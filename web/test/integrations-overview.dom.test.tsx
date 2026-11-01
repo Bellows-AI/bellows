@@ -94,16 +94,15 @@ describe('the Integrations overview', () => {
         expect(browse.getAttribute('href')).toBe('/settings/integrations/available');
     });
 
-    it('previews planned providers read-only, and never lists one as connected', async () => {
+    it('previews the organization providers read-only, and never a planned one', async () => {
         stubFetch(withConnections({ connections: [connection('acme-example.atlassian.net')] }));
         renderApp(PATH);
 
         await screen.findByRole('link', { name: /acme-example\.atlassian\.net/ });
-        const connected = within(screen.getByRole('list', { name: 'Connected integrations' }));
-        for (const planned of ['Slack', 'Discord', 'MCP']) expect(connected.queryByText(planned)).toBeNull();
         const preview = within(screen.getByRole('list', { name: 'Available integrations' }));
-        expect(preview.getByText('Slack')).toBeTruthy();
-        expect(preview.getAllByText('Planned').length).toBeGreaterThan(0);
+        expect(preview.getAllByRole('listitem').map((item) => item.getAttribute('aria-label'))).toEqual(['GitHub']);
+        expect(preview.getByText('Organization')).toBeTruthy();
+        expect(screen.queryByText('Planned')).toBeNull();
         expect(preview.queryByRole('button')).toBeNull();
         expect(preview.queryByRole('link')).toBeNull();
     });

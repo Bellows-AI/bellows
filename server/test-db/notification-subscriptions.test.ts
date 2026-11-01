@@ -72,19 +72,15 @@ const fields = (over: Partial<SubscriptionFields> = {}): SubscriptionFields => (
     connectorConfig: { target: `room-${randomUUID()}` },
     eventKinds: ['task.ready', 'task.blocked', 'task.question'],
     repos: [],
-    workflows: [],
     enabled: true,
     ...over,
 });
 
 describe('notification subscription store', () => {
     it('create, list, update and remove round-trip in the store’s org', async () => {
-        const created = await store.create(
-            ORG_OWNER,
-            fields({ repos: ['acme/api'], workflows: ['build'] }),
-            credential()
-        );
-        expect(created).toMatchObject({ connectorKind: 'fake', repos: ['acme/api'], workflows: ['build'] });
+        const created = await store.create(ORG_OWNER, fields({ repos: ['acme/api'] }), credential());
+        expect(created).toMatchObject({ connectorKind: 'fake', repos: ['acme/api'] });
+        expect(created).not.toHaveProperty('workflows');
         expect((await store.list(ORG_OWNER)).find((s) => s.id === created.id)).toEqual(created);
 
         const replaced = (await store.update(

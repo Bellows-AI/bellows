@@ -23,7 +23,6 @@ const VIEW = {
     connectorConfig: {},
     eventKinds: ['task.ready'],
     repos: [],
-    workflows: [],
     enabled: true,
     createdAt: '2026-09-01T00:00:00.000Z',
     updatedAt: '2026-09-01T00:00:00.000Z',
@@ -34,7 +33,6 @@ const INPUT: SubscriptionInput = {
     credential: 'https://discord.com/api/webhooks/0/test',
     eventKinds: ['task.ready'],
     repos: [],
-    workflows: [],
     enabled: true,
 };
 

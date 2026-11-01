@@ -20,8 +20,6 @@ export interface SubscriptionFields {
     eventKinds: NotificationKind[];
     /** Empty = every repo. */
     repos: string[];
-    /** Empty = every workflow. */
-    workflows: string[];
     enabled: boolean;
 }
 
@@ -68,7 +66,6 @@ interface Row {
     connector_config: unknown;
     event_kinds: NotificationKind[];
     repos: string[];
-    workflows: string[];
     enabled: boolean;
     created_at: Date;
     updated_at: Date;
@@ -80,7 +77,6 @@ const toView = (row: Row): SubscriptionView => ({
     connectorConfig: row.connector_config,
     eventKinds: row.event_kinds,
     repos: row.repos,
-    workflows: row.workflows,
     enabled: row.enabled,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -91,7 +87,7 @@ const toView = (row: Row): SubscriptionView => ({
 type Replaced = { row: Row; old: RetiredEnvSecret | undefined } | 'kind-changed' | undefined;
 
 const COLUMNS = (sql: Sql) =>
-    sql`id, connector_kind, connector_config, event_kinds, repos, workflows, enabled, created_at, updated_at`;
+    sql`id, connector_kind, connector_config, event_kinds, repos, enabled, created_at, updated_at`;
 
 export function createNotificationSubscriptionStore({
     sql,
@@ -175,8 +171,8 @@ export function createNotificationSubscriptionStore({
         const [row] = await tx<Row[]>`
             update notification_subscription
             set connector_kind = ${f.connectorKind}, connector_config = ${sql.json(f.connectorConfig as never)},
-                event_kinds = ${f.eventKinds}::text[], repos = ${f.repos}::text[],
-                workflows = ${f.workflows}::text[], enabled = ${f.enabled}, updated_at = now()
+                event_kinds = ${f.eventKinds}::text[], repos = ${f.repos}::text[], enabled = ${f.enabled},
+                updated_at = now()
                 ${made ? sql`, secret_ref = ${made.ref}, secret_version = ${made.version}` : sql``}
             where org_id = ${orgId} and id = ${id} and ${ownerClause(owner)}
             returning ${COLUMNS(sql)}
@@ -201,10 +197,10 @@ export function createNotificationSubscriptionStore({
             try {
                 const [row] = await sql<Row[]>`
                     insert into notification_subscription
-                        (org_id, id, user_id, connector_kind, connector_config, event_kinds, repos, workflows,
-                         enabled, secret_ref, secret_version)
+                        (org_id, id, user_id, connector_kind, connector_config, event_kinds, repos, enabled,
+                         secret_ref, secret_version)
                     values (${orgId}, ${id}, ${userIdOf(owner)}::uuid, ${f.connectorKind}, ${sql.json(f.connectorConfig as never)},
-                            ${f.eventKinds}::text[], ${f.repos}::text[], ${f.workflows}::text[], ${f.enabled},
+                            ${f.eventKinds}::text[], ${f.repos}::text[], ${f.enabled},
                             ${made.ref}, ${made.version})
                     returning ${COLUMNS(sql)}
                 `;

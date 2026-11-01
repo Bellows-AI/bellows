@@ -96,7 +96,6 @@ const fields = (over: Partial<SubscriptionFields> = {}): SubscriptionFields => (
     connectorConfig: { target: `room-${randomUUID()}` },
     eventKinds: ['task.ready', 'task.blocked', 'task.question'],
     repos: [],
-    workflows: [],
     enabled: true,
     ...over,
 });
@@ -187,11 +186,10 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
         }
     });
 
-    it('does not fan out to a non-matching kind, repo or workflow, or to a null repo/workflow under a filter', async () => {
+    it('does not fan out to a non-matching kind or repo, or to a null repo under a filter', async () => {
         const open = await subs.create(ORG_OWNER, fields(), credential());
         await subs.create(ORG_OWNER, fields({ eventKinds: ['task.blocked'] }), credential());
         await subs.create(ORG_OWNER, fields({ repos: ['acme/api'] }), credential());
-        await subs.create(ORG_OWNER, fields({ workflows: ['build'] }), credential());
 
         await emit({ repo: null, workflow: null });
         await emit({ repo: 'acme/web', workflow: 'review' });
@@ -201,14 +199,20 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
         expect(new Set(found.map((r) => r.subscription_id))).toEqual(new Set([open.id]));
     });
 
-    it('fans out on the repo and workflow a filter names', async () => {
-        const filtered = await subs.create(
-            ORG_OWNER,
-            fields({ repos: ['acme/api'], workflows: ['build'] }),
-            credential()
-        );
+    it('fans out on the repo a filter names', async () => {
+        const filtered = await subs.create(ORG_OWNER, fields({ repos: ['acme/api'] }), credential());
         await emit({ repo: 'acme/api', workflow: 'build' });
         expect((await rows()).map((r) => r.subscription_id)).toEqual([filtered.id]);
+    });
+
+    it('ignores a workflows value an older build stored: the row matches every workflow', async () => {
+        const stale = await subs.create(ORG_OWNER, fields(), credential());
+        await sql`update notification_subscription set workflows = '{build}' where id = ${stale.id}`;
+        await emit({ repo: 'acme/web', workflow: 'review' });
+        await emit({ repo: null, workflow: null });
+        const found = await rows();
+        expect(found).toHaveLength(2);
+        expect(new Set(found.map((r) => r.subscription_id))).toEqual(new Set([stale.id]));
     });
 
     it('does not fan out to a disabled subscription', async () => {
@@ -797,11 +801,10 @@ describe.skipIf(!enabled)('notification outbox — personal subscriptions (BEL-1
         expect(await targets()).toEqual([asActor.id, asAuthor.id].sort());
     });
 
-    it('a personal subscription respects event kind, repo and workflow filters like an org row', async () => {
+    it('a personal subscription respects event kind and repo filters like an org row', async () => {
         await subs.create(owner(ALICE), fields({ eventKinds: ['task.blocked'] }), credential());
         await subs.create(owner(ALICE), fields({ repos: ['acme/other'] }), credential());
-        await subs.create(owner(ALICE), fields({ workflows: ['other'] }), credential());
-        const ok = await subs.create(owner(ALICE), fields({ repos: ['acme/api'], workflows: ['build'] }), credential());
+        const ok = await subs.create(owner(ALICE), fields({ repos: ['acme/api'] }), credential());
         await emit({ user: ALICE, repo: 'acme/api', workflow: 'build' });
         expect(await targets()).toEqual([ok.id]);
     });

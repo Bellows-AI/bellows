@@ -8,7 +8,7 @@ type Refusal = { ok: false; code: string; message: string; problems?: string[] }
 /** `credential` is the write-only secret half, kept out of `fields` so no store path can echo it; null = keep. */
 export type ParsedSubscription = { ok: true; fields: SubscriptionFields; credential: string | null } | Refusal;
 
-const KEYS = new Set(['connectorKind', 'connectorConfig', 'credential', 'eventKinds', 'repos', 'workflows', 'enabled']);
+const KEYS = new Set(['connectorKind', 'connectorConfig', 'credential', 'eventKinds', 'repos', 'enabled']);
 
 const refuse = (message: string, code: string = ERROR_CODES.BAD_BODY): Refusal => ({
     ok: false,
@@ -107,8 +107,6 @@ export function parseSubscriptionFields(
 
     const repos = stringList('repos', o.repos ?? [], repoReason);
     if (!repos.ok) return refuse(repos.message);
-    const workflows = stringList('workflows', o.workflows ?? [], (w) => (w === '' ? 'workflow is empty' : null));
-    if (!workflows.ok) return refuse(workflows.message);
 
     if (typeof o.connectorKind !== 'string' || o.connectorKind === '') {
         return refuse('connectorKind must be a non-empty string');
@@ -129,7 +127,6 @@ export function parseSubscriptionFields(
             connectorConfig: checked.config,
             eventKinds: kinds.value as NotificationKind[],
             repos: repos.value,
-            workflows: workflows.value,
             enabled: o.enabled,
         },
         credential: credential.value,

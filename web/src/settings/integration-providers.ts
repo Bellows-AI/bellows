@@ -69,6 +69,11 @@ export const INTEGRATION_PROVIDERS: readonly IntegrationProvider[] = [
     },
 ];
 
+/** The providers the Integrations pages show: a `planned` one stays hidden until something is behind it. */
+export const LISTED_PROVIDERS: readonly IntegrationProvider[] = INTEGRATION_PROVIDERS.filter(
+    (provider) => provider.availability !== 'planned'
+);
+
 export const integrationProvider = (id: string): IntegrationProvider | undefined =>
     INTEGRATION_PROVIDERS.find((provider) => provider.id === id);
 

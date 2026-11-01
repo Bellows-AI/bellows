@@ -53,7 +53,6 @@ describe('the organization notifications on the organization page', () => {
             credential: WEBHOOK,
             eventKinds: ['task.ready', 'task.blocked', 'task.question', 'task.admin_action'],
             repos: ['e2e-org/no-such-repo'],
-            workflows: [],
             enabled: true,
         });
         const row = within(await orgTable()).getByRole('row', { name: /e2e-org\/no-such-repo/ });
@@ -94,6 +93,7 @@ describe('the organization notifications on the organization page', () => {
         expect(webhook.type).toBe('password');
         expect(webhook.value).toBe('');
         expect((within(dialog).getByLabelText(/Repositories/) as HTMLTextAreaElement).value).toBe('acme/api');
+        expect(within(dialog).queryByLabelText(/Workflows/)).toBeNull();
         await user.click(within(dialog).getByRole('checkbox', { name: 'Task blocked' }));
         await user.click(within(dialog).getByRole('button', { name: 'Save' }));
 
@@ -105,7 +105,6 @@ describe('the organization notifications on the organization page', () => {
             connectorConfig: {},
             eventKinds: ['task.ready', 'task.blocked'],
             repos: ['acme/api'],
-            workflows: [],
             enabled: true,
         });
     });
@@ -130,7 +129,7 @@ describe('the organization notifications on the organization page', () => {
     });
 
     it('the Enabled toggle sends a full-body PUT with enabled flipped and no credential', async () => {
-        const row = subscription({ repos: ['acme/api'], workflows: ['review'] });
+        const row = subscription({ repos: ['acme/api'] });
         const calls = stubFetch(boardHandler(settingsBoard({ subscriptions: { org: [row], workspace: [] } })));
         const user = userEvent.setup();
         renderApp('/settings/organization');
@@ -147,7 +146,6 @@ describe('the organization notifications on the organization page', () => {
                 connectorConfig: {},
                 eventKinds: ['task.ready'],
                 repos: ['acme/api'],
-                workflows: ['review'],
                 enabled: false,
             },
         });
