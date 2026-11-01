@@ -6,6 +6,7 @@ import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
 import { checkoutDir, CREDENTIAL_HELPER, remoteUrl, type SyncResult, worktreeBranch } from './publish/publish.js';
 import { claimStepEnv, detailOf, type StepHost, stepRequest, submitStep } from './supervised-steps.js';
+import type { StepResult } from './supervisor-contract.js';
 import { FIRST_GENERATION } from './task-volume.js';
 
 /**
@@ -181,12 +182,31 @@ export const unrestorableResult = (e: CheckpointUnrestorable): SyncResult => ({
 /** The restore script's verdict: a sync result, `absent` when it confirmed the volume holds no tree. */
 type RestoreVerdict = SyncResult & { absent?: boolean; transient?: boolean };
 
-/** A failed restore as the refusal the loop reports; an unconfirmed one (a 5xx, a network or disk fault) throws, so the lease hands the claim back. */
+/** The refusal the loop reports: only the script's own `checkpoint_unrestorable` verdict. */
 const refusalOf = (verdict: RestoreVerdict): SyncResult => {
-    if (verdict.transient === true) throw new Error(verdict.reason ?? 'the checkpoint restore failed');
     const { absent: _absent, transient: _transient, ...refused } = verdict;
     return refused;
 };
+
+/**
+ * The script's verdict, or a throw so the lease hands the claim back: a timeout, unreadable output, a transient fault
+ * and any shape but `ok: true` or the `checkpoint_unrestorable` refusal confirm nothing and delete nothing.
+ */
+function verdictOf(job: BoardJob, result: StepResult): RestoreVerdict {
+    const unconfirmed = (): never => {
+        throw new Error(
+            `job ${job.id}: the checkpoint restore is unconfirmed: ${detailOf(result, RESTORE_DEADLINE_MS)}`
+        );
+    };
+    if (result.timedOut) return unconfirmed();
+    const verdict = parseLastJsonLine<RestoreVerdict>(result.stdout, unconfirmed);
+    if (verdict.ok === true) return verdict;
+    if (verdict.ok === false && verdict.transient === true) {
+        throw new Error(verdict.reason ?? 'the checkpoint restore failed');
+    }
+    if (verdict.ok === false && verdict.kind === 'checkpoint_unrestorable') return verdict;
+    return unconfirmed();
+}
 
 /**
  * Runs the owed restore as a supervised step, then deletes the older generations through `removeOlder`.
@@ -195,7 +215,11 @@ const refusalOf = (verdict: RestoreVerdict): SyncResult => {
 export async function restoreTaskTree(
     host: StepHost,
     job: BoardJob,
-    options: { githubToken?: string | undefined; removeOlder: (generations: number[]) => Promise<void> }
+    options: {
+        githubToken?: string | undefined;
+        removeOlder: (generations: number[]) => Promise<void>;
+        signal?: AbortSignal | undefined;
+    }
 ): Promise<SyncResult | null> {
     const pending = job.taskRestore;
     const checkout = checkoutDir(job);
@@ -220,16 +244,16 @@ export async function restoreTaskTree(
                 ...(options.githubToken ? { CRED_HELPER: CREDENTIAL_HELPER } : {}),
             },
             timeoutMs: RESTORE_DEADLINE_MS,
-        })
+        }),
+        options.signal
     );
-    const failed = (): RestoreVerdict => ({
-        ok: false,
-        reason: `the checkpoint restore failed: ${detailOf(result, RESTORE_DEADLINE_MS)}`,
-    });
-    const verdict: RestoreVerdict = result.timedOut
-        ? failed()
-        : parseLastJsonLine<RestoreVerdict>(result.stdout, failed);
-    if (!verdict.ok && verdict.absent === true && pending.held !== undefined && job.taskGeneration !== undefined) {
+    const verdict = verdictOf(job, result);
+    if (
+        verdict.ok === false &&
+        verdict.absent === true &&
+        pending.held !== undefined &&
+        job.taskGeneration !== undefined
+    ) {
         // The live volume is confirmed empty and an unschedulable one may hold the tree. Only the empty one goes;
         // the claim is handed back, and the next one, finding no live volume, adopts the held one with its mark
         // cleared (`planTaskVolume`). A delete that fails throws too: the empty one stays, nothing else is touched.

@@ -82,11 +82,25 @@ describe('the kubernetes runner restoring a task volume', () => {
     it('keeps the older claim and the sync step when the restore fails', async () => {
         const run = await k8sSyncRun(job(), {
             checkpoints: board(FOUND),
-            answer: (step) => (step.id.endsWith('-restore') ? '{"ok":false,"reason":"bundle unreadable"}' : OK),
+            answer: (step) =>
+                step.id.endsWith('-restore')
+                    ? '{"ok":false,"reason":"bundle unreadable","kind":"checkpoint_unrestorable"}'
+                    : OK,
             volumes: [claim(1), claim(2)],
         });
         expect(run).toMatchObject({ value: { ok: false } });
         expect((run as { value: { reason: string } }).value.reason).toContain('bundle unreadable');
+        expect(run.steps).toHaveLength(1);
+        expect(claimsDeleted(run.calls)).toEqual([]);
+    });
+
+    it('hands the claim back when the restore answers unreadably, keeping the older claim and the sync step', async () => {
+        const run = await k8sSyncRun(job(), {
+            checkpoints: board(FOUND),
+            answer: (step) => (step.id.endsWith('-restore') ? 'garbage' : OK),
+            volumes: [claim(1), claim(2)],
+        });
+        expect(run).toHaveProperty('error');
         expect(run.steps).toHaveLength(1);
         expect(claimsDeleted(run.calls)).toEqual([]);
     });
@@ -160,7 +174,10 @@ describe('the kubernetes runner restoring a task volume', () => {
         it('never releases the agent past a failed restore: the inputs step does not run', async () => {
             const run = await k8sSyncRun(repoFree({ attachments: [FILE] }), {
                 checkpoints: board({ state: 'none' }),
-                answer: (step) => (step.id.endsWith('-restore') ? '{"ok":false,"reason":"no transcripts"}' : OK),
+                answer: (step) =>
+                    step.id.endsWith('-restore')
+                        ? '{"ok":false,"reason":"no transcripts","kind":"checkpoint_unrestorable"}'
+                        : OK,
             });
             expect(run).toMatchObject({ value: { ok: false } });
             expect(stepNames(run.steps)).toEqual(['restore']);

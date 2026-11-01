@@ -300,7 +300,7 @@ describe('the docker runner restoring a task volume', () => {
     it('keeps the older generation when the restore step fails, and fails the sync with its reason', async () => {
         const steps = fakeSteps((step) =>
             step.id.endsWith('-restore')
-                ? ok('{"ok":false,"reason":"bundle unreadable"}')
+                ? ok('{"ok":false,"reason":"bundle unreadable","kind":"checkpoint_unrestorable"}')
                 : ok('{"ok":true,"reason":null}')
         );
         const { d, runner: r } = runner([1, 2], steps, { checkpoint: async () => POINTER });
@@ -309,6 +309,15 @@ describe('the docker runner restoring a task volume', () => {
         expect(result.reason).toContain('bundle unreadable');
         expect(removes(d.calls)).toEqual([]);
         // The sync step never ran on the half-restored volume.
+        expect(steps.submitted).toHaveLength(1);
+    });
+
+    it('hands the claim back when the restore answers unreadably, keeping the older generation', async () => {
+        const steps = fakeSteps((step) => ok(step.id.endsWith('-restore') ? 'garbage' : '{"ok":true,"reason":null}'));
+        const { d, runner: r } = runner([1, 2], steps, { checkpoint: async () => POINTER });
+        await expect(r.syncCheckout(restoreJob(), undefined, null, 'ghs_x')).rejects.toThrow();
+        expect(removes(d.calls)).not.toContain(named(1));
+        expect(removes(d.calls)).not.toContain(named(2));
         expect(steps.submitted).toHaveLength(1);
     });
 
@@ -395,7 +404,11 @@ describe('the docker runner restoring a task volume', () => {
 
         it('never reaches the inputs step past a failed restore', async () => {
             const steps = fakeSteps((step) =>
-                ok(step.id.endsWith('-restore') ? '{"ok":false,"reason":"no transcripts"}' : '{"ok":true}')
+                ok(
+                    step.id.endsWith('-restore')
+                        ? '{"ok":false,"reason":"no transcripts","kind":"checkpoint_unrestorable"}'
+                        : '{"ok":true}'
+                )
             );
             const result = await runner([], steps, NONE).runner.syncCheckout(
                 repoFree({ attachments: [FILE] }),

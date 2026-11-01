@@ -339,6 +339,7 @@ async function dockerSyncCheckout(
         // A volume made by a restore is filled before the sync looks at it; the generation it replaces goes after.
         const restored = await restoreTaskTree(host, job, {
             githubToken,
+            signal,
             removeOlder: (generations) => removeTaskVolumes(deps.execDocker, job, generations, signal),
         });
         if (restored && !restored.ok) return restored;
