@@ -84,7 +84,6 @@ const fields = (eventKinds: SubscriptionFields['eventKinds']): SubscriptionField
     connectorConfig: { target: `room-${Math.random()}` },
     eventKinds,
     repos: [],
-    workflows: [],
     enabled: true,
 });
 

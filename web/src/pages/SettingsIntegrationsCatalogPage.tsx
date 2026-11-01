@@ -9,7 +9,7 @@ import { ProviderMark } from '../components/ProviderMark.js';
 import {
     connectionState,
     INTEGRATION_CATEGORIES,
-    INTEGRATION_PROVIDERS,
+    LISTED_PROVIDERS,
     type IntegrationCategory,
     type IntegrationProvider,
 } from '../settings/integration-providers.js';
@@ -76,7 +76,6 @@ function CardState({
     connections: UseConnections;
     onConnect: () => void;
 }) {
-    if (provider.availability === 'planned') return <span className="pill">Planned</span>;
     if (provider.availability === 'organization') {
         return (
             <>
@@ -89,12 +88,12 @@ function CardState({
 }
 
 /**
- * Browse integrations: every provider the product names, filed by category, each in the state it is really in. A
+ * Browse integrations: every listed provider (planned ones stay hidden), filed by category, each in the state it is really in. A
  * provider is Connected only on the connections read, connectable only on the configuration read, and a failed
  * read of either is said as such. The filter is local state; there is no search.
  */
 export function SettingsIntegrationsCatalogPage({
-    providers = INTEGRATION_PROVIDERS,
+    providers = LISTED_PROVIDERS,
 }: {
     providers?: readonly IntegrationProvider[];
 }) {
@@ -104,6 +103,7 @@ export function SettingsIntegrationsCatalogPage({
     const [open, setOpen] = useState(false);
     const { saving, start } = useAuthorizationStart('jira', RETURN_TO);
     const shown = providers.filter((provider) => filter === ALL || provider.category === filter);
+    const categories = INTEGRATION_CATEGORIES.filter((category) => providers.some((p) => p.category === category));
 
     return (
         <>
@@ -123,7 +123,7 @@ export function SettingsIntegrationsCatalogPage({
                 </p>
             ) : null}
             <div className="catalog-filters">
-                {[ALL, ...INTEGRATION_CATEGORIES].map((name) => (
+                {[ALL, ...categories].map((name) => (
                     <button
                         key={name}
                         type="button"
@@ -135,7 +135,6 @@ export function SettingsIntegrationsCatalogPage({
                     </button>
                 ))}
             </div>
-            {shown.length === 0 ? <p className="muted">Nothing in this category yet.</p> : null}
             {shown.length > 0 ? (
                 <ul className="integration-list" aria-label="Available integrations">
                     {shown.map((provider) => (

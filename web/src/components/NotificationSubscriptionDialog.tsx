@@ -32,7 +32,7 @@ const linesOf = (text: string): string[] => [
 
 /**
  * Add or edit one notification subscription: channel, the write-only webhook, the events, the repo
- * and workflow filters (one per line, empty = all) and Enabled, stacked in the executor dialog's
+ * filter (one per line, empty = all) and Enabled, stacked in the executor dialog's
  * field layout. Headless UI owns the focus trap and Escape; no `<form>` because the CSP sends
  * `form-action 'none'`. The webhook is a password input that starts blank even on edit: blank
  * keeps the stored one, except on a changed channel, which cannot. A refusal (the connector's
@@ -60,7 +60,6 @@ export function NotificationSubscriptionDialog({
     const [webhook, setWebhook] = useState('');
     const [events, setEvents] = useState<readonly NotificationKind[]>([]);
     const [repos, setRepos] = useState('');
-    const [workflows, setWorkflows] = useState('');
     const [enabled, setEnabled] = useState(true);
     const [failure, setFailure] = useState<string | null>(null);
     const ids = useId();
@@ -72,7 +71,6 @@ export function NotificationSubscriptionDialog({
         setWebhook('');
         setEvents(editing?.eventKinds ?? DEFAULT_EVENTS);
         setRepos(editing?.repos.join('\n') ?? '');
-        setWorkflows(editing?.workflows.join('\n') ?? '');
         setEnabled(editing?.enabled ?? true);
         setFailure(null);
     }, [open, editing, connectorKinds]);
@@ -100,7 +98,6 @@ export function NotificationSubscriptionDialog({
             ...(secret === '' ? {} : { credential: secret }),
             eventKinds: NOTIFICATION_KINDS.filter((event) => events.includes(event)),
             repos: linesOf(repos),
-            workflows: linesOf(workflows),
             enabled,
         });
         setFailure(message);
@@ -181,18 +178,6 @@ export function NotificationSubscriptionDialog({
                             value={repos}
                             disabled={busy}
                             onChange={(e) => setRepos(e.target.value)}
-                        />
-                    </div>
-
-                    <div className="picker-field">
-                        <label htmlFor={`${ids}-workflows`}>Workflows (one per line, empty for all)</label>
-                        <textarea
-                            id={`${ids}-workflows`}
-                            className="field"
-                            rows={3}
-                            value={workflows}
-                            disabled={busy}
-                            onChange={(e) => setWorkflows(e.target.value)}
                         />
                     </div>
 

@@ -98,7 +98,6 @@ export const subscription = (overrides: Partial<SubscriptionView> = {}): Subscri
     connectorConfig: {},
     eventKinds: ['task.ready'],
     repos: [],
-    workflows: [],
     enabled: true,
     createdAt: AT,
     updatedAt: AT,

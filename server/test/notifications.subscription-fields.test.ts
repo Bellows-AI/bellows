@@ -59,7 +59,6 @@ describe('parseSubscriptionFields', () => {
                 connectorConfig: { target: 'room-1' },
                 eventKinds: ['task.ready'],
                 repos: ['acme/api'],
-                workflows: [],
                 enabled: true,
             },
             credential: null,
@@ -67,24 +66,21 @@ describe('parseSubscriptionFields', () => {
         if (parsed.ok) expect(parsed.fields.connectorConfig).not.toBe(config);
     });
 
-    it('defaults repos and workflows to empty and dedupes every list', () => {
+    it('defaults repos to empty and dedupes every list', () => {
         const defaults = parse(valid, registry);
         expect(defaults.ok && defaults.fields.repos).toEqual([]);
-        expect(defaults.ok && defaults.fields.workflows).toEqual([]);
 
         const deduped = parse(
             {
                 ...valid,
                 eventKinds: ['task.ready', 'task.blocked', 'task.ready'],
                 repos: ['acme/api', 'acme/api'],
-                workflows: ['w', 'w'],
             },
             registry
         );
         expect(deduped.ok && deduped.fields).toMatchObject({
             eventKinds: ['task.ready', 'task.blocked'],
             repos: ['acme/api'],
-            workflows: ['w'],
         });
     });
 
@@ -173,7 +169,7 @@ describe('parseSubscriptionFields', () => {
             ['a missing event kind list', { ...valid, eventKinds: undefined }],
             ['a repo that is not owner/name', { ...valid, repos: ['acme'] }],
             ['a non-string repo', { ...valid, repos: [1] }],
-            ['an empty workflow name', { ...valid, workflows: [''] }],
+            ['a workflows filter, which subscriptions no longer have', { ...valid, workflows: [] }],
             ['a missing enabled', { ...valid, enabled: undefined }],
             ['a non-boolean enabled', { ...valid, enabled: 'true' }],
             ['an unknown body key', { ...valid, extra: 1 }],

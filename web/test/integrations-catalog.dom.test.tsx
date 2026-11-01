@@ -31,16 +31,24 @@ const board = (replies: { config?: unknown; connections?: unknown; start?: unkno
         }
     });
 
+/** The category filter buttons, the only buttons with a pressed state. */
+const filterNames = () =>
+    screen
+        .getAllByRole('button')
+        .filter((button) => button.hasAttribute('aria-pressed'))
+        .map((button) => button.textContent);
+
 const card = async (name: string) => within(await screen.findByRole('listitem', { name }));
 
 describe('the integrations catalog', () => {
-    it('has the page heading, a Back link and a pressed-state filter per category', async () => {
+    it('has the page heading, a Back link and a pressed-state filter per category it lists', async () => {
         stubFetch(board());
         renderApp(PATH);
 
         expect(await screen.findByRole('heading', { level: 1, name: 'Browse integrations' })).toBeTruthy();
         expect(screen.getByRole('link', { name: /Back/ }).getAttribute('href')).toBe('/settings/integrations');
-        for (const name of ['All', 'Issue tracking', 'Communication', 'Agent tools', 'CI / DevOps']) {
+        expect(filterNames()).toEqual(['All', 'Issue tracking', 'CI / DevOps']);
+        for (const name of ['All', 'Issue tracking', 'CI / DevOps']) {
             expect(screen.getByRole('button', { name }).getAttribute('aria-pressed')).toBe(
                 name === 'All' ? 'true' : 'false'
             );
@@ -52,23 +60,25 @@ describe('the integrations catalog', () => {
         stubFetch(board());
         renderApp(PATH);
 
-        await user.click(await screen.findByRole('button', { name: 'Communication' }));
+        await user.click(await screen.findByRole('button', { name: 'CI / DevOps' }));
         const list = within(screen.getByRole('list', { name: 'Available integrations' }));
         const names = list.getAllByRole('listitem').map((item) => item.getAttribute('aria-label'));
-        expect(names).toEqual(['Slack', 'Discord']);
-        expect(screen.getByRole('button', { name: 'Communication' }).getAttribute('aria-pressed')).toBe('true');
+        expect(names).toEqual(['GitHub']);
+        expect(screen.getByRole('button', { name: 'CI / DevOps' }).getAttribute('aria-pressed')).toBe('true');
         expect(screen.getByRole('button', { name: 'All' }).getAttribute('aria-pressed')).toBe('false');
     });
 
-    it('marks planned providers Planned and gives them no Connect', async () => {
+    it('lists only the providers something is behind, never a planned one', async () => {
         stubFetch(board());
         renderApp(PATH);
 
-        for (const name of ['Slack', 'Discord', 'GitLab', 'MCP servers']) {
-            const planned = await card(name);
-            expect(planned.getByText('Planned')).toBeTruthy();
-            expect(planned.queryByRole('button', { name: /Connect/ })).toBeNull();
-        }
+        await card('Jira');
+        const list = within(screen.getByRole('list', { name: 'Available integrations' }));
+        expect(list.getAllByRole('listitem').map((item) => item.getAttribute('aria-label'))).toEqual([
+            'Jira',
+            'GitHub',
+        ]);
+        expect(screen.queryByText('Planned')).toBeNull();
     });
 
     it('offers Connect for a configured Jira with no connection, and posts the integrations page as returnTo', async () => {
@@ -148,8 +158,7 @@ describe('the integrations catalog', () => {
         expect(jira.queryByRole('link', { name: /Manage/ })).toBeNull();
     });
 
-    it('says a category with nothing in it is empty', async () => {
-        const user = userEvent.setup();
+    it('offers a filter only for a category it has a provider in', async () => {
         stubFetch(board());
         const { INTEGRATION_PROVIDERS } = await import('../src/settings/integration-providers.js');
         renderAt(
@@ -157,8 +166,8 @@ describe('the integrations catalog', () => {
             PATH
         );
 
-        await user.click(await screen.findByRole('button', { name: 'Communication' }));
-        expect(screen.getByText('Nothing in this category yet.')).toBeTruthy();
+        await card('Jira');
+        expect(filterNames()).toEqual(['All', 'Issue tracking']);
     });
 
     it('lists GitHub as an organization integration linking to Repositories, never connectable or Connected', async () => {

@@ -3,6 +3,7 @@ import type { ConnectionView } from '../src/api/connections.js';
 import {
     INTEGRATION_CATEGORIES,
     INTEGRATION_PROVIDERS,
+    LISTED_PROVIDERS,
     canConnect,
     connectionState,
     integrationNotice,
@@ -63,6 +64,10 @@ describe('the provider registry', () => {
         expect(canConnect(integrationProvider('jira')!)).toBe(true);
         expect(canConnect(integrationProvider('slack')!)).toBe(false);
         expect(canConnect(integrationProvider('github')!)).toBe(false);
+    });
+
+    it('lists every provider but the planned ones', () => {
+        expect(LISTED_PROVIDERS.map((provider) => provider.id)).toEqual(['jira', 'github']);
     });
 
     it('looks a provider up by id, and answers undefined for a stranger', () => {

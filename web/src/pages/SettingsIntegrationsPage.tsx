@@ -5,8 +5,8 @@ import { PageHeader } from '../components/PageHeader.js';
 import { ProviderMark } from '../components/ProviderMark.js';
 import {
     connectionState,
-    INTEGRATION_PROVIDERS,
     integrationProvider,
+    LISTED_PROVIDERS,
     canConnect,
     type ConnectionState,
 } from '../settings/integration-providers.js';
@@ -34,7 +34,7 @@ const PREVIEW_LIMIT = 4;
 export function SettingsIntegrationsPage() {
     const read = useConnections();
     const { notice } = useIntegrationNotice();
-    const preview = INTEGRATION_PROVIDERS.filter((provider) => !canConnect(provider)).slice(0, PREVIEW_LIMIT);
+    const preview = LISTED_PROVIDERS.filter((provider) => !canConnect(provider)).slice(0, PREVIEW_LIMIT);
     return (
         <>
             <PageHeader
@@ -90,9 +90,7 @@ export function SettingsIntegrationsPage() {
                                 <span className="integration-card-title">{provider.label}</span>
                                 <span className="integration-card-site">{provider.description}</span>
                             </span>
-                            <span className="pill">
-                                {provider.availability === 'planned' ? 'Planned' : 'Organization'}
-                            </span>
+                            <span className="pill">Organization</span>
                         </li>
                     ))}
                 </ul>

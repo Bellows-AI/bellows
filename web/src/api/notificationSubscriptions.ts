@@ -30,8 +30,6 @@ export interface SubscriptionView {
     eventKinds: NotificationKind[];
     /** Empty = every repo. */
     repos: string[];
-    /** Empty = every workflow. */
-    workflows: string[];
     enabled: boolean;
     createdAt: string;
     updatedAt: string;
@@ -44,7 +42,6 @@ export interface SubscriptionInput {
     credential?: string;
     eventKinds: NotificationKind[];
     repos: string[];
-    workflows: string[];
     enabled: boolean;
 }
 
@@ -73,7 +70,6 @@ const isSubscriptionView = (row: unknown): row is SubscriptionView => {
         Array.isArray(view.eventKinds) &&
         view.eventKinds.every((kind) => (NOTIFICATION_KINDS as readonly unknown[]).includes(kind)) &&
         isStringArray(view.repos) &&
-        isStringArray(view.workflows) &&
         typeof view.enabled === 'boolean' &&
         typeof view.createdAt === 'string' &&
         typeof view.updatedAt === 'string'

@@ -22,8 +22,8 @@ const lines = (items: readonly string[]) =>
     items.length === 0 ? 'All' : items.map((item) => <div key={item}>{item}</div>);
 
 /**
- * One scope's notification subscriptions: a row per channel with its events, repo and workflow
- * filters, the Enabled switch and, for a caller who can write, `RowActions` (Send test
+ * One scope's notification subscriptions: a row per channel with its events, repo filter, the
+ * Enabled switch and, for a caller who can write, `RowActions` (Send test
  * notification inline, Edit and Delete in the menu). Presentational, like `JiraConnectionsPanel` —
  * the section owns the list, the writes and the dialogs. No row has a place to show a webhook.
  */
@@ -93,7 +93,6 @@ export function NotificationSubscriptionsPanel({
                                 <th scope="col">Channel</th>
                                 <th scope="col">Events</th>
                                 <th scope="col">Repos</th>
-                                <th scope="col">Workflows</th>
                                 <th scope="col">Enabled</th>
                                 {canWrite ? (
                                     <th scope="col">
@@ -110,7 +109,6 @@ export function NotificationSubscriptionsPanel({
                                         {lines(row.eventKinds.map((kind) => EVENT_KIND_LABELS[kind]))}
                                     </td>
                                     <td data-label="Repos">{lines(row.repos)}</td>
-                                    <td data-label="Workflows">{lines(row.workflows)}</td>
                                     <td data-label="Enabled">
                                         <label className="settings-toggle">
                                             <input

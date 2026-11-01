@@ -133,7 +133,6 @@ test('the organization notifications: create, edit, toggle, test and delete', as
             credential: WEBHOOK,
             eventKinds: ['task.ready'],
             repos: [PERSONAL_ONLY_REPO],
-            workflows: [],
             enabled: true,
         },
     });

@@ -22,7 +22,7 @@ const COPY: Record<SubscriptionScope, { heading: string; tableLabel: string; int
     org: {
         heading: 'Organization notifications',
         tableLabel: 'Organization notification subscriptions',
-        intro: 'Send task events to a channel for the whole organization. Each subscription picks the events, and can be limited to some repositories or workflows.',
+        intro: 'Send task events to a channel for the whole organization. Each subscription picks the events, and can be limited to some repositories.',
     },
     workspace: {
         heading: 'My notifications',

@@ -18,5 +18,6 @@ test('the catalog says Jira is not configured here and offers no Connect', async
     const jira = page.getByRole('listitem', { name: 'Jira' });
     await expect(jira.getByText('Not configured on this deployment')).toBeVisible();
     await expect(jira.getByRole('button', { name: /Connect/ })).toHaveCount(0);
-    await expect(page.getByRole('listitem', { name: 'Slack' }).getByText('Planned')).toBeVisible();
+    await expect(page.getByRole('listitem', { name: 'GitHub' })).toBeVisible();
+    await expect(page.getByRole('listitem', { name: 'Slack' })).toHaveCount(0);
 });

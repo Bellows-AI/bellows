@@ -79,11 +79,11 @@ describe('the catalog card for Jira, by state', () => {
 });
 
 describe('the catalog cards that are not connectable', () => {
-    it.each([['Slack'], ['GitHub']])('%s claims neither Connected nor Connect', async (name) => {
+    it('GitHub claims neither Connected nor Connect', async () => {
         stubFetch(handler({ board: { connections: [connection('acme-example.atlassian.net')] } }));
         renderApp(PATH);
 
-        const other = await card(name);
+        const other = await card('GitHub');
         expect(other.queryByText('Connected')).toBeNull();
         expect(other.queryByRole('button', { name: /Connect/ })).toBeNull();
     });
