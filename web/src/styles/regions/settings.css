@@ -774,6 +774,10 @@
         justify-content: flex-end;
     }
 
+    .integration-actions {
+        margin-top: 16px;
+    }
+
     .integration-back {
         align-items: center;
         display: inline-flex;
@@ -802,7 +806,7 @@
         .unsaved-actions button,
         .env-add,
         .org-executor-add,
-        button.jira-connection-add,
+        .integration-actions button,
         .env-advanced-toggle,
         .env-raw input,
         .env-raw select,

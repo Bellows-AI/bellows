@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ALLOW_COMMENTS_LABEL, SITE_HELP } from '../src/components/JiraConnectionDialog.js';
 import { SettingsIntegrationsCatalogPage } from '../src/pages/SettingsIntegrationsCatalogPage.js';
 import { renderApp, renderAt, stubFetch, type FetchHandler } from './dom.js';
 import { boardHandler, connection, settingsBoard } from './settings-board.js';
@@ -169,6 +170,27 @@ describe('the integrations catalog', () => {
         expect(github.getByRole('link').getAttribute('href')).toBe('/settings/repos');
         expect(github.queryByRole('button', { name: /Connect/ })).toBeNull();
         expect(github.queryByText('Connected')).toBeNull();
+    });
+
+    it('Connect posts the site and write access from the dialog', async () => {
+        const user = userEvent.setup();
+        const assign = spyNavigation();
+        const calls = stubFetch(board({ start: { status: 201, body: { authorizeUrl: CONSENT_URL } } }));
+        renderApp(PATH);
+
+        await user.click((await card('Jira')).getByRole('button', { name: 'Connect' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Connect Jira' });
+        expect(dialog.textContent).toContain(SITE_HELP);
+        await user.type(within(dialog).getByLabelText('Jira site (optional)'), 'e2e-site.atlassian.net');
+        await user.click(within(dialog).getByRole('checkbox', { name: ALLOW_COMMENTS_LABEL }));
+        await user.click(within(dialog).getByRole('button', { name: 'Continue to Atlassian' }));
+
+        await waitFor(() => expect(assign).toHaveBeenCalledWith(CONSENT_URL));
+        expect(calls.find((call) => call.method === 'POST')?.body).toEqual({
+            access: 'write',
+            site: 'e2e-site.atlassian.net',
+            returnTo: '/settings/integrations',
+        });
     });
 
     it('shows a start refusal beside the control and lets the member try again', async () => {

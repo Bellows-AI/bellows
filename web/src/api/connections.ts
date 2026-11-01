@@ -28,14 +28,14 @@ export interface ConnectionView {
 
 /**
  * What the start sends: `connectionId` reconnects that connection, `site` narrows a new connect to one
- * site, `jobId` binds the new connection to that task on consent, and `returnTo` is where the browser lands.
+ * site, and `jobId` binds the new connection to that task on consent. Where the browser lands (`returnTo`) is the
+ * caller's, always: `startAuthorization` takes it as a required addition.
  */
 export interface StartAuthorizationInput {
     access?: ConnectionAccess;
     site?: string;
     connectionId?: string;
     jobId?: string;
-    returnTo?: string;
 }
 
 const isConnectionView = (row: unknown): row is ConnectionView => {
@@ -78,23 +78,20 @@ export const listConnections = async (): Promise<
     }
 };
 
-/** Where the consent returns the browser to: this settings page, which then reads the result off the URL. */
-export const CONNECTIONS_RETURN_PATH = '/settings/workspace';
-
 /**
  * Starts a provider's authorization. Resolves to the provider's consent URL, or the route's refusal
- * message as sent (the 503 names the operator's missing configuration). `returnTo` defaults to the
- * settings page.
+ * message as sent (the 503 names the operator's missing configuration). `returnTo` is a path on this
+ * app, the page that reads the callback's result off the URL.
  */
 export const startAuthorization = async (
     provider: string,
-    input: StartAuthorizationInput
+    input: StartAuthorizationInput & { returnTo: string }
 ): Promise<{ ok: true; authorizeUrl: string } | { ok: false; error: string }> => {
     try {
         const response = await fetch(`/api/integrations/${encodeURIComponent(provider)}/authorizations`, {
             method: 'POST',
             headers: JSON_HEADERS,
-            body: JSON.stringify({ returnTo: CONNECTIONS_RETURN_PATH, ...input }),
+            body: JSON.stringify(input),
         });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
@@ -111,18 +108,28 @@ export const startAuthorization = async (
     }
 };
 
-/** Returns the refusal's message, or null when the connection is disconnected. */
-export const deleteConnection = async (id: string): Promise<string | null> => {
+/**
+ * A disconnect's outcome. Only the route's 204 is `disconnected`; a 404 is `gone` (the row is not the caller's, or
+ * is already disconnected: nothing was disconnected by this call); anything else is the refusal's message.
+ */
+export type DisconnectResult = { kind: 'disconnected' } | { kind: 'gone' } | { kind: 'failed'; error: string };
+
+const HTTP_STATUS_NO_CONTENT = 204;
+const HTTP_STATUS_NOT_FOUND = 404;
+
+export const deleteConnection = async (id: string): Promise<DisconnectResult> => {
     try {
         const response = await fetch(`/api/connections/${id}`, { method: 'DELETE' });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
-            return SESSION_EXPIRED;
+            return { kind: 'failed', error: SESSION_EXPIRED };
         }
-        if (!response.ok) return (await refusalOf(response, 'Could not disconnect the connection')).error;
-        return null;
+        if (response.status === HTTP_STATUS_NO_CONTENT) return { kind: 'disconnected' };
+        if (response.status === HTTP_STATUS_NOT_FOUND) return { kind: 'gone' };
+        const refusal = await refusalOf(response, 'Could not disconnect the connection');
+        return { kind: 'failed', error: response.ok ? 'Could not confirm the disconnect.' : refusal.error };
     } catch (e) {
-        return (e as Error).message;
+        return { kind: 'failed', error: (e as Error).message };
     }
 };
 
