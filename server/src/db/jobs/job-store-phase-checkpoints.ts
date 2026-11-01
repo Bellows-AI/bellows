@@ -4,7 +4,7 @@
  * driver that adopts or takes over the run.
  */
 
-import { exists } from './job-store-rows.js';
+import { lockRunningAttempt, leaseRefusal } from './job-store-rows.js';
 import type { JobStoreContext } from './job-store-types.js';
 
 /** The phases that leave a checkpoint, in the order they run: the pre-agent setup, then the post-run phases (#829, #917). */
@@ -49,12 +49,8 @@ export async function writePhaseCheckpoint(
     const { id, leaseToken } = attempt;
     const { runClaimSeq, phase, tree, result } = checkpoint;
     return sql.begin(async (tx) => {
-        const [row] = await tx<{ claim_seq: string }[]>`
-            select claim_seq from job
-            where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
-            for update
-        `;
-        if (!row) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
+        const row = await lockRunningAttempt(tx, orgId, id, leaseToken);
+        if ('result' in row) return row;
         if (runClaimSeq < 1 || runClaimSeq > Number(row.claim_seq)) return { result: 'conflict' };
         const later = ORDER.slice(ORDER.indexOf(phase) + 1);
         if (later.length > 0) {
@@ -82,11 +78,8 @@ export async function readPhaseCheckpoints(
 ): ReturnType<PhaseCheckpointStore['readPhaseCheckpoints']> {
     const { sql, orgId } = ctx;
     const { id, leaseToken } = attempt;
-    const [row] = await sql<{ lease_token: string | null; status: string }[]>`
-        select lease_token, status from job where org_id = ${orgId} and id = ${id}
-    `;
-    if (!row) return { result: 'missing' };
-    if (row.status !== 'running' || row.lease_token !== leaseToken) return { result: 'lost' };
+    const refused = await leaseRefusal(sql, orgId, id, leaseToken);
+    if (refused) return refused;
     const rows = await sql<{ phase: PhaseCheckpointPhase; claim_seq: string; tree: string | null; result: unknown }[]>`
         select phase, claim_seq, tree, result from job_phase_checkpoint
         where org_id = ${orgId} and job_id = ${id} and run_claim_seq = ${runClaimSeq}

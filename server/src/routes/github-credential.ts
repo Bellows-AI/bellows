@@ -53,11 +53,8 @@ const NO_REPO = 'This task names no repository, so it has no GitHub token: a tok
 
 type Refusal = { code: string; message: string; status: number };
 
-/** The live attempt the request's pair names, narrowed to a repository — or why it may have no token. */
-async function attemptOf(
-    request: FastifyRequest,
-    attemptOfLease: AttemptOfLease
-): Promise<{ jobId: string; leaseToken: string; orgId: string; repo: string } | Refusal> {
+/** The job id and lease token the request's headers name, or the refusal for a pair that is not one. */
+function pairOf(request: FastifyRequest): { jobId: string; leaseToken: string } | Refusal {
     const jobId = (request.params as { id: string }).id;
     const leaseToken = request.headers[LEASE_TOKEN_HEADER];
     if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') {
@@ -67,6 +64,17 @@ async function attemptOf(
             status: HTTP_FORBIDDEN,
         };
     }
+    return { jobId, leaseToken };
+}
+
+/** The live attempt the request's pair names, narrowed to a repository — or why it may have no token. */
+async function attemptOf(
+    request: FastifyRequest,
+    attemptOfLease: AttemptOfLease
+): Promise<{ jobId: string; leaseToken: string; orgId: string; repo: string } | Refusal> {
+    const pair = pairOf(request);
+    if ('code' in pair) return pair;
+    const { jobId, leaseToken } = pair;
     const unreadable = { code: ERROR_CODES.UNAVAILABLE, message: LEASE_UNREADABLE, status: HTTP_SERVICE_UNAVAILABLE };
     const refused = { code: ERROR_CODES.CONNECTION_NOT_AUTHORIZED, message: ATTEMPT_REFUSED, status: HTTP_FORBIDDEN };
     // A malformed id or lease token is no attempt, refused before the database's uuid cast can throw.
@@ -93,15 +101,9 @@ const scopesOf = (permissions: Record<string, string>): string[] =>
 
 /** The org the pair names, or why it names none. No liveness: a Stop or a settle still lets a runner revoke. */
 async function pairOrgOf(request: FastifyRequest, pairMatches: PairMatches): Promise<{ orgId: string } | Refusal> {
-    const jobId = (request.params as { id: string }).id;
-    const leaseToken = request.headers[LEASE_TOKEN_HEADER];
-    if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') {
-        return {
-            code: ERROR_CODES.UNAUTHENTICATED,
-            message: 'Job id and lease token required',
-            status: HTTP_FORBIDDEN,
-        };
-    }
+    const named = pairOf(request);
+    if ('code' in named) return named;
+    const { jobId, leaseToken } = named;
     const refused = { code: ERROR_CODES.CONNECTION_NOT_AUTHORIZED, message: ATTEMPT_REFUSED, status: HTTP_FORBIDDEN };
     if (!UUID.test(jobId) || !UUID.test(leaseToken)) return refused;
     try {

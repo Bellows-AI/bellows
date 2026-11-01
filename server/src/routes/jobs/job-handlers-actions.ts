@@ -14,7 +14,7 @@ import {
     validateWaitQuery,
 } from './job-field-validation.js';
 import { bad, body, guard } from '../helpers.js';
-import { resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
 import { adminOf } from './job-handlers-follow-up.js';
 import type { Job, SettleOutcome } from '../../db/jobs/job-store-types.js';
@@ -442,15 +442,9 @@ const reclaimNotYours = (reply: FastifyReply) =>
 // thread that merely finished keeps its tree. `reclaimId` names the reclaim row a threadDone verdict
 // queued claimed by this worker (issue #821): the driver acks it once the tree is gone.
 export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobWorkerStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const parsed = validateVerdictBody(fields);
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
 

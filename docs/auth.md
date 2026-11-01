@@ -7,17 +7,16 @@ Who a caller is, and which credential each route accepts.
 | Route credentials, chosen from the matched route pattern (`requirementOf`); question reports accept workers, answers require members; a credential lookup the database cannot answer is a 503 | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/auth.route-match.test.ts`, `server/test/auth.tokens.test.ts` |
 | `AUTH_MODE`, its boot refusals, `AUTH_ALLOW_PUBLIC_BIND` | `server/src/config.ts` | `server/test/config.auth.test.ts` |
 | Session cookie: signing, flags, expiry | `server/src/auth/session.ts` | `server/test/auth.session.test.ts` |
-| OAuth round trip, state, redirect validation, `/me` (a present bearer is its credential — the CLI's `auth status`) | `server/src/routes/auth.ts`, `auth-shared.ts`, `server/src/auth/github.ts` | `server/test/auth.oauth*.test.ts`, `server/test/auth.github-client.test.ts`, `server/test/auth.tokens.test.ts` |
+| OAuth round trip, state, redirect validation, `/me` (a present bearer is its credential — the CLI's `auth status`) | `server/src/routes/auth.ts`, `server/src/routes/auth-shared.ts`, `server/src/auth/github.ts` | `server/test/auth.oauth.sign-in.test.ts`, `server/test/auth.oauth.me.test.ts`, `server/test/auth.github-client.test.ts`, `server/test/auth.tokens.test.ts` |
 | Installation-selection screen, pending sign-in, repo scope | `server/src/routes/auth-onboarding.ts` | `server/test/auth.completion.test.ts` |
 | Accounts, sessions, memberships, roles (SQL) | `server/src/auth/store.ts`, `server/migrations/010_auth.sql` | `server/test-db/auth-store.test.ts` |
-| Personal (`fat_`) and org (`oat_`) access tokens | `server/src/auth/access-token.ts`, `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts`, `server/test-db/auth-store.access-tokens.test.ts`, `…lifecycle.test.ts`, `…org.test.ts` |
+| Personal (`fat_`) and org (`oat_`) access tokens | `server/src/auth/access-token.ts`, `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts`, `server/test-db/auth-store.access-tokens.test.ts` |
 | Roster reads and role writes | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
 | Commerce plan push: `commerce` requirement, bearer `COMMERCE_TOKEN`, enforced in both `AUTH_MODE`s (`enforceCommerce`; [commerce.md](commerce.md)) | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/routes.commerce.test.ts` |
 | GitHub-side removal, signed webhook | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
 | Sign-in in a real browser | `e2e/auth.spec.ts`, `e2e/stub-idp.mjs`, `e2e/signin.ts` | the `auth` Playwright project (`playwright.config.ts`) |
 
-Org scoping: [organizations.md](organizations.md) · App credential: [configuration.md](configuration.md) ·
-posture: [security.md](security.md) · routes and codes: [api.md](api.md).
+See also [organizations.md](organizations.md), [configuration.md](configuration.md), [security.md](security.md), [api.md](api.md).
 
 ## Invariants
 
@@ -29,7 +28,6 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
   `server/test-db/auth-store.access-tokens.test.ts`.
 - **An org's first membership lands `admin`**; demoting the last admin is `409 LAST_ADMIN`.
   `server/test/routes.org-members.test.ts`.
-- **`github_user_id` is the identity; `github_login` is a label** nothing keys on.
 - **Only the sha-256 is stored** (sessions, both token kinds, the pending sign-in row), and the cookie is
   `SameSite=Lax`: the callback is a cross-site top-level GET. `server/src/auth/session.ts`,
   `server/test/auth.session.test.ts`.
@@ -40,19 +38,14 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
 - **`AUTH_MODE=none` synthesises a caller rather than skipping the hook**; it refuses a non-loopback `HOST`
   unless `AUTH_ALLOW_PUBLIC_BIND=1`, and `docker-compose.yml` pins `github`. `server/src/config.ts`,
   `server/src/db/migrate.ts` (`LOCAL_LOGIN`), `server/test/config.auth.test.ts`.
-- **An idempotency key is scoped to org, caller and operation**, and a replay re-passes the route's credential
-  and author-or-admin check. `server/src/db/jobs/job-store-idempotency.ts`, `server/test-db/job-store.idempotency.test.ts`.
+- **An idempotency key is scoped to org, caller and operation**; a replay re-passes the credential check.
+  `server/src/db/jobs/job-store-idempotency.ts`, `server/test-db/job-store.idempotency.test.ts`.
 - **An org admin may follow up, retry and control the wait of another member's task**; the row's `created_by` is the
   admin, the run executes as the thread root's `execution_user_id`. `server/src/db/jobs/job-store-actions.ts`,
   `server/test-db/job-store.admin-actions.test.ts`.
-- **The restore reads (`checkpoint`, `transcripts`) are worker routes whose credential is the job's live lease** in
-  the body: a lost, foreign or unknown lease reads nothing. `server/src/routes/jobs/job-handlers-restore.ts`,
-  `server/test/auth.enforcement.test.ts`, `server/test/routes.restore.test.ts`.
-- **Attachment content for a runner is a worker route whose credential is the live lease** in the body, and the file must be in
-  that job's effective set read fresh on every call; a review's lease reads only its own row's set.
-  `server/src/routes/jobs/job-handlers-attachment-content.ts`, `server/test/routes.attachment-content.test.ts`.
-- **The worker credential is one deployment-wide secret**, `JOB_BOARD_TOKEN` (fatal in github mode when missing
-  or under 32 characters), so a claim is offered every org's queue. `server/src/config.ts`.
+- **The restore reads (`checkpoint`, `transcripts`) and an attachment's content are worker routes whose credential is the job's live lease** in the body: a lost, foreign or unknown lease reads nothing, and the file must be in that job's effective set, read fresh each call (a review's lease reads only its own row's set). `server/src/routes/jobs/job-handlers-restore.ts`, `server/src/routes/jobs/job-handlers-attachment-content.ts`, `server/test/auth.enforcement.test.ts`, `server/test/routes.restore.test.ts`, `server/test/routes.attachment-content.test.ts`.
+- **The worker credential is one deployment-wide secret**, `JOB_BOARD_TOKEN` (fatal in github mode when missing or
+  under 32 characters). `server/src/config.ts`.
 - **`POST /api/sessions/branch` demands an org-bound credential in github mode** (the runner's lease pair or a
   `fat_` token); the ingest token does not open it. `server/src/routes/ingest.ts`,
   `server/test/routes.ingest.test.ts`.

@@ -22,20 +22,17 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   service whose database ends `_test` — the only coverage the SQL and the migrations have. It also runs a `moto`
   AWS emulator and a dev-mode `vault` (GHCR mirrors of the compose pins, `mirror-images.yml`) with
   `SECRETS_TEST_REQUIRE_AWS=1` and `SECRETS_TEST_REQUIRE_VAULT=1`, so an unreachable provider fails the job
-  instead of skipping the external-store suites.
-  `.github/workflows/ci.yml`, `core/test/ci-workflows.test.ts`.
+  instead of skipping the external-store suites. `.github/workflows/ci.yml`, `core/test/ci-workflows.test.ts`.
 - **The `e2e` job runs only on a push to `main`**, with a `postgres:17` service, `factory_e2e` and
   `factory_auth_e2e` created by hand (`e2e/reset-db.mjs` truncates but never creates), and chromium.
 - **A push to `main` that changes only `VERSION` skips CI; its tag still validates** through the `workflow_call`
   `release-image.yml` makes. No release commit carries `[skip ci]`.
-- **Node is `24`, matching `docker/Dockerfile`'s runtime base**; there is no `.nvmrc`, so the test is the only pin.
-- **Every base image pulls from `mirror.gcr.io/library/`** (Docker Hub rate-limits shared runner IPs, and
-  ECR Public's per-IP data limit refuses them). Buildkit comes from `mirror.gcr.io/moby/buildkit`, pulled once per
-  release by the `buildkit` job into `<registry>/buildkit`; every build cell boots from that mirror.
-- **No job service pulls from ECR Public**: a service is pulled before any step, so it can neither log in nor retry,
-  and ECR Public's per-IP data limit fails it on a shared runner IP. Every `postgres` service pulls the GHCR mirror
-  with `github.actor`/`github.token` credentials under `packages: read`. Only the two mirror pulls retry, and only
-  on `toomanyrequests`.
+- **Node is `24`, matching `docker/Dockerfile`'s runtime base**; no `.nvmrc`, the test is the only pin.
+- **Every base image pulls from `mirror.gcr.io/library/`**. Buildkit comes from `mirror.gcr.io/moby/buildkit`, pulled
+  once per release by the `buildkit` job into `<registry>/buildkit`; every build cell boots from that mirror.
+- **No job service pulls from ECR Public** (a service is pulled before any step, so it can neither log in nor retry).
+  Every `postgres` service pulls the GHCR mirror with `github.actor`/`github.token` under `packages: read`; only the
+  two mirror pulls retry, and only on `toomanyrequests`.
 - **Every `uses:` on a job holding `packages: write` is GitHub-owned**, pinned by major tag; Trivy runs as a pinned
   container and helm from a checksum-verified tarball.
 - **Each build job builds to a tarball, scans it, and only then runs `docker login`**; the one earlier login, for the

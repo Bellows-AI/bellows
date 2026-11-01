@@ -1,74 +1,50 @@
 # Runner environment & secrets
 
-Environment variables and secrets for runners, held by the board in three stacked scopes — org,
-workspace (a member's own), repository — and injected into the runner at claim time.
-
-The name rules, the per-scope ceiling and the reserved-name list live in `core/src/env.ts`, which
-both the route and the web editors render from. The driver keeps its own copy in
-`driver/src/claim.ts`, deliberately narrower.
-
-## Where things live
+Environment variables and secrets for runners, held by the board in three stacked scopes — org, workspace (a member's
+own), repository — and injected into the runner at claim time. Name rules, the per-scope ceiling and the reserved-name
+list live in `core/src/env.ts`; the driver keeps a deliberately narrower copy in `driver/src/claim.ts`.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| The three scopes, the scope check, `stackEnv`, the write-only secret echo | `server/src/db/env-var-store.ts`, `server/migrations/017_env_vars.sql` | `server/test-db/env-var-store.test.ts` |
-| Where a secret's value lives: the row's reference, its identity, the batched fail-closed read | `server/src/db/env-secrets.ts`, `server/migrations/093_env_var_secret_ref.sql`, `server/migrations/113_env_var_secret_form.sql` | `server/test-db/env-var-store.test.ts`, `server/test-db/migration.093-env-secret-ref.test.ts`, `server/test-db/migration.113-env-secret-form.test.ts`, `server/test-db/env-secrets.claim.test.ts` |
-| The PUT's write path and its compensation: secrets through the store, creates reconciled or deleted when the PUT does not commit | `server/src/db/env-var-store.ts`, `server/src/db/env-secrets.ts` | `server/test-db/env-secrets.writes.test.ts` |
+| Scopes, scope check, `stackEnv`, write-only secret echo | `server/src/db/env-var-store.ts`, `server/migrations/017_env_vars.sql` | `server/test-db/env-var-store.test.ts` |
+| A secret's value in the store: reference, identity, batched fail-closed read | `server/src/db/env-secrets.ts`, `server/migrations/093_env_var_secret_ref.sql`, `server/migrations/113_env_var_secret_form.sql` | `server/test-db/migration.093-env-secret-ref.test.ts`, `server/test-db/migration.113-env-secret-form.test.ts`, `server/test-db/env-secrets.claim.test.ts` |
+| PUT write path and compensation | `server/src/db/env-var-store.ts`, `server/src/db/env-secrets.ts` | `server/test-db/env-secrets.writes.test.ts` |
 | Whole-list PUT, validation codes, reserved names | `server/src/routes/env.ts`, `core/src/env.ts` | `server/test/routes.env.test.ts` |
-| Claim-time resolution, with `GITHUB_TOKEN`/`GH_TOKEN` dropped from it (`withoutGithubToken`) | `server/src/db/jobs/job-store-claim.ts`, `job-store-claim-executor.ts` | `server/test/job-store.env.test.ts`, `server/test-db/job-store.attribution.test.ts` |
-| `claimEnv`: the driver's filter and the synthesized executor-config names | `driver/src/claim.ts` | `driver/test/docker/`, `k8s/` |
-| Docker: a 0600 `--env-file` written and removed around the run | `driver/src/docker/docker.ts` | `driver/test/docker/` |
-| Kubernetes: a per-attempt Secret, values in `stringData`, referenced by `secretKeyRef` | `driver/src/k8s/k8s-podspec.ts` | `driver/test/k8s/` |
-| Driver literals in every runner and gate env, both executors: `npmQuietEnv` and `repoCacheEnv` (defaults a claim overrides), `gateEnv` | `driver/src/claim.ts`, `runner-plan.ts`, `docker.ts`, `k8s-podspec.ts` | `driver/test/docker/`, `k8s/`, `runner-plan.test.ts` |
-| GitHub: `GITHUB_TOKEN` and `GH_TOKEN` are reserved names in every scope, stored rows deleted by `072_github_env_reserved.sql`; the runner's token comes from the board, see [connections.md](connections.md) | `core/src/env.ts`, `driver/src/claim.ts` | `server/test/routes.env.test.ts`, `server/test-db/env-var-store.test.ts` |
-| Skill connections: an env connection needs its env names present in the resolved claim env, checked by name and never read as values; both shipped ones are managed — `jira` by the task's selection, `github` by the org's App installation (`githubApp`), which no env value satisfies | `core/src/skills.ts`, `server/src/db/jobs/job-store-claim.ts` | `core/test/skills.test.ts`, `server/test-db/job-store.skills.test.ts` |
-| The three editors, their drafts, the `.env` disclosure | `web/src/panels/EnvVarsPanel.tsx`, `env-vars-panel-parts.tsx`, `env-draft.ts`, `env-raw.ts` | `web/test/env-draft.test.ts`, `env-raw.test.ts`, `env.render.test.tsx`, `env.dom.test.tsx`, `e2e/env.spec.ts` |
-| Where the editors mount | `web/src/pages/SettingsOrganizationPage.tsx`, `SettingsWorkspacePage.tsx`, `SettingsRepositoriesPage.tsx` | `e2e/env.spec.ts` |
-| The vertical: PUT core env → claim → runner → the probe values in the output | `scripts/test-jobs.sh` | — |
-| The driver deletes every `SECRETS_*` variable at startup, so none is ever forwarded to a runner (the secret-store keys belong to the dashboard) | `driver/src/strip-secret-store-env.ts`, `driver/src/index.ts` | `driver/test/strip-secret-store-env.test.ts` |
+| Claim-time resolution (`withoutGithubToken`) | `server/src/db/jobs/job-store-claim.ts`, `server/src/db/jobs/job-store-claim-executor.ts` | `server/test/job-store.env.test.ts`, `server/test-db/job-store.attribution.test.ts` |
+| `claimEnv`: the driver's filter and synthesized executor names | `driver/src/claim.ts` | `driver/test/docker/`, `driver/test/k8s/` |
+| Docker: 0600 `--env-file` around the run | `driver/src/docker/docker.ts` | `driver/test/docker/` |
+| Kubernetes: per-attempt Secret, `secretKeyRef` | `driver/src/k8s/k8s-podspec.ts` | `driver/test/k8s/` |
+| Driver literals in every runner and gate env (`npmQuietEnv`, `repoCacheEnv`, `gateEnv`) | `driver/src/claim.ts`, `driver/src/runner-plan.ts`, `driver/src/docker/docker.ts`, `driver/src/k8s/k8s-podspec.ts` | `driver/test/runner-plan.test.ts` |
+| GitHub names reserved in every scope; the token comes from the board ([connections.md](connections.md)) | `core/src/env.ts`, `server/migrations/072_github_env_reserved.sql` | `server/test/routes.env.test.ts` |
+| Skill connections: env names checked by name, never as values | `core/src/skills.ts`, `server/src/db/jobs/job-store-claim.ts` | `core/test/skills.test.ts`, `server/test-db/job-store.skills.test.ts` |
+| The three editors, drafts, `.env` disclosure, and where they mount | `web/src/panels/EnvVarsPanel.tsx`, `web/src/panels/env-vars-panel-parts.tsx`, `web/src/panels/env-draft.ts`, `web/src/panels/env-raw.ts`, `web/src/pages/SettingsOrganizationPage.tsx`, `web/src/pages/SettingsWorkspacePage.tsx`, `web/src/pages/SettingsRepositoriesPage.tsx` | `web/test/env-draft.test.ts`, `web/test/env-raw.test.ts`, `web/test/env.render.test.tsx`, `web/test/env.dom.test.tsx`, `e2e/env.spec.ts` |
+| The vertical: PUT env, claim, runner, probe values in output | `scripts/test-jobs.sh` | — |
+| The driver deletes every `SECRETS_*` at startup | `driver/src/strip-secret-store-env.ts`, `driver/src/index.ts` | `driver/test/strip-secret-store-env.test.ts` |
 
 ## Invariants
 
-- **A secret's value lives in the secret store, not in `env_var`**: every PUT writes each secret through the store, and the
-  row keeps `secret_ref` and `secret_version` (`093_env_var_secret_ref.sql`) with `value` null. The identity is rebuilt
-  from the row's slot on every read, so a copied reference is `identity-mismatch` (`server/src/db/env-secrets.ts`).
-  **Only `is_secret` entries ever reach the store**: a non-secret row always keeps its plaintext `value` with `secret_ref`
-  and `secret_version` null, in every scope (`server/test-db/env-secrets.writes.test.ts`). `env_var_secret_form_ck`
-  (`113_env_var_secret_form.sql`) admits only those two shapes, and the claim reads no other; a row that is neither, an
-  inconclusive or failed read, a version other than the stored one, or bytes that are not UTF-8 throws and rolls the
-  claim back, a secret is never dropped (`server/test-db/env-var-store.test.ts`, `server/test-db/env-secrets.claim.test.ts`).
-  Every list read nulls a secret's value in the SELECT.
-- **A PUT that does not commit deletes only what a fresh read of its own scope shows unreferenced**, and every create that
-  may have written is reconciled once; a changed value gets a new reference and the old one is deleted after the commit.
-  An inconclusive read deletes nothing and reports the refs as `cleanup-failed` diagnostics (`server/src/main.ts`).
-  `server/test-db/env-secrets.writes.test.ts`.
-- **An upgrade refuses to migrate while a plaintext secret row remains** (`113_env_var_secret_form.sql`): run
-  `npm run secrets:convert-env` on v0.0.13 until it exits 0, have a member re-enter each oversized row it lists, then
-  upgrade (`server/test-db/migration.113-env-secret-form.test.ts`).
-- **A secret entry carrying `value: null` on a whole-list PUT SURVIVES untouched**; an omitted name
-  deletes. This is the one exception to "the body is the whole truth", and it is why a non-secret
-  may never carry a null value. Same test, plus `server/test/routes.env.test.ts`.
-- **Precedence is org < workspace < repo, most specific wins** — `stackEnv`, exported and pinned by
-  the offline suite so the rule does not live only where a database is.
-- **No GitHub token rides the claim env**: the names are refused at PUT and dropped at claim
-  (`withoutGithubToken`, `server/test/job-store.env.test.ts`). Against the driver's own `RUNNER_ENV`
-  a collision runs the claim's way — the claim always wins.
-- **The resolved env is never persisted on the job row**, which `GET /api/jobs/:id` serves to every
-  member. A resolver failure rolls the claim back to 503 with the attempt unburned, so a job is never
-  handed out with half an environment (`server/test-db/job-store.attribution.test.ts`).
-- **Claim values never pass through the driver's own process environment.** The names are
-  member-controlled, so a `PATH` or `DOCKER_HOST` on the docker CLI's own argv would be host code
-  execution; the env file and the k8s Secret are what keep them out of argv entirely.
+- **A secret's value lives in the secret store, not in `env_var`**: the row keeps `secret_ref` and `secret_version`
+  with `value` null; a non-secret keeps its plaintext `value` with both null, in every scope. `env_var_secret_form_ck`
+  admits only those two shapes. An inconclusive or failed read, a foreign version or non-UTF-8 bytes roll the claim
+  back; a secret is never dropped. `server/test-db/env-var-store.test.ts`, `server/test-db/env-secrets.claim.test.ts`.
+- **A PUT that does not commit deletes only what a fresh read of its own scope shows unreferenced**; an inconclusive
+  read deletes nothing and reports `cleanup-failed`. `server/test-db/env-secrets.writes.test.ts`.
+- **Migration 113 refuses while a plaintext secret row remains**; its message names the previous release's conversion
+  command. `server/test-db/migration.113-env-secret-form.test.ts`.
+- **A secret entry with `value: null` on a whole-list PUT survives untouched**; an omitted name deletes.
+  `server/test/routes.env.test.ts`.
+- **Precedence is org < workspace < repo** (`stackEnv`); against the driver's own `RUNNER_ENV` the claim wins.
+- **No GitHub token rides the claim env**: refused at PUT, dropped at claim. `server/test/job-store.env.test.ts`.
+- **The resolved env is never persisted on the job row**; a resolver failure rolls the claim back to 503 with the
+  attempt unburned. `server/test-db/job-store.attribution.test.ts`.
+- **Claim values never pass through the driver's own process environment**; the env file and the k8s Secret keep them
+  out of argv. `driver/test/docker/`, `driver/test/k8s/`.
 
 ## Stated limits
 
-- A stored record is orphaned when compensation is inconclusive (reported as `cleanup-failed` with its ref), and
-  unreported when a pod dies mid-PUT or an org or user is purged (`docs/secrets.md`). The future sweep selects `secret`
-  records of purpose `environment-secret` that no `env_var.secret_ref` names, grouped by the identity's org or user.
-- An env-file line has no quoting, so a value containing a newline is refused at PUT
-  (`400 BAD_ENV_VALUE`) and again at the driver.
-- A driver that crashes before cleanup leaks its attempt's Secret — Secrets carry no TTL; the
-  `factory.job: <id>` label is what a cleanup job would select. The chart's Role grants
-  `secrets: [create, delete]` only, never `get` or `list`.
-- `REPO`, `WORKTREE` and `BRANCH` belong to the startup sync's container and are deliberately NOT
-  reserved board-wide: a runner never sees them.
+- A stored record is orphaned when compensation is inconclusive, and unreported when a pod dies mid-PUT or an org or
+  user is purged ([secrets.md](secrets.md)).
+- An env-file line has no quoting: a value containing a newline is refused at PUT (`400 BAD_ENV_VALUE`) and at the driver.
+- A driver that crashes before cleanup leaks its attempt's Secret (no TTL; label `factory.job`); the chart's Role grants
+  `secrets: [create, delete]` only.
+- `REPO`, `WORKTREE` and `BRANCH` are not reserved board-wide: a runner never sees them.

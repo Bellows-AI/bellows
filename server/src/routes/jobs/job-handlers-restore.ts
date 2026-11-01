@@ -13,8 +13,8 @@ import type { OrgRegistry } from '../../orgs.js';
 import { artifactsFor } from './job-context.js';
 import { registerAttachmentContentRoute } from './job-handlers-attachment-content.js';
 import { CONTROL_BODY_LIMIT, HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAVAILABLE, leaseLost, notFoundJob } from './job-limits.js';
-import { bad, body, guard } from '../helpers.js';
-import { resolveJobRoute } from '../route-guards.js';
+import { bad, guard } from '../helpers.js';
+import { resolveLeasedRoute } from '../route-guards.js';
 import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 
 /**
@@ -38,14 +38,9 @@ interface Resolved {
 
 /** The preamble: the live lease's scope and the org's artifact store. Null once a refusal has landed. */
 async function resolve(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply): Promise<Resolved | null> {
-    const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return null;
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        await bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-        return null;
-    }
+    const { fields, leaseToken } = route;
     const answer = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'restore scope read failed'),
