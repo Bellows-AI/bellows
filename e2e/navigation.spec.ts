@@ -27,6 +27,7 @@ const PAGES: ReadonlyArray<[string, string]> = [
     ['/tasks/new', 'page-composer'],
     ['/settings', 'page-settings-overview'],
     ['/settings/workspace', 'page-settings-workspace'],
+    ['/settings/integrations', 'page-settings-integrations'],
     ['/settings/repos', 'page-settings-repos'],
     ['/settings/executors', 'page-settings-executors'],
     ['/settings/organization', 'page-settings-organization'],
