@@ -2,6 +2,98 @@
    context. Owned by the settings lane; shared primitives live in ../primitives.css, contracts
    in docs/design-system.md. */
 @layer components {
+    /* The integrations directory: every provider gets the same discovery card, but only a
+       configured provider offers a working action. The connected rows remain below the catalog. */
+    .integrations-catalog {
+        margin-bottom: 24px;
+    }
+
+    .integrations-intro h2 {
+        font-size: 18px;
+        margin: 0 0 6px;
+    }
+
+    .integrations-intro p {
+        margin: 0;
+    }
+
+    .integrations-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin-top: 16px;
+    }
+
+    .integration-card {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-width: 0;
+        padding: 20px;
+    }
+
+    .integration-card-header {
+        align-items: flex-start;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    .integration-mark {
+        align-items: center;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        display: inline-flex;
+        font-size: 16px;
+        font-weight: 700;
+        height: 40px;
+        justify-content: center;
+        width: 40px;
+    }
+
+    .integration-card h3 {
+        font-size: 17px;
+        margin: 0;
+    }
+
+    .integration-kind {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 2px 0 0;
+    }
+
+    .integration-card > .muted {
+        flex: 1;
+        font-size: 14px;
+        margin: 0;
+    }
+
+    .integration-card-action {
+        margin-top: auto;
+        padding-top: 8px;
+    }
+
+    .integration-coming {
+        color: var(--ink-muted);
+        font-size: 13px;
+        margin-bottom: 0;
+    }
+
+    @media (max-width: 760px) {
+        .integrations-grid {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .integration-card {
+            padding: 16px;
+        }
+    }
+
 
     /* The executor picker wears the shared `dialog` panel at its full width. */
     .picker h2 {
