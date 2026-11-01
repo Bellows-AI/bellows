@@ -8,6 +8,7 @@ import type { UseRepos } from '../src/api/useRepos.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import type { Session } from '../src/api/useSession.js';
 import { SettingsExecutorsPage } from '../src/pages/SettingsExecutorsPage.js';
+import { SettingsIntegrationsPage } from '../src/pages/SettingsIntegrationsPage.js';
 import { SettingsOrganizationPage } from '../src/pages/SettingsOrganizationPage.js';
 import { SettingsRepositoriesPage } from '../src/pages/SettingsRepositoriesPage.js';
 import { SettingsWorkflowsPage } from '../src/pages/SettingsWorkflowsPage.js';
@@ -98,6 +99,7 @@ const render = (
                     <Route path="settings">
                         <Route path="organization" element={<SettingsOrganizationPage />} />
                         <Route path="workspace" element={<SettingsWorkspacePage />} />
+                        <Route path="integrations" element={<SettingsIntegrationsPage />} />
                         <Route path="repos" element={<SettingsRepositoriesPage />} />
                         <Route path="executors" element={<SettingsExecutorsPage />} />
                         <Route path="workflows" element={<SettingsWorkflowsPage />} />
@@ -195,6 +197,7 @@ describe('Settings workspace page', () => {
         const html = render('/settings/workspace');
         expect(html).not.toContain('Loading your workspace');
         expect(html).toContain('My workspace');
+        expect(html).not.toContain('Loading connections…');
         expect(html).toContain('Applies only to tasks the current member starts.');
         expect(html).toContain('Edited only by that member.');
         for (const gone of [
@@ -265,6 +268,16 @@ describe('Settings workspace page', () => {
         expect(html).toContain('The environment request failed');
         expect(html).not.toContain('No variables configured.');
         expect(html).not.toContain('Add variable');
+    });
+});
+
+describe('Settings integrations page', () => {
+    it('has its own route, with generic connection loading and no Jira-first page title', () => {
+        const html = render('/settings/integrations');
+        expect(html).toContain('>Integrations</h1>');
+        expect(html).toContain('Connected accounts');
+        expect(html).toContain('Loading connections…');
+        expect(html).not.toContain('>Jira connections</h2>');
     });
 });
 
