@@ -182,12 +182,21 @@ function canModify(caller: Caller, record: WorkflowSummary): boolean {
     return true;
 }
 
-async function handleGetWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+/** The org's workflow store with the caller and `:id` of a by-id route — or null once the refusal is sent. */
+async function workflowRoute(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeOf(orgs, request);
-    if (!store) return noStore(reply);
+    if (!store) {
+        noStore(reply);
+        return null;
+    }
     const route = resolveCallerRoute(request, reply);
+    return route ? { store, ...route } : null;
+}
+
+async function handleGetWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await workflowRoute(orgs, request, reply);
     if (!route) return reply;
-    const { caller, id } = route;
+    const { store, caller, id } = route;
 
     const record = await store.get(id);
     if (!record || !canSee(caller, record)) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
@@ -195,11 +204,9 @@ async function handleGetWorkflow(orgs: OrgRegistry, request: FastifyRequest, rep
 }
 
 async function handleUpdateWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
-    if (!store) return noStore(reply);
-    const route = resolveCallerRoute(request, reply);
+    const route = await workflowRoute(orgs, request, reply);
     if (!route) return reply;
-    const { caller, id } = route;
+    const { store, caller, id } = route;
 
     const fields = body(request.body);
     // Scope is immutable after create: silently ignoring a `scope` field would let a caller
@@ -225,11 +232,9 @@ async function handleUpdateWorkflow(orgs: OrgRegistry, request: FastifyRequest, 
 }
 
 async function handleDeleteWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
-    if (!store) return noStore(reply);
-    const route = resolveCallerRoute(request, reply);
+    const route = await workflowRoute(orgs, request, reply);
     if (!route) return reply;
-    const { caller, id } = route;
+    const { store, caller, id } = route;
 
     const record = await store.get(id);
     if (!record) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
