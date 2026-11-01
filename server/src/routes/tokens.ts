@@ -1,5 +1,5 @@
 import { ERROR_CODES } from '@factory-ai/core';
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import { mintAccessToken } from '../auth/access-token.js';
 import { callerOf } from '../auth/plugin.js';
 import { hashToken } from '../auth/session.js';
@@ -57,7 +57,12 @@ export const tokenRoutes =
             return caller.org.id;
         };
 
-        app.post('/api/tokens', { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
+        /** Mints and stores a token: a personal one belongs to the caller, an org one to nobody. */
+        const createToken = async (
+            request: Parameters<typeof callerOf>[0],
+            reply: FastifyReply,
+            kind: 'personal' | 'org'
+        ) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const label = parseLabel(request.body);
@@ -68,11 +73,11 @@ export const tokenRoutes =
                 reply,
                 (e) => request.log.error({ err: e }),
                 async () => {
-                    const token = mintAccessToken('personal');
+                    const token = mintAccessToken(kind);
                     const row = await store.createAccessToken({
-                        kind: 'personal',
+                        kind,
                         orgId: orgIdOf(request),
-                        userId: caller.user.id,
+                        userId: kind === 'personal' ? caller.user.id : null,
                         createdBy: caller.user.id,
                         label,
                         tokenHash: hashToken(token),
@@ -82,6 +87,10 @@ export const tokenRoutes =
             );
             if (!created.ok) return reply;
             return reply.code(HTTP_CREATED).send(created.value);
+        };
+
+        app.post('/api/tokens', { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
+            return createToken(request, reply, 'personal');
         });
 
         app.get('/api/tokens', async (request, reply) => {
@@ -114,30 +123,7 @@ export const tokenRoutes =
         });
 
         app.post('/api/tokens/org', { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
-            const caller = callerOf(request);
-            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-            const label = parseLabel(request.body);
-            if (label === null)
-                return bad(reply, ERROR_CODES.BAD_LABEL, `label must be 1 to ${LABEL_LIMIT} characters`);
-
-            const created = await guard(
-                reply,
-                (e) => request.log.error({ err: e }),
-                async () => {
-                    const token = mintAccessToken('org');
-                    const row = await store.createAccessToken({
-                        kind: 'org',
-                        orgId: orgIdOf(request),
-                        userId: null,
-                        createdBy: caller.user.id,
-                        label,
-                        tokenHash: hashToken(token),
-                    });
-                    return { id: row.id, token };
-                }
-            );
-            if (!created.ok) return reply;
-            return reply.code(HTTP_CREATED).send(created.value);
+            return createToken(request, reply, 'org');
         });
 
         app.get('/api/tokens/org', async (request, reply) => {

@@ -133,14 +133,22 @@ async function holdUntilSettled(
     }
 }
 
+/** The context, batch id and task key of a body-less task action — or null once the refusal is sent. */
+async function taskRouteOf(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await contextOf(orgs, request, reply);
+    if (!ctx) return null;
+    if (!envelopeOf(request, reply, [])) return null;
+    const id = batchIdOf(request, reply);
+    if (id === null) return null;
+    const { key } = request.params as { key: string };
+    return { ctx, id, key };
+}
+
 /** A started batch's retry of one task: the task goes back to the scheduler, which launches it when a slot is free. */
 export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const ctx = await contextOf(orgs, request, reply);
-    if (!ctx) return reply;
-    if (!envelopeOf(request, reply, [])) return reply;
-    const id = batchIdOf(request, reply);
-    if (id === null) return reply;
-    const { key } = request.params as { key: string };
+    const route = await taskRouteOf(orgs, request, reply);
+    if (!route) return reply;
+    const { ctx, id, key } = route;
 
     const retried = await guard(
         reply,
@@ -317,12 +325,9 @@ const ACCEPT_REFUSALS = {
 
 /** A person's recorded acceptance of a finished `accepted`-completion task; its gate passes and the stage may advance. */
 export async function handleAccept(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const ctx = await contextOf(orgs, request, reply);
-    if (!ctx) return reply;
-    if (!envelopeOf(request, reply, [])) return reply;
-    const id = batchIdOf(request, reply);
-    if (id === null) return reply;
-    const { key } = request.params as { key: string };
+    const route = await taskRouteOf(orgs, request, reply);
+    if (!route) return reply;
+    const { ctx, id, key } = route;
 
     const accepted = await guard(
         reply,

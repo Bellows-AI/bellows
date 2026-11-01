@@ -48,6 +48,56 @@ function isNameTaken(error: unknown): boolean {
     throw error;
 }
 
+/** The store and admin caller every mutating route needs — or null once the refusal is sent. */
+async function adminContext(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) {
+        noStore(reply);
+        return null;
+    }
+    const caller = callerOf(request);
+    if (!caller) {
+        bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+        return null;
+    }
+    if (!requireAdmin(caller)) {
+        bad(
+            reply,
+            ERROR_CODES.FORBIDDEN,
+            'Only an organization admin can manage organization executors',
+            HTTP_FORBIDDEN
+        );
+        return null;
+    }
+    return { store, caller };
+}
+
+/** The `:id` path segment, or null once the BAD_ID refusal is sent. */
+function idParam(request: FastifyRequest, reply: FastifyReply): string | null {
+    const { id } = request.params as { id?: string };
+    if (typeof id !== 'string' || !id) {
+        bad(reply, ERROR_CODES.BAD_ID, 'id must be a string');
+        return null;
+    }
+    return id;
+}
+
+/** Runs a write, answering `{ taken: true }` for the unique-name violation and `{ ok }` otherwise. */
+function saveOrTaken<T>(request: FastifyRequest, reply: FastifyReply, write: () => Promise<T>) {
+    return guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        async (): Promise<{ ok: T } | { taken: true }> => {
+            try {
+                return { ok: await write() };
+            } catch (error) {
+                if (isNameTaken(error)) return { taken: true };
+                throw error;
+            }
+        }
+    );
+}
+
 /**
  * The route-level name rules for an org profile, restating the row check the way the personal PUT
  * does: a name arrives in a JSON body now, so the route guards the request and
@@ -120,18 +170,9 @@ async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest
 }
 
 async function handleCreateOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
-    if (!store) return noStore(reply);
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    if (!requireAdmin(caller)) {
-        return bad(
-            reply,
-            ERROR_CODES.FORBIDDEN,
-            'Only an organization admin can manage organization executors',
-            HTTP_FORBIDDEN
-        );
-    }
+    const ctx = await adminContext(orgs, request, reply);
+    if (!ctx) return reply;
+    const { store, caller } = ctx;
 
     const fields = parseExecutorFields(jsonBody(request.body));
     if (typeof fields === 'string') return bad(reply, executorFieldRefusal(fields), fields);
@@ -152,18 +193,7 @@ async function handleCreateOrgExecutor(orgs: OrgRegistry, request: FastifyReques
         );
     }
 
-    const saved = await guard(
-        reply,
-        (e) => request.log.error({ err: e }),
-        async () => {
-            try {
-                return { ok: await store.createOrg({ ...fields, createdBy: caller.user.id }) };
-            } catch (error) {
-                if (isNameTaken(error)) return { taken: true };
-                throw error;
-            }
-        }
-    );
+    const saved = await saveOrTaken(request, reply, () => store.createOrg({ ...fields, createdBy: caller.user.id }));
     if (!saved.ok) return reply;
     if ('taken' in saved.value) {
         return bad(
@@ -177,20 +207,11 @@ async function handleCreateOrgExecutor(orgs: OrgRegistry, request: FastifyReques
 }
 
 async function handleUpdateOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
-    if (!store) return noStore(reply);
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    if (!requireAdmin(caller)) {
-        return bad(
-            reply,
-            ERROR_CODES.FORBIDDEN,
-            'Only an organization admin can manage organization executors',
-            HTTP_FORBIDDEN
-        );
-    }
-    const { id } = request.params as { id?: string };
-    if (typeof id !== 'string' || !id) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a string');
+    const ctx = await adminContext(orgs, request, reply);
+    if (!ctx) return reply;
+    const { store } = ctx;
+    const id = idParam(request, reply);
+    if (id === null) return reply;
 
     const raw = jsonBody(request.body);
     // Scope is not a field: it moves only through the scope route, loudly — quietly accepting it
@@ -202,18 +223,7 @@ async function handleUpdateOrgExecutor(orgs: OrgRegistry, request: FastifyReques
     const reason = badProfileName(fields.name);
     if (reason) return bad(reply, ERROR_CODES.BAD_EXECUTOR_NAME, `"${fields.name}": ${reason}`);
 
-    const saved = await guard(
-        reply,
-        (e) => request.log.error({ err: e }),
-        async () => {
-            try {
-                return { ok: await store.updateOrg(id, fields) };
-            } catch (error) {
-                if (isNameTaken(error)) return { taken: true };
-                throw error;
-            }
-        }
-    );
+    const saved = await saveOrTaken(request, reply, () => store.updateOrg(id, fields));
     if (!saved.ok) return reply;
     if ('taken' in saved.value) {
         return bad(
@@ -228,20 +238,11 @@ async function handleUpdateOrgExecutor(orgs: OrgRegistry, request: FastifyReques
 }
 
 async function handleDeleteOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
-    if (!store) return noStore(reply);
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    if (!requireAdmin(caller)) {
-        return bad(
-            reply,
-            ERROR_CODES.FORBIDDEN,
-            'Only an organization admin can manage organization executors',
-            HTTP_FORBIDDEN
-        );
-    }
-    const { id } = request.params as { id?: string };
-    if (typeof id !== 'string' || !id) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a string');
+    const ctx = await adminContext(orgs, request, reply);
+    if (!ctx) return reply;
+    const { store } = ctx;
+    const id = idParam(request, reply);
+    if (id === null) return reply;
 
     const removed = await guard(
         reply,
@@ -255,20 +256,11 @@ async function handleDeleteOrgExecutor(orgs: OrgRegistry, request: FastifyReques
 
 /** Suspends or resumes an org profile for every member (issue 440): admin-gated, id-keyed. */
 async function handleSuspendOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
-    if (!store) return noStore(reply);
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    if (!requireAdmin(caller)) {
-        return bad(
-            reply,
-            ERROR_CODES.FORBIDDEN,
-            'Only an organization admin can manage organization executors',
-            HTTP_FORBIDDEN
-        );
-    }
-    const { id } = request.params as { id?: string };
-    if (typeof id !== 'string' || !id) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a string');
+    const ctx = await adminContext(orgs, request, reply);
+    if (!ctx) return reply;
+    const { store } = ctx;
+    const id = idParam(request, reply);
+    if (id === null) return reply;
     const { suspended } = jsonBody(request.body);
     if (typeof suspended !== 'boolean') return bad(reply, ERROR_CODES.BAD_BODY, 'suspended must be a boolean');
 
@@ -288,20 +280,11 @@ async function handleSuspendOrgExecutor(orgs: OrgRegistry, request: FastifyReque
  * the ownership, and this route holds the role check — both halves of the same enforcement.
  */
 async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
-    if (!store) return noStore(reply);
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    if (!requireAdmin(caller)) {
-        return bad(
-            reply,
-            ERROR_CODES.FORBIDDEN,
-            'Only an organization admin can manage organization executors',
-            HTTP_FORBIDDEN
-        );
-    }
-    const { id } = request.params as { id?: string };
-    if (typeof id !== 'string' || !id) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a string');
+    const ctx = await adminContext(orgs, request, reply);
+    if (!ctx) return reply;
+    const { store, caller } = ctx;
+    const id = idParam(request, reply);
+    if (id === null) return reply;
 
     const raw = jsonBody(request.body);
     const scope = raw.scope as ExecutorScope | undefined;
@@ -335,18 +318,7 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
         );
     }
 
-    const moved = await guard(
-        reply,
-        (e) => request.log.error({ err: e }),
-        async () => {
-            try {
-                return { ok: await store.changeScope(id, scope, caller.user.id) };
-            } catch (error) {
-                if (isNameTaken(error)) return { taken: true };
-                throw error;
-            }
-        }
-    );
+    const moved = await saveOrTaken(request, reply, () => store.changeScope(id, scope, caller.user.id));
     if (!moved.ok) return reply;
     if ('taken' in moved.value) {
         return bad(

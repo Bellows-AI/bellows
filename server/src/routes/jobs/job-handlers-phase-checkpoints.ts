@@ -12,7 +12,7 @@ import {
     leaseLost,
     notFoundJob,
 } from './job-limits.js';
-import { resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute, resolveJobRoute } from '../route-guards.js';
 import type { PhaseCheckpointStore } from '../../db/jobs/job-store-phase-checkpoints.js';
 
 const PHASES: readonly string[] = ['setup', 'gates', 'post', 'publish'] satisfies PhaseCheckpointPhase[];
@@ -73,15 +73,9 @@ export async function handlePhaseCheckpoint(orgs: OrgRegistry, request: FastifyR
 
 /** The checkpoints of the run claim `runClaimSeq` started, under the caller's lease. */
 export async function handlePhaseCheckpoints(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof PhaseCheckpointStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof PhaseCheckpointStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const runClaimSeq = runClaimSeqOf(fields.runClaimSeq);
     if (runClaimSeq === null) return bad(reply, ERROR_CODES.BAD_BODY, 'runClaimSeq must be a positive integer');
 

@@ -19,7 +19,7 @@ import {
 import { validateGates } from './job-gate-validation.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body, checkReposVisible, guard } from '../helpers.js';
-import { resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
 import type { ClaimPollOutcome } from '../../metrics.js';
 import {
@@ -387,15 +387,9 @@ export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, 
 // the receipt's, with the lease renewed by `leaseSeconds`. The board commits it should the lease
 // expire before the complete lands; a different one under the lease is a 409 of its own.
 export async function handleConclusion(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobConclusionStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobConclusionStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const lease = leaseSeconds(fields.leaseSeconds);
     if (lease === null) {
         return bad(reply, ERROR_CODES.BAD_LEASE, `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
@@ -468,15 +462,9 @@ function interruptionOf(
 // attempt refunded (`release`), or recorded by the claim that adopted it. Lease-guarded; a spent
 // interruption budget is a 409 of its own, and the driver then treats the attempt as before.
 export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const interruption = interruptionOf(fields);
     if (typeof interruption === 'string') return bad(reply, ERROR_CODES.BAD_BODY, interruption);
 

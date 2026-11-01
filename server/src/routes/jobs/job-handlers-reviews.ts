@@ -15,7 +15,7 @@ import {
     leaseLost,
     notFoundJob,
 } from './job-limits.js';
-import { resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute, resolveJobRoute } from '../route-guards.js';
 import type { JobReviewStore } from '../../db/jobs/job-store-reviews.js';
 
 /**
@@ -48,15 +48,9 @@ function validateReviewBody(fields: Record<string, unknown>): Checked {
 }
 
 export async function handleReviewRequest(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobReviewStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobReviewStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const parsed = validateReviewBody(fields);
     if (!parsed.ok) return bad(reply, ERROR_CODES.INVALID_REVIEW, parsed.message);
 
