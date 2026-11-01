@@ -4,6 +4,7 @@ import { useId } from 'react';
 import { useDownwardAnchor } from '../anchor.js';
 import { isTerminal, type AuthorRef, type Job } from '../api/useJobs.js';
 import { PRODUCT_NAME } from '../brand.js';
+import { Avatar } from '../components/Avatar.js';
 import { Icon, type IconName } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
@@ -292,13 +293,7 @@ function OpenedBy({ author }: { author: AuthorRef | null }) {
     if (author === null) return <span className="task-opened-by">unknown</span>;
     return (
         <span className="task-opened-by">
-            {author.avatarUrl !== null ? (
-                <img className="avatar" src={author.avatarUrl} alt="" width={20} height={20} />
-            ) : (
-                <span className="avatar avatar-fallback" aria-hidden="true">
-                    {author.login.slice(0, 1).toUpperCase()}
-                </span>
-            )}
+            <Avatar author={author} size={20} />
             {author.login}
         </span>
     );

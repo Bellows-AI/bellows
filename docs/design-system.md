@@ -96,7 +96,7 @@ Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-preci
 
 ## Shared UI units
 
-`AppBar.tsx`, `AppShell.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
+`AppBar.tsx`, `AppShell.tsx`, `Avatar.tsx`, `ConfirmDialog.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
 `MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`,
 `SideNav.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
 `SettingsLayout.tsx`, `TasksLayout.tsx` (`web/src/pages/`).

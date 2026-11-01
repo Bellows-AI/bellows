@@ -1,6 +1,6 @@
-import { useRef } from 'react';
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle, Description } from '@headlessui/react';
+import { Description } from '@headlessui/react';
 import type { ConnectionView } from '../api/connections.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 export const WRITE_CONSENT_TITLE = 'Allow adding comments';
 
@@ -21,37 +21,20 @@ export function JiraWriteConsentDialog({
     onClose: () => void;
     onConfirm: () => void;
 }) {
-    const cancelRef = useRef<HTMLButtonElement>(null);
     return (
-        <Dialog
+        <ConfirmDialog
             open={connection !== null}
-            onClose={() => {
-                if (!busy) onClose();
-            }}
-            className="dialog-layer"
-            initialFocus={cancelRef}
+            busy={busy}
+            title={WRITE_CONSENT_TITLE}
+            confirmClassName="primary"
+            confirmText={busy ? 'Opening Atlassian…' : 'Continue to Atlassian'}
+            onClose={onClose}
+            onConfirm={onConfirm}
         >
-            <DialogBackdrop className="dialog-backdrop" />
-            <div className="dialog-position">
-                <DialogPanel className="dialog task-remove">
-                    <DialogTitle as="h2" className="task-remove-title">
-                        {WRITE_CONSENT_TITLE}
-                    </DialogTitle>
-                    <Description as="p">
-                        Atlassian will ask {connection?.account ?? 'you'} to approve adding comments. Once granted,
-                        read-bound tasks of this account will be refused until they are started again with the new
-                        access.
-                    </Description>
-                    <div className="task-remove-actions">
-                        <button ref={cancelRef} type="button" className="chat-resume" onClick={onClose} disabled={busy}>
-                            Cancel
-                        </button>
-                        <button type="button" className="primary" onClick={onConfirm} disabled={busy}>
-                            {busy ? 'Opening Atlassian…' : 'Continue to Atlassian'}
-                        </button>
-                    </div>
-                </DialogPanel>
-            </div>
-        </Dialog>
+            <Description as="p">
+                Atlassian will ask {connection?.account ?? 'you'} to approve adding comments. Once granted, read-bound
+                tasks of this account will be refused until they are started again with the new access.
+            </Description>
+        </ConfirmDialog>
     );
 }
