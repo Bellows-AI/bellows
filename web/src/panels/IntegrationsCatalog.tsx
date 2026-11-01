@@ -1,5 +1,7 @@
 /** A provider directory, separate from the member's credential-bearing connection rows.
  * Only Jira has a working authorization flow. Other cards intentionally have no action. */
+export const CONNECT_JIRA_LABEL = 'Connect Jira';
+
 const UPCOMING_INTEGRATIONS = [
     {
         name: 'Slack',
@@ -54,7 +56,7 @@ export function IntegrationsCatalog({
                             disabled={saving}
                             onClick={onConnectJira}
                         >
-                            Connect Jira
+                            {CONNECT_JIRA_LABEL}
                         </button>
                     </div>
                 </article>
