@@ -22,14 +22,14 @@ export interface UseAccessTokens {
     revoke: (id: string) => Promise<string | null>;
 }
 
+const selectTokens = (body: { tokens: AccessTokenView[] }) => body.tokens;
+
 /**
  * One scope of access tokens — the caller's personal list, or the organization's.
  *
  * No polling, like `useEnv`: the list only changes when the page holding it mints or revokes, and
  * each success refetches so the table shows exactly what is stored.
  */
-const selectTokens = (body: { tokens: AccessTokenView[] }) => body.tokens;
-
 export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
     // The org scope is the same routes under one prefix; the admin gate lives on the server.
     const base = scope === 'org' ? '/api/tokens/org' : '/api/tokens';

@@ -49,6 +49,8 @@ export interface UseEnv {
     saveRepo: (repo: { owner: string; name: string }, vars: EnvVarInput[]) => Promise<EnvSaveResult>;
 }
 
+const selectEnv = (body: EnvPayload) => body;
+
 /**
  * The runner environment, fetched once and refetched after each save.
  *
@@ -56,8 +58,6 @@ export interface UseEnv {
  * that edits it is the page holding this hook. A two-second poll would also race the draft state in
  * the editors, remounting them under a typing hand.
  */
-const selectEnv = (body: EnvPayload) => body;
-
 export function useEnv(): UseEnv {
     const { data, loading, error, refresh } = useResource('/api/env', selectEnv);
     const [saving, setSaving] = useState(false);

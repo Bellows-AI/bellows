@@ -113,10 +113,10 @@ export interface WorkflowDetailView extends WorkflowSummaryView {
     definition: unknown;
 }
 
-/** A read or write that named its own refusal, `code` included — the panel renders `code: error`
- * so a validator refusal (UNKNOWN_KEY, NO_PUBLISH_PATH, …) is diagnosable, not just a sentence. */
 const readRecord = async (response: Response) => (await response.json()) as WorkflowDetailView;
 
+/** A read or write that named its own refusal, `code` included — the panel renders `code: error`
+ * so a validator refusal (UNKNOWN_KEY, NO_PUBLISH_PATH, …) is diagnosable, not just a sentence. */
 export type WorkflowResult = { ok: true; record: WorkflowDetailView } | { ok: false; error: string; code?: string };
 
 export interface UseWorkflowsManagement {
@@ -130,6 +130,8 @@ export interface UseWorkflowsManagement {
     remove: (id: string) => Promise<string | null>;
 }
 
+const selectWorkflows = (body: { workflows: WorkflowSummaryView[] }) => body.workflows;
+
 /**
  * The settings management panel's CRUD surface (issue 131): the caller-visible list — org-level
  * and the caller's own user-level workflows, the no-repo-context list — plus fetch-one, create, update and delete. No polling, like
@@ -141,8 +143,6 @@ export interface UseWorkflowsManagement {
  * context this settings page has no reason to hold is not worth adding just to show a scope this
  * panel does not offer creating anyway — repo-scoped definitions stay the API's own surface.
  */
-const selectWorkflows = (body: { workflows: WorkflowSummaryView[] }) => body.workflows;
-
 export function useWorkflowsManagement(): UseWorkflowsManagement {
     const { data: workflows, loading, error, refresh } = useResource('/api/workflows', selectWorkflows);
 
