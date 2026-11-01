@@ -14,4 +14,17 @@ describe('ProviderMark', () => {
             expect(html).toContain('<path d="');
         }
     );
+
+    it.each([
+        ['jira', '0 0 24 24'],
+        ['slack', '0 0 127 127'],
+        ['discord', '0 0 24 24'],
+        ['github', '0 0 24 24'],
+        ['gitlab', '0 0 24 24'],
+        ['mcp', '0 0 24 24'],
+    ])('draws the official %s mark on its own grid, filled nonzero as published', (id, viewBox) => {
+        const html = renderToStaticMarkup(<ProviderMark provider={id} />);
+        expect(html).toContain(`viewBox="${viewBox}"`);
+        expect(html).not.toContain('evenodd');
+    });
 });
