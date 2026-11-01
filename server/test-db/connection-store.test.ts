@@ -81,8 +81,21 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
             site: 'example.atlassian.net',
             account: 'agent@example.com',
             status: 'active',
+            needsReconnect: false,
         });
         expect(JSON.stringify(views)).not.toMatch(/token|secret/i);
+    });
+
+    it('flags a connection whose grant needs reconnecting, in the list and the candidates', async () => {
+        const fine = await oauthConnection(sql, ORG, OWNER.id);
+        const stale = await oauthConnection(sql, ORG, OWNER.id);
+        await sql`update integration_grant set status = 'reconnect_required' where id = ${stale.grantId}`;
+        const views = await store.list(OWNER.id);
+        expect(views.find((v) => v.id === fine.id)?.needsReconnect).toBe(false);
+        expect(views.find((v) => v.id === stale.id)?.needsReconnect).toBe(true);
+        const candidates = await store.candidates(OWNER.id, 'jira');
+        expect(candidates.find((v) => v.id === stale.id)?.needsReconnect).toBe(true);
+        expect(candidates.find((v) => v.id === fine.id)?.needsReconnect).toBe(false);
     });
 
     it('candidates(user, jira) excludes disconnected and other members', async () => {

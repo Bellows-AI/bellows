@@ -345,23 +345,47 @@ describe.skipIf(!enabled)('start: the trusted context binds the transaction', ()
 });
 
 describe.skipIf(!enabled)('complete: callback validation', () => {
-    it('an unknown or missing state is state-mismatch with returnTo `/` and no exchange', async () => {
+    it('an unknown or missing state is state-mismatch back to the integrations page and no exchange', async () => {
         const r = rig();
         expect(await complete(r, { state: 'nope', code: CODE })).toEqual({
             ok: false,
-            returnTo: '/',
+            returnTo: '/settings/integrations',
             failure: 'state-mismatch',
         });
-        expect(await complete(r, { code: CODE })).toEqual({ ok: false, returnTo: '/', failure: 'state-mismatch' });
+        expect(await complete(r, { code: CODE })).toEqual({
+            ok: false,
+            returnTo: '/settings/integrations',
+            failure: 'state-mismatch',
+        });
         expect(r.fake.exchangeCalls).toBe(0);
     });
+
+    // Regression guard (passes before and after the fallback moved): a stored destination wins over the fallback.
+    it.each(['/tasks/task-1', '/settings/integrations/jira/conn-1'])(
+        'a stored returnTo %s is still honoured on an expired and on a replayed attempt',
+        async (returnTo) => {
+            const r = rig();
+            const expired = await begin(r, { provider: 'jira', returnTo });
+            await db.sql`update integration_authorization set expires_at = now() - interval '1 second' where id = ${expired.authorizationId}`;
+            expect(await complete(r, { state: expired.state, code: CODE })).toMatchObject({
+                returnTo,
+                failure: 'expired',
+            });
+            const replayed = await begin(r, { provider: 'jira', returnTo });
+            await complete(r, { state: replayed.state, code: CODE });
+            expect(await complete(r, { state: replayed.state, code: CODE })).toMatchObject({
+                returnTo,
+                failure: 'replayed',
+            });
+        }
+    );
 
     it("another user's context is refused and does not consume; the original user then completes", async () => {
         const r = rig();
         const started = await begin(r, { provider: 'jira', returnTo: '/after' });
         expect(await complete(r, { state: started.state, code: CODE }, asBob())).toEqual({
             ok: false,
-            returnTo: '/',
+            returnTo: '/settings/integrations',
             failure: 'state-mismatch',
         });
         expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'pending', consumed_at: null });

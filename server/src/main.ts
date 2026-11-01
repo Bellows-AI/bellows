@@ -206,7 +206,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
 
     // The outbound OAuth runtime (BEL-138). Jira registers when ATLASSIAN_CLIENT_ID/SECRET are set; unset, no provider is
     // configured and the runtime serves only the recovery of rows and the destroy of a revoked grant's secret.
-    const jira = jiraRegistration(config.integrations.jira);
+    const jira = jiraRegistration(config.integrations.jira, config.integrations.callbackOrigin);
     const integrations = createIntegrationRuntime({
         sql,
         secrets,
@@ -223,7 +223,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         notificationConnectors: connectors,
         store,
         secrets,
-        integrations,
+        integrations: { ...integrations, configured: jira.configured },
         auth: authStore,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one

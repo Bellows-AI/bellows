@@ -18,6 +18,8 @@ export interface SettingsBoard {
     executors: WorkspaceExecutorFull[];
     orgExecutors: (OrgExecutorFull & { suspended: boolean })[];
     connections: ConnectionView[];
+    /** Whether `GET /api/integrations` reports Jira as configured on this deployment. */
+    jiraConfigured: boolean;
 }
 
 const AT = '2026-09-01T00:00:00.000Z';
@@ -31,6 +33,7 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         executors: [],
         orgExecutors: [],
         connections: [],
+        jiraConfigured: true,
         ...overrides,
     };
 }
@@ -78,6 +81,7 @@ export const connection = (site: string, overrides: Partial<ConnectionView> = {}
     account: 'stub-account-a@example.com',
     access: 'read',
     status: 'active',
+    needsReconnect: false,
     createdAt: AT,
     ...overrides,
 });
@@ -166,6 +170,9 @@ function routes(board: SettingsBoard, { method, url, body }: FetchCall): FetchRe
             };
         }
         return { status: 204 };
+    }
+    if (method === 'GET' && path === '/api/integrations') {
+        return { integrations: [{ provider: 'jira', configured: board.jiraConfigured }] };
     }
     if (method === 'GET' && path === '/api/connections') return { connections: board.connections };
     if (method === 'DELETE' && path.startsWith('/api/connections/')) {
