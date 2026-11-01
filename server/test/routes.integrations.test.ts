@@ -33,9 +33,10 @@ const track = trackApps();
 interface Boot {
     start?: (input: StartAuthorizationInput) => StartAuthorizationResult | Promise<StartAuthorizationResult>;
     complete?: (input: CompleteAuthorizationInput) => CompleteAuthorizationResult;
+    configured?: readonly string[];
 }
 
-async function boot({ start, complete }: Boot = {}) {
+async function boot({ start, complete, configured }: Boot = {}) {
     const lines: string[] = [];
     const started: { ctx: TrustedIntegrationContext; input: StartAuthorizationInput }[] = [];
     const completed: (CompleteAuthorizationInput & { signal?: AbortSignal | undefined })[] = [];
@@ -71,6 +72,7 @@ async function boot({ start, complete }: Boot = {}) {
                 },
             }),
             flowOf: () => flow,
+            configured,
         },
         logger: { level: 'trace', stream: { write: (line: string) => lines.push(line) } },
     });
@@ -190,7 +192,7 @@ describe('GET /api/integrations/:provider/callback', () => {
         });
         const thrown = await callback(throwing, `state=${SECRET_STATE}&code=${SECRET_CODE}`);
         expect(thrown.statusCode).toBe(HTTP_SEE_OTHER);
-        expect(thrown.headers.location).toBe('/?integration=jira&result=error');
+        expect(thrown.headers.location).toBe('/settings/integrations?integration=jira&result=error');
     });
 
     it('writes no log line containing the code or the state', async () => {
@@ -213,5 +215,31 @@ describe('GET /api/integrations/:provider/callback', () => {
         const response = await callback(ctx, `state=${SECRET_STATE}&code=${SECRET_CODE}`, {});
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
         expect(ctx.completed).toHaveLength(0);
+    });
+});
+
+describe('GET /api/integrations', () => {
+    const list = (ctx: Awaited<ReturnType<typeof boot>>, headers: Record<string, string> = { cookie: ctx.cookie }) =>
+        ctx.app.inject({ method: 'GET', url: '/api/integrations', headers });
+
+    it('reports whether Jira is configured, as booleans only, and never caches the answer', async () => {
+        const configured = await list(await boot({ configured: ['jira'] }));
+        expect(configured.statusCode).toBe(200);
+        expect(configured.json()).toEqual({ integrations: [{ provider: 'jira', configured: true }] });
+        expect(configured.headers['cache-control']).toBe('no-store');
+        const absent = await list(await boot());
+        expect(absent.json()).toEqual({ integrations: [{ provider: 'jira', configured: false }] });
+    });
+
+    it('answers only provider and configured: no client id, origin or secret', async () => {
+        const body = (await list(await boot({ configured: ['jira'] }))).json() as {
+            integrations: Record<string, unknown>[];
+        };
+        for (const entry of body.integrations) expect(Object.keys(entry).sort()).toEqual(['configured', 'provider']);
+    });
+
+    it('answers 401 without a session in github mode', async () => {
+        const response = await list(await boot({ configured: ['jira'] }), {});
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });

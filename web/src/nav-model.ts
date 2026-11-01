@@ -38,6 +38,7 @@ export const SETTINGS_SECTIONS: readonly NavItem[] = [
     { to: '/settings', label: 'Overview', end: true },
     { to: '/settings/organization', label: 'Organization' },
     { to: '/settings/workspace', label: 'Workspace' },
+    { to: '/settings/integrations', label: 'Integrations' },
     { to: '/settings/repos', label: 'Repositories' },
     { to: '/settings/executors', label: 'Executors' },
 ];

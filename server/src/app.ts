@@ -97,7 +97,10 @@ export interface AppDeps {
     /** The outbound OAuth runtime whose per-org resolver the broker spends through. */
     integrations?:
         | (Pick<IntegrationRuntime, 'resolverOf'> &
-              Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>>)
+              Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>> & {
+                  /** The provider ids with an OAuth client registered here; `GET /api/integrations` reports it as booleans. */
+                  configured?: readonly string[] | undefined;
+              })
         | undefined;
     githubMint?: GithubMint | undefined;
     /** Replaces the org's installation revoke, like `githubMint` (the lanes' stand-in, the tests' seam). */
@@ -215,7 +218,8 @@ async function registerRunnerCredentialRoutes(
         }
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
-    if (integrations?.flowOf) await app.register(integrationRoutes({ flowOf: integrations.flowOf }));
+    if (integrations?.flowOf)
+        await app.register(integrationRoutes({ flowOf: integrations.flowOf, configured: integrations.configured }));
 }
 
 async function registerCommerce(

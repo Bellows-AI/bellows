@@ -41,12 +41,14 @@ Both or neither: one alone refuses to boot, naming the missing one. Restart the 
 
 ## 4. Check it
 
-1. Sign in, Settings, Workspace, Connect Jira, optionally name one site, Continue to Atlassian.
-2. Approve the consent. The page returns to Workspace with "Jira connected." and one row per site the account can
-   reach (or the one named).
-3. "Allow adding comments" on a row asks Atlassian again with `write:jira-work` added; the row then shows `write`.
+1. Sign in, Settings, Integrations, Browse integrations, the Jira card's Connect, optionally name one site, Continue to Atlassian.
+2. Approve the consent. The page returns to Integrations with "Jira connected." and one card per site the account
+   can reach (or the one named).
+3. "Allow adding comments" on a connection's page asks Atlassian again with `write:jira-work` added; the row then shows `write`.
 
-Refusals come back as one sentence on the same page; the codes are `AuthorizationFailure` in
+`e2e/jira-connections.spec.ts` walks these steps against the stand-in.
+
+Refusals come back as one sentence on the page the consent started from; the codes are `AuthorizationFailure` in
 `server/src/integrations/authorization-types.ts`.
 
 ## Limits

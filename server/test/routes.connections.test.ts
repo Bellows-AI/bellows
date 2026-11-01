@@ -52,6 +52,7 @@ function memoryConnections(revokedGrantId: string | null = null): ConnectionStor
         account: 'agent@example.com',
         access: 'read',
         status: 'active',
+        needsReconnect: false,
         createdAt: '2026-10-08T00:00:00.000Z',
     });
     return {

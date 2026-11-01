@@ -35,7 +35,7 @@ const COPY: Record<SubscriptionScope, { heading: string; tableLabel: string; int
 type Editing = { row: SubscriptionView | null } | null;
 
 /**
- * One scope's notification subscriptions bound to their data (`JiraConnectionsSection`'s shape):
+ * One scope's notification subscriptions bound to their data:
  * the section owns the list, the writes, the test sends and both dialogs, the panel the markup.
  * The organization's rows are written by admins only (a member reads them); the member's own are
  * theirs on `/settings/workspace`. Every write re-reads the list, and a read that fails or does not
