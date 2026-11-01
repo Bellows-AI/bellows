@@ -51,10 +51,12 @@ describe('the Jira connections panel', () => {
         expect(html).not.toMatch(/apiToken|api_token|API token|Legacy/);
     });
 
-    it('offers "Allow adding comments" on a read row only, and the Connect button in the head', () => {
+    it('offers "Allow adding comments" on a read row only, and the Connect button in the catalog', () => {
         const html = render();
         expect(html.match(new RegExp(`>${ALLOW_COMMENTS_LABEL}</button>`, 'g'))).toHaveLength(1);
-        expect(html).toMatch(new RegExp(`class="panel-head">.*${CONNECT_JIRA_LABEL}</button>`));
+        expect(html).toContain('aria-label="Available integrations"');
+        expect(html).toContain(CONNECT_JIRA_LABEL);
+        expect(html).toContain('Connected accounts');
     });
 
     it('says so when the list is empty', () => {
@@ -83,7 +85,7 @@ describe('the Jira connections panel', () => {
     it('announces a list or disconnect failure inside the panel', () => {
         const html = render({ error: 'Could not disconnect.' });
         expect(html).toMatch(/role="alert"[^>]*>[^<]*(<[^>]+>)*[^<]*Could not disconnect\./);
-        expect(html.indexOf('Could not disconnect.')).toBeGreaterThan(html.indexOf('<h2>Jira connections</h2>'));
+        expect(html.indexOf('Could not disconnect.')).toBeGreaterThan(html.indexOf('<h2>Connected accounts</h2>'));
     });
 });
 
