@@ -6,6 +6,7 @@ import { createLoop } from '../src/loop/loop.js';
 import { recordEnding } from '../src/loop/loop-phase.js';
 import { cancelReviews, createReviewRelay, superviseReview } from '../src/loop/loop-review.js';
 import { StepChannelClosed } from '../src/step-control.js';
+import { InputsUnconfirmed } from '../src/task-inputs.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 import { openRunControl } from '../src/loop/loop-gates.js';
 import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
@@ -365,6 +366,27 @@ describe('a review the board leased in-band (issue #774)', () => {
         t.start();
         await until(() => t.runner.reviewed.length === 1);
         await cancelReviews(t.state);
+        expect(t.board.completed).toEqual([]);
+    });
+
+    it('ends the row failed with attachment_unavailable when the reviewed request’s file is gone for good', async () => {
+        const t = supervising({
+            runReview: async () =>
+                STEP({ exitCode: 1, stdout: '', stderr: 'a file is gone', failureKind: 'attachment_unavailable' }),
+        });
+        t.start();
+        await t.settled();
+        expect(t.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'attachment_unavailable' });
+    });
+
+    it('completes nothing when the reviewed request’s files could not be confirmed: the lease redelivers it', async () => {
+        const t = supervising({
+            runReview: async () => {
+                throw new InputsUnconfirmed('the board answered 503');
+            },
+        });
+        t.start();
+        await t.settled();
         expect(t.board.completed).toEqual([]);
     });
 

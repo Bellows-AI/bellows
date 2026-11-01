@@ -51,9 +51,30 @@ describe('the supervisor’s checkpoint environment', () => {
         expect(env).not.toHaveProperty(SUPERVISOR_ENV.checkpointOpencodeDb);
     });
 
-    it('configures none for a job with no repository, with no control endpoint, or in a supervisor-only group', () => {
+    it('configures a repo-free OpenCode job to snapshot its session database, with no tree or branch', () => {
+        const env = envOf(withControl({ repo: null, executorType: 'opencode' }));
+
+        expect(env[SUPERVISOR_ENV.checkpointScript]).toBe(checkpointScript);
+        expect(env[SUPERVISOR_ENV.checkpointDir]).toBe('/task/.factory/checkpoint');
+        expect(env[SUPERVISOR_ENV.checkpointOpencodeDb]).toBe(`/task/.factory/opencode/${ROOT}/opencode/opencode.db`);
+        expect(env[SUPERVISOR_ENV.checkpointMs]).toBe('120000');
+        for (const name of [
+            SUPERVISOR_ENV.checkpointCheckout,
+            SUPERVISOR_ENV.checkpointBranch,
+            SUPERVISOR_ENV.checkpointBase,
+        ]) {
+            expect(env).not.toHaveProperty(name);
+        }
+    });
+
+    it('configures none for a repo-free OpenCode job with no control endpoint', () => {
+        const job = { ...withControl({ repo: null, executorType: 'opencode' }), supervisorEnv: undefined };
+        expect(envOf(job as unknown as BoardJob)).not.toHaveProperty(SUPERVISOR_ENV.checkpointScript);
+    });
+
+    it('configures none for a job with no repository and no database, with no control endpoint, or in a supervisor-only group', () => {
         for (const [job, g] of [
-            [withControl({ repo: null }), group],
+            [withControl({ repo: null, executorType: 'claude-code' }), group],
             [{ ...withControl({}), supervisorEnv: undefined } as unknown as BoardJob, group],
             [withControl({}), { exporting: false, agentless: true }],
         ] as const) {

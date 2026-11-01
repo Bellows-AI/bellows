@@ -28,7 +28,7 @@ FROM mirror.gcr.io/library/node:24-bookworm-slim
 # because it is large. Byte-identical to the same layer in docker/claude-executor/Dockerfile,
 # deliberately — see the acli/gh note below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git procps python3 \
+    && apt-get install -y --no-install-recommends ca-certificates curl git poppler-utils procps python3 \
     && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
 # npm stays in this image, so its own bundled dependency tree ships too — and the version node:24

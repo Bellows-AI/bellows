@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runCli } from './harness.js';
 
@@ -98,6 +101,18 @@ describe('--idempotency-key', () => {
         expect(refused.code).toBe(1);
         expect(refused.err).toContain('[IDEMPOTENCY_KEY_REUSED]');
         expect(refused.err).not.toContain('may have been applied');
+    });
+
+    it('surfaces a refusal of an upload key reused for another file, and submits nothing', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'bellows-idem-'));
+        const path = join(dir, 'a.txt');
+        await writeFile(path, 'a');
+        const result = await cli(['job', 'create', 'x', '--attach', path, '--idempotency-key', KEY], () =>
+            Response.json({ error: 'key reused', code: 'IDEMPOTENCY_KEY_REUSED' }, { status: 409 })
+        );
+        expect(result.code).toBe(1);
+        expect(result.err).toContain('IDEMPOTENCY_KEY_REUSED');
+        expect(result.sent).toEqual([{ url: 'http://board/api/attachments', key: `${KEY}.a1` }]);
     });
 
     describe('an uncertain write outcome', () => {

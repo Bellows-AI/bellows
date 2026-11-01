@@ -72,7 +72,11 @@ export function createS3Store(options: S3Options): S3Store {
     async function send(
         method: string,
         url: URL,
-        { headers = {}, body }: { headers?: Record<string, string>; body?: Uint8Array } = {}
+        {
+            headers = {},
+            body,
+            signal,
+        }: { headers?: Record<string, string>; body?: Uint8Array; signal?: AbortSignal | undefined } = {}
     ): Promise<Response> {
         const signed = signRequest({
             method,
@@ -85,6 +89,7 @@ export function createS3Store(options: S3Options): S3Store {
             now: now(),
         });
         const init: RequestInit = { method, headers: signed };
+        if (signal) init.signal = signal;
         if (body) init.body = body as NonNullable<RequestInit['body']>;
         return doFetch(url, init);
     }
@@ -94,10 +99,11 @@ export function createS3Store(options: S3Options): S3Store {
     }
 
     return {
-        async put(key, body): Promise<PutResult> {
+        async put(key, body, call): Promise<PutResult> {
             const response = await send('PUT', urlOf(key), {
                 headers: { 'if-none-match': '*', [CONTENT_TYPE_HEADER]: 'application/octet-stream', ...encryption },
                 body,
+                signal: call?.signal,
             });
             if (response.status === HTTP_PRECONDITION_FAILED) {
                 await response.arrayBuffer();
@@ -116,8 +122,8 @@ export function createS3Store(options: S3Options): S3Store {
             if (response.status !== HTTP_OK) return fail('GET', response);
             return new Uint8Array(await response.arrayBuffer());
         },
-        async head(key) {
-            const response = await send('HEAD', urlOf(key));
+        async head(key, call) {
+            const response = await send('HEAD', urlOf(key), { signal: call?.signal });
             if (response.status === HTTP_NOT_FOUND) return null;
             if (response.status !== HTTP_OK) return fail('HEAD', response);
             return { size: Number(response.headers.get('content-length')) };

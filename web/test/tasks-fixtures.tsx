@@ -16,7 +16,7 @@ import type {
     PrActivity,
     ThreadActivity,
 } from '../src/api/useJobActivity.js';
-import type { ComposerDraftInput } from '../src/composer-draft.js';
+import { type ComposerDraftInput, type ComposerDraftStore, EMPTY_FILES } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 import { TaskHeader } from '../src/panels/TaskHeader.js';
@@ -28,6 +28,25 @@ import type { FollowUpViewer } from '../src/task-outcome.js';
  * never runs under renderToStaticMarkup, so the hooks are exercised by the pages that own them and
  * this suite exercises what the reader actually sees.
  */
+/** A draft store that holds nothing and writes nowhere: what a panel renders against offline. */
+export const inertDraftStore = (overrides: Partial<ComposerDraftStore> = {}): ComposerDraftStore => ({
+    state: null,
+    save: () => {},
+    clear: () => {},
+    files: EMPTY_FILES,
+    updateTaskFiles: () => {},
+    clearTaskFiles: () => {},
+    followUps: {},
+    saveFollowUp: () => {},
+    updateFollowUp: () => {},
+    clearFollowUp: () => {},
+    submits: {},
+    beginSubmit: () => {},
+    finishSubmit: () => {},
+    taskCompletions: 0,
+    ...overrides,
+});
+
 export function job(overrides: Partial<Job> = {}): Job {
     return {
         id: '11111111-1111-4111-8111-111111111111',
@@ -68,6 +87,7 @@ export function job(overrides: Partial<Job> = {}): Job {
         questions: [],
         connections: [],
         bindingRevision: 0,
+        attachments: [],
         integrationRequirements: [],
         executionUser: null,
         actingFor: null,
@@ -156,11 +176,9 @@ export const renderComposer = ({
                 actionError={actionError}
                 sending={sending}
                 onSend={async () => null}
-                draftStore={{
+                draftStore={inertDraftStore({
                     state: restored === null ? null : { ...restored, owner: 'org-1:user-1' },
-                    save: () => {},
-                    clear: () => {},
-                }}
+                })}
             />
         </MemoryRouter>
     );
@@ -202,6 +220,7 @@ export const renderDetail = ({
                 followUpError={followUpError}
                 sending={sending}
                 onFollowUp={async () => null}
+                draftStore={inertDraftStore()}
                 onAnswer={async () => ({ state: 'failed', error: 'not wired in this suite' })}
                 onConnectionChange={() => {}}
                 activity={activity}

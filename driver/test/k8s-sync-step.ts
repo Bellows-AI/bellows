@@ -91,7 +91,13 @@ export async function k8sSyncRun(
         { steps: sink, ...(checkpoints ? { checkpoints } : {}) }
     );
     const result = await runner
-        .syncCheckout(supervised, undefined, { id: '33333333-3333-4333-8333-333333333333', resume: false }, githubToken)
+        .syncCheckout(
+            supervised,
+            undefined,
+            // The opencode runner refuses a minted session: its follow-ups resume the one they continue.
+            { id: '33333333-3333-4333-8333-333333333333', resume: job.executorType === 'opencode' },
+            githubToken
+        )
         .then(
             (value) => ({ value }),
             (error: unknown) => ({ error })

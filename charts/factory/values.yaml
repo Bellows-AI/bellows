@@ -194,6 +194,8 @@ artifacts:
     retentionDays: 90
     # Per-org byte quota; 0 is off.
     orgQuotaBytes: 0
+    # An upload not attached to a task within this many hours is collected.
+    attachmentDraftTtlHours: 24
 
 secret:
     # Creates the dashboard Secret from the values below. With existingSecret set, the chart

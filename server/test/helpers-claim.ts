@@ -4,6 +4,7 @@ import type { Claim } from '../src/db/jobs/job-store-types.js';
 export const makeClaim = (overrides: Partial<Claim> & Pick<Claim, 'id' | 'command' | 'leaseToken'>): Claim => ({
     attempts: 1,
     maxAttempts: 3,
+    attachments: [],
     lastAttempt: false,
     claimSeq: 1,
     leaseExpiresAt: '2026-08-21T12:05:00.000Z',

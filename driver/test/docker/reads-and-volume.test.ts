@@ -300,7 +300,7 @@ describe('the docker runner restoring a task volume', () => {
     it('keeps the older generation when the restore step fails, and fails the sync with its reason', async () => {
         const steps = fakeSteps((step) =>
             step.id.endsWith('-restore')
-                ? ok('{"ok":false,"reason":"bundle unreadable"}')
+                ? ok('{"ok":false,"reason":"bundle unreadable","kind":"checkpoint_unrestorable"}')
                 : ok('{"ok":true,"reason":null}')
         );
         const { d, runner: r } = runner([1, 2], steps, { checkpoint: async () => POINTER });
@@ -309,6 +309,15 @@ describe('the docker runner restoring a task volume', () => {
         expect(result.reason).toContain('bundle unreadable');
         expect(removes(d.calls)).toEqual([]);
         // The sync step never ran on the half-restored volume.
+        expect(steps.submitted).toHaveLength(1);
+    });
+
+    it('hands the claim back when the restore answers unreadably, keeping the older generation', async () => {
+        const steps = fakeSteps((step) => ok(step.id.endsWith('-restore') ? 'garbage' : '{"ok":true,"reason":null}'));
+        const { d, runner: r } = runner([1, 2], steps, { checkpoint: async () => POINTER });
+        await expect(r.syncCheckout(restoreJob(), undefined, null, 'ghs_x')).rejects.toThrow();
+        expect(removes(d.calls)).not.toContain(named(1));
+        expect(removes(d.calls)).not.toContain(named(2));
         expect(steps.submitted).toHaveLength(1);
     });
 
@@ -339,5 +348,149 @@ describe('the docker runner restoring a task volume', () => {
         await r.syncCheckout(j, undefined, null, 'ghs_x');
         expect(j.taskGeneration).toBe(1);
         expect(restoreStep(steps)).toBeUndefined();
+    });
+
+    describe('a repo-free continuing claim and its task inputs', () => {
+        const FILE = {
+            id: '66666666-6666-4666-8666-666666666666',
+            name: 'brief.pdf',
+            mediaType: 'application/pdf',
+            size: 3,
+            sha256: 'e'.repeat(64),
+            originJobId: ROOT_ID,
+        };
+        const repoFree = (over: Partial<BoardJob> = {}): BoardJob =>
+            ({ ...restoreJob(over), repo: undefined }) as unknown as BoardJob;
+        const names = (steps: ReturnType<typeof fakeSteps>) =>
+            steps.submitted.map((s) => s.step.id.replace(/^sync-[0-9a-f]+-/, ''));
+        const NONE = { checkpoint: async () => ({ state: 'none' as const }) };
+
+        it('rebuilds the Claude session on the new generation before release, with no attachments', async () => {
+            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            const { d, runner: r } = runner([], steps, NONE);
+            const j = repoFree();
+            expect(await r.syncCheckout(j, undefined, null)).toEqual({ ok: true, reason: null });
+            expect(j.taskGeneration).toBe(2);
+            expect(taskCreates(d.calls)).toEqual([named(2)]);
+            expect(names(steps)).toEqual(['restore']);
+            expect(restoreStep(steps)?.step.env).toMatchObject({ RESTORE_FEED: '1' });
+            expect(restoreStep(steps)?.step.env).not.toHaveProperty('CHECKOUT');
+        });
+
+        it('rebuilds a repo-free OpenCode session on the new generation before release', async () => {
+            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            const { d, runner: r } = runner([], steps, { checkpoint: async () => POINTER });
+            const j = repoFree({ executorType: 'opencode' });
+            expect(await r.syncCheckout(j, undefined, null)).toEqual({ ok: true, reason: null });
+            expect(j.taskGeneration).toBe(2);
+            expect(taskCreates(d.calls)).toEqual([named(2)]);
+            expect(names(steps)).toEqual(['restore']);
+            const env = restoreStep(steps)?.step.env;
+            expect(env).toMatchObject({ OPENCODE_DB: expect.stringContaining('opencode.db') });
+            expect(env).toHaveProperty('CHUNKS', JSON.stringify(POINTER.checkpoint.chunks));
+            expect(env).not.toHaveProperty('CHECKOUT');
+        });
+
+        it('then writes the inputs, in that order, when the claim carries attachments', async () => {
+            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            const { runner: r } = runner([], steps, NONE);
+            expect(await r.syncCheckout(repoFree({ attachments: [FILE] }), undefined, null)).toEqual({
+                ok: true,
+                reason: null,
+            });
+            expect(names(steps)).toEqual(['restore', 'inputs']);
+            expect(steps.submitted[1]?.step.env).toMatchObject({ INPUT_FEED: '1', INPUT_DELIVERY: 'task' });
+            expect(JSON.parse(steps.submitted[1]?.step.env.MANIFEST ?? '')).toEqual([FILE]);
+        });
+
+        it('delivers the inputs of a first repo-free claim and starts nothing without attachments', async () => {
+            const withFiles = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            await runner([], withFiles, NONE).runner.syncCheckout(
+                repoFree({ followUp: false, attachments: [FILE] }),
+                undefined,
+                null
+            );
+            expect(names(withFiles)).toEqual(['inputs']);
+            const bare = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            await runner([], bare, NONE).runner.syncCheckout(repoFree({ followUp: false }), undefined, null);
+            expect(names(bare)).toEqual([]);
+        });
+
+        it('never reaches the inputs step past a failed restore', async () => {
+            const steps = fakeSteps((step) =>
+                ok(
+                    step.id.endsWith('-restore')
+                        ? '{"ok":false,"reason":"no transcripts","kind":"checkpoint_unrestorable"}'
+                        : '{"ok":true}'
+                )
+            );
+            const result = await runner([], steps, NONE).runner.syncCheckout(
+                repoFree({ attachments: [FILE] }),
+                undefined,
+                null
+            );
+            expect(result).toMatchObject({ ok: false });
+            expect(names(steps)).toEqual(['restore']);
+        });
+
+        it('ends attachment_unavailable on a definitive refusal and throws on a transient one', async () => {
+            const refused = fakeSteps((step) =>
+                ok(
+                    step.id.endsWith('-inputs')
+                        ? '{"ok":false,"reason":"gone","kind":"attachment_unavailable"}'
+                        : '{"ok":true,"reason":null}'
+                )
+            );
+            expect(
+                await runner([1], refused, NONE).runner.syncCheckout(
+                    restoreJob({ attachments: [FILE] }),
+                    undefined,
+                    null,
+                    'ghs_x'
+                )
+            ).toMatchObject({ ok: false, kind: 'attachment_unavailable' });
+            const transient = fakeSteps((step) =>
+                ok(
+                    step.id.endsWith('-inputs')
+                        ? '{"ok":false,"reason":"503","transient":true}'
+                        : '{"ok":true,"reason":null}'
+                )
+            );
+            await expect(
+                runner([1], transient, NONE).runner.syncCheckout(
+                    restoreJob({ attachments: [FILE] }),
+                    undefined,
+                    null,
+                    'ghs_x'
+                )
+            ).rejects.toThrow();
+        });
+
+        it.each([[true], [false]])(
+            'returns the checkout sync result, fingerprint and conflicts, with attachments %s',
+            async (withFiles) => {
+                const synced = '{"ok":true,"reason":null,"fingerprint":"fp-1","conflicts":["a.txt"]}';
+                const steps = fakeSteps((step) => ok(step.id.endsWith('-inputs') ? '{"ok":true}' : synced));
+                const result = await runner([1], steps, NONE).runner.syncCheckout(
+                    restoreJob({ followUp: false, ...(withFiles ? { attachments: [FILE] } : {}) }),
+                    undefined,
+                    null,
+                    'ghs_x'
+                );
+                expect(result).toMatchObject({ ok: true, fingerprint: 'fp-1', conflicts: ['a.txt'] });
+                expect(names(steps).includes('inputs')).toBe(withFiles);
+            }
+        );
+
+        it('delivers the inputs of a repo job after its sync step, and again on a retry', async () => {
+            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            await runner([1], steps, NONE).runner.syncCheckout(
+                restoreJob({ followUp: false, claimSeq: 2, attachments: [FILE] }),
+                undefined,
+                null,
+                'ghs_x'
+            );
+            expect(names(steps)).toEqual(['1', 'inputs']);
+        });
     });
 });

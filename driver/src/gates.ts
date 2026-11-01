@@ -16,7 +16,8 @@ import {
 
 import type { GateRunNote } from './timeout-note.js';
 import type { ConnectionRelay } from './connection-control.js';
-import { createControlChannel } from './control-channel.js';
+import type { InputDelivery } from './input-control.js';
+import { attachersOf, createControlChannel } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { TASK_MOUNT } from './task-volume.js';
 import { reportTail } from './runner.js';
@@ -422,6 +423,7 @@ export interface GateServer {
     attachExporter(token: string, exporter: ExportRelay): void;
     /** Gives an open control token its supervisor's checkpoint relay (the `/checkpoint` routes). */
     attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
+    attachInputs(token: string, name: string, delivery: InputDelivery): void;
     /** Gives an open control token the relay of its agent's connection ask. */
     attachConnection(token: string, connection: ConnectionRelay): void;
     /**
@@ -686,9 +688,7 @@ export function createGateServer({
         grantAgent: (token, agentToken) => channel.grantAgent(token, agentToken),
         grantExporter: (token, exporterToken, exporter) => channel.grantExporter(token, exporterToken, exporter),
         revokeExporter: (exporterToken) => channel.revokeExporter(exporterToken),
-        attachExporter: (token, exporter) => channel.attachExporter(token, exporter),
-        attachCheckpoint: (token, checkpoint) => channel.attachCheckpoint(token, checkpoint),
-        attachConnection: (token, connection) => channel.attachConnection(token, connection),
+        ...attachersOf(channel),
         resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
         hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
         cancelQuestions: (token) => channel.cancelQuestions(token),

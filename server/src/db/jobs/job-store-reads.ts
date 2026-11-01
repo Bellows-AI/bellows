@@ -5,6 +5,7 @@
 
 import type { Sql, Fragment } from 'postgres';
 import { bindingsOf, requirementsOf } from '../connection-bindings.js';
+import { attachmentsOfThread, effectiveAttachments, type ClaimAttachment } from './job-store-attachments.js';
 import { type JobRow, toJobRow, type TaskRow, toTask, userRef, workspacePathFor } from './job-store-rows.js';
 import type {
     Job,
@@ -48,6 +49,13 @@ export interface JobReadStore {
      * `leaseToken` (or is not running); `missing` an unknown one. Writes nothing.
      */
     restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
+
+    /**
+     * The files `id`'s run carries, authorized by its LIVE lease like `restoreScope` and read fresh on every call. `lost`
+     * is a known job whose lease is not `leaseToken` (or is not running); `missing` an unknown one. A read that cannot be
+     * confirmed throws; it never answers an empty set.
+     */
+    attachmentSet(id: string, leaseToken: string): Promise<AttachmentSetResult>;
 
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
@@ -156,9 +164,11 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
         rows.map((row) => row.id)
     );
     const integrations = await integrationsOf(ctx, first.root_job_id);
+    const attachments = await attachmentsOfThread(sql, orgId, first.root_job_id);
     return rows.map((row) => ({
         ...toJobRow(ctx, row),
         questions: questions.get(row.id) ?? [],
+        attachments: attachments.get(row.id) ?? [],
         ...ownedBy(ctx.orgId, row.created_by, integrations),
     }));
 }
@@ -453,6 +463,28 @@ export async function artifactScopeOf(ctx: JobStoreContext, id: string): Promise
     `;
     const row = rows[0];
     return row ? { member: row.created_by, root: row.root_job_id, claimSeq: Number(row.claim_seq) } : null;
+}
+
+export type AttachmentSetResult =
+    | { result: 'ok'; attachments: ClaimAttachment[] }
+    | { result: 'missing' }
+    | { result: 'lost' };
+
+/** The files of a live lease's run (`effectiveAttachments`), the lease check being the claim's own. */
+export async function attachmentSetOf(
+    ctx: JobStoreContext,
+    id: string,
+    leaseToken: string
+): Promise<AttachmentSetResult> {
+    const { sql, orgId } = ctx;
+    const [live] = await sql<{ id: string }[]>`
+        select id from job where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
+    `;
+    if (!live) {
+        const known = await sql`select 1 from job where org_id = ${orgId} and id = ${id}`;
+        return { result: known.length > 0 ? 'lost' : 'missing' };
+    }
+    return { result: 'ok', attachments: await effectiveAttachments(sql, orgId, id) };
 }
 
 /**

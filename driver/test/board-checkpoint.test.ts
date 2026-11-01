@@ -166,6 +166,13 @@ describe('syncFailureHalt', () => {
         });
     });
 
+    it('ends a thread whose attachment is gone with its own failure kind', () => {
+        expect(syncFailureHalt({ ok: false, reason: 'gone', kind: 'attachment_unavailable' })).toMatchObject({
+            halt: 'fault',
+            verdict: { status: 'failed', failureKind: 'attachment_unavailable' },
+        });
+    });
+
     it('keeps an unnamed failure a runner error', () => {
         expect(syncFailureHalt({ ok: false, reason: 'boom' })).toMatchObject({
             verdict: { failureKind: 'runner_error' },

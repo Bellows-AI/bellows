@@ -6,6 +6,7 @@ import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
 import { checkoutDir, CREDENTIAL_HELPER, remoteUrl, type SyncResult, worktreeBranch } from './publish/publish.js';
 import { claimStepEnv, detailOf, type StepHost, stepRequest, submitStep } from './supervised-steps.js';
+import type { StepResult } from './supervisor-contract.js';
 import { FIRST_GENERATION } from './task-volume.js';
 
 /**
@@ -29,6 +30,11 @@ export interface TaskRestore {
      */
     held?: number;
     restored: boolean;
+    /**
+     * A repository-free thread: no tree. Claude sessions are rebuilt from transcripts; an OpenCode database already
+     * on the volume is kept, else installed from `checkpoint` when it carries one.
+     */
+    sessionsOnly?: boolean;
 }
 
 /** The thread's volumes as the executor listed them: a CONFIRMED listing, never a guess. */
@@ -58,6 +64,35 @@ function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
     return new CheckpointUnrestorable("the thread's checkpoint was cut at its size cap and carries no tree");
 }
 
+/** The restore a repository-free adopted generation owes: its sessions checked, never a tree. */
+async function owedSessions(
+    source: Pick<Board, 'checkpoint'> | undefined,
+    job: BoardJob,
+    older: number[],
+    unschedulable: number[]
+): Promise<void> {
+    // A restore that failed after creating the generation left the sessions missing; the step keeps any it finds.
+    // An OpenCode database is checkpointed: the step installs it from a complete one, and refuses only once it
+    // confirms the database is absent.
+    if (job.executorType === OPENCODE) {
+        if (!source) throw new Error(`job ${job.id}: no checkpoint source to verify the thread's session database`);
+        const read = await source.checkpoint(job);
+        job.taskRestore = {
+            checkpoint: read.state === 'found' && !read.checkpoint.truncated ? read.checkpoint : null,
+            older: [...older, ...unschedulable],
+            restored: false,
+            sessionsOnly: true,
+        };
+    } else if (job.executorType === CLAUDE_CODE) {
+        job.taskRestore = {
+            checkpoint: null,
+            older: [...older, ...unschedulable],
+            restored: false,
+            sessionsOnly: true,
+        };
+    }
+}
+
 /**
  * The restore an adopted restored generation (`live[0]`) still owes. A volume made by an earlier restore may not
  * have been filled, and the plan cannot tell: the restore step does (the checkout is there, or it is not), so a
@@ -67,12 +102,14 @@ function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
  * in reserve, for the step's confirmed answer that the live one is empty (`restoreTaskTree`).
  */
 async function owedRestore(
-    source: Pick<Board, 'checkpoint'>,
+    source: Pick<Board, 'checkpoint'> | undefined,
     job: BoardJob,
     live: number[],
     unschedulable: number[]
 ): Promise<void> {
     const [, ...older] = live;
+    if (!checkoutDir(job)) return owedSessions(source, job, older, unschedulable);
+    if (!source) return;
     const read = await source.checkpoint(job);
     if (read.state === 'found' && !read.checkpoint.truncated) {
         job.taskRestore = { checkpoint: read.checkpoint, older: [...older, ...unschedulable], restored: false };
@@ -86,6 +123,14 @@ async function owedRestore(
         restored: false,
     };
 }
+
+/**
+ * A repository-free Claude thread never stores a checkpoint, so `none` is its confirmed answer and the session is
+ * rebuilt from the board's transcripts. A repository-free OpenCode thread checkpoints its session database: without
+ * a complete one there is nothing to rebuild it from.
+ */
+const repoFreeSessions = (job: BoardJob, read: CheckpointRead): boolean =>
+    !checkoutDir(job) && job.executorType === CLAUDE_CODE && read.state === 'none';
 
 /**
  * Decides which volume the attempt runs on and what it owes it, setting `job.taskGeneration` and
@@ -106,7 +151,7 @@ export async function planTaskVolume(
     const current = live[0];
     if (current !== undefined) {
         job.taskGeneration = current;
-        if (current > FIRST_GENERATION && claimContinuesSession(job) && source && !job.taskRestore?.restored) {
+        if (current > FIRST_GENERATION && claimContinuesSession(job) && !job.taskRestore?.restored) {
             await owedRestore(source, job, live, listing.unschedulable);
         }
         return { create: false };
@@ -124,10 +169,18 @@ export async function planTaskVolume(
             job.taskGeneration = held;
             return { create: false, unlabel: held };
         }
-        throw unrestorable(read);
+        if (!repoFreeSessions(job, read)) throw unrestorable(read);
+        job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
+        job.taskRestore = { checkpoint: null, older: [], restored: false, sessionsOnly: true };
+        return { create: true };
     }
     job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
-    job.taskRestore = { checkpoint: read.checkpoint, older: [...listing.unschedulable], restored: false };
+    job.taskRestore = {
+        checkpoint: read.checkpoint,
+        older: [...listing.unschedulable],
+        restored: false,
+        ...(checkoutDir(job) ? {} : { sessionsOnly: true }),
+    };
     return { create: true };
 }
 
@@ -154,7 +207,33 @@ export const unrestorableResult = (e: CheckpointUnrestorable): SyncResult => ({
 });
 
 /** The restore script's verdict: a sync result, `absent` when it confirmed the volume holds no tree. */
-type RestoreVerdict = SyncResult & { absent?: boolean };
+type RestoreVerdict = SyncResult & { absent?: boolean; transient?: boolean };
+
+/** The refusal the loop reports: only the script's own `checkpoint_unrestorable` verdict. */
+const refusalOf = (verdict: RestoreVerdict): SyncResult => {
+    const { absent: _absent, transient: _transient, ...refused } = verdict;
+    return refused;
+};
+
+/**
+ * The script's verdict, or a throw so the lease hands the claim back: a timeout, unreadable output, a transient fault
+ * and any shape but `ok: true` or the `checkpoint_unrestorable` refusal confirm nothing and delete nothing.
+ */
+function verdictOf(job: BoardJob, result: StepResult): RestoreVerdict {
+    const unconfirmed = (): never => {
+        throw new Error(
+            `job ${job.id}: the checkpoint restore is unconfirmed: ${detailOf(result, RESTORE_DEADLINE_MS)}`
+        );
+    };
+    if (result.timedOut) return unconfirmed();
+    const verdict = parseLastJsonLine<RestoreVerdict>(result.stdout, unconfirmed);
+    if (verdict.ok === true) return verdict;
+    if (verdict.ok === false && verdict.transient === true) {
+        throw new Error(verdict.reason ?? 'the checkpoint restore failed');
+    }
+    if (verdict.ok === false && verdict.kind === 'checkpoint_unrestorable') return verdict;
+    return unconfirmed();
+}
 
 /**
  * Runs the owed restore as a supervised step, then deletes the older generations through `removeOlder`.
@@ -163,12 +242,17 @@ type RestoreVerdict = SyncResult & { absent?: boolean };
 export async function restoreTaskTree(
     host: StepHost,
     job: BoardJob,
-    options: { githubToken?: string | undefined; removeOlder: (generations: number[]) => Promise<void> }
+    options: {
+        githubToken?: string | undefined;
+        removeOlder: (generations: number[]) => Promise<void>;
+        signal?: AbortSignal | undefined;
+    }
 ): Promise<SyncResult | null> {
     const pending = job.taskRestore;
     const checkout = checkoutDir(job);
     const remote = remoteUrl(host.config, job);
-    if (!pending || pending.restored || !checkout || !remote) return null;
+    if (!pending || pending.restored) return null;
+    if (!pending.sessionsOnly && (!checkout || !remote)) return null;
     const result = await submitStep(
         host,
         job,
@@ -177,9 +261,9 @@ export async function restoreTaskTree(
             argv: ['node', '-e', checkpointRestoreScript],
             env: {
                 ...claimStepEnv(job, options.githubToken),
-                CHECKOUT: checkout,
-                REMOTE: remote,
-                BRANCH: worktreeBranch(job),
+                ...(pending.sessionsOnly || !checkout || !remote
+                    ? {}
+                    : { CHECKOUT: checkout, REMOTE: remote, BRANCH: worktreeBranch(job) }),
                 CHUNKS: JSON.stringify(pending.checkpoint?.chunks ?? []),
                 ...sessionEnv(job),
                 // The supervisor lays its control endpoint and token over this one step only.
@@ -187,16 +271,16 @@ export async function restoreTaskTree(
                 ...(options.githubToken ? { CRED_HELPER: CREDENTIAL_HELPER } : {}),
             },
             timeoutMs: RESTORE_DEADLINE_MS,
-        })
+        }),
+        options.signal
     );
-    const failed = (): RestoreVerdict => ({
-        ok: false,
-        reason: `the checkpoint restore failed: ${detailOf(result, RESTORE_DEADLINE_MS)}`,
-    });
-    const verdict: RestoreVerdict = result.timedOut
-        ? failed()
-        : parseLastJsonLine<RestoreVerdict>(result.stdout, failed);
-    if (!verdict.ok && verdict.absent === true && pending.held !== undefined && job.taskGeneration !== undefined) {
+    const verdict = verdictOf(job, result);
+    if (
+        verdict.ok === false &&
+        verdict.absent === true &&
+        pending.held !== undefined &&
+        job.taskGeneration !== undefined
+    ) {
         // The live volume is confirmed empty and an unschedulable one may hold the tree. Only the empty one goes;
         // the claim is handed back, and the next one, finding no live volume, adopts the held one with its mark
         // cleared (`planTaskVolume`). A delete that fails throws too: the empty one stays, nothing else is touched.
@@ -206,10 +290,7 @@ export async function restoreTaskTree(
                 'may, and is adopted again by the next claim'
         );
     }
-    if (!verdict.ok) {
-        const { absent: _absent, ...refused } = verdict;
-        return refused;
-    }
+    if (!verdict.ok) return refusalOf(verdict);
     pending.restored = true;
     // Durable before destructive: only now may the volume it replaces go. A delete that fails leaves an
     // older generation the next claim sees beside the current one and removes then.

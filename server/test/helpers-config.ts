@@ -48,6 +48,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
             backend: { kind: 'filesystem', root: '/tmp/factory-test-artifacts' },
             retentionDays: 90,
             orgQuotaBytes: 0,
+            attachmentDraftTtlHours: 24,
         },
         admission: {},
         integrations: { callbackOrigin: null, jira: null },

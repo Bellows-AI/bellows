@@ -5,6 +5,7 @@ import {
     opencodeDataDir,
     RESUME_MAY_BE_UNWRITTEN_ENV,
     REVIEWER_HOME,
+    reviewerAttachmentsName,
     reviewerDataName,
     reviewerTranscriptName,
     repoCacheEnv,
@@ -98,7 +99,7 @@ const unwrittenResumeEnv = (job: BoardJob, session: RunSession): [string, string
  * persisting it per task (thread root) inside the member's tree — a dot-directory the workspace
  * reconcile never mistakes for a checkout.
  */
-function opencodePlan(job: BoardJob, session: RunSession | null): RunnerPlan {
+function opencodePlan(job: BoardJob, session: RunSession | null, attachmentsPath?: string): RunnerPlan {
     if (session && !session.resume) {
         throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
     }
@@ -117,7 +118,7 @@ function opencodePlan(job: BoardJob, session: RunSession | null): RunnerPlan {
         // reporter from the session database XDG_DATA_HOME keeps.
         envPairs.push(['BELLOWS_SESSION_ID', session.id], ...unwrittenResumeEnv(job, session));
     }
-    cliArgs.push(opencodeTurnPrompt(job));
+    cliArgs.push(opencodeTurnPrompt(job, attachmentsPath));
     return { envPairs, cliArgs };
 }
 
@@ -136,7 +137,12 @@ function opencodePlan(job: BoardJob, session: RunSession | null): RunnerPlan {
  * entrypoint redirects CLAUDE_CONFIG_DIR onto it (headless only), so transcript persistence does
  * not depend on which executor ran the job. A path literal like WORKDIR, never a credential.
  */
-function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerPlan {
+function claudePlan(
+    config: DriverConfig,
+    job: BoardJob,
+    session: RunSession | null,
+    attachmentsPath?: string
+): RunnerPlan {
     if (!session) {
         throw new Error(`refusing to run job ${job.id}: the claude-code runner runs every job as a session`);
     }
@@ -161,13 +167,20 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
     // It is the same text on every claim of a thread; the per-node turn context rides the env above.
     cliArgs.push(...claudeSystemPromptArgs(job));
     // Framed as a continuation when the claim continues an interrupted attempt (issue #822).
-    cliArgs.push('-p', agentPrompt(job));
+    cliArgs.push('-p', agentPrompt(job, attachmentsPath));
     return { envPairs, cliArgs };
 }
 
 /** The plan for whichever executor the task's profile selected. */
-export function runnerPlan(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerPlan {
-    return job.executorType === OPENCODE ? opencodePlan(job, session) : claudePlan(config, job, session);
+export function runnerPlan(
+    config: DriverConfig,
+    job: BoardJob,
+    session: RunSession | null,
+    attachmentsPath?: string
+): RunnerPlan {
+    return job.executorType === OPENCODE
+        ? opencodePlan(job, session, attachmentsPath)
+        : claudePlan(config, job, session, attachmentsPath);
 }
 
 /** The executor image's ENTRYPOINT as argv, which a reviewer container runs as a command (issue #774). */
@@ -187,7 +200,7 @@ export function reviewerPlan(
     review: BoardJob,
     session: RunSession | null
 ): { argv: string[]; env: [string, string][] } {
-    const plan = runnerPlan(config, review, session);
+    const plan = runnerPlan(config, review, session, `${REVIEWER_HOME}/${reviewerAttachmentsName(review)}`);
     const home: Record<string, string> = {
         FACTORY_TRANSCRIPT_DIR: `${REVIEWER_HOME}/${reviewerTranscriptName(review)}`,
         XDG_DATA_HOME: `${REVIEWER_HOME}/${reviewerDataName(review)}`,

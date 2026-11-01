@@ -266,6 +266,14 @@ export function syncFailureHalt(synced: SyncResult): SetupHalt {
             'checkpoint_unrestorable'
         );
     }
+    // An attached file the board will never deliver again: its own kind, a person re-attaches or drops it.
+    if (synced.kind === 'attachment_unavailable') {
+        return faultHalt(
+            `task inputs unavailable: ${synced.reason}`,
+            `The task's attached files could not be delivered before the run: ${synced.reason}`,
+            'attachment_unavailable'
+        );
+    }
     // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
     const deterministic = synced.kind !== undefined && (SYNC_FAILURE_KINDS as readonly string[]).includes(synced.kind);
     return faultHalt(

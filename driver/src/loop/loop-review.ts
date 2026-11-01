@@ -1,6 +1,7 @@
 import type { BoardJob, ReviewAnswer, ReviewClaim } from '../board/board.js';
 import { withBoardRetry } from '../board/board-retry.js';
 import { openReviewExport } from './loop-export.js';
+import { attachReviewInputs } from './loop-inputs.js';
 import { applyHeartbeatVerdict, down, type JobState, newReviewStop, settling } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { ReviewRelay, ReviewVerdict } from '../review/review-control.js';
@@ -9,7 +10,8 @@ import { reviewBudgetMs } from '../review/review-step.js';
 import { pickSession } from '../runner-plan.js';
 import { heartbeatPeriodMs } from '../supervisor-plan.js';
 import { stepLost } from '../step-control.js';
-import type { ReviewExporter } from '../supervised-steps.js';
+import { InputsUnconfirmed } from '../task-inputs.js';
+import { controlTokenOf, type ReviewExporter } from '../supervised-steps.js';
 import type { StepResult } from '../supervisor-contract.js';
 
 /**
@@ -152,12 +154,13 @@ async function superviseOne(
     let result: StepResult | null = null;
     let lost = false;
     const exporting = openReviewExport(rt, caller, review);
+    if (caller.supervisorEnv) attachReviewInputs({ rt, review }, controlTokenOf(caller));
     try {
         await runner.resizeReviewer(caller, 'run').catch(() => false);
         result = await runUntilAnswered(rt, supervision, exporting?.exporter);
     } catch (e) {
         // A lost supervisor is no verdict on the review; anything else that stopped it ends the row.
-        lost = stepLost(e);
+        lost = stepLost(e) || e instanceof InputsUnconfirmed;
         if (!lost && !stop.signal.aborted) result = failedStep((e as Error).message);
         else log(`review ${review.id}: the review step ended without an answer: ${(e as Error).message}`);
     } finally {
@@ -279,6 +282,9 @@ function completionOf(
             : null;
     }
     const output = tailBytes(`${result.stdout}${result.stderr}`.trim(), OUTPUT_LIMIT);
+    if (result.failureKind === 'attachment_unavailable') {
+        return { status: 'failed', exitCode: result.exitCode, output, failureKind: result.failureKind };
+    }
     if (result.timedOut || result.exitCode === EXIT_TIMEOUT) {
         return { status: 'failed', exitCode: EXIT_TIMEOUT, output, failureKind: 'timeout' };
     }

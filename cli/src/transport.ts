@@ -103,6 +103,8 @@ export interface TransportOptions {
 export interface Target {
     path: string;
     holdMs: number;
+    /** What an attempt may spend moving a request body — a large upload's allowance, on top of the base deadline. */
+    transferMs?: number | undefined;
 }
 
 export interface Transport {
@@ -273,8 +275,8 @@ export function createTransport(options: TransportOptions): Transport {
         const keyed = IDEMPOTENCY_KEY_HEADER in ((init.headers ?? {}) as Record<string, string>);
         const attempts = isRead || keyed ? options.readRetries + 1 : 1;
         for (let n = 1; ; n++) {
-            const { path, holdMs } = target(n > 1);
-            const result = await attempt(path, init, timeoutFor(holdMs, n > 1), { isRead, onResponse });
+            const { path, holdMs, transferMs = 0 } = target(n > 1);
+            const result = await attempt(path, init, timeoutFor(holdMs + transferMs, n > 1), { isRead, onResponse });
             if ('payload' in result) return result.payload;
             if (!(await backOff(result, n < attempts, n))) throw result.error;
         }

@@ -51,6 +51,8 @@ export interface FetchCall {
     method: string;
     url: string;
     body: unknown;
+    /** The request headers, lower-cased. */
+    headers: Record<string, string>;
 }
 
 /** A route's answer: a JSON body (status 200), or an explicit status, or a held promise. */
@@ -84,6 +86,9 @@ export function stubFetch(handler: FetchHandler): FetchCall[] {
             method: (init.method ?? 'GET').toUpperCase(),
             url,
             body: typeof raw === 'string' ? safeJson(raw) : raw,
+            headers: Object.fromEntries(
+                Object.entries((init.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v])
+            ),
         };
         calls.push(call);
         const reply = await handler(call);
@@ -146,4 +151,26 @@ export function renderAt(element: ReactNode, path = '/') {
     acceptJsdomSignals();
     const router = createMemoryRouter([{ path: '*', element }], { initialEntries: [path] });
     return { ...render(<RouterProvider router={router} />), router };
+}
+
+/**
+ * jsdom has no object URLs: installs counting stand-ins (`blob:<n>`) and returns what was minted
+ * and revoked. Left installed for the file (each dom file has its own jsdom); a mounted tree torn
+ * down by the harness's cleanup may still revoke.
+ */
+export function stubObjectUrls() {
+    const created: string[] = [];
+    const revoked: string[] = [];
+    URL.createObjectURL = () => {
+        const url = `blob:${created.length}`;
+        created.push(url);
+        return url;
+    };
+    URL.revokeObjectURL = (url: string) => {
+        revoked.push(url);
+    };
+    return {
+        created,
+        revoked,
+    };
 }
