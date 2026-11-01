@@ -359,7 +359,7 @@ describe('my notifications on the workspace page', () => {
     });
 });
 
-describe('the compact notification rows (BEL-196)', () => {
+describe('the compact notification rows', () => {
     const open = async (events: SubscriptionView['eventKinds'], repos: string[] = []) => {
         const row = subscription({ eventKinds: events, repos });
         stubFetch(boardHandler(settingsBoard({ subscriptions: { org: [], workspace: [row] } })));
