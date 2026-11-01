@@ -3,6 +3,7 @@ import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { JiraConnectionsSection } from '../panels/JiraConnectionsSection.js';
+import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
 import type { UseEnv } from '../api/useEnv.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
@@ -36,6 +37,8 @@ export function SettingsWorkspacePage() {
             <DraftReturnBanner />
 
             <JiraConnectionsSection session={session} />
+
+            <NotificationSubscriptionsSection session={session} scope="workspace" />
 
             <ConfigurationScope scope="workspace" />
 

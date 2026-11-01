@@ -30,6 +30,7 @@ The durable event a delivery stage reads when a task becomes ready or blocked, i
 | Subscription routes (`/api/org/notification-subscriptions`) | `server/src/routes/notification-subscriptions.ts` | `server/test-db/notification-subscriptions.routes.test.ts` |
 | Personal subscriptions: `user_id` column, member-scoped fan-out (114) and routes (`/api/workspace/notification-subscriptions`) | `server/migrations/114_notification_personal_subscription.sql`, `server/src/routes/notification-subscriptions.ts` | `server/test-db/notification-workspace-subscriptions.routes.test.ts`, `server/test-db/notification-outbox.test.ts` |
 | Test send (`POST …/:id/test`, both mounts): made-up event of the row's first kind, one 10 s deadline, no outbox row | `server/src/notifications/test-send.ts`, `server/src/notifications/subscription-store.ts` | `server/test/notifications.test-send.test.ts`, `server/test-db/notification-subscriptions.routes.test.ts` |
+| Settings UI: org section (`/settings/organization`, admins write) and personal section (`/settings/workspace`), shared panel, dialog and client; webhook write-only | `web/src/panels/NotificationSubscriptionsSection.tsx`, `web/src/components/NotificationSubscriptionDialog.tsx`, `web/src/api/notificationSubscriptions.ts` | `web/test/notification-subscriptions.dom.test.tsx`, `e2e/notification-subscriptions.spec.ts` |
 
 ## Invariants
 

@@ -667,6 +667,7 @@
         .env-add,
         .org-executor-add,
         button.jira-connection-add,
+        button.notification-subscription-add,
         .env-advanced-toggle,
         .env-raw input,
         .env-raw select,
