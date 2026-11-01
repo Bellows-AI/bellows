@@ -37,6 +37,8 @@ let secrets: SecretStore;
 let admin: { token: string; userId: string };
 let member: { token: string; userId: string };
 let orgToken: string;
+let fake = fakeConnector('fake');
+const ORIGIN = 'http://127.0.0.1:9';
 
 const body = (over: Record<string, unknown> = {}) => ({
     connectorKind: 'fake',
@@ -83,15 +85,16 @@ beforeEach(async () => {
         label: 'org-token',
         tokenHash: hashToken(orgToken),
     });
+    fake = fakeConnector('fake');
     const ready = Promise.resolve();
-    const config = testConfig({ auth: githubAuth() });
+    const config = testConfig({ auth: githubAuth(), integrations: { callbackOrigin: ORIGIN, jira: null } });
     app = await buildApp({
         config,
         orgs: createOrgRegistry({ sql, ready, config, withStores: true, secrets, secretLog: () => {} }),
         auth,
         ready,
         version: '0.0.0',
-        notificationConnectors: createConnectorRegistry([fakeConnector('fake'), fakeConnector('other')]),
+        notificationConnectors: createConnectorRegistry([fake, fakeConnector('other')]),
     });
 });
 
@@ -210,5 +213,36 @@ describe.skipIf(!enabled)('personal notification subscription routes', () => {
         expect((await call(member.token, 'PUT', `${PERSONAL}/${id}`, rest)).status).toBe(BAD_REQUEST);
         expect((await call(member.token, 'PUT', `${PERSONAL}/not-a-uuid`, body())).status).toBe(NOT_FOUND);
         expect(await listed(member.token)).toHaveLength(1);
+    });
+    describe('POST /:id/test', () => {
+        it('the owner test send is 200 delivered with their credential, linking to the workspace page', async () => {
+            const value = `hook-secret-${randomUUID()}`;
+            const { id } = (await call(member.token, 'POST', PERSONAL, body({ credential: value }))).json;
+
+            const sent = await call(member.token, 'POST', `${PERSONAL}/${id}/test`);
+
+            expect(sent).toMatchObject({ status: OK, json: { result: { status: 'delivered' } } });
+            expect(fake.sent).toHaveLength(1);
+            expect(fake.sent[0]).toMatchObject({ credential: value });
+            expect(fake.sent[0]!.event.link).toBe(`${ORIGIN}/settings/workspace`);
+        });
+
+        it("another member's id is 404 and nothing is sent", async () => {
+            const { id } = (await call(member.token, 'POST', PERSONAL, body())).json;
+
+            const refused = await call(admin.token, 'POST', `${PERSONAL}/${id}/test`);
+
+            expect(refused.status).toBe(NOT_FOUND);
+            expect(fake.sent).toEqual([]);
+        });
+
+        it('an org-row id is 404 on the personal path', async () => {
+            const { id } = (await call(admin.token, 'POST', SHARED_PATH, body())).json;
+
+            const refused = await call(admin.token, 'POST', `${PERSONAL}/${id}/test`);
+
+            expect(refused.status).toBe(NOT_FOUND);
+            expect(fake.sent).toEqual([]);
+        });
     });
 });

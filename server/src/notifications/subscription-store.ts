@@ -9,7 +9,8 @@ import {
     retireEnvSecrets,
 } from '../db/env-secrets.js';
 import type { SecretDiagnostic, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
-import { subscriptionSecretIdentity } from './subscription-credential.js';
+import { readSubscriptionCredential, subscriptionSecretIdentity } from './subscription-credential.js';
+import type { TestTarget } from './test-send.js';
 
 /** What a write carries; the row's id and stamps are the store's. */
 export interface SubscriptionFields {
@@ -54,6 +55,11 @@ export interface NotificationSubscriptionStore {
     ): Promise<SubscriptionView | null | 'kind-changed'>;
     /** False when this owner has no such row. The credential is retired with it. */
     remove(owner: SubscriptionOwner, id: string): Promise<boolean>;
+    /**
+     * What a test send needs of one row, enabled or not; null only when a successful read found no such row. A
+     * credential that cannot be confirmed is `credential: null` (inconclusive), a failed query throws.
+     */
+    testTarget(owner: SubscriptionOwner, id: string, signal: AbortSignal): Promise<TestTarget | null>;
 }
 
 interface Row {
@@ -236,6 +242,34 @@ export function createNotificationSubscriptionStore({
             `;
             if (rows[0]) await retireEnvSecrets(secrets, [retired(owner, id, rows[0])], cleanup());
             return rows.length > 0;
+        },
+        async testTarget(owner, id, signal) {
+            await gate();
+            const [row] = await sql<
+                (Pick<Row, 'connector_kind' | 'connector_config' | 'event_kinds'> & {
+                    secret_ref: string;
+                    secret_version: string;
+                })[]
+            >`
+                select connector_kind, connector_config, event_kinds, secret_ref, secret_version
+                from notification_subscription
+                where org_id = ${orgId} and id = ${id} and ${ownerClause(owner)}
+            `;
+            if (!row) return null;
+            return {
+                kind: row.connector_kind,
+                config: row.connector_config,
+                eventKinds: row.event_kinds,
+                credential: await readSubscriptionCredential(
+                    secrets,
+                    {
+                        identity: subscriptionSecretIdentity(orgId, id, userIdOf(owner)),
+                        ref: row.secret_ref,
+                        version: row.secret_version,
+                    },
+                    signal
+                ),
+            };
         },
     };
 }

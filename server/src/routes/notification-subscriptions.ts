@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { ConnectorRegistry } from '../notifications/connector.js';
+import { sendTestNotification, TEST_SEND_TIMEOUT_MS } from '../notifications/test-send.js';
 import { parseSubscriptionFields } from '../notifications/subscription-fields.js';
 import {
     ORG_OWNER,
@@ -35,6 +36,8 @@ type Gate = { store: NotificationSubscriptionStore; owner: SubscriptionOwner } |
 interface Mount {
     path: string;
     personal: boolean;
+    /** The page a test notification links to: where this scope's subscriptions are managed. */
+    settingsPath: string;
 }
 
 /**
@@ -82,9 +85,18 @@ function idOf(request: FastifyRequest): string | null {
 }
 
 export const notificationSubscriptionRoutes =
-    ({ orgs, connectors }: { orgs: OrgRegistry; connectors: ConnectorRegistry }): FastifyPluginAsync =>
+    ({
+        orgs,
+        connectors,
+        publicUrl,
+    }: {
+        orgs: OrgRegistry;
+        connectors: ConnectorRegistry;
+        /** The origin a test notification's link points at; null = notifications are off. */
+        publicUrl: string | null;
+    }): FastifyPluginAsync =>
     async (app) => {
-        const register = ({ path, personal }: Mount) => {
+        const register = ({ path, personal, settingsPath }: Mount) => {
             app.get(path, { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
                 const ctx = await gate(orgs, request, reply, { personal, write: false });
                 if (!ctx) return reply;
@@ -119,9 +131,15 @@ export const notificationSubscriptionRoutes =
                 if (!ctx) return reply;
                 return remove(ctx, request, reply);
             });
+
+            app.post(`${path}/:id/test`, { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
+                const ctx = await gate(orgs, request, reply, { personal, write: true });
+                if (!ctx) return reply;
+                return testSend(ctx, { connectors, publicUrl, settingsPath }, request, reply);
+            });
         };
-        register({ path: ORG_PATH, personal: false });
-        register({ path: PERSONAL_PATH, personal: true });
+        register({ path: ORG_PATH, personal: false, settingsPath: '/settings/organization' });
+        register({ path: PERSONAL_PATH, personal: true, settingsPath: '/settings/workspace' });
     };
 
 async function replace(
@@ -161,4 +179,35 @@ function replaced(reply: FastifyReply, value: SubscriptionView | null | 'kind-ch
 function refusal(reply: FastifyReply, parsed: { code: string; message: string; problems?: string[] }) {
     if (!parsed.problems) return bad(reply, parsed.code, parsed.message);
     return reply.code(HTTP_BAD_REQUEST).send({ error: parsed.message, code: parsed.code, problems: parsed.problems });
+}
+
+/** 200 `{ result }` for every connector verdict; 404 only for a confirmed missing row; 503 for PUBLIC_URL unset or a failed read. */
+async function testSend(
+    ctx: NonNullable<Gate>,
+    {
+        connectors,
+        publicUrl,
+        settingsPath,
+    }: { connectors: ConnectorRegistry; publicUrl: string | null; settingsPath: string },
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
+    const id = idOf(request);
+    if (!id) return noSuchSubscription(reply);
+    if (publicUrl === null) {
+        return bad(reply, ERROR_CODES.UNAVAILABLE, 'PUBLIC_URL is unset: notifications are off', HTTP_UNAVAILABLE);
+    }
+    const sent = await guard(reply, log(request), () =>
+        sendTestNotification({
+            connectors,
+            readTarget: (signal) => ctx.store.testTarget(ctx.owner, id, signal),
+            orgId: orgOf(request),
+            publicUrl,
+            settingsPath,
+            signal: AbortSignal.timeout(TEST_SEND_TIMEOUT_MS),
+        })
+    );
+    if (!sent.ok) return reply;
+    if (sent.value === null) return noSuchSubscription(reply);
+    return reply.code(HTTP_OK).send({ result: sent.value });
 }
