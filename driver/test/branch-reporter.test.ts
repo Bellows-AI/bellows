@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -17,8 +17,24 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  */
 const REPORTER = join(ROOT, 'docker/executor-common/branch-reporter.cjs');
 // What each executor image bakes (`ENV BRANCH_REPORTER_AGENT`); the one reporter reads it.
-const CLAUDE_AGENT = { BRANCH_REPORTER_AGENT: 'claude-code' };
-const OPENCODE_AGENT = { BRANCH_REPORTER_AGENT: 'opencode' };
+// as a file beside the script, so the reporter under test sits staged in a directory of its own.
+const CLAUDE_AGENT = { STAGE_AGENT: 'claude-code' };
+const OPENCODE_AGENT = { STAGE_AGENT: 'opencode' };
+const STAGED = new Map<string, string>();
+/** The reporter beside its helper and the agent file the image bakes; `''` stages no agent file. */
+const stagedReporter = (agent: string): string => {
+    let dir = STAGED.get(agent);
+    if (!dir) {
+        dir = mkdtempSync(join(tmpdir(), 'branch-reporter-staged-'));
+        for (const file of ['branch-reporter.cjs', 'attempt-pair.cjs']) {
+            copyFileSync(join(ROOT, 'docker/executor-common', file), join(dir, file));
+        }
+        if (agent) writeFileSync(join(dir, 'branch-reporter-agent'), `${agent}\n`);
+        STAGED.set(agent, dir);
+        process.on('exit', () => rmSync(dir!, { recursive: true, force: true }));
+    }
+    return join(dir, 'branch-reporter.cjs');
+};
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
 
@@ -128,17 +144,51 @@ const run = (
     args: string[] = ['--once']
 ): Promise<{ status: number | null; stdout: string; stderr: string }> =>
     new Promise((resolve) => {
-        const child = spawn(process.execPath, [...NODE_ARGS, script, ...args], {
-            cwd: env.WORKDIR ?? process.cwd(),
-            env: { ...OUTER_ENV, ...env },
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        const { STAGE_AGENT, ...childEnv } = env;
+        const child = spawn(
+            process.execPath,
+            [...NODE_ARGS, STAGE_AGENT === undefined ? script : stagedReporter(STAGE_AGENT), ...args],
+            {
+                cwd: env.WORKDIR ?? process.cwd(),
+                env: { ...OUTER_ENV, ...childEnv },
+                stdio: ['ignore', 'pipe', 'pipe'],
+            }
+        );
         let stdout = '';
         let stderr = '';
         child.stdout.on('data', (chunk) => (stdout += chunk));
         child.stderr.on('data', (chunk) => (stderr += chunk));
         child.on('close', (status) => resolve({ status, stdout, stderr }));
     });
+
+describe('the branch reporter: the baked agent name', () => {
+    it('refuses to start without the baked file, loudly, whatever the environment says', async () => {
+        const out = await run(REPORTER, {
+            STAGE_AGENT: '',
+            BRANCH_REPORTER_AGENT: 'claude-code',
+            FACTORY_STATS_URL: 'http://127.0.0.1:9',
+        });
+        expect(out.status).toBe(1);
+        expect(out.stderr).toContain('branch-reporter-agent');
+    });
+
+    it('reports the baked name, not the task environment’s', async () => {
+        const { url, requests } = await board();
+        const dir = gitRepo();
+        try {
+            await run(REPORTER, {
+                ...OPENCODE_AGENT,
+                BRANCH_REPORTER_AGENT: 'claude-code',
+                FACTORY_STATS_URL: url,
+                BELLOWS_SESSION_ID: SESSION,
+                WORKDIR: dir,
+            });
+            expect(requests[0]!.body).toMatchObject({ agent: 'opencode' });
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
 
 describe('the branch reporter: wire shape and redirects', () => {
     it('posts the plugin’s exact wire shape for the session it was given', async () => {
@@ -694,11 +744,10 @@ describe('the branch reporter: loop mode', () => {
         const dir = gitRepo();
         let child: ReturnType<typeof spawn> | undefined;
         try {
-            child = spawn(process.execPath, [...NODE_ARGS, REPORTER], {
+            child = spawn(process.execPath, [...NODE_ARGS, stagedReporter('claude-code')], {
                 cwd: dir,
                 env: {
                     ...OUTER_ENV,
-                    ...CLAUDE_AGENT,
                     FACTORY_STATS_URL: url,
                     BELLOWS_SESSION_ID: SESSION,
                     WORKDIR: dir,
@@ -761,9 +810,9 @@ describe('the branch reporter: loop mode', () => {
                     poll();
                 });
             try {
-                const child = spawn(process.execPath, [...NODE_ARGS, REPORTER], {
+                const child = spawn(process.execPath, [...NODE_ARGS, stagedReporter('opencode')], {
                     cwd: dir,
-                    env: { ...OUTER_ENV, ...OPENCODE_AGENT, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
+                    env: { ...OUTER_ENV, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
                     stdio: ['ignore', 'pipe', 'pipe'],
                 });
                 let stderr = '';

@@ -124,6 +124,14 @@ describe('test-jobs --changed path-to-phase map', () => {
         }
     });
 
+    it('maps the GitHub credential helpers to its phase and to both images’ phases', () => {
+        for (const file of ['github-credential.cjs', 'credential-broker.cjs']) {
+            expect(classify([`docker/executor-common/${file}`]).selected).toEqual(
+                expect.arrayContaining(['github-credential', 'cooperative-stop', 'tool-isolation', 'image-checks'])
+            );
+        }
+    });
+
     it('unions the phases of several files and ignores files no lane executes', () => {
         expect(
             classify(['driver/src/run-deadline.ts', 'driver/src/k8s/k8s-runner.ts', 'docs/jobs.md', 'web/src/App.tsx'])

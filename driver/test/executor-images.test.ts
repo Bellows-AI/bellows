@@ -82,10 +82,18 @@ describe('the executor branch reporter', () => {
     // One file in docker/executor-common, the agent from the image's ENV. The values are exactly the
     // ones agentOf() derives from the OTLP metric names — a mismatch here would report branch spans
     // no session summary would ever join to.
-    it('is one shared file; each image bakes the agent it reports as', () => {
-        expect(read(REPORTER)).toContain('process.env.BRANCH_REPORTER_AGENT');
-        expect(read('docker/claude-executor/Dockerfile')).toMatch(/^ENV BRANCH_REPORTER_AGENT=claude-code$/m);
-        expect(read('docker/opencode-executor/Dockerfile')).toMatch(/^ENV BRANCH_REPORTER_AGENT=opencode$/m);
+    it('is one shared file; each image bakes the agent it reports as in a read-only file, not env', () => {
+        expect(read(REPORTER)).not.toContain('process.env.BRANCH_REPORTER_AGENT');
+        for (const [dir, agent] of [
+            ['claude', 'claude-code'],
+            ['opencode', 'opencode'],
+        ]) {
+            const dockerfile = read(`docker/${dir}-executor/Dockerfile`);
+            expect(dockerfile, dir).toContain(
+                `RUN printf '%s\\n' ${agent} >/usr/local/bin/branch-reporter-agent && chmod 0444 /usr/local/bin/branch-reporter-agent\n`
+            );
+            expect(dockerfile, dir).not.toContain('BRANCH_REPORTER_AGENT');
+        }
     });
 
     // claude-home/ cannot hold it: the transcript redirect moves CLAUDE_CONFIG_DIR onto the
@@ -1234,6 +1242,7 @@ describe('the shared executor skills', () => {
             for (const line of invocations.filter((build) => !/\s-f\s/.test(build))) {
                 builds++;
                 expect(line, `${file}: ${line}`).toContain('--build-context skills=');
+                expect(line, `${file}: ${line}`).toContain('--build-context common=');
             }
         }
         expect(builds).toBeGreaterThan(0);

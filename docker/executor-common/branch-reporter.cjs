@@ -5,7 +5,7 @@
  * nothing else; without this side channel the attribution join has no span to intersect a PR
  * branch with, and every executor run lands in the dashboard's unmatched bucket.
  *
- * Hard rules, inherited from the plugin:
+ * Hard rules, inherited from the plugin (one startup failure aside: a missing baked agent name exits 1):
  *   - never fail a run: every path exits 0, and nothing is written to stdout or stderr — the
  *     stream this container prints is the run output the driver tails and the board stores;
  *   - never lag a run: one short-timeout request per sample, no retries, no queue, no spool;
@@ -25,8 +25,6 @@
  *                        and otherwise discovers the id live from opencode's session database.
  *   WORKDIR              the checkout to sample. Defaults to the current directory.
  *   XDG_DATA_HOME        where opencode keeps its session database (opencode/opencode.db).
- *   BRANCH_REPORTER_AGENT  the agent the report names: `claude-code` or `opencode`, set by each image's
- *                        Dockerfile. Unset, nothing is reported.
  *   BRANCH_REPORTER_PRIOR_SESSION  the newest root session of this directory BEFORE the run
  *                        started (`--prior` prints it): a retry runs in its task's directory and
  *                        database, and discovery answers nothing while that conversation is still
@@ -50,13 +48,21 @@
  * unknown (any other read error). The entrypoint asks before it drops a resumed `--session`.
  */
 const { execFileSync } = require('node:child_process');
-const { statSync } = require('node:fs');
+const { readFileSync, statSync } = require('node:fs');
 const { join } = require('node:path');
 const { currentPair } = require('./attempt-pair.cjs');
 
 // The agent the metrics carry, exactly as agentOf() derives it from the OTLP metric names — a
-// branch span under any other name joins to nothing. Each image bakes it (`ENV BRANCH_REPORTER_AGENT`).
-const AGENT = process.env.BRANCH_REPORTER_AGENT ?? '';
+// branch span under any other name joins to nothing. Each image bakes it.
+// A file beside this script, written root-owned and read-only when the image is built — never
+// the environment, which a task's own env can set.
+const AGENT = (() => {
+    try {
+        return readFileSync(join(__dirname, 'branch-reporter-agent'), 'utf8').trim();
+    } catch {
+        return '';
+    }
+})();
 
 /**
  * A budget from the environment, or the documented default. Only a finite, positive value Node
@@ -166,8 +172,6 @@ function discoverSessionId() {
 }
 
 async function report(sessionId) {
-    // An unnamed agent joins to nothing; report nothing rather than a span nobody can attribute.
-    if (!AGENT) return;
     // The plugin fires everywhere, including outside a worktree; so does this. Leave immediately.
     if (git(['rev-parse', '--is-inside-work-tree']) !== 'true') return;
     const repo = repoSlug();
@@ -224,6 +228,11 @@ async function main() {
         return;
     }
     if (!ENDPOINT) return;
+    if (!AGENT) {
+        // A startup failure, not a skipped report: an unnamed agent's spans join to nothing.
+        process.stderr.write('branch-reporter: no agent name baked beside the script (branch-reporter-agent)\n');
+        process.exit(1);
+    }
 
     if (process.argv.includes('--once')) {
         const sessionId = resolveSessionId();

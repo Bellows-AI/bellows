@@ -107,8 +107,6 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
     && npm cache clean --force
 
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude
-# The agent the shared docker/executor-common/branch-reporter.cjs reports as.
-ENV BRANCH_REPORTER_AGENT=claude-code
 
 # The CLI's bundled skills (dataviz, loop, schedule, code-review, …) are interactive tools a
 # headless run cannot use, listed to the model on every turn. This drops them; docker/skills and
@@ -168,6 +166,8 @@ COPY entrypoint.sh /usr/local/bin/claude-executor
 # CLAUDE_CONFIG_DIR off the baked home, so a script there is not a fixed path. The settings.json
 # hooks below are in the same boat and for the same reason: each hook command names an absolute path.
 COPY --from=common branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
+# The agent it reports as: a root-owned read-only file, not env a task could override.
+RUN printf '%s\n' claude-code >/usr/local/bin/branch-reporter-agent && chmod 0444 /usr/local/bin/branch-reporter-agent
 COPY claude-progress.cjs /usr/local/bin/claude-progress.cjs
 # The AskUserQuestion bridge (issue #226): the entrypoint execs it in place of the bare CLI.
 COPY claude-bridge.cjs /usr/local/bin/claude-bridge.cjs

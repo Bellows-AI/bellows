@@ -86,7 +86,7 @@ export const RULES = [
     [/^driver\/src\/k8s\/k8s-[a-z-]+\.ts$/, NONE, 'kubernetes executor, covered by test:k8s'],
 
     // --- runner images ------------------------------------------------------------------------------
-    [/^docker\/executor-common\/(github-credential|credential-broker)\.cjs$/, ['github-credential'], 'GitHub credential'],
+    [/^docker\/executor-common\/(github-credential|credential-broker)\.cjs$/, ['github-credential', 'cooperative-stop', 'tool-isolation', 'image-checks'], 'GitHub credential, built into both images'],
     [/^docker\/(claude-executor|opencode-executor)\/(stop-hook\.cjs|stop-plugin\/.*)$/, ['cooperative-stop'], 'cooperative stop'],
     [/^docker\/(claude|opencode)-executor\/test\.sh$/, ['image-checks'], 'executor image checks'],
     [/^docker\/claude-executor\/(Dockerfile|entrypoint\.sh|claude-bridge\.cjs|claude-progress\.cjs|turn-context-hook\.cjs|managed-settings\.json|claude-home\/.*)$/, [...REAL, 'image-checks'], 'claude-executor image'],

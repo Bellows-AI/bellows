@@ -121,8 +121,6 @@ RUN npm install -g @gcornut/opencode-otel@${OPENCODE_OTEL_VERSION} \
 # outside /workspace on purpose: config that resolved inside the checkout would enter its diff —
 # the same reason the claude-executor points --settings outside the worktree.
 ENV XDG_CONFIG_HOME=/home/node/.config
-# The agent the shared docker/executor-common/branch-reporter.cjs reports as.
-ENV BRANCH_REPORTER_AGENT=opencode
 ENV OPENCODE_CONFIG=/home/node/.config/opencode/opencode.json
 
 # Telemetry. opencode's binary has no native OTLP metric surface (its bundled SDK only emits
@@ -189,6 +187,8 @@ COPY entrypoint.sh /usr/local/bin/opencode-executor
 # The branch reporter and the rate-limit watch, beside the entrypoint in /usr/local/bin:
 # siblings of the CLI, outside the config directory nothing mounted at run time can shadow.
 COPY --from=common branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
+# The agent it reports as: a root-owned read-only file, not env a task could override.
+RUN printf '%s\n' opencode >/usr/local/bin/branch-reporter-agent && chmod 0444 /usr/local/bin/branch-reporter-agent
 COPY rate-limit-watch.cjs /usr/local/bin/rate-limit-watch.cjs
 # The cooperative Stop (issue #442): the mailbox agent copies the task supervisor's Stop into the
 # stop marker, the baked factory-stop plugin (registered in opencode.json) reads it at each step
