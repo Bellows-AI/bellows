@@ -655,7 +655,7 @@
         /* No text-transform: the repository label carries case-sensitive owner/name. */
     }
 
-    /* ── integrations (BEL-188): the member's connections as link cards, and one connection's page ── */
+    /* ── integrations: the member's connections as link cards, and one connection's page ── */
     .provider-mark {
         background: var(--surface-sunken);
         border: 1px solid var(--line);
