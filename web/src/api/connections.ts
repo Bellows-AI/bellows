@@ -76,7 +76,7 @@ export const listConnections = async (): Promise<
 };
 
 /** Where the consent returns the browser to: this settings page, which then reads the result off the URL. */
-export const CONNECTIONS_RETURN_PATH = '/settings/workspace';
+export const CONNECTIONS_RETURN_PATH = '/settings/integrations';
 
 /**
  * Starts a provider's authorization. Resolves to the provider's consent URL, or the route's refusal
