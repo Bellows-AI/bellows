@@ -39,13 +39,13 @@ const pick = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
     await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name }));
 };
 
-const panel = () => screen.findByRole('region', { name: 'Jira connections' });
+const panel = () => screen.findByRole('region', { name: 'Connected accounts' });
 
-describe('the Jira connection panel on the workspace page', () => {
+describe('the managed connections panel on the integrations page', () => {
     it('shows the connected account and site with Reconnect and Disconnect, for a member', async () => {
         stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
         const user = userEvent.setup();
-        renderApp('/settings/workspace');
+        renderApp('/settings/integrations');
 
         const row = await within(await panel()).findByRole('row', { name: /mine\.atlassian\.net/ });
         expect(row.textContent).toContain('stub-account-a@example.com');
@@ -63,9 +63,9 @@ describe('the Jira connection panel on the workspace page', () => {
         const calls = stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
         const assign = spyNavigation();
         const user = userEvent.setup();
-        renderApp('/settings/workspace');
+        renderApp('/settings/integrations');
 
-        await user.click(await within(await panel()).findByRole('button', { name: CONNECT_JIRA_LABEL }));
+        await user.click(await screen.findByRole('button', { name: CONNECT_JIRA_LABEL }));
         const dialog = await screen.findByRole('dialog', { name: CONNECT_DIALOG_TITLE });
         expect(dialog.textContent).toContain(SITE_HELP);
         await user.type(within(dialog).getByLabelText('Jira site (optional)'), 'e2e-site.atlassian.net');
@@ -77,7 +77,7 @@ describe('the Jira connection panel on the workspace page', () => {
         expect(post?.body).toEqual({
             access: 'write',
             site: 'e2e-site.atlassian.net',
-            returnTo: '/settings/workspace',
+            returnTo: '/settings/integrations',
         });
     });
 
@@ -85,15 +85,15 @@ describe('the Jira connection panel on the workspace page', () => {
         const calls = stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
         spyNavigation();
         const user = userEvent.setup();
-        renderApp('/settings/workspace');
+        renderApp('/settings/integrations');
 
-        await user.click(await within(await panel()).findByRole('button', { name: CONNECT_JIRA_LABEL }));
+        await user.click(await screen.findByRole('button', { name: CONNECT_JIRA_LABEL }));
         const dialog = await screen.findByRole('dialog', { name: CONNECT_DIALOG_TITLE });
         await user.click(within(dialog).getByRole('button', { name: CONNECT_SUBMIT_LABEL }));
         await waitFor(() => expect(calls.some((call) => call.url === START)).toBe(true));
         expect(calls.find((call) => call.url === START)?.body).toEqual({
             access: 'read',
-            returnTo: '/settings/workspace',
+            returnTo: '/settings/integrations',
         });
     });
 
@@ -101,7 +101,7 @@ describe('the Jira connection panel on the workspace page', () => {
         const calls = stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
         const assign = spyNavigation();
         const user = userEvent.setup();
-        renderApp('/settings/workspace');
+        renderApp('/settings/integrations');
 
         const row = await within(await panel()).findByRole('row', { name: /mine\.atlassian\.net/ });
         await user.click(within(row).getByRole('button', { name: ALLOW_COMMENTS_LABEL }));
@@ -114,7 +114,7 @@ describe('the Jira connection panel on the workspace page', () => {
         expect(calls.find((call) => call.url === START)?.body).toEqual({
             connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
             access: 'write',
-            returnTo: '/settings/workspace',
+            returnTo: '/settings/integrations',
         });
     });
 
@@ -122,9 +122,9 @@ describe('the Jira connection panel on the workspace page', () => {
         stubFetch(startsWith({ status: 503, body: { error: NOT_CONFIGURED, code: 'INTEGRATION_NOT_CONFIGURED' } }));
         const assign = spyNavigation();
         const user = userEvent.setup();
-        renderApp('/settings/workspace');
+        renderApp('/settings/integrations');
 
-        await user.click(await within(await panel()).findByRole('button', { name: CONNECT_JIRA_LABEL }));
+        await user.click(await screen.findByRole('button', { name: CONNECT_JIRA_LABEL }));
         const dialog = await screen.findByRole('dialog', { name: CONNECT_DIALOG_TITLE });
         await user.click(within(dialog).getByRole('button', { name: CONNECT_SUBMIT_LABEL }));
         expect((await within(dialog).findByRole('alert')).textContent).toContain(NOT_CONFIGURED);
@@ -133,7 +133,7 @@ describe('the Jira connection panel on the workspace page', () => {
 
     it('?integration=jira&result=identity-mismatch renders the mismatch sentence', async () => {
         stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
-        renderApp('/settings/workspace?integration=jira&result=identity-mismatch');
+        renderApp('/settings/integrations?integration=jira&result=identity-mismatch');
         const message = await screen.findByText(/not the account this connection was made with/);
         const banner = message.closest('.banner-bad');
         expect(banner?.getAttribute('role')).toBe('alert');
@@ -141,7 +141,7 @@ describe('the Jira connection panel on the workspace page', () => {
 
     it('a connected result is an info banner without an alert role', async () => {
         stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
-        renderApp('/settings/workspace?integration=jira&result=connected');
+        renderApp('/settings/integrations?integration=jira&result=connected');
         const banner = (await screen.findByText('Jira connected.')).closest('.banner-info');
         expect(banner).not.toBeNull();
         expect(banner?.getAttribute('role')).toBeNull();
@@ -150,7 +150,7 @@ describe('the Jira connection panel on the workspace page', () => {
     it('consumes the callback result once: it leaves the URL and goes away on Disconnect', async () => {
         stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
         const user = userEvent.setup();
-        const { router } = renderApp('/settings/workspace?integration=jira&result=connected');
+        const { router } = renderApp('/settings/integrations?integration=jira&result=connected');
         await screen.findByText('Jira connected.');
         await waitFor(() => expect(router.state.location.search).toBe(''));
         await pick(user, 'Disconnect');
@@ -168,7 +168,7 @@ describe('the Jira connection panel on the workspace page', () => {
             )
         );
         const user = userEvent.setup();
-        renderApp('/settings/workspace');
+        renderApp('/settings/integrations');
         await screen.findByRole('row', { name: /mine\.atlassian\.net/ });
         await pick(user, 'Disconnect');
         const alert = await within(await panel()).findByRole('alert');
@@ -178,13 +178,13 @@ describe('the Jira connection panel on the workspace page', () => {
     it('disconnects a row', async () => {
         const calls = stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
         const user = userEvent.setup();
-        renderApp('/settings/workspace');
+        renderApp('/settings/integrations');
         const row = await within(await panel()).findByRole('row', { name: /mine\.atlassian\.net/ });
         expect(row).toBeTruthy();
         await pick(user, 'Disconnect');
         await waitFor(() =>
             expect(
-                within(screen.getByRole('region', { name: 'Jira connections' })).queryByRole('row', {
+                within(screen.getByRole('region', { name: 'Connected accounts' })).queryByRole('row', {
                     name: /mine\.atlassian\.net/,
                 })
             ).toBeNull()
