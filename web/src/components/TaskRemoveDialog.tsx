@@ -1,7 +1,6 @@
-import { useRef } from 'react';
 import { taskTitleFromCommand } from '@factory-ai/core';
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
 import { PRODUCT_NAME } from '../brand.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 /**
  * The remove confirmation's copy, exported pure so the offline suite holds it: the title names
@@ -56,45 +55,22 @@ export function TaskRemoveDialog({
     onClose: () => void;
     onConfirm: () => void;
 }) {
-    const cancelRef = useRef<HTMLButtonElement>(null);
     return (
-        <Dialog
+        <ConfirmDialog
             open={open}
-            onClose={() => {
-                if (!removing) onClose();
-            }}
-            className="dialog-layer"
-            initialFocus={cancelRef}
+            busy={removing}
+            title={removeDialogTitle(command)}
+            confirmClassName="chat-remove"
+            confirmText={removing ? 'Removing\u2026' : 'Remove task'}
+            onClose={onClose}
+            onConfirm={onConfirm}
         >
-            <DialogBackdrop className="dialog-backdrop" />
-            <div className="dialog-position">
-                <DialogPanel className="dialog task-remove">
-                    {/* The page's one h1 is the header's; a dialog title is an h2. */}
-                    <DialogTitle as="h2" className="task-remove-title">
-                        {removeDialogTitle(command)}
-                    </DialogTitle>
-                    <p>{removeDialogBody(runCount)}</p>
-                    {error !== null ? (
-                        <p className="status error" role="alert">
-                            {error}
-                        </p>
-                    ) : null}
-                    <div className="task-remove-actions">
-                        <button
-                            ref={cancelRef}
-                            type="button"
-                            className="chat-resume"
-                            onClick={onClose}
-                            disabled={removing}
-                        >
-                            Cancel
-                        </button>
-                        <button type="button" className="chat-remove" onClick={onConfirm} disabled={removing}>
-                            {removing ? 'Removing\u2026' : 'Remove task'}
-                        </button>
-                    </div>
-                </DialogPanel>
-            </div>
-        </Dialog>
+            <p>{removeDialogBody(runCount)}</p>
+            {error !== null ? (
+                <p className="status error" role="alert">
+                    {error}
+                </p>
+            ) : null}
+        </ConfirmDialog>
     );
 }
