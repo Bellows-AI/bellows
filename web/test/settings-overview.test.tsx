@@ -421,6 +421,18 @@ describe('SettingsOverviewPage (render) — identity and headings', () => {
         expectNoPlaceholder(html);
     });
 
+    it('reports the role by its title only in the header, with no invented powers', () => {
+        for (const [role, title] of [
+            ['admin', 'Admin'],
+            ['member', 'Member'],
+        ] as const) {
+            const html = render({ session: { ...fullSession, role } });
+            expect(html).toContain(`Bellows AI · ${title}`);
+            expect(html.split(`· ${title}`).length - 1).toBe(1);
+            expect(html).not.toMatch(/can manage|permissions|powers/i);
+        }
+    });
+
     it('renders one h1 "Overview" and the org name exactly once', () => {
         const html = render();
         expect(html).toContain('>Overview</h1>');
