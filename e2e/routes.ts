@@ -99,7 +99,7 @@ export const COMPOSER_SHOT: Shot = {
 };
 
 export const SETTINGS_SHOTS: readonly Shot[] = [
-    onOpenBoard('settings-overview', '/settings', 'Configuration overview'),
+    onOpenBoard('settings-overview', '/settings', 'Overview'),
     onOpenBoard('settings-organization', '/settings/organization', 'Organization'),
     onOpenBoard('settings-workspace', '/settings/workspace', 'Workspace'),
     onOpenBoard('settings-repos', '/settings/repos', 'Repositories'),

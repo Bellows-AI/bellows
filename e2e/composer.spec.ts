@@ -53,7 +53,7 @@ async function openSelector(page: Page, label: 'Repository' | 'Executor') {
 async function detourToSettings(page: Page) {
     await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
     await expect(page).toHaveURL(/\/settings$/);
-    await expect(page.getByRole('heading', { name: 'Configuration overview' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
 }
 
 test.describe('the guided task composer', () => {

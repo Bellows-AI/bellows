@@ -1,5 +1,5 @@
 import type { UseEnv } from '../api/useEnv.js';
-import { roleLabel, type Session } from '../api/useSession.js';
+import type { Session } from '../api/useSession.js';
 import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 
@@ -18,7 +18,7 @@ import type { UseWorkspace } from '../api/useWorkspace.js';
  *   only a failure with NO data reads as "unavailable".
  *
  * Zero rows are neutral, not errors: no personal executors is "the deployment default", no custom
- * environment values is "optional".
+ * environment values is "None set".
  */
 
 export type ReadinessTone = 'ok' | 'attention' | 'pending' | 'info';
@@ -59,6 +59,8 @@ export interface ReadinessInput {
 const count = (n: number, singular: string, plural: string): string => `${n} ${n === 1 ? singular : plural}`;
 
 const REVIEW_REPOS: ReadinessAction = { label: 'Review repositories', to: '/settings/repos' };
+/** The organization scope hosts the broadest editor, so it is the row's one destination. */
+const ENVIRONMENT_ACTION: ReadinessAction = { label: 'Environment', to: '/settings/organization' };
 const MANAGE_EXECUTORS: ReadinessAction = { label: 'Manage executors', to: '/settings/executors' };
 
 function organizationItem(session: ReadinessInput['session']): ReadinessItem {
@@ -76,11 +78,8 @@ function organizationItem(session: ReadinessInput['session']): ReadinessItem {
         id: 'organization',
         heading: 'Organization',
         status: 'Configured',
-        facts: [
-            { text: session.organization.name },
-            // The role's title, and nothing more: no internal id, no powers the API does not grant.
-            { text: `Your role: ${roleLabel(session.role)}` },
-        ],
+        // Name and role live once in the page header, not as facts here.
+        facts: [],
         tone: 'ok',
         action: { label: 'Review organization settings', to: '/settings/organization' },
     };
@@ -262,14 +261,14 @@ function environmentItem(environment: ReadinessInput['environment']): ReadinessI
         return {
             id: 'environment',
             heading: 'Environment',
-            status: 'No custom environment values',
-            facts: [{ text: 'Environment values are optional; runners run without them.' }],
+            status: 'None set',
+            facts: [],
             tone: 'info',
-            action: null,
+            action: ENVIRONMENT_ACTION,
         };
     }
     // Counts only — no names, no values, no ids. Each scope fact links to the page that edits it,
-    // which is why the item itself carries no single action.
+    // beside the item's own link to the organization scope.
     const facts: ReadinessFact[] = [];
     const split = (rows: { isSecret: boolean }[]) => ({
         vars: rows.filter((row) => !row.isSecret).length,
@@ -303,7 +302,7 @@ function environmentItem(environment: ReadinessInput['environment']): ReadinessI
         status: count(total, 'environment value configured', 'environment values configured'),
         facts,
         tone: 'info',
-        action: null,
+        action: ENVIRONMENT_ACTION,
     };
 }
 

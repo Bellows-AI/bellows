@@ -276,12 +276,20 @@ describe('deriveReadiness — executors', () => {
 });
 
 describe('deriveReadiness — environment', () => {
-    it('reads an empty payload as optional, with no action to take', () => {
+    it('reads an empty payload as "None set", linked to the organization environment', () => {
         const items = byId(...deriveReadiness(input({ environment: { data: emptyEnv } })));
-        expect(items.get('environment')?.status).toBe('No custom environment values');
+        expect(items.get('environment')?.status).toBe('None set');
         expect(items.get('environment')?.tone).toBe('info');
-        expect(JSON.stringify(items.get('environment')?.facts)).toContain('optional');
-        expect(items.get('environment')?.action).toBeNull();
+        expect(items.get('environment')?.facts).toEqual([]);
+        expect(items.get('environment')?.action).toEqual({ label: 'Environment', to: '/settings/organization' });
+    });
+
+    it('guard: loading and a failed read keep no action, never "None set"', () => {
+        const loading = byId(...deriveReadiness(input({ environment: { loading: true } })));
+        expect(loading.get('environment')?.action).toBeNull();
+        const failed = byId(...deriveReadiness(input({ environment: { error: 'boom' } })));
+        expect(failed.get('environment')?.status).toBe('Environment status unavailable');
+        expect(failed.get('environment')?.action).toBeNull();
     });
 
     it('counts variables and secrets per scope without names or values, each scope linked', () => {
@@ -303,6 +311,7 @@ describe('deriveReadiness — environment', () => {
         );
         const environment = items.get('environment')!;
         expect(environment.status).toBe('4 environment values configured');
+        expect(environment.action).toEqual({ label: 'Environment', to: '/settings/organization' });
         const facts = environment.facts.map((fact) => fact.text);
         expect(facts).toContain('Organization scope: 1 variable, 1 secret');
         expect(facts).toContain('Workspace scope: 1 variable, 0 secrets');
@@ -318,23 +327,17 @@ describe('deriveReadiness — environment', () => {
 });
 
 describe('deriveReadiness — organization identity', () => {
-    it('shows the organization name and role, with no internal id', () => {
+    it('organization item carries no org-name or role fact', () => {
         const items = byId(...deriveReadiness(input()));
         expect(items.get('organization')?.status).toBe('Configured');
-        expect(JSON.stringify(items.get('organization')?.facts)).toContain('Bellows AI');
-        expect(JSON.stringify(items.get('organization')?.facts)).toContain('Your role: Member');
+        expect(items.get('organization')?.facts).toEqual([]);
+        expect(JSON.stringify(items.get('organization'))).not.toContain('Bellows AI');
+        expect(JSON.stringify(items.get('organization'))).not.toContain('Your role');
         expect(items.get('organization')?.action).toEqual({
             label: 'Review organization settings',
             to: '/settings/organization',
         });
         expect(JSON.stringify(items)).not.toContain('org-1');
-    });
-
-    it('reports an admin role by its title only, with no invented powers', () => {
-        const items = byId(
-            ...deriveReadiness(input({ session: { organization: session.organization, role: 'admin' } }))
-        );
-        expect(JSON.stringify(items.get('organization')?.facts)).toContain('Your role: Admin');
     });
 
     it('keeps checking while the session has not resolved', () => {
@@ -413,28 +416,41 @@ describe('SettingsOverviewPage (render) — identity and headings', () => {
     it('renders one h1 with the eyebrow and description naming the organization', () => {
         const html = render();
         expect((html.match(/<h1[ >]/g) ?? []).length).toBe(1);
-        expect(html).toContain('Configuration overview');
+        expect(html).toContain('>Overview</h1>');
         expect(html).toContain('Settings</p>');
-        expect(html).toContain('Review what is configured for Bellows AI and your workspace.');
         expectNoPlaceholder(html);
     });
 
-    it('shows the identity definition list without the internal id', () => {
+    it('reports the role by its title only in the header, with no invented powers', () => {
+        for (const [role, title] of [
+            ['admin', 'Admin'],
+            ['member', 'Member'],
+        ] as const) {
+            const html = render({ session: { ...fullSession, role } });
+            expect(html).toContain(`Bellows AI · ${title}`);
+            expect(html.split(`· ${title}`).length - 1).toBe(1);
+            expect(html).not.toMatch(/can manage|permissions|powers/i);
+        }
+    });
+
+    it('renders one h1 "Overview" and the org name exactly once', () => {
         const html = render();
-        expect(html).toContain('Bellows AI');
-        expect(html).toContain('Your role');
+        expect(html).toContain('>Overview</h1>');
+        expect(html.split('Bellows AI').length - 1).toBe(1);
         expect(html).toContain('Member');
+        expect(html).not.toContain('Your role');
+        expect(html).not.toContain('Configuration overview');
         expect(html).not.toContain('bellows');
     });
 
     it('renders the five readiness headings in order', () => {
         const html = render();
         const headings = [
-            '<h2>Organization</h2>',
-            '<h2>Workspace</h2>',
-            '<h2>Repositories</h2>',
-            '<h2>Executors</h2>',
-            '<h2>Environment</h2>',
+            '>Organization</h3>',
+            '>Workspace</h3>',
+            '>Repositories</h3>',
+            '>Executors</h3>',
+            '>Environment</h3>',
         ];
         let at = -1;
         for (const heading of headings) {
@@ -481,14 +497,14 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
             env: { loading: false, data: emptyEnv },
         });
         expect(html).toContain('href="/settings/organization"');
-        expect(html).toContain('Review organization settings');
+        expect(html).not.toContain('Review ');
         expect(html).toContain('href="/settings/workspace"');
         expect(html).toContain('href="/settings/repos"');
         expect(html).toContain('href="/settings/executors"');
         expect(html).toContain('Workspace available');
         expect(html).toContain('1 repository tracked');
         expect(html).toContain('1 personal executor available');
-        expect(html).toContain('No custom environment values');
+        expect(html).toContain('None set');
     });
 
     it('wears each item tone as a status pill from the shared tone set', () => {
@@ -502,11 +518,11 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
             repos: { loading: false, data: reposData(['web']) },
             env: { loading: false, data: emptyEnv },
         });
-        expect(answered).toContain('<p class="readiness-status pill pill-ok">Workspace available</p>');
-        expect(answered).toContain('<p class="readiness-status pill">No custom environment values</p>');
-        expect(answered).toContain('<li class="readiness-item">');
-        expect(render({ session: null })).toContain(
-            '<p class="readiness-status pill pill-warn">Checking workspace…</p>'
+        expect(answered).toMatch(/<p class="settings-row-status" id="[^"]*">Workspace available<\/p>/);
+        expect(answered).toMatch(/<p class="settings-row-status" id="[^"]*">None set<\/p>/);
+        expect(answered).not.toContain('pill-ok');
+        expect(render({ session: null })).toMatch(
+            /<p class="settings-row-status pill pill-warn" id="[^"]*">Checking workspace…<\/p>/
         );
     });
 
