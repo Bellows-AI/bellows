@@ -198,7 +198,9 @@ export type StartBlocker =
     | 'no-repos'
     | 'repo-required'
     | 'workflow-loading'
-    | 'invalid-params';
+    | 'invalid-params'
+    | 'files-uploading'
+    | 'files-failed';
 
 /**
  * Why Start cannot start, or null when it can. The order is the message the member needs: an
@@ -207,7 +209,7 @@ export type StartBlocker =
  * anything about its workflow matters. A named workflow whose list has not answered comes next —
  * a restored draft can hold one, and until the list says what it declares, the params gate would
  * pass vacuously and launch it without its values; a named workflow's own field validation comes
- * last. The unresolved flag defaults to false: it means nothing beside no workflow at all.
+ * next; a file still going up, or one that failed, comes last. The unresolved flag defaults to false: it means nothing beside no workflow at all.
  */
 export function startBlocker(input: {
     sending: boolean;
@@ -218,6 +220,8 @@ export function startBlocker(input: {
     repoReadiness?: RepoReadiness;
     workflowUnresolved?: boolean;
     paramsInvalid: boolean;
+    /** Why the chosen files cannot go yet; absent beside none. */
+    files?: 'uploading' | 'failed' | null;
 }): StartBlocker | null {
     if (input.sending) return 'in-flight';
     if (input.executorMissing) return 'missing-executor';
@@ -227,6 +231,8 @@ export function startBlocker(input: {
     if (input.repoReadiness === 'unselected') return 'repo-required';
     if (input.workflowUnresolved) return 'workflow-loading';
     if (input.paramsInvalid) return 'invalid-params';
+    if (input.files === 'uploading') return 'files-uploading';
+    if (input.files === 'failed') return 'files-failed';
     return null;
 }
 
@@ -247,6 +253,8 @@ export function blockerTone(blocker: StartBlocker | null): 'bad' | 'info' | 'qui
             return 'info';
         case 'empty-prompt':
         case 'in-flight':
+        case 'files-uploading':
+        case 'files-failed':
             return 'quiet';
         default:
             return null;

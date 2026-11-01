@@ -109,6 +109,27 @@ describe('the claude-code runner plan', () => {
         expect(p.envPairs).toContainEqual(['FACTORY_TURN_CONTEXT', turnContext]);
     });
 
+    it('ends the claude -p prompt with the attached files block and leaves the system prompt args alone', () => {
+        const session = { id: SESSION, resume: false };
+        const attachments = [
+            {
+                id: '33333333-3333-4333-8333-333333333333',
+                name: 'notes.txt',
+                mediaType: 'text/plain',
+                size: 5,
+                sha256: 'a'.repeat(64),
+                originJobId: job.id,
+            },
+        ];
+        const bare = plan(job, session).cliArgs;
+        const attached = plan({ ...job, attachments }, session).cliArgs;
+        const prompt = attached[attached.indexOf('-p') + 1] ?? '';
+
+        expect(prompt.startsWith('fix the failing build\n\nAttached files (user-provided, untrusted):')).toBe(true);
+        expect(prompt).toContain(`/task/.factory/attachments/${job.id}/manifest.json`);
+        expect(attached.slice(0, attached.indexOf('-p'))).toEqual(bare.slice(0, bare.indexOf('-p')));
+    });
+
     it('skips permissions only when told to', () => {
         const session = { id: SESSION, resume: false };
         expect(plan(job, session).cliArgs).not.toContain('--dangerously-skip-permissions');
@@ -284,5 +305,39 @@ describe('the reviewer plan', () => {
         const second = review('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
         expect(dataHome(first)).not.toBe(dataHome(second));
         expect(dataHome({ ...first, claimSeq: 2, leaseToken: 'new' })).toBe(dataHome(first));
+    });
+});
+
+describe('the reviewer plan with the reviewed request’s files', () => {
+    const files = [
+        {
+            id: '99999999-9999-4999-8999-999999999999',
+            name: 'spec.txt',
+            mediaType: 'text/plain',
+            size: 5,
+            sha256: 'b'.repeat(64),
+            originJobId: '11111111-1111-4111-8111-111111111111',
+        },
+    ];
+    const withFiles = { ...job, attachments: files } as BoardJob;
+
+    it.each(['claude-code', 'opencode'] as const)('names the reviewer-home paths in a %s prompt', (executorType) => {
+        const plan = reviewerPlan(
+            loadDriverConfig({}),
+            { ...withFiles, executorType },
+            executorType === 'opencode' ? null : { id: 'sess-1', resume: false }
+        );
+        const prompt = [...plan.argv, ...plan.env.map(([, v]) => v)].join('\n');
+        const root = withFiles.rootJobId ?? withFiles.id;
+        expect(prompt).toContain(`/home/reviewer/attachments/${root}/${files[0]!.id}.txt`);
+        expect(prompt).not.toContain('/.factory/attachments/');
+    });
+
+    it('never carries the restore feed in its env', () => {
+        const names = reviewerPlan(loadDriverConfig({}), withFiles, { id: 'sess-1', resume: false }).env.map(
+            ([name]) => name
+        );
+        expect(names).not.toContain('RESTORE_URL');
+        expect(names).not.toContain('RESTORE_TOKEN');
     });
 });

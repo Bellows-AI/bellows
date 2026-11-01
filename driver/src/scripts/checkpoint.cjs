@@ -9,7 +9,7 @@
 // One execFileSync per git call: no value can become a command; every call runs offline
 // (OFFLINE_ENV), so an object the partial clone never fetched fails fast. One JSON verdict on the last line
 // of stdout:
-//   {ok:true, state:'none'}                                    no checkout: nothing to carry;
+//   {ok:true, state:'none'}                                    no checkout (or no database without one): nothing to carry;
 //   {ok:true, state:'complete'|'truncated', cause, headerFile, parts}
 //   {ok:false, reason}
 // `headerFile` is the header's JSON in OUT_DIR (it lists every remote ref, so it never rides the verdict line,
@@ -17,7 +17,8 @@
 // (cause `checkpoint_cap`) leaves none: above the cap the bytes are not uploaded at all.
 //
 // Environment (set by the supervisor; paths and a branch name, never a credential):
-//   CHECKOUT    — the task's own tree (`/task/<repo segment>`);
+//   CHECKOUT    — the task's own tree (`/task/<repo segment>`); unset for a repository-free OpenCode task, which
+//                 then checkpoints only its session database (header `tip: null`, no bundle) or answers `none`;
 //   BRANCH      — the branch it runs on (`factory/<thread root id>`);
 //   BASE        — optional: the branch the task bases on (the claim's base; recorded in the header);
 //   OUT_DIR     — where the parts are written; emptied first;
@@ -171,7 +172,38 @@ const snapshot = async (file) => {
     return size(file);
 };
 
+/** A repository-free task: the session database alone, under a header whose null tip a repository restore refuses. */
+const treeless = async () => {
+    if (!opencodeDb || size(opencodeDb) === null) return { ok: true, state: 'none' };
+    fs.rmSync(outDir, { recursive: true, force: true });
+    fs.mkdirSync(outDir, { recursive: true });
+    const headerFile = path.join(outDir, 'header.json');
+    const sqliteFile = path.join(outDir, 'opencode.db');
+    const header = {
+        version: HEADER_VERSION,
+        tip: null,
+        parent: null,
+        branch: null,
+        base: null,
+        defaultBranch: null,
+        prerequisites: {},
+        bundleBytes: 0,
+        sqliteBytes: await snapshot(sqliteFile),
+        truncated: false,
+    };
+    if (header.sqliteBytes > cap) {
+        fs.rmSync(outDir, { recursive: true, force: true });
+        fs.mkdirSync(outDir, { recursive: true });
+        fs.writeFileSync(headerFile, JSON.stringify({ ...header, sqliteBytes: 0, truncated: true }));
+        return { ok: true, state: 'truncated', cause: 'checkpoint_cap', headerFile, parts: [] };
+    }
+    fs.writeFileSync(headerFile, JSON.stringify(header));
+    const parts = header.sqliteBytes > 0 ? [{ path: sqliteFile, bytes: header.sqliteBytes }] : [];
+    return { ok: true, state: 'complete', cause: null, headerFile, parts };
+};
+
 const main = async () => {
+    if (!checkout) return treeless();
     if (size(path.join(checkout, '.git')) === null) return { ok: true, state: 'none' };
     fs.rmSync(outDir, { recursive: true, force: true });
     fs.mkdirSync(outDir, { recursive: true });

@@ -94,13 +94,22 @@ export function supervisorLiterals(
 /**
  * What the supervisor's finalize stage needs to checkpoint the task (issue #775): the script by
  * content, the tree and branch it works on, a directory on the volume, and — for opencode — the
- * session database. None for a job with no repository (no tree to carry) or without a control
- * endpoint (nowhere to upload to).
+ * session database. A job with no repository carries no tree: only an OpenCode one is configured, with the
+ * database alone. None without a control endpoint (nowhere to upload to).
  */
 function checkpointLiterals(job: BoardJob): [string, string][] {
     const checkout = checkoutDir(job);
     const base = baseBranchOf(job);
-    if (!checkout || supervisorControlNames(job).length === 0) return [];
+    if (supervisorControlNames(job).length === 0) return [];
+    if (!checkout) {
+        if (job.executorType !== OPENCODE) return [];
+        return [
+            [SUPERVISOR_ENV.checkpointScript, checkpointScript],
+            [SUPERVISOR_ENV.checkpointDir, CHECKPOINT_DIR],
+            [SUPERVISOR_ENV.checkpointOpencodeDb, opencodeDbPath(job)],
+            [SUPERVISOR_ENV.checkpointMs, String(SUPERVISOR_CHECKPOINT_MS)],
+        ];
+    }
     return [
         [SUPERVISOR_ENV.checkpointScript, checkpointScript],
         [SUPERVISOR_ENV.checkpointCheckout, checkout],

@@ -14,6 +14,7 @@
  * Append-only after #278: lanes add fixtures, they never change an existing one.
  */
 import {
+    type AttachmentMeta,
     OBJECTIVE_MODE,
     WORKFLOW_MODE,
     emptyBlock,
@@ -131,6 +132,8 @@ export interface ThreadJob {
     publication: ThreadPublication | null;
     /** The run's agent questions, `asked_at` order; empty on every fixture that asked none. */
     questions: ThreadQuestion[];
+    /** The files the request carried, in the order named; empty on every fixture that carried none. */
+    attachments: AttachmentMeta[];
     /** The thread root's connection bindings (094); empty on every fixture that bound none. */
     connections: {
         connectionId: string | null;
@@ -257,6 +260,7 @@ function run(fields: RunFields): ThreadJob {
         taskWallClockMs: null,
         publication: null,
         questions: [],
+        attachments: [],
         connections: [],
         bindingRevision: 0,
         integrationRequirements: [],

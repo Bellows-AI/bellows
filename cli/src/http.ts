@@ -7,6 +7,10 @@ export const JSON_CONTENT_TYPE = 'application/json';
 
 export const CONTENT_TYPE_HEADER = 'content-type';
 
+/** The raw-body media type of an attachment upload, and the header that carries its percent-encoded display name. */
+export const OCTET_STREAM_CONTENT_TYPE = 'application/octet-stream';
+export const ATTACHMENT_NAME_HEADER = 'x-attachment-name';
+
 /** The header that names one logical write, so a repeat of it is recognized (docs/api.md). */
 export const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
 

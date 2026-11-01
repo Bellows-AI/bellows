@@ -63,6 +63,8 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // The restore reads (issue #775): the thread's checkpoint and raw transcripts, authorized by the
     // job's live lease in the body (job-handlers-restore.ts) — the lease is the credential.
     /^\/api\/jobs\/[^/]+\/(checkpoint|transcripts)(\/chunk)?$/,
+    // A task's input files, fetched by the runner under the job's live lease (job-handlers-attachment-content.ts).
+    /^\/api\/jobs\/[^/]+\/attachments\/[^/]+\/content$/,
 ];
 
 /** Machine-to-machine telemetry, from the collector. The branch route is NOT here — see BRANCH. */

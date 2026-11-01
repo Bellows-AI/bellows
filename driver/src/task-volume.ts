@@ -63,6 +63,14 @@ export function taskRootOf(job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>): string
     return root.toLowerCase();
 }
 
+/**
+ * Where the task's input files (the user's attachments) are written: beside the transcripts, on the task volume and
+ * outside the checkout, so no publish ever stages them. One directory per thread.
+ */
+export function attachmentsDir(job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>): string {
+    return `${TASK_MOUNT}/.factory/attachments/${taskRootOf(job)}`;
+}
+
 /** `factory-task-<root uuid>-<generation>`, the name of the thread's volume. */
 export function taskVolumeName(
     job: Pick<TaskVolumeJob, 'id' | 'rootJobId' | 'taskGeneration'>,

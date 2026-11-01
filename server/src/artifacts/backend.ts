@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import type { ArtifactsConfig } from '../config-artifacts.js';
-import { createFilesystemStore } from './fs-store.js';
+import { createFilesystemStore, sweepStaleTemps, type TempSweepResult } from './fs-store.js';
 import type { ObjectStore } from './object-store.js';
 import { createCredentialProvider } from './s3-credentials.js';
 import { createS3Store } from './s3-store.js';
@@ -11,6 +11,8 @@ export interface ArtifactBackend {
     prefix: string;
     /** Boot step: makes the filesystem root, or creates a missing bucket. Returns a log line. */
     prepare(): Promise<string>;
+    /** The filesystem backend's stale temp-file sweep; the boot step runs it once, `main.ts` repeats it. */
+    sweepTemps?(): Promise<TempSweepResult>;
 }
 
 const PREPARE_ATTEMPTS = 10;
@@ -45,9 +47,11 @@ export function createArtifactBackend(config: ArtifactsConfig, env: NodeJS.Proce
         return {
             objects: createFilesystemStore(backend.root),
             prefix: '',
+            sweepTemps: () => sweepStaleTemps(backend.root),
             async prepare() {
                 await mkdir(backend.root, { recursive: true });
-                return `filesystem ${backend.root} (single replica only)`;
+                const swept = await sweepStaleTemps(backend.root);
+                return `filesystem ${backend.root} (single replica only); swept ${swept.removed} stale temp files`;
             },
         };
     }

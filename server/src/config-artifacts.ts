@@ -31,6 +31,8 @@ export interface ArtifactsConfig {
     readonly retentionDays: number;
     /** Per-org byte quota; 0 is off. */
     readonly orgQuotaBytes: number;
+    /** An upload not bound to a task within this many hours is collected (docs/persistence.md). */
+    readonly attachmentDraftTtlHours: number;
 }
 
 /** The configured prefix, normalized to "" or a single trailing slash. */
@@ -41,6 +43,7 @@ export function normalizePrefix(raw: string): string {
 
 const BACKENDS = ['s3', 'filesystem'] as const;
 const DEFAULT_RETENTION_DAYS = 90;
+const DEFAULT_ATTACHMENT_DRAFT_TTL_HOURS = 24;
 const DEFAULT_S3_PREFIX = 'factory/';
 const DEFAULT_REGION = 'us-east-1';
 const DEFAULT_FILESYSTEM_DIR = 'factory-artifacts';
@@ -102,5 +105,11 @@ export function loadArtifactsConfig(env: NodeJS.ProcessEnv): ArtifactsConfig {
         backend: backendOf(env),
         retentionDays: count(env.ARTIFACTS_RETENTION_DAYS, DEFAULT_RETENTION_DAYS, 'ARTIFACTS_RETENTION_DAYS', 1),
         orgQuotaBytes: count(env.ARTIFACTS_ORG_QUOTA_BYTES, 0, 'ARTIFACTS_ORG_QUOTA_BYTES', 0),
+        attachmentDraftTtlHours: count(
+            env.ATTACHMENTS_DRAFT_TTL_HOURS,
+            DEFAULT_ATTACHMENT_DRAFT_TTL_HOURS,
+            'ATTACHMENTS_DRAFT_TTL_HOURS',
+            1
+        ),
     };
 }

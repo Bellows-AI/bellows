@@ -9,6 +9,7 @@ import type { RunOutcome } from '../runner.js';
 import { controlTokenOf, type ReviewExporter } from '../supervised-steps.js';
 import type { KillRecord } from '../termination.js';
 import { killAgent } from './loop-attempt.js';
+import { attachTaskInputs } from './loop-inputs.js';
 import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { EXPORT_PRODUCER, EXPORT_SCHEMA_VERSION, SPOOL_FULL_CAUSE } from '../transcript-export.js';
 
@@ -79,10 +80,14 @@ export function createCheckpointRelay(rt: LoopRuntime, job: BoardJob): Checkpoin
     };
 }
 
-/** Every attempt with a control endpoint checkpoints at finalize, whichever executor ran: no transcript stream is needed. */
+/**
+ * Every attempt with a control endpoint checkpoints at finalize, whichever executor ran: no transcript stream is needed.
+ * The same endpoint serves the task's input files to the supervisor's `inputs` step (`attachTaskInputs`).
+ */
 export function attachCheckpoint(ctx: Pick<AttemptCtx, 'rt' | 'job'>, token: string): void {
     const { rt, job } = ctx;
     rt.gates?.server.attachCheckpoint(token, createCheckpointRelay(rt, job));
+    attachTaskInputs({ rt, job }, token);
 }
 
 /**

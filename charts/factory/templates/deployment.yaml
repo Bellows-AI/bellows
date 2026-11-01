@@ -155,6 +155,8 @@ spec:
                         value: {{ .Values.artifacts.retentionDays | quote }}
                       - name: ARTIFACTS_ORG_QUOTA_BYTES
                         value: {{ .Values.artifacts.orgQuotaBytes | quote }}
+                      - name: ATTACHMENTS_DRAFT_TTL_HOURS
+                        value: {{ .Values.artifacts.attachmentDraftTtlHours | quote }}
                       {{- if eq .Values.artifacts.backend "s3" }}
                       - name: ARTIFACTS_S3_BUCKET
                         value: {{ .Values.artifacts.s3.bucket | quote }}

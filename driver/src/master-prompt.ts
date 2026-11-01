@@ -63,8 +63,8 @@ export function claudeTurnContextEnv(job: BoardJob): [string, string][] {
  * OpenCode's turn prompt: its positional message is plain text, so the turn context leads it, ahead
  * of the command — framed as a continuation when the claim continues an interrupted attempt.
  */
-export function opencodeTurnPrompt(job: BoardJob): string {
-    const prompt = agentPrompt(job);
+export function opencodeTurnPrompt(job: BoardJob, attachmentsPath?: string): string {
+    const prompt = agentPrompt(job, attachmentsPath);
     return job.turnContext ? `${job.turnContext}\n\n${prompt}` : prompt;
 }
 

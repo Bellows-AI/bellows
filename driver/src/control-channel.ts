@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CONNECTION_BODY_LIMIT, CONNECTION_PATH, type ConnectionRelay, serveConnection } from './connection-control.js';
-import { readBody, respondJson } from './http.js';
+import { CONTENT_TYPE_HEADER, OCTET_STREAM_CONTENT_TYPE, readBody, respondJson } from './http.js';
 import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish/publish-control.js';
 import {
     type CheckpointRelay,
@@ -11,6 +11,7 @@ import {
     serveCheckpoint,
     serveExport,
 } from './export-control.js';
+import { INPUT_PATH, type InputAnswer, type InputDelivery, serveInput } from './input-control.js';
 import { createStepBroker, serveReport, serveStepPoll, serveStepResult, type StepBroker } from './step-control.js';
 import { REPORT_PATH, STEP_PATH } from './supervisor-contract.js';
 import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review/review-control.js';
@@ -33,7 +34,8 @@ import {
  *
  *  - the SUPERVISOR token — held by the task supervisor alone — reads the run's stop and kill orders
  *    (`GET /control`), relays the agent's questions (`POST /question`, `GET /question/:id`) and pulls
- *    and answers the supervised steps (`/step`, `POST /report`);
+ *    and answers the supervised steps (`/step`, `POST /report`), and reads the task's input files
+ *    (`GET /input/<delivery>/<id>`);
  *  - the EXPORTER token — all the transcript exporter holds — carries the transcript chunks
  *    (`/export`) and nothing else;
  *  - the AGENT token — all the agent container holds — reaches only the draft publication
@@ -82,6 +84,13 @@ export interface ControlChannel {
     attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
     /** Gives an open token the relay of its agent's connection ask: `/connection` answers 503 until then. */
     attachConnection(token: string, connection: ConnectionRelay): void;
+    /**
+     * Registers a delivery of task inputs on an open token (the task's own as `task`, a review's under its row id):
+     * `GET /input/<name>/<id>` serves only the files of its manifest, read from the board under its row's lease.
+     */
+    attachInputs(token: string, name: string, delivery: InputDelivery): void;
+    /** Drops a delivery once its step is over; unknown tokens and names do nothing. */
+    detachInputs(token: string, name: string): void;
     /** Whether the supervisor has contacted this token — its control poll, or a question POST. */
     polled(token: string): boolean;
     /** Raises the stop; repeated calls and unknown tokens do nothing. */
@@ -108,7 +117,17 @@ export interface ControlChannel {
     serve(request: IncomingMessage, reply: ServerResponse, auth: string): Promise<boolean>;
 }
 
-type Route = 'checkpoint' | 'connection' | 'control' | 'export' | 'publish' | 'question' | 'report' | 'review' | 'step';
+type Route =
+    | 'checkpoint'
+    | 'connection'
+    | 'control'
+    | 'export'
+    | 'input'
+    | 'publish'
+    | 'question'
+    | 'report'
+    | 'review'
+    | 'step';
 
 /** A path that is a POST of its own, or a GET of `<path>/<id>`: the shape the question and review routes share. */
 const isPostOrGetOf = (request: IncomingMessage, path: string): boolean => {
@@ -131,6 +150,7 @@ function routeOf(request: IncomingMessage): Route | null {
     if (request.method === 'GET' && url === CONTROL_PATH) return 'control';
     if (url === EXPORT_PATH || url.startsWith(`${EXPORT_PATH}/`)) return 'export';
     if (url === CHECKPOINT_PATH || url.startsWith(`${CHECKPOINT_PATH}/`)) return 'checkpoint';
+    if (url.startsWith(`${INPUT_PATH}/`)) return 'input';
     if (request.method === 'POST' && url === PUBLISH_PATH) return 'publish';
     if (request.method === 'POST' && url === CONNECTION_PATH) return 'connection';
     if (isPostOrGetOf(request, QUESTION_PATH)) return 'question';
@@ -139,8 +159,12 @@ function routeOf(request: IncomingMessage): Route | null {
     return isPostOrGetOf(request, REVIEW_PATH) ? 'review' : null;
 }
 
+type RelayRoute = 'checkpoint' | 'export' | 'input';
+const isRelayRoute = (route: Route): route is RelayRoute =>
+    route === 'export' || route === 'checkpoint' || route === 'input';
+
 /** The routes each token opens: the supervisor's, the exporter's one and the agent's two. */
-const SUPERVISOR_ROUTES: readonly Route[] = ['checkpoint', 'control', 'question', 'report', 'step'];
+const SUPERVISOR_ROUTES: readonly Route[] = ['checkpoint', 'control', 'input', 'question', 'report', 'step'];
 const EXPORTER_ROUTES: readonly Route[] = ['export'];
 const AGENT_ROUTES: readonly Route[] = ['connection', 'publish', 'review'];
 
@@ -235,6 +259,19 @@ const serveReview = (control: ControlEntry, request: IncomingMessage, stale: Sta
               serveReviewRequest(control.reviewing, control.reviewer, raw)
           );
 
+/** A relay route's answer: the input file's raw bytes beside the board's digest, or the JSON of any other answer. */
+function respondAnswer(reply: ServerResponse, answer: BodyAnswer | InputAnswer): void {
+    if ('bytes' in answer) {
+        reply.writeHead(HTTP_OK, {
+            [CONTENT_TYPE_HEADER]: OCTET_STREAM_CONTENT_TYPE,
+            'x-content-sha256': answer.sha256,
+        });
+        reply.end(Buffer.from(answer.bytes));
+    } else {
+        respondJson(reply, answer.status, answer.body);
+    }
+}
+
 /** The tokens of attempts left to a newer holder (#829): remembered, to be hung up on, until their bound passes. */
 function createDepartures() {
     const timers = new Map<string, NodeJS.Timeout>();
@@ -260,16 +297,17 @@ const attachRelay = <R>(slot: { relay: R | null } | undefined, relay: R): void =
     if (slot) slot.relay = relay;
 };
 
-/** `/export` (the exporter's own slot where it has one) or `/checkpoint` (the supervisor's), once the token holds that door. */
+/** `/export` (the exporter's own slot where it has one), `/checkpoint` or `/input` (the supervisor's), once the token holds that door. */
 const serveRelayRoute = (
-    route: 'export' | 'checkpoint',
+    route: RelayRoute,
     control: ControlEntry,
     slot: ExportSlot | undefined,
     call: { request: IncomingMessage; open: () => boolean }
-) =>
-    route === 'export'
-        ? serveExport(slot ?? control.exporting, call.request, call.open)
-        : serveCheckpoint(control.checkpointing, call.request, call.open);
+): Promise<BodyAnswer | InputAnswer> => {
+    if (route === 'export') return serveExport(slot ?? control.exporting, call.request, call.open);
+    if (route === 'input') return serveInput(control.inputs, call.request, call.open);
+    return serveCheckpoint(control.checkpointing, call.request, call.open);
+};
 
 export function createControlChannel(steps: StepBroker = createStepBroker()): ControlChannel {
     /** Every attempt, under its supervisor token. */
@@ -321,6 +359,8 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
         attachExporter: (token, exporter) => attachRelay(controls.get(token)?.exporting, exporter),
         attachCheckpoint: (token, checkpoint) => attachRelay(controls.get(token)?.checkpointing, checkpoint),
         attachConnection: (token, connection) => attachRelay(controls.get(token)?.connecting, connection),
+        attachInputs: (token, name, delivery) => void controls.get(token)?.inputs.deliveries.set(name, delivery),
+        detachInputs: (token, name) => void controls.get(token)?.inputs.deliveries.delete(name),
         polled: (token) => controls.get(token)?.polled ?? false,
         raiseStop(token) {
             const control = controls.get(token);
@@ -376,11 +416,11 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
                 respondJson(reply, HTTP_FORBIDDEN, { error: 'this token does not open that route' });
                 return true;
             }
-            if (route === 'export' || route === 'checkpoint') {
+            if (isRelayRoute(route)) {
                 // Not the supervisor's poll: neither the exporter's calls nor its finalize stage's say a Stop can be cooperative.
                 const open = () => entryOf(auth) === control;
                 const answer = await serveRelayRoute(route, control, exporters.get(auth)?.slot, { request, open });
-                respondJson(reply, answer.status, answer.body);
+                respondAnswer(reply, answer);
                 return true;
             }
             // Only the supervisor holds a door that gets here besides publish and review: its poll
@@ -408,3 +448,19 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
         },
     };
 }
+
+/** What a control token is given after it opens: the relays and the task inputs it serves (`GET /input/<name>/<id>`). */
+export const attachersOf = ({
+    attachExporter,
+    attachCheckpoint,
+    attachConnection,
+    attachInputs,
+}: ControlChannel): Pick<
+    ControlChannel,
+    'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachInputs'
+> => ({
+    attachExporter,
+    attachCheckpoint,
+    attachConnection,
+    attachInputs,
+});

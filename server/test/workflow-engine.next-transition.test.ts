@@ -142,6 +142,17 @@ describe('nextTransition: blocked and no-progress rests', () => {
         expect(t).toEqual({ action: 'rest', reason: 'checkpoint_unrestorable' });
     });
 
+    it('rests a thread whose attachment is gone, a custom failed edge included', () => {
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot: { ...snapshot, edges: [{ from: 'implement', to: 'fix', when: 'failed' }] },
+            rows: [row({ id: 'r1', node: 'implement' })],
+            completed: done({ id: 'r1', status: 'failed', failureKind: 'attachment_unavailable' }),
+        });
+        expect(t).toEqual({ action: 'rest', reason: 'attachment_unavailable' });
+    });
+
     it('rests a gate-failed edge over a tree the run left unchanged', () => {
         const t = nextTransition({
             params: {},

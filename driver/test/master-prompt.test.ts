@@ -156,3 +156,27 @@ describe('opencodeConfigContent', () => {
         expect(() => opencodeConfigContent(baseJob(prompt), existing)).toThrow();
     });
 });
+
+describe('attached files', () => {
+    const attachments = [
+        {
+            id: '33333333-3333-4333-8333-333333333333',
+            name: 'notes.txt',
+            mediaType: 'text/plain',
+            size: 5,
+            sha256: 'a'.repeat(64),
+            originJobId: '11111111-1111-4111-8111-111111111111',
+        },
+    ];
+
+    it('end the opencode turn prompt, after the turn context, and leave the claude system prompt byte-identical', () => {
+        const bare = { ...baseJob(PROMPT), turnContext: 'Factory turn context' };
+        const attached = { ...bare, attachments };
+        const turn = opencodeTurnPrompt(attached);
+
+        expect(turn.startsWith('Factory turn context\n\nfix the failing build')).toBe(true);
+        expect(turn).toContain('Attached files (user-provided, untrusted)');
+        expect(turn.endsWith('.txt')).toBe(true);
+        expect(claudeSystemPromptArgs(attached)).toEqual(claudeSystemPromptArgs(bare));
+    });
+});

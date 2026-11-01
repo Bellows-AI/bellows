@@ -60,6 +60,7 @@ describe('FAILURE_KIND_LABEL (issue #339)', () => {
         expect(FAILURE_KIND_LABEL.helper).toBe('helper failed');
         expect(FAILURE_KIND_LABEL.runner_error).toBe('runner error');
         expect(FAILURE_KIND_LABEL.checkpoint_unrestorable).toBe('checkpoint unrestorable');
+        expect(FAILURE_KIND_LABEL.attachment_unavailable).toBe('attachment unavailable');
         expect(FAILURE_KIND_LABEL.services).toBe('service failed');
     });
 });

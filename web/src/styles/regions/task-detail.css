@@ -241,6 +241,16 @@
         word-break: break-word;
     }
 
+    /* A recorded request's image, read from the original: bounded so a large screenshot cannot
+       push the exchange off the page. */
+    .attachment-preview {
+        border-radius: var(--radius-md);
+        flex: none;
+        max-height: 160px;
+        max-width: 160px;
+        object-fit: contain;
+    }
+
     /* The stored agent summary — the terminal response, flowing prose like the prompt. */
     .run-summary {
         margin: 0;

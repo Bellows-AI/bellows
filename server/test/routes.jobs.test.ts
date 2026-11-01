@@ -437,6 +437,10 @@ function stubStore(
             boom();
             return { result: 'missing' };
         },
+        async attachmentSet() {
+            boom();
+            return { result: 'missing' };
+        },
         async session(id, _token, sessionId, evidence) {
             boom();
             stub.sessions.push({ id, sessionId });
@@ -3109,6 +3113,7 @@ describe('GET /api/jobs', () => {
         waitTerminalReason: null,
         publication: null,
         questions: [],
+        attachments: [],
         connections: [],
         bindingRevision: 0,
         integrationRequirements: [],
@@ -3287,6 +3292,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         interruptions: [],
         publication: null,
         questions: [],
+        attachments: [],
         connections: [],
         bindingRevision: 0,
         integrationRequirements: [],
@@ -3511,6 +3517,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         waitTerminalReason: null,
         publication: null,
         questions: [],
+        attachments: [],
         connections: [],
         bindingRevision: 0,
         integrationRequirements: [],

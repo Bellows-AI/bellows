@@ -1,10 +1,102 @@
 import { randomUUID } from 'node:crypto';
-import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
-import type { ObjectStore, PutResult } from './object-store.js';
+import type { ObjectCallOptions, ObjectStore, PutResult } from './object-store.js';
 
 const NOT_FOUND = 'ENOENT';
 const ALREADY_EXISTS = 'EEXIST';
+
+/** Well above `UPLOAD_WRITE_BOUND_MS`, the longest bounded write, so a live write is never swept. */
+export const STALE_TEMP_MS = 3_600_000;
+const SWEEP_DEADLINE_MS = 60_000;
+const SWEEP_INTERVAL_MS = 3_600_000;
+const TEMP_NAME = /\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
+
+export interface TempSweepResult {
+    removed: number;
+    skipped: number;
+    stopped: boolean;
+}
+
+/** A temp file is stale when its mtime is before `cutoff`; any error leaves it alone. */
+async function removeIfStale(path: string, cutoff: number): Promise<'removed' | 'skipped' | 'kept'> {
+    try {
+        if ((await lstat(path)).mtimeMs >= cutoff) return 'kept';
+        await rm(path, { force: true });
+        return 'removed';
+    } catch {
+        return 'skipped';
+    }
+}
+
+/**
+ * Removes the `<key>.<uuid>.tmp` files a process death left between `writeFile` and `put`'s `finally`.
+ * Never follows a symlink, never touches an object, never throws: an entry it cannot read is `skipped`.
+ */
+export async function sweepStaleTemps(
+    root: string,
+    {
+        olderThanMs = STALE_TEMP_MS,
+        deadlineMs = SWEEP_DEADLINE_MS,
+        now = Date.now,
+    }: { olderThanMs?: number; deadlineMs?: number; now?: () => number } = {}
+): Promise<TempSweepResult> {
+    const result: TempSweepResult = { removed: 0, skipped: 0, stopped: false };
+    const start = now();
+    const dirs = [resolve(root)];
+    for (let dir = dirs.pop(); dir !== undefined && !result.stopped; dir = dirs.pop()) {
+        dirs.push(
+            ...(await sweepDir(dir, result, { cutoff: start - olderThanMs, expired: () => now() - start > deadlineMs }))
+        );
+    }
+    return result;
+}
+
+/** Sweeps one directory's files into `result` and returns its subdirectories. */
+async function sweepDir(
+    dir: string,
+    result: TempSweepResult,
+    { cutoff, expired }: { cutoff: number; expired: () => boolean }
+): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
+    if (!entries) result.skipped++;
+    const subdirs: string[] = [];
+    for (const entry of entries ?? []) {
+        if (expired()) {
+            result.stopped = true;
+            break;
+        }
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) subdirs.push(path);
+        else if (entry.isFile() && TEMP_NAME.test(entry.name)) {
+            const outcome = await removeIfStale(path, cutoff);
+            if (outcome !== 'kept') result[outcome]++;
+        }
+    }
+    return subdirs;
+}
+
+/** Runs `sweep` every `intervalMs` on an unref'd timer, skipping a tick while a pass is in flight. */
+export function startTempSweep(
+    sweep: () => Promise<TempSweepResult>,
+    { intervalMs = SWEEP_INTERVAL_MS, log }: { intervalMs?: number; log: (line: string) => void }
+): () => void {
+    let running = false;
+    const timer = setInterval(() => {
+        if (running) return;
+        running = true;
+        sweep()
+            .then((r) => {
+                if (r.removed > 0) log(`swept ${r.removed} stale temp files`);
+            })
+            .catch((e: unknown) => log(`temp sweep failed: ${(e as Error).message}`))
+            .finally(() => {
+                running = false;
+            });
+    }, intervalMs);
+    timer.unref();
+    return () => clearInterval(timer);
+}
 
 const errnoOf = (error: unknown): string | undefined => (error as NodeJS.ErrnoException).code;
 
@@ -23,12 +115,13 @@ export function createFilesystemStore(root: string): ObjectStore {
         return path;
     };
     return {
-        async put(key, body): Promise<PutResult> {
+        async put(key, body, options?: ObjectCallOptions): Promise<PutResult> {
             const path = pathOf(key);
             await mkdir(dirname(path), { recursive: true });
             const temp = `${path}.${randomUUID()}.tmp`;
-            await writeFile(temp, body);
             try {
+                await writeFile(temp, body, options?.signal ? { signal: options.signal } : {});
+                options?.signal?.throwIfAborted();
                 await link(temp, path);
                 return 'created';
             } catch (error) {

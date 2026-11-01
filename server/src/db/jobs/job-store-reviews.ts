@@ -15,6 +15,7 @@ import type { ReviewEvidence } from '../evidence-policy.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { LEASE_EXPIRED_REASON } from './job-store-actions.js';
 import { buildClaimResult } from './job-store-claim.js';
+import { withClaimAttachments } from './job-store-claim-row.js';
 import { resolveClaimExecutor } from './job-store-claim-executor.js';
 import { recordExecution } from './job-store-provenance.js';
 import { exists, workspacePathFor } from './job-store-rows.js';
@@ -349,7 +350,9 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
             skillRefusal: null,
         }
     );
-    return { ...claim, reviewRun: { profile: spec.name, ref: row!.review_ref, timeoutMinutes: spec.timeoutMinutes } };
+    const reviewRun = { profile: spec.name, ref: row!.review_ref, timeoutMinutes: spec.timeoutMinutes };
+    // The review binds nothing: its files are the reviewed row's, and a read that throws fails the claim.
+    return withClaimAttachments(tx, orgId, { ...claim, reviewRun });
 }
 
 export async function readReviewFor(

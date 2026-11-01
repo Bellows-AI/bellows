@@ -309,11 +309,16 @@ describe('S3 credentials chain', () => {
 });
 
 describe('artifacts config', () => {
+    it('reads the attachment draft TTL in hours', () => {
+        expect(loadArtifactsConfig({ ATTACHMENTS_DRAFT_TTL_HOURS: '6' }).attachmentDraftTtlHours).toBe(6);
+    });
+
     it('defaults to the filesystem backend with a 90 day retention and no quota', () => {
         expect(loadArtifactsConfig({})).toEqual({
             backend: { kind: 'filesystem', root: '/tmp/factory-artifacts' },
             retentionDays: 90,
             orgQuotaBytes: 0,
+            attachmentDraftTtlHours: 24,
         });
     });
 
@@ -355,6 +360,8 @@ describe('artifacts config', () => {
         ['a relative filesystem root', { ARTIFACTS_FS_ROOT: 'data' }, /absolute/],
         ['a zero retention', { ARTIFACTS_RETENTION_DAYS: '0' }, /RETENTION/],
         ['a negative quota', { ARTIFACTS_ORG_QUOTA_BYTES: '-1' }, /QUOTA/],
+        ['a zero attachment draft TTL', { ATTACHMENTS_DRAFT_TTL_HOURS: '0' }, /ATTACHMENTS_DRAFT_TTL_HOURS/],
+        ['a fractional attachment draft TTL', { ATTACHMENTS_DRAFT_TTL_HOURS: '1.5' }, /ATTACHMENTS_DRAFT_TTL_HOURS/],
     ])('refuses %s', (_name, env, message) => {
         expect(() => loadArtifactsConfig(env)).toThrow(message);
     });
