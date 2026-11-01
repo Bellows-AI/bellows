@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { confirmLabel, confirmTitle } from '../src/panels/org-executor-confirm.js';
@@ -9,6 +9,7 @@ import {
     RESUME_LABEL,
     SUSPEND_LABEL,
     SUSPENDED_LABEL,
+    WorkspaceExecutorsPanel,
 } from '../src/panels/WorkspaceExecutorsPanel.js';
 import { ADD_LABEL } from '../src/workspace/executors.js';
 import { renderApp, stubFetch } from './dom.js';
@@ -116,6 +117,36 @@ describe('a personal row’s actions', () => {
         expect(
             within(await screen.findByRole('menu')).queryByRole('menuitem', { name: MAKE_DEFAULT_LABEL })
         ).toBeNull();
+    });
+});
+
+describe('a personal row while a save is in flight', () => {
+    it('disables Edit and the overflow trigger, so Make default cannot be picked', () => {
+        const noop = () => {};
+        const executors = ['main', 'oc'].map((name) => ({
+            id: name,
+            name,
+            suspended: false,
+            type: 'claude-code',
+            createdAt: '2026-09-01T00:00:00.000Z',
+            gateFixRounds: 3,
+        }));
+        render(
+            <WorkspaceExecutorsPanel
+                executors={executors}
+                defaultExecutor={{ scope: 'user', name: 'main' }}
+                onAdd={noop}
+                onEdit={noop}
+                onMakeDefault={noop}
+                onSuspend={noop}
+                onRemove={noop}
+                saving
+            />
+        );
+        const row = screen.getByRole('row', { name: /^oc/ });
+        expect((within(row).getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((within(row).getByRole('button', { name: 'Actions for oc' }) as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByRole('menuitem', { name: MAKE_DEFAULT_LABEL })).toBeNull();
     });
 });
 
