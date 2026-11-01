@@ -133,7 +133,11 @@ const storedValue = async (id: string) => {
     const row = await rowOf(id);
     return readSubscriptionCredential(
         secrets,
-        { identity: subscriptionSecretIdentity(orgOfAdmin, id), ref: row!.secret_ref, version: row!.secret_version },
+        {
+            identity: subscriptionSecretIdentity(orgOfAdmin, id, null),
+            ref: row!.secret_ref,
+            version: row!.secret_version,
+        },
         AbortSignal.timeout(3000)
     );
 };
@@ -251,6 +255,15 @@ describe('notification subscription routes', () => {
         expect(refused).toMatchObject({ status: BAD_REQUEST, json: { code: 'BAD_BODY' } });
         expect(await rowOf(id)).toEqual(before);
         expect(await listed(admin)).toEqual([created.json]);
+    });
+
+    it('GET carries the registered connectorKinds', async () => {
+        const response = await app.inject({
+            method: 'GET',
+            url: PATH,
+            headers: { authorization: `Bearer ${member}` },
+        });
+        expect((response.json() as { connectorKinds: string[] }).connectorKinds.sort()).toEqual(['fake', 'other']);
     });
 
     it('the webhook URL appears in no response (POST, PUT, GET as admin and member) and not in connector_config', async () => {
