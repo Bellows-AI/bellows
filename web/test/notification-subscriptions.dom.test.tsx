@@ -1,8 +1,13 @@
 import { MEMBER_ROLE } from '@factory-ai/core';
-import { screen, waitFor, within } from '@testing-library/react';
+import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-import { testResultMessage } from '../src/api/notificationSubscriptions.js';
+import {
+    channelLabel,
+    EVENT_KIND_LABELS,
+    testResultMessage,
+    type SubscriptionView,
+} from '../src/api/notificationSubscriptions.js';
 import { ADD_SUBSCRIPTION_LABEL, MEMBER_NOTE } from '../src/panels/NotificationSubscriptionsPanel.js';
 import { renderApp, stubFetch, type FetchCall } from './dom.js';
 import { boardHandler, settingsBoard, subscription } from './settings-board.js';
@@ -135,7 +140,7 @@ describe('the organization notifications on the organization page', () => {
         renderApp('/settings/organization');
 
         const table = await orgTable();
-        await user.click(within(table).getByRole('checkbox', { name: /enabled/i }));
+        await user.click(within(table).getByRole('switch', { name: /enabled/i }));
 
         await waitFor(() => expect(writes(calls)).toHaveLength(1));
         expect(writes(calls)[0]).toMatchObject({
@@ -152,7 +157,7 @@ describe('the organization notifications on the organization page', () => {
         expect(writes(calls)[0]!.body).not.toHaveProperty('credential');
         await waitFor(() =>
             expect(
-                (within(screen.getByRole('table')).getByRole('checkbox', { name: /enabled/i }) as HTMLInputElement)
+                (within(screen.getByRole('table')).getByRole('switch', { name: /enabled/i }) as HTMLInputElement)
                     .checked
             ).toBe(false)
         );
@@ -276,7 +281,7 @@ describe('the organization notifications on the organization page', () => {
         expect(screen.getByText(MEMBER_NOTE)).toBeTruthy();
         expect(screen.queryByRole('button', { name: ADD_SUBSCRIPTION_LABEL })).toBeNull();
         expect(within(table).queryByRole('button')).toBeNull();
-        expect((within(table).getByRole('checkbox', { name: /enabled/i }) as HTMLInputElement).disabled).toBe(true);
+        expect((within(table).getByRole('switch', { name: /enabled/i }) as HTMLInputElement).disabled).toBe(true);
     });
 
     it('a failed list is an alert with no Add button, never an empty table', async () => {
@@ -322,7 +327,7 @@ describe('my notifications on the workspace page', () => {
 
         const table = await personalTable();
         expect(screen.queryByText(MEMBER_NOTE)).toBeNull();
-        expect(screen.getByText(/tasks you started and actions taken by you/i)).toBeTruthy();
+        expect(screen.getByText(/updates for tasks you start and actions you take/i)).toBeTruthy();
         expect(within(table).getByRole('row', { name: /Task blocked/ })).toBeTruthy();
 
         await user.click(screen.getByRole('button', { name: ADD_SUBSCRIPTION_LABEL }));
@@ -351,5 +356,78 @@ describe('my notifications on the workspace page', () => {
         expect((await screen.findAllByRole('alert')).some((node) => node.textContent === 'store down')).toBe(true);
         expect(screen.queryByRole('button', { name: ADD_SUBSCRIPTION_LABEL })).toBeNull();
         expect(screen.queryByRole('table', { name: 'My notification subscriptions' })).toBeNull();
+    });
+});
+
+describe('the compact notification rows (BEL-196)', () => {
+    const open = async (events: SubscriptionView['eventKinds'], repos: string[] = []) => {
+        const row = subscription({ eventKinds: events, repos });
+        stubFetch(boardHandler(settingsBoard({ subscriptions: { org: [], workspace: [row] } })));
+        renderApp('/settings/workspace');
+        return { row, table: await personalTable() };
+    };
+    const ALL_EVENTS: SubscriptionView['eventKinds'] = [
+        'task.ready',
+        'task.blocked',
+        'task.question',
+        'task.admin_action',
+    ];
+
+    it('renders each event as a tag with its label and an aria-hidden icon', async () => {
+        const { table } = await open(ALL_EVENTS);
+        const pills = Array.from(table.querySelectorAll<HTMLElement>('[data-label="Events"] .pill'));
+        expect(pills.map((pill) => pill.textContent)).toEqual(ALL_EVENTS.map((kind) => EVENT_KIND_LABELS[kind]));
+        for (const pill of pills) expect(pill.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    });
+
+    it('tones the Question tag purple and only the Question tag', async () => {
+        const { table } = await open(ALL_EVENTS);
+        const toned = Array.from(table.querySelectorAll<HTMLElement>('[data-label="Events"] .pill-question'));
+        expect(toned.map((pill) => pill.textContent)).toEqual([EVENT_KIND_LABELS['task.question']]);
+    });
+
+    it('renders an all-repositories scope as one neutral tag, and named repos as one tag each', async () => {
+        const all = await open(['task.ready']);
+        const allTags = Array.from(all.table.querySelectorAll('[data-label="Repos"] .pill'));
+        expect(allTags.map((pill) => pill.textContent)).toEqual(['All repositories']);
+        cleanup();
+
+        const named = await open(['task.ready'], ['acme/api', 'acme/web']);
+        const tags = Array.from(named.table.querySelectorAll<HTMLElement>('[data-label="Repos"] .pill'));
+        expect(tags.map((pill) => pill.textContent)).toEqual(['acme/api', 'acme/web']);
+        expect(tags.map((pill) => pill.title)).toEqual(['acme/api', 'acme/web']);
+    });
+
+    it('shows the subscription count beside the heading, and none while the read is pending or failed', async () => {
+        const rows = [subscription(), subscription({ connectorKind: 'slack' })];
+        stubFetch(boardHandler(settingsBoard({ subscriptions: { org: [], workspace: rows } })));
+        renderApp('/settings/workspace');
+        const heading = await screen.findByRole('heading', { name: /^My notifications/ });
+        expect(heading.querySelector('.count')?.textContent).toBe('2');
+        cleanup();
+
+        stubFetch(
+            boardHandler(settingsBoard(), ({ method, url }) =>
+                method === 'GET' && url === PERSONAL_PATH ? { status: 503, body: { error: 'store down' } } : undefined
+            )
+        );
+        renderApp('/settings/workspace');
+        await screen.findAllByRole('alert');
+        expect(document.querySelector('.count')).toBeNull();
+    });
+
+    it('the channel cell shows the provider mark with the channel name', async () => {
+        const { table } = await open(['task.ready']);
+        const cell = table.querySelector<HTMLElement>('[data-label="Channel"]')!;
+        const mark = cell.querySelector('svg.provider-mark');
+        expect(mark?.getAttribute('aria-hidden')).toBe('true');
+        expect(mark?.getAttribute('role')).toBeNull();
+        expect(cell.textContent).toBe(channelLabel('discord'));
+    });
+
+    it('the Enabled control is a switch named for its row', async () => {
+        const { table } = await open(['task.ready']);
+        const toggle = within(table).getByRole('switch', { name: /^Enabled, Discord for/ });
+        expect(toggle.classList.contains('switch')).toBe(true);
     });
 });

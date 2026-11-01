@@ -16,6 +16,7 @@ export const ROWS = [
     'Text field',
     'Textarea',
     'Checkbox',
+    'Switch',
     'Pill',
     'Filter chip',
     'Banner (warn)',

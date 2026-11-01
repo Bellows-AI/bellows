@@ -62,6 +62,7 @@ const COMPOSITE_PAIRS: readonly Composite[] = [
         [`pill-warn on ${surface}`, '--lamp-wait', [surface, '--warn-wash']],
         [`pill-bad on ${surface}`, '--lamp-stop', [surface, '--bad-wash']],
         [`pill-done on ${surface}`, '--lamp-done', [surface, '--done-wash']],
+        [`pill-question on ${surface}`, '--question', [surface, '--question-wash']],
         [`pill-accent on ${surface}`, '--accent', [surface, '--accent-wash']],
         [`inbox-chip on ${surface}`, '--ink', [surface, '--accent-wash']],
         [`banner-warn on ${surface}`, '--ink', [surface, '--warn-wash']],

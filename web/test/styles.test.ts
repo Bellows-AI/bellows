@@ -552,6 +552,18 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         const css = stripComments(shippedCss());
         expect(css.match(/transition\s*:[^;{}]*/gi) ?? []).toEqual([]);
     });
+
+    it("the compact table resets the data table's mono cells to the inherited face", () => {
+        const css = stripComments(shippedCss());
+        const mono = css.indexOf('table.data td:not(:first-child)');
+        expect(mono, 'the data table sets mono on its non-first cells').toBeGreaterThanOrEqual(0);
+        const reset = rules(css).find(
+            ([prelude, body]) =>
+                prelude.includes('.data-compact') && /\btd\b/.test(prelude) && /font-family\s*:\s*inherit/.test(body)
+        );
+        expect(reset, 'a .data-compact td rule sets font-family: inherit').toBeDefined();
+        expect(css.indexOf(reset![0]), 'the reset follows the mono rule').toBeGreaterThan(mono);
+    });
 });
 
 describe('the style system file ownership (#321)', () => {

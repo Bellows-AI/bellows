@@ -385,6 +385,27 @@
         margin-top: 8px;
     }
 
+    /* The notification channel cell: the mark shrinks to sit beside its name, and the Enabled
+       switch's label keeps a 36px hit area. */
+    .data-compact .provider-mark {
+        height: 24px;
+        margin-right: 8px;
+        padding: 4px;
+        vertical-align: middle;
+        width: 24px;
+    }
+
+    .data-compact .settings-toggle {
+        margin-top: 0;
+        min-height: 36px;
+    }
+
+    .pill-list .pill {
+        max-width: 24ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
     .env-tabs {
         display: flex;
         gap: 6px;
