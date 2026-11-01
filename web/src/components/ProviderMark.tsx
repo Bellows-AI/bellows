@@ -1,33 +1,50 @@
 import { integrationProvider } from '../settings/integration-providers.js';
 
 /**
- * A provider's mark: one flat, single-color glyph filled with the provider's `--brand-<id>` token
- * (`styles/tokens.css`, defined for both themes), on a neutral tile (`.provider-mark`, `styles/regions/settings.css`).
- * Outside the frozen `Icon` set: these are brands, not interface glyphs, and they keep their color in both themes.
+ * A provider's mark: the provider's official logo shape, filled in one color with the provider's `--brand-<id>` token
+ * (`styles/tokens.css`, tuned per theme to hold 3:1 on the tile), on a neutral tile (`.provider-mark`,
+ * `styles/regions/settings.css`). Outside the frozen `Icon` set: these are brands, not interface glyphs.
  *
- * Source and licence of every path below: drawn for this repository as simplified geometric glyphs, 24x24 grid.
- * No third-party artwork or trademark vector is copied, so nothing here carries a third-party licence; swap in
- * the vendor's own asset (and record its source and licence at the path) when a brand kit is licensed.
+ * Sources: Simple Icons 16.36.0 (the path data is CC0; each mark stays its owner's trademark, used here only to name
+ * the integration, per the owner's brand guidelines), except Slack, which Simple Icons no longer carries. Each path
+ * keeps its published grid and the default nonzero fill rule it was drawn for.
  */
 
-const GLYPHS: Record<string, string> = {
-    // Three stacked chevrons.
-    jira: 'M12 2 20 10l-3 3-5-5-5 5-3-3zM12 8l8 8-3 3-5-5-5 5-3-3z',
-    // A hash: two vertical and two horizontal rounded bars.
-    slack: 'M8 3h2v18H8zM14 3h2v18h-2zM3 8h18v2H3zM3 14h18v2H3z',
-    // A speech bubble with two eyes.
-    discord:
-        'M5 5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-5l-2 3-2-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm3.5 4a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2zm7 0a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 0 0 0-3.2z',
-    // A disc with a ring cut out of it.
-    github: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4a6 6 0 1 1 0 12 6 6 0 0 1 0-12z',
-    // A fox-head triangle with two ears.
-    gitlab: 'M12 21 3 13l2-8 3 6h8l3-6 2 8z',
-    // Two interlocked links.
-    mcp: 'M3 8a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v2h-2V8a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h3v2H6a3 3 0 0 1-3-3zm9 3h6a3 3 0 0 1 3 3v2a3 3 0 0 1-3 3h-6a3 3 0 0 1-3-3v-2h2v2a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1h-6z',
+const GLYPHS: Record<string, { viewBox: string; d: string }> = {
+    // Simple Icons `jira`.
+    jira: {
+        viewBox: '0 0 24 24',
+        d: 'M11.571 11.513H0a5.218 5.218 0 0 0 5.232 5.215h2.13v2.057A5.215 5.215 0 0 0 12.575 24V12.518a1.005 1.005 0 0 0-1.005-1.005zm5.723-5.756H5.736a5.215 5.215 0 0 0 5.215 5.214h2.129v2.058a5.218 5.218 0 0 0 5.215 5.214V6.758a1.001 1.001 0 0 0-1.001-1.001zM23.013 0H11.455a5.215 5.215 0 0 0 5.215 5.215h2.129v2.057A5.215 5.215 0 0 0 24 12.483V1.005A1.001 1.001 0 0 0 23.013 0Z',
+    },
+    // Slack's 2019 mark (Wikimedia Commons `Slack_icon_2019.svg`), its four paths merged into one.
+    slack: {
+        viewBox: '0 0 127 127',
+        d: 'M27.2 80c0 7.3-5.9 13.2-13.2 13.2C6.7 93.2.8 87.3.8 80c0-7.3 5.9-13.2 13.2-13.2h13.2V80zm6.6 0c0-7.3 5.9-13.2 13.2-13.2 7.3 0 13.2 5.9 13.2 13.2v33c0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V80zM47 27c-7.3 0-13.2-5.9-13.2-13.2C33.8 6.5 39.7.6 47 .6c7.3 0 13.2 5.9 13.2 13.2V27H47zm0 6.7c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H13.9C6.6 60.1.7 54.2.7 46.9c0-7.3 5.9-13.2 13.2-13.2H47zM99.9 46.9c0-7.3 5.9-13.2 13.2-13.2 7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H99.9V46.9zm-6.6 0c0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V13.8C66.9 6.5 72.8.6 80.1.6c7.3 0 13.2 5.9 13.2 13.2v33.1zM80.1 99.8c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2-7.3 0-13.2-5.9-13.2-13.2V99.8h13.2zm0-6.6c-7.3 0-13.2-5.9-13.2-13.2 0-7.3 5.9-13.2 13.2-13.2h33.1c7.3 0 13.2 5.9 13.2 13.2 0 7.3-5.9 13.2-13.2 13.2H80.1z',
+    },
+    // Simple Icons `discord`.
+    discord: {
+        viewBox: '0 0 24 24',
+        d: 'M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z',
+    },
+    // Simple Icons `github`.
+    github: {
+        viewBox: '0 0 24 24',
+        d: 'M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12',
+    },
+    // Simple Icons `gitlab`.
+    gitlab: {
+        viewBox: '0 0 24 24',
+        d: 'm23.6004 9.5927-.0337-.0862L20.3.9814a.851.851 0 0 0-.3362-.405.8748.8748 0 0 0-.9997.0539.8748.8748 0 0 0-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 0 0-.29-.4412.8748.8748 0 0 0-.9997-.0537.8585.8585 0 0 0-.3362.4049L.4332 9.5015l-.0325.0862a6.0657 6.0657 0 0 0 2.0119 7.0105l.0113.0087.03.0213 4.976 3.7264 2.462 1.8633 1.4995 1.1321a1.0085 1.0085 0 0 0 1.2197 0l1.4995-1.1321 2.4619-1.8633 5.006-3.7489.0125-.01a6.0682 6.0682 0 0 0 2.0094-7.003z',
+    },
+    // Simple Icons `modelcontextprotocol`.
+    mcp: {
+        viewBox: '0 0 24 24',
+        d: 'M13.85 0a4.16 4.16 0 0 0-2.95 1.217L1.456 10.66a.835.835 0 0 0 0 1.18.835.835 0 0 0 1.18 0l9.442-9.442a2.49 2.49 0 0 1 3.541 0 2.49 2.49 0 0 1 0 3.541L8.59 12.97l-.1.1a.835.835 0 0 0 0 1.18.835.835 0 0 0 1.18 0l.1-.098 7.03-7.034a2.49 2.49 0 0 1 3.542 0l.049.05a2.49 2.49 0 0 1 0 3.54l-8.54 8.54a1.96 1.96 0 0 0 0 2.755l1.753 1.753a.835.835 0 0 0 1.18 0 .835.835 0 0 0 0-1.18l-1.753-1.753a.266.266 0 0 1 0-.394l8.54-8.54a4.185 4.185 0 0 0 0-5.9l-.05-.05a4.16 4.16 0 0 0-2.95-1.218c-.2 0-.401.02-.6.048a4.17 4.17 0 0 0-1.17-3.552A4.16 4.16 0 0 0 13.85 0m0 3.333a.84.84 0 0 0-.59.245L6.275 10.56a4.186 4.186 0 0 0 0 5.902 4.186 4.186 0 0 0 5.902 0L19.16 9.48a.835.835 0 0 0 0-1.18.835.835 0 0 0-1.18 0l-6.985 6.984a2.49 2.49 0 0 1-3.54 0 2.49 2.49 0 0 1 0-3.54l6.983-6.985a.835.835 0 0 0 0-1.18.84.84 0 0 0-.59-.245',
+    },
 };
 
 export function ProviderMark({ provider }: { provider: string }) {
-    const path = GLYPHS[provider];
+    const glyph = GLYPHS[provider];
     const name = integrationProvider(provider)?.label ?? provider;
     return (
         <svg
@@ -35,11 +52,10 @@ export function ProviderMark({ provider }: { provider: string }) {
             data-provider={provider}
             role="img"
             aria-label={`${name} logo`}
-            viewBox="0 0 24 24"
+            viewBox={glyph?.viewBox ?? '0 0 24 24'}
             fill={`var(--brand-${provider})`}
-            fillRule="evenodd"
         >
-            {path ? <path d={path} /> : null}
+            {glyph ? <path d={glyph.d} /> : null}
         </svg>
     );
 }
