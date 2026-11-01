@@ -46,6 +46,8 @@ Both or neither: one alone refuses to boot, naming the missing one. Restart the 
    can reach (or the one named).
 3. "Allow adding comments" on a connection's page asks Atlassian again with `write:jira-work` added; the row then shows `write`.
 
+`e2e/jira-connections.spec.ts` walks these steps against the stand-in.
+
 Refusals come back as one sentence on the page the consent started from; the codes are `AuthorizationFailure` in
 `server/src/integrations/authorization-types.ts`.
 

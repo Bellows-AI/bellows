@@ -104,6 +104,8 @@ export const SETTINGS_SHOTS: readonly Shot[] = [
     onOpenBoard('settings-workspace', '/settings/workspace', 'Workspace'),
     onOpenBoard('settings-repos', '/settings/repos', 'Repositories'),
     onOpenBoard('settings-executors', '/settings/executors', 'Executors'),
+    onOpenBoard('settings-integrations', '/settings/integrations', 'Integrations'),
+    onOpenBoard('settings-integrations-available', '/settings/integrations/available', 'Browse integrations'),
 ];
 
 export const ENTRY_SHOTS: readonly Shot[] = [

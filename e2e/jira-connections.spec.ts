@@ -59,7 +59,10 @@ async function pickFromMenu(page: Page, name: string) {
 /** Connect from the catalog's Jira card; the consent returns to the Integrations overview. */
 async function connect(page: Page, options: { comments?: boolean } = {}) {
     await page.goto(CATALOG);
-    await page.getByRole('listitem', { name: 'Jira' }).getByRole('button', { name: 'Connect', exact: true }).click();
+    await page
+        .getByRole('listitem', { name: 'Jira' })
+        .getByRole('button', { name: /^Connect( another)?$/ })
+        .click();
     const dialog = page.getByRole('dialog', { name: 'Connect Jira' });
     if (options.comments) await dialog.getByRole('checkbox', { name: 'Allow adding comments' }).check();
     await dialog.getByRole('button', { name: 'Continue to Atlassian' }).click();
@@ -150,6 +153,82 @@ test('allowing adding comments reconnects and the connection shows write', async
     await expect(after.getByRole('button', { name: 'Allow adding comments' })).toHaveCount(0);
     // Now a write row: Reconnect is its inline action.
     await expect(after.getByRole('button', { name: 'Reconnect' })).toBeVisible();
+});
+
+test('a successful return leaves a clean address and the notice does not come back on reload', async ({ page }) => {
+    await connect(page);
+    await expect(page.getByText('Jira connected.')).toBeVisible();
+
+    const url = new URL(page.url());
+    expect(url.pathname).toBe('/settings/integrations');
+    expect(url.search).toBe('');
+    await page.reload();
+    await expect(page.getByRole('link', { name: new RegExp(SITE) })).toBeVisible();
+    await expect(page.getByText('Jira connected.')).toHaveCount(0);
+});
+
+test('two accounts of one site are two cards with their own addresses, and each page survives a reload', async ({
+    page,
+}) => {
+    await connect(page);
+    await expect(page.getByText('Jira connected.')).toBeVisible();
+    await consentAs(page, 'b');
+    await connect(page);
+    await expect(page.getByText('Jira connected.')).toBeVisible();
+
+    const cards = page.getByRole('link', { name: new RegExp(SITE) });
+    await expect(cards).toHaveCount(2);
+    const hrefs = await cards.evaluateAll((links) => links.map((link) => link.getAttribute('href')));
+    expect(new Set(hrefs).size).toBe(2);
+
+    await page.goto(hrefs[1]!);
+    const detail = page.getByRole('region', { name: 'Jira connection' });
+    await expect(detail).toContainText('stub-account-');
+    const account = await detail.textContent();
+    await page.reload();
+    await expect(page.getByRole('region', { name: 'Jira connection' })).toHaveText(account!);
+});
+
+test('a stale connection address says it is not found', async ({ page }) => {
+    await page.goto('/settings/integrations/jira/00000000-0000-4000-8000-000000000000');
+    await expect(page.getByRole('heading', { name: 'Integration not found' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Jira connection' })).toHaveCount(0);
+});
+
+const THEMES = ['light', 'dark'] as const;
+const WIDTHS: ReadonlyArray<[string, number, number]> = [
+    ['desktop', 1440, 900],
+    ['mobile', 390, 844],
+];
+
+test('the overview, the catalog and the Jira page hold at mobile and desktop in both themes', async ({ page }) => {
+    await connect(page);
+    await expect(page.getByText('Jira connected.')).toBeVisible();
+    const overview = page.url();
+    const detail = await openDetail(page).then(() => page.url());
+    for (const theme of THEMES) {
+        await page.emulateMedia({ colorScheme: theme });
+        for (const [size, width, height] of WIDTHS) {
+            await page.setViewportSize({ width, height });
+            for (const [name, url, title] of [
+                ['overview', overview, 'Integrations'],
+                ['catalog', `${new URL(overview).origin}${CATALOG}`, 'Browse integrations'],
+                ['jira-detail', detail, 'Jira'],
+            ] as const) {
+                await page.goto(url);
+                await expect(page.getByRole('heading', { level: 1 })).toHaveCount(1);
+                await expect(page.getByRole('heading', { level: 1 })).toContainText(title);
+                const overflow = await page.evaluate(
+                    () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+                );
+                expect(overflow, `${name} overflows at ${size} ${theme}`).toBeLessThanOrEqual(0);
+                await page.screenshot({
+                    path: `${SHOTS}/settings-integrations-${name}-${size}-${theme}.png`,
+                    fullPage: true,
+                });
+            }
+        }
+    }
 });
 
 test('a member sees no Jira panel on the Organization or Workspace pages', async ({ page }) => {
