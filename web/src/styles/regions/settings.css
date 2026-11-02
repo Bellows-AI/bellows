@@ -256,25 +256,24 @@
     }
 
     /* Configure stays reachable without hunting for it: pinned to the wrap's trailing edge, with
-       a hairline that visibly rides over scrolled content underneath — the discoverable "this
-       still scrolls" cue the old plain cut-off column gave none of. */
+       the canvas fill the table sits on, opaque so scrolled content never shows through and invisible
+       until something scrolls under it. */
     table.repo-table th:last-child,
     table.repo-table td:last-child {
-        background: var(--surface-raised);
-        box-shadow: inset 1px 0 0 var(--line-strong);
+        background: var(--surface);
         position: sticky;
         right: 0;
         width: 120px;
     }
 
-    /* The configured row (concept 06's selected row): the accent wash, layered over the raised
+    /* The configured row (concept 06's selected row): the accent wash, layered over the canvas
        fill on the sticky cell so scrolled content never shows through a translucent wash. */
     table.repo-table tr.repo-row-configured td {
         background: var(--accent-wash);
     }
 
     table.repo-table tr.repo-row-configured td:last-child {
-        background: linear-gradient(var(--accent-wash), var(--accent-wash)), var(--surface-raised);
+        background: linear-gradient(var(--accent-wash), var(--accent-wash)), var(--surface);
     }
 
     /* Narrow widths stack rows as cards, mirroring the environment editor's pattern (issue 222):
@@ -449,31 +448,9 @@
         margin-bottom: 8px;
     }
 
-    .env-tabs {
-        display: flex;
-        gap: 4px;
-    }
-
-    .env-tab {
-        background: transparent;
-        border: none;
-        border-bottom: 2px solid transparent;
-        border-radius: 0;
-        color: var(--ink-muted);
-        font-size: 13px;
-        margin-bottom: -1px;
-        padding: 4px 10px;
-    }
-
-    .env-tab:hover {
-        background: var(--surface-raised);
-    }
-
-    /* The selected tab is the one carrying aria-selected — the attribute the roving focus moves
-        with the keyboard, so state and semantics cannot drift apart. */
-    .env-tab[aria-selected='true'] {
-        border-bottom-color: var(--accent);
-        color: var(--accent);
+    /* The shared .tabs strip rides the toolbar's own rule; its underline would double it. */
+    .env-toolbar .tabs {
+        border-bottom: none;
     }
 
     /* Aligned Name/Value/Actions columns, bounded rows: the Value column absorbs the width the
@@ -527,7 +504,6 @@
 
     .env-add {
         background: transparent;
-        border: 1px solid var(--line);
         color: var(--accent);
         font-size: 13px;
         padding: 4px 10px;
@@ -676,7 +652,7 @@
     }
 
     /* The badge shares the tab label's type, so the label and its count are one line box. */
-    .env-tab .count {
+    .tabs .count {
         font-size: inherit;
     }
 
@@ -690,9 +666,6 @@
     }
 
     .settings-rows {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
         list-style: none;
         margin: 0;
         padding: 0;
@@ -920,7 +893,6 @@
 
     /* ── settings touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
-        .env-tab,
         .scope-detail > summary,
         .settings-toggle,
         .repo-search input,
