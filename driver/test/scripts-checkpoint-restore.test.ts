@@ -1,4 +1,4 @@
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -362,7 +362,8 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
         expect(verdict.kind).toBeUndefined();
     });
     describe('FROM_REMOTE: no complete checkpoint, the tree is the pushed branch', () => {
-        const REMOTE_ENV = { FROM_REMOTE: '1' };
+        const NOTE = 'rebuilt from the pushed branch {branch}';
+        const REMOTE_ENV = { FROM_REMOTE: '1', REBUILD_NOTE: NOTE };
         const pushed = (name: string) => {
             fx.commitIn(fx.checkout(), `${name.replace('/', '-')}.txt`, 'pushed work\n', 'a pushed commit');
             git(fx.checkout(), 'push', '--quiet', 'origin', `HEAD:refs/heads/${name}`);
@@ -382,10 +383,34 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             expect(git(restoredTree(), 'config', `branch.${fx.branch()}.remote`)).toBe('origin');
             expect(git(restoredTree(), 'config', `branch.${fx.branch()}.merge`)).toBe(`refs/heads/${fx.branch()}`);
             expect(status(restoredTree())).toBe('');
-            mkdirSync(join(restoredTree(), '.factory'));
+            mkdirSync(join(restoredTree(), '.factory'), { recursive: true });
             writeFileSync(join(restoredTree(), '.factory', 'state.json'), '{}\n');
             expect(status(restoredTree())).not.toContain('.factory');
             expect(readdirSync(restoreDir())).toEqual(['factory']);
+        });
+
+        it('leaves the note in the tree, so the agent gets it after an interruption too, and the hook delivers it', async () => {
+            workedTree();
+            pushed(fx.branch());
+            const { url } = await serve(Buffer.alloc(0));
+
+            await restore([], url, REMOTE_ENV);
+            // The claim after an interruption finds the tree: the verdict carries no provenance, the tree does.
+            expect(await restore([], url, REMOTE_ENV)).toMatchObject({ ok: true, restored: false });
+
+            const out = execFileSync(
+                'node',
+                [join(SCRIPTS, '..', '..', '..', 'docker/claude-executor/turn-context-hook.cjs')],
+                {
+                    cwd: restoredTree(),
+                    env: { PATH: process.env.PATH ?? '' },
+                    input: '{}',
+                }
+            ).toString();
+            expect(JSON.parse(out).hookSpecificOutput.additionalContext).toBe(
+                `rebuilt from the pushed branch ${fx.branch()}`
+            );
+            expect(status(restoredTree())).toBe('');
         });
 
         it('takes the branch a truncated header names', async () => {

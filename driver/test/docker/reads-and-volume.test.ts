@@ -4,6 +4,7 @@ import { loadDriverConfig } from '../../src/config.js';
 import { TASK_ROOT_LABEL } from '../../src/task-volume.js';
 import { createDockerRunner } from '../../src/docker/docker-runner.js';
 import { untilStandDown } from '../../src/docker/docker-runner-support.js';
+import { remoteRebuildNote } from '../../src/publish/publish.js';
 import { gateName, reviewerName } from '../../src/docker/docker-group.js';
 import { supervisorName } from '../../src/docker/docker-mailbox.js';
 import {
@@ -342,29 +343,33 @@ describe('the docker runner restoring a task volume', () => {
     });
 
     describe('a remote rebuild (no complete checkpoint)', () => {
-        const REBUILT = '{"ok":true,"reason":null,"restored":true,"fromRemote":true,"branch":"factory/agent-work"}';
-        const claude = () => restoreJob({ executorType: 'claude-code' });
+        const claude = () => restoreJob({ executorType: 'claude-code', turnContext: 'board context' });
 
-        it("carries the rebuild's note into the turn context", async () => {
-            const steps = fakeSteps((step) => ok(step.id.endsWith('-restore') ? REBUILT : '{"ok":true,"reason":null}'));
+        // The agent's env is built from the job, so the note travels in the tree the step leaves (the hook reads
+        // it), not in the job: the same on both executors.
+        it('hands the step the credential and the note to leave in the tree, and leaves the job context alone', async () => {
+            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
             const { runner: r } = runner([], steps, { checkpoint: async () => ({ state: 'none' as const }) });
             const j = claude();
 
-            const result = await r.syncCheckout(j, undefined, null, 'ghs_x');
+            expect(await r.syncCheckout(j, undefined, null, 'ghs_x')).toEqual({ ok: true, reason: null });
 
-            expect(result).toEqual({ ok: true, reason: null });
-            expect(restoreStep(steps)?.step.env).toMatchObject({ FROM_REMOTE: '1' });
-            expect(j.turnContext).toContain('rebuilt from the pushed branch factory/agent-work');
+            expect(restoreStep(steps)?.step.env).toMatchObject({
+                FROM_REMOTE: '1',
+                REBUILD_NOTE: remoteRebuildNote('{branch}'),
+                CRED_HELPER: expect.any(String),
+            });
+            expect(j.turnContext).toBe('board context');
         });
 
-        it('leaves the turn context alone when the verdict does not say it was rebuilt from the remote', async () => {
+        it('asks nothing of the remote when a complete checkpoint rebuilds the tree', async () => {
             const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
             const { runner: r } = runner([], steps, { checkpoint: async () => POINTER });
-            const j = restoreJob({ executorType: 'claude-code', turnContext: 'board context' });
 
-            await r.syncCheckout(j, undefined, null, 'ghs_x');
+            await r.syncCheckout(claude(), undefined, null, 'ghs_x');
 
-            expect(j.turnContext).toBe('board context');
+            expect(restoreStep(steps)?.step.env).not.toHaveProperty('FROM_REMOTE');
+            expect(restoreStep(steps)?.step.env).not.toHaveProperty('REBUILD_NOTE');
         });
     });
 

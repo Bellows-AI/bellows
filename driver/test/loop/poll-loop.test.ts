@@ -421,7 +421,15 @@ describe('the poll loop', () => {
 
         // A follow-up restores its tree: nothing touches the remote, so nothing is asked.
         const restoring = stubBoard(
-            [{ ...job(2, 'session-x'), repo: 'Bellows-AI/bellows', followUp: true, publish: false }],
+            [
+                {
+                    ...job(2, 'session-x'),
+                    repo: 'Bellows-AI/bellows',
+                    followUp: true,
+                    publish: false,
+                    executorType: 'opencode',
+                },
+            ],
             {
                 githubToken: 'ghs_unused',
             }
@@ -430,6 +438,28 @@ describe('the poll loop', () => {
         await drive({ ...restoring, runner: restoreRunner });
         expect(restoreRunner.syncTokens).toEqual([undefined]);
         expect(restoring.board.githubAsks).toEqual([]);
+    });
+
+    // A Claude thread whose volume and checkpoint are lost is rebuilt from the pushed branch by the restore step,
+    // which clones under the claim's credential: the loop asks for one before the plan can say it is needed.
+    it("hands a Claude follow-up's restore a token minted for it", async () => {
+        const board = stubBoard(
+            [
+                {
+                    ...job(2, 'session-x'),
+                    repo: 'Bellows-AI/bellows',
+                    followUp: true,
+                    publish: false,
+                    executorType: 'claude-code',
+                },
+            ],
+            { githubToken: 'ghs_restore' }
+        );
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(runner.syncTokens).toEqual(['ghs_restore']);
     });
 
     // Only a succeeded run publishes: a failed or truncated run's tree may be mid-thought, and

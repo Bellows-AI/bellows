@@ -202,14 +202,12 @@ export const withConflictContext = (turnContext: string | undefined, paths: read
     ].join('\n\n');
 
 /**
- * The turn context a checkout rebuilt from the pushed branch adds: the task volume and its checkpoint were lost, so
- * edits not pushed before the loss are gone. Appended to the board's own context, which it never replaces.
+ * The note a checkout rebuilt from the pushed branch leaves in its tree (`.factory/rebuilt-from-remote`, written by
+ * scripts/checkpoint-restore.cjs from this template, read by the claude image's turn-context hook): the agent's env
+ * is built before the restore runs, so the tree is the channel read after it. `{branch}` is the script's to fill.
  */
-export const withRemoteRebuildContext = (turnContext: string | undefined, branch: string): string =>
-    [
-        ...(turnContext ? [turnContext] : []),
-        `The task volume and its checkpoint were lost; the checkout was rebuilt from the pushed branch ${branch} — edits not pushed before the loss are gone.`,
-    ].join('\n\n');
+export const remoteRebuildNote = (branch: string): string =>
+    `The task volume and its checkpoint were lost; the checkout was rebuilt from the pushed branch ${branch} — edits not pushed before the loss are gone.`;
 
 /** What the startup sync answers: ok, or the reason the run should not start from a stale tree. */
 export interface SyncResult {

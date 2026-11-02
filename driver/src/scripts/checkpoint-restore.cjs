@@ -36,6 +36,7 @@
 //   RESTORE_URL / RESTORE_TOKEN — the control endpoint serving the chunks, and its bearer (the supervisor adds them);
 //   SESSIONS_DIR  — optional: where the Claude session files go (`<transcript dir>/projects/<working dir>`);
 //   FROM_REMOTE   — optional '1': no complete checkpoint, rebuild the tree from the pushed branch;
+//   REBUILD_NOTE  — optional: with FROM_REMOTE, the note (`{branch}` filled in) left in `.factory/rebuilt-from-remote`;
 //   OPENCODE_DB   — optional: where the OpenCode session database goes;
 //   CRED_HELPER   — optional: the git credential-helper program (the token itself is in the environment).
 const { execFileSync } = require('node:child_process');
@@ -68,6 +69,7 @@ const credHelper = process.env.CRED_HELPER;
 const sessionsDir = process.env.SESSIONS_DIR;
 const opencodeDb = process.env.OPENCODE_DB;
 const fromRemote = process.env.FROM_REMOTE === '1';
+const rebuildNote = process.env.REBUILD_NOTE;
 const SESSION_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 
 class Unrestorable extends Error {}
@@ -483,6 +485,15 @@ const fromPushedBranch = async (work, headerBranch) => {
     git(tree, ['read-tree', '-u', '--reset', 'HEAD']);
     git(tree, ['config', 'branch.' + target + '.remote', 'origin']);
     git(tree, ['config', 'branch.' + target + '.merge', 'refs/heads/' + target]);
+    // The provenance stays in the tree (git-ignored `.factory/`): the agent's env is built before this step runs, and
+    // a claim after an interruption finds the tree with no verdict to say how it was made. The image's hook reads it.
+    if (rebuildNote) {
+        fs.mkdirSync(path.join(tree, '.factory'), { recursive: true });
+        fs.writeFileSync(
+            path.join(tree, '.factory', 'rebuilt-from-remote'),
+            rebuildNote.split('{branch}').join(target) + '\n'
+        );
+    }
     for (const file of sessions) fs.renameSync(file.temp, file.final);
     fs.renameSync(tree, checkout);
     return { ok: true, reason: null, restored: true, fromRemote: true, branch: target };

@@ -51,7 +51,7 @@ import { STOOD_DOWN } from './loop-types.js';
 import type { SyncResult } from '../publish/publish.js';
 import { agentFaults, gatesEligible, skipWhyOf } from './loop-ledger.js';
 import { report, reportFinish } from './loop-verdict.js';
-import { OPENCODE } from '../executors.js';
+import { CLAUDE_CODE, OPENCODE } from '../executors.js';
 import { masterPromptRefusalReason } from '../master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { stepLost } from '../step-control.js';
@@ -115,8 +115,10 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     const { runner } = rt;
     // An adopted run's tree is its result, and a taken-over run is still writing it: nothing rewrites it.
     if (ctx.adopted || ctx.takeover) return null;
-    // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not.
-    const fetches = Boolean(job.repo) && !claimContinuesSession(job);
+    // A starting claim's fetch reaches GitHub. A restore does not, except a Claude thread's: with no checkpoint its
+    // restore step clones the pushed branch (`task-restore.ts` `fromRemote`), a plan only the sync can make, so the
+    // credential is asked for beforehand. The sync step itself still drops it in restore mode.
+    const fetches = Boolean(job.repo) && (!claimContinuesSession(job) || job.executorType === CLAUDE_CODE);
     const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
     const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
     let syncedOut: { value: SyncResult } | null;

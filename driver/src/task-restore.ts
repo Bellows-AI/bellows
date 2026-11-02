@@ -9,7 +9,7 @@ import {
     CREDENTIAL_HELPER,
     remoteUrl,
     type SyncResult,
-    withRemoteRebuildContext,
+    remoteRebuildNote,
     worktreeBranch,
 } from './publish/publish.js';
 import { claimStepEnv, detailOf, type StepHost, stepRequest, submitStep } from './supervised-steps.js';
@@ -248,13 +248,7 @@ export const unrestorableResult = (e: CheckpointUnrestorable): SyncResult => ({
 });
 
 /** The restore script's verdict: a sync result, `absent` when it confirmed the volume holds no tree. */
-type RestoreVerdict = SyncResult & {
-    absent?: boolean;
-    transient?: boolean;
-    /** Set on an ok verdict that rebuilt the tree from the pushed branch, and the branch it stands on. */
-    fromRemote?: boolean;
-    branch?: unknown;
-};
+type RestoreVerdict = SyncResult & { absent?: boolean; transient?: boolean };
 
 /** The refusal the loop reports: only the script's own `checkpoint_unrestorable` verdict. */
 const refusalOf = (verdict: RestoreVerdict): SyncResult => {
@@ -280,13 +274,6 @@ function verdictOf(job: BoardJob, result: StepResult): RestoreVerdict {
     }
     if (verdict.ok === false && verdict.kind === 'checkpoint_unrestorable') return verdict;
     return unconfirmed();
-}
-
-/** Both executors' sync wrappers discard an ok restore result; the turn context is the channel to the agent. */
-function noteRemoteRebuild(job: BoardJob, verdict: RestoreVerdict): void {
-    if (verdict.fromRemote !== true) return;
-    const branch = typeof verdict.branch === 'string' && verdict.branch ? verdict.branch : worktreeBranch(job);
-    job.turnContext = withRemoteRebuildContext(job.turnContext, branch);
 }
 
 /**
@@ -318,7 +305,7 @@ export async function restoreTaskTree(
                 ...(pending.sessionsOnly || !checkout || !remote
                     ? {}
                     : { CHECKOUT: checkout, REMOTE: remote, BRANCH: worktreeBranch(job) }),
-                ...(pending.fromRemote ? { FROM_REMOTE: '1' } : {}),
+                ...(pending.fromRemote ? { FROM_REMOTE: '1', REBUILD_NOTE: remoteRebuildNote('{branch}') } : {}),
                 CHUNKS: JSON.stringify(pending.checkpoint?.chunks ?? []),
                 ...sessionEnv(job),
                 // The supervisor lays its control endpoint and token over this one step only.
@@ -347,7 +334,6 @@ export async function restoreTaskTree(
     }
     if (!verdict.ok) return refusalOf(verdict);
     pending.restored = true;
-    noteRemoteRebuild(job, verdict);
     // Durable before destructive: only now may the volume it replaces go. A delete that fails leaves an
     // older generation the next claim sees beside the current one and removes then.
     await options.removeOlder(pending.older).catch(() => undefined);
