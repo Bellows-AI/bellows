@@ -38,7 +38,8 @@
 //                 attempt and kept as it is after — still with no fetch and no rebase, because
 //                 nothing a reviewer needs is on the remote.
 //
-// STARTING claims, tree present (a failure aborts only the rebase this sync started; a rebase the run left is
+// STARTING claims, tree present (an existing tree on a named branch other than its base is rebased on that
+// branch, as publish pushes it; one on its base or a detached HEAD is put on the task branch; a failure aborts only the rebase this sync started; a rebase the run left is
 // never aborted): rebased onto the new default with --autostash, so a follow-up
 // works whether or not the previous run left uncommitted edits; the edits are stashed for the
 // rebase and reapplied on the new base. Git exits 0 even when the reapplied STASH conflicts (the
@@ -277,6 +278,17 @@ const hasRemoteRef = (name) => {
     }
 };
 
+/** Whether the tree has the local branch; only git's exit 1 is "no", any other failure is not an answer and throws. */
+const hasLocalRef = (name) => {
+    try {
+        inw('rev-parse', '--verify', '--quiet', 'refs/heads/' + name);
+        return true;
+    } catch (e) {
+        if (e && e.status === 1) return false;
+        throw e;
+    }
+};
+
 /**
  * The tree of a repository with no commits: HEAD is pointed at the unborn task branch, nothing
  * checked out, so the first commit starts the branch.
@@ -436,18 +448,20 @@ const cloneInto = (dest) =>
         { cwd: path.dirname(dest), encoding: 'utf8' }
     );
 
-/** Puts an existing tree on its task branch and rebases it onto the base; a conflicted tree is handed over. */
+/** Rebases an existing tree onto the base, on the named branch it stands on (the task branch from its base or a detached HEAD); a conflicted tree is handed over. */
 const rebaseExisting = (base, hasBase) => {
     // An existing tree over an empty remote has no new base to rebase onto: it is left as it is.
     if (!hasBase) return synced();
     // A tree a previous attempt left conflicted is handed over as it is: a second rebase would
     // refuse to start over its markers.
     if (rebaseInProgress() || unmergedPaths().length) return handOver();
+    // A tree on a named branch other than its base stays on it, as publish pushes it; one on its base, or on
+    // a detached HEAD, is put on the task branch.
     const on = inw('branch', '--show-current');
-    if (on !== branch) {
-        try {
+    if (!on || on === base) {
+        if (hasLocalRef(branch)) {
             inwFetching('checkout', branch);
-        } catch {
+        } else {
             inwFetching('checkout', '-b', branch, hasRemoteRef(branch) ? 'origin/' + branch : 'origin/' + base);
         }
     }

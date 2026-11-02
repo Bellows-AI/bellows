@@ -43,6 +43,64 @@ describe.skipIf(!hasGit())('the task checkout script', () => {
         expect(git(fx.checkout(), 'merge-base', 'HEAD', 'origin/main')).toBe(git(fx.work(), 'rev-parse', 'main'));
     });
 
+    describe('an existing tree on a branch of the agent’s own', () => {
+        const AGENT = 'factory/agent-work';
+        const agentBranch = (): void => {
+            expect(fx.sync()).toMatchObject({ ok: true });
+            git(fx.checkout(), 'switch', '-c', AGENT);
+            fx.commitIn(fx.checkout(), 'README.md', 'agent readme\n', 'agent work');
+        };
+
+        it('rebases the agent’s own branch onto the new default, never switching off it', () => {
+            agentBranch();
+            const taskRef = git(fx.checkout(), 'rev-parse', fx.branch());
+            fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+
+            expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+
+            expect(git(fx.checkout(), 'branch', '--show-current')).toBe(AGENT);
+            expect(git(fx.checkout(), 'log', '--format=%s')).toContain('agent work');
+            expect(git(fx.checkout(), 'merge-base', 'HEAD', 'origin/main')).toBe(git(fx.work(), 'rev-parse', 'main'));
+            expect(git(fx.checkout(), 'rev-parse', fx.branch())).toBe(taskRef);
+        });
+
+        it('keeps a dirty agent branch and its edits through the sync', () => {
+            agentBranch();
+            fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+            writeFileSync(join(fx.checkout(), 'README.md'), 'uncommitted edit\n');
+
+            expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+
+            expect(git(fx.checkout(), 'branch', '--show-current')).toBe(AGENT);
+            expect(readFileSync(join(fx.checkout(), 'README.md'), 'utf8')).toBe('uncommitted edit\n');
+        });
+
+        it('puts a tree left on the default branch back on the task branch', () => {
+            expect(fx.sync()).toMatchObject({ ok: true });
+            git(fx.checkout(), 'switch', 'main');
+            fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+
+            expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+
+            expect(git(fx.checkout(), 'branch', '--show-current')).toBe(fx.branch());
+        });
+
+        it('surfaces git’s own error, kindless, when a dirty tree cannot switch to the task branch', () => {
+            expect(fx.sync()).toMatchObject({ ok: true });
+            fx.commitIn(fx.checkout(), 'README.md', 'task readme\n', 'task work');
+            git(fx.checkout(), 'switch', 'main');
+            fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+            writeFileSync(join(fx.checkout(), 'README.md'), 'uncommitted edit\n');
+
+            const result = fx.sync();
+
+            expect(result.ok).toBe(false);
+            expect(result).not.toHaveProperty('kind');
+            expect(result.reason).toContain('would be overwritten');
+            expect(result.reason).not.toContain('already exists');
+        });
+    });
+
     it('refuses a path that holds something this sync did not create, deleting nothing', () => {
         mkdirSync(fx.checkout(), { recursive: true });
         writeFileSync(join(fx.checkout(), 'PRECIOUS.md'), 'uncommitted work\n');

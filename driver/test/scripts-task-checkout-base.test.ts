@@ -28,6 +28,17 @@ describe.skipIf(!hasGit())('the task checkout script (a named base branch)', () 
 
     const syncOnBase = () => runScript({ ...fx.syncEnv(), BASE_BRANCH: BASE });
 
+    it('puts a tree left on the base branch back on the task branch', () => {
+        createBase();
+        expect(syncOnBase()).toMatchObject({ ok: true });
+        git(fx.checkout(), 'switch', BASE);
+        pushBase('MORE.md', 'sandbox moves on');
+
+        expect(syncOnBase()).toMatchObject({ ok: true, reason: null });
+
+        expect(git(fx.checkout(), 'branch', '--show-current')).toBe(fx.branch());
+    });
+
     it('creates the checkout off origin/<base>, never the remote default', () => {
         createBase();
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'main moves on');
