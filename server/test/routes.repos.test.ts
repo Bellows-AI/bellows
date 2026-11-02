@@ -3,7 +3,7 @@ import { buildApp } from '../src/app.js';
 import type { GitHubAppClient, InstallationListing } from '../src/github/app-client.js';
 import { createRepoSource } from '../src/github/repo-source.js';
 import { listingClient, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
-import { HTTP_OK, trackApps } from './helpers-http.js';
+import { HTTP_BAD_REQUEST, HTTP_OK, trackApps } from './helpers-http.js';
 
 const track = trackApps();
 
@@ -116,5 +116,119 @@ describe('the repo source', () => {
         await expect(repos.list()).resolves.toEqual([
             { owner: 'acme', name: 'web', private: false, defaultBranch: null, pushedAt: null },
         ]);
+    });
+});
+
+describe('GET /api/repos/:owner/:name/branches', () => {
+    const HTTP_UNAVAILABLE = 503;
+    type Lister = NonNullable<NonNullable<Parameters<typeof staticRegistry>[0]>['listBranches']>;
+
+    async function bootBranches(listBranches?: Lister) {
+        const config = testConfig();
+        const repos = createRepoSource({ client: stubAppClient(async () => listing()) });
+        const app = track(
+            await buildApp({
+                config,
+                orgs: staticRegistry({ config, repos, telemetry: stubTelemetryClient(), listBranches }),
+            })
+        );
+        return app;
+    }
+    const get = (app: Awaited<ReturnType<typeof bootBranches>>, query = '', repo = 'acme/web') =>
+        app.inject({ method: 'GET', url: `/api/repos/${repo}/branches${query}` });
+
+    it('lists branches with the default branch and cursor', async () => {
+        const calls: unknown[] = [];
+        const app = await bootBranches(async (repo, opts) => {
+            calls.push([repo, opts]);
+            return { names: ['main', 'dev'], cursor: 'c1' };
+        });
+        const response = await get(app);
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toEqual({ branches: ['main', 'dev'], cursor: 'c1', defaultBranch: 'main' });
+        expect(calls).toEqual([['acme/web', {}]]);
+    });
+
+    it('searches by prefix server-side', async () => {
+        const calls: unknown[] = [];
+        const app = await bootBranches(async (_repo, opts) => {
+            calls.push(opts);
+            return { names: ['feat/a'], cursor: null };
+        });
+        const response = await get(app, '?q=feat/');
+        expect(response.json().branches).toEqual(['feat/a']);
+        expect(calls).toEqual([{ query: 'feat/' }]);
+    });
+
+    it('round-trips the cursor to the next page', async () => {
+        const calls: unknown[] = [];
+        const app = await bootBranches(async (_repo, opts) => {
+            calls.push(opts);
+            return { names: [], cursor: null };
+        });
+        await get(app, '?q=f&cursor=abc_-1');
+        expect(calls).toEqual([{ query: 'f', cursor: 'abc_-1' }]);
+    });
+
+    it('answers 400 BAD_BRANCH_CURSOR when the client refuses the cursor', async () => {
+        const { BranchCursorError } = await import('../src/github/app-client.js');
+        const app = await bootBranches(async () => {
+            throw new BranchCursorError('cursor belongs to another query');
+        });
+        const response = await get(app, '?cursor=forged');
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_BRANCH_CURSOR');
+    });
+
+    it.each(['a..b', '%20x', '-x', 'a%20b', 'a%00b', 'x'.repeat(256)])(
+        'answers 400 BAD_BRANCH_QUERY on %j',
+        async (q) => {
+            const app = await bootBranches(async () => ({ names: [], cursor: null }));
+            const response = await get(app, `?q=${q}`);
+            expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+            expect(response.json().code).toBe('BAD_BRANCH_QUERY');
+        }
+    );
+
+    it('answers 503 BRANCHES_UNAVAILABLE when the read fails, never an empty list', async () => {
+        const { GitHubReadError } = await import('../src/github/pr-read.js');
+        const app = await bootBranches(async () => {
+            throw new GitHubReadError('rate limited', 'rate_limited');
+        });
+        const response = await get(app);
+        expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(response.json().code).toBe('BRANCHES_UNAVAILABLE');
+        expect(response.json().branches).toBeUndefined();
+    });
+
+    it('answers 503 on a board with no client', async () => {
+        const app = await bootBranches(undefined);
+        const response = await get(app);
+        expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(response.json().code).toBe('BRANCHES_UNAVAILABLE');
+    });
+
+    it('refuses a repo the installation cannot see', async () => {
+        const app = await bootBranches(async () => ({ names: ['x'], cursor: null }));
+        const response = await get(app, '', 'acme/hidden');
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('UNKNOWN_REPO');
+    });
+
+    it('refuses a repo GitHub answers 404 for as not visible', async () => {
+        const { GitHubReadError } = await import('../src/github/pr-read.js');
+        const app = await bootBranches(async () => {
+            throw new GitHubReadError('gone', 'not_found');
+        });
+        const response = await get(app);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('UNKNOWN_REPO');
+    });
+
+    it('answers 200 [] only when GitHub answered []', async () => {
+        const app = await bootBranches(async () => ({ names: [], cursor: null }));
+        const response = await get(app, '?q=zzz');
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toEqual({ branches: [], cursor: null, defaultBranch: 'main' });
     });
 });

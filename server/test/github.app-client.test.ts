@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GitHubConfig } from '../src/config.js';
-import { createGitHubAppClient } from '../src/github/app-client.js';
+import { BranchCursorError, createGitHubAppClient } from '../src/github/app-client.js';
 import type { InstallationTokenProvider } from '../src/github/app-token.js';
 
 /**
@@ -167,5 +167,122 @@ describe('listRepositories', () => {
         );
 
         await expect(client.listRepositories()).rejects.toThrow(/403[\s\S]*rate limited/);
+    });
+});
+
+describe('listBranches', () => {
+    const branches = (...names: string[]) => names.map((name) => ({ name }));
+    const next = (page: number, base = 'https://api.github.test') => ({
+        link: `<${base}/repos/acme/web/branches?per_page=100&page=${page}>; rel="next", <${base}/repos/acme/web/branches?per_page=100&page=9>; rel="last"`,
+    });
+    const clientFor = (script: Call[], requests: string[] = []) =>
+        createGitHubAppClient(github, tokens, fetchScript(script, requests));
+
+    it('lists a page and returns a cursor from Link rel=next', async () => {
+        const requests: string[] = [];
+        const client = clientFor(
+            [
+                { path: '/x', status: 200, body: branches('main', 'dev'), headers: next(2) },
+                { path: '/x', status: 200, body: branches('zed') },
+            ],
+            requests
+        );
+
+        const first = await client.listBranches('acme/web', {});
+        expect(requests).toEqual(['/repos/acme/web/branches?per_page=100&page=1']);
+        expect(first.names).toEqual(['main', 'dev']);
+        expect(first.cursor).not.toBeNull();
+
+        const second = await client.listBranches('acme/web', { cursor: first.cursor! });
+        expect(requests[1]).toBe('/repos/acme/web/branches?per_page=100&page=2');
+        expect(second).toEqual({ names: ['zed'], cursor: null });
+    });
+
+    it('answers a null cursor without a Link next (a full page of 100 alone never implies more)', async () => {
+        const names = Array.from({ length: 100 }, (_, i) => `b${i}`);
+        const client = clientFor([{ path: '/x', status: 200, body: branches(...names) }]);
+
+        const page = await client.listBranches('acme/web', {});
+        expect(page.names).toHaveLength(100);
+        expect(page.cursor).toBeNull();
+    });
+
+    it('searches matching-refs/heads/<encoded segments> and strips refs/heads/', async () => {
+        const requests: string[] = [];
+        const client = clientFor(
+            [
+                {
+                    path: '/x',
+                    status: 200,
+                    body: [{ ref: 'refs/heads/feat/b' }, { ref: 'refs/heads/feat/a' }],
+                },
+            ],
+            requests
+        );
+
+        const page = await client.listBranches('acme/web', { query: 'fe at/x#' });
+        expect(requests).toEqual(['/repos/acme/web/git/matching-refs/heads/fe%20at/x%23']);
+        expect(page).toEqual({ names: ['feat/a', 'feat/b'], cursor: null });
+    });
+
+    it('pages a search by offset slices of one response (matching-refs is unpaginated)', async () => {
+        const refs = Array.from({ length: 250 }, (_, i) => ({ ref: `refs/heads/f${String(i).padStart(3, '0')}` }));
+        const requests: string[] = [];
+        const client = clientFor([{ path: '/x', status: 200, body: refs }], requests);
+
+        const one = await client.listBranches('acme/web', { query: 'f' });
+        expect(one.names).toHaveLength(100);
+        expect(one.names[0]).toBe('f000');
+        const two = await client.listBranches('acme/web', { query: 'f', cursor: one.cursor! });
+        expect(two.names[0]).toBe('f100');
+        const three = await client.listBranches('acme/web', { query: 'f', cursor: two.cursor! });
+        expect(three.names).toHaveLength(50);
+        expect(three.cursor).toBeNull();
+        expect(requests.every((r) => !/per_page|page=/.test(r))).toBe(true);
+    });
+
+    it.each([
+        ['a non-array body', { body: { message: 'x' } }],
+        ['a branch without name', { body: [{ nope: 1 }] }],
+        ['a Link next on a foreign origin', { body: branches('a'), headers: next(2, 'https://evil.test') }],
+        [
+            'a Link next without a page',
+            { body: branches('a'), headers: { link: '<https://api.github.test/x>; rel="next"' } },
+        ],
+    ])('throws READ_BINDING on %s', async (_label, answer) => {
+        const client = clientFor([{ path: '/x', status: 200, ...answer }]);
+        await expect(client.listBranches('acme/web', {})).rejects.toMatchObject({ kind: 'binding' });
+    });
+
+    it('throws READ_BINDING on a search entry outside refs/heads/ or without ref', async () => {
+        for (const body of [[{ ref: 'refs/tags/v1' }], [{ name: 'x' }]]) {
+            const client = clientFor([{ path: '/x', status: 200, body }]);
+            await expect(client.listBranches('acme/web', { query: 'v' })).rejects.toMatchObject({ kind: 'binding' });
+        }
+    });
+
+    it('rejects a cursor for another mode or query, or a forged one', async () => {
+        const client = clientFor([{ path: '/x', status: 200, body: branches('a'), headers: next(2) }]);
+        const page = await client.listBranches('acme/web', {});
+        for (const args of [
+            { query: 'f', cursor: page.cursor! },
+            { cursor: 'not-base64-json' },
+            { cursor: Buffer.from(JSON.stringify({ mode: 'list', query: '', page: 1 })).toString('base64url') },
+            { cursor: Buffer.from(JSON.stringify({ mode: 'list', query: '', page: 1e9 })).toString('base64url') },
+        ]) {
+            await expect(client.listBranches('acme/web', args)).rejects.toBeInstanceOf(BranchCursorError);
+        }
+    });
+
+    it('keeps a rate-limited 403 as READ_RATE_LIMITED', async () => {
+        const client = clientFor([
+            {
+                path: '/x',
+                status: 403,
+                body: { message: 'API rate limit exceeded' },
+                headers: { 'x-ratelimit-remaining': '0' },
+            },
+        ]);
+        await expect(client.listBranches('acme/web', {})).rejects.toMatchObject({ kind: 'rate_limited' });
     });
 });

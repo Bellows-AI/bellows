@@ -23,7 +23,7 @@ import {
     type NotificationSubscriptionStore,
 } from './notifications/subscription-store.js';
 import { createNotificationOutboxStore, type NotificationOutboxStore } from './notifications/outbox-store.js';
-import { createGitHubAppClient } from './github/app-client.js';
+import { createGitHubAppClient, type GitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
 import { trackedRepos } from './db/tracked-repos.js';
@@ -70,6 +70,8 @@ export interface OrgRuntime {
     prFollower?: PrFollower | undefined;
     /** Merges the PRs of automerge stages and verifies each merged stage (064); absent offline, where the board cannot merge. */
     batchMerger?: BatchMerger | undefined;
+    /** A page of the repository's branch names (or a prefix search) through the org's installation; absent offline. */
+    listBranches?: GitHubAppClient['listBranches'] | undefined;
     /** A branch's tip through the org's installation, null when it cannot be read; absent offline. */
     branchHead?: ((repo: string, branch: string) => Promise<string | null>) | undefined;
     /** The artifact index over the object store (070): the org's chunks and manifests; present with the other stores. */
@@ -381,7 +383,13 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
             repos,
             telemetry,
             service: createStatsService({ config, repos, telemetry }),
-            ...(client ? { branchHead: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
+            ...(client
+                ? {
+                      branchHead: (repo: string, branch: string) => client.readBranchHead(repo, branch),
+                      listBranches: (repo: string, request: { query?: string; cursor?: string }) =>
+                          client.listBranches(repo, request),
+                  }
+                : {}),
             githubToken: tokens,
         };
 

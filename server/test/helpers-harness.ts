@@ -45,6 +45,8 @@ export function staticRegistry(
         batchMerger?: OrgRuntime['batchMerger'];
         /** Present when the org's board reads branches through an installation. */
         branchHead?: OrgRuntime['branchHead'];
+        /** Present when the org's board lists branches through an installation. */
+        listBranches?: OrgRuntime['listBranches'];
         /** The org's own runtime store, when a test needs two orgs that do not share one. */
         batchesByOrg?: Readonly<Record<string, NonNullable<OrgRuntime['batches']>>>;
         connections?: OrgRuntime['connections'];
@@ -72,6 +74,7 @@ export function staticRegistry(
         batchObserver: parts.batchObserver,
         batchMerger: parts.batchMerger,
         branchHead: parts.branchHead,
+        listBranches: parts.listBranches,
         connections: parts.connections,
         githubToken: parts.githubToken,
         userExecutors: parts.userExecutors,

@@ -324,6 +324,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // Both fall through to 'user' rather than being listed anywhere, which is the point: the
     // default is the safe one, so a new route is walled unless somebody deliberately opens it.
     ['/api/repos', 'user'],
+    ['/api/repos/:owner/:name/branches', 'user'],
     ['/api/skills', 'user'],
     // Access-token management: a person's settings act, so session cookie or personal bearer —
     // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
