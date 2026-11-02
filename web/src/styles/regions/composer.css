@@ -72,13 +72,14 @@
         width: 100%;
     }
 
-    /* The one surface: the request on top, the chip-and-launch toolbar below, one border and one
-       radius (the chat-style input). Focus lightens its edge; the textarea and chips keep their
+    /* The one surface, the raised tier: the request on top, the chip-and-launch toolbar below, one
+       hairline, one radius and the soft float shadow (the chat-style input). Focus lightens its edge; the textarea and chips keep their
        own 2px focus ring. */
     .composer-surface {
-        background: var(--surface);
-        border: 1px solid var(--line-strong);
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
         border-radius: var(--radius-lg);
+        box-shadow: 0 2px 8px var(--shadow-float);
         display: flex;
         flex-direction: column;
         gap: 8px;
