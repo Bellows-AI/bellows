@@ -19,7 +19,7 @@
 // Environment (set by the supervisor; paths and a branch name, never a credential):
 //   CHECKOUT    — the task's own tree (`/task/<repo segment>`); unset for a repository-free OpenCode task, which
 //                 then checkpoints only its session database (header `tip: null`, no bundle) or answers `none`;
-//   BRANCH      — the branch it runs on (`factory/<thread root id>`);
+//   BRANCH      — the fallback branch (`factory/<thread root id>`), recorded when HEAD is detached;
 //   BASE        — optional: the branch the task bases on (the claim's base; recorded in the header);
 //   OUT_DIR     — where the parts are written; emptied first;
 //   OPENCODE_DB — optional: the OpenCode session database to snapshot (absent file: no snapshot);
@@ -210,12 +210,14 @@ const main = async () => {
     // A run killed between update-ref and its delete leaves the ref behind in the real repository.
     git(['update-ref', '-d', TIP_REF]);
     const { tip, parent } = commitTree();
+    // The branch the tree stands on (git exits 1 for a detached HEAD); an unborn branch still reads its name.
+    const current = optional(['symbolic-ref', '--quiet', '--short', 'HEAD']);
     const prerequisites = remoteRefs();
     const header = {
         version: HEADER_VERSION,
         tip,
         parent,
-        branch,
+        branch: current || branch,
         base,
         defaultBranch: defaultBranch(),
         prerequisites,
