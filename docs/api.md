@@ -10,7 +10,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Personal and org access tokens | `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts` |
 | Liveness and readiness probes | `server/src/routes/health.ts` | `server/test/routes.health.test.ts` |
 | Release version (`/api/version`, open) | `server/src/routes/version.ts` | `server/test/routes.version.test.ts` |
-| Skill discovery (`GET /api/skills`; never the instructions) | `server/src/routes/skills.ts` | `server/test/skills.test.ts` |
+| Skill discovery (`GET /api/skills`; never the instructions) and the repo slash-menu list (`GET /api/repos/:owner/:name/skills?branch=`: built-ins + `.claude/skills` at the tip; an unconfirmed repo read is `repoError`) | `server/src/routes/skills.ts`, `server/src/github/skill-read.ts` | `server/test/skills.test.ts`, `server/test/routes.repo-skills.test.ts`, `server/test/github.skill-read.test.ts` |
 | `baseBranch` on `POST /api/jobs` (`BAD_BASE_BRANCH` 400; `UNKNOWN_BASE_BRANCH` 422 only on a confirmed 404, an unconfirmed read accepts) | `server/src/routes/jobs/job-handlers-worker.ts` | `server/test/routes.jobs-base-branch.test.ts` |
 | Dashboard payload (`/api/stats`) | `server/src/routes/stats.ts`, `core/src/types.ts` (`StatsUsage`) | `server/test/routes.stats.get.test.ts`, `server/test/routes.stats.scope.test.ts` |
 | OTLP ingest, `/api/sessions/branch` | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |

@@ -286,3 +286,21 @@ describe('listBranches', () => {
         await expect(client.listBranches('acme/web', {})).rejects.toMatchObject({ kind: 'rate_limited' });
     });
 });
+
+describe('listRepoSkills', () => {
+    it('reaches every request with the caller signal, and an aborted caller stops the read', async () => {
+        const seen: AbortSignal[] = [];
+        const fetchFn = (async (_input: unknown, init?: RequestInit) => {
+            seen.push(init?.signal as AbortSignal);
+            return new Response(JSON.stringify({ sha: 'abc' }), { status: 200 });
+        }) as typeof fetch;
+        const client = createGitHubAppClient(github, tokens, fetchFn);
+        const controller = new AbortController();
+        const read = await client.listRepoSkills('acme/skills-signal', 'main', controller.signal).catch((e) => e);
+        // The tip answered {sha}; the directory read got the same JSON, a non-array: unconfirmed, not "none".
+        expect(read).toMatchObject({ kind: 'binding' });
+        expect(seen.length).toBeGreaterThan(1);
+        controller.abort();
+        expect(seen.every((signal) => signal.aborted)).toBe(true);
+    });
+});

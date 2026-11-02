@@ -310,7 +310,7 @@ export async function buildApp({
             await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
     }
-    await app.register(skillRoutes(skillCatalog));
+    await app.register(skillRoutes(skillCatalog, orgs));
     await app.register(statsRoutes(config, orgs, auth, now));
     await app.register(repoRoutes({ config, orgs }));
     if (store) await app.register(ingestRoutes(store, orgs));

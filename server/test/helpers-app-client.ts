@@ -13,4 +13,5 @@ export const listingClient = (listRepositories: GitHubAppClient['listRepositorie
     readBranchHead: unstubbed('readBranchHead'),
     listBranches: unstubbed('listBranches'),
     readFileAtBranchTip: unstubbed('readFileAtBranchTip'),
+    listRepoSkills: unstubbed('listRepoSkills'),
 });

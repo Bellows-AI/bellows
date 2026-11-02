@@ -80,6 +80,10 @@ const OBJECTIVE_RULES = `${RULES_HEAD}
 - You may edit files, run tests and other local verification, and commit, as the current task requires.
 ${RULES_TAIL}`;
 
+/** A `/name` skill token: at the start or after whitespace, so a path (`a/b`, a URL) never matches. */
+const SLASH_SKILL_TOKEN = /(?:^|\s)\/[a-z0-9][a-z0-9_-]*/;
+const SLASH_SKILL_LINE = 'A `/name` in the task names a skill: load it with your skill tool and follow it.';
+
 /** What one claim resolves the prompt from — trusted, already-validated board metadata only. */
 export interface MasterPromptClaimInput {
     /** The thread's stored execution mode (051): what the context block's `Mode:` line renders. */
@@ -98,11 +102,37 @@ export interface MasterPromptClaimInput {
      * Absent is none.
      */
     skills?: readonly string[];
+    /** The claimed row's own command: a `/name` token in it names a skill (the composer's slash menu). */
+    command: string;
+}
+
+/** The prompt input of one claimed row: the row's snake_case columns, the thread's snapshot and this claim's helper plans. */
+export function claimPromptInput(
+    row: {
+        mode: JobMode;
+        workflow_node: string | null;
+        workflow_name: string | null;
+        skills: string[];
+        command: string;
+    },
+    snapshot: WorkflowDefinition | null,
+    helperPlans: ClaimHelperPlan[] | undefined
+): MasterPromptClaimInput {
+    return {
+        mode: row.mode,
+        workflowNode: row.workflow_node,
+        workflowName: row.workflow_name,
+        snapshot,
+        helperPlans,
+        skills: row.skills,
+        command: row.command,
+    };
 }
 
 interface RenderContext {
     mode: JobMode;
     skills: readonly string[];
+    slashSkill: boolean;
     workflowName: string | null;
     workflowNode: string | null;
     capabilities: readonly CapabilityLabel[];
@@ -124,6 +154,7 @@ function renderContextBlock(ctx: RenderContext): string {
             '- Load each selected skill with your skill tool before you start and follow its instructions; a skill grants no access beyond what this task already has.'
         );
     }
+    if (ctx.slashSkill) lines.push(`- ${SLASH_SKILL_LINE}`);
     return lines.join('\n');
 }
 
@@ -203,6 +234,7 @@ function renderContext(input: MasterPromptClaimInput): RenderContext | null {
     return {
         mode,
         skills: input.skills ?? [],
+        slashSkill: SLASH_SKILL_TOKEN.test(input.command),
         workflowName,
         workflowNode,
         capabilities: claimCapabilities(input, node),

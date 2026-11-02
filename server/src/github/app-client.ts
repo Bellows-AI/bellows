@@ -19,6 +19,7 @@ import {
     readPullRequest,
     type BranchState,
 } from './pr-read.js';
+import { readRepoSkills, type RepoSkillRead } from './skill-read.js';
 
 /**
  * What the App installation reports it can see. This replaced ORG_REPOS: the credential and the
@@ -85,6 +86,12 @@ export interface GitHubAppClient {
      * `GitHubReadError` for a failure that says nothing about the repository (rate limit, transport).
      */
     readFileAtBranchTip(repo: string, branch: string | null, path: string): Promise<RepoFileRead | null>;
+    /**
+     * The repository's own `.claude/skills` at the tip of `branch` (the default branch when null).
+     * Resolves only for a confirmed answer (a 404 skills directory is `skills: []`); every other
+     * failure, including `signal` aborting or the deadline, rejects.
+     */
+    listRepoSkills(repo: string, branch: string | null, signal?: AbortSignal): Promise<RepoSkillRead>;
 }
 
 /**
@@ -119,7 +126,8 @@ function pagedCaller(
     fetchFn: typeof fetch,
     now: () => number
 ): PagedCall {
-    return async (path) => {
+    return async (path, signal) => {
+        const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         const response = await fetchFn(`${github.apiUrl}${path}`, {
             headers: {
                 authorization: `Bearer ${await tokens.get()}`,
@@ -128,7 +136,7 @@ function pagedCaller(
                 'user-agent': 'factory-ai',
             },
             // Well under the observation lease: a stalled request must fail as transport, not hold a pass.
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         });
         if (!response.ok) {
             const detail = (await response.text().catch(() => '')).slice(0, ERROR_DETAIL_LIMIT);
@@ -145,7 +153,7 @@ export function createGitHubAppClient(
     now: () => number = Date.now
 ): GitHubAppClient {
     const callPage = pagedCaller(github, tokens, fetchFn, now);
-    const call = async (path: string): Promise<unknown> => (await callPage(path)).body;
+    const call = async (path: string, signal?: AbortSignal): Promise<unknown> => (await callPage(path, signal)).body;
 
     // Only successful ruleset answers are kept; a failure is asked again next time.
     const rules = new Map<string, { at: number; body: unknown }>();
@@ -275,6 +283,14 @@ export function createGitHubAppClient(
         async readFileAtBranchTip(repo, branch, path) {
             try {
                 return await readRepoFileAtBranchTip(call, repo, branch, path);
+            } catch (e) {
+                throw readError(e);
+            }
+        },
+
+        async listRepoSkills(repo, branch, signal) {
+            try {
+                return await readRepoSkills(call, repo, branch, signal ? { signal } : {});
             } catch (e) {
                 throw readError(e);
             }

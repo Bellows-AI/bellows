@@ -43,7 +43,7 @@ function decodeCursor(raw: string, mode: BranchCursor['mode'], query: string): n
 }
 
 /** One GET returning the parsed body and the `Link` header (`callPage` in app-client.ts). */
-export type PagedCall = (path: string) => Promise<{ body: unknown; link: string | null }>;
+export type PagedCall = (path: string, signal?: AbortSignal) => Promise<{ body: unknown; link: string | null }>;
 
 export function createBranchLister(callPage: PagedCall, apiUrl: string) {
     /** The `page` of a `rel="next"` link on our own API origin; anything else cannot be trusted as a cursor. */

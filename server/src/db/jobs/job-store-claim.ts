@@ -39,7 +39,7 @@ import type {
 } from './job-store-types.js';
 import { type ClaimCandidateRow, rootRowFree, withClaimAttachments } from './job-store-claim-row.js';
 import { claimCommand } from '../follow-up-recap.js';
-import { resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
+import { claimPromptInput, resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
 import { skillCatalog } from '../../skills.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from '../workflows/workflow-blocks/runtime.js';
 import {
@@ -874,7 +874,7 @@ export async function resolveClaimHelperPlans(
 async function resolveClaimWorkflow(
     tx: TransactionSql,
     ctx: { orgId: string; rootJobId: string; prs: JobStorePrs | undefined },
-    row: { workflow_node: string | null; workflow_name: string | null; mode: JobMode; skills: string[] },
+    row: Pick<ClaimCandidateRow, 'workflow_node' | 'workflow_name' | 'mode' | 'skills' | 'command'>,
     gates: ClaimGatesRead
 ): Promise<
     ResolvedClaimPublish & {
@@ -894,14 +894,7 @@ async function resolveClaimWorkflow(
         snapshot,
         prs,
     });
-    const promptInput = {
-        mode: row.mode,
-        workflowNode: row.workflow_node,
-        workflowName: row.workflow_name,
-        snapshot,
-        helperPlans,
-        skills: row.skills,
-    };
+    const promptInput = claimPromptInput(row, snapshot, helperPlans);
     return {
         ...published,
         helperPlans,
