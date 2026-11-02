@@ -137,12 +137,13 @@
         min-height: 40px;
     }
 
-    /* The secondary button — every button's default: an outline on the page, filled only on
-       hover. `primary` and `danger` below are the two variants. */
+    /* The secondary button — every button's default: a quiet fill at rest and no visible frame
+       (the border stays transparent, so a state that adds one back shifts nothing). `primary`,
+       `tertiary`, `icon-button` and `danger` below are the variants. */
     button {
-        background: transparent;
+        background: var(--surface-strong);
         color: var(--ink);
-        border: 1px solid var(--line-strong);
+        border: 1px solid transparent;
         border-radius: var(--radius-lg);
         /* Desktop control floor (issue 189): padding alone lands a 31px control; every button,
            tab and verdict clears 36. The compact shell restates 44 for touch below. */
@@ -157,7 +158,7 @@
        a skin with status text or no frame restates its own hover. Disabled comes after, so a dead
        button never lights up. */
     button:hover {
-        background: var(--surface-strong);
+        background: var(--surface-hover);
     }
 
     /* Held down (issue 265): a press must look different from a hover, or a member cannot tell a
@@ -170,8 +171,7 @@
     button:disabled {
         background: transparent;
         color: var(--ink-muted);
-        cursor: default;
-        border-color: var(--line);
+        cursor: not-allowed;
     }
 
     /* The page's one main action. Disabled trades the accent for the strong surface, so a
@@ -202,9 +202,30 @@
         cursor: not-allowed;
     }
 
-    /* The destructive variant: the stop lamp's text and edge, its wash on hover. */
+    /* The quietest action: no fill until hovered, never the page's one main thing. */
+    button.tertiary {
+        background: transparent;
+    }
+
+    button.tertiary:hover:not(:disabled),
+    button.icon-button:hover:not(:disabled) {
+        background: var(--surface-hover);
+    }
+
+    /* An icon alone in a button: a square tertiary target on the 36px floor. */
+    button.icon-button {
+        align-items: center;
+        background: transparent;
+        display: inline-flex;
+        justify-content: center;
+        min-width: 36px;
+        padding: 4px;
+    }
+
+    /* The destructive variant: the stop lamp's text with no frame or fill at rest, its wash on
+       hover. Never filled: danger is never visually primary. */
     button.danger {
-        border-color: var(--bad-border);
+        background: transparent;
         color: var(--lamp-stop);
     }
 
@@ -221,8 +242,34 @@
     }
 
     button.danger:disabled {
-        border-color: var(--line);
         color: var(--ink-muted);
+    }
+
+    /* The shared tab strip: a row of `role="tab"` buttons, the selected one (aria-selected, the
+       attribute roving focus moves) marked by an accent underline and ink. Lanes migrate their own
+       tab skins onto it. */
+    .tabs {
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .tabs [role='tab'] {
+        background: transparent;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        color: var(--ink-muted);
+        margin-bottom: -1px;
+    }
+
+    .tabs [role='tab']:hover:not(:disabled, [aria-selected='true']) {
+        background: var(--surface-strong);
+    }
+
+    .tabs [role='tab'][aria-selected='true'] {
+        border-bottom-color: var(--accent);
+        color: var(--accent);
     }
 
     /* The one text-field skin (inputs, selects and textareas alike): sunken, framed by the
@@ -324,7 +371,7 @@
     .select-trigger:disabled {
         border-color: transparent;
         color: var(--ink-muted);
-        cursor: default;
+        cursor: not-allowed;
     }
 
     /* The chevron is the "a choice is available here" cue; a disabled trigger has none to make. */

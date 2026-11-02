@@ -553,6 +553,39 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(flat).toMatch(/border[a-z-]*\s*:[^;]*var\(--line\)/);
     });
 
+    it('rests secondary buttons without a visible frame and gives them the quiet soft fill', () => {
+        const css = stripComments(shippedCss());
+        const body = (selector: string) => rules(css).find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        const bare = body('button');
+        expect(bare).toMatch(/border\s*:\s*1px solid transparent/);
+        expect(bare).toContain('background: var(--surface-strong)');
+        expect(body('button:disabled')).toMatch(/cursor\s*:\s*not-allowed/);
+        expect(body('button.danger')).not.toMatch(/border[a-z-]*\s*:/);
+        expect(body('button.danger')).toMatch(/background\s*:\s*transparent/);
+    });
+
+    it('ships tertiary, icon-button and tabs variants whose focus falls to the global ring', () => {
+        const css = stripComments(shippedCss());
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('button.tertiary')).toMatch(/background\s*:\s*transparent/);
+        expect(body('button.icon-button')).toMatch(/min-width\s*:\s*36px/);
+        expect(body(".tabs [role='tab'][aria-selected='true']")).toContain('var(--accent)');
+        for (const variant of ['button.tertiary', 'button.icon-button']) {
+            const hover = all.find(([prelude]) => prelude.includes(`${variant}:hover:not(:disabled)`));
+            expect(hover?.[1], `${variant} hover fill`).toContain('var(--surface-hover)');
+        }
+        for (const verdict of ['.chat-done', '.chat-stop', '.chat-remove']) {
+            expect(body(verdict), `${verdict} rests transparent`).toMatch(/background\s*:\s*transparent/);
+        }
+        const ring = all.find(([prelude]) => /:where\([^)]*\bbutton\b[^)]*\):focus-visible/.test(prelude));
+        expect(ring?.[1]).toMatch(/outline\s*:\s*2px solid var\(--accent\)/);
+        for (const [prelude, text] of all) {
+            if (/tertiary|icon-button|\.tabs/.test(prelude))
+                expect(text, prelude).not.toMatch(/outline\s*:\s*(none|0)/);
+        }
+    });
+
     it('keeps the panel rules on the spacing scale', () => {
         const SCALE = [0, 4, 8, 12, 16, 24, 32, 48];
         const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));

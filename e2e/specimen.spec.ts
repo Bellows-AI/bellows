@@ -55,6 +55,15 @@ const TARGETS: Target[] = [
         focusable: true,
         pressable: true,
     },
+    {
+        name: 'tertiary-button',
+        row: 'Tertiary button',
+        hover: (c) => c.getByRole('button'),
+        focusable: true,
+        pressable: true,
+    },
+    { name: 'icon-button', row: 'Icon button', hover: (c) => c.getByRole('button'), focusable: true },
+    { name: 'tabs', row: 'Tabs', hover: (c) => c.getByRole('tab').nth(1), focusable: true },
     { name: 'field', row: 'Text field', hover: (c) => c.getByRole('textbox'), focusable: true },
     { name: 'textarea', row: 'Textarea', hover: (c) => c.getByRole('textbox'), focusable: true },
     { name: 'checkbox', row: 'Checkbox', hover: (c) => c.getByRole('checkbox'), focusable: true },
@@ -140,6 +149,14 @@ test.describe('component-state specimen', () => {
                     const target = id === null ? undefined : pending.get(id);
                     if (!target) continue;
                     pending.delete(id!);
+                    // The global ring serves every variant: a tertiary, icon-only or tab control keeps it.
+                    const outline = await page.evaluate(() => {
+                        const s = getComputedStyle(document.activeElement!);
+                        return `${s.outlineStyle} ${s.outlineWidth}`;
+                    });
+                    if (/^(Tertiary button|Icon button|Tabs)$/.test(target.row)) {
+                        expect(outline, `${target.name} focus ring`).toBe('solid 2px');
+                    }
                     await cell(page, target.row, 'Default').screenshot({
                         path: `${STATES_OUT}/${target.name}-focus-${theme}-${viewport.width}.png`,
                     });
