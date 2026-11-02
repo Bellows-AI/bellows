@@ -248,18 +248,18 @@ describe('ScopeToggle', () => {
     const renderToggle = (scope: ScopeSelection) =>
         renderToStaticMarkup(<ScopeToggle scope={scope} onChange={() => {}} />);
 
-    it('renders one labeled Scope dropdown, no radio semantics', () => {
+    it('renders the shared tabs strip, labeled Scope, with the selected tab marked', () => {
         const html = renderToggle('org');
-        expect(html).toContain('<legend');
         expect(html).toContain('>Scope<');
-        expect(html).toContain('id="scope-select"');
-        expect(html).toContain('aria-haspopup="listbox"');
+        expect(html).toContain('class="tabs" role="tablist" aria-label="Scope"');
+        expect(html).not.toContain('aria-haspopup');
         expect(html).not.toContain('role="radio"');
-        expect(html).not.toContain('range-option');
+        expect(html).toMatch(/role="tab"[^>]*aria-selected="true"[^>]*>Organization<\/button>/);
+        expect(html).toMatch(/role="tab"[^>]*aria-selected="false"[^>]*>Personal<\/button>/);
     });
 
-    it('shows the selected scope on the trigger, spelled out in full', () => {
-        expect(renderToggle('org')).toContain('>Organization</button>');
-        expect(renderToggle('mine')).toContain('>Personal</button>');
+    it('marks the personal tab when it is the scope, spelled out in full', () => {
+        expect(renderToggle('mine')).toMatch(/aria-selected="true"[^>]*>Personal<\/button>/);
+        expect(renderToggle('mine')).toMatch(/aria-selected="false"[^>]*>Organization<\/button>/);
     });
 });

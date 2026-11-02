@@ -12,7 +12,6 @@ import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
 import { pct, tokens } from '../src/format.js';
 import { figure } from '../src/components/usage/usage-format.js';
 import { PAD } from '../src/charts/scale.js';
-import { Icon, type IconName } from '../src/components/Icon.js';
 import type { TaskUsageStats } from '@factory-ai/core';
 
 /**
@@ -306,11 +305,12 @@ describe('telemetry panels render — usage summary panel', () => {
         return html.slice(start, end === -1 ? undefined : end);
     };
 
-    it('renders four metric cards in order: Sessions, Tokens, Active time, Edit acceptance', () => {
+    it('renders four metrics in order: Sessions, Tokens, Active time, Edit acceptance', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
         // DOM order IS the reading order at every width.
         expect(html.match(/class="usage-group"/g)).toHaveLength(4);
-        expect(html.match(/class="usage-disc/g)).toHaveLength(4);
+        expect(html).not.toContain('usage-disc');
+        expect(html).not.toContain('<svg');
         const labels = ['Sessions', 'Total input tokens', 'Active time', 'Edit acceptance'].map((label) =>
             html.indexOf(`>${label}</span>`)
         );
@@ -318,19 +318,11 @@ describe('telemetry panels render — usage summary panel', () => {
         expect([...labels].sort((x, y) => x - y)).toEqual(labels);
     });
 
-    it('gives each card its glyph in a disc, edit acceptance on the ok wash', () => {
+    it('draws no glyph disc: the strip is figures, labels and captions only', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
-        const glyphs: [string, IconName][] = [
-            ['Sessions', 'users'],
-            ['Total input tokens', 'layers'],
-            ['Active time', 'clock'],
-            ['Edit acceptance', 'check'],
-        ];
-        for (const [label, name] of glyphs) {
-            expect(card(html, label)).toContain(renderToStaticMarkup(<Icon name={name} size={24} />));
+        for (const label of ['Sessions', 'Total input tokens', 'Active time', 'Edit acceptance']) {
+            expect(card(html, label)).not.toMatch(/usage-disc|<svg/);
         }
-        expect(html.match(/usage-disc usage-disc-ok/g)).toHaveLength(1);
-        expect(card(html, 'Edit acceptance')).toContain('usage-disc usage-disc-ok');
     });
 
     it('headlines total input, with output, cache hit rate and the three input parts beneath', () => {

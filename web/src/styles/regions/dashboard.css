@@ -11,13 +11,12 @@
         gap: 16px;
     }
 
-    /* The analytics toolbar (issue 283): one 64px raised panel — Range, Scope, the repository coverage
+    /* The analytics toolbar (issue 283): one 64px soft panel — Range, Scope, the repository coverage
        and, pushed to the far edge, the freshness stamp. It wraps rather than overflows, so a
        narrow screen restacks the same order. */
     .analytics-toolbar {
         align-items: center;
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
+        background: var(--surface-soft);
         border-radius: var(--radius-xl);
         display: flex;
         flex: 1 1 100%;
@@ -191,41 +190,24 @@
         display: block;
     }
 
-    /* The metric summary (issue 283): four cards in reading order — Sessions, Tokens, Active time, Edit
-       acceptance. Narrow widths restack the same DOM order; presentation never reorders content. */
+    /* The metric summary: one open strip in reading order — Sessions, Tokens, Active time, Edit
+       acceptance — between two hairlines, each figure set apart from the next by a hairline alone.
+       Narrow widths restack the same DOM order; presentation never reorders content. */
     .usage-groups {
+        border-bottom: 1px solid var(--line);
+        border-top: 1px solid var(--line);
         display: grid;
-        gap: 16px;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     }
 
     .usage-group {
-        align-items: flex-start;
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-xl);
-        display: flex;
-        flex-direction: row;
-        gap: 16px;
-        padding: 16px;
+        border-inline-start: 1px solid var(--line);
+        padding: 16px 20px;
     }
 
-    /* The card's icon disc: the accent wash, or the ok wash for Edit acceptance. */
-    .usage-disc {
-        align-items: center;
-        background: var(--accent-wash);
-        border-radius: 50%;
-        color: var(--accent);
-        display: inline-flex;
-        flex: none;
-        height: 40px;
-        justify-content: center;
-        width: 40px;
-    }
-
-    .usage-disc-ok {
-        background: var(--ok-wash);
-        color: var(--lamp-run);
+    .usage-group:first-child {
+        border-inline-start: 0;
+        padding-inline-start: 0;
     }
 
     .usage-body {
@@ -255,6 +237,15 @@
     }
 
     @media (max-width: 640px) {
+        .usage-group {
+            border-inline-start: 0;
+            padding-inline: 0;
+        }
+
+        .usage-group + .usage-group {
+            border-top: 1px solid var(--line);
+        }
+
         .usage-group strong {
             font-size: 24px;
             line-height: 30px;
@@ -264,9 +255,8 @@
     /* The one analytics empty state: a raised panel where the figures would be, naming the
        rendered selection and one next action — never a row of dash tiles. */
     .usage-empty {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
+        background: var(--surface-soft);
+        border-radius: var(--radius-xl);
         padding: 24px 16px;
         text-align: center;
     }

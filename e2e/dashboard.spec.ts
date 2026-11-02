@@ -152,8 +152,8 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         await expect(toolbar.locator('.toolbar-coverage-dot')).toHaveCount(1);
         await expect(toolbar.locator('.toolbar-coverage button')).toHaveCount(0);
         // Open mode has no personal scope — the "unavailable identity" case: a read-only value,
-        // never a dead dropdown.
-        await expect(page.locator('#scope-select')).toHaveCount(0);
+        // never a dead control.
+        await expect(page.getByRole('tablist', { name: 'Scope' })).toHaveCount(0);
         await expect(toolbar.locator('.toolbar-value')).toHaveText('Organization');
         // Every item shares one row: the legends sit inline beside their controls.
         const range = (await toolbar.locator('#range-select').boundingBox())!;
