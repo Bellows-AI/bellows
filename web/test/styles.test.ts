@@ -384,6 +384,13 @@ describe('the stylesheet', () => {
 });
 
 describe('the stylesheet — sizing and motion (#189)', () => {
+    it('gives the settings column room for a table row and lays an icon button on one line', () => {
+        const css = stripComments(shippedCss());
+        const body = (selector: string) => rules(css).find(([prelude]) => prelude === selector)?.[1] ?? '';
+        expect(Number(body('.settings-content').match(/max-width:\s*(\d+)px/)?.[1])).toBeGreaterThanOrEqual(1040);
+        expect(body('.settings-content button:has(> .icon)')).toMatch(/display:\s*inline-flex/);
+    });
+
     it('keeps every font size at or above the 12px floor (#189)', () => {
         // Decision-bearing text never renders under 12px; buttons, inputs and tabs carry 14px
         // through `font: inherit`. The chart tick is the one documented exception: the

@@ -63,8 +63,14 @@ async function settle(page: Page, path: string): Promise<void> {
         return;
     }
     // Every other routed page mounts its sections below the shell; a panel is the difference
-    // between a skeleton and the layout the route settles into.
-    await page.locator('main .composer, main section.panel').first().waitFor();
+    // between a skeleton and the layout the route settles into. The settings overview and the
+    // repositories page have no panel: the compact rows and the tracked list are their settled layout.
+    await page
+        .locator(
+            'main .composer, main section.panel, main .settings-rows, main section[aria-label="Tracked repositories"]'
+        )
+        .first()
+        .waitFor();
 }
 
 /** The matrix's route list with a live task detail appended. */

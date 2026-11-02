@@ -658,12 +658,26 @@
        scope context block every environment editor opens with. Status text carries the meaning; only
        attention and pending wear a pill, so no state is ever color alone. */
 
+    /* Wide enough that a table row (channel, events, repos, switch, actions) keeps its tags on one
+       line at desktop width; prose lines stay short through their own measure. */
     .settings-content {
-        max-width: 880px;
+        max-width: 1040px;
         display: flex;
         flex-direction: column;
         gap: 20px;
         min-width: 0;
+    }
+
+    /* An icon beside its label sits on the label's line, centered on it, not stacked above it. */
+    .settings-content button:has(> .icon) {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    /* The badge shares the tab label's type, so the label and its count are one line box. */
+    .env-tab .count {
+        font-size: inherit;
     }
 
     .settings-content .page-header-leading h1 {
