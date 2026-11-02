@@ -577,6 +577,17 @@ describe('the composer base branch and skill menu', () => {
         expect(prompt.value).toBe('please /release-notes and /');
     });
 
+    it('lists the skills for a bare "/" in a fresh composer: the menu and the fetch share one trigger', async () => {
+        const user = userEvent.setup();
+        openComposer(reposReply(['web']), undefined, board);
+        const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+        await waitFor(() => expect(screen.getByRole('button', { name: /^Executor: / })).toBeTruthy());
+
+        await user.type(prompt, '/');
+        const menu = await screen.findByRole('listbox', { name: 'Skills' });
+        await waitFor(() => expect(within(menu).getAllByRole('option')).toHaveLength(SKILLS.length));
+    });
+
     it('submits baseBranch and the built-in skills named by a token that stays in the prompt', async () => {
         const user = userEvent.setup();
         const { launches } = openComposer(reposReply(['web']), undefined, board);

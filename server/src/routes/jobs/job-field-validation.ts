@@ -136,7 +136,7 @@ export function validateSkillsField(raw: unknown): { ok: true; value: string[] }
     return { ok: true, value: raw as string[] };
 }
 
-/** The create body's `baseBranch` (BEL-162): absent or null is the remote default, otherwise a name `isBranchName` accepts. */
+/** The create body's `baseBranch`: absent or null is the remote default, otherwise a name `isBranchName` accepts. */
 export function validateBaseBranchField(
     raw: unknown
 ): { ok: true; value: string | null } | { ok: false; message: string } {

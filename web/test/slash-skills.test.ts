@@ -80,6 +80,12 @@ describe('hasSlashToken / builtinSkillsIn', () => {
         expect(hasSlashToken('fix /x')).toBe(true);
         expect(hasSlashToken('a/b')).toBe(false);
     });
+
+    it('counts a bare slash, the cue that opens the menu, at the start or after whitespace', () => {
+        expect(hasSlashToken('/')).toBe(true);
+        expect(hasSlashToken('foo /')).toBe(true);
+        expect(hasSlashToken('foo/')).toBe(false);
+    });
 });
 
 describe('slashKeyAction', () => {

@@ -99,7 +99,7 @@ export interface JobRow {
     publication_pr_url?: string | null;
     publication_head_branch?: string | null;
     publication_base_branch?: string | null;
-    /** Only the detail reads (get/thread) select the root's requested base branch (BEL-162). */
+    /** Only the detail reads (get/thread) select the thread's effective base branch. */
     base_branch?: string | null;
 }
 
@@ -644,9 +644,17 @@ export function publicationJoinFragment(sql: Sql): Fragment {
     `;
 }
 
-/** The ROOT job's requested base branch (BEL-162): one indexed lookup, so a thread's every row reads the same value. */
+/**
+ * The branch a thread bases on, for the claim and every read alike: the frozen target branch of the
+ * batch task the thread works, else the branch the ROOT job was created with. Neither means the
+ * remote default. Indexed lookups by root, so a thread's every row reads the same value.
+ */
 export function threadBaseBranchFragment(sql: Sql): Fragment {
-    return sql`(select r.base_branch from job r where r.org_id = job.org_id and r.id = job.root_job_id)`;
+    return sql`coalesce((select tg.branch from batch_task t
+                         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id
+                                             and tg.key = t.target_key
+                         where t.org_id = job.org_id and t.root_job_id = job.root_job_id),
+                         (select r.base_branch from job r where r.org_id = job.org_id and r.id = job.root_job_id))`;
 }
 
 export function publicationColumnsFragment(sql: Sql): Fragment {

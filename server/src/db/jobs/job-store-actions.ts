@@ -84,7 +84,7 @@ export interface JobActionStore {
              */
             skills?: readonly string[];
             /**
-             * The branch the task bases its checkout and PR on (BEL-162); null or absent is the remote default.
+             * The branch the task bases its checkout and PR on; null or absent is the remote default.
              * Stored on the ROOT row only: every later row of the thread reads it from there at claim.
              */
             baseBranch?: string | null;

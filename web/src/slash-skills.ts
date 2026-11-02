@@ -21,7 +21,10 @@ export interface SlashToken {
     prefix: string;
 }
 
-const TOKEN_BEFORE_CARET = new RegExp(`(?:^|\\s)\\/([${NAME_CHARS}]*)$`, 'i');
+/** A slash that starts the text or follows whitespace, then the name typed so far (maybe none): the one trigger of the menu and of the skills fetch. */
+const TOKEN_SOURCE = `(?:^|\\s)\\/([${NAME_CHARS}]*)`;
+
+const TOKEN_BEFORE_CARET = new RegExp(`${TOKEN_SOURCE}$`, 'i');
 
 /**
  * The slash token the caret ends, or null. A token starts at the text's start or after whitespace,
@@ -50,9 +53,9 @@ export function insertSkill(text: string, token: SlashToken, name: string): { te
     };
 }
 
-/** Whether the text holds any `/name` token — the cue to load the skills list. */
+/** Whether the text holds any slash token, a bare `/` included — the cue to load the skills list, matching what opens the menu. */
 export function hasSlashToken(text: string): boolean {
-    return new RegExp(`(?:^|\\s)\\/[${NAME_CHARS}]`, 'i').test(text);
+    return new RegExp(TOKEN_SOURCE, 'i').test(text);
 }
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

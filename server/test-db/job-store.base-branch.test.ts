@@ -8,7 +8,7 @@ import { useTestDb } from './harness.js';
 import { expireLease, testOrg, testUser } from './fixtures.js';
 
 /**
- * BEL-162: a task names the branch it bases on at creation; the choice lives on the root row and
+ * a task names the branch it bases on at creation; the choice lives on the root row and
  * every claim of the thread (retry, follow-up, reclaim) reads it from there, so no insert site
  * copies it. A batch task's frozen target still wins (batch-dispatch.test.ts pins that).
  */

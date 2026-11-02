@@ -7,7 +7,7 @@ import type { OrgRuntime } from '../src/orgs.js';
 import { trackApps } from './helpers-http.js';
 import { jobStoreSlice, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
-/** BEL-162: the create body's `baseBranch` — shape-checked, then existence-checked when the board can read GitHub. */
+/** the create body's `baseBranch` — shape-checked, then existence-checked when the board can read GitHub. */
 const track = trackApps();
 const TRACKED = { owner: 'acme', name: 'web' };
 const DEADLINE_MS = 5_000;
