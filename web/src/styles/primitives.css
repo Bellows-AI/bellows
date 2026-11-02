@@ -363,9 +363,11 @@
         min-width: 0;
     }
 
+    /* Soft tier: a quiet fill, no frame. The border stays as a transparent slot so `.bad` can name
+       a meaning with it and `panel-flat` can draw the canvas tier's hairline without a reflow. */
     .panel {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
+        background: var(--surface-soft);
+        border: 1px solid transparent;
         border-radius: var(--radius-xl);
         padding: 24px;
     }
@@ -387,7 +389,12 @@
     .panel > :where(ul) {
         list-style: disc;
         margin: 0 0 12px;
-        padding-left: 20px;
+        padding-left: 24px;
+    }
+
+    .panel.panel-flat {
+        background: var(--surface);
+        border-color: var(--line);
     }
 
     .panel.bad {

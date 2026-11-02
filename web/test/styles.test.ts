@@ -541,6 +541,34 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(offScale).toEqual([]);
     });
 
+    it('defines the soft surface tier in both theme blocks and .panel rests on it without a frame', () => {
+        const css = stripComments(shippedCss());
+        const blocks = tokenSpans(css).map(([start, end]) => css.slice(start, end));
+        expect(blocks.filter((block) => /--surface-soft\s*:/.test(block))).toHaveLength(2);
+        const body = rules(css).find(([prelude]) => prelude.trim() === '.panel')?.[1] ?? '';
+        expect(body).toContain('var(--surface-soft)');
+        expect(body).not.toMatch(/border\s*:[^;]*--line/);
+        const flat = rules(css).find(([prelude]) => prelude.trim() === '.panel.panel-flat')?.[1] ?? '';
+        expect(flat).toContain('var(--surface)');
+        expect(flat).toMatch(/border[a-z-]*\s*:[^;]*var\(--line\)/);
+    });
+
+    it('keeps the panel rules on the spacing scale', () => {
+        const SCALE = [0, 4, 8, 12, 16, 24, 32, 48];
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const offScale = rules(css)
+            .filter(([prelude]) => /^\.panel(?![\w-])/.test(prelude.trim()))
+            .flatMap(([prelude, body]) =>
+                [...body.matchAll(/(?:padding|margin)[a-z-]*:([^;]+);/g)].flatMap((decl) =>
+                    [...decl[1]!.matchAll(/(\d+(?:\.\d+)?)px/g)]
+                        .map((pixels) => Number(pixels[1]))
+                        .filter((pixels) => !SCALE.includes(pixels))
+                        .map((pixels) => `${prelude} { ${decl[0]!.trim()} } is ${pixels}px`)
+                )
+            );
+        expect(offScale).toEqual([]);
+    });
+
     it('bootstraps the theme before paint with no inline or remote script (CSP: script-src self)', () => {
         const html = readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
         // The external same-origin bootstrap must execute before the application entry, so the

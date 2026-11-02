@@ -452,6 +452,18 @@ function Specimen() {
                     ))}
                 </tbody>
             </table>
+            <section className="specimen-tiers" aria-labelledby="specimen-tiers-title">
+                <h2 id="specimen-tiers-title">Surface tiers</h2>
+                <div className="panel panel-flat">
+                    <p>Flat: the canvas with a section hairline.</p>
+                </div>
+                <div className="panel">
+                    <p>Soft: the resting panel, no frame.</p>
+                </div>
+                <div className="dialog">
+                    <p>Raised: dialogs, popovers and the composer.</p>
+                </div>
+            </section>
             <UsageSpecimen />
         </main>
     );

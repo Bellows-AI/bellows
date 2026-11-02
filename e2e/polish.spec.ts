@@ -21,9 +21,11 @@ const BOUNDARY_THRESHOLD = 3;
 const TEXT_PAIRS: readonly Pair[] = [
     ['--ink', '--surface'],
     ['--ink', '--surface-raised'],
+    ['--ink', '--surface-soft'],
     ['--ink', '--surface-sunken'],
     ['--ink-muted', '--surface'],
     ['--ink-muted', '--surface-raised'],
+    ['--ink-muted', '--surface-soft'],
     ['--ink-muted', '--surface-sunken'],
     ['--accent', '--surface'],
     ['--accent', '--surface-raised'],
@@ -49,9 +51,9 @@ const BOUNDARY_PAIRS: readonly Pair[] = [
  * then any translucent wash painted over it. */
 type Composite = readonly [label: string, text: string, layers: readonly string[]];
 
-/** The surfaces a status pill, chip or banner actually sits on: panels (raised), the page (a
+/** The surfaces a status pill, chip or banner actually sits on: panels (soft), dialogs (raised), the page (a
  * header's status pill), and a hovered table row (sunken). */
-const SITTING_ON = ['--surface-raised', '--surface', '--surface-sunken'] as const;
+const SITTING_ON = ['--surface-raised', '--surface-soft', '--surface', '--surface-sunken'] as const;
 
 /** Every wash-backed text pair the primitives render (redesign plan §1.1). The opaque matrix
  * above cannot measure these: its canvas paints each token opaque, so a 16% wash would read as
