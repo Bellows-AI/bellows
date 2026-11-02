@@ -47,9 +47,9 @@
            control is displaced or hidden, whatever the account login's length. */
         row-gap: 2px;
         justify-content: space-between;
-        /* 56px border-box: a 40px control, 4px above and below, and the 1px bottom edge fit
+        /* 48px border-box: a 36px control, 4px above and below, and the 1px bottom edge fit
            inside it (issue 274). */
-        min-height: 56px;
+        min-height: 48px;
         padding: 4px 24px;
         position: sticky;
         top: 0;
@@ -59,6 +59,23 @@
     .appbar-trigger,
     .appbar-brand {
         display: none;
+    }
+
+    /* Compact desktop chrome: 36px quiet triggers fit the 48px bar. The compact floor in
+       touch-targets.css (44px) takes over at 900px, so this stays desktop-only. The appearance
+       trigger names itself through its visually hidden label and the sun/moon glyph. */
+    @media (min-width: 901px) {
+        .appbar .select-trigger {
+            min-height: 36px;
+        }
+    }
+
+    .appbar .theme-label {
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
     }
 
     .appbar-actions {
@@ -398,6 +415,16 @@
         illegible anyway (~700px); past 900px the whole selector leaves the bar for the drawer. */
     .org-select {
         max-width: 220px;
+        min-width: 0;
+    }
+
+    /* The visible name clips to one line with an ellipsis; the trigger's aria-label keeps the
+       full name for assistive tech. */
+    .org-select-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     /* The routed page's content container (issue 160) — a class, not a `main` element selector,
@@ -743,7 +770,7 @@
         overflow-y: auto;
     }
 
-    /* The text wordmark, on the app bar's 56px line so the two chrome edges read as one. */
+    /* The text wordmark, on the app bar's 48px line so the two chrome edges read as one. */
     .sidenav-brand {
         align-items: center;
         color: var(--ink);
@@ -752,7 +779,7 @@
         font-weight: 600;
         letter-spacing: 0.12em;
         margin-bottom: 8px;
-        min-height: 56px;
+        min-height: 48px;
         padding: 0 12px;
         text-transform: uppercase;
     }
