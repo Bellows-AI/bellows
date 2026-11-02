@@ -571,6 +571,13 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('button.tertiary')).toMatch(/background\s*:\s*transparent/);
         expect(body('button.icon-button')).toMatch(/min-width\s*:\s*36px/);
         expect(body(".tabs [role='tab'][aria-selected='true']")).toContain('var(--accent)');
+        for (const variant of ['button.tertiary', 'button.icon-button']) {
+            const hover = all.find(([prelude]) => prelude.includes(`${variant}:hover:not(:disabled)`));
+            expect(hover?.[1], `${variant} hover fill`).toContain('var(--surface-hover)');
+        }
+        for (const verdict of ['.chat-done', '.chat-stop', '.chat-remove']) {
+            expect(body(verdict), `${verdict} rests transparent`).toMatch(/background\s*:\s*transparent/);
+        }
         const ring = all.find(([prelude]) => /:where\([^)]*\bbutton\b[^)]*\):focus-visible/.test(prelude));
         expect(ring?.[1]).toMatch(/outline\s*:\s*2px solid var\(--accent\)/);
         for (const [prelude, text] of all) {

@@ -75,9 +75,20 @@ const COMPOSITE_PAIRS: readonly Composite[] = [
     ['primary button hover', '--ink-inverse', ['--accent-hover']],
     ['primary button pressed', '--ink-inverse', ['--accent-pressed']],
     ['primary button disabled', '--ink-muted', ['--surface-strong']],
+    // The tinted verdict buttons (.chat-remove, .chat-stop, .chat-done, danger) rest transparent, so their
+    // label is measured on each surface they sit on, then on their own hover wash.
+    ...(
+        [
+            ['chat-remove / danger', '--lamp-stop', '--bad-wash'],
+            ['chat-stop', '--lamp-wait', '--warn-wash'],
+            ['chat-done', '--lamp-run', '--ok-wash'],
+        ] as const
+    ).flatMap(([name, ink, wash]): Composite[] => [
+        ...SITTING_ON.map((surface): Composite => [`${name} at rest on ${surface}`, ink, [surface]]),
+        ...SITTING_ON.map((surface): Composite => [`${name} hover on ${surface}`, ink, [surface, wash]]),
+    ]),
     ['secondary button', '--ink', ['--surface-strong']],
     ['secondary button hover', '--ink', ['--surface-hover']],
-    ['danger button at rest on a soft panel', '--lamp-stop', ['--surface-soft']],
     ['secondary button pressed', '--ink', ['--surface-pressed']],
     ['danger button hover', '--lamp-stop', ['--surface', '--bad-wash']],
     ['avatar initials', '--ink', ['--surface-strong']],

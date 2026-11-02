@@ -207,6 +207,11 @@
         background: transparent;
     }
 
+    button.tertiary:hover:not(:disabled),
+    button.icon-button:hover:not(:disabled) {
+        background: var(--surface-hover);
+    }
+
     /* An icon alone in a button: a square tertiary target on the 36px floor. */
     button.icon-button {
         align-items: center;
