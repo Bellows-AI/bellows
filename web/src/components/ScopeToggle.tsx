@@ -1,38 +1,45 @@
+import type { KeyboardEvent } from 'react';
 import type { ScopeSelection } from './RangeSelector.js';
-import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
-import { useDownwardAnchor } from '../anchor.js';
 import { scopeWord } from '../dashboardSummary.js';
-
-const SCOPE_BUTTON_ID = 'scope-select';
 
 const SCOPE_VALUES: readonly ScopeSelection[] = ['org', 'mine'];
 
 /**
- * The Scope group of the analytics toolbar (issue 246): one labeled dropdown, the shared
- * quiet-selector language (issue 224) instead of the old Org/Me button pair. `scopeWord` supplies
- * the trigger's text, the same wording the rendered-data summary sentence uses.
+ * The Scope group of the analytics toolbar: Organization and Personal as the shared `.tabs`
+ * strip, the selected one marked by `aria-selected`. `scopeWord` supplies the tab text, the same
+ * wording the rendered-data summary sentence uses. Arrow keys move the selection (roving focus).
  *
  * Rendered only when the session reports a signed-in user — under AUTH_MODE=none there is no
- * "me", and a dropdown that renders anyway would advertise a filter the server can never answer.
+ * "me", and a control that renders anyway would advertise a filter the server can never answer.
  * Absent is the honest shape there: the page reads as org-scoped, which is exactly what it is.
  */
 export function ScopeToggle({ scope, onChange }: { scope: ScopeSelection; onChange: (next: ScopeSelection) => void }) {
-    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
+    const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        const next = SCOPE_VALUES[(SCOPE_VALUES.indexOf(scope) + 1) % SCOPE_VALUES.length]!;
+        onChange(next);
+        event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-scope="${next}"]`)?.focus();
+    };
     return (
-        <fieldset className="toolbar-group">
-            <legend className="toolbar-label">Scope</legend>
-            <Listbox value={scope} onChange={onChange}>
-                <ListboxButton id={SCOPE_BUTTON_ID} ref={setReference} className="select-trigger">
-                    {scopeWord(scope)}
-                </ListboxButton>
-                <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
-                    {SCOPE_VALUES.map((value) => (
-                        <ListboxOption key={value} value={value} className="popover-option">
-                            {scopeWord(value)}
-                        </ListboxOption>
-                    ))}
-                </ListboxOptions>
-            </Listbox>
-        </fieldset>
+        <div className="toolbar-group">
+            <span className="toolbar-label">Scope</span>
+            <div className="tabs" role="tablist" aria-label="Scope">
+                {SCOPE_VALUES.map((value) => (
+                    <button
+                        key={value}
+                        type="button"
+                        role="tab"
+                        data-scope={value}
+                        aria-selected={value === scope}
+                        tabIndex={value === scope ? 0 : -1}
+                        onClick={() => onChange(value)}
+                        onKeyDown={onKeyDown}
+                    >
+                        {scopeWord(value)}
+                    </button>
+                ))}
+            </div>
+        </div>
     );
 }

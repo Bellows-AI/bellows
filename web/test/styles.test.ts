@@ -177,6 +177,8 @@ const SHARED_TOUCH_TARGETS = [
     '.mobile-nav .sidenav-sublink',
     '.mobile-nav .sidenav-newtask',
     '.select-trigger',
+    ".tabs [role='tab']",
+    '.tabs a',
     '.page-header-actions button',
     'table.data button',
 ];
@@ -370,13 +372,14 @@ describe('the stylesheet', () => {
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
     });
 
-    it('lays each metric card out as a 40px icon disc beside its figure (issue 283)', () => {
+    it('lays the metrics out as one open strip', () => {
         const css = stripComments(shippedCss());
         const body = (selector: string) => rules(css).find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
-        expect(body('.usage-group')).toMatch(/flex-direction:\s*row/);
-        expect(body('.usage-disc')).toMatch(/width:\s*40px/);
-        expect(body('.usage-disc')).toMatch(/height:\s*40px/);
-        expect(body('.usage-disc')).toMatch(/border-radius:\s*50%/);
+        // No per-group box: the figures sit open on the page, set apart by hairlines alone.
+        expect(body('.usage-group')).not.toMatch(/background|border-radius|border:|box-shadow/);
+        expect(body('.usage-groups')).toMatch(/border-(top|bottom):\s*1px solid var\(--line\)/);
+        // The 40px icon disc is gone with its rules.
+        expect(rules(css).some(([prelude]) => /\.usage-disc/.test(prelude))).toBe(false);
         expect(body('.usage-caption')).toMatch(/font-size:\s*13px/);
         // The six-measure grid is gone with its rules.
         expect(rules(css).some(([prelude]) => /\.usage-(measure|tokens)\b/.test(prelude))).toBe(false);
