@@ -202,4 +202,10 @@ describe('the draft editor', () => {
         expect(html).toContain('Add task to stage 1');
         expect(html).toContain('These tasks run in parallel');
     });
+
+    it('groups stages as flat rows: only the batch settings is a panel, no card inside a card', () => {
+        const html = render(<BatchEditor plan={plan()} onChange={() => {}} issues={[]} repos={[]} disabled={false} />);
+        expect(html.match(/class="panel[" ]/g)).toHaveLength(1);
+        expect(html).toMatch(/<section class="batch-stage" aria-label="Stage 1">/);
+    });
 });
