@@ -627,6 +627,16 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         }
     });
 
+    it('keeps the composer the one raised tier and its chips on the shared quiet trigger', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.composer-surface')).toMatch(/background:\s*var\(--surface-raised\)/);
+        expect(body('.composer-surface')).toMatch(/box-shadow:\s*0 \d+px \d+px var\(--shadow-float\)/);
+        expect(body('.composer-surface')).not.toMatch(/--line-strong/);
+        expect(body('.composer-context .select-trigger')).not.toMatch(/border|background/);
+    });
+
     it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/inbox.css'), 'utf8'));
         const all = rules(css);
