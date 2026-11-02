@@ -318,6 +318,27 @@ describe('the parameter touched-state model', () => {
     });
 });
 
+describe('the base branch in the draft and the create body', () => {
+    const lists = { repos: [{ owner: 'acme', name: 'web' }], executors: [], defaultExecutor: null };
+
+    it('starts on the repository default (empty) and a picked branch is not a fresh draft', () => {
+        const fresh = initialComposerState(null, lists);
+        expect(fresh.baseBranch).toBe('');
+        expect(draftIsFresh(fresh, lists)).toBe(true);
+        expect(draftIsFresh({ ...fresh, baseBranch: 'release' }, lists)).toBe(false);
+    });
+
+    it('sends null for the default, the name otherwise, and skills only when some are named', () => {
+        const fresh = initialComposerState(null, lists);
+        expect(queuedTask(fresh, [], {})).toMatchObject({ baseBranch: null });
+        expect('skills' in queuedTask(fresh, [], {})).toBe(false);
+        expect(queuedTask({ ...fresh, baseBranch: 'release' }, [], {}, ['review'])).toMatchObject({
+            baseBranch: 'release',
+            skills: ['review'],
+        });
+    });
+});
+
 describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
     const held: ComposerDraftInput = {
         draft: 'fix the bug',
@@ -326,6 +347,7 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
         repo: 'acme/web',
         repoTouched: false,
         workflowRepo: 'acme/web',
+        baseBranch: '',
         ...freshWorkflowDraft(),
     };
 
@@ -338,6 +360,7 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
             executorScope: 'user',
             workflow: null,
             workflowParams: null,
+            baseBranch: null,
         });
         expect('defaultWorkflow' in body).toBe(false);
     });
@@ -355,6 +378,7 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
             executorScope: 'org',
             workflow: 'fix-issue',
             workflowParams: { issue: '#12' },
+            baseBranch: null,
         });
         expect('defaultWorkflow' in body).toBe(false);
     });
@@ -416,6 +440,7 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
         repo: 'acme/api',
         repoTouched: true,
         workflowRepo: 'acme/api',
+        baseBranch: '',
         workflow: 'fix-issue',
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: { issue: true },
@@ -429,6 +454,7 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
             repo: 'acme/web',
             repoTouched: false,
             workflowRepo: 'acme/web',
+            baseBranch: '',
             ...freshWorkflowDraft(),
         });
         // No resolved default (no preference, no rows at all): the fresh composer holds nothing,
@@ -468,6 +494,7 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
         repo: 'acme/web',
         repoTouched: false,
         workflowRepo: 'acme/web',
+        baseBranch: '',
         workflow: 'fix-issue',
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: {},
@@ -490,6 +517,7 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
             executorScope: 'user' as const,
             repo: '',
             workflowRepo: '',
+            baseBranch: '',
             workflow: '',
         };
         expect(restoredDraftNotices(bare, { repos: [], executors: [], workflows: [], defaultExecutor: null })).toEqual(

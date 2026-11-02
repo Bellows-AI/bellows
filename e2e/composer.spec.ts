@@ -12,6 +12,7 @@ import {
     trackRepos,
     withExecutor,
 } from './executor.js';
+import { queuedThread } from './fixtures/threads.js';
 import { stubAttachments } from './fixtures/attachments.js';
 import { dragFiles, gradientPng } from './fixtures/files.js';
 
@@ -535,5 +536,123 @@ test.describe('attachments in the composer', () => {
             command: 'review these',
             attachments: [board.ids.get('one.txt'), board.ids.get('two.txt')],
         });
+    });
+});
+
+/** The board's branch listing, answered per `q` and `cursor`; every request is recorded. */
+async function stubBranches(page: Page, failing = false): Promise<{ queries: (string | null)[] }> {
+    const seen = { queries: [] as (string | null)[] };
+    await page.route('**/api/repos/*/*/branches*', (route) => {
+        const url = new URL(route.request().url());
+        seen.queries.push(url.searchParams.get('q'));
+        if (failing) return route.fulfill({ status: 503, json: { error: 'GitHub is unreachable' } });
+        const q = url.searchParams.get('q');
+        const cursor = url.searchParams.get('cursor');
+        if (q === 'rel')
+            return route.fulfill({ json: { branches: ['release/1.0'], cursor: null, defaultBranch: 'main' } });
+        if (cursor === 'p2') {
+            return route.fulfill({ json: { branches: ['feature/beta'], cursor: null, defaultBranch: 'main' } });
+        }
+        return route.fulfill({ json: { branches: ['main', 'feature/alpha'], cursor: 'p2', defaultBranch: 'main' } });
+    });
+    return seen;
+}
+
+const branchField = (page: Page) => page.getByRole('combobox', { name: /^Base branch/ });
+
+test.describe('the base branch and the skill menu', () => {
+    const prompt = (page: Page) => page.getByLabel('What should the agent do?');
+    test.beforeEach(({ page }) => withExecutor(page));
+
+    test('searches, loads more and picks a non-default branch; the queued task reports it', async ({ page }) => {
+        const problems = watchConsole(page);
+        await stubLaunch(page);
+        await page.route('**/api/jobs/*/thread*', (route) =>
+            route.fulfill({
+                json: { jobs: queuedThread.map((job) => ({ ...job, baseBranch: 'release/1.0' })) },
+            })
+        );
+        const seen = await stubBranches(page);
+        const launches = countLaunches(page);
+        await page.goto('/tasks/new');
+
+        await branchField(page).scrollIntoViewIfNeeded();
+        await branchField(page).click();
+        await expect(page.getByRole('option', { name: 'Default (main)' })).toBeVisible();
+        await page.getByRole('option', { name: 'Load more' }).click();
+        await expect(page.getByRole('option', { name: 'feature/beta' })).toBeVisible();
+        await expect(page.getByRole('option', { name: 'feature/alpha' })).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/composer-branch-list.png` });
+
+        await branchField(page).fill('rel');
+        await expect(page.getByRole('option', { name: 'release/1.0' })).toBeVisible();
+        await expect(page.getByRole('option', { name: 'feature/beta' })).toHaveCount(0);
+        // Typed text is a search, never the value: nothing is committed until an option is picked.
+        await expect(branchField(page)).toHaveAttribute('placeholder', 'Default');
+        expect(seen.queries.filter((q) => q !== null)).toEqual(['rel']);
+
+        await page.getByRole('option', { name: 'release/1.0' }).click();
+        await expect(branchField(page)).toHaveAttribute('placeholder', 'release/1.0');
+        await page.screenshot({ path: `${SHOTS}/composer-branch-picked.png` });
+
+        await prompt(page).fill('ship it');
+        await page.getByRole('button', { name: 'Start task' }).click();
+        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
+        expect(launches.bodies).toHaveLength(1);
+        expect(launches.bodies[0]).toMatchObject({ command: 'ship it', baseBranch: 'release/1.0' });
+        await expect(page.getByText('Base branch')).toBeVisible();
+        await expect(page.getByText('release/1.0')).toBeVisible();
+        expect(problems).toEqual([]);
+    });
+
+    test('/ menu inserts a skill token that stays in the prompt', async ({ page }) => {
+        await stubLaunch(page);
+        await page.route('**/api/repos/*/*/skills*', (route) =>
+            route.fulfill({
+                json: {
+                    skills: [
+                        { name: 'review', description: 'Review the change', source: 'builtin' },
+                        { name: 'release-notes', description: 'Write the notes', source: 'repo' },
+                    ],
+                    repoError: null,
+                    unreadable: [],
+                },
+            })
+        );
+        const launches = countLaunches(page);
+        await page.goto('/tasks/new');
+
+        await prompt(page).click();
+        await page.keyboard.type('please /re');
+        const menu = page.getByRole('listbox', { name: 'Skills' });
+        await expect(menu.getByRole('option')).toHaveCount(2);
+        await page.screenshot({ path: `${SHOTS}/composer-skill-menu.png` });
+
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('Enter');
+        await expect(prompt(page)).toHaveValue('please /release-notes ');
+        await expect(menu).toHaveCount(0);
+
+        await page.keyboard.type('and /rev');
+        await page.getByRole('option', { name: /^\/review/ }).click();
+        await expect(prompt(page)).toHaveValue('please /release-notes and /review ');
+
+        await page.getByRole('button', { name: 'Start task' }).click();
+        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
+        expect(launches.bodies[0]).toMatchObject({
+            command: 'please /release-notes and /review ',
+            skills: ['review'],
+        });
+    });
+
+    test('branch list failure shows an error, not an empty picker', async ({ page }) => {
+        await stubBranches(page, true);
+        await page.goto('/tasks/new');
+        await branchField(page).scrollIntoViewIfNeeded();
+        await branchField(page).click();
+        await expect(page.getByRole('alert')).toHaveText('GitHub is unreachable');
+        await expect(page.getByText('No matching branches')).toHaveCount(0);
+        await expect(page.getByRole('option', { name: 'Retry' })).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/composer-branch-error.png` });
     });
 });

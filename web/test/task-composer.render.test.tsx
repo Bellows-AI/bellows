@@ -254,7 +254,8 @@ describe('TaskComposer — the prompt and the launch', () => {
         // No list, no process to pick: the selector and anything about workflow details are absent.
         const html = renderComposer({ workflows: null });
         expect(html).not.toContain('Reusable workflow');
-        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(2);
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
+        // Repository, base branch and executor remain.
         expect(html).not.toContain('Workflow details');
     });
 
@@ -300,7 +301,8 @@ describe('TaskComposer — the prompt and the launch', () => {
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
         expect(html).toContain('class="composer-context"');
-        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(4);
+        // Repository, base branch, executor and workflow.
         // The full value stays reachable off the truncated trigger through the title attribute,
         // beside the listbox itself.
         expect(html).toContain('title="acme/web"');
@@ -442,7 +444,7 @@ describe('the redesigned composer (#280)', () => {
             restored: restoredDraft({ draft: 'fix it', workflow: 'fix-issue' }),
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] }],
         });
-        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(4);
         expect(html.indexOf('id="composer-param-issue"')).toBeGreaterThan(html.indexOf('class="composer-bar"'));
         expect(html.match(/class="panel /g) ?? []).toHaveLength(0);
         expect(html.match(/class="composer-surface drop-zone"/g) ?? []).toHaveLength(1);
@@ -642,6 +644,7 @@ describe('the redesigned composer (#280)', () => {
                 repo: 'acme/api',
                 repoTouched: true,
                 workflowRepo: 'acme/api',
+                baseBranch: '',
                 workflow: 'fix-issue',
                 storedParams: { workflowId: 'w1', values: { issue: '#12' } },
             }),
@@ -664,6 +667,7 @@ function restoredDraft(overrides: Partial<ComposerDraftInput>): ComposerDraftInp
         repo: 'acme/web',
         repoTouched: false,
         workflowRepo: 'acme/web',
+        baseBranch: '',
         workflow: '',
         storedParams: { workflowId: null, values: {} },
         paramTouched: {},

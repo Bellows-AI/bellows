@@ -29,6 +29,8 @@ export interface ComposerDraftState {
     repo: string;
     repoTouched: boolean;
     workflowRepo: string;
+    /** The branch the task works from; '' is the repository's default. Reset when `repo` changes. */
+    baseBranch: string;
     workflow: string;
     storedParams: WorkflowDraft['storedParams'];
     paramTouched: WorkflowDraft['paramTouched'];

@@ -44,10 +44,14 @@ const workspace: WorkspacePayload = {
 
 function openComposer(
     repos: FetchReply,
-    launchReply: FetchReply = { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } }
+    launchReply: FetchReply = { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } },
+    more: (call: FetchCall) => FetchReply | undefined = () => undefined
 ) {
     let reposAnswer = repos;
-    const calls = stubFetch(({ method, url }) => {
+    const calls = stubFetch((call) => {
+        const { method, url } = call;
+        const extra = more(call);
+        if (extra !== undefined) return extra;
         if (url === '/api/workspace') return workspace;
         if (url === '/api/repos') return reposAnswer;
         // The held draft belongs to a session, so /api/auth/me must answer.
@@ -526,5 +530,114 @@ describe('the composer attachments', () => {
             const [first, second] = launches();
             expect(second!.headers['idempotency-key']).toBe(first!.headers['idempotency-key']);
         });
+    });
+});
+
+const skillsReply = (skills: { name: string; description: string; source: 'builtin' | 'repo' }[]) => ({
+    skills,
+    repoError: null,
+    unreadable: [],
+});
+
+const SKILLS = [
+    { name: 'review', description: 'Review the change', source: 'builtin' as const },
+    { name: 'release-notes', description: 'Write the notes', source: 'repo' as const },
+];
+
+const board = ({ url }: FetchCall): FetchReply | undefined => {
+    if (url.includes('/branches')) return { branches: ['feature-a', 'main'], cursor: null, defaultBranch: 'main' };
+    if (url.includes('/skills')) return skillsReply(SKILLS);
+    return undefined;
+};
+
+describe('the composer base branch and skill menu', () => {
+    it('opens the skill menu on "/", Enter inserts the token and does not submit, Escape closes', async () => {
+        const user = userEvent.setup();
+        const { launches } = openComposer(reposReply(['web']), undefined, board);
+        const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+        await waitFor(() => expect(screen.getByRole('button', { name: /^Executor: / })).toBeTruthy());
+
+        await user.type(prompt, 'please /re');
+        const menu = await screen.findByRole('listbox', { name: 'Skills' });
+        expect(
+            within(menu)
+                .getAllByRole('option')
+                .map((o) => o.textContent)
+        ).toEqual(['/reviewReview the changeBuilt-in', '/release-notesWrite the notesRepository']);
+
+        await user.keyboard('{ArrowDown}{Enter}');
+        expect(prompt.value).toBe('please /release-notes ');
+        expect(screen.queryByRole('listbox', { name: 'Skills' })).toBeNull();
+        expect(launches()).toHaveLength(0);
+
+        await user.type(prompt, 'and /');
+        await screen.findByRole('listbox', { name: 'Skills' });
+        await user.keyboard('{Escape}');
+        expect(screen.queryByRole('listbox', { name: 'Skills' })).toBeNull();
+        expect(prompt.value).toBe('please /release-notes and /');
+    });
+
+    it('submits baseBranch and the built-in skills named by a token that stays in the prompt', async () => {
+        const user = userEvent.setup();
+        const { launches } = openComposer(reposReply(['web']), undefined, board);
+        const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+        await waitFor(() => expect(screen.getByRole('button', { name: /^Executor: / })).toBeTruthy());
+
+        await user.click(screen.getByRole('combobox', { name: /^Base branch/ }));
+        await user.click(await screen.findByRole('option', { name: 'feature-a' }));
+
+        await user.type(prompt, 'check it /rev');
+        await user.click(await screen.findByRole('option', { name: /^\/review/ }));
+        expect(prompt.value).toBe('check it /review ');
+        await user.click(screen.getByRole('button', { name: 'Start task' }));
+
+        await waitFor(() => expect(launches()).toHaveLength(1));
+        expect(launches()[0]?.body).toMatchObject({
+            command: 'check it /review ',
+            baseBranch: 'feature-a',
+            skills: ['review'],
+        });
+    });
+
+    it('sends a null baseBranch and no skills when none was chosen', async () => {
+        const user = userEvent.setup();
+        const { launches } = openComposer(reposReply(['web']), undefined, board);
+        const prompt = await screen.findByLabelText('What should the agent do?');
+        await user.type(prompt, 'fix the login crash');
+        const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
+        await waitFor(() => expect(start.disabled).toBe(false));
+        await user.click(start);
+        await waitFor(() => expect(launches()).toHaveLength(1));
+        const body = launches()[0]?.body as Record<string, unknown>;
+        expect(body.baseBranch).toBeNull();
+        expect('skills' in body).toBe(false);
+    });
+
+    it('keeps the picked branch through a trip to Settings and back', async () => {
+        const user = userEvent.setup();
+        const { router } = openComposer(reposReply(['web']), undefined, board);
+        await screen.findByLabelText('What should the agent do?');
+        await user.click(screen.getByRole('combobox', { name: /^Base branch/ }));
+        await user.click(await screen.findByRole('option', { name: 'feature-a' }));
+
+        await act(() => router.navigate('/settings/repos'));
+        await waitFor(() => expect(screen.queryByLabelText('What should the agent do?')).toBeNull());
+        await act(() => router.navigate('/tasks/new'));
+        const picker = (await screen.findByRole('combobox', { name: /^Base branch/ })) as HTMLInputElement;
+        expect(picker.placeholder).toBe('feature-a');
+    });
+
+    it('a repository switch resets the branch to the default', async () => {
+        const user = userEvent.setup();
+        openComposer(reposReply(['web', 'api']), undefined, board);
+        await screen.findByLabelText('What should the agent do?');
+        const picker = () => screen.getByRole('combobox', { name: /^Base branch/ }) as HTMLInputElement;
+        await user.click(picker());
+        await user.click(await screen.findByRole('option', { name: 'feature-a' }));
+        expect(picker().placeholder).toBe('feature-a');
+
+        await user.click(await screen.findByRole('button', { name: /^Repository: / }));
+        await user.click(await screen.findByRole('option', { name: 'acme/api' }));
+        await waitFor(() => expect(picker().placeholder).toBe('Default'));
     });
 });
