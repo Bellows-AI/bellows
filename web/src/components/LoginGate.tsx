@@ -2,8 +2,8 @@ import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useSession } from '../api/useSession.js';
 import { PRODUCT_NAME } from '../brand.js';
-import { Icon } from './Icon.js';
 import { PublicPageHeader } from './PublicPageHeader.js';
+import { StateNote } from './StateNote.js';
 import { ThemeSelector } from './ThemeSelector.js';
 
 /** What the callback redirects back with when it could not sign somebody in. */
@@ -16,14 +16,9 @@ const REASONS: Record<string, string> = {
     install_cancelled: 'You returned without installing the App. Install it, then sign in again.',
 };
 
-/** A sign-in problem — the session check failing, or the callback's reason — as the bad banner. */
+/** A sign-in problem — the session check failing, or the callback's reason — as the shared error line. */
 function LoginProblem({ message }: { message: string }) {
-    return (
-        <div className="banner-bad" role="alert">
-            <Icon name="alert-circle" size={24} />
-            <p>{message}</p>
-        </div>
-    );
+    return <StateNote state="error">{message}</StateNote>;
 }
 
 /**

@@ -102,6 +102,7 @@ describe('OnboardingPage', () => {
         const html = renderPage({});
         expect(html).toContain('Choose organizations and repositories');
         expect(html).toContain('onboarding-loading');
+        expect(html).toMatch(/<p class="state-note" role="status">Loading setup/);
         // A placeholder enables no action and invents no rows.
         expect(html).not.toContain('Continue');
         expectNoPlaceholder(html);
@@ -284,6 +285,11 @@ describe('OnboardingOrganization states keep apart (issue 284)', () => {
         );
     const seeded = (listing?: RepoListing) =>
         initialDrafts([acme], listing ? { [acme.id]: listing } : undefined).get(acme.id)!;
+
+    it('a loading listing is the shared status line', () => {
+        const html = renderOrg({ ...seeded(), listing: { kind: 'loading' } });
+        expect(html).toMatch(/<p class="state-note" role="status">Loading repositories/);
+    });
 
     it('a failed listing is a bad-banner alert with its Retry', () => {
         const html = renderOrg(withFailedListing(seeded()));

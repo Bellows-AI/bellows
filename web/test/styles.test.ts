@@ -587,6 +587,13 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(flat).toMatch(/border[a-z-]*\s*:[^;]*var\(--line\)/);
     });
 
+    it('rests the sign-in card on the soft tier without a frame', () => {
+        const css = stripComments(shippedCss());
+        const body = rules(css).find(([prelude]) => prelude.trim() === '.login-card')?.[1] ?? '';
+        expect(body).toContain('var(--surface-soft)');
+        expect(body).not.toMatch(/border\s*:/);
+    });
+
     it('rests secondary buttons without a visible frame and gives them the quiet soft fill', () => {
         const css = stripComments(shippedCss());
         const body = (selector: string) => rules(css).find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';

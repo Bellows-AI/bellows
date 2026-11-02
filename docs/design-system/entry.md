@@ -14,6 +14,7 @@ Gate, onboarding, account page. `web/src/styles/regions/entry.css`; shared syste
 - A public page owns its one `h1`; `PublicPageHeader` carries no heading, navigation or session.
 - `login-button` is an anchor skinned as a primary button: the CSP forbids a form, and a fetch
   cannot follow the OAuth 302.
+- Gate and onboarding loading/error lines render through `StateNote`; `login-card` rests on `--surface-soft`, unframed.
 - Continue is `aria-disabled`, never `disabled`, so its reason stays focusable and `aria-describedby`-wired.
 
 Classes defined here: `login-gate`, `login-card`, `login-button`, `public-brand`, `public-context`,
