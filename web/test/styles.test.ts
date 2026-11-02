@@ -695,6 +695,16 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(offenders).toEqual([]);
     });
 
+    it('sets mono on no statistics-dialog figure, date or model cell', () => {
+        const css = stripComments(shippedCss());
+        const offenders = rules(css)
+            .filter(
+                ([prelude, body]) => /\.task-stats/.test(prelude) && /font-family\s*:\s*var\(--font-mono\)/.test(body)
+            )
+            .map(([prelude]) => prelude.trim());
+        expect(offenders).toEqual([]);
+    });
+
     it('offers one mono identifier primitive and ships Inter as the sans face', () => {
         const css = stripComments(shippedCss());
         const mono = rules(css).find(([prelude]) => prelude.trim() === '.mono');

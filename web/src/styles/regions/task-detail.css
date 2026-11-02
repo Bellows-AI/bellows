@@ -660,7 +660,7 @@
     }
 
     .task-stats-totals dd {
-        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
         margin: 0;
     }
 
@@ -671,7 +671,7 @@
     .task-stats-line {
         display: flex;
         flex-wrap: wrap;
-        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
         gap: 4px 12px;
     }
 
@@ -721,7 +721,7 @@
     }
 
     .task-stats-runs td {
-        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
     }
 
     /* An agent question inside its run's exchange: a form while the run waits, the asked
