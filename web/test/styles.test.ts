@@ -177,6 +177,8 @@ const SHARED_TOUCH_TARGETS = [
     '.mobile-nav .sidenav-sublink',
     '.mobile-nav .sidenav-newtask',
     '.select-trigger',
+    ".tabs [role='tab']",
+    '.tabs a',
     '.page-header-actions button',
     'table.data button',
 ];
