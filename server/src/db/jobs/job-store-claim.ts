@@ -416,6 +416,10 @@ async function acquireCandidate(
                 status           = 'running',
                 claimed_by       = ${lease.worker},
                 lease_token      = gen_random_uuid(),
+                -- The lease this claim supersedes, one claim back (the SET reads the pre-update row): a runner
+                -- still holding it is told to retry with the current pair, never refused for good. A claim of a
+                -- queued row supersedes no running attempt.
+                prior_lease_token = case when status = 'running' then lease_token else null end,
                 -- A lost attempt is recorded, not spent: the interruption names the claim it
                 -- supersedes, so an adoption of that claim's runner is the same disruption.
                 attempts         = attempts + case when ${recovering} then 0 else 1 end,

@@ -59,10 +59,10 @@ async function boot({ answers = [LIVE], resolve = async () => OK }: Boot = {}) {
     const resolved: { ctx: TrustedIntegrationContext; request: { rootJobId: string; connectionId: string } }[] = [];
     let call = 0;
     const attemptOfLease: AttemptOfLease = async (jobId, leaseToken) => {
-        const answer = answers[Math.min(call, answers.length - 1)] ?? { ok: false };
+        const answer = answers[Math.min(call, answers.length - 1)] ?? { ok: false, pending: false };
         call += 1;
         if (typeof answer === 'function') return answer();
-        return jobId === JOB_ID && leaseToken === LEASE ? answer : { ok: false };
+        return jobId === JOB_ID && leaseToken === LEASE ? answer : { ok: false, pending: false };
     };
     const config = testConfig({ auth: githubAuth() });
     const app = await buildApp({
@@ -192,11 +192,29 @@ describe('the managed-connection broker route', () => {
     });
 
     it('refuses an attempt the check refuses, and resolves nothing for it', async () => {
-        const { app, resolved } = await boot({ answers: [{ ok: false }] });
+        const { app, resolved } = await boot({ answers: [{ ok: false, pending: false }] });
         const res = await ask(app);
         expect(res.statusCode).toBe(HTTP_FORBIDDEN);
         expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
         expect(resolved).toEqual([]);
+    });
+
+    it('answers 503 LEASE_PENDING to a pending attempt, retryable and never cached, and resolves nothing', async () => {
+        const { app, resolved } = await boot({ answers: [{ ok: false, pending: true }] });
+        const res = await ask(app);
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(res.headers['retry-after']).toBe('1');
+        expect(res.headers['cache-control']).toBe('no-store');
+        expect(res.json()).toMatchObject({ code: 'LEASE_PENDING', retryable: true });
+        expect(resolved).toEqual([]);
+    });
+
+    it('withholds the token as pending when the lease lapsed during the resolve', async () => {
+        const { app } = await boot({ answers: [LIVE, { ok: false, pending: true }] });
+        const res = await ask(app);
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(res.json().code).toBe('LEASE_PENDING');
+        expect(res.body).not.toContain(TOKEN);
     });
 
     it('answers 503 retryable, not a refusal, when the check cannot be read', async () => {
@@ -214,7 +232,7 @@ describe('the managed-connection broker route', () => {
     });
 
     it('withholds the token when the attempt ended during the resolve', async () => {
-        const { app, lines } = await boot({ answers: [LIVE, { ok: false }] });
+        const { app, lines } = await boot({ answers: [LIVE, { ok: false, pending: false }] });
         const res = await ask(app);
         expect(res.statusCode).toBe(HTTP_FORBIDDEN);
         expect(res.body).not.toContain(TOKEN);

@@ -56,7 +56,7 @@ const track = trackApps();
 
 interface Boot {
     attempt?: AttemptCheck | (() => never);
-    pair?: boolean | (() => never);
+    pair?: boolean | 'prior' | (() => never);
     bound?: boolean | (() => never);
     begin?: Awaited<ReturnType<OperationReceipts['begin']>> | (() => never);
     transition?: Receipt | null | (() => never);
@@ -72,12 +72,15 @@ async function boot(over: Boot = {}) {
     const attemptOfLease: AttemptOfLease = async (jobId, leaseToken) => {
         calls.attempts += 1;
         const answer = run(over.attempt ?? LIVE);
-        return jobId === JOB_ID && leaseToken === LEASE ? answer : { ok: false };
+        return jobId === JOB_ID && leaseToken === LEASE ? answer : { ok: false, pending: false };
     };
-    const pairMatches: PairMatches = async (jobId, leaseToken) =>
-        run(over.pair ?? true) && jobId === JOB_ID && leaseToken === LEASE
+    const pairMatches: PairMatches = async (jobId, leaseToken) => {
+        const pair = run(over.pair ?? true);
+        if (pair === 'prior') return { ok: false, pending: true };
+        return pair && jobId === JOB_ID && leaseToken === LEASE
             ? { ok: true, orgId: 'local' }
-            : { ok: false };
+            : { ok: false, pending: false };
+    };
     const operationReceipts: OperationReceipts = {
         isBound: async () => run(over.bound ?? true),
         begin: async (input) => {
@@ -130,8 +133,19 @@ describe('POST /api/jobs/:id/operations', () => {
         expect(calls.begin).toEqual([{ orgId: 'local', rootJobId: ROOT_ID, jobId: JOB_ID, ...BODY }]);
     });
 
+    // BEL-243: the pair one claim back on a task that still runs is transient; the helper retries with the new pair.
+    it('answers 503 LEASE_PENDING, no-store and retryable, to a pending attempt, and begins nothing', async () => {
+        const { app, calls } = await boot({ attempt: { ok: false, pending: true } });
+        const res = await post(app);
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(res.headers['retry-after']).toBe('1');
+        expect(res.headers['cache-control']).toBe('no-store');
+        expect(res.json()).toMatchObject({ code: 'LEASE_PENDING', retryable: true });
+        expect(calls.begin).toEqual([]);
+    });
+
     it('needs a live lease: a reviewer row, a finished or cancelled attempt, a stale pair is 403', async () => {
-        const { app, calls } = await boot({ attempt: { ok: false } });
+        const { app, calls } = await boot({ attempt: { ok: false, pending: false } });
         const res = await post(app);
         expect(res.statusCode).toBe(HTTP_FORBIDDEN);
         expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
@@ -214,7 +228,7 @@ describe('POST /api/jobs/:id/operations', () => {
 
 describe('PUT /api/jobs/:id/operations/:receiptId', () => {
     it('after the attempt was stopped (pair matches, not live) still records succeeded', async () => {
-        const { app, calls } = await boot({ attempt: { ok: false } });
+        const { app, calls } = await boot({ attempt: { ok: false, pending: false } });
         const res = await put(app, { from: ['dispatched'], to: 'succeeded', result: { commentId: '10042' } });
         expect(res.statusCode).toBe(HTTP_OK);
         expect(res.json()).toEqual({ receipt: { ...RECEIPT, status: 'succeeded' } });
@@ -229,6 +243,16 @@ describe('PUT /api/jobs/:id/operations/:receiptId', () => {
             },
         ]);
         expect(calls.attempts).toBe(0);
+    });
+
+    it('answers 503 LEASE_PENDING to the pair one claim back, and moves nothing', async () => {
+        const { app, calls } = await boot({ pair: 'prior' });
+        const res = await put(app, { from: ['started'], to: 'dispatched' });
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(res.headers['retry-after']).toBe('1');
+        expect(res.headers['cache-control']).toBe('no-store');
+        expect(res.json()).toMatchObject({ code: 'LEASE_PENDING', retryable: true });
+        expect(calls.transition).toEqual([]);
     });
 
     it('a pair that names no attempt row is 403', async () => {
@@ -334,7 +358,9 @@ describe('GET /api/jobs/:id/credentials/connections', () => {
     });
 
     it('a lease refusal is 403 and a throwing lease or listing is 503', async () => {
-        expect((await get((await boot({ attempt: { ok: false } })).app)).statusCode).toBe(HTTP_FORBIDDEN);
+        expect((await get((await boot({ attempt: { ok: false, pending: false } })).app)).statusCode).toBe(
+            HTTP_FORBIDDEN
+        );
         const down = (): never => {
             throw new Error('db down');
         };

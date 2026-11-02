@@ -21,6 +21,17 @@ export const body = (raw: unknown): Record<string, unknown> =>
 export const bad = (reply: FastifyReply, code: string, error: string, status = 400) =>
     reply.code(status).send({ error, code });
 
+/** A lapse or a takeover on a task that still runs: not a verdict, so the helper retries with the current pair. */
+export const LEASE_PENDING_MESSAGE =
+    "This attempt's lease lapsed or moved to a new claim while its task still runs. Retry shortly with the current pair.";
+
+/** The runner credential routes' answer to a pending lease (docs/connections.md): a 503 the helper retries. */
+export const leasePending = (reply: FastifyReply) =>
+    reply
+        .code(HTTP_UNAVAILABLE)
+        .header('retry-after', '1')
+        .send({ error: LEASE_PENDING_MESSAGE, code: ERROR_CODES.LEASE_PENDING, retryable: true });
+
 /**
  * The path-segment rules, applied where a name actually becomes a directory.
  *

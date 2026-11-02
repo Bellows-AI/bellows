@@ -179,6 +179,8 @@ function fakeBoard(getConnections: () => unknown) {
         receipts: new Map<string, Receipt>(),
         listFailures: 0,
         listAlwaysFails: false,
+        /** The pair one claim back: answered 503 LEASE_PENDING, as a takeover window does. */
+        supersededLease: null as string | null,
         beginAlwaysFails: false,
         conflictOnDispatch: false,
         moves: [] as { from: Status[]; to: Status }[],
@@ -190,6 +192,9 @@ function fakeBoard(getConnections: () => unknown) {
     const server = createServer(async (req, res) => {
         const raw = await readBody(req);
         const path = new URL(req.url ?? '', 'http://x').pathname;
+        if (state.supersededLease && req.headers['x-factory-job-lease-token'] === state.supersededLease) {
+            return send(res, 503, { error: 'moved', code: 'LEASE_PENDING', retryable: true });
+        }
         if (req.headers['x-factory-job-id'] !== JOB || req.headers['x-factory-job-lease-token'] !== LEASE) {
             return send(res, 401, { error: 'pair' });
         }
@@ -435,6 +440,20 @@ describe('finding the connection', () => {
         expect(result.code).toBe(1);
         expect(Date.now() - started).toBeLessThan(4000);
         expect(down.jira.calls).toHaveLength(0);
+    });
+
+    // BEL-243 counterpart: the helper re-reads the relayed pair on each try, so a pending answer under the
+    // superseded lease is followed by the adopting claim's. A pin: green before the fix.
+    it('rides a 503 LEASE_PENDING from the connection list onto the relayed pair', async () => {
+        const OLD = '55555555-5555-4555-8555-555555555555';
+        const s = await scenario();
+        s.board.supersededLease = OLD;
+        let reads = 0;
+        const result = await s.run(['issue', 'ABC-1'], {
+            pair: async () => ({ jobId: JOB, leaseToken: ++reads === 1 ? OLD : LEASE }),
+        });
+        expect(result.code).toBe(0);
+        expect(reads).toBeGreaterThan(1);
     });
 
     it('63: two bindings without --site is exit 1 naming --site; --site picks one', async () => {

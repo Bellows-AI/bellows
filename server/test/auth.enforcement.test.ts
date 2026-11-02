@@ -383,8 +383,8 @@ describe('the route table', () => {
                 auth: store,
                 commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
                 // The runner credential routes exist exactly when their per-call check does.
-                attemptOfLease: async () => ({ ok: false }),
-                pairMatches: async () => ({ ok: false }),
+                attemptOfLease: async () => ({ ok: false, pending: false }),
+                pairMatches: async () => ({ ok: false, pending: false }),
                 integrations: {
                     flowOf: () => ({
                         startAuthorization: async () => ({ ok: false as const, reason: 'unknown-provider' as const }),

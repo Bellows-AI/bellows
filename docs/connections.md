@@ -18,7 +18,7 @@ Over the 60-line cap on purpose: four independent surfaces (connection store, Ji
 | Legacy API-token connections: disconnected, scrubbed, unbound | `server/migrations/100_legacy_jira_tokens.sql`, `server/src/db/connection-bindings.ts` | `server/test-db/migration.100-legacy-jira-tokens.test.ts` |
 | Credential class: the attempt pair in every `AUTH_MODE` | `server/src/auth/plugin.ts` (`CONNECTOR_ROUTES`) | `server/test/auth.enforcement.test.ts` |
 | Agent's Jira skill and helper; runner entrypoints drop a claimed `JIRA_API` | `docker/skills/jira/SKILL.md`, `docker/skills/jira/jira.cjs`, `docker/claude-executor/entrypoint.sh`, `docker/opencode-executor/entrypoint.sh` | `driver/test/jira-helper.test.ts`, `server/test/jira-helper-parity.test.ts`, `driver/test/skill-helper-paths.test.ts`, `driver/test/executor-images.test.ts` |
-| Broker routes: GitHub token, revoke, connection credential (attempt pair only, `no-store`) | `server/src/routes/github-credential.ts`, `server/src/routes/connection-credential.ts`, `server/src/db/attempt-of-lease.ts`, `server/src/integrations/integration-recovery.ts` (`resolverOf`) | `server/test/routes.github-credential.test.ts`, `server/test/routes.connection-credential.test.ts`, `server/test-db/github-credential.test.ts`, `server/test-db/connection-credential.test.ts` |
+| Broker routes: GitHub token, revoke, connection credential (attempt pair only, `no-store`) | `server/src/routes/github-credential.ts`, `server/src/routes/connection-credential.ts`, `server/src/db/attempt-of-lease.ts`, `server/migrations/120_job_prior_lease.sql`, `server/src/integrations/integration-recovery.ts` (`resolverOf`) | `server/test/routes.github-credential.test.ts`, `server/test/routes.connection-credential.test.ts`, `server/test-db/github-credential.test.ts`, `server/test-db/connection-credential.test.ts` |
 | Runner seam: live bindings read and the operation receipt | `server/src/routes/operation-receipts.ts`, `server/src/db/operation-receipts.ts`, `server/migrations/099_operation_receipts.sql` | `server/test/routes.operation-receipts.test.ts`, `server/test-db/operation-receipts.test.ts`, `server/test-db/migration.099-operation-receipts.test.ts` |
 | GitHub mint: narrowed to the task's repo and `RUNNER_TOKEN_PERMISSIONS`, answer checked against that ceiling | `server/src/github/app-token.ts` | `server/test/github.app-token.test.ts` |
 | Runner broker client (byte-identical in both images) and the GitHub helper behind `credential.helper` and `gh` | `docker/executor-common/credential-broker.cjs`, `docker/executor-common/github-credential.cjs`, `docker/executor-common/gh-wrapper.sh` | `driver/test/credential-broker.test.ts`, `driver/test/github-credential.test.ts`, `driver/test/executor-images.test.ts` |
@@ -37,7 +37,9 @@ Over the 60-line cap on purpose: four independent surfaces (connection store, Ji
 - **A runner never holds a Jira refresh secret or a stored credential**; it holds the attempt pair and asks the broker
   per call. `server/test-db/connection-credential.test.ts`.
 - **Every ask re-checks the live attempt**, no tail grace: unfinished job, unexpired lease, no stop, not a reviewer
-  row, root's execution user still a member. `server/test-db/connection-credential.test.ts`.
+  row, root's execution user still a member. `server/test-db/connection-credential.test.ts`. A lapsed lease, or the
+  pair one claim back, on a task that still runs answers `503 LEASE_PENDING`, never the terminal 403: a takeover
+  window, not a verdict (`server/test-db/github-credential.test.ts`).
 - **Selection is the root task's bindings, stamped at create**; follow-ups, retries and workflow nodes read the root's.
   A required provider with no live binding is an open requirement: the claim never offers the queued root.
   `server/test-db/job-store.connection-bindings.test.ts`.
@@ -72,3 +74,5 @@ Over the 60-line cap on purpose: four independent surfaces (connection store, Ji
   `redactedResult`, `driver/test/supervisor.test.ts`).
 - A supervised step's token rides its step request across the mailbox volume, not memory.
 - The token reaches every site the Atlassian account can reach; there is no in-place edit and no per-task picker in the UI.
+- Only the pair one claim back is pending: after two takeovers before the relay, the oldest pair is refused
+  (`server/test-db/github-credential.test.ts`).
