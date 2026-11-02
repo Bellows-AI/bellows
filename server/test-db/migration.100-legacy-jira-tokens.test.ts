@@ -149,6 +149,8 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
             values (${org}, ${completedFollowUp}, 'more', ${completedRoot}, ${completedRoot}, ${author})
         `;
         await applyAll([VERSION]);
+        // The claim below is today's code: it reads columns later migrations add, so the schema goes on to head.
+        await applyAll(versioned().filter((name) => name > VERSION));
     });
 
     it('80: disconnects every active legacy row and nulls every legacy api_token; oauth rows untouched', async () => {
