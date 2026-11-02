@@ -231,7 +231,7 @@ export function EnvTabsBar({
     onKeyDown: (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
 }) {
     return (
-        <div role="tablist" aria-label="Environment variable categories" className="env-tabs">
+        <div role="tablist" aria-label="Environment variable categories" className="tabs">
             {(['variables', 'secrets'] as const).map((key, index) => (
                 <button
                     key={key}
@@ -241,7 +241,6 @@ export function EnvTabsBar({
                     aria-selected={tab === key}
                     aria-controls={`${uid}-panel-${key}`}
                     tabIndex={tab === key ? 0 : -1}
-                    className="env-tab"
                     ref={(el) => {
                         tabRefs.current[index] = el;
                     }}

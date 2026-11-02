@@ -212,7 +212,6 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.question button',
     ],
     'styles/regions/settings.css': [
-        '.env-tab',
         '.settings-toggle',
         '.repo-search input',
         '.repo-search button',
@@ -628,6 +627,14 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             if (/tertiary|icon-button|\.tabs/.test(prelude))
                 expect(text, prelude).not.toMatch(/outline\s*:\s*(none|0)/);
         }
+    });
+
+    it('rests the settings overview rows flat on dividers, with no raised box around them', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.settings-rows')).not.toMatch(/background|border\s*:|border-radius/);
+        expect(body('.settings-row-item + .settings-row-item')).toMatch(/border-top\s*:\s*1px solid var\(--line\)/);
     });
 
     it('keeps the composer the one raised tier and its chips on the shared quiet trigger', () => {
