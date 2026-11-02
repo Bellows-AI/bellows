@@ -541,6 +541,26 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(offScale).toEqual([]);
     });
 
+    it('lights every current navigation row with the one soft fill: no border, no accent text', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const body = (selector: string) =>
+            rules(css)
+                .filter(([prelude]) => prelude.split(',').some((part) => part.trim() === selector))
+                .map(([, decls]) => decls)
+                .join('\n');
+        for (const selector of [
+            '.sidenav-link.is-active',
+            '.sidenav-sublink.is-active',
+            '.sidenav-task.is-active',
+            '.sidenav-newtask.is-active',
+        ]) {
+            const decls = body(selector);
+            expect(decls, selector).toMatch(/background:\s*var\(--surface-strong\)/);
+            expect(decls, selector).toMatch(/color:\s*var\(--ink\)/);
+            expect(decls, selector).not.toMatch(/border|outline|box-shadow/);
+        }
+    });
+
     it('defines the soft surface tier in both theme blocks and .panel rests on it without a frame', () => {
         const css = stripComments(shippedCss());
         const blocks = tokenSpans(css).map(([start, end]) => css.slice(start, end));
