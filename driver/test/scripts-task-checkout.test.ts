@@ -104,6 +104,22 @@ describe.skipIf(!hasGit())('the task checkout script', () => {
         for (const kind of SYNC_FAILURE_KINDS) expect(source).toContain(`'${kind}'`);
     });
 
+    it('keeps the rebase the agent left stopped when the fetch fails', () => {
+        expect(fx.sync()).toMatchObject({ ok: true });
+        git(fx.checkout(), 'branch', 'side');
+        fx.commitIn(fx.checkout(), 'README.md', 'mine\n', 'mine');
+        git(fx.checkout(), 'switch', 'side');
+        fx.commitIn(fx.checkout(), 'README.md', 'theirs\n', 'theirs');
+        git(fx.checkout(), 'switch', fx.branch());
+        expect(() => git(fx.checkout(), 'rebase', 'side')).toThrow();
+        git(fx.checkout(), 'remote', 'set-url', 'origin', 'file:///nonexistent');
+
+        expect(fx.sync()).toMatchObject({ ok: false });
+
+        expect(existsSync(join(git(fx.checkout(), 'rev-parse', '--absolute-git-dir'), 'rebase-merge'))).toBe(true);
+        expect(readFileSync(join(fx.checkout(), 'README.md'), 'utf8')).toContain('<<<<<<<');
+    });
+
     describe('hands a conflict to the agent instead of refusing the run (issue #661)', () => {
         const conflictedRebase = (): void => {
             expect(fx.sync()).toMatchObject({ ok: true });

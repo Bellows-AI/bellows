@@ -38,7 +38,8 @@
 //                 attempt and kept as it is after — still with no fetch and no rebase, because
 //                 nothing a reviewer needs is on the remote.
 //
-// STARTING claims, tree present: rebased onto the new default with --autostash, so a follow-up
+// STARTING claims, tree present (a failure aborts only the rebase this sync started; a rebase the run left is
+// never aborted): rebased onto the new default with --autostash, so a follow-up
 // works whether or not the previous run left uncommitted edits; the edits are stashed for the
 // rebase and reapplied on the new base. Git exits 0 even when the reapplied STASH conflicts (the
 // rebase itself succeeded), so the script re-checks for unmerged entries. A conflict is HANDED
@@ -204,7 +205,7 @@ const handOver = () => {
 const KIND_BRANCH_UNRESTORABLE = 'branch_unrestorable';
 const KIND_MISSING_BASE_BRANCH = 'missing_base_branch';
 const fail = (r, kind) => {
-    if (!restore) {
+    if (!restore && startedRebase) {
         try {
             inw('rebase', '--abort');
         } catch {}
@@ -221,6 +222,8 @@ const buildDirOf = (final) => path.join(path.dirname(final), '.' + path.basename
 const discardTree = (dir) => fs.rmSync(dir, { recursive: true, force: true });
 // The build in progress, removed if the script leaves before it is moved into place.
 let building = null;
+// Whether this sync began a rebase: only that one is aborted on failure, never one the run left.
+let startedRebase = false;
 process.on('exit', () => {
     if (building) discardTree(building);
 });
@@ -448,6 +451,7 @@ const rebaseExisting = (base, hasBase) => {
             inwFetching('checkout', '-b', branch, hasRemoteRef(branch) ? 'origin/' + branch : 'origin/' + base);
         }
     }
+    startedRebase = true;
     try {
         inwFetching('rebase', '--autostash', 'origin/' + base);
     } catch (e) {
