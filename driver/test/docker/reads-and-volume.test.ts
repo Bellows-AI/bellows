@@ -332,13 +332,40 @@ describe('the docker runner restoring a task volume', () => {
         ['none', { state: 'none' as const }],
         ['gone', { state: 'gone' as const }],
         ['truncated', { state: 'found' as const, checkpoint: { bytes: 1, truncated: true, chunks: [] } }],
-    ])('ends a follow-up with checkpoint_unrestorable on a %s checkpoint and no volume', async (_n, read) => {
+    ])('ends an OpenCode follow-up with checkpoint_unrestorable on a %s checkpoint and no volume', async (_n, read) => {
         const steps = fakeSteps();
         const { d, runner: r } = runner([], steps, { checkpoint: async () => read });
-        const result = await r.syncCheckout(restoreJob(), undefined, null, 'ghs_x');
+        const result = await r.syncCheckout(restoreJob({ executorType: 'opencode' }), undefined, null, 'ghs_x');
         expect(result).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
         expect(steps.submitted).toEqual([]);
         expect(taskCreates(d.calls)).toEqual([]);
+    });
+
+    describe('a remote rebuild (no complete checkpoint)', () => {
+        const REBUILT = '{"ok":true,"reason":null,"restored":true,"fromRemote":true,"branch":"factory/agent-work"}';
+        const claude = () => restoreJob({ executorType: 'claude-code' });
+
+        it("carries the rebuild's note into the turn context", async () => {
+            const steps = fakeSteps((step) => ok(step.id.endsWith('-restore') ? REBUILT : '{"ok":true,"reason":null}'));
+            const { runner: r } = runner([], steps, { checkpoint: async () => ({ state: 'none' as const }) });
+            const j = claude();
+
+            const result = await r.syncCheckout(j, undefined, null, 'ghs_x');
+
+            expect(result).toEqual({ ok: true, reason: null });
+            expect(restoreStep(steps)?.step.env).toMatchObject({ FROM_REMOTE: '1' });
+            expect(j.turnContext).toContain('rebuilt from the pushed branch factory/agent-work');
+        });
+
+        it('leaves the turn context alone when the verdict does not say it was rebuilt from the remote', async () => {
+            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            const { runner: r } = runner([], steps, { checkpoint: async () => POINTER });
+            const j = restoreJob({ executorType: 'claude-code', turnContext: 'board context' });
+
+            await r.syncCheckout(j, undefined, null, 'ghs_x');
+
+            expect(j.turnContext).toBe('board context');
+        });
     });
 
     it('starts a first claim on generation 1 with a fresh clone and no restore', async () => {

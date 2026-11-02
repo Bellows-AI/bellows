@@ -109,11 +109,35 @@ describe('the kubernetes runner restoring a task volume', () => {
         ['none', { state: 'none' } as CheckpointRead],
         ['gone', { state: 'gone' } as CheckpointRead],
         ['truncated', { state: 'found', checkpoint: { bytes: 1, truncated: true, chunks: [] } } as CheckpointRead],
-    ])('ends a follow-up with checkpoint_unrestorable on a %s checkpoint and no claim', async (_n, read) => {
-        const run = await k8sSyncRun(job(), { checkpoints: board(read), answer: () => OK });
+    ])('ends an OpenCode follow-up with checkpoint_unrestorable on a %s checkpoint and no claim', async (_n, read) => {
+        const run = await k8sSyncRun(job({ executorType: 'opencode' }), { checkpoints: board(read), answer: () => OK });
         expect(run).toMatchObject({ value: { ok: false, kind: 'checkpoint_unrestorable' } });
         expect(run.steps).toEqual([]);
         expect(claimsCreated(run.calls)).toEqual([]);
+    });
+
+    describe('a remote rebuild (no complete checkpoint)', () => {
+        const REBUILT = '{"ok":true,"reason":null,"restored":true,"fromRemote":true,"branch":"factory/agent-work"}';
+
+        it("creates the next generation and carries the rebuild's note into the turn context", async () => {
+            const j = job();
+            const run = await k8sSyncRun(j, {
+                checkpoints: board({ state: 'none' }),
+                answer: (step) => (step.id.endsWith('-restore') ? REBUILT : OK),
+            });
+
+            expect(run).toMatchObject({ value: { ok: true } });
+            expect(claimsCreated(run.calls)).toEqual([taskVolumeName(j, 2)]);
+            expect(run.steps.find((s) => s.id.endsWith('-restore'))?.env).toMatchObject({ FROM_REMOTE: '1' });
+            expect(run.job.turnContext).toContain('rebuilt from the pushed branch factory/agent-work');
+        });
+
+        it('leaves the turn context alone when the verdict does not say it was rebuilt from the remote', async () => {
+            const j = job({ turnContext: 'board context' });
+            const run = await k8sSyncRun(j, { checkpoints: board(FOUND), answer: () => OK });
+
+            expect(run.job.turnContext).toBe('board context');
+        });
     });
 
     it('starts a first claim on generation 1 with a fresh clone and no restore', async () => {

@@ -305,16 +305,16 @@ describe("the thread's docker task volume across generations (issue #775)", () =
         expect(d.calls.find((a) => a[1] === 'inspect')!.at(-1)).toBe(`factory-task-${ROOT}-3`);
     });
 
-    it('fails checkpoint_unrestorable, creating nothing, for a follow-up whose volume is gone and whose checkpoint is none, gone or truncated', async () => {
+    it('fails checkpoint_unrestorable, creating nothing, for an OpenCode follow-up whose volume is gone and whose checkpoint is none, gone or truncated', async () => {
         for (const read of [
             { state: 'none' },
             { state: 'gone' },
             { state: 'found', checkpoint: { ...POINTER, truncated: true } },
         ] as const) {
             const d = daemon('absent');
-            await expect(ensureTaskVolume({ ...d.deps, checkpoints: board(read) }, continuing)).rejects.toBeInstanceOf(
-                CheckpointUnrestorable
-            );
+            await expect(
+                ensureTaskVolume({ ...d.deps, checkpoints: board(read) }, { ...continuing, executorType: 'opencode' })
+            ).rejects.toBeInstanceOf(CheckpointUnrestorable);
             expect(creates(d.calls)).toEqual([]);
         }
     });
