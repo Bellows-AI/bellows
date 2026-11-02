@@ -263,7 +263,7 @@
         margin-bottom: -1px;
     }
 
-    .tabs [role='tab']:hover:not(:disabled) {
+    .tabs [role='tab']:hover:not(:disabled, [aria-selected='true']) {
         background: var(--surface-strong);
     }
 
