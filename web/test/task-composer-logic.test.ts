@@ -6,6 +6,7 @@ import {
     blockerTone,
     clampedWorkflow,
     commandCount,
+    commandNearLimit,
     commandTooLong,
     draftIsFresh,
     initialComposerState,
@@ -19,6 +20,7 @@ import {
     paramsComplete,
     repoReadiness,
     startBlocker,
+    submitShortcutHint,
     touchAll,
     valuesForWorkflow,
 } from '../src/task-composer.js';
@@ -562,5 +564,23 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
         expect(
             restoredDraftNotices(restored, { repos: [], executors, workflows: null, defaultExecutor: null })
         ).toEqual(['Repository ‘acme/web’ is no longer selected — the task will run without a repository.']);
+    });
+});
+
+describe('commandNearLimit — the counter shows only close to the board limit', () => {
+    it('is quiet far from the limit, shown from 90% of it, and still shown past it', () => {
+        expect(commandNearLimit('')).toBe(false);
+        expect(commandNearLimit('x'.repeat(Math.floor(COMMAND_LIMIT * 0.9) - 1))).toBe(false);
+        expect(commandNearLimit('x'.repeat(Math.ceil(COMMAND_LIMIT * 0.9)))).toBe(true);
+        expect(commandNearLimit('x'.repeat(COMMAND_LIMIT + 1))).toBe(true);
+    });
+});
+
+describe('submitShortcutHint — the Enter shortcut named by platform', () => {
+    it('says ⌘↵ on Apple platforms and Ctrl↵ elsewhere, and without a navigator', () => {
+        expect(submitShortcutHint('MacIntel')).toBe('⌘↵');
+        expect(submitShortcutHint('iPhone')).toBe('⌘↵');
+        expect(submitShortcutHint('Win32')).toBe('Ctrl↵');
+        expect(submitShortcutHint(undefined)).toBe('Ctrl↵');
     });
 });
