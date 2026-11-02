@@ -211,6 +211,12 @@
         }
     }
 
+    /* The conversation sits on the canvas: no fill, no frame. The exchanges separate by their own
+       hairlines; the soft tier belongs to the rail and the supporting panels. */
+    .task-conversation > .panel-head {
+        margin-bottom: 4px;
+    }
+
     .chat-exchange {
         border-top: 1px solid var(--line);
         padding-top: 10px;

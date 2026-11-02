@@ -41,7 +41,7 @@ describe('TaskDetail — task activity (issues #339, #530)', () => {
         expect(html).toContain('No telemetry for this run.');
         expect(html).toContain('Open task statistics');
         // No chart in the activity panel itself — the page's other icons are not the chart's.
-        const panel = html.slice(html.indexOf('task-activity'), html.indexOf('task-follow-up'));
+        const panel = html.slice(html.indexOf('task-activity'), html.indexOf('<section class="panel task-follow-up'));
         expect(panel).not.toContain('<svg');
     });
 });
@@ -650,5 +650,27 @@ describe('TaskDetail — main column', () => {
         // The rail leads the DOM, so a narrow screen reads the summary first, the panels last.
         expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-main'));
         expect(html.indexOf('task-main')).toBeLessThan(html.indexOf('task-support'));
+    });
+});
+
+describe('TaskDetail — surface hierarchy (BEL-232)', () => {
+    it('draws the conversation on the canvas, not as a soft panel; no panel nests in another', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    output: '[driver] published fix/2 — https://github.com/acme/web/pull/2',
+                    gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }],
+                }),
+            ],
+        });
+        const classes = (el: string) => new RegExp(`<[a-z]+ [^>]*class="([^"]*${el}[^"]*)"`).exec(html)![1]!.split(' ');
+        expect(classes('task-conversation')).not.toContain('panel');
+        const conversation = html.slice(
+            html.indexOf('task-conversation'),
+            html.indexOf('<section class="panel task-follow-up')
+        );
+        expect(conversation).not.toMatch(/class="([^"]* )?panel[ "]/);
+        // The outcome rail stays a soft section.
+        expect(classes('task-outcome')).toContain('panel');
     });
 });
