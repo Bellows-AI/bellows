@@ -158,6 +158,13 @@ describe('the user menu', () => {
 });
 
 describe('the main chart', () => {
+    it('wears the legend toggles as quiet tertiary buttons with their accessible names', () => {
+        const { container } = render(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta} />);
+        const toggles = [...container.querySelectorAll<HTMLButtonElement>('.legend button')];
+        expect(toggles.map((b) => b.textContent?.trim())).toEqual(['Total input', 'Output', 'Sessions']);
+        for (const toggle of toggles) expect(toggle.classList.contains('tertiary')).toBe(true);
+    });
+
     it('toggles a series from the legend and inspects the buckets from the keyboard', async () => {
         const user = userEvent.setup();
         const { container } = render(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta} />);

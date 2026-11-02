@@ -91,7 +91,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                     <div className="legend">
                         <button
                             type="button"
-                            className="legend-button"
+                            className="tertiary legend-button"
                             aria-pressed={!hidden.has('input')}
                             onClick={() => toggle('input')}
                         >
@@ -100,7 +100,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                         </button>
                         <button
                             type="button"
-                            className="legend-button"
+                            className="tertiary legend-button"
                             aria-pressed={!hidden.has('output')}
                             onClick={() => toggle('output')}
                         >
@@ -109,7 +109,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                         </button>
                         <button
                             type="button"
-                            className="legend-button"
+                            className="tertiary legend-button"
                             aria-pressed={!hidden.has('sessions')}
                             onClick={() => toggle('sessions')}
                         >
