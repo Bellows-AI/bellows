@@ -50,22 +50,28 @@ async function openCore() {
 const footerOf = (core: ReturnType<typeof within>) =>
     within(core.getByRole('button', { name: 'Save changes' }).closest('.settings-actions') as HTMLElement);
 
+/** The save bar is unmounted while the draft is pristine and not saving. */
+const expectNoSaveBar = (core: ReturnType<typeof within>) => {
+    expect(core.queryByRole('button', { name: 'Save changes' })).toBeNull();
+    expect(core.queryByRole('button', { name: 'Cancel' })).toBeNull();
+};
+
 describe('the Core environment editor', () => {
     it('shows Unsaved changes while dirty, and Cancel returns the draft to the stored rows', async () => {
         envBoard();
         const { user, core } = await openCore();
-        const footer = footerOf(core);
-        expect(footer.queryByText('Unsaved changes')).toBeNull();
-        expect(footer.getByRole('button', { name: 'Cancel' })).toHaveProperty('disabled', true);
+        expectNoSaveBar(core);
+        expect(core.queryByText('Unsaved changes')).toBeNull();
 
         await user.click(core.getByRole('button', { name: 'Add variable' }));
         await user.type(core.getByLabelText('Variable 1 name'), 'E2E_CANCEL_VAR');
+        const footer = footerOf(core);
         expect(footer.getByText('Unsaved changes')).toBeTruthy();
 
         await user.click(footer.getByRole('button', { name: 'Cancel' }));
         expect(core.getByText('No variables configured.')).toBeTruthy();
-        expect(footer.queryByText('Unsaved changes')).toBeNull();
-        expect(footer.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', true);
+        expectNoSaveBar(core);
+        expect(core.queryByText('Unsaved changes')).toBeNull();
 
         // Clean again: leaving asks nothing.
         await user.click(screen.getByRole('link', { name: 'Tasks' }));
@@ -84,9 +90,9 @@ describe('the Core environment editor', () => {
         await user.click(core.getByRole('tab', { name: /^Variables \(/ }));
         expect(core.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_TAB_DRAFT');
 
-        // An untouched blank addition may vanish without ceremony; the save button stays honest.
+        // An untouched blank addition may vanish without ceremony; the bar goes with the dirtiness.
         await user.click(core.getByRole('button', { name: /^Remove/ }));
-        expect(core.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', true);
+        expectNoSaveBar(core);
     });
 
     it('stages a removal with Undo, and only the save deletes', async () => {
@@ -127,7 +133,7 @@ describe('the Core environment editor', () => {
         // Invalid text is refused with the line error; the table draft is untouched.
         expect(core.getByText(/not a legal environment variable name/)).toBeTruthy();
         expect(core.getByLabelText('Variables in .env format')).toBeTruthy();
-        expect(core.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', true);
+        expectNoSaveBar(core);
 
         await user.clear(editor);
         await user.type(editor, 'E2E_RAW_VAR=raw-value');
@@ -221,5 +227,49 @@ describe('the Core environment editor', () => {
         await core.findByText('Changes saved.');
         expect(core.getByText('No variables configured.')).toBeTruthy();
         expect(board.org).toEqual([]);
+    });
+
+    it('after a successful save the bar unmounts and "Changes saved." stays announced', async () => {
+        envBoard();
+        const { user, core } = await openCore();
+        await user.click(core.getByRole('button', { name: 'Add variable' }));
+        await user.type(core.getByLabelText('Variable 1 name'), 'E2E_SAVED_VAR');
+        await user.click(core.getByRole('button', { name: 'Save changes' }));
+        const status = await core.findByText('Changes saved.');
+        expect(status.getAttribute('role')).toBe('status');
+        expectNoSaveBar(core);
+        expect(core.queryByText('Unsaved changes')).toBeNull();
+    });
+
+    it('has Save as the editor\u2019s one primary action once the bar shows', async () => {
+        envBoard();
+        const { user, core } = await openCore();
+        await user.click(core.getByRole('button', { name: 'Add variable' }));
+        const panel = core.getByRole('button', { name: 'Save changes' }).closest('section.panel') as HTMLElement;
+        const primaries = panel.querySelectorAll('button.primary');
+        expect(primaries).toHaveLength(1);
+        expect(primaries[0]!.textContent).toBe('Save changes');
+    });
+
+    it('places the save bar after both tab panels once the draft is dirty', async () => {
+        envBoard();
+        const { user, core } = await openCore();
+        await user.click(core.getByRole('button', { name: 'Add variable' }));
+        const bar = core.getByRole('button', { name: 'Save changes' }).closest('.settings-actions') as HTMLElement;
+        const panels = document.querySelectorAll('[role="tabpanel"]');
+        const last = panels[panels.length - 1] as HTMLElement;
+        expect(last.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('keeps tab names "Variables (n)" and "Secrets (n)" with the count in a .count element', async () => {
+        envBoard([{ name: 'E2E_COUNT_VAR', value: '1', isSecret: false, updatedAt: STORED_AT }]);
+        const user = userEvent.setup();
+        renderApp('/settings/organization');
+        const heading = await screen.findByRole('heading', { name: 'Core (organization)' });
+        const core = within(heading.closest('section.panel') as HTMLElement);
+        const variables = await core.findByRole('tab', { name: 'Variables (1)' });
+        expect(variables.querySelector('.count')?.textContent).toBe('(1)');
+        expect(core.getByRole('tab', { name: 'Secrets (0)' }).querySelector('.count')).toBeTruthy();
+        await user.click(core.getByRole('tab', { name: 'Secrets (0)' }));
     });
 });

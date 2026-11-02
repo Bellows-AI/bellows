@@ -28,7 +28,8 @@ describe('the repositories page', () => {
         const heading = await screen.findByRole('heading', { name: `Selected repository: ${REPO}` });
         await waitFor(() => expect(document.activeElement).toBe(heading));
         const detail = document.querySelector('.repo-detail') as HTMLElement;
-        within(detail).getByText(`Repository · ${REPO}`);
+        await within(detail).findByText(`Applies to every task using ${REPO} in the organization.`);
+        expect(detail.textContent?.match(/rightmost scope wins/g)).toHaveLength(1);
         expect(detail.textContent).not.toContain('Not checked out');
         expect(detail.textContent).not.toContain('Not available');
         expect(document.querySelectorAll('tr.repo-row-configured')).toHaveLength(1);

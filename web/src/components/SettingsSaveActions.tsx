@@ -2,11 +2,11 @@
 export const UNSAVED_CHANGES_LABEL = 'Unsaved changes';
 
 /**
- * The footer every settings editor ends with (issue 282): an "Unsaved changes" indicator while
+ * The bar every settings editor ends with while its draft is edited (issue 282): an "Unsaved changes" indicator while
  * the draft differs from what is stored, Cancel (back to the stored rows) and Save, the panel's
  * one primary action. Presentational — the editor owns the draft, the guard and the request; this
  * only draws what they decided. The indicator is text, never color alone, and is not a live
- * region: every keystroke would announce it.
+ * region: every keystroke would announce it. Unmounted when the draft is pristine and idle.
  */
 export function SettingsSaveActions({
     dirty,
@@ -21,6 +21,8 @@ export function SettingsSaveActions({
     onSave: () => void;
     onCancel: () => void;
 }) {
+    // Pristine means no bar at all; saving and error feedback live outside it, so they survive the unmount.
+    if (!dirty && !saving) return null;
     return (
         <div className="settings-actions">
             {dirty ? <span className="settings-dirty">{UNSAVED_CHANGES_LABEL}</span> : null}

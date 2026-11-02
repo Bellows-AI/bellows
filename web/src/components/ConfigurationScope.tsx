@@ -18,44 +18,47 @@ import type { ReactElement } from 'react';
 
 export type ConfigurationScopeId = 'organization' | 'workspace' | 'repository';
 
-type ScopeProps =
+export type ConfigurationScopeProps =
     | { scope: 'organization' | 'workspace' }
     | { scope: 'repository'; repository: { owner: string; name: string } };
 
+/** The one precedence summary every scope shows; the per-scope long form sits in a disclosure. */
+const PRECEDENCE_SUMMARY =
+    'Organization \u2192 My workspace \u2192 Repository. The rightmost scope wins for the same key.';
+
 /** Per-scope copy, in one table so the three editors cannot drift apart. */
-const COPY: Record<ConfigurationScopeId, { label: string; impact: string; editability: string; precedence: string }> = {
+const COPY: Record<ConfigurationScopeId, { impact: string; editability: string; detail: string }> = {
     organization: {
-        label: 'Organization',
         impact: 'Applies to every member\u2019s tasks in the organization.',
         editability: 'Any member can edit.',
-        precedence:
-            'Environment values resolve organization < workspace < repository: a workspace or repository value with the same name overrides this scope.',
+        detail: 'Environment values resolve organization < workspace < repository: a workspace or repository value with the same name overrides this scope.',
     },
     workspace: {
-        label: 'My workspace',
-        impact: 'Applies only to tasks the current member starts.',
+        impact: 'Applies to tasks you start.',
         editability: 'Edited only by that member.',
-        precedence:
-            'Environment values resolve organization < workspace < repository: these values override the organization scope, and a repository value with the same name overrides them.',
+        detail: 'Environment values resolve organization < workspace < repository: these values override the organization scope, and a repository value with the same name overrides them.',
     },
     repository: {
-        label: 'Repository',
         impact: 'Applies to every task using {repo} in the organization.',
         editability: 'Any member can edit.',
-        precedence:
-            'Environment values resolve organization < workspace < repository: these values override the organization and workspace scopes, and nothing more specific remains.',
+        detail: 'Environment values resolve organization < workspace < repository: these values override the organization and workspace scopes, and nothing more specific remains.',
     },
 };
 
-export function ConfigurationScope(props: ScopeProps): ReactElement {
+/** The scope context an editor head renders under its title: impact, who edits, and precedence
+ * stated once (the long form behind a disclosure). */
+export function ConfigurationScope(props: ConfigurationScopeProps): ReactElement {
     const copy = COPY[props.scope];
     const fullName = props.scope === 'repository' ? `${props.repository.owner}/${props.repository.name}` : null;
     return (
         <div className="scope-context">
-            <p className="scope-context-label">{fullName ? `Repository · ${fullName}` : copy.label}</p>
             <p>{fullName ? copy.impact.replace('{repo}', fullName) : copy.impact}</p>
             <p>{copy.editability}</p>
-            <p className="muted">{copy.precedence}</p>
+            <p className="muted">{PRECEDENCE_SUMMARY}</p>
+            <details className="scope-detail">
+                <summary>How precedence works</summary>
+                <p className="muted">{copy.detail}</p>
+            </details>
         </div>
     );
 }

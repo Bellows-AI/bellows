@@ -26,7 +26,7 @@ async function open(page: Page) {
  * Clears the scope through the page's own contract, so every run starts from an empty editor no
  * matter what earlier runs stored (the seed leaves env_var alone): removal is pending per row,
  * so both tabs are swept and the whole-list save commits the deletions. A clean panel needs no
- * save at all — and its save button is exactly what tells us so.
+ * save at all — and the save bar being unmounted is exactly what tells us so.
  */
 async function clearScope(panel: Locator) {
     for (const tabName of [/^Variables \(/, /^Secrets \(/]) {
@@ -40,7 +40,7 @@ async function clearScope(panel: Locator) {
     }
     await panel.getByRole('tab', { name: /^Variables \(/ }).click();
     const save = panel.getByRole('button', { name: 'Save changes' });
-    if (await save.isEnabled()) {
+    if (await save.count()) {
         await save.click();
         await expect(panel.getByText('Changes saved.')).toBeVisible({ timeout: 15_000 });
     }
@@ -85,8 +85,8 @@ test.describe('environment editors', () => {
         const core = corePanel(page);
         await clearScope(core);
 
-        // Clean means the save button has nothing to do — the disabled posture is the test.
-        await expect(core.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+        // Clean means the save bar has nothing to do — it is not mounted at all.
+        await expect(core.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
 
         await core.getByRole('button', { name: 'Add variable' }).click();
         await core.getByLabel('Variable 1 name').fill('E2E_PROBE_VAR');
@@ -99,6 +99,26 @@ test.describe('environment editors', () => {
         // The echoed rows are adopted inside the mounted panel: the value survives as the input's.
         await expect(core.getByLabel('Variable 1 value')).toHaveValue('probe-value');
         await page.screenshot({ path: `${SHOTS}/env-row-saved.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('the save bar appears once the draft is dirty, and Cancel restores and removes it', async ({ page }) => {
+        const problems = watchConsole(page);
+        await open(page);
+
+        const core = corePanel(page);
+        await clearScope(core);
+        await expect(core.getByText('Unsaved changes')).toHaveCount(0);
+
+        await core.getByRole('button', { name: 'Add variable' }).click();
+        await core.getByLabel('Variable 1 name').fill('E2E_BAR_VAR');
+        await expect(core.getByText('Unsaved changes')).toBeVisible();
+        await expect(core.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+
+        await core.getByRole('button', { name: 'Cancel' }).click();
+        await expect(core.getByText('No variables configured.')).toBeVisible();
+        await expect(core.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
+        await expect(core.getByText('Unsaved changes')).toHaveCount(0);
         expect(problems.join('\n')).toBe('');
     });
 

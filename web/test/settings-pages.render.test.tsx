@@ -118,8 +118,8 @@ describe('Settings organization page', () => {
         expect(html).toContain('Your role');
         expect(html).toContain('Admin');
         expect(html).not.toContain('bellows');
-        expect(html).toContain('Any member can edit.');
         expect(html).toContain('Loading environment…');
+        expect(html).not.toContain('Any member can edit.');
         expect(html).not.toContain('No variables configured.');
         expectNoPlaceholder(html);
     });
@@ -143,6 +143,7 @@ describe('Settings organization page', () => {
         // save-state rule, not a role gate.)
         expect(html.match(/<input [^>]*disabled/g) ?? []).toHaveLength(0);
         expect(html).not.toContain('shown here read-only');
+        expect(html).toContain('Any member can edit.');
     });
 
     it('carries no client-only admin gate in its source', () => {
@@ -192,10 +193,12 @@ describe('Settings workspace page', () => {
     it('owns the member\u2019s own scopes only: no checkout root, orphan list or checkout management', () => {
         // The page reads no workspace data: nothing is checked out on the board, so a cold render
         // is the whole page and it never waits on the workspace poll.
-        const html = render('/settings/workspace');
+        const html = render('/settings/workspace', {
+            env: { loading: false, data: { org: [], workspace: [], repos: [] } },
+        });
         expect(html).not.toContain('Loading your workspace');
         expect(html).toContain('My workspace');
-        expect(html).toContain('Applies only to tasks the current member starts.');
+        expect(html).toContain('Applies to tasks you start.');
         expect(html).toContain('Edited only by that member.');
         for (const gone of [
             'ORG_WORKSPACE_ROOT',
@@ -214,6 +217,7 @@ describe('Settings workspace page', () => {
     it('is unaffected by a failed workspace read: that error belongs to the executors', () => {
         const html = render('/settings/workspace', {
             workspace: { loading: false, error: 'The workspace request failed' },
+            env: { loading: false, data: { org: [], workspace: [], repos: [] } },
         });
         expect(html).not.toContain('The workspace request failed');
         expect(html).toContain('My workspace');
@@ -233,6 +237,23 @@ describe('Settings workspace page', () => {
         });
         expect(html).toContain('My workspace');
         expect(html).toContain('No variables configured.');
+    });
+
+    it('shows the title "My workspace" as visible text exactly once, as the editor\u2019s h2', () => {
+        const html = render('/settings/workspace', {
+            env: { loading: false, data: { org: [], workspace: [], repos: [] } },
+        });
+        expect(html.match(/>My workspace</g)).toHaveLength(1);
+        expect(html).toContain('<h2>My workspace</h2>');
+        expect(html).not.toContain('scope-context-label');
+    });
+
+    it('states precedence exactly once on the workspace and organization pages', () => {
+        const env = { loading: false, data: { org: [], workspace: [], repos: [] } };
+        for (const path of ['/settings/workspace', '/settings/organization']) {
+            const html = render(path, { env });
+            expect(html.match(/rightmost scope wins/g), path).toHaveLength(1);
+        }
     });
 
     it('keeps the way back to a task draft on the executor dialog’s credentials detour', () => {
@@ -508,9 +529,10 @@ describe('settings scope context (issue 182 invariants)', () => {
 
     it('renders the org editor under its scope sentence, tabs counting the stored rows', () => {
         const html = render('/settings/organization', { env: { loading: false, data: envData } });
-        expect(html).toContain('Injected into every runner in this deployment');
-        expect(html).toContain('Variables (0)');
-        expect(html).toContain('Secrets (1)');
+        const text = html.replace(/<[^>]*>/g, '');
+        expect(text).toContain('Applies to every member\u2019s tasks in the organization.');
+        expect(text).toContain('Variables (0)');
+        expect(text).toContain('Secrets (1)');
         expect(html).not.toContain('Discard unsaved changes?');
     });
 
@@ -526,7 +548,7 @@ describe('settings scope context (issue 182 invariants)', () => {
             },
             env: { loading: false, data: envData },
         });
-        expect(html).toContain('Your own defaults, on every task you queue.');
+        expect(html).toContain('Applies to tasks you start.');
         expect(html).toContain('No variables configured.');
         expect(html).not.toContain('Discard unsaved changes?');
     });

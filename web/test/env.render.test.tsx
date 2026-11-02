@@ -15,6 +15,8 @@ import { expectNoPlaceholder } from './fixtures.js';
  * `env.dom.test.tsx`.
  */
 
+const ORG = { scope: 'organization' } as const;
+
 const noop = async () => ({ error: null, vars: [] });
 
 const oneVar = [{ name: 'LOG_LEVEL', value: 'debug', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' }];
@@ -22,20 +24,17 @@ const oneSecret = [{ name: 'CORE_SECRET', value: null, isSecret: true, updatedAt
 
 describe('the env draft editor', () => {
     it('offers an empty scope a way in', () => {
-        const html = renderToStaticMarkup(
-            <EnvVarsPanel title="Core" hint="Injected into every runner." initialVars={[]} onSave={noop} />
-        );
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" scope={ORG} initialVars={[]} onSave={noop} />);
         expect(html).toContain('Core');
         expect(html).toContain('No variables configured');
         expect(html).toContain('Add variable');
-        // Clean means disabled: there is nothing to save yet.
-        expect(html).toContain('Save changes');
-        expect(html).toContain('disabled');
+        // Clean means no bar: there is nothing to save yet.
+        expect(html).not.toContain('Save changes');
     });
 
     it('renders a row per variable with its name and value', () => {
         const html = renderToStaticMarkup(
-            <EnvVarsPanel title="My workspace" hint="" initialVars={oneVar} onSave={noop} />
+            <EnvVarsPanel title="My workspace" scope={ORG} initialVars={oneVar} onSave={noop} />
         );
         expect(html).toContain('LOG_LEVEL');
         expect(html).toContain('debug');
@@ -43,7 +42,7 @@ describe('the env draft editor', () => {
 
     it('renders a real tablist with live counts and roving focus', () => {
         const html = renderToStaticMarkup(
-            <EnvVarsPanel title="Core" hint="" initialVars={[...oneVar, ...oneSecret]} onSave={noop} />
+            <EnvVarsPanel title="Core" scope={ORG} initialVars={[...oneVar, ...oneSecret]} onSave={noop} />
         );
         expect(html).toContain('role="tablist"');
         expect(html).toContain('role="tab"');
@@ -53,8 +52,9 @@ describe('the env draft editor', () => {
         expect(html).toContain('tabindex="0"');
         expect(html).toContain('tabindex="-1"');
         // Counts: one stored variable, one stored secret.
-        expect(html).toContain('Variables (1)');
-        expect(html).toContain('Secrets (1)');
+        const text = html.replace(/<[^>]*>/g, '');
+        expect(text).toContain('Variables (1)');
+        expect(text).toContain('Secrets (1)');
         // The tab/panel relationship is explicit, and both panels stay mounted (the inactive one
         // carries hidden) — the draft spans tabs.
         expect(html).toContain('aria-controls');
@@ -67,7 +67,7 @@ describe('the env draft editor', () => {
         const html = renderToStaticMarkup(
             <EnvVarsPanel
                 title="Core"
-                hint=""
+                scope={ORG}
                 initialVars={[
                     { name: 'A', value: '1', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' },
                     { name: 'B', value: '2', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' },
@@ -86,7 +86,9 @@ describe('the env draft editor', () => {
         // renders — with the sentence that says what blank MEANS. No checkbox anywhere: the old
         // secret flag was the one control that could turn a masked credential into an empty
         // variable, and the tab a row lives in now decides its type.
-        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={oneSecret} onSave={noop} />);
+        const html = renderToStaticMarkup(
+            <EnvVarsPanel title="Core" scope={ORG} initialVars={oneSecret} onSave={noop} />
+        );
         expect(html).toContain('CORE_SECRET');
         expect(html).toContain('type="password"');
         expect(html).toContain('autoComplete="off"');
@@ -97,7 +99,7 @@ describe('the env draft editor', () => {
     });
 
     it('renders the advanced disclosure closed, with no textarea and no warning', () => {
-        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={oneVar} onSave={noop} />);
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" scope={ORG} initialVars={oneVar} onSave={noop} />);
         expect(html).toContain('Edit variables as .env');
         expect(html).toContain('aria-expanded="false"');
         expect(html).not.toContain('<textarea');
@@ -109,7 +111,7 @@ describe('the env draft editor', () => {
         const html = renderToStaticMarkup(
             <EnvVarsPanel
                 title="Core"
-                hint=""
+                scope={ORG}
                 initialVars={[{ name: '', value: 'debug', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' }]}
                 onSave={noop}
             />
@@ -126,12 +128,12 @@ describe('the env draft editor', () => {
         expect(valueField).not.toContain('Name is required.');
     });
 
-    it('keeps Save the panel’s only primary action — Add and the .env toggle stay secondary', () => {
+    it('has no primary action while clean — Add and the .env toggle stay secondary, Save arrives with the draft', () => {
         const html = renderToStaticMarkup(
-            <EnvVarsPanel title="Core" hint="" initialVars={[...oneVar, ...oneSecret]} onSave={noop} />
+            <EnvVarsPanel title="Core" scope={ORG} initialVars={[...oneVar, ...oneSecret]} onSave={noop} />
         );
         const primaryButtons = html.match(/class="[^"]*\bprimary\b[^"]*"/g) ?? [];
-        expect(primaryButtons).toHaveLength(1);
+        expect(primaryButtons).toHaveLength(0);
     });
 
     it('never gives the open .env disclosure its own primary button, even beside the real Save', () => {
@@ -153,37 +155,46 @@ describe('the env draft editor', () => {
         expect(html).not.toMatch(/class="[^"]*\bprimary\b[^"]*"/);
     });
 
-    it('ends with the Save/Cancel footer after both tab panels, clean and without the indicator', () => {
-        // The settings editor pattern (issue 282): form first, then the footer — never Save in
-        // the heading. Clean means both actions are off and nothing claims unsaved changes.
-        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={oneVar} onSave={noop} />);
-        const footerAt = html.indexOf('class="settings-actions"');
-        expect(footerAt).toBeGreaterThan(html.lastIndexOf('role="tabpanel"'));
-        expect(html.indexOf('>Save changes</button>')).toBeGreaterThan(footerAt);
-        expect(html).not.toContain('panel-actions');
-        expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Cancel<\/button>/);
+    it('renders no save bar while clean — no Save, no Cancel, no indicator', () => {
+        // The settings editor pattern: the bar is unmounted when pristine (it shows once dirty,
+        // env.dom.test.tsx), so a clean editor has no disabled Save to stare at.
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" scope={ORG} initialVars={oneVar} onSave={noop} />);
+        expect(html).not.toContain('settings-actions');
+        expect(html).not.toContain('>Save changes</button>');
         expect(html).not.toContain('Unsaved changes');
+        expect(html).not.toContain('panel-actions');
     });
 
-    it('renders the add control and the .env toggle after the table, near the rows', () => {
-        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={oneVar} onSave={noop} />);
-        expect(html.indexOf('env-vars')).toBeLessThan(html.indexOf('Add variable'));
+    it('renders the add control and the .env toggle in a toolbar beside the tabs, before the table', () => {
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" scope={ORG} initialVars={oneVar} onSave={noop} />);
+        expect(html).toContain('class="env-toolbar"');
+        expect(html.indexOf('role="tablist"')).toBeLessThan(html.indexOf('Add variable'));
+        expect(html.indexOf('Add variable')).toBeLessThan(html.indexOf('env-vars'));
+        expect(html.indexOf('Edit variables as .env')).toBeLessThan(html.indexOf('env-vars'));
+        expect(html).not.toContain('env-row-actions');
+    });
+
+    it('counts the tabs in a .count element while the tab name stays "Variables (n)"', () => {
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" scope={ORG} initialVars={oneVar} onSave={noop} />);
+        expect(html).toContain(
+            'Variables <span class="count"><span class="visually-hidden">(</span>1<span class="visually-hidden">)</span></span>'
+        );
     });
 
     it('renders a read-only scope with the tabs intact and every control disabled', () => {
         const html = renderToStaticMarkup(
-            <EnvVarsPanel title="Core" hint="" initialVars={[...oneVar, ...oneSecret]} onSave={noop} disabled />
+            <EnvVarsPanel title="Core" scope={ORG} initialVars={[...oneVar, ...oneSecret]} onSave={noop} disabled />
         );
         expect(html).toContain('Edit variables as .env');
         expect(html).toContain('Add variable');
-        expect(html).toContain('Save changes');
+        expect(html).not.toContain('Save changes');
         expect(html).toContain('type="password"');
         expect(html).toContain('disabled');
         expectNoPlaceholder(html);
     });
 
     it('renders a polite status region for confirmations — alerts are for errors only', () => {
-        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} />);
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" scope={ORG} initialVars={[]} onSave={noop} />);
         // The clean render carries the live region and no alert: role="alert" is reserved for
         // the scope error, the save failure and the advanced parser's refusals.
         expect(html).toContain('role="status"');
@@ -191,13 +202,15 @@ describe('the env draft editor', () => {
     });
 
     it('renders both panels mounted so the draft spans tabs', () => {
-        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={oneSecret} onSave={noop} />);
+        const html = renderToStaticMarkup(
+            <EnvVarsPanel title="Core" scope={ORG} initialVars={oneSecret} onSave={noop} />
+        );
         expect(html).toContain('Leave blank to keep the current secret');
         expect(html).toContain('hidden');
     });
 
     it('uses no form, because the CSP sends form-action none', () => {
-        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={[]} onSave={noop} />);
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" scope={ORG} initialVars={[]} onSave={noop} />);
         expect(html).not.toContain('<form');
     });
 

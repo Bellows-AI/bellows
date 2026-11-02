@@ -1,4 +1,6 @@
-import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { ConfigurationScope } from '../components/ConfigurationScope.js';
+import type { ConfigurationScopeProps } from '../components/ConfigurationScope.js';
 import { countActive, SECRET_STATE_LABEL, secretState } from './env-draft.js';
 import type { EnvRowState, RowFieldErrors } from './env-draft.js';
 
@@ -210,32 +212,6 @@ export function EnvTable({
     );
 }
 
-/** One kind's table and the action row beneath it: the Add button, then any `children` the kind adds. */
-function EnvRows({
-    addLabel,
-    onAdd,
-    addButtonRef,
-    children,
-    ...table
-}: {
-    addLabel: string;
-    onAdd: () => void;
-    addButtonRef: (el: HTMLButtonElement | null) => void;
-    children?: ReactNode;
-} & Parameters<typeof EnvTable>[0]) {
-    return (
-        <>
-            <EnvTable {...table} />
-            <div className="env-row-actions">
-                <button type="button" className="env-add" onClick={onAdd} disabled={table.locked} ref={addButtonRef}>
-                    {addLabel}
-                </button>
-                {children}
-            </div>
-        </>
-    );
-}
-
 /** The tablist switching Variables and Secrets, with live counts. Split out of `EnvVarsPanel` so
  * its own markup does not add to the panel's line count. */
 export function EnvTabsBar({
@@ -271,11 +247,70 @@ export function EnvTabsBar({
                     onClick={() => onSelect(key)}
                     onKeyDown={(event) => onKeyDown(index, event)}
                 >
-                    {key === 'variables'
-                        ? `Variables (${countActive(rows, false)})`
-                        : `Secrets (${countActive(rows, true)})`}
+                    {key === 'variables' ? 'Variables' : 'Secrets'}{' '}
+                    <span className="count">
+                        <span className="visually-hidden">(</span>
+                        {countActive(rows, key === 'secrets')}
+                        <span className="visually-hidden">)</span>
+                    </span>
                 </button>
             ))}
+        </div>
+    );
+}
+
+/**
+ * The toolbar beside the tabs: Add for the active kind, and on Variables the .env disclosure
+ * toggle as a secondary button. Split out of `EnvVarsPanel` for the same reason as `EnvTabsBar`.
+ */
+export function EnvToolbarActions({
+    uid,
+    tab,
+    locked,
+    onAdd,
+    addRefs,
+    advanced,
+}: {
+    uid: string;
+    tab: TabKey;
+    locked: boolean;
+    onAdd: () => void;
+    addRefs: { current: { variables: HTMLButtonElement | null; secrets: HTMLButtonElement | null } };
+    advanced: {
+        advancedOpen: boolean;
+        openAdvanced: () => void;
+        closeAdvanced: () => void;
+        advancedToggleRef: { current: HTMLButtonElement | null };
+    };
+}) {
+    return (
+        <div className="env-toolbar-actions">
+            {tab === 'variables' ? (
+                <button
+                    type="button"
+                    className="env-advanced-toggle"
+                    aria-expanded={advanced.advancedOpen}
+                    aria-controls={`${uid}-advanced`}
+                    onClick={advanced.advancedOpen ? advanced.closeAdvanced : advanced.openAdvanced}
+                    disabled={locked}
+                    ref={(el) => {
+                        advanced.advancedToggleRef.current = el;
+                    }}
+                >
+                    Edit variables as .env
+                </button>
+            ) : null}
+            <button
+                type="button"
+                className="env-add"
+                onClick={onAdd}
+                disabled={locked}
+                ref={(el) => {
+                    addRefs.current[tab] = el;
+                }}
+            >
+                {tab === 'variables' ? 'Add variable' : 'Add secret'}
+            </button>
         </div>
     );
 }
@@ -333,19 +368,19 @@ export function AdvancedEnvEditor({
     );
 }
 
-/** The panel's title and the hint/error/status lines beneath it — Save and Cancel are the
- * footer's (`SettingsSaveActions`). Split out of `EnvVarsPanel` so its own markup does not add to
- * the panel's line count. */
+/** The editor head: the title once, the scope context under it (impact, who edits, precedence),
+ * then the error and status lines. Save and Cancel are the bar's (`SettingsSaveActions`); the
+ * status and alert lines live here, outside it, so they survive the bar's unmount. */
 export function EnvPanelBanner({
     title,
-    hint,
+    scope,
     scopeMsg,
     saveError,
     saveErrorRef,
     statusText,
 }: {
     title: string;
-    hint: string;
+    scope: ConfigurationScopeProps;
     scopeMsg: string | null;
     saveError: string | null;
     saveErrorRef: (el: HTMLParagraphElement | null) => void;
@@ -356,7 +391,7 @@ export function EnvPanelBanner({
             <div className="panel-head">
                 <h2>{title}</h2>
             </div>
-            {hint ? <p className="muted">{hint}</p> : null}
+            <ConfigurationScope {...scope} />
             {scopeMsg ? (
                 <p className="status env-errors error" role="alert">
                     {scopeMsg}
@@ -375,8 +410,9 @@ export function EnvPanelBanner({
 }
 
 /**
- * The Variables tabpanel: the Add button, the .env disclosure toggle and its editor, and the
- * table. Split out of `EnvVarsPanel` for the same reason as `EnvPanelBanner`.
+ * The Variables tabpanel: the .env editor it discloses and the table. The Add and .env buttons
+ * live in the toolbar beside the tabs (`EnvToolbar`). Split out of `EnvVarsPanel` for the same
+ * reason as `EnvPanelBanner`.
  */
 export function VariablesTabPanel({
     uid,
@@ -384,17 +420,13 @@ export function VariablesTabPanel({
     rows,
     errors,
     locked,
-    onAdd,
-    addButtonRef,
     advancedOpen,
     advancedText,
     advancedErrors,
-    onToggleAdvanced,
     onAdvancedTextChange,
     onApplyAdvanced,
     onCancelAdvanced,
     advancedContainerRef,
-    advancedToggleRef,
     onUpdate,
     onRemove,
     onUndoRemove,
@@ -406,17 +438,13 @@ export function VariablesTabPanel({
     rows: readonly EnvRowState[];
     errors: Map<string, RowFieldErrors>;
     locked: boolean;
-    onAdd: () => void;
-    addButtonRef: (el: HTMLButtonElement | null) => void;
     advancedOpen: boolean;
     advancedText: string;
     advancedErrors: readonly string[];
-    onToggleAdvanced: () => void;
     onAdvancedTextChange: (value: string) => void;
     onApplyAdvanced: () => void;
     onCancelAdvanced: () => void;
     advancedContainerRef: (el: HTMLDivElement | null) => void;
-    advancedToggleRef: (el: HTMLButtonElement | null) => void;
     onUpdate: (id: string, patch: Partial<EnvRowState>) => void;
     onRemove: (row: EnvRowState) => void;
     onUndoRemove: (row: EnvRowState) => void;
@@ -433,23 +461,10 @@ export function VariablesTabPanel({
             {/* The table holds the pending-removal strips too, so it renders while ANY row of
                 this type exists — removing the last active row must leave its strip and Undo
                 visible, not an empty scope claiming nothing is configured. */}
-            <EnvRows
+            <EnvTable
                 kind="variable"
-                addLabel="Add variable"
-                {...{ rows, errors, locked, onAdd, addButtonRef, onUpdate, onRemove, onUndoRemove, nameRefs, undoRefs }}
-            >
-                <button
-                    type="button"
-                    className="env-advanced-toggle"
-                    aria-expanded={advancedOpen}
-                    aria-controls={`${uid}-advanced`}
-                    onClick={onToggleAdvanced}
-                    disabled={locked}
-                    ref={advancedToggleRef}
-                >
-                    Edit variables as .env
-                </button>
-            </EnvRows>
+                {...{ rows, errors, locked, onUpdate, onRemove, onUndoRemove, nameRefs, undoRefs }}
+            />
             {advancedOpen ? (
                 <AdvancedEnvEditor
                     uid={uid}
@@ -467,7 +482,7 @@ export function VariablesTabPanel({
 }
 
 /**
- * The Secrets tabpanel: the Add button and the table — no .env disclosure, since secrets never
+ * The Secrets tabpanel: the table — no .env disclosure, since secrets never
  * round-trip through text. Split out of `EnvVarsPanel` for the same reason as `EnvPanelBanner`.
  */
 export function SecretsTabPanel({
@@ -476,8 +491,6 @@ export function SecretsTabPanel({
     rows,
     errors,
     locked,
-    onAdd,
-    addButtonRef,
     onUpdate,
     onRemove,
     onUndoRemove,
@@ -489,8 +502,6 @@ export function SecretsTabPanel({
     rows: readonly EnvRowState[];
     errors: Map<string, RowFieldErrors>;
     locked: boolean;
-    onAdd: () => void;
-    addButtonRef: (el: HTMLButtonElement | null) => void;
     onUpdate: (id: string, patch: Partial<EnvRowState>) => void;
     onRemove: (row: EnvRowState) => void;
     onUndoRemove: (row: EnvRowState) => void;
@@ -504,10 +515,9 @@ export function SecretsTabPanel({
             aria-labelledby={`${uid}-tab-secrets`}
             hidden={tab !== 'secrets'}
         >
-            <EnvRows
+            <EnvTable
                 kind="secret"
-                addLabel="Add secret"
-                {...{ rows, errors, locked, onAdd, addButtonRef, onUpdate, onRemove, onUndoRemove, nameRefs, undoRefs }}
+                {...{ rows, errors, locked, onUpdate, onRemove, onUndoRemove, nameRefs, undoRefs }}
             />
         </div>
     );

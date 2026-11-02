@@ -413,7 +413,7 @@ describe('the compact notification rows', () => {
         );
         renderApp('/settings/workspace');
         await screen.findAllByRole('alert');
-        expect(document.querySelector('.count')).toBeNull();
+        expect(document.querySelector('section[aria-label="My notifications"] .count')).toBeNull();
     });
 
     it('the channel cell shows the provider mark with the channel name', async () => {

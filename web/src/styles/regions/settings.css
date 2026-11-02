@@ -373,8 +373,8 @@
         flex-wrap: wrap;
         gap: 12px;
         justify-content: flex-end;
-        margin-top: 24px;
-        padding-top: 16px;
+        margin-top: 12px;
+        padding-top: 12px;
     }
 
     .settings-dirty {
@@ -437,17 +437,31 @@
         text-overflow: ellipsis;
     }
 
+    /* The tabs and their actions share one line: tabs underlined on the leading edge, Add and the
+        .env toggle on the trailing one. */
+    .env-toolbar {
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: space-between;
+        margin-bottom: 8px;
+    }
+
     .env-tabs {
         display: flex;
-        gap: 6px;
-        margin-bottom: 8px;
+        gap: 4px;
     }
 
     .env-tab {
         background: transparent;
-        border: 1px solid transparent;
-        border-radius: var(--radius-lg);
+        border: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
         color: var(--ink-muted);
+        font-size: 13px;
+        margin-bottom: -1px;
         padding: 4px 10px;
     }
 
@@ -458,8 +472,7 @@
     /* The selected tab is the one carrying aria-selected — the attribute the roving focus moves
         with the keyboard, so state and semantics cannot drift apart. */
     .env-tab[aria-selected='true'] {
-        background: var(--surface-raised);
-        border-color: var(--line);
+        border-bottom-color: var(--accent);
         color: var(--accent);
     }
 
@@ -502,14 +515,14 @@
         border-color: var(--lamp-stop);
     }
 
-    /* The compact row beneath the table: Add stays a quiet outline, the .env disclosure trigger
-        stays plain text — neither competes with the panel's one `.primary` Save action. */
-    .env-row-actions {
+    /* Add stays a quiet outline, the .env disclosure trigger stays plain text — neither competes
+        with the panel's one `.primary` Save action. */
+    .env-toolbar-actions {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin-top: 8px;
+        padding-bottom: 4px;
     }
 
     .env-add {
@@ -741,13 +754,11 @@
         margin: 0 0 2px;
     }
 
-    .scope-context-label {
-        color: var(--ink-muted);
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.08em;
-        margin: 0 0 4px;
-        /* No text-transform: the repository label carries case-sensitive owner/name. */
+    /* The long precedence sentence, collapsed: the summary line above it already says who wins. */
+    .scope-detail > summary {
+        cursor: pointer;
+        font-size: 13px;
+        padding: 4px 0;
     }
 
     /* ── integrations: the member's connections as link cards, and one connection's page ── */
@@ -896,6 +907,7 @@
     /* ── settings touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .env-tab,
+        .scope-detail > summary,
         .settings-toggle,
         .repo-search input,
         .repo-search button,
