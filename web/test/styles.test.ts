@@ -719,6 +719,31 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(offenders).toEqual([]);
     });
 
+    it('sets mono only on code, identifier, log and chart-axis surfaces, never on a date or count', () => {
+        const css = stripComments(shippedCss());
+        const allowed = new Set([
+            'code',
+            'kbd',
+            '.mono',
+            '.kv dd',
+            '.sidenav-task-summary',
+            '.composer-param-details code',
+            '.tick',
+            '.chart-tooltip',
+            '.json-editor',
+            '.chat-output.gate-output',
+            '.task-branch',
+            '.chat-exit',
+            '.chat-activity',
+            '.task-summary',
+        ]);
+        const offenders = rules(css)
+            .filter(([, body]) => /font-family\s*:\s*var\(--font-mono\)/.test(body))
+            .map(([prelude]) => prelude.trim())
+            .filter((prelude) => !allowed.has(prelude));
+        expect(offenders).toEqual([]);
+    });
+
     it('sets mono on no statistics-dialog figure, date or model cell', () => {
         const css = stripComments(shippedCss());
         const offenders = rules(css)

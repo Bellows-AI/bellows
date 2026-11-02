@@ -173,7 +173,6 @@
         border-radius: var(--radius-md);
         color: var(--ink);
         display: none;
-        font-family: var(--font-mono);
         font-size: 12px;
         font-style: normal;
         padding: 4px 8px;
