@@ -191,7 +191,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.inbox-clear',
         '.inbox-footer button',
         '.inbox-error button',
-        '.inbox-banner-body button',
+        '.inbox-counts a',
     ],
     'styles/regions/composer.css': [
         '.composer-start button',
@@ -625,6 +625,17 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             if (/tertiary|icon-button|\.tabs/.test(prelude))
                 expect(text, prelude).not.toMatch(/outline\s*:\s*(none|0)/);
         }
+    });
+
+    it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/inbox.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(all.some(([prelude]) => /\.inbox-card/.test(prelude))).toBe(false);
+        expect(body('.inbox-list')).not.toMatch(/surface-raised|border\s*:/);
+        expect(body('.inbox-empty')).not.toMatch(/surface-raised|border\s*:/);
+        // The age is a quiet label, never the mono identifier face.
+        expect(css).not.toMatch(/\.inbox-when[^{]*\{[^}]*font-family/);
     });
 
     it('keeps the panel rules on the spacing scale', () => {
