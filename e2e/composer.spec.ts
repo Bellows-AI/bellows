@@ -67,7 +67,7 @@ test.describe('the guided task composer', () => {
         await page.goto('/tasks/new');
 
         await expect(page.getByLabel('What should the agent do?')).toBeInViewport({ ratio: 1 });
-        await expect(contextChip(page, 'Repository')).toHaveText(`${E2E_REPO.owner}/${E2E_REPO.name}`);
+        await expect(contextChip(page, 'Repository')).toHaveText(E2E_REPO.name);
         await expect(contextChip(page, 'Executor')).toHaveText(E2E_EXECUTOR.name);
         for (const label of ['Repository', 'Executor'] as const) {
             await expect(contextChip(page, label)).toBeInViewport({ ratio: 1 });
@@ -97,6 +97,15 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
+    test('at 390px the surface does not overflow the page and Start stays reachable', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 800 });
+        await page.goto('/tasks/new');
+        await expect(page.getByRole('button', { name: 'Start task' })).toBeVisible();
+        await expect(page.locator('.composer-surface')).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await page.screenshot({ path: `${SHOTS}/composer-390.png`, fullPage: true });
+    });
+
     test('with no tracked repository Start stays dark and the banner points at Repositories', async ({ page }) => {
         await trackRepos(page, []);
         await page.goto('/tasks/new');
@@ -123,7 +132,7 @@ test.describe('the guided task composer', () => {
         await expect(page.getByText('Repositories unavailable')).toBeVisible();
         await expect(page.getByText('No repositories tracked')).toHaveCount(0);
         await page.getByRole('button', { name: 'Retry' }).click();
-        await expect(contextChip(page, 'Repository')).toHaveText(`${E2E_REPO.owner}/${E2E_REPO.name}`);
+        await expect(contextChip(page, 'Repository')).toHaveText(E2E_REPO.name);
     });
 
     test('a fresh composer opens without a red banner, counts the request, and blocks it past the limit', async ({
@@ -134,21 +143,20 @@ test.describe('the guided task composer', () => {
 
         const composer = page.locator('.composer');
         const start = page.getByRole('button', { name: 'Start task' });
-        await expect(composer.getByText('0 / 16,384')).toBeVisible();
+        await expect(composer.locator('.composer-counter')).toHaveCount(0);
         await expect(composer.locator('.banner-bad')).toHaveCount(0);
         await expect(start).toHaveAttribute('aria-describedby', 'composer-blocker');
 
-        // The removed example and discard buttons stay gone; the chips explain themselves instead.
+        // The removed example and discard buttons stay gone; each chip explains itself in its open listbox.
         await expect(composer.getByRole('button', { name: 'Try an example' })).toHaveCount(0);
         await expect(composer.getByRole('button', { name: 'Discard draft' })).toHaveCount(0);
-        const repoHelp = composer.getByRole('button', { name: 'About Repository' });
-        await repoHelp.focus();
-        await page.keyboard.press('Enter');
+        await expect(composer.getByRole('button', { name: /^About / })).toHaveCount(0);
+        await contextChip(page, 'Repository').click();
         await expect(page.getByText('The codebase the task runs in.')).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/composer-help.png`, fullPage: true });
         await page.keyboard.press('Escape');
         await expect(page.getByText('The codebase the task runs in.')).toHaveCount(0);
-        await composer.getByRole('button', { name: 'About Executor' }).click();
+        await contextChip(page, 'Executor').click();
         await expect(page.getByText('The configured agent environment')).toBeVisible();
         await page.keyboard.press('Escape');
         await expect(start).toBeDisabled();
@@ -344,7 +352,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await page.getByRole('option', { name: 'heavy' }).click();
         await openSelector(page, 'Repository');
         await page.getByRole('option', { name: 'acme/api' }).click();
-        await expect(contextChip(page, 'Repository')).toHaveText('acme/api');
+        await expect(contextChip(page, 'Repository')).toHaveText('api');
 
         await detourToSettings(page);
         // Hold the workspace poll back on return, so the pending window is real rather than a race.
@@ -372,7 +380,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
 
         await expect(prompt(page)).toHaveValue('fix the login crash');
         await expect(contextChip(page, 'Executor')).toHaveText('heavy');
-        await expect(contextChip(page, 'Repository')).toHaveText('acme/api');
+        await expect(contextChip(page, 'Repository')).toHaveText('api');
         await expect(page.locator('.composer-notices')).toHaveCount(0);
         expect(workflowReads).toEqual([]);
         expect(problems.join('\n')).toBe('');
@@ -409,7 +417,7 @@ test.describe('attachments in the composer', () => {
             const data = new DataTransfer();
             data.items.add(new File(['x'], 'dropped.txt', { type: 'text/plain' }));
             document
-                .querySelector('.composer-prompt')!
+                .querySelector('.composer-surface')!
                 .dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
         });
         await expect(chips(page).getByText('dropped.txt')).toBeVisible();

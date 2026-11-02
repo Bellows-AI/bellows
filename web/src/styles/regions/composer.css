@@ -61,22 +61,63 @@
         padding-top: 0;
     }
 
-    /* The prompt surface: the request, then the chip-and-launch bar, then whatever blocks Start. */
-    .composer-prompt {
+    /* The new-task heading, centred above the one surface. */
+    .composer-heading {
+        font-size: 24px;
+        font-weight: 600;
+        line-height: 32px;
+        margin: 8px auto 0;
+        max-width: 960px;
+        text-align: center;
+        width: 100%;
+    }
+
+    /* The one surface: the request on top, the chip-and-launch toolbar below, one border and one
+       radius (the chat-style input). Focus lightens its edge; the textarea and chips keep their
+       own 2px focus ring. */
+    .composer-surface {
+        background: var(--surface);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
         display: flex;
         flex-direction: column;
         gap: 8px;
+        margin: 0 auto;
+        max-width: 960px;
+        padding: 12px 12px 8px;
+        width: 100%;
     }
 
-    /* On the composer page the request IS the pane, so it gets the reading size a chat footer's
-       one-liner does not need. It opens compact and grows with the request where the engine sizes
-       a field to its content; past half the viewport it scrolls inside itself. */
+    .composer-surface:focus-within {
+        border-color: var(--accent);
+    }
+
+    /* The label is still the textarea's name; the heading above carries the visible question. */
+    .composer-visually-hidden {
+        border: 0;
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
+        width: 1px;
+    }
+
+    /* The request grows with its content down from about five lines and scrolls past half the
+       viewport; it wears no frame of its own, the surface is the frame. */
     .task-compose .composer-input {
+        background: transparent;
+        border: 0;
         field-sizing: content;
-        font-size: 15px;
-        line-height: 22px;
+        font-size: 16px;
+        line-height: 24px;
         max-height: 50vh;
-        min-height: 88px;
+        min-height: 132px;
+        resize: none;
+    }
+
+    .task-compose .composer-input:focus-visible {
+        outline-offset: 4px;
     }
 
     /* An engine that cannot grow the field to its content gets room up front instead. */
@@ -86,12 +127,7 @@
         }
     }
 
-    .composer-prompt-head label {
-        font-size: 15px;
-        font-weight: 600;
-    }
-
-    /* The request against the board's limit; the stop lamp once it is over. */
+    /* The request against the board's limit: shown only close to it, the stop lamp once over. */
     .composer-counter {
         color: var(--ink-muted);
         font-size: 12px;
@@ -106,7 +142,6 @@
 
     /* `.panel p` spaces and caps prose; the page's small print and banner lines set their own —
        the counter spans the textarea so it can sit at its right edge. */
-    .task-compose .composer-helper,
     .task-compose .composer-counter,
     .task-compose .banner-bad p,
     .task-compose .banner-info p {
@@ -174,8 +209,8 @@
         gap: 12px;
     }
 
-    /* Under the prompt: the context chips at the start, the launch actions at the far end. On a
-       narrow screen the actions wrap below the chips. */
+    /* The toolbar under the prompt: attach and the context chips at the start, the launch at the
+       far end. On a narrow screen the launch wraps below the chips. */
     .composer-bar {
         align-items: flex-start;
         display: flex;
@@ -184,73 +219,40 @@
         justify-content: space-between;
     }
 
-    /* Repository, Executor and Workflow as compact framed chips that wrap rather than overflow,
-       centred on Start's line even when the quiet status text makes the launch block taller. */
+    .composer-toolbar {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        min-width: 0;
+    }
+
+    /* Repository, Executor and Workflow as borderless chips that wrap rather than overflow; the
+       shared trigger already carries the chevron. */
     .composer-context {
         align-items: center;
         display: flex;
-        min-height: 40px;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: 4px;
         min-width: 0;
     }
 
     .composer-context-item {
         align-items: center;
         display: flex;
-        gap: 4px;
         max-width: 100%;
         min-width: 0;
     }
 
-    /* The `?` beside a chip: a small round trigger that keeps its focus ring, with the 44px touch
-       floor below 901px (the touch-target block at the end). */
-    .composer-help {
-        flex: none;
-    }
-
-    .composer-help-trigger {
-        align-items: center;
-        background: none;
-        border: 1px solid var(--line-strong);
-        border-radius: 50%;
-        color: var(--ink-muted);
-        cursor: pointer;
-        display: inline-flex;
-        font-size: 12px;
-        font-weight: 600;
-        height: 22px;
-        justify-content: center;
-        padding: 0;
-        width: 22px;
-    }
-
-    .composer-help-trigger:hover,
-    .composer-help-trigger[data-open] {
-        background: var(--accent-wash);
-        color: inherit;
-    }
-
-    .composer-help-trigger:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
-    }
-
-    .composer-help-panel {
-        font-size: 13px;
-        padding: 8px 12px;
-    }
-
     .composer-context .select-trigger {
-        border-color: var(--line-strong);
-        font-size: 13px;
-        max-width: min(280px, 100%);
+        font-size: 14px;
+        max-width: min(240px, 100%);
     }
 
     /* Chip-sized only on a wide screen: below it the shared 44px touch floor must win. */
     @media (min-width: 901px) {
         .composer-context .select-trigger {
-            min-height: 32px;
+            min-height: 36px;
             padding: 4px 10px;
         }
     }
@@ -272,6 +274,15 @@
         white-space: nowrap;
     }
 
+    /* What a field is, said at the top of its open listbox; not an option. */
+    .composer-note {
+        color: var(--ink-muted);
+        font-size: 13px;
+        margin: 0;
+        max-width: 280px;
+        padding: 8px 12px;
+    }
+
     .composer-helper {
         color: var(--ink-muted);
         font-size: 13px;
@@ -285,6 +296,27 @@
         gap: 8px;
         justify-content: flex-end;
         margin-left: auto;
+    }
+
+    /* The Enter shortcut, a quiet hint beside the send arrow. */
+    .composer-hint {
+        background: transparent;
+        border: 0;
+        color: var(--ink-muted);
+        font-family: inherit;
+        font-size: 13px;
+        padding: 0;
+    }
+
+    /* Start: a round arrow button, the surface's one filled control. */
+    .composer-send {
+        align-items: center;
+        border-radius: 50%;
+        display: inline-flex;
+        height: 36px;
+        justify-content: center;
+        padding: 0;
+        width: 36px;
     }
 
     .composer-blocker {
@@ -319,6 +351,8 @@
     /* ── attachments: the attach control and one chip per chosen file ── */
     .attachment-add {
         align-items: center;
+        background: transparent;
+        border-color: transparent;
         display: inline-flex;
         gap: 6px;
     }
@@ -391,7 +425,7 @@
         .composer-start button,
         .composer-row button,
         .composer-param-input,
-        .composer-help-trigger,
+        .composer-send,
         .composer-notices-dismiss,
         .attachment-add,
         .attachment-action {

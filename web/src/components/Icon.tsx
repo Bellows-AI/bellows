@@ -24,6 +24,7 @@ const GLYPHS = {
     'chevron-right': ['M9 6l6 6-6 6'],
     'arrow-left': ['M19 12H5', 'M12 19l-7-7 7-7'],
     'arrow-right': ['M5 12h14', 'M12 5l7 7-7 7'],
+    'arrow-up': ['M12 19V5', 'M5 12l7-7 7 7'],
     x: ['M18 6 6 18', 'M6 6l12 12'],
     check: ['M20 6 9 17l-5-5'],
     'check-circle': ['M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0', 'M8.5 12l2.5 2.5 5-5'],
