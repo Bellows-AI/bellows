@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ICON_NAMES, Icon } from '../src/components/Icon.js';
 
 describe('Icon', () => {
-    it('ships exactly the foundation glyph set, which the lanes consume and never extend', () => {
+    it('ships exactly the frozen glyph set, which the lanes consume and never extend', () => {
         // IMPLEMENTATION-PLAN §1.6: Icon.tsx freezes at Checkpoint A, so the list is the contract.
         expect([...ICON_NAMES].sort()).toEqual(
             [
@@ -42,6 +42,19 @@ describe('Icon', () => {
                 'menu',
                 'calendar',
                 'more-horizontal',
+                'sun',
+                'moon',
+                'bell',
+                'plug',
+                'key',
+                'lock',
+                'trash',
+                'paperclip',
+                'message-square',
+                'help-circle',
+                'bar-chart',
+                'building',
+                'server',
             ].sort()
         );
     });
