@@ -651,6 +651,16 @@
         overflow-wrap: anywhere;
     }
 
+    @media (max-width: 640px) {
+        .kv {
+            grid-template-columns: 1fr;
+        }
+
+        .kv dd {
+            margin-bottom: 8px;
+        }
+    }
+
     footer {
         display: flex;
         gap: 20px;
@@ -1498,11 +1508,16 @@
     }
 
     .usage-coverage,
-    .usage-state-note {
+    .usage-state-note,
+    .state-note {
         color: var(--ink-muted);
         font-size: 12px;
         font-weight: 400;
         margin: 4px 0;
+    }
+
+    .state-note.error {
+        color: var(--lamp-stop);
     }
 
     ul.usage-coverage {

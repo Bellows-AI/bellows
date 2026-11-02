@@ -818,4 +818,19 @@ describe('the design-system inventory', () => {
         expect([...found.prefixes]).toEqual(['repo-card-disc-']);
         for (const prose of ['ghost', 'cards', 'four']) expect(found.tokens, prose).not.toContain(prose);
     });
+
+    it('stacks the key/value list into one column at phone width and keeps two columns above it', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const kv = rules(css).filter(([prelude]) => prelude === '.kv');
+        expect(kv.some(([, body]) => /grid-template-columns:\s*auto auto/.test(body))).toBe(true);
+        const phone = [...css.matchAll(/@media \(max-width: 640px\)\s*\{([\s\S]*?)\n {4}\}/g)].map((m) => m[1]!);
+        expect(phone.some((block) => /\.kv\s*\{[^}]*grid-template-columns:\s*1fr/.test(block))).toBe(true);
+    });
+
+    it('styles the shared state note as quiet text, red only for an error', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const preludes = rules(css).map(([prelude]) => prelude);
+        expect(preludes.some((p) => p.includes('.state-note'))).toBe(true);
+        expect(preludes.some((p) => p.includes('.state-note.error'))).toBe(true);
+    });
 });
