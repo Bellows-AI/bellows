@@ -173,9 +173,9 @@
  * `static` keeps every token emitted even where only var() points at it (the components below
  * consume --font-mono and the radii that way; plain @theme prunes what no utility spells). */
 @theme static {
-    /* Barlow was drawn after highway signage: sturdy, legible, industrial — body and headings
-     * alike. Plex Mono is only for things that are literally identifiers or logs. */
-    --font-sans: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+    /* Inter carries body, headings and data alike. Plex Mono is only for things that are
+     * literally identifiers or logs. */
+    --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
     --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
     /* Hardware, not bubbles: tight radii. md for pills, kbd and checkboxes; lg for controls; xl

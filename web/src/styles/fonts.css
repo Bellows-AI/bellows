@@ -3,27 +3,27 @@
    are checked — web/test/styles.test.ts pins that. */
 
 @font-face {
-    font-family: 'Barlow';
+    font-family: 'Inter';
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/barlow-latin-400.woff2') format('woff2');
+    src: url('/fonts/inter-latin-400.woff2') format('woff2');
 }
 
 @font-face {
-    font-family: 'Barlow';
+    font-family: 'Inter';
     font-style: normal;
     font-weight: 500;
     font-display: swap;
-    src: url('/fonts/barlow-latin-500.woff2') format('woff2');
+    src: url('/fonts/inter-latin-500.woff2') format('woff2');
 }
 
 @font-face {
-    font-family: 'Barlow';
+    font-family: 'Inter';
     font-style: normal;
     font-weight: 600;
     font-display: swap;
-    src: url('/fonts/barlow-latin-600.woff2') format('woff2');
+    src: url('/fonts/inter-latin-600.woff2') format('woff2');
 }
 
 @font-face {

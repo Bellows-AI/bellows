@@ -160,7 +160,12 @@ function StageRow({
                     held. Fix or re-run them on GitHub; nothing to retry here.{' '}
                     <span className="muted">
                         {verification.detail ?? 'No detail recorded.'}
-                        {verification.headSha ? ` Checked at ${verification.headSha.slice(0, SHA_LENGTH)}.` : ''}
+                        {verification.headSha ? (
+                            <>
+                                {' Checked at '}
+                                <span className="mono">{verification.headSha.slice(0, SHA_LENGTH)}</span>.
+                            </>
+                        ) : null}
                     </span>
                 </p>
             ) : null}

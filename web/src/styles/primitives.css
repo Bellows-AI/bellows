@@ -126,7 +126,9 @@
         align-items: center;
         display: flex;
         flex: none;
+        flex-wrap: wrap;
         gap: 8px;
+        max-width: 100%;
     }
 
     /* Header actions are primary-sized controls on desktop (the 36px floor below stays the
@@ -427,7 +429,6 @@
 
     .status {
         color: var(--ink-muted);
-        font-family: var(--font-mono);
         margin: 0;
     }
 
@@ -502,19 +503,15 @@
         content: ' ↓';
     }
 
-    table.data td:not(:first-child) {
+    /* The identifier primitive: SHAs, ids, tokens, branch names and code — the only mono a table
+       cell or line of text takes. */
+    .mono {
         font-family: var(--font-mono);
-    }
-
-    /* A compact table: hairline rows, no mono. Placed after the mono rule so every cell, pills and
-       buttons included, reads in the inherited sans face. */
-    table.data.data-compact td {
-        font-family: inherit;
     }
 
     table.data.data-compact th,
     table.data.data-compact td {
-        padding: 8px 12px;
+        padding: 8px 8px;
         vertical-align: middle;
     }
 
