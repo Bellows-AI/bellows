@@ -119,6 +119,7 @@ describe('Settings organization page', () => {
         expect(html).toContain('Admin');
         expect(html).not.toContain('bellows');
         expect(html).toContain('Loading environment…');
+        expect(html).toMatch(/<p class="state-note" role="status">Loading environment…/);
         expect(html).not.toContain('Any member can edit.');
         expect(html).not.toContain('No variables configured.');
         expectNoPlaceholder(html);
@@ -163,6 +164,26 @@ describe('Settings organization page', () => {
         }
     });
 
+    it('renders the organization-wide scope line and both tab counts once the environment arrives', () => {
+        const html = render('/settings/organization', {
+            env: {
+                loading: false,
+                data: {
+                    org: [
+                        { name: 'LOG_LEVEL', value: 'debug', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' },
+                        { name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' },
+                    ],
+                    workspace: [],
+                    repos: [],
+                },
+            },
+        });
+        expect(html).toContain('Applies to every member');
+        expect(html).toContain('Any member can edit.');
+        expect(html.replace(/<[^>]+>/g, '')).toContain('Variables (1)');
+        expect(html.replace(/<[^>]+>/g, '')).toContain('Secrets (1)');
+    });
+
     it('renders no editor after a failed environment read — the error is the whole story', () => {
         // loading is false and data is null: the ternary's "else" arm. An editor mounted here
         // would be an ENABLED empty draft whose save wipes whatever is stored.
@@ -170,6 +191,8 @@ describe('Settings organization page', () => {
             env: { loading: false, error: 'The environment request failed' },
         });
         expect(html).toContain('The environment request failed');
+        expect(html).toMatch(/<p class="state-note error" role="alert">The environment request failed/);
+        expect(html).toContain('<h1');
         expect(html).not.toContain('No variables configured.');
         expect(html).not.toContain('Add variable');
     });
