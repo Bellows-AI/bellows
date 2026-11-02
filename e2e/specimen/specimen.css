@@ -135,3 +135,64 @@
     gap: 16px;
     margin-top: 32px;
 }
+
+/* Type, icons, tokens: the foundation sections above and below the grid. Tokens only. */
+.specimen-block {
+    margin-top: 32px;
+}
+
+.specimen-icons {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.specimen-icons li {
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+}
+
+.specimen-tokens {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+table.specimen-tokens th,
+table.specimen-tokens td {
+    border: 1px solid var(--line);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    padding: 6px 8px;
+    text-align: left;
+}
+
+.specimen-swatch {
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-lg);
+    display: block;
+    height: 24px;
+    width: 48px;
+}
+
+.specimen-grid tbody .specimen-group th {
+    background: var(--surface-soft);
+    color: var(--ink);
+    font-size: 15px;
+}
+
+.specimen-group h2 {
+    font-size: inherit;
+    margin: 0;
+}
+
+/* The wrap scrolls its table, so it also contains the table's absolutely placed screen-reader words
+   instead of letting them widen the page. */
+.specimen-usage .table-wrap {
+    position: relative;
+}
