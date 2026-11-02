@@ -13,6 +13,7 @@ import {
     withExecutor,
 } from './executor.js';
 import { stubAttachments } from './fixtures/attachments.js';
+import { dragFiles, gradientPng } from './fixtures/files.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -442,6 +443,75 @@ test.describe('attachments in the composer', () => {
         expect(problems).toEqual([
             'console: Failed to load resource: the server responded with a status of 503 (Service Unavailable)',
         ]);
+    });
+
+    test('a chosen image shows its thumbnail, beside a text file, in both themes', async ({ page }) => {
+        await stubAttachments(page);
+        await page.goto('/tasks/new');
+        await prompt(page).fill('look at the picture');
+        await page
+            .getByLabel('Attach files', { exact: true })
+            .setInputFiles([
+                { name: 'shot.png', mimeType: 'image/png', buffer: gradientPng() },
+                file('a-rather-long-file-name-for-notes.txt'),
+            ]);
+        await expect(chips(page).getByText('Ready')).toHaveCount(2);
+        // The thumbnail is a blob: object URL; the page's CSP must let it load.
+        await expect
+            .poll(() =>
+                chips(page)
+                    .locator('img.attachment-thumb')
+                    .evaluate((i: HTMLImageElement) => i.naturalWidth)
+            )
+            .toBeGreaterThan(0);
+        for (const theme of ['light', 'dark']) {
+            await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+            await page.screenshot({ path: `${SHOTS}/composer-attachment-tiles_${theme}.png`, fullPage: true });
+        }
+        await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+    });
+
+    test('a drop anywhere on the card, not only the text field, attaches; the overlay shows while dragging', async ({
+        page,
+    }) => {
+        await stubAttachments(page);
+        await page.goto('/tasks/new');
+        const card = page.locator('.composer-surface');
+        const overlay = card.getByText('Drop files to attach');
+        const label = page.getByText('What should the agent do?', { exact: true });
+        await expect(overlay).toHaveCount(0);
+        await dragFiles(label, 'dragenter', ['card.txt']);
+        await expect(overlay).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/composer-drop-overlay.png`, fullPage: true });
+        await dragFiles(label, 'dragleave', ['card.txt']);
+        await expect(overlay).toHaveCount(0);
+
+        await dragFiles(label, 'dragenter', ['card.txt']);
+        await dragFiles(label, 'drop', ['card.txt']);
+        await expect(chips(page).getByText('card.txt')).toBeVisible();
+        await expect(overlay).toHaveCount(0);
+    });
+
+    test('a file dropped outside the card, on the heading or the sidebar, neither navigates nor attaches', async ({
+        page,
+    }) => {
+        await stubAttachments(page);
+        await page.goto('/tasks/new');
+        await prompt(page).fill('keep this draft');
+        for (const target of [page.getByRole('heading', { name: 'New task' }), page.locator('.sidenav').first()]) {
+            await dragFiles(target, 'dragover', ['stray.txt']);
+            const notCancelled = await target.evaluate((node) => {
+                const data = new DataTransfer();
+                data.items.add(new File(['x'], 'stray.txt', { type: 'text/plain' }));
+                return node.dispatchEvent(
+                    new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true })
+                );
+            });
+            expect(notCancelled).toBe(false);
+        }
+        await expect(page).toHaveURL(/\/tasks\/new$/);
+        await expect(prompt(page)).toHaveValue('keep this draft');
+        await expect(chips(page)).toHaveCount(0);
     });
 
     test('the Settings round trip keeps the files, and the launch carries both ids', async ({ page }) => {

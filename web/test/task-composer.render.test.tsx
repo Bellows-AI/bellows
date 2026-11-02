@@ -411,7 +411,7 @@ describe('the redesigned composer (#280)', () => {
             expect(html).not.toContain(title);
         }
         expect(html.match(/class="panel /g) ?? []).toHaveLength(0);
-        expect(html.match(/class="composer-surface"/g) ?? []).toHaveLength(1);
+        expect(html.match(/class="composer-surface drop-zone"/g) ?? []).toHaveLength(1);
         expect(html).toContain(
             '<label for="composer-prompt" class="composer-visually-hidden">What should the agent do?</label>'
         );
@@ -423,7 +423,7 @@ describe('the redesigned composer (#280)', () => {
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
         const order = [
-            'class="composer-surface"',
+            'class="composer-surface drop-zone"',
             '<textarea',
             'class="composer-bar"',
             'aria-label="Repository: acme/web"',
@@ -445,7 +445,7 @@ describe('the redesigned composer (#280)', () => {
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
         expect(html.indexOf('id="composer-param-issue"')).toBeGreaterThan(html.indexOf('class="composer-bar"'));
         expect(html.match(/class="panel /g) ?? []).toHaveLength(0);
-        expect(html.match(/class="composer-surface"/g) ?? []).toHaveLength(1);
+        expect(html.match(/class="composer-surface drop-zone"/g) ?? []).toHaveLength(1);
     });
 
     describe('the repository must be tracked and chosen', () => {
