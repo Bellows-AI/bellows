@@ -560,11 +560,7 @@ export function TaskComposer({
                 ) : null}
                 <RestoredNotices notices={composer.notices} onDismiss={composer.dismissNotices} />
                 <h2 className="composer-heading">What should we work on?</h2>
-                <AttachmentDropZone
-                    className="composer-surface"
-                    accepts={() => limits !== null}
-                    onFiles={files.add}
-                >
+                <AttachmentDropZone className="composer-surface" accepts={() => limits !== null} onFiles={files.add}>
                     <label htmlFor={PROMPT_ID} className="composer-visually-hidden">
                         What should the agent do?
                     </label>
