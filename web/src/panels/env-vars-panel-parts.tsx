@@ -1,6 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import type { ConfigurationScopeProps } from '../components/ConfigurationScope.js';
+import { Icon } from '../components/Icon.js';
 import { countActive, SECRET_STATE_LABEL, secretState } from './env-draft.js';
 import type { EnvRowState, RowFieldErrors } from './env-draft.js';
 
@@ -135,7 +136,7 @@ export function EnvEditableRow({
                     disabled={locked}
                     aria-label={`Remove ${row.name.trim() || kind}`}
                 >
-                    ✕
+                    <Icon name="x" />
                 </button>
             </td>
         </tr>

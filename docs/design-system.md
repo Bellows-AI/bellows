@@ -57,7 +57,7 @@ never utilities, and every color it renders resolves through a token.
   Under `prefers-reduced-motion` the lamp stills at full strength, so no state rides on movement.
 - Fonts are self-hosted: the CSP is `font-src 'self'` and `verify:ui` runs offline, so a remote
   font link falls back silently exactly where faces are checked.
-- The icon set is frozen at the foundation; a lane that needs a glyph asks for a foundation change.
+- The icon set is frozen (`ICON_NAMES`, pinned by `icon.test.tsx`); a lane that needs a glyph asks for a foundation change. Sizes: nav 20, inline and action 16, banner 24.
 
 ## Stated limits
 
