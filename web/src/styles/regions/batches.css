@@ -94,14 +94,21 @@
         gap: 12px;
     }
 
-    /* The editor's stage is a flat row on the page canvas; the monitor's stage is a soft panel. */
-    .batch-stage:not(.panel) {
+    /* A stage is a flat row on the page canvas, in the editor and the monitor alike. */
+    .batch-stage {
         border-top: 1px solid var(--line);
         padding: 16px 0;
     }
 
     .batch-stage.is-active {
         border-color: var(--accent);
+    }
+
+    /* A stage every task of which is accepted is history: quiet, never collapsed (its cards, retry
+       and report links stay reachable). */
+    .batch-stage.is-complete .batch-stage-head h3,
+    .batch-stage.is-complete .batch-objective {
+        color: var(--ink-muted);
     }
 
     .batch-stage-head {

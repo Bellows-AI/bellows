@@ -128,12 +128,13 @@ function StageRow({
     const { stage, tasks } = view;
     const done = tasks.filter(({ state }) => state && isAccepted(state)).length;
     const active = batch.activeStage === stage.key && batch.status !== BATCH_CANCELLED;
+    const complete = tasks.length > 0 && done === tasks.length;
     const humanGate = effectivePolicy(batch.plan, stage) === 'human';
     const waiting = tasks.some(({ state }) => state?.waitReason != null);
     const verification = batch.verification.find((row) => row.stage === stage.key);
     return (
         <section
-            className={`panel batch-stage${active ? ' is-active' : ''}`}
+            className={`batch-stage${active ? ' is-active' : ''}${complete ? ' is-complete' : ''}`}
             aria-label={`Stage ${index + 1}`}
             data-stage={stage.key}
         >
