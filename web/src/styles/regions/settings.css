@@ -776,6 +776,12 @@
         flex: none;
     }
 
+    /* A Default or Suspended tag stays inline after the name; the name clips before the tag does. */
+    .member-identity .pill-list {
+        flex: none;
+        flex-wrap: nowrap;
+    }
+
     .member-login {
         min-width: 0;
         overflow: hidden;

@@ -74,9 +74,8 @@ describe('the organization executors panel', () => {
     it('leads each row with an initial avatar beside the name, and invents no model or runtime', () => {
         const html = renderPanel({ defaultName: 'team-runner' });
         expect(html).toMatch(
-            /<span class="member-identity"><span class="avatar avatar-fallback" aria-hidden="true">T<\/span><span class="member-login" title="team-runner">team-runner<\/span><\/span>/
+            /<span class="member-identity"><span class="avatar avatar-fallback" aria-hidden="true">T<\/span><span class="member-login" title="team-runner">team-runner<\/span><span class="pill-list"><span class="pill">Default<\/span><\/span><\/span>/
         );
-        expect(html).toContain('<span class="pill">Default</span>');
         expect(html).not.toMatch(/model|runtime/i);
     });
 

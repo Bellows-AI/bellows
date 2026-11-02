@@ -105,17 +105,17 @@ export function WorkspaceExecutorsPanel({
                                             <span className="member-login" title={executor.name}>
                                                 {executor.name}
                                             </span>
+                                            {isDefaultRow(executor) || executor.suspended ? (
+                                                <span className="pill-list">
+                                                    {isDefaultRow(executor) ? (
+                                                        <span className="pill">{DEFAULT_LABEL}</span>
+                                                    ) : null}
+                                                    {executor.suspended ? (
+                                                        <span className="pill">{SUSPENDED_LABEL}</span>
+                                                    ) : null}
+                                                </span>
+                                            ) : null}
                                         </span>
-                                        {isDefaultRow(executor) || executor.suspended ? (
-                                            <span className="pill-list">
-                                                {isDefaultRow(executor) ? (
-                                                    <span className="pill">{DEFAULT_LABEL}</span>
-                                                ) : null}
-                                                {executor.suspended ? (
-                                                    <span className="pill">{SUSPENDED_LABEL}</span>
-                                                ) : null}
-                                            </span>
-                                        ) : null}
                                     </td>
                                     <td data-label="Type">
                                         <span className="pill">{executorTypeLabel(executor.type)}</span>
