@@ -645,7 +645,9 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             expect(text, prelude).toMatch(/background\s*:\s*var\(--surface\)/);
             expect(text, prelude).not.toMatch(/surface-raised|box-shadow/);
         }
-        const configured = rules(css).find(([p]) => p.trim() === 'table.repo-table tr.repo-row-configured td:last-child');
+        const configured = rules(css).find(
+            ([p]) => p.trim() === 'table.repo-table tr.repo-row-configured td:last-child'
+        );
         expect(configured?.[1]).not.toContain('surface-raised');
     });
 
