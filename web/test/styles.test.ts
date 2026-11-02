@@ -637,6 +637,18 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.settings-row-item + .settings-row-item')).toMatch(/border-top\s*:\s*1px solid var\(--line\)/);
     });
 
+    it('paints the repos table sticky column on the canvas it sits on, not a raised tier', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
+        const sticky = rules(css).filter(([, text]) => /position\s*:\s*sticky/.test(text));
+        expect(sticky.length).toBeGreaterThan(0);
+        for (const [prelude, text] of sticky) {
+            expect(text, prelude).toMatch(/background\s*:\s*var\(--surface\)/);
+            expect(text, prelude).not.toMatch(/surface-raised|box-shadow/);
+        }
+        const configured = rules(css).find(([p]) => p.trim() === 'table.repo-table tr.repo-row-configured td:last-child');
+        expect(configured?.[1]).not.toContain('surface-raised');
+    });
+
     it('keeps the composer the one raised tier and its chips on the shared quiet trigger', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         const all = rules(css);

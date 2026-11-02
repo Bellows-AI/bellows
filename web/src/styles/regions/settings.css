@@ -256,25 +256,24 @@
     }
 
     /* Configure stays reachable without hunting for it: pinned to the wrap's trailing edge, with
-       a hairline that visibly rides over scrolled content underneath — the discoverable "this
-       still scrolls" cue the old plain cut-off column gave none of. */
+       the canvas fill the table sits on, opaque so scrolled content never shows through and invisible
+       until something scrolls under it. */
     table.repo-table th:last-child,
     table.repo-table td:last-child {
-        background: var(--surface-raised);
-        box-shadow: inset 1px 0 0 var(--line-strong);
+        background: var(--surface);
         position: sticky;
         right: 0;
         width: 120px;
     }
 
-    /* The configured row (concept 06's selected row): the accent wash, layered over the raised
+    /* The configured row (concept 06's selected row): the accent wash, layered over the canvas
        fill on the sticky cell so scrolled content never shows through a translucent wash. */
     table.repo-table tr.repo-row-configured td {
         background: var(--accent-wash);
     }
 
     table.repo-table tr.repo-row-configured td:last-child {
-        background: linear-gradient(var(--accent-wash), var(--accent-wash)), var(--surface-raised);
+        background: linear-gradient(var(--accent-wash), var(--accent-wash)), var(--surface);
     }
 
     /* Narrow widths stack rows as cards, mirroring the environment editor's pattern (issue 222):
