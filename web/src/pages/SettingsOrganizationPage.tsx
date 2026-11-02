@@ -1,5 +1,5 @@
 import { roleLabel } from '../api/useSession.js';
-import { KeyValues } from '../components/KeyValues.js';
+import { Icon } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { MembersSection } from '../panels/MembersSection.js';
@@ -27,16 +27,14 @@ export function SettingsOrganizationPage() {
             />
 
             {session ? (
-                <section className="panel">
+                <div className="org-identity">
                     {/* Identity, not authority: the display name and the role title. No internal id,
                         no powers inferred beyond what the API grants. */}
-                    <KeyValues
-                        pairs={[
-                            ['Organization', session.organization.name],
-                            ['Your role', roleLabel(session.role)],
-                        ]}
-                    />
-                </section>
+                    <Icon name="building" size={20} />
+                    <strong className="org-identity-name">{session.organization.name}</strong>
+                    <span className="muted">Your role</span>
+                    <span className="pill">{roleLabel(session.role)}</span>
+                </div>
             ) : (
                 <p className="muted">Checking your session…</p>
             )}

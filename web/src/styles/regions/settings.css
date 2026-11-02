@@ -665,6 +665,21 @@
         margin: 0 0 24px;
     }
 
+    /* Organization identity: one compact row under the page header, no raised box. */
+    .org-identity {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+        margin: 0 0 24px;
+    }
+
+    .org-identity-name {
+        font-size: 16px;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
     .settings-rows {
         list-style: none;
         margin: 0;

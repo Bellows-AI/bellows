@@ -124,6 +124,16 @@ describe('Settings organization page', () => {
         expectNoPlaceholder(html);
     });
 
+    it('shows identity as a compact header row, and keeps one h1 over h2 sections', () => {
+        const html = render('/settings/organization');
+        expect(html).not.toMatch(/<section class="panel">[\s\S]*Your role/);
+        expect(html).toMatch(
+            /class="org-identity"[^>]*>[\s\S]*<svg[\s\S]*Bellows AI[\s\S]*Your role[\s\S]*pill[^>]*>Admin/
+        );
+        expect(html.match(/<h1[ >]/g)).toHaveLength(1);
+        expect(html).not.toMatch(/<h[3-6][ >]/);
+    });
+
     it('leaves the editor enabled for a member — the server route is the authorization', () => {
         // `PUT /api/env/org` accepts any member of the installation (routes.env.test.ts), so a
         // disabled browser control was never authorization — it was a false claim about the API.
