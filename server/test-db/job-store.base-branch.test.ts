@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
@@ -77,6 +78,37 @@ describe.skipIf(!enabled)('task base branch — database', () => {
         const followUp = await store.createFollowUp(root, 'and also this', USER.id);
         if (typeof followUp === 'string') throw new Error(`follow-up refused: ${followUp}`);
         expect(await claim()).toMatchObject({ id: followUp.id, baseBranch: BRANCH });
+    });
+
+    it('a workflow successor claims with the root branch', async () => {
+        const walk: WorkflowDefinition = {
+            entry: 'implement',
+            params: [],
+            nodes: [
+                { name: 'implement', kind: 'agent', session: 'resume', prompt: 'implement' },
+                { name: 'review', kind: 'agent', session: 'fresh', prompt: 'review the work', publish: true },
+            ],
+            edges: [{ from: 'implement', to: 'review', when: 'succeeded' }],
+        };
+        // job.workflow_id carries no foreign key, so a hand-built snapshot walks without the workflow store.
+        const created = await store.create('fix the thing', USER.id, {
+            repo: null,
+            executor: null,
+            baseBranch: BRANCH,
+            workflow: { id: randomUUID(), name: 'walk', node: walk.entry, snapshot: walk, params: {} },
+        });
+        if (typeof created === 'string') throw new Error(created);
+        const first = await claim();
+        await store.session(first.id, first.leaseToken, randomUUID());
+        await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
+
+        const successor = await claim();
+        expect(successor.id).not.toBe(first.id);
+        const [row] = await sql<
+            { workflow_node: string | null }[]
+        >`select workflow_node from job where id = ${successor.id}`;
+        expect(row?.workflow_node).toBe('review');
+        expect(successor.baseBranch).toBe(BRANCH);
     });
 
     it('an expired-lease reclaim of the same row still carries the branch', async () => {
