@@ -186,6 +186,13 @@ describe('TaskOutcome', () => {
         expect(bare).not.toContain('fix-issue');
     });
 
+    it('shows the base branch the task started from, and Default when it started from none', () => {
+        expect(renderDetail({ jobs: [job({ baseBranch: 'release/1.2' })] })).toContain('release/1.2');
+        const none = renderDetail({ jobs: [job({ baseBranch: null })] });
+        expect(none).toContain('Base branch');
+        expect(none).toContain('Default');
+    });
+
     it('names an absent executor selection explicitly', () => {
         expect(renderDetail({ jobs: [job()] })).toContain('No executor selected');
     });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { QueueTaskInput } from './api/useTasks.js';
 import type { Attachments } from './api/useAttachments.js';
+import { type UseRepoSkills, useRepoSkills } from './api/useRepoSkills.js';
 import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from './composer-draft.js';
 import {
     type WorkflowParamChoice,
@@ -16,6 +17,7 @@ import {
     restoredDraftNotices,
     valuesForWorkflow,
 } from './task-composer.js';
+import { builtinSkillsIn, hasSlashToken } from './slash-skills.js';
 import { selectionExists, type ComposerExecutorOption, type ExecutorChoice } from './workspace/executors.js';
 
 /** One workflow choice as the composer's props hand it in — the shape `TaskComposer`'s
@@ -59,6 +61,8 @@ export interface ComposerDraft {
     notices: string[];
     dismissNotices: () => void;
     send: () => Promise<void>;
+    /** The skills the prompt's `/` menu offers for the chosen repository and branch. */
+    repoSkills: UseRepoSkills;
 }
 
 /**
@@ -138,12 +142,13 @@ function useListClamps(
     // context's list cannot sit interactive under it and offer its workflows back. The draft
     // resets the moment the repository state leaves the one the workflow was chosen under — the
     // member's select, the autoselect, the clamp: every path a change arrives by is this one
-    // state — and the member picks again from the list that answers. After the context changed,
+    // state — and the member picks again from the list that answers. The picked base branch goes
+    // with it: a branch belongs to the repository it was listed from. After the context changed,
     // a process is the member's explicit call again. The mount starts `workflowRepo` equal to
     // `repo`, a restored draft included, so the mount-time run resets nothing: a workflow, its
     // values and its step overrides chosen before a trip to Settings survive the return.
     useEffect(() => {
-        if (repo !== workflowRepo) update({ ...freshWorkflowDraft(), workflowRepo: repo });
+        if (repo !== workflowRepo) update({ ...freshWorkflowDraft(), baseBranch: '', workflowRepo: repo });
     }, [repo, workflowRepo, update]);
 
     // And the workflow: a repository switch refetches the list for the new context, and a chosen
@@ -201,11 +206,33 @@ function useRestoredNotices(
     return { notices: notices ?? [], dismiss: () => setNotices([]) };
 }
 
+/** What the list clamps said while the composer was open, each sentence once. */
+function useClampNotices() {
+    const [clampNotices, setClampNotices] = useState<string[]>([]);
+    const announceClamp = useCallback(
+        (notice: string) => setClampNotices((held) => (held.includes(notice) ? held : [...held, notice])),
+        []
+    );
+    return { clampNotices, announceClamp, clearClampNotices: () => setClampNotices([]) };
+}
+
+/**
+ * The skills list for the draft's repository and branch, read once the prompt holds a `/name`
+ * token (the menu opening, or a restored draft); the built-ins among the tokens it names ride the
+ * create body.
+ */
+function useDraftSkills(state: ComposerDraftInput) {
+    const repoSkills = useRepoSkills(state.repo, state.baseBranch, hasSlashToken(state.draft));
+    const builtins = repoSkills.skills.filter((skill) => skill.source === 'builtin').map((skill) => skill.name);
+    return { repoSkills, builtinsNamedIn: (draft: string) => builtinSkillsIn(draft, builtins) };
+}
+
 /** The `POST /api/jobs` body for the draft as it stands. */
 export function queuedTask(
     state: ComposerDraftInput,
     declaredParams: readonly WorkflowParamChoice[],
-    paramValues: Record<string, string>
+    paramValues: Record<string, string>,
+    builtinSkills: readonly string[] = []
 ): QueueTaskInput {
     // Values travel trimmed, and only beside an explicit choice — a task with no workflow carries
     // no parameters at all.
@@ -220,6 +247,8 @@ export function queuedTask(
         executorScope: state.executorScope,
         workflow: state.workflow === '' ? null : state.workflow,
         workflowParams: chosenParams,
+        baseBranch: state.baseBranch === '' ? null : state.baseBranch,
+        ...(builtinSkills.length > 0 ? { skills: [...builtinSkills] } : {}),
     };
 }
 
@@ -293,13 +322,10 @@ export function useComposerDraft(input: {
     const paramsReady = paramsComplete(declaredParams, paramValues);
     const workflowPending = state.workflow !== '' && workflows === null;
 
-    const [clampNotices, setClampNotices] = useState<string[]>([]);
-    const announceClamp = useCallback(
-        (notice: string) => setClampNotices((held) => (held.includes(notice) ? held : [...held, notice])),
-        []
-    );
+    const { clampNotices, announceClamp, clearClampNotices } = useClampNotices();
     useListClamps(state, update, { repos, executors, executorsLoaded, defaultExecutor, workflows }, announceClamp);
     useRepoReport(state.repo, onRepoChange);
+    const skills = useDraftSkills(state);
     const restoredNotices = useRestoredNotices(restored, {
         repos,
         executors,
@@ -311,7 +337,7 @@ export function useComposerDraft(input: {
     const notices = [...new Set([...restoredNotices.notices, ...clampNotices])];
     const dismiss = () => {
         restoredNotices.dismiss();
-        setClampNotices([]);
+        clearClampNotices();
     };
 
     // The store follows the draft, so a trip to Settings and back finds it as it was left. A
@@ -350,7 +376,7 @@ export function useComposerDraft(input: {
         // A launched task is no longer a draft; a refusal keeps every field for the retry.
         if (files.blocker !== null) return;
         const ids = files.readyIds();
-        const queued = queuedTask(state, declaredParams, paramValues);
+        const queued = queuedTask(state, declaredParams, paramValues, skills.builtinsNamedIn(draft));
         // Text-only stays exactly the old request: the files and their key ride only when there are some.
         const key = ids.length === 0 ? null : files.submissionKey();
         const withFiles = key === null ? queued : { ...queued, attachments: ids, idempotencyKey: key };
@@ -388,5 +414,6 @@ export function useComposerDraft(input: {
         notices,
         dismissNotices: dismiss,
         send,
+        repoSkills: skills.repoSkills,
     };
 }

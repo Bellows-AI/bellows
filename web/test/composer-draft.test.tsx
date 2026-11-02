@@ -35,6 +35,7 @@ const next: ComposerDraftInput = {
     repo: 'acme/app',
     repoTouched: true,
     workflowRepo: 'acme/app',
+    baseBranch: '',
     workflow: 'w1',
     storedParams: { workflowId: 'w1', values: { issue: '#12' } },
     paramTouched: { issue: true },
@@ -57,6 +58,12 @@ describe('composer draft store', () => {
             revisions: { task: 1 },
             submits: {},
         });
+    });
+
+    it('keeps the picked base branch through save and restore', () => {
+        const picked = { ...next, baseBranch: 'release/1.2' };
+        const stamped = composerDraftReducer(null, { type: 'save', next: picked, owner: OWNER });
+        expect(ownedDraft(stamped, OWNER)?.task?.baseBranch).toBe('release/1.2');
     });
 
     it('hands the draft back to its owner', () => {

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { resolveClaimSkills } from '../src/db/jobs/job-store-claim.js';
 import { skillRoutes } from '../src/routes/skills.js';
 import { readSkillCatalog, skillCatalog } from '../src/skills.js';
+import { staticRegistry } from './helpers.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const dirs: string[] = [];
@@ -63,7 +64,7 @@ describe('resolveClaimSkills', () => {
 describe('GET /api/skills', () => {
     it('lists each skill with its requirements and env names, never the instructions', async () => {
         const app = Fastify();
-        await app.register(skillRoutes(readSkillCatalog));
+        await app.register(skillRoutes(readSkillCatalog, staticRegistry()));
         const response = await app.inject({ method: 'GET', url: '/api/skills' });
 
         expect(response.statusCode).toBe(200);
@@ -89,7 +90,7 @@ describe('GET /api/skills', () => {
             app.register(
                 skillRoutes(() => {
                     throw new Error('catalog broken');
-                })
+                }, staticRegistry())
             )
         ).rejects.toThrow('catalog broken');
     });

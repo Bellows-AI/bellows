@@ -21,6 +21,7 @@ const restored: ComposerDraftInput = {
     repo: 'acme/web',
     repoTouched: true,
     workflowRepo: 'acme/web',
+    baseBranch: '',
     workflow: '',
     storedParams: { workflowId: null, values: {} },
     paramTouched: {},

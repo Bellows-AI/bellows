@@ -8,6 +8,7 @@ Which repositories an organization sees, where that list comes from, and what it
 | Installation listing | `server/src/github/app-client.ts` | `server/test/github.app-client.test.ts` |
 | Per-org tracked-repo allowlist (`tracked_repo`) | `server/src/db/tracked-repos.ts`, `server/migrations/030_signin_selection.sql` | `server/test/repo-source.test.ts`, `server/test-db/repo-source.replicas.test.ts` |
 | Credential-less fallback to `session_branch` | `server/src/db/stored-repos.ts` | `server/test/routes.repos.test.ts` |
+| Branch list and prefix search through the installation (a search is one unpaginated `matching-refs` response sliced into 100s) | `server/src/github/app-client.ts` (`listBranches`), `server/src/routes/repos.ts` | `server/test/github.app-client.test.ts`, `server/test/routes.repos.test.ts` |
 | Picker route | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Settings → Repositories page: the tracked list and each repo's env config | `web/src/pages/SettingsRepositoriesPage.tsx`, `web/src/components/repository-setup.ts` | `web/test/repository-setup.test.ts`, `web/test/repository-setup.render.test.tsx`, `web/test/repository-selection.dom.test.tsx` |
 | Scoping of stored reads | `server/src/stats-service.ts`, `core/src/telemetry.ts` | `core/test/telemetry.stats.test.ts` |

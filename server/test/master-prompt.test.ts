@@ -18,6 +18,7 @@ const OBJECTIVE: MasterPromptClaimInput = {
     workflowName: null,
     snapshot: null,
     helperPlans: undefined,
+    command: 'do the work',
 };
 
 const defaultSnapshot = (options: { review?: boolean; merge?: boolean } = {}): WorkflowDefinition => {
@@ -91,6 +92,7 @@ Rules for this turn
 
     it('keeps the publication denial on a workflow turn', () => {
         const prompt = resolveMasterPrompt({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -103,6 +105,7 @@ Rules for this turn
 
     it('keeps the GitHub-wait permission and the pr-land hint out of a workflow turn', () => {
         const prompt = resolveMasterPrompt({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -157,8 +160,16 @@ describe('resolveMasterPrompt: stable across a thread', () => {
     it('is byte-identical on every claim of one workflow thread', () => {
         const snapshot = defaultSnapshot({ review: true, merge: true });
         const claims: MasterPromptClaimInput[] = [
-            { workflowNode: 'task', mode: WORKFLOW_MODE, workflowName: 'default', snapshot, helperPlans: undefined },
             {
+                command: 'do the work',
+                workflowNode: 'task',
+                mode: WORKFLOW_MODE,
+                workflowName: 'default',
+                snapshot,
+                helperPlans: undefined,
+            },
+            {
+                command: 'do the work',
                 workflowNode: 'merge-conflict-autofix--repair',
                 mode: WORKFLOW_MODE,
                 workflowName: 'default',
@@ -166,13 +177,21 @@ describe('resolveMasterPrompt: stable across a thread', () => {
                 helperPlans: [{ helperId: PROBE_HELPER_ID, phase: 'pre', githubWriting: true, input: null }],
             },
             {
+                command: 'do the work',
                 workflowNode: 'review-reconciliation--collect',
                 mode: WORKFLOW_MODE,
                 workflowName: 'default',
                 snapshot,
                 helperPlans: undefined,
             },
-            { workflowNode: null, mode: WORKFLOW_MODE, workflowName: 'default', snapshot, helperPlans: undefined },
+            {
+                command: 'do the work',
+                workflowNode: null,
+                mode: WORKFLOW_MODE,
+                workflowName: 'default',
+                snapshot,
+                helperPlans: undefined,
+            },
         ];
         const prompts = claims.map(resolveMasterPrompt);
         for (const prompt of prompts) {
@@ -197,6 +216,7 @@ describe('resolveTurnContext: objective', () => {
 describe('resolveTurnContext: targeted-test rule', () => {
     it('tells a gated workflow node to run its covering gates itself, the close-time ones being a backstop', () => {
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -211,6 +231,7 @@ describe('resolveTurnContext: targeted-test rule', () => {
 describe('resolveTurnContext: default workflow', () => {
     it('names only the enabled optional blocks — both excluded', () => {
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -225,6 +246,7 @@ describe('resolveTurnContext: default workflow', () => {
 
     it('names review reconciliation only when that block is selected', () => {
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -237,6 +259,7 @@ describe('resolveTurnContext: default workflow', () => {
 
     it('names merge-conflict repair only when that block is selected', () => {
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -249,6 +272,7 @@ describe('resolveTurnContext: default workflow', () => {
 
     it('names both when both are selected, and names the durable wait the review block declares', () => {
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -273,6 +297,7 @@ describe('resolveTurnContext: base workflow (fix-issue)', () => {
             params: [],
         };
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'review',
             mode: WORKFLOW_MODE,
             workflowName: 'fix-issue',
@@ -288,6 +313,7 @@ describe('resolveTurnContext: base workflow (fix-issue)', () => {
 describe('resolveTurnContext: pre/post helper phases', () => {
     it('names pre-turn helper steps for this claim only', () => {
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -300,6 +326,7 @@ describe('resolveTurnContext: pre/post helper phases', () => {
 
     it('names post-turn helper steps for this claim only', () => {
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -326,6 +353,7 @@ describe('resolveTurnContext: pre/post helper phases', () => {
             params: [],
         };
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'custom',
@@ -339,6 +367,7 @@ describe('resolveTurnContext: pre/post helper phases', () => {
 describe('resolveTurnContext: member follow-up', () => {
     it('names the turn as a member follow-up when off-graph inside a workflow thread', () => {
         const prompt = resolveTurnContext({
+            command: 'do the work',
             workflowNode: null,
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -357,6 +386,7 @@ describe.each([
     it('refuses (null) when a node claim carries no snapshot at all', () => {
         expect(
             resolve({
+                command: 'do the work',
                 workflowNode: 'task',
                 mode: WORKFLOW_MODE,
                 workflowName: 'default',
@@ -369,6 +399,7 @@ describe.each([
     it('refuses (null) when the claimed node is missing from its own snapshot', () => {
         expect(
             resolve({
+                command: 'do the work',
                 workflowNode: 'ghost-node',
                 mode: WORKFLOW_MODE,
                 workflowName: 'default',
@@ -382,6 +413,7 @@ describe.each([
 describe('resolveMasterPrompt: workflow name safety', () => {
     it('withholds a workflow name that could inject opencode template syntax', () => {
         const prompt = resolveMasterPrompt({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: '{env:GITHUB_TOKEN}',
@@ -395,6 +427,7 @@ describe('resolveMasterPrompt: workflow name safety', () => {
     it('withholds a 100-character junk name past the safe display shape', () => {
         const junk = `ok-but-then-${'*'.repeat(90)}`;
         const prompt = resolveMasterPrompt({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: junk,
@@ -406,6 +439,7 @@ describe('resolveMasterPrompt: workflow name safety', () => {
 
     it('names the mode and workflow on a workflow claim', () => {
         const prompt = resolveMasterPrompt({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -418,6 +452,7 @@ describe('resolveMasterPrompt: workflow name safety', () => {
 
     it('renders an ordinary workflow name verbatim', () => {
         const prompt = resolveMasterPrompt({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'fix-issue (v2) #9',
@@ -434,6 +469,7 @@ describe.each([
 ])('%s: content boundaries', (_name, resolve) => {
     it('never contains job.command, prior output, or env-shaped content', () => {
         const prompt = resolve({
+            command: 'do the work',
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
             workflowName: 'default',
@@ -443,5 +479,30 @@ describe.each([
         expect(prompt).not.toContain('secret');
         expect(prompt).not.toContain('nope');
         expect(prompt.length).toBeLessThanOrEqual(MASTER_PROMPT_LIMIT);
+    });
+});
+
+describe('resolveMasterPrompt: a /name token in the task', () => {
+    const LINE = 'A `/name` in the task names a skill: load it with your skill tool and follow it.';
+
+    it('a /name token adds the load-skill line', () => {
+        for (const command of ['/fix the login bug', 'please run /pr-land now', 'a\n/review_2 it']) {
+            expect(resolveMasterPrompt({ ...OBJECTIVE, command })).toContain(LINE);
+        }
+    });
+
+    it('no token, no line', () => {
+        expect(resolveMasterPrompt(OBJECTIVE)).not.toContain(LINE);
+        expect(resolveMasterPrompt({ ...OBJECTIVE, command: 'fix it' })).not.toContain(LINE);
+    });
+
+    it("a URL path ('a/b') is not a token", () => {
+        for (const command of ['see a/b', 'open https://example.com/fix', 'src/fix.ts and 1/2']) {
+            expect(resolveMasterPrompt({ ...OBJECTIVE, command })).not.toContain(LINE);
+        }
+    });
+
+    it('is runner-neutral and brace-free', () => {
+        expect(resolveMasterPrompt({ ...OBJECTIVE, command: '/fix' })).not.toMatch(/[{}]/);
     });
 });

@@ -24,6 +24,12 @@ export async function reposFor(orgs: OrgRegistry, request: FastifyRequest) {
     return rt?.repos ?? null;
 }
 
+/** The branch-tip read the caller's org's board has through its GitHub installation, absent when it has none. */
+export async function branchHeadFor(orgs: OrgRegistry, request: FastifyRequest) {
+    const rt = await orgs.for(orgOf(request));
+    return rt?.branchHead ?? null;
+}
+
 /** The artifact index the caller's org writes through (070), absent when no object store was configured. */
 export async function artifactsFor(orgs: OrgRegistry, request: FastifyRequest) {
     const rt = await orgs.for(orgOf(request));

@@ -1,6 +1,6 @@
 /** The CLI's whole help text: `bellows help` prints it, and every usage error ends with it. */
 export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
+                          [--base-branch <branch>] [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
        bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]

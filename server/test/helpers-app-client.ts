@@ -11,5 +11,7 @@ export const listingClient = (listRepositories: GitHubAppClient['listRepositorie
     mergePullRequest: unstubbed('mergePullRequest'),
     readBranchState: unstubbed('readBranchState'),
     readBranchHead: unstubbed('readBranchHead'),
+    listBranches: unstubbed('listBranches'),
     readFileAtBranchTip: unstubbed('readFileAtBranchTip'),
+    listRepoSkills: unstubbed('listRepoSkills'),
 });

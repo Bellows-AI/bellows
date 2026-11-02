@@ -165,6 +165,10 @@ export interface QueueTaskInput {
     executorScope: ExecutorScope;
     workflow: string | null;
     workflowParams: Record<string, string> | null;
+    /** The branch the task works from; null is the repository's default branch. */
+    baseBranch?: string | null;
+    /** Built-in skills the prompt names with a `/name` token; absent when it names none. */
+    skills?: string[];
     /** Completed upload ids; absent for a text-only task, so that body is unchanged. */
     attachments?: string[];
     /** Sent as the `Idempotency-Key` header, never in the body; set beside `attachments`. */

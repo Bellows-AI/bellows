@@ -51,8 +51,18 @@ export function idempotencyOf<Operation extends string = IdempotentOperation>(
 
 /** The create's idempotency input: every body field the create acts on, as the client spelled it. */
 export function createIdempotencyOf(request: FastifyRequest, reply: FastifyReply, fields: Record<string, unknown>) {
-    const { command, repo, executor, executorScope, skills, workflow, workflowParams, connections, attachments } =
-        fields;
+    const {
+        command,
+        repo,
+        executor,
+        executorScope,
+        skills,
+        workflow,
+        workflowParams,
+        connections,
+        attachments,
+        baseBranch,
+    } = fields;
     return idempotencyOf(request, reply, 'create', {
         command,
         repo,
@@ -63,6 +73,7 @@ export function createIdempotencyOf(request: FastifyRequest, reply: FastifyReply
         workflowParams,
         connections,
         attachments,
+        baseBranch,
     });
 }
 

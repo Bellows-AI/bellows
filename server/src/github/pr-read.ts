@@ -3,6 +3,7 @@ import {
     CHECKS_PASSING,
     CHECKS_PENDING,
     CHECKS_UNKNOWN,
+    READ_BINDING,
     READ_FORBIDDEN,
     READ_NOT_FOUND,
     READ_RATE_LIMITED,
@@ -318,13 +319,23 @@ export interface BranchState {
     checks: CheckItem[];
 }
 
-/** The tip commit of a branch, or null when the branch cannot be read. */
+/**
+ * The tip commit of a branch: null only when GitHub confirms the branch is absent (404). A refusal
+ * (403) or an answer without a tip sha is inconclusive and throws — never an "absent" verdict.
+ */
 export async function readBranchHead(call: ApiCall, repo: string, branch: string): Promise<string | null> {
-    const body = (await optional(
-        call,
-        `/repos/${repo}/branches/${encodeURIComponent(branch)}`
-    )) as BranchPayload | null;
-    return body?.commit?.sha ?? null;
+    let body: BranchPayload;
+    try {
+        body = (await call(`/repos/${repo}/branches/${encodeURIComponent(branch)}`)) as BranchPayload;
+    } catch (e) {
+        if (e instanceof GitHubReadError && e.kind === READ_NOT_FOUND) return null;
+        throw e;
+    }
+    const sha = body?.commit?.sha;
+    if (typeof sha !== 'string' || sha === '') {
+        throw new GitHubReadError(`GET /repos/${repo}/branches/${branch} answered without a tip commit`, READ_BINDING);
+    }
+    return sha;
 }
 
 /** Whether `head` descends from `sha`: GitHub's compare says `ahead` or `identical`. An unknown commit is not contained. */

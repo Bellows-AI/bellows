@@ -311,3 +311,28 @@ describe('read failures', () => {
         await expect(read({ status: 429 })).rejects.toMatchObject({ kind: 'rate_limited', retryAfterMs: null });
     });
 });
+
+describe('readBranchHead', () => {
+    const head = (reply: Reply) =>
+        client({ [`${base}/branches/release%2F1`]: reply }).readBranchHead('acme/web', 'release/1');
+
+    it('reads the tip sha, and answers null only for a confirmed 404', async () => {
+        await expect(head({ body: { commit: { sha: 'abc' } } })).resolves.toBe('abc');
+        await expect(head({ status: 404, body: { message: 'Branch not found' } })).resolves.toBeNull();
+    });
+
+    it('throws on a forbidden answer: an unreadable branch is not an absent one', async () => {
+        await expect(head({ status: 403, body: { message: 'Resource not accessible' } })).rejects.toMatchObject({
+            kind: 'forbidden',
+        });
+    });
+
+    it.each([
+        ['no commit', {}],
+        ['a commit without a sha', { commit: {} }],
+        ['an empty sha', { commit: { sha: '' } }],
+        ['a non-string sha', { commit: { sha: 7 } }],
+    ])('throws on a 200 with %s', async (_what, body) => {
+        await expect(head({ body })).rejects.toMatchObject({ kind: 'binding' });
+    });
+});

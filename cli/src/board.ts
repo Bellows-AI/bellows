@@ -58,6 +58,8 @@ export interface BoardJobRecord {
     executor: string | null;
     /** The scope `executor` names (issue 391), as the board's read model normalizes it. */
     executorScope?: string | null;
+    /** The task's base branch; null is the repo's default branch. */
+    baseBranch?: string | null;
     /** The task's stored execution mode (issue 543): `objective`, or `workflow`. */
     mode: string;
     createdAt: string;
@@ -307,6 +309,8 @@ export interface BoardClient extends BatchRoutes {
         executor?: string | undefined;
         /** The scope `executor` names (issue 391); absent lets the board default to personal. */
         executorScope?: 'user' | 'org' | undefined;
+        /** The branch the task is based on; absent lets the board use the repo's default branch. */
+        baseBranch?: string | undefined;
         /** The skills the task selects (issue #545); absent selects none. */
         skills?: string[] | undefined;
         /** Names this logical attempt; a repeat under the same key never makes a second task. */

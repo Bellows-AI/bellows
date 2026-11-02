@@ -367,6 +367,10 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
         });
     });
 
+    it.each(['a..b', '-x', 'with space'])('refuses a target branch no git branch can have (%s)', (branch) => {
+        expect(paths(plan({ targets: [{ key: 'web', repo: 'acme/web', branch }] }))).toEqual(['targets[0].branch']);
+    });
+
     it('accepts a branch other than the repository default', () => {
         const resolved = resolveBatchPlan(
             parsed(plan({ targets: [{ key: 'web', repo: 'acme/web', branch: 'release' }] })),

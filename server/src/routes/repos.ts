@@ -1,17 +1,88 @@
-import { ERROR_CODES } from '@factory-ai/core';
-import type { FastifyPluginAsync } from 'fastify';
+import { ERROR_CODES, isBranchName, READ_NOT_FOUND } from '@factory-ai/core';
+import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
 import type { AppConfig } from '../config.js';
+import { BranchCursorError } from '../github/app-client.js';
+import { GitHubReadError } from '../github/pr-read.js';
 import type { OrgRegistry } from '../orgs.js';
-import { bad } from './helpers.js';
+import { bad, checkReposVisible } from './helpers.js';
 
 const HTTP_OK = 200;
 const HTTP_UNAVAILABLE = 503;
+const BRANCH_QUERY_LIMIT = 255;
+const CURSOR_LIMIT = 512;
 
 export interface RepoRouteDeps {
     /** The per-org runtimes; the repo list a request touches is the caller's org's. */
     orgs: OrgRegistry;
     config: AppConfig;
+}
+
+const branchesUnavailable = (reply: FastifyReply, message: string) =>
+    bad(reply, ERROR_CODES.BRANCHES_UNAVAILABLE, message, HTTP_UNAVAILABLE);
+
+/** A prefix of a branch name (the full rule's alphabet, a partial trailing segment allowed) and an opaque cursor. */
+function branchRequestRefusal(query: string | undefined, cursor: string | undefined) {
+    if (query !== undefined && (query.length > BRANCH_QUERY_LIMIT || !isBranchName(query))) {
+        return { code: ERROR_CODES.BAD_BRANCH_QUERY, message: 'q must be the start of a git branch name' };
+    }
+    if (cursor !== undefined && cursor.length > CURSOR_LIMIT) {
+        return { code: ERROR_CODES.BAD_BRANCH_CURSOR, message: 'cursor is not one this board issued' };
+    }
+    return null;
+}
+
+/** A failed branch read: a bad cursor and a repo GitHub does not know are the caller's; the rest is unconfirmed. */
+function branchReadRefusal(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    repo: { owner: string; name: string },
+    e: unknown
+) {
+    if (e instanceof BranchCursorError) {
+        return bad(reply, ERROR_CODES.BAD_BRANCH_CURSOR, 'cursor is not one this board issued for this query');
+    }
+    if (e instanceof GitHubReadError && e.kind === READ_NOT_FOUND) {
+        return bad(
+            reply,
+            ERROR_CODES.UNKNOWN_REPO,
+            `"${repo.owner}/${repo.name}" is not a repository this board tracks`
+        );
+    }
+    request.log.error({ err: e }, 'branch list read failed');
+    return branchesUnavailable(reply, `Branches could not be read: ${(e as Error).message}`);
+}
+
+/** Branch names for the composer's base-branch picker. */
+function registerBranchRoute(app: FastifyInstance, orgs: OrgRegistry) {
+    // Branch names for the composer's base-branch picker. One GitHub request per call; the cursor
+    // carries the next position. A read that did not confirm is a 503, never an empty list.
+    app.get<{ Params: { owner: string; name: string }; Querystring: { q?: string; cursor?: string } }>(
+        '/api/repos/:owner/:name/branches',
+        async (request, reply) => {
+            const { owner, name } = request.params;
+            const { q, cursor } = request.query;
+            const query = q === '' ? undefined : q;
+            const refused = branchRequestRefusal(query, cursor);
+            if (refused) return bad(reply, refused.code, refused.message);
+            const rt = await orgs.for(orgOf(request));
+            if (!rt?.listBranches) return branchesUnavailable(reply, 'Branches cannot be read on this board');
+            const visible = await checkReposVisible(rt.repos, [{ owner, name }], { subject: 'the repository' });
+            if (!visible.ok) return bad(reply, visible.code, visible.message, visible.status);
+            try {
+                const page = await rt.listBranches(`${owner}/${name}`, {
+                    ...(query === undefined ? {} : { query }),
+                    ...(cursor === undefined ? {} : { cursor }),
+                });
+                const defaultBranch =
+                    (await rt.repos.detail()).repos.find((r) => r.owner === owner && r.name === name)?.defaultBranch ??
+                    null;
+                return reply.code(HTTP_OK).send({ branches: page.names, cursor: page.cursor, defaultBranch });
+            } catch (e) {
+                return branchReadRefusal(request, reply, { owner, name }, e);
+            }
+        }
+    );
 }
 
 /**
@@ -56,4 +127,5 @@ export const repoRoutes =
                 },
             });
         });
+        registerBranchRoute(app, orgs);
     };
