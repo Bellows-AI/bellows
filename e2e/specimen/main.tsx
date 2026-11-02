@@ -218,6 +218,31 @@ const CELLS: Record<Row, Partial<Record<Column, ReactNode>>> = {
     'Primary button': button('primary', 'Start task', 'Starting…'),
     'Secondary button': button(undefined, 'Cancel', 'Saving…'),
     'Destructive button': button('danger', 'Remove task', 'Removing…'),
+    'Tertiary button': button('tertiary', 'Skip', 'Skipping…'),
+    'Icon button': {
+        Default: (
+            <button type="button" className="icon-button" aria-label="Refresh">
+                <Icon name="clock" size={16} />
+            </button>
+        ),
+        Disabled: (
+            <button type="button" className="icon-button" aria-label="Refresh, disabled" disabled>
+                <Icon name="clock" size={16} />
+            </button>
+        ),
+    },
+    Tabs: {
+        Default: (
+            <div className="tabs" role="tablist" aria-label="Specimen tabs">
+                <button type="button" role="tab" aria-selected="true">
+                    Overview
+                </button>
+                <button type="button" role="tab" aria-selected="false">
+                    Activity
+                </button>
+            </div>
+        ),
+    },
     'Text field': {
         Default: <Field name="Repository" />,
         Selected: <Field name="Repository, filled" value="bellows-ai/bellows" />,

@@ -80,7 +80,7 @@ Shell and navigation: `shell-main`, `page-header-eyebrow`, `page-header-leading`
 `sidenav-dot-failed`, `sidenav-dot-done`, `sidenav-dot-review`, `mobile-nav-head`,
 `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `is-active`.
 
-Controls and overlays: `primary`, `danger`, `select-trigger`, `popover-option`, `popover-separator`,
+Controls and overlays: `primary`, `tertiary`, `icon-button`, `danger`, `tabs`, `select-trigger`, `popover-option`, `popover-separator`,
 `theme-field`, `theme-label`, `org-selector`, `user-menu-button`, `user-menu-login`,
 `user-menu-panel`, `avatar-fallback`, `avatar-lg`, `task-avatar`, `row-actions-trigger`,
 `dialog-layer`, `dialog-backdrop`, `dialog-position`, `lamp-glow`.
