@@ -43,29 +43,68 @@ describe.skipIf(!hasGit())('the task checkout script (restore)', () => {
         expect(existsSync(fx.checkout())).toBe(false);
     });
 
-    it('refuses a restore whose checkout sits on another branch', () => {
-        // The tree is ours, but the checkout moved off the task branch: a follow-up must not
-        // run there, and must not reset or recreate it either — the refusal names the branch
-        // it found against the branch it expected, and the tree stays as it stands.
+    it('continues a restore on the named branch the agent switched to, untouched', () => {
+        // The task checkout is task-owned, so the branch the agent moved it to is the task's work:
+        // publish pushes that branch, and a resume after a lost driver continues on it rather than
+        // ending the task branch_unrestorable.
         expect(fx.sync()).toMatchObject({ ok: true, reason: null });
-        git(fx.checkout(), 'switch', '-c', 'rogue');
+        const taskTip = git(fx.checkout(), 'rev-parse', 'HEAD');
+        git(fx.checkout(), 'switch', '-c', 'factory/agent-work');
+        fx.commitIn(fx.checkout(), 'TASK.md', 'agent work\n', 'the agent commit');
+        writeFileSync(join(fx.checkout(), 'TASK.md'), 'agent work, mid-edit\n');
+        const before = git(fx.checkout(), 'rev-parse', 'HEAD');
 
-        const result = fx.restore();
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('rogue');
-        expect(result.reason).toContain(fx.branch());
-        expect(git(fx.checkout(), 'branch', '--show-current')).toBe('rogue');
+        expect(fx.restore()).toMatchObject({ ok: true, reason: null });
+
+        expect(git(fx.checkout(), 'branch', '--show-current')).toBe('factory/agent-work');
+        expect(git(fx.checkout(), 'rev-parse', 'HEAD')).toBe(before);
+        expect(readFileSync(join(fx.checkout(), 'TASK.md'), 'utf8')).toBe('agent work, mid-edit\n');
+        expect(git(fx.checkout(), 'stash', 'list')).toBe('');
+        expect(git(fx.checkout(), 'rev-parse', fx.branch())).toBe(taskTip);
+    });
+
+    it("hands over a stopped rebase of the agent's own branch", () => {
+        // A rebase the agent stopped on its own branch is the agent's to finish: the restore hands
+        // the conflict over instead of refusing a branch that is not the task branch.
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+        git(fx.checkout(), 'switch', '-c', 'agent-work');
+        fx.commitIn(fx.checkout(), 'README.md', 'agent side\n', 'agent edits README');
+        git(fx.checkout(), 'switch', fx.branch());
+        fx.commitIn(fx.checkout(), 'README.md', 'task side\n', 'task edits README');
+        git(fx.checkout(), 'switch', 'agent-work');
+        expect(() => git(fx.checkout(), 'rebase', fx.branch())).toThrow();
+
+        expect(fx.restore()).toMatchObject({ ok: true, reason: null, conflicts: ['README.md'] });
+        expect(existsSync(git(fx.checkout(), 'rev-parse', '--absolute-git-dir') + '/rebase-merge')).toBe(true);
     });
 
     it('refuses a restore whose checkout is on a detached HEAD', () => {
-        // A detached checkout is no thread to continue either: no branch survives under it,
-        // so the refusal names the detached state instead of answering success.
+        // A detached checkout is no thread to continue: no branch names its commits, and publish
+        // would switch away from them, so the refusal names the detached state.
         expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         git(fx.checkout(), 'checkout', '--detach');
 
         const result = fx.restore();
-        expect(result.ok).toBe(false);
+        expect(result).toMatchObject({ ok: false, kind: 'branch_unrestorable' });
         expect(result.reason).toContain('detached');
         expect(git(fx.checkout(), 'rev-parse', '--is-inside-work-tree')).toBe('true');
+        expect(git(fx.checkout(), 'branch', '--show-current')).toBe('');
+    });
+
+    it('refuses a stopped rebase of a detached HEAD, never reading it as a branch', () => {
+        // A rebase of a detached HEAD records `detached HEAD` as its head-name: that names no
+        // branch, so it is refused like any detached checkout.
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+        git(fx.checkout(), 'switch', '-c', 'side');
+        fx.commitIn(fx.checkout(), 'README.md', 'side\n', 'side edits README');
+        git(fx.checkout(), 'switch', fx.branch());
+        fx.commitIn(fx.checkout(), 'README.md', 'task side\n', 'task edits README');
+        git(fx.checkout(), 'checkout', '--detach', 'side');
+        expect(() => git(fx.checkout(), 'rebase', fx.branch())).toThrow();
+
+        const result = fx.restore();
+        expect(result).toMatchObject({ ok: false, kind: 'branch_unrestorable' });
+        expect(result.reason).toContain('detached');
+        expect(result.reason).not.toContain('branch detached HEAD');
     });
 });
