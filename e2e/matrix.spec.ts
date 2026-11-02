@@ -530,7 +530,7 @@ const POLLED = [
     '.sidenav-section',
     '.sidenav-count',
     '.mobile-nav-count',
-    '.inbox-cards',
+    '.inbox-counts-strip',
     '.inbox-footer',
     '.updated-at',
     '.usage-groups',

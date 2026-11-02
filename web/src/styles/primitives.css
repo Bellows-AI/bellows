@@ -289,6 +289,27 @@
         color: var(--accent);
     }
 
+    /* The same strip over links: a tab that is a URL (the task inbox) is an anchor whose current
+       page, not aria-selected, marks it; the lane sets its control floor. */
+    .tabs a {
+        align-items: center;
+        border-bottom: 2px solid transparent;
+        color: var(--ink-muted);
+        display: inline-flex;
+        margin-bottom: -1px;
+        padding: 4px 12px;
+        text-decoration: none;
+    }
+
+    .tabs a:hover:not([aria-current='page']) {
+        background: var(--surface-strong);
+    }
+
+    .tabs a[aria-current='page'] {
+        border-bottom-color: var(--accent);
+        color: var(--accent);
+    }
+
     /* The one text-field skin (inputs, selects and textareas alike): sunken, framed by the
        strong hairline, the accent edge while focused — the global ring still draws on top. */
     .field {

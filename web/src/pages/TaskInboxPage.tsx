@@ -7,6 +7,7 @@ import { Icon } from '../components/Icon.js';
 import type { IconName } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
+import { StateNote } from '../components/StateNote.js';
 import { useTasksPage } from './TasksLayout.js';
 import { trackedRepos } from '../api/useRepos.js';
 import { DEFAULT_FILTERS, inboxQueryString, QUERY_MAX } from '../api/useTasks.js';
@@ -21,7 +22,7 @@ import type { TaskStatus, TaskTone } from '../task-tree.js';
  * in `useTasks.ts`. The filters are URL state (see `inboxFiltersFromSearch`): linkable, and
  * Back/Forward moves them — this page only writes back what its controls change.
  *
- * Top to bottom (issue 279): the header, three organization count cards (they ignore the
+ * Top to bottom (issue 279): the header, organization count strip (it ignores the
  * filters), the state tabs / search form / sort links, one chip per applied filter, the rows and
  * a footer that counts only what is loaded. The row grammar: the title (the row's ONE link) over
  * its one-line summary, the state as a toned pill with a VISIBLE label, repository, author and
@@ -43,11 +44,11 @@ const SORTS: readonly { value: InboxFilters['sort']; label: string }[] = [
 
 type CountKind = keyof TaskNavigation['counts'];
 
-/** The three organization counts, in the order the cards read; the state each one opens. */
-const COUNT_CARDS: readonly { kind: CountKind; label: string; icon: IconName }[] = [
-    { kind: 'review', label: 'Needs review', icon: 'circle-dot' },
-    { kind: 'running', label: 'Running', icon: 'refresh' },
-    { kind: 'past', label: 'Past', icon: 'check-circle' },
+/** The three organization counts, in the order the strip reads; the state each one opens. */
+const COUNT_LINKS: readonly { kind: CountKind; label: string }[] = [
+    { kind: 'review', label: 'Needs review' },
+    { kind: 'running', label: 'Running' },
+    { kind: 'past', label: 'Past' },
 ];
 
 /** The filters a chip stands for — state has its tab and sort its segmented control. */
@@ -107,30 +108,25 @@ function useFilterDraft(value: string | null): [string, (next: string) => void] 
     return [draft, setDraft];
 }
 
-/** The organization-wide counts as three links into their state tab. They never read the
- * filters: the number is the organization's, whatever the list below is narrowed to. */
-function InboxCountCards({ counts }: { counts: TaskNavigation['counts'] }) {
+/** The organization-wide counts as one quiet strip of three links into their state tab. They never
+ * read the filters: the number is the organization's, whatever the list below is narrowed to. */
+function InboxCountStrip({ counts }: { counts: TaskNavigation['counts'] }) {
     return (
-        <div className="inbox-cards">
-            {COUNT_CARDS.map((card) => (
-                <Link
-                    key={card.kind}
-                    to={filtersUrl({ ...DEFAULT_FILTERS, state: card.kind })}
-                    className={`inbox-card inbox-card-${card.kind}`}
-                    aria-label={`${countLabel(card.kind, counts[card.kind])} across the organization`}
-                >
-                    <span className="inbox-card-disc">
-                        <Icon name={card.icon} size={24} />
-                    </span>
-                    <span className="inbox-card-text">
-                        <span className="inbox-card-line">
-                            <span className="inbox-card-value">{counts[card.kind]}</span>
-                            <span className="inbox-card-label">{card.label}</span>
-                        </span>
-                        <span className="inbox-card-caption">Organization total</span>
-                    </span>
-                </Link>
-            ))}
+        <div className="inbox-counts-strip">
+            <span className="inbox-counts-caption">Organization total</span>
+            <ul className="inbox-counts">
+                {COUNT_LINKS.map((count) => (
+                    <li key={count.kind} className="inbox-count">
+                        <Link
+                            to={filtersUrl({ ...DEFAULT_FILTERS, state: count.kind })}
+                            aria-label={`${countLabel(count.kind, counts[count.kind])} across the organization`}
+                        >
+                            <span className="inbox-count-value">{counts[count.kind]}</span>
+                            <span className="inbox-count-label">{count.label}</span>
+                        </Link>
+                    </li>
+                ))}
+            </ul>
         </div>
     );
 }
@@ -159,7 +155,7 @@ function InboxFilterBar({
     const [author, setAuthor] = useFilterDraft(filters.author);
     return (
         <div className="inbox-filters">
-            <nav className="inbox-tabs" aria-label="Task state">
+            <nav className="tabs inbox-tabs" aria-label="Task state">
                 {STATES.map((state) => (
                     <Link
                         key={state.value}
@@ -353,12 +349,11 @@ function InboxTaskListBody({
     noTasksAtAll: boolean;
     appendNote: string | null;
 }) {
-    if (tasks.initial) return <p className="muted">Loading tasks…</p>;
+    if (tasks.initial) return <StateNote state="loading">Loading tasks…</StateNote>;
     if (noTasksAtAll) {
         return (
             <div className="inbox-empty">
-                <Icon name="list" size={24} />
-                <p>No tasks yet</p>
+                <StateNote state="empty">No tasks yet</StateNote>
                 <Link to="/tasks/new">Start your first task</Link>
             </div>
         );
@@ -367,8 +362,7 @@ function InboxTaskListBody({
     if (tasks.items.length === 0) {
         return (
             <div className="inbox-empty">
-                <Icon name="search" size={24} />
-                <p>No tasks match these filters</p>
+                <StateNote state="empty">No tasks match these filters</StateNote>
                 <Link to="/tasks">Clear filters</Link>
             </div>
         );
@@ -391,8 +385,8 @@ function InboxTaskListBody({
                 </ul>
             </div>
             {tasks.loadMoreError !== null ? (
-                <div className="inbox-error" role="alert">
-                    <p>Couldn't load more tasks — {tasks.loadMoreError}</p>
+                <div className="inbox-error">
+                    <StateNote state="error">Couldn't load more tasks — {tasks.loadMoreError}</StateNote>
                     <button type="button" onClick={tasks.loadMore}>
                         Retry
                     </button>
@@ -431,14 +425,11 @@ function InboxTaskList({
     return (
         <>
             {tasks.error !== null ? (
-                <div className="banner-bad" role="alert">
-                    <Icon name="alert-circle" size={24} />
-                    <div className="inbox-banner-body">
-                        <p className="banner-title">Couldn't load tasks — {tasks.error}</p>
-                        <button type="button" onClick={tasks.retry}>
-                            Retry
-                        </button>
-                    </div>
+                <div className="inbox-error">
+                    <StateNote state="error">Couldn't load tasks — {tasks.error}</StateNote>
+                    <button type="button" onClick={tasks.retry}>
+                        Retry
+                    </button>
                 </div>
             ) : null}
             {/* Stale only when rows exist: a first-page failure carries the same message as
@@ -518,7 +509,7 @@ export function TaskInboxPage() {
         <section className="inbox">
             {/* The page's one heading lives in the shared PageHeader (issue 159): no eyebrow —
                 "Tasks" over "Tasks" says the same thing twice — and New task as the page's one
-                action. The org-wide counts are the cards below, not a meta line. */}
+                action. The org-wide counts are the strip below, not a meta line. */}
             <PageHeader
                 title="Tasks"
                 description="Delegate software work to AI agents and review their changes."
@@ -530,7 +521,7 @@ export function TaskInboxPage() {
                 }
             />
 
-            {counts !== null ? <InboxCountCards counts={counts} /> : null}
+            {counts !== null ? <InboxCountStrip counts={counts} /> : null}
 
             <InboxFilterBar
                 filters={filters}
