@@ -413,7 +413,7 @@ export function TaskDetail({
                     accepts={() => followUpAdd.current !== null}
                     onFiles={(dropped) => followUpAdd.current?.(dropped)}
                 >
-                    <section className="task-conversation panel">
+                    <section className="task-conversation">
                         <div className="panel-head">
                             <h2>Conversation</h2>
                         </div>
