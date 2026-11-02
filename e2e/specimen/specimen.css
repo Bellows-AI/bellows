@@ -129,3 +129,9 @@
     font-weight: 500;
     margin: 0 0 8px;
 }
+
+.specimen-tiers {
+    display: grid;
+    gap: 16px;
+    margin-top: 32px;
+}

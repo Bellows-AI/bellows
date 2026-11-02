@@ -15,7 +15,8 @@
 
     --surface-sunken: oklch(0.170 0.016 249); /* inputs, textareas, code and log wells, kbd */
     --surface: oklch(0.189 0.017 253); /* page canvas, sidebar, top bar */
-    --surface-raised: oklch(0.227 0.021 252); /* cards, panels, menus, dialogs */
+    --surface-soft: oklch(0.208 0.019 253); /* panels: the soft tier between canvas and raised */
+    --surface-raised: oklch(0.227 0.021 252); /* menus, popovers, dialogs, composer */
     --surface-strong: oklch(0.281 0.026 253); /* hover fills, disabled primary — never under status text */
     --line: oklch(0.273 0.024 254);
     --line-strong: oklch(0.347 0.028 251);
@@ -87,6 +88,7 @@
 
     --surface-sunken: oklch(0.960 0.008 254);
     --surface: oklch(0.978 0.005 258);
+    --surface-soft: oklch(0.986 0.004 258);
     --surface-raised: oklch(1 0 0);
     --surface-strong: oklch(0.935 0.013 256);
     --line: oklch(0.926 0.013 256);

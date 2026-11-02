@@ -44,6 +44,7 @@ never utilities, and every color it renders resolves through a token.
   finished well, red failed, grey parked, amber warnings only, purple a question and only on the Question notification event tag. The text label always renders and
   the icon is `aria-hidden`. The per-state maps are `TONE` in `web/src/panels/TaskHeader.tsx` and
   `STATE_PILL` in `web/src/pages/TaskInboxPage.tsx`, keyed by `taskTone` in `web/src/task-tree.ts`.
+- Surface tiers: flat = `--surface` + `--line` (`panel-flat`), soft = `--surface-soft` (the resting `panel`, borderless; `bad` keeps its border), raised = `--surface-raised` (dialogs, popovers, composer). `web/test/styles.test.ts`, `e2e/specimen/main.tsx`.
 - The light washes are opaque tints mixed into `--surface-raised`; the dark ones are translucent.
   `e2e/polish.spec.ts` measures every pill, chip and banner on raised, canvas and sunken in both
   themes — a translucent light wash drops below AA on the light canvas.
@@ -83,7 +84,7 @@ Controls and overlays: `primary`, `danger`, `select-trigger`, `popover-option`, 
 `user-menu-panel`, `avatar-fallback`, `avatar-lg`, `task-avatar`, `row-actions-trigger`,
 `dialog-layer`, `dialog-backdrop`, `dialog-position`, `lamp-glow`.
 
-Surfaces and feedback: `panel-head`, `panel-actions`, `status`, `alert`, `error`, `muted`,
+Surfaces and feedback: `panel-flat`, `panel-head`, `panel-actions`, `status`, `alert`, `error`, `muted`,
 `badge-warn`, `banner-warn`, `banner-bad`, `banner-info`, `banner-title`, `pill-ok`, `pill-warn`,
 `pill-bad`, `pill-done`, `pill-accent`, `pill-question`, `pill-list`, `count`, `switch`, `inbox-chip`.
 
