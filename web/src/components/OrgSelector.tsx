@@ -47,7 +47,7 @@ export function OrgSelector({
                     className="select-trigger org-select"
                     aria-label={`Organization: ${organization.current.name}`}
                 >
-                    {organization.current.name}
+                    <span className="org-select-name">{organization.current.name}</span>
                 </ListboxButton>
                 <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
                     {organization.available.map((org) => (
