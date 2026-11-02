@@ -661,7 +661,7 @@
     /* Wide enough that a table row (channel, events, repos, switch, actions) keeps its tags on one
        line at desktop width; prose lines stay short through their own measure. */
     .settings-content {
-        max-width: 1040px;
+        max-width: var(--page-standard);
         display: flex;
         flex-direction: column;
         gap: 20px;

@@ -186,6 +186,14 @@
     --radius-lg: 0.375rem;
     --radius-xl: 0.5rem;
 
+    /* Page content widths: dense data pages, the settings column, the single-surface forms. */
+    --page-dense: 1400px;
+    --page-standard: 1040px;
+    --page-form: 960px;
+    /* Reading measures for single-column blocks (task stats, onboarding). */
+    --measure-wide: 720px;
+    --measure-narrow: 640px;
+
     /* The single ambient motion: a running lamp breathes. */
     --animate-lamp: lamp 2.4s ease-in-out infinite;
     @keyframes lamp {

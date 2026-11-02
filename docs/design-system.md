@@ -19,6 +19,7 @@ never utilities, and every color it renders resolves through a token.
 | Downward-only popover anchoring | `web/src/anchor.ts` | `web/test/anchor.test.ts` |
 | Token usage: four figures, breakdown, notes (no data fetch, no combined total) | `web/src/components/usage/` (`TokenFigures.tsx`, `PrecisionBadge.tsx`, `CoverageNote.tsx`, `UsageBreakdown.tsx`, `UsageDiagnostics.tsx`, `UsageStateNote.tsx`, `usage-format.ts`) | `web/test/usage-components.render.test.tsx`, `web/test/usage-breakdown.dom.test.tsx`, `web/test/usage-format.test.ts`, `e2e/specimen.spec.ts` |
 | Icon set and `ICON_NAMES` | `web/src/components/Icon.tsx` | `web/test/icon.test.tsx` |
+| Page content widths: `--page-dense` (`.page`), `--page-standard` (settings), `--page-form` (composer); `--measure-wide`, `--measure-narrow` (task stats, onboarding) | `web/src/styles/tokens.css`, `web/src/styles/primitives.css` | `web/test/styles.test.ts` |
 | One-`h1` page heading contract | `web/src/components/PageHeader.tsx` | `web/test/page-header.test.tsx` |
 | Table sorting, row actions, ≤640px card reflow | `web/src/components/DataTable.tsx`, `RowActions.tsx` | `web/test/data-table.test.tsx`, `web/test/dashboard.dom.test.tsx`, `web/test/row-actions.render.test.tsx` |
 | Shell, sidenav, drawer | `web/src/components/AppShell.tsx`, `SideNav.tsx`, `MobileNavDialog.tsx` | `web/test/shell.test.tsx`, `web/test/navigation.dom.test.tsx`, `web/test/sidenav.test.tsx`, `e2e/navigation.spec.ts` |

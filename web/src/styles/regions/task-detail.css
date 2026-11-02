@@ -621,7 +621,7 @@
     .task-stats {
         display: grid;
         gap: 16px;
-        max-width: 720px;
+        max-width: var(--measure-wide);
     }
 
     .task-stats-head {
