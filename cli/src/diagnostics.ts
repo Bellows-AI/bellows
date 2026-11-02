@@ -41,6 +41,8 @@ export interface PreflightSelection {
     repo?: string | undefined;
     executor?: string | undefined;
     executorScope?: 'user' | 'org' | undefined;
+    /** The branch the task checks out and publishes against; absent is the repo's default branch. */
+    baseBranch?: string | undefined;
     skills?: string[] | undefined;
     connections?: string[] | undefined;
 }

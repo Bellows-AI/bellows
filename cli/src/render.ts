@@ -146,6 +146,7 @@ export function renderJobDetail(job: BoardJobRecord): string {
         field('repo:', job.repo),
         field('executor:', job.executor),
         field('scope:', job.executorScope ?? null),
+        field('base:', job.baseBranch ?? 'default'),
         field('mode:', job.mode),
         field('author:', job.author?.login ?? null),
         field('created:', job.createdAt),

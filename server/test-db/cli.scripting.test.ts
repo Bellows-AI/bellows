@@ -242,6 +242,19 @@ describe.skipIf(!enabled)('CLI scripting against the real board', () => {
         expect(succeeded.env.outcome).toBe('succeeded');
     });
 
+    it('job create --base-branch against a real board stores it and job investigate --json reports it', async () => {
+        const create = await cli(
+            ['job', 'create', '--repo', repo, '--base-branch', 'release/1.2', 'echo based', '--json'],
+            {}
+        );
+        expect(create.code).toBe(0);
+        const { id } = created(create.env);
+
+        const detail = await cli(['job', 'investigate', id, '--json']);
+        expect(detail.code).toBe(0);
+        expect(JSON.stringify(detail.env.data)).toContain('"baseBranch":"release/1.2"');
+    });
+
     it('recovers a committed create whose answer was lost by repeating it under the same key', async () => {
         const key = `k-${randomUUID()}`;
         const argv = ['job', 'create', '--repo', repo, 'echo once', '--idempotency-key', key, '--json'];
