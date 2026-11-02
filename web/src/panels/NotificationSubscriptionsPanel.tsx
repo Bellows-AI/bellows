@@ -2,11 +2,13 @@ import { channelLabel, EVENT_KIND_LABELS, type SubscriptionView } from '../api/n
 import { Icon, type IconName } from '../components/Icon.js';
 import { ProviderMark } from '../components/ProviderMark.js';
 import { RowActions } from '../components/RowActions.js';
+import { StateNote } from '../components/StateNote.js';
 
 export const ADD_SUBSCRIPTION_LABEL = 'Add notification';
 export const SEND_TEST_LABEL = 'Send test notification';
 export const MEMBER_NOTE = "Organization notifications are managed by your organization's admins.";
-export const NO_SUBSCRIPTIONS_NOTE = 'No notifications yet.';
+export const NO_SUBSCRIPTIONS_NOTE = 'No notification channels yet.';
+export const EMPTY_WRITER_NOTE = 'Add one to send task events to a chat channel.';
 
 /** A row's last test verdict: the sentence and the banner it is shown in (`info` delivered, `warn` retryable, `bad` refused or failed). */
 export interface TestOutcome {
@@ -83,13 +85,11 @@ export function NotificationSubscriptionsPanel({
             </div>
             <p className="muted">{intro}</p>
             {canWrite ? null : <p className="muted">{MEMBER_NOTE}</p>}
-            {error ? (
-                <p className="status" role="alert">
-                    {error}
-                </p>
-            ) : null}
+            {error ? <StateNote state="error">{error}</StateNote> : null}
             {subscriptions.length === 0 ? (
-                <p className="muted">{NO_SUBSCRIPTIONS_NOTE}</p>
+                <StateNote state="empty">
+                    {canWrite ? `${NO_SUBSCRIPTIONS_NOTE} ${EMPTY_WRITER_NOTE}` : NO_SUBSCRIPTIONS_NOTE}
+                </StateNote>
             ) : (
                 <section className="table-wrap">
                     <table className="data data-compact table-cards" aria-label={tableLabel}>

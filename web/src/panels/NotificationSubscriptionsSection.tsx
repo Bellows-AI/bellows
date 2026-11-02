@@ -16,6 +16,7 @@ import {
     DeleteSubscriptionDialog,
     NotificationSubscriptionDialog,
 } from '../components/NotificationSubscriptionDialog.js';
+import { StateNote } from '../components/StateNote.js';
 import { NotificationSubscriptionsPanel, type TestOutcome } from './NotificationSubscriptionsPanel.js';
 
 const COPY: Record<SubscriptionScope, { heading: string; tableLabel: string; intro: string }> = {
@@ -138,11 +139,9 @@ export function NotificationSubscriptionsSection({
             <section className="panel" aria-label={copy.heading}>
                 <h2>{copy.heading}</h2>
                 {error ? (
-                    <p className="status" role="alert">
-                        {error}
-                    </p>
+                    <StateNote state="error">{error}</StateNote>
                 ) : (
-                    <p className="status">Loading notifications…</p>
+                    <StateNote state="loading">Loading notifications…</StateNote>
                 )}
             </section>
         );
