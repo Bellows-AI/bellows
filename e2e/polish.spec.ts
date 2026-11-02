@@ -280,3 +280,25 @@ test.describe('polish (issue 189)', () => {
         await assertRing(inboxRepo(page), 'inbox repository select');
     });
 });
+
+test('data cells and status lines read in Inter with tabular figures, never mono (BEL-221)', async ({ page }) => {
+    let cells = 0;
+    for (const route of ['/', '/settings/organization']) {
+        await page.goto(route);
+        await page.waitForLoadState('networkidle');
+        const seen = await page.locator('table.data td:not(:first-child), .status').evaluateAll((nodes) =>
+            nodes.map((node) => {
+                const style = getComputedStyle(node);
+                return { family: style.fontFamily, numeric: style.fontVariantNumeric, table: node.tagName === 'TD' };
+            })
+        );
+        for (const cell of seen) {
+            expect(cell.family).toMatch(/^"?Inter/);
+            expect(cell.family).not.toMatch(/IBM Plex Mono|monospace/);
+            if (cell.table) expect(cell.numeric).toContain('tabular-nums');
+        }
+        cells += seen.length;
+    }
+    expect(cells, 'at least one data cell or status line was measured').toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.fonts.check('14px "Inter"'))).toBe(true);
+});

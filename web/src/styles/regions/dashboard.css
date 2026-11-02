@@ -151,7 +151,6 @@
     .analytics-summary {
         color: var(--ink-muted);
         flex-basis: 100%;
-        font-family: var(--font-mono);
         font-size: 12px;
         margin: 0;
     }

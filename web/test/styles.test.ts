@@ -588,16 +588,25 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(css.match(/transition\s*:[^;{}]*/gi) ?? []).toEqual([]);
     });
 
-    it("the compact table resets the data table's mono cells to the inherited face", () => {
+    it('sets mono on no generic table cell or status line', () => {
         const css = stripComments(shippedCss());
-        const mono = css.indexOf('table.data td:not(:first-child)');
-        expect(mono, 'the data table sets mono on its non-first cells').toBeGreaterThanOrEqual(0);
-        const reset = rules(css).find(
-            ([prelude, body]) =>
-                prelude.includes('.data-compact') && /\btd\b/.test(prelude) && /font-family\s*:\s*inherit/.test(body)
-        );
-        expect(reset, 'a .data-compact td rule sets font-family: inherit').toBeDefined();
-        expect(css.indexOf(reset![0]), 'the reset follows the mono rule').toBeGreaterThan(mono);
+        const offenders = rules(css)
+            .filter(
+                ([prelude, body]) =>
+                    /table\.data\s+td|\.status(?![\w-])/.test(prelude) &&
+                    /font-family\s*:\s*var\(--font-mono\)/.test(body)
+            )
+            .map(([prelude]) => prelude.trim());
+        expect(offenders).toEqual([]);
+    });
+
+    it('offers one mono identifier primitive and ships Inter as the sans face', () => {
+        const css = stripComments(shippedCss());
+        const mono = rules(css).find(([prelude]) => prelude.trim() === '.mono');
+        expect(mono, 'a .mono rule exists').toBeDefined();
+        expect(mono![1]).toMatch(/font-family\s*:\s*var\(--font-mono\)/);
+        expect(css).toMatch(/--font-sans:\s*'Inter'/);
+        expect(css).not.toMatch(/Barlow/i);
     });
 });
 

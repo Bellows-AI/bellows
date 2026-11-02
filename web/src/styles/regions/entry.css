@@ -258,7 +258,6 @@
     .onboarding-repo {
         align-items: center;
         display: flex;
-        font-family: var(--font-mono);
         font-size: 13px;
         gap: 8px;
         min-height: 24px;

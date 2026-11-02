@@ -73,7 +73,7 @@ test('the workspace page carries no checkout state; the repositories page lists 
         expect(reposText, gone).not.toContain(gone);
     }
     // The compact table keeps its cells in the sans face: branch, tag and Configure never inherit the
-    // monospace the shared table gives non-first cells.
+    // monospace the shared table once gave non-first cells.
     const firstRow = tracked.locator('tbody tr').first();
     for (const target of [
         firstRow.locator('td[data-label="Branch"]'),

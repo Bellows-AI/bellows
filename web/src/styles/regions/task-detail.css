@@ -466,13 +466,13 @@
         flex: none;
         flex-wrap: wrap;
         gap: 8px;
+        max-width: 100%;
     }
 
-    /* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
+    /* The overall wall clock in the head: a neutral reading, not a verdict — muted like the
         activity line, never the exit code's red. */
     .task-clock {
         color: var(--ink-muted);
-        font-family: var(--font-mono);
         font-size: 12px;
         white-space: nowrap;
     }
