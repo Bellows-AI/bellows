@@ -34,6 +34,11 @@ const HTTP_OK = 200;
 const HTTP_NO_CONTENT = 204;
 const CEILING = { permissions: { contents: 'write' }, repositories: ['widgets'] };
 const HTTP_FORBIDDEN = 403;
+const HTTP_UNAVAILABLE = 503;
+/** A pair that is no attempt of a running task: the terminal answer. */
+const REFUSED = { ok: false, pending: false };
+/** A pair the task held but that a lapse or a takeover moved off: retry with the current one. */
+const PENDING = { ok: false, pending: true };
 
 const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [AUTHOR, OTHER_AUTHOR] });
 
@@ -90,25 +95,69 @@ describe.skipIf(!enabled)('github credential of lease — the per-call check', (
             repo: REPO,
         });
         // A pair is the attempt's own: crossing the halves resolves nothing.
-        expect(await check(theirs.id, mine.claim.leaseToken)).toEqual({ ok: false });
-        expect(await check(mine.id, theirs.claim.leaseToken)).toEqual({ ok: false });
+        expect(await check(theirs.id, mine.claim.leaseToken)).toEqual(REFUSED);
+        expect(await check(mine.id, theirs.claim.leaseToken)).toEqual(REFUSED);
     });
 
     it('refuses a wrong token and an unknown job', async () => {
         const { id, claim } = await running();
-        expect(await check(id, crypto.randomUUID())).toEqual({ ok: false });
-        expect(await check(crypto.randomUUID(), claim.leaseToken)).toEqual({ ok: false });
+        expect(await check(id, crypto.randomUUID())).toEqual(REFUSED);
+        expect(await check(crypto.randomUUID(), claim.leaseToken)).toEqual(REFUSED);
     });
 
-    it('refuses the superseded attempt once a reclaim rotates the lease token', async () => {
+    it('answers pending for the current pair while its lease has lapsed and the task still runs', async () => {
+        const attempt = await running();
+        await expireLease(sql, attempt.id);
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(PENDING);
+    });
+
+    it('answers pending for the pair one claim back after a reclaim, and live for the new one', async () => {
         const first = await running();
         await expireLease(sql, first.id);
-        expect(await check(first.id, first.claim.leaseToken)).toEqual({ ok: false });
-
         const second = (await jobs.claim('w2', LEASE_SECONDS)) as Claim;
         expect(second.id).toBe(first.id);
-        expect(await check(first.id, first.claim.leaseToken)).toEqual({ ok: false });
+        expect(await check(first.id, first.claim.leaseToken)).toEqual(PENDING);
         expect((await check(second.id, second.leaseToken)).ok).toBe(true);
+    });
+
+    // Shape-only RED before the fix (no `pending` key): behaviourally a pin, the refusal was already terminal.
+    it('refuses the pair two claims back', async () => {
+        const first = await running();
+        await expireLease(sql, first.id);
+        const second = (await jobs.claim('w2', LEASE_SECONDS)) as Claim;
+        await expireLease(sql, first.id);
+        const third = (await jobs.claim('w3', LEASE_SECONDS)) as Claim;
+        expect(third.id).toBe(first.id);
+        expect(await check(first.id, first.claim.leaseToken)).toEqual(REFUSED);
+        expect(await check(first.id, second.leaseToken)).toEqual(PENDING);
+        expect((await check(first.id, third.leaseToken)).ok).toBe(true);
+    });
+
+    // Shape-only RED before the fix: the no-leak pin, a token the task never held is never pending.
+    it('never answers pending to a token the task never held', async () => {
+        const attempt = await running();
+        await expireLease(sql, attempt.id);
+        expect(await check(attempt.id, crypto.randomUUID())).toEqual(REFUSED);
+    });
+
+    // Pin: a claim of a requeued row clears the prior lease, so a pair of a run that already ended is no pending.
+    it('clears the prior lease when a queued row is claimed', async () => {
+        const first = await running();
+        await expireLease(sql, first.id);
+        await jobs.claim('w2', LEASE_SECONDS);
+        const [held] = await sql<
+            { prior: string | null }[]
+        >`select prior_lease_token as prior from job where id = ${first.id}`;
+        expect(held?.prior).toBe(first.claim.leaseToken);
+        await sql`update job set status = 'queued', claimed_by = null where id = ${first.id}`;
+        await expireLease(sql, first.id);
+        const again = (await jobs.claim('w3', LEASE_SECONDS)) as Claim;
+        expect(again.id).toBe(first.id);
+        const [cleared] = await sql<
+            { prior: string | null }[]
+        >`select prior_lease_token as prior from job where id = ${first.id}`;
+        expect(cleared?.prior).toBeNull();
+        expect(await check(first.id, first.claim.leaseToken)).toEqual(REFUSED);
     });
 
     it.each<{ name: string; settle: (id: string) => Promise<unknown> }>([
@@ -136,7 +185,18 @@ describe.skipIf(!enabled)('github credential of lease — the per-call check', (
         const attempt = await running();
         expect((await check(attempt.id, attempt.claim.leaseToken)).ok).toBe(true);
         await settle(attempt.id);
-        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual({ ok: false });
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(REFUSED);
+        // A lapsed lease on a task that is over (or stopped, or unauthorized) is no takeover window.
+        await expireLease(sql, attempt.id);
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(REFUSED);
+    });
+
+    // A1: a stop path clears the lease token, so the comparisons read null; the verdict stays the terminal one.
+    it('keeps the terminal verdict for a stopped attempt whose lease was cleared', async () => {
+        const attempt = await running();
+        await sql`update job set cancel_requested_at = now(), lease_token = null where id = ${attempt.id}`;
+        await expireLease(sql, attempt.id);
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(REFUSED);
     });
 });
 
@@ -153,7 +213,7 @@ describe.skipIf(!enabled)('attempt of lease — whose membership decides', () =>
         await sql`insert into org_membership (org_id, github_login, user_id) values (${ORG}, ${OTHER_AUTHOR.login}, ${OTHER_AUTHOR.id}) on conflict do nothing`;
         await sql`delete from org_membership where org_id = ${ORG} and user_id = ${AUTHOR.id}`;
         // Now created_by is a member and the execution user is not: the execution user decides.
-        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual({ ok: false });
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(REFUSED);
         await sql`delete from org_membership where org_id = ${ORG} and user_id = ${OTHER_AUTHOR.id}`;
     });
 
@@ -161,7 +221,7 @@ describe.skipIf(!enabled)('attempt of lease — whose membership decides', () =>
         const attempt = await running();
         // Deleting the account nulls the column through its foreign key; the trigger allows that one change.
         await sql`update job set execution_user_id = null where id = ${attempt.id}`;
-        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual({ ok: false });
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(REFUSED);
     });
 });
 
@@ -277,6 +337,87 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         expect(res.statusCode).toBe(HTTP_FORBIDDEN);
         expect(res.body).not.toContain('ghs_blocked_secret_token');
         expect(lines.join('\n')).not.toContain('ghs_blocked_secret_token');
+    });
+
+    // BEL-243: a lapsed lease or a takeover on a task that still runs is transient, never the terminal 403.
+    it('answers 503 LEASE_PENDING with Retry-After to a lapsed lease on a running task, and mints nothing', async () => {
+        const minted: string[] = [];
+        const { app: instance } = await boot(async (orgId) => {
+            minted.push(orgId);
+            return { token: 'ghs_never_pending', expiresAt: '2026-10-16T13:00:00.000Z', ...CEILING };
+        });
+        const attempt = await running();
+        await expireLease(sql, attempt.id);
+        const res = await ask(instance, attempt.id, attempt.claim.leaseToken);
+        expect(res.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(res.headers['retry-after']).toBe('1');
+        expect(res.json()).toMatchObject({ code: 'LEASE_PENDING', retryable: true });
+        expect(minted).toEqual([]);
+    });
+
+    it('answers 503 to the superseded pair after a reclaim and 200 to the new pair', async () => {
+        const { app: instance } = await boot(async () => ({
+            token: 'ghs_db_takeover_secret',
+            expiresAt: '2026-10-16T13:00:00.000Z',
+            ...CEILING,
+        }));
+        const first = await running();
+        await expireLease(sql, first.id);
+        const second = (await jobs.claim('w2', LEASE_SECONDS)) as Claim;
+        const old = await ask(instance, first.id, first.claim.leaseToken);
+        expect(old.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(old.json().code).toBe('LEASE_PENDING');
+        expect((await ask(instance, second.id, second.leaseToken)).statusCode).toBe(HTTP_OK);
+    });
+
+    it('withholds the token as pending when the lease lapses during the GitHub exchange', async () => {
+        let release: (minted: MintedToken) => void = () => {};
+        let entered: () => void = () => {};
+        const inMint = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const { app: instance } = await boot(
+            () =>
+                new Promise<MintedToken>((resolve) => {
+                    release = resolve;
+                    entered();
+                })
+        );
+        const attempt = await running();
+        const pending = ask(instance, attempt.id, attempt.claim.leaseToken);
+        await inMint;
+        await expireLease(sql, attempt.id);
+        release({ token: 'ghs_lapsed_secret_token', expiresAt: '2026-10-16T13:00:00.000Z', ...CEILING });
+        const res = await pending;
+        expect(res.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(res.json().code).toBe('LEASE_PENDING');
+        expect(res.body).not.toContain('ghs_lapsed_secret_token');
+    });
+
+    // Pin, green before the fix: the terminal refusals keep their 403.
+    it('keeps the terminal 403 for a settled, a stopped and a never-held pair', async () => {
+        const { app: instance } = await boot(async () => ({
+            token: 'ghs_never_terminal',
+            expiresAt: '2026-10-16T13:00:00.000Z',
+            ...CEILING,
+        }));
+        const settled = await running();
+        await sql`update job set status = 'succeeded', finished_at = now() where id = ${settled.id}`;
+        await expireLease(sql, settled.id);
+        const stopped = await running();
+        await sql`update job set cancel_requested_at = now(), lease_token = null where id = ${stopped.id}`;
+        await expireLease(sql, stopped.id);
+        const live = await running();
+        await expireLease(sql, live.id);
+        for (const [id, token] of [
+            [settled.id, settled.claim.leaseToken],
+            [stopped.id, stopped.claim.leaseToken],
+            [live.id, crypto.randomUUID()],
+        ] as const) {
+            const res = await ask(instance, id, token);
+            expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+            expect(res.body).not.toContain('ghs_never_terminal');
+        }
     });
 
     // BEL-60: Stop revokes the stopped attempt's token only. Possession of a token is the authority to revoke it

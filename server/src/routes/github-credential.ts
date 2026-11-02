@@ -4,7 +4,7 @@ import { JOB_ID_HEADER, LEASE_TOKEN_HEADER } from '../auth/plugin.js';
 import { UUID } from '../identifiers.js';
 import type { AttemptCheck, AttemptOfLease, PairMatches } from '../db/attempt-of-lease.js';
 import type { MintedToken, RevokeOutcome } from '../github/app-token.js';
-import { bad } from './helpers.js';
+import { bad, LEASE_PENDING_MESSAGE, leasePending } from './helpers.js';
 
 /**
  * `POST /api/jobs/:id/credentials/github` (docs/connections.md): a running attempt's GitHub token,
@@ -53,6 +53,10 @@ const NO_REPO = 'This task names no repository, so it has no GitHub token: a tok
 
 type Refusal = { code: string; message: string; status: number };
 
+/** The refusal's reply: a pending lease is transient and says so, every other refusal is as the check made it. */
+const refusal = (reply: FastifyReply, { code, message, status }: Refusal) =>
+    code === ERROR_CODES.LEASE_PENDING ? leasePending(reply) : bad(reply, code, message, status);
+
 /** The job id and lease token the request's headers name, or the refusal for a pair that is not one. */
 function pairOf(request: FastifyRequest): { jobId: string; leaseToken: string } | Refusal {
     const jobId = (request.params as { id: string }).id;
@@ -86,7 +90,14 @@ async function attemptOf(
         // A query that threw confirmed nothing: the attempt may well be live.
         return unreadable;
     }
-    if (!attempt.ok) return refused;
+    if (!attempt.ok) {
+        const pending = {
+            code: ERROR_CODES.LEASE_PENDING,
+            message: LEASE_PENDING_MESSAGE,
+            status: HTTP_SERVICE_UNAVAILABLE,
+        };
+        return attempt.pending ? pending : refused;
+    }
     if (attempt.repo === null) return { ...refused, message: NO_REPO };
     // The token is narrowed to the attempt's own repository, which must be the thread root's.
     if (attempt.repo !== attempt.rootRepo) return refused;
@@ -145,7 +156,7 @@ export function githubCredentialRoutes({
     const handle = async (request: FastifyRequest, reply: FastifyReply) => {
         reply.header('cache-control', 'no-store');
         const attempt = await attemptOf(request, attemptOfLease);
-        if ('code' in attempt) return bad(reply, attempt.code, attempt.message, attempt.status);
+        if ('code' in attempt) return refusal(reply, attempt);
         const { jobId, leaseToken } = attempt;
         let minted: MintedToken | null;
         try {
@@ -164,6 +175,7 @@ export function githubCredentialRoutes({
         } catch {
             return bad(reply, ERROR_CODES.UNAVAILABLE, LEASE_UNREADABLE, HTTP_SERVICE_UNAVAILABLE);
         }
+        if (!still.ok && still.pending) return leasePending(reply);
         if (!still.ok || still.orgId !== attempt.orgId) {
             return bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ATTEMPT_REFUSED, HTTP_FORBIDDEN);
         }
