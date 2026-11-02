@@ -2,6 +2,7 @@ import type { Ref } from 'react';
 import { PRODUCT_NAME } from '../brand.js';
 import { needsListing, type OrgDraft, type RepoMode } from '../onboarding.js';
 import { Icon } from './Icon.js';
+import { StateNote } from './StateNote.js';
 
 /** What the disclosure reads while collapsed: the org's repository mode, and the count only once
  * a listing is there to count. */
@@ -34,7 +35,7 @@ function RepositoryListingBody({
     onRetryListing: () => void;
     onToggleRepo: (repo: string) => void;
 }) {
-    if (draft.listing.kind === 'loading') return <p className="muted">Loading repositories…</p>;
+    if (draft.listing.kind === 'loading') return <StateNote state="loading">Loading repositories…</StateNote>;
     // A failed read is an alert; an unavailable listing is information — the choice still
     // completes — and neither reads like a missing choice (issue 284).
     if (draft.listing.kind === 'failed') {

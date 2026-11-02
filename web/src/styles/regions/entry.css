@@ -43,7 +43,7 @@
         margin-left: auto;
     }
 
-    /* The gate centers one raised card — the dialog's recipe without the float. */
+    /* The gate centers one soft card — the panel tier, no frame. */
     .login-gate {
         align-items: center;
         display: flex;
@@ -53,8 +53,7 @@
     }
 
     .login-card {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
+        background: var(--surface-soft);
         border-radius: var(--radius-xl);
         display: flex;
         flex-direction: column;
@@ -75,7 +74,7 @@
         margin: 0;
     }
 
-    .login-card .banner-bad {
+    .login-card .state-note {
         text-align: left;
     }
 

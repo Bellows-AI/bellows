@@ -36,6 +36,7 @@ describe('the login gate', () => {
         const signIn = await screen.findByRole('link', { name: 'Sign in with GitHub' });
         const gate = signIn.closest('.login-gate') as HTMLElement;
         expect(within(gate).getByRole('alert').textContent).toBe('Sign-in was cancelled.');
+        expect(within(gate).getByRole('alert').className).toBe('state-note error');
         expect(screen.queryByText('the dashboard')).toBeNull();
     });
 });

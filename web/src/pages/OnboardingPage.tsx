@@ -21,6 +21,7 @@ import {
 import { Icon } from '../components/Icon.js';
 import { OnboardingOrganization } from '../components/OnboardingOrganization.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
+import { StateNote } from '../components/StateNote.js';
 import { ThemeSelector } from '../components/ThemeSelector.js';
 import { PRODUCT_NAME } from '../brand.js';
 import { ERROR_CODES, JSON_HEADERS } from '@factory-ai/core';
@@ -525,15 +526,14 @@ function useOnboardingSubmit(state: {
 function OnboardingLoadState({ loadFailed, onRetry }: { loadFailed: boolean; onRetry: () => void }) {
     if (loadFailed) {
         return (
-            <div className="banner-bad" role="alert">
-                <Icon name="alert-circle" size={24} />
-                <div className="onboarding-banner-body">
-                    <p>Could not load setup. Try again.</p>
+            <>
+                <StateNote state="error">Could not load setup. Try again.</StateNote>
+                <div className="onboarding-actions">
                     <button type="button" onClick={onRetry}>
                         Retry
                     </button>
                 </div>
-            </div>
+            </>
         );
     }
     return (
@@ -541,7 +541,7 @@ function OnboardingLoadState({ loadFailed, onRetry }: { loadFailed: boolean; onR
             <div className="onboarding-loading-line" aria-hidden="true" />
             <div className="onboarding-loading-line" aria-hidden="true" />
             <div className="onboarding-loading-line" aria-hidden="true" />
-            <p className="muted">Loading setup…</p>
+            <StateNote state="loading">Loading setup…</StateNote>
         </div>
     );
 }
