@@ -1,5 +1,6 @@
 import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
 import type { MemberView } from '../api/orgMembers.js';
+import { Avatar } from '../components/Avatar.js';
 import { commitDate } from '../format.js';
 
 /**
@@ -41,9 +42,18 @@ export function MembersPanel({
                     <tbody>
                         {members.map((member) => (
                             <tr key={member.userId}>
-                                <td data-label="Login">{member.githubLogin}</td>
+                                <td data-label="Login">
+                                    <span className="member-identity">
+                                        {/* F14: the member payload carries no avatar URL, so initials only. */}
+                                        <Avatar author={{ login: member.githubLogin, avatarUrl: null }} size={28} />
+                                        <span className="member-login" title={member.githubLogin}>
+                                            {member.githubLogin}
+                                        </span>
+                                    </span>
+                                </td>
                                 <td data-label="Role">
                                     <select
+                                        className="select-trigger"
                                         aria-label={`Role for ${member.githubLogin}`}
                                         disabled={saving}
                                         value={member.role}
