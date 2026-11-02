@@ -227,6 +227,28 @@ describe('a started batch', () => {
         expect(one.getByRole('link', { name: 'Pull request' }).getAttribute('href')).toBe(PR);
     });
 
+    it('draws stages as divided rows, the gate before the task cards, and a finished stage muted', async () => {
+        board(
+            started(
+                twoStagePlan(),
+                [
+                    state('task-1', 'stage-1', { execution: 'succeeded', pr: PR, gate: 'passed' }),
+                    state('task-2', 'stage-1', { execution: 'succeeded', pr: PR, gate: 'passed' }),
+                    state('task-3', 'stage-2', { waitReason: `waiting for a person to merge ${PR}` }),
+                ],
+                'stage-2'
+            )
+        );
+        renderApp(`/batches/${ID}`);
+        await headerPill('Needs attention');
+        expect(stage(1).classList.contains('panel')).toBe(false);
+        expect(stage(1).classList.contains('is-complete')).toBe(true);
+        expect(stage(2).classList.contains('is-complete')).toBe(false);
+        const note = within(stage(2)).getByRole('note');
+        const cards = stage(2).querySelector('.batch-tasks') as HTMLElement;
+        expect(note.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
     it('reads an automerge PR the board is still merging as the board’s, from the report’s next step (#693)', async () => {
         const plan = twoStagePlan();
         const merging = state('task-1', 'stage-1', {
