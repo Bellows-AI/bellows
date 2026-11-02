@@ -1,3 +1,4 @@
+import { Avatar } from '../components/Avatar.js';
 import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
 import { Icon } from '../components/Icon.js';
@@ -157,7 +158,12 @@ export function OrgExecutorsPanel({
                             {executors.map((executor) => (
                                 <tr key={executor.name}>
                                     <td data-label="Name">
-                                        {executor.name}
+                                        <span className="member-identity">
+                                            <Avatar author={{ login: executor.name, avatarUrl: null }} size={28} />
+                                            <span className="member-login" title={executor.name}>
+                                                {executor.name}
+                                            </span>
+                                        </span>
                                         {defaultName === executor.name || executor.suspended ? (
                                             <span className="pill-list">
                                                 {defaultName === executor.name ? (
