@@ -261,6 +261,7 @@ export { inputTokens, seriesGranularity, telemetryStats, usageRangeOf } from './
 export { taskUsageStats } from './task-usage.js';
 export { taskTitleFromCommand } from './task-title.js';
 export * from './notifications.js';
+export * from './branch-name.js';
 export {
     UNKNOWN_BUCKET,
     bucketTimedContributions,

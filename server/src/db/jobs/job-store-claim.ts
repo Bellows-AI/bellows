@@ -21,7 +21,7 @@ import {
 } from './job-store-admission.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
-import { stopReviewsOf, workspacePathFor } from './job-store-rows.js';
+import { stopReviewsOf, threadBaseBranchFragment, workspacePathFor } from './job-store-rows.js';
 import { commitStagedConclusions } from './job-store-conclusions.js';
 import { stagedUnderLease } from './job-store-staged.js';
 import { secondsSince } from '../../prometheus.js';
@@ -183,8 +183,8 @@ const REFUSED = Symbol('refused by a budget');
  * and what the claim reports as `lastAttempt`: one definition, so the two never drift apart.
  *
  * `baseBranch` is the frozen target branch of the batch task the thread works, joined through the
- * root, so every retry, follow-up and repair of a batch task bases on the target's branch with no
- * column to copy.
+ * root, else the branch the root was created with (BEL-162): every retry, follow-up and repair
+ * bases on the same branch with no column to copy. Neither means the remote default.
  *
  * `ownSession` is whether the row's session was minted by one of its own attempts (issue #822),
  * read in the acquisition's RETURNING off the post-update row. Every inherited session is copied
@@ -207,10 +207,11 @@ function claimRules({ sql, orgId }: JobStoreContext) {
         `,
         recovering: sql`(status = 'running' and not ${spent})`,
         exhausted: sql`(attempts >= max_attempts and ${spent})`,
-        baseBranch: sql`(select tg.branch from batch_task t
+        baseBranch: sql`coalesce((select tg.branch from batch_task t
                          join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id
                                              and tg.key = t.target_key
-                         where t.org_id = job.org_id and t.root_job_id = job.root_job_id)`,
+                         where t.org_id = job.org_id and t.root_job_id = job.root_job_id),
+                         ${threadBaseBranchFragment(sql)})`,
         ownSession: sql`(session_id is not null and not exists (
                             select 1 from job o
                             where o.org_id = job.org_id and o.root_job_id = job.root_job_id and o.id <> job.id

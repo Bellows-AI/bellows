@@ -99,6 +99,8 @@ export interface JobRow {
     publication_pr_url?: string | null;
     publication_head_branch?: string | null;
     publication_base_branch?: string | null;
+    /** Only the detail reads (get/thread) select the root's requested base branch (BEL-162). */
+    base_branch?: string | null;
 }
 
 /**
@@ -176,6 +178,8 @@ const failureOf = (row: JobRow): Pick<Job, 'failureKind' | 'failureCause'> => ({
     failureCause: (row.failure_cause as Job['failureCause']) ?? null,
 });
 
+const baseBranchOf = (row: JobRow): string | null => row.base_branch ?? null;
+
 export function toJob(orgId: string, row: JobRow): Job {
     return {
         id: row.id,
@@ -188,6 +192,7 @@ export function toJob(orgId: string, row: JobRow): Job {
         author: userRef(row.creator_id, row.creator_login, row.creator_name, row.creator_avatar_url),
         stoppedBy: userRef(row.stopper_id, row.stopper_login, row.stopper_name, row.stopper_avatar_url),
         doneBy: userRef(row.doner_id, row.doner_login, row.doner_name, row.doner_avatar_url),
+        baseBranch: baseBranchOf(row),
         sessionId: row.session_id,
         exitCode: row.exit_code,
         output: row.output ?? null,
@@ -637,6 +642,11 @@ export function publicationJoinFragment(sql: Sql): Fragment {
             where p.org_id = job.org_id and p.root_job_id = job.root_job_id
         ) pub on true
     `;
+}
+
+/** The ROOT job's requested base branch (BEL-162): one indexed lookup, so a thread's every row reads the same value. */
+export function threadBaseBranchFragment(sql: Sql): Fragment {
+    return sql`(select r.base_branch from job r where r.org_id = job.org_id and r.id = job.root_job_id)`;
 }
 
 export function publicationColumnsFragment(sql: Sql): Fragment {

@@ -1,5 +1,6 @@
 import {
     COMMAND_LIMIT,
+    isBranchName,
     ERROR_CODES,
     MAX_FILES_PER_REQUEST,
     EXECUTOR_SCOPES,
@@ -133,6 +134,17 @@ export function validateSkillsField(raw: unknown): { ok: true; value: string[] }
     }
     if (new Set(raw).size !== raw.length) return { ok: false, message: 'skills must not repeat a name' };
     return { ok: true, value: raw as string[] };
+}
+
+/** The create body's `baseBranch` (BEL-162): absent or null is the remote default, otherwise a name `isBranchName` accepts. */
+export function validateBaseBranchField(
+    raw: unknown
+): { ok: true; value: string | null } | { ok: false; message: string } {
+    if (raw === undefined || raw === null) return { ok: true, value: null };
+    if (typeof raw !== 'string' || !isBranchName(raw)) {
+        return { ok: false, message: 'baseBranch must be a git branch name of at most 255 characters' };
+    }
+    return { ok: true, value: raw };
 }
 
 /**

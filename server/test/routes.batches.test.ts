@@ -93,6 +93,8 @@ async function setup(
         canMerge?: boolean;
         /** The branches the installation can read, on every repository; absent offline. */
         branches?: readonly string[];
+        /** A branch read that throws instead of answering (forbidden, malformed): inconclusive, never "absent". */
+        branchReadFails?: Error;
         /** The repo list read is failing: the cached list is served with this reason attached. */
         listError?: string;
     } = {}
@@ -126,6 +128,13 @@ async function setup(
             telemetry: stubTelemetryClient(),
             batchesByOrg: { [ORG]: batches, [OTHER_ORG]: otherBatches },
             ...(options.canMerge ? { batchMerger: { mergeDue: async () => 0 } } : {}),
+            ...(options.branchReadFails
+                ? {
+                      branchHead: async () => {
+                          throw options.branchReadFails;
+                      },
+                  }
+                : {}),
             ...(options.branches
                 ? {
                       branchHead: async (_repo: string, branch: string) =>
@@ -409,6 +418,21 @@ describe('launch checks: validate and start', () => {
         }
         expect(jobCreates).toEqual([]);
         expect(batches.writes).toEqual(['create']);
+    });
+
+    it('a target branch read that answers forbidden or malformed is not BATCH_UNKNOWN_BRANCH', async () => {
+        const { call, create, jobCreates } = await setup({ branchReadFails: new Error('read forbidden') });
+        const { id } = await create(
+            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' }] })
+        );
+        for (const response of [
+            await call('POST', `/api/batches/${id}/validate`, {}),
+            await call('POST', `/api/batches/${id}/start`, { version: 1 }),
+        ]) {
+            expect(response.statusCode).not.toBe(HTTP_CONFLICT);
+            expect(response.json().code).not.toBe('BATCH_UNKNOWN_BRANCH');
+        }
+        expect(jobCreates).toEqual([]);
     });
 
     it('answers 409 BATCH_UNSUPPORTED for an automerge stage on a board that cannot merge', async () => {

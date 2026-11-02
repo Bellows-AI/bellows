@@ -3072,6 +3072,7 @@ describe('POST /api/jobs/:id/complete', () => {
 describe('GET /api/jobs', () => {
     const job: Job = {
         id: ID,
+        baseBranch: null,
         command: 'echo hi',
         status: 'succeeded',
         attempts: 1,
@@ -3251,6 +3252,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
     // A moving run: the shape the long-poll is asked to watch.
     const job: Job = {
         id: ID,
+        baseBranch: null,
         command: 'echo hi',
         status: 'running',
         attempts: 1,
@@ -3476,6 +3478,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
     // reads are the started/finished stamps and the session id; the rest rides along for type.
     const runJob: Job = {
         id: ID,
+        baseBranch: null,
         command: 'echo hi',
         status: 'failed',
         attempts: 1,

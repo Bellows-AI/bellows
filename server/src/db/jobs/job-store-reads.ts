@@ -6,7 +6,15 @@
 import type { Sql, Fragment } from 'postgres';
 import { bindingsOf, requirementsOf } from '../connection-bindings.js';
 import { attachmentsOfThread, effectiveAttachments, type ClaimAttachment } from './job-store-attachments.js';
-import { type JobRow, toJobRow, type TaskRow, toTask, userRef, workspacePathFor } from './job-store-rows.js';
+import {
+    type JobRow,
+    toJobRow,
+    type TaskRow,
+    threadBaseBranchFragment,
+    toTask,
+    userRef,
+    workspacePathFor,
+} from './job-store-rows.js';
 import type {
     Job,
     JobArtifactScope,
@@ -144,7 +152,8 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
                -- them. A sum over all-null banks is null — nothing measurable, never zero.
                sum(wall_clock_ms) over () as task_wall_clock_ms,
                wall_clock_ms, agent_turns, setup_ms, interruptions, summary, failure_kind, failure_cause,
-               wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
+               wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason,
+               ${threadBaseBranchFragment(sql)} as base_branch
                ${publicationColumns}
                ${authorColumns}
         from job ${authorJoin}
@@ -242,7 +251,8 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
                summary, wall_clock_ms, agent_turns, setup_ms, interruptions, failure_kind, failure_cause,
                -- The thread's wait (036) and publication (#324), served by the detail reads on
                -- the same thread-wide rule thread() follows — the per-run lists answer null.
-               wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
+               wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason,
+               ${threadBaseBranchFragment(sql)} as base_branch
                ${publicationColumns}
                ${authorColumns}
         from job ${authorJoin}

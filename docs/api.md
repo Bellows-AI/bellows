@@ -11,6 +11,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Liveness and readiness probes | `server/src/routes/health.ts` | `server/test/routes.health.test.ts` |
 | Release version (`/api/version`, open) | `server/src/routes/version.ts` | `server/test/routes.version.test.ts` |
 | Skill discovery (`GET /api/skills`; never the instructions) | `server/src/routes/skills.ts` | `server/test/skills.test.ts` |
+| `baseBranch` on `POST /api/jobs` (`BAD_BASE_BRANCH` 400; `UNKNOWN_BASE_BRANCH` 422 only on a confirmed 404, an unconfirmed read accepts) | `server/src/routes/jobs/job-handlers-worker.ts` | `server/test/routes.jobs-base-branch.test.ts` |
 | Dashboard payload (`/api/stats`) | `server/src/routes/stats.ts`, `core/src/types.ts` (`StatsUsage`) | `server/test/routes.stats.get.test.ts`, `server/test/routes.stats.scope.test.ts` |
 | OTLP ingest, `/api/sessions/branch` | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |
 | Prometheus scrape (`GET /api/metrics`, worker credential only) | `server/src/routes/prometheus.ts` | `server/test/routes.prometheus.test.ts` |
