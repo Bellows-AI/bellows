@@ -220,7 +220,7 @@ function workerMethods(
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
  */
-export { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
+export { INTERRUPTION_BUDGET, INTERRUPTION_WINDOW_MS, LEASE_EXPIRED_REASON } from './job-store-actions.js';
 export { CLAIM_PREPARE_SECONDS } from './job-store-claim.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {

@@ -893,6 +893,8 @@ export async function suspendJob(
  */
 export const INTERRUPTION_BUDGET = 5;
 
+/** Only interruptions inside this trailing window count against `INTERRUPTION_BUDGET`. */
+export const INTERRUPTION_WINDOW_MS = 3_600_000;
 /**
  * How long a blocked hand-back defers the next claim (BEL-160): the claim could not start because a
  * leftover of an earlier claim is still terminating, so an immediate re-claim would only meet it again.
@@ -902,11 +904,14 @@ export const BLOCKED_RETRY_SECONDS = 60;
 /**
  * Whether the row's interruption budget is spent. A blocked hand-back waits on a leftover rather than
  * losing an attempt to the infrastructure, so it is outside the count; a requirement hand-back waits on a
- * person, so it is too.
+ * person, so it is too. Only interruptions inside `INTERRUPTION_WINDOW_MS` count; an `at` that does not parse counts as spent.
+ * The cutoff is bound per call from the process clock that wrote each `at`, never DB now().
  */
 export const interruptionsSpent = (q: Sql | TransactionSql): Fragment => q`(
     select count(*) from jsonb_array_elements(interruptions) as spent
     where spent ->> 'blocked' is distinct from 'true' and spent ->> 'requirement' is distinct from 'true'
+      and case when spent ->> 'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+          then (spent ->> 'at')::timestamptz > ${new Date(Date.now() - INTERRUPTION_WINDOW_MS)} else true end
 ) >= ${INTERRUPTION_BUDGET}`;
 
 /** The interruption the next claim records for an attempt whose lease expired (issue #822). */
