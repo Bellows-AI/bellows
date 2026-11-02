@@ -173,13 +173,11 @@ describe('RepositoryConfigDetail', () => {
         expect(render(<RepositoryConfigDetail repo={null} />)).toBe('');
     });
 
-    it('heads with the chosen repository and states the shared scope truth (issue 180)', () => {
+    it('heads with the chosen repository and leaves the scope truth to the editor below (rendered once there)', () => {
         const html = render(<RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} />);
         expect(html).toContain('Selected repository: acme/web');
-        expect(html).toContain('Repository · acme/web');
-        expect(html).toContain('Applies to every task using acme/web in the organization.');
-        expect(html).toContain('Any member can edit.');
-        expect(html).toContain('organization &lt; workspace &lt; repository');
+        expect(html).not.toContain('scope-context');
+        expect(html).not.toContain('rightmost scope wins');
     });
 
     it('carries no checkout facts — nothing is checked out on the board', () => {

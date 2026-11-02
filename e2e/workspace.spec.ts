@@ -121,7 +121,11 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
     // editor's footer share the narrowed width.
     await page.goto('/settings/repos');
     await page.getByRole('button', { name: 'Configure' }).click();
-    await expect(page.getByRole('heading', { name: /^Selected repository:/ })).toBeVisible({ timeout: 60_000 });
+    const detailHeading = page.getByRole('heading', { name: /^Selected repository:/ });
+    await expect(detailHeading).toBeVisible({ timeout: 60_000 });
+    await expect(detailHeading).toBeFocused();
+    // Precedence shows once, inside the editor head below the heading.
+    await expect(page.getByText(/rightmost scope wins/)).toHaveCount(1);
     expect(await wrapped(), '/settings/repos').toEqual([]);
     await page.screenshot({ path: `${SHOTS}/settings-repos-1024.png`, fullPage: true });
 });

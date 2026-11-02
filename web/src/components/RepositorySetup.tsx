@@ -1,7 +1,6 @@
 import type { ReactNode, RefObject } from 'react';
 import type { InstallationRepo } from '../api/useRepos.js';
 import { Icon } from './Icon.js';
-import { ConfigurationScope } from './ConfigurationScope.js';
 import { commitDate } from '../format.js';
 import { NOT_AVAILABLE, repoKey } from './repository-setup.js';
 
@@ -198,8 +197,8 @@ export interface RepositoryConfigDetailProps {
 
 /**
  * The selected repository's environment detail, below the table. The scope truth — what it applies
- * to, who may edit it, the precedence order — is the shared ConfigurationScope (issue 180); the
- * mounted editor renders as children, so a save's echoed rows and its confirmation survive.
+ * to, who may edit it, the precedence order — renders in the mounted editor's head (the shared
+ * ConfigurationScope, issue 180), which arrives as children, so a save's echoed rows and its confirmation survive.
  */
 export function RepositoryConfigDetail({ repo, headingRef, children }: RepositoryConfigDetailProps) {
     if (!repo) return null;
@@ -208,7 +207,6 @@ export function RepositoryConfigDetail({ repo, headingRef, children }: Repositor
             <h2 ref={headingRef} tabIndex={-1}>
                 Selected repository: {repoKey(repo)}
             </h2>
-            <ConfigurationScope scope="repository" repository={repo} />
             {children}
         </section>
     );

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Dispatch, KeyboardEvent as ReactKeyboardEvent, SetStateAction } from 'react';
 import type { EnvSaveResult } from '../api/useEnv.js';
+import type { ConfigurationScopeProps } from '../components/ConfigurationScope.js';
 import { SettingsSaveActions } from '../components/SettingsSaveActions.js';
 import { useGuardedDraft } from '../components/UnsavedChangesDialog.js';
 import {
@@ -15,7 +16,13 @@ import {
 } from './env-draft.js';
 import type { EnvRowState } from './env-draft.js';
 import { parseEnvRaw, serializeEnv } from './env-raw.js';
-import { EnvPanelBanner, EnvTabsBar, SecretsTabPanel, VariablesTabPanel } from './env-vars-panel-parts.js';
+import {
+    EnvPanelBanner,
+    EnvTabsBar,
+    EnvToolbarActions,
+    SecretsTabPanel,
+    VariablesTabPanel,
+} from './env-vars-panel-parts.js';
 import type { TabKey } from './env-vars-panel-parts.js';
 
 /**
@@ -31,8 +38,8 @@ export interface EnvVarDraft {
 
 export interface EnvVarsPanelProps {
     title: string;
-    /** One sentence on what this scope is for; rendered under the heading. */
-    hint: string;
+    /** Which scope this editor writes: its impact, editability and precedence render in the head. */
+    scope: ConfigurationScopeProps;
     initialVars: EnvVarDraft[];
     /** Resolves to the scope's stored rows on success — the panel adopts them as its new draft. */
     onSave: (vars: { name: string; value: string | null; isSecret: boolean }[]) => Promise<EnvSaveResult>;
@@ -347,7 +354,7 @@ function useEnvTabs() {
  */
 export function EnvVarsPanel({
     title,
-    hint,
+    scope,
     initialVars,
     onSave,
     disabled = false,
@@ -400,7 +407,7 @@ export function EnvVarsPanel({
         <section className="panel">
             <EnvPanelBanner
                 title={title}
-                hint={hint}
+                scope={scope}
                 scopeMsg={scopeMsg}
                 saveError={saveState.saveError}
                 saveErrorRef={(el) => {
@@ -409,14 +416,24 @@ export function EnvVarsPanel({
                 statusText={saveState.statusText}
             />
 
-            <EnvTabsBar
-                uid={uid}
-                tab={tabs.tab}
-                rows={rowsState.rows}
-                tabRefs={tabs.tabRefs}
-                onSelect={tabs.selectTab}
-                onKeyDown={tabs.onTabKeyDown}
-            />
+            <div className="env-toolbar">
+                <EnvTabsBar
+                    uid={uid}
+                    tab={tabs.tab}
+                    rows={rowsState.rows}
+                    tabRefs={tabs.tabRefs}
+                    onSelect={tabs.selectTab}
+                    onKeyDown={tabs.onTabKeyDown}
+                />
+                <EnvToolbarActions
+                    uid={uid}
+                    tab={tabs.tab}
+                    locked={locked}
+                    onAdd={() => rowsState.addRow(tabs.tab === 'secrets')}
+                    addRefs={rowsState.addRefs}
+                    advanced={advanced}
+                />
+            </div>
 
             <VariablesTabPanel
                 uid={uid}
@@ -424,22 +441,14 @@ export function EnvVarsPanel({
                 rows={rowsState.rows}
                 errors={errors}
                 locked={locked}
-                onAdd={() => rowsState.addRow(false)}
-                addButtonRef={(el) => {
-                    rowsState.addRefs.current.variables = el;
-                }}
                 advancedOpen={advanced.advancedOpen}
                 advancedText={advanced.advancedText}
                 advancedErrors={advanced.advancedErrors}
-                onToggleAdvanced={() => (advanced.advancedOpen ? advanced.closeAdvanced() : advanced.openAdvanced())}
                 onAdvancedTextChange={advanced.setAdvancedText}
                 onApplyAdvanced={advanced.applyAdvanced}
                 onCancelAdvanced={advanced.closeAdvanced}
                 advancedContainerRef={(el) => {
                     advanced.advancedRef.current = el;
-                }}
-                advancedToggleRef={(el) => {
-                    advanced.advancedToggleRef.current = el;
                 }}
                 onUpdate={rowsState.updateRow}
                 onRemove={rowsState.removeRow}
@@ -454,10 +463,6 @@ export function EnvVarsPanel({
                 rows={rowsState.rows}
                 errors={errors}
                 locked={locked}
-                onAdd={() => rowsState.addRow(true)}
-                addButtonRef={(el) => {
-                    rowsState.addRefs.current.secrets = el;
-                }}
                 onUpdate={rowsState.updateRow}
                 onRemove={rowsState.removeRow}
                 onUndoRemove={rowsState.undoRemove}

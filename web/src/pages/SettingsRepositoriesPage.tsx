@@ -50,7 +50,7 @@ function ConfiguredRepoEnv({
         <EnvVarsPanel
             key={configured}
             title={configured}
-            hint=""
+            scope={{ scope: 'repository', repository: { owner, name } }}
             initialVars={scope?.vars ?? []}
             onSave={(vars) => env.saveRepo({ owner, name }, vars)}
             draftId={`repo:${configured}`}

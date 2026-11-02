@@ -21,7 +21,7 @@ describe('ConfigurationScope', () => {
     it('states the workspace scope: only the current member, only that member edits', () => {
         const html = renderToStaticMarkup(<ConfigurationScope scope="workspace" />);
         expect(html).toContain('My workspace');
-        expect(html).toContain('Applies only to tasks the current member starts.');
+        expect(html).toContain('Applies to tasks you start.');
         expect(html).toContain('Edited only by that member.');
         expect(html).toContain('a repository value with the same name overrides them');
     });
@@ -30,7 +30,7 @@ describe('ConfigurationScope', () => {
         const html = renderToStaticMarkup(
             <ConfigurationScope scope="repository" repository={{ owner: 'acme', name: 'web' }} />
         );
-        expect(html).toContain('Repository · acme/web');
+        expect(html).toContain('acme/web');
         expect(html).toContain('Applies to every task using acme/web in the organization.');
         expect(html).toContain('Any member can edit.');
         expect(html).toContain('nothing more specific remains');
@@ -45,6 +45,20 @@ describe('ConfigurationScope', () => {
             expect(renderToStaticMarkup(props)).toContain(
                 'Environment values resolve organization &lt; workspace &lt; repository'
             );
+        }
+    });
+
+    it('states precedence once as Organization → My workspace → Repository, with the long form in a disclosure', () => {
+        for (const props of [
+            <ConfigurationScope key="org" scope="organization" />,
+            <ConfigurationScope key="ws" scope="workspace" />,
+            <ConfigurationScope key="repo" scope="repository" repository={{ owner: 'acme', name: 'web' }} />,
+        ]) {
+            const html = renderToStaticMarkup(props);
+            expect(html.match(/rightmost scope wins/g)).toHaveLength(1);
+            expect(html).toContain('Organization → My workspace → Repository.');
+            expect(html).toMatch(/<details[^>]*><summary>How precedence works<\/summary>[\s\S]*resolve organization/);
+            expect(html).not.toContain('scope-context-label');
         }
     });
 
