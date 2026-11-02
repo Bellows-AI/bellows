@@ -356,18 +356,12 @@
         background: var(--lamp-wait);
     }
 
-    /* The legend's series toggles: bare buttons wearing the old swatch, dimmed when the
-       series is off — a state the swatch's opacity carries without color alone. */
+    /* The legend's series toggles: tertiary buttons, dimmed when the series is off — a state
+       the swatch's opacity carries without color alone. */
     .legend-button {
         align-items: center;
-        background: none;
-        border: 0;
-        color: var(--ink);
-        cursor: pointer;
         display: inline-flex;
-        font: inherit;
         gap: 6px;
-        padding: 0;
     }
 
     .legend-button[aria-pressed='false'] {
@@ -376,16 +370,6 @@
 
     .legend-button[aria-pressed='false'] .swatch {
         opacity: 0.35;
-    }
-
-    /* The swatches' old inter-item spacing, now between the buttons that carry them. */
-    .legend-button:not(:first-child) {
-        margin-left: 10px;
-    }
-
-    /* A frameless toggle: the swatch's opacity is its state, so hover paints no fill. */
-    .legend-button:hover {
-        background: none;
     }
 
     /* The chart's one-line caption and the calculation disclosure that follows it. */
