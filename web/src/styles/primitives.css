@@ -852,8 +852,8 @@
     }
 
     .sidenav-sublink.is-active {
-        background: var(--surface-raised);
-        color: var(--accent);
+        background: var(--surface-strong);
+        color: var(--ink);
     }
 
     /* The recent tasks, nested under the Tasks item. A command is long; the label clips and the full
@@ -933,7 +933,8 @@
     }
 
     .sidenav-task.is-active {
-        color: var(--accent);
+        background: var(--surface-strong);
+        color: var(--ink);
     }
 
     /* The status dot before a task's name: the task's state in one painted pixel, the legend being the
@@ -1021,7 +1022,8 @@
     }
 
     .sidenav-newtask.is-active {
-        color: var(--accent);
+        background: var(--surface-strong);
+        color: var(--ink);
     }
 
     /* Below this the two columns stop fitting side by side: 224 of nav leaves under 680 for a grid
