@@ -74,4 +74,5 @@ Over the 60-line cap on purpose: four independent surfaces (connection store, Ji
   `redactedResult`, `driver/test/supervisor.test.ts`).
 - A supervised step's token rides its step request across the mailbox volume, not memory.
 - The token reaches every site the Atlassian account can reach; there is no in-place edit and no per-task picker in the UI.
-- Only the pair one claim back is pending: after two takeovers before the relay, the oldest pair is refused.
+- Only the pair one claim back is pending: after two takeovers before the relay, the oldest pair is refused
+  (`server/test-db/github-credential.test.ts`).
