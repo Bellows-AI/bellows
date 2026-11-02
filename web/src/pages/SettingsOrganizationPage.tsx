@@ -1,6 +1,7 @@
 import { roleLabel } from '../api/useSession.js';
 import { Icon } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { StateNote } from '../components/StateNote.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { MembersSection } from '../panels/MembersSection.js';
 import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
@@ -45,7 +46,7 @@ export function SettingsOrganizationPage() {
 
             <NotificationSubscriptionsSection session={session} scope="org" />
 
-            {env.error ? <p className="status">{env.error}</p> : null}
+            {env.error ? <StateNote state="error">{env.error}</StateNote> : null}
             {/*
                 The editor mounts only on DATA, not merely when the request settles: its draft is
                 seeded from initialVars in a state initializer, so mounting it early would freeze
@@ -54,7 +55,7 @@ export function SettingsOrganizationPage() {
                 posture; a retry is the page's next full render.
             */}
             {env.loading && !env.data ? (
-                <p className="status">Loading environment…</p>
+                <StateNote state="loading">Loading environment…</StateNote>
             ) : env.data ? (
                 <EnvVarsPanel
                     title="Core (organization)"
