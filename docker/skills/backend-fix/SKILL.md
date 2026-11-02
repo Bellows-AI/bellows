@@ -105,7 +105,7 @@ No coverage at all → **Step 4**. Some coverage → **Step 5**.
 
 ## Step 4 — Build the baseline harness (no asking)
 
-Cut the ticket branch first (Step 5.1 logic) so the harness commits land on it, then:
+Commit on the task branch the checkout is on (Step 5.1), then:
 
 1. **Setup helpers** — functions that build the state a test needs, through the application's own
    model or API layer rather than raw inserts. Reuse the project's existing helpers; add to them
@@ -125,13 +125,10 @@ folds the bug's permanent test.
 
 ### 5.1 Branch
 
-Derive the base from the ticket's target version: a patch release means the corresponding hotfix
-branch, anything else means the project's development branch. Several candidate hotfix branches →
-ask.
-
-Work in a dedicated worktree if the project supports it (`git worktree add`, or the repo's own
-script) so several tickets can be in flight at once without sharing a checkout, a database or a
-port block.
+Stay on the task branch the checkout is on: commit and push there, never cut, check out or switch to another
+branch, and never `git worktree add` — the driver checkpoints and publishes only this tree. The ticket's target
+version only picks the pull request's base: a patch release means the corresponding hotfix branch, anything else
+the project's development branch. Several candidate hotfix branches → ask.
 
 ### 5.2 Identify the state the bug needs
 

@@ -1330,6 +1330,25 @@ describe('the executor PR boundary', () => {
         }
     });
 
+    it('no baked skill tells the agent to cut a branch or add a worktree', () => {
+        const skills = [
+            GITHUB_SKILL,
+            'docker/skills/gates/SKILL.md',
+            'docker/skills/backend-fix/SKILL.md',
+            'docker/skills/pr-land/SKILL.md',
+            'docker/opencode-executor/opencode-home/AGENTS.md',
+        ];
+        for (const skill of skills) {
+            const text = read(skill);
+            expect(text).not.toMatch(/cut the ticket branch/i);
+            expect(text).not.toMatch(/work in a dedicated worktree/i);
+            expect(text).not.toMatch(/(?<!never `)git worktree add/i);
+        }
+        expect(read('docker/skills/backend-fix/SKILL.md')).toMatch(
+            /Stay on the task branch the checkout is on.*never `git worktree add`/s
+        );
+    });
+
     it('the backend-fix skill is an optional playbook: suggested order, policy stays the board’s (issue #550)', () => {
         const text = read('docker/skills/backend-fix/SKILL.md');
         expect(text).toContain('optional playbook');
