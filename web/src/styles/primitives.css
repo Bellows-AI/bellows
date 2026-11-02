@@ -435,7 +435,7 @@
         display: flex;
         flex-direction: column;
         gap: 20px;
-        max-width: 1400px;
+        max-width: var(--page-dense);
         min-width: 0;
     }
 

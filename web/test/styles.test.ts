@@ -384,10 +384,24 @@ describe('the stylesheet', () => {
 });
 
 describe('the stylesheet — sizing and motion (#189)', () => {
+    it('takes page widths from width tokens', () => {
+        const css = stripComments(shippedCss());
+        const body = (selector: string) => rules(css).find(([prelude]) => prelude === selector)?.[1] ?? '';
+        expect(body('.page')).toMatch(/max-width:\s*var\(--page-dense\)/);
+        expect(body('.settings-content')).toMatch(/max-width:\s*var\(--page-standard\)/);
+        expect(body('.composer-surface')).toMatch(/max-width:\s*var\(--page-form\)/);
+        expect(body('.composer-heading')).toMatch(/max-width:\s*var\(--page-form\)/);
+        const literal = [...stripComments(shippedCss()).matchAll(/^\s*max-width:\s*(\d+)px/gm)].filter(
+            (m) => Number(m[1]) >= 600
+        );
+        expect(literal.map((m) => m[0])).toEqual([]);
+    });
+
     it('gives the settings column room for a table row and lays an icon button on one line', () => {
         const css = stripComments(shippedCss());
         const body = (selector: string) => rules(css).find(([prelude]) => prelude === selector)?.[1] ?? '';
-        expect(Number(body('.settings-content').match(/max-width:\s*(\d+)px/)?.[1])).toBeGreaterThanOrEqual(1040);
+        const token = body('.settings-content').match(/max-width:\s*var\((--page-[a-z]+)\)/)?.[1] ?? '';
+        expect(Number(css.match(new RegExp(`${token}:\\s*(\\d+)px`))?.[1])).toBeGreaterThanOrEqual(1040);
         expect(body('.settings-content button:has(> .icon)')).toMatch(/display:\s*inline-flex/);
     });
 
