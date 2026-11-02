@@ -1,13 +1,15 @@
-import { cleanup, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { confirmLabel, confirmTitle } from '../src/panels/org-executor-confirm.js';
 import {
     ALL_SUSPENDED_NOTE,
+    MAKE_DEFAULT_LABEL,
     REMOVE_LABEL,
     RESUME_LABEL,
     SUSPEND_LABEL,
     SUSPENDED_LABEL,
+    WorkspaceExecutorsPanel,
 } from '../src/panels/WorkspaceExecutorsPanel.js';
 import { ADD_LABEL } from '../src/workspace/executors.js';
 import { renderApp, stubFetch } from './dom.js';
@@ -30,6 +32,12 @@ const orgRow = async (name: string) =>
         name: new RegExp(name),
     });
 
+/** Open "Actions for <name>" and pick one entry: the personal rows keep only Edit inline, like the Organization rows. */
+async function personalAction(user: ReturnType<typeof userEvent.setup>, name: string, label: string) {
+    await user.click(within(await personalRow(name)).getByRole('button', { name: `Actions for ${name}` }));
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: label }));
+}
+
 /** The page as a fresh visit sees it: everything unmounted, then mounted again over the same board. */
 function reload() {
     cleanup();
@@ -45,7 +53,7 @@ describe('Remove on a personal profile', () => {
         const user = userEvent.setup();
         renderApp('/settings/executors');
 
-        await user.click(within(await personalRow('Scratch')).getByRole('button', { name: REMOVE_LABEL }));
+        await personalAction(user, 'Scratch', REMOVE_LABEL);
         const confirm = await screen.findByRole('dialog');
         within(confirm).getByRole('heading', { name: confirmTitle({ action: 'remove', name: 'Scratch' }) });
         expect(confirm.textContent).toMatch(/personal executor/);
@@ -59,7 +67,7 @@ describe('Remove on a personal profile', () => {
         await personalRow('Scratch');
         expect(removals()).toEqual([]);
 
-        await user.click(within(await personalRow('Scratch')).getByRole('button', { name: REMOVE_LABEL }));
+        await personalAction(user, 'Scratch', REMOVE_LABEL);
         const again = await screen.findByRole('dialog');
         await user.click(
             within(again).getByRole('button', { name: confirmLabel({ action: 'remove', name: 'Scratch' }) })
@@ -75,15 +83,82 @@ describe('Remove on a personal profile', () => {
     });
 });
 
+describe('a personal row’s actions', () => {
+    it('keeps Edit inline; Make default, Suspend and Remove sit in "Actions for <name>"', async () => {
+        stubFetch(boardHandler(settingsBoard({ executors: [personalExecutor('Alpha'), personalExecutor('Beta')] })));
+        const user = userEvent.setup();
+        renderApp('/settings/executors');
+        const row = await personalRow('Beta');
+        within(row).getByRole('button', { name: 'Edit' });
+        for (const label of [MAKE_DEFAULT_LABEL, SUSPEND_LABEL, REMOVE_LABEL]) {
+            expect(within(row).queryByRole('button', { name: label })).toBeNull();
+        }
+        await user.click(within(row).getByRole('button', { name: 'Actions for Beta' }));
+        const menu = await screen.findByRole('menu');
+        for (const label of [MAKE_DEFAULT_LABEL, SUSPEND_LABEL, REMOVE_LABEL]) {
+            within(menu).getByRole('menuitem', { name: label });
+        }
+    });
+
+    it('offers no Make default on the row the default names, and Resume instead of Suspend once suspended', async () => {
+        const board = settingsBoard({ executors: [personalExecutor('Alpha'), personalExecutor('Beta')] });
+        board.executors[1]!.suspended = true;
+        stubFetch(boardHandler(board));
+        const user = userEvent.setup();
+        renderApp('/settings/executors');
+        await user.click(within(await personalRow('Beta')).getByRole('button', { name: 'Actions for Beta' }));
+        const menu = await screen.findByRole('menu');
+        expect(within(menu).queryByRole('menuitem', { name: MAKE_DEFAULT_LABEL })).toBeNull();
+        within(menu).getByRole('menuitem', { name: RESUME_LABEL });
+        expect(within(menu).queryByRole('menuitem', { name: SUSPEND_LABEL })).toBeNull();
+        await user.keyboard('{Escape}');
+        // Alpha is the resolved default (the first active row), so it cannot be made the default again.
+        await user.click(within(await personalRow('Alpha')).getByRole('button', { name: 'Actions for Alpha' }));
+        expect(
+            within(await screen.findByRole('menu')).queryByRole('menuitem', { name: MAKE_DEFAULT_LABEL })
+        ).toBeNull();
+    });
+});
+
+describe('a personal row while a save is in flight', () => {
+    it('disables Edit and the overflow trigger, so Make default cannot be picked', () => {
+        const noop = () => {};
+        const executors = ['main', 'oc'].map((name) => ({
+            id: name,
+            name,
+            suspended: false,
+            type: 'claude-code',
+            createdAt: '2026-09-01T00:00:00.000Z',
+            gateFixRounds: 3,
+        }));
+        render(
+            <WorkspaceExecutorsPanel
+                executors={executors}
+                defaultExecutor={{ scope: 'user', name: 'main' }}
+                onAdd={noop}
+                onEdit={noop}
+                onMakeDefault={noop}
+                onSuspend={noop}
+                onRemove={noop}
+                saving
+            />
+        );
+        const row = screen.getByRole('row', { name: /^oc/ });
+        expect((within(row).getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((within(row).getByRole('button', { name: 'Actions for oc' }) as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByRole('menuitem', { name: MAKE_DEFAULT_LABEL })).toBeNull();
+    });
+});
+
 describe('Suspend', () => {
     it('says so when the last active personal profile is suspended, and Resume clears it', async () => {
         stubFetch(boardHandler(settingsBoard({ executors: [personalExecutor('Solo')] })));
         const user = userEvent.setup();
         renderApp('/settings/executors');
 
-        await user.click(within(await personalRow('Solo')).getByRole('button', { name: SUSPEND_LABEL }));
+        await personalAction(user, 'Solo', SUSPEND_LABEL);
         await screen.findByText(ALL_SUSPENDED_NOTE);
-        await user.click(within(await personalRow('Solo')).getByRole('button', { name: RESUME_LABEL }));
+        await personalAction(user, 'Solo', RESUME_LABEL);
         await waitFor(() => expect(screen.queryByText(ALL_SUSPENDED_NOTE)).toBeNull());
     });
 

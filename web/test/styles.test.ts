@@ -196,7 +196,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
     'styles/regions/composer.css': [
         '.composer-start button',
         '.composer-param-input',
-        '.composer-help-trigger',
+        '.composer-send',
         '.composer-notices-dismiss',
     ],
     'styles/regions/task-detail.css': [
@@ -384,6 +384,13 @@ describe('the stylesheet', () => {
 });
 
 describe('the stylesheet — sizing and motion (#189)', () => {
+    it('gives the settings column room for a table row and lays an icon button on one line', () => {
+        const css = stripComments(shippedCss());
+        const body = (selector: string) => rules(css).find(([prelude]) => prelude === selector)?.[1] ?? '';
+        expect(Number(body('.settings-content').match(/max-width:\s*(\d+)px/)?.[1])).toBeGreaterThanOrEqual(1040);
+        expect(body('.settings-content button:has(> .icon)')).toMatch(/display:\s*inline-flex/);
+    });
+
     it('keeps every font size at or above the 12px floor (#189)', () => {
         // Decision-bearing text never renders under 12px; buttons, inputs and tabs carry 14px
         // through `font: inherit`. The chart tick is the one documented exception: the
@@ -551,6 +558,18 @@ describe('the stylesheet — sizing and motion (#189)', () => {
     it('never transitions, so a theme flip cannot pass through an intermediate palette', () => {
         const css = stripComments(shippedCss());
         expect(css.match(/transition\s*:[^;{}]*/gi) ?? []).toEqual([]);
+    });
+
+    it("the compact table resets the data table's mono cells to the inherited face", () => {
+        const css = stripComments(shippedCss());
+        const mono = css.indexOf('table.data td:not(:first-child)');
+        expect(mono, 'the data table sets mono on its non-first cells').toBeGreaterThanOrEqual(0);
+        const reset = rules(css).find(
+            ([prelude, body]) =>
+                prelude.includes('.data-compact') && /\btd\b/.test(prelude) && /font-family\s*:\s*inherit/.test(body)
+        );
+        expect(reset, 'a .data-compact td rule sets font-family: inherit').toBeDefined();
+        expect(css.indexOf(reset![0]), 'the reset follows the mono rule').toBeGreaterThan(mono);
     });
 });
 

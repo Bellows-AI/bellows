@@ -1,5 +1,4 @@
 import { roleLabel } from '../api/useSession.js';
-import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
@@ -48,8 +47,6 @@ export function SettingsOrganizationPage() {
 
             <NotificationSubscriptionsSection session={session} scope="org" />
 
-            <ConfigurationScope scope="organization" />
-
             {env.error ? <p className="status">{env.error}</p> : null}
             {/*
                 The editor mounts only on DATA, not merely when the request settles: its draft is
@@ -63,7 +60,7 @@ export function SettingsOrganizationPage() {
             ) : env.data ? (
                 <EnvVarsPanel
                     title="Core (organization)"
-                    hint="Injected into every runner in this deployment. The place for shared credentials; GitHub is the App’s, never a variable here."
+                    scope={{ scope: 'organization' }}
                     initialVars={env.data.org}
                     onSave={env.saveOrg}
                     draftId="org"

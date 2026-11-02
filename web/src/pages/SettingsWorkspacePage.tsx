@@ -1,4 +1,3 @@
-import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
@@ -15,7 +14,7 @@ function WorkspaceEnvEditor({ env }: { env: UseEnv }) {
     return (
         <EnvVarsPanel
             title="My workspace"
-            hint="Your own defaults, on every task you queue."
+            scope={{ scope: 'workspace' }}
             initialVars={env.data.workspace}
             onSave={env.saveWorkspace}
             draftId="workspace"
@@ -37,8 +36,6 @@ export function SettingsWorkspacePage() {
             <DraftReturnBanner />
 
             <NotificationSubscriptionsSection session={session} scope="workspace" />
-
-            <ConfigurationScope scope="workspace" />
 
             {env.error ? <p className="status">{env.error}</p> : null}
             {/* Same data gate as the organization page: the editor mounts only when the scope's

@@ -28,12 +28,8 @@ const buttonTag = (html: string, label: string) => {
 };
 
 describe('SettingsSaveActions', () => {
-    it('offers Save and Cancel, both disabled, and no indicator while clean', () => {
-        const html = actions();
-        expect(html).toContain('class="settings-actions"');
-        expect(buttonTag(html, 'Save changes')).toContain('disabled');
-        expect(buttonTag(html, 'Cancel')).toContain('disabled');
-        expect(html).not.toContain(UNSAVED_CHANGES_LABEL);
+    it('renders no save bar while clean', () => {
+        expect(actions()).toBe('');
     });
 
     it('shows Unsaved changes and enables Cancel and Save while dirty and valid', () => {
@@ -52,6 +48,12 @@ describe('SettingsSaveActions', () => {
 
     it('renames Save and locks both while a save runs', () => {
         const html = actions({ dirty: true, canSave: false, saving: true });
+        expect(buttonTag(html, 'Saving changes…')).toContain('disabled');
+        expect(buttonTag(html, 'Cancel')).toContain('disabled');
+    });
+
+    it('keeps the bar mounted while a save runs even when the draft is no longer dirty', () => {
+        const html = actions({ dirty: false, canSave: false, saving: true });
         expect(buttonTag(html, 'Saving changes…')).toContain('disabled');
         expect(buttonTag(html, 'Cancel')).toContain('disabled');
     });

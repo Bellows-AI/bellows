@@ -1,13 +1,5 @@
 import type { ReactNode } from 'react';
-import {
-    Listbox,
-    ListboxButton,
-    ListboxOption,
-    ListboxOptions,
-    Popover,
-    PopoverButton,
-    PopoverPanel,
-} from '@headlessui/react';
+import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
 import { useDownwardAnchor } from '../anchor.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
@@ -25,12 +17,14 @@ import {
     type StartBlocker,
     blockerTone,
     commandCount,
+    commandNearLimit,
     commandTooLong,
     effectiveWorkflows,
     markTouched,
     paramValueMatches,
     repoReadiness,
     startBlocker,
+    submitShortcutHint,
     touchAll,
 } from '../task-composer.js';
 import { type ComposerDraft, type ComposerWorkflowOption, useComposerDraft } from '../use-composer-draft.js';
@@ -59,31 +53,24 @@ type Update = (patch: Partial<ComposerDraftInput>) => void;
 const REPO_HELP = 'The codebase the task runs in. The agent works on a copy of this repository.';
 const EXECUTOR_HELP = 'The configured agent environment that runs the task. Its type decides which runner is used.';
 
-/**
- * The `?` beside a chip (issue 574): a Headless UI popover, so mouse, touch and keyboard all open
- * it and Escape or an outside press closes it without touching the selection. The trigger's name
- * says which field it explains; the panel is downward-anchored like the listboxes.
- */
-function ComposerHelp({ field, children }: { field: string; children: ReactNode }) {
-    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
+/** The muted note atop a chip's open listbox: what the field is, said where the choice is made. */
+function ComposerNote({ children }: { children: ReactNode }) {
     return (
-        <Popover className="composer-help">
-            <PopoverButton ref={setReference} className="composer-help-trigger" aria-label={`About ${field}`}>
-                <span aria-hidden="true">?</span>
-            </PopoverButton>
-            <PopoverPanel ref={setFloating} style={floatingStyles} portal className="popover composer-help-panel">
-                {children}
-            </PopoverPanel>
-        </Popover>
+        <p className="composer-note" role="presentation">
+            {children}
+        </p>
     );
 }
+
+/** The repository chip's short value: the name, with the owner left to the title and the listbox. */
+const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf('/') + 1);
 
 /** The empty workflow option: objective mode, the prompt runs as written. */
 const NO_WORKFLOW_LABEL = 'No workflow';
 
 /**
- * The context chips (issue 571): Repository, Executor and Workflow as compact triggers in one
- * wrapping row under the prompt, each showing its glyph and selected value. The accessible name
+ * The context chips (issue 571): Repository, Executor and Workflow as compact borderless triggers
+ * in the surface's toolbar, each showing its glyph and selected value. The accessible name
  * is the field and that value (label in name), the full value also its title and its menu. A missing executor is a
  * blocker, said by the readiness banner; its trigger only wears the stop lamp's edge.
  */
@@ -119,7 +106,7 @@ function ComposerContextRow({
                         title={repoLabel}
                     >
                         <Icon name="repo" />
-                        <span className="composer-context-value">{repoLabel}</span>
+                        <span className="composer-context-value">{repo === '' ? repoLabel : shortRepo(repo)}</span>
                     </ListboxButton>
                     <ListboxOptions
                         ref={repoAnchor.setFloating}
@@ -127,6 +114,7 @@ function ComposerContextRow({
                         portal
                         className="popover"
                     >
+                        <ComposerNote>{REPO_HELP}</ComposerNote>
                         {repos.map(({ owner, name }) => {
                             const full = `${owner}/${name}`;
                             return (
@@ -137,7 +125,6 @@ function ComposerContextRow({
                         })}
                     </ListboxOptions>
                 </Listbox>
-                <ComposerHelp field="Repository">{REPO_HELP}</ComposerHelp>
             </div>
             <div className="composer-context-item">
                 <Listbox
@@ -163,6 +150,7 @@ function ComposerContextRow({
                         portal
                         className="popover"
                     >
+                        <ComposerNote>{EXECUTOR_HELP}</ComposerNote>
                         {executors.map((candidate) => (
                             <ListboxOption
                                 key={executorChoiceId(candidate)}
@@ -175,7 +163,6 @@ function ComposerContextRow({
                         ))}
                     </ListboxOptions>
                 </Listbox>
-                <ComposerHelp field="Executor">{EXECUTOR_HELP}</ComposerHelp>
             </div>
             <ComposerWorkflowTrigger workflows={workflows} workflow={state.workflow} update={update} />
         </div>
@@ -334,7 +321,7 @@ function ReadinessBanner({ blocker, workflow }: { blocker: StartBlocker | null; 
 }
 
 /**
- * The launch actions at the chips' far end: Start and its shortcut, and quiet
+ * The launch actions at the toolbar's far end: the round arrow Start and its shortcut, and quiet
  * status text for an empty prompt or a launch in flight. Start's `aria-describedby` names
  * whichever of that text or the readiness banner is saying why it is dark; a ready launch says
  * nothing — the chips already show what will run.
@@ -352,16 +339,19 @@ function ComposerLaunch({
     const describedBy = tone === 'quiet' ? BLOCKER_ID : tone === null ? undefined : READINESS_ID;
     return (
         <div className="composer-start">
-            <kbd>Ctrl/⌘ + Enter</kbd>
+            <kbd className="composer-hint">
+                {submitShortcutHint(typeof navigator === 'undefined' ? undefined : navigator.platform)}
+            </kbd>
             <button
                 type="button"
-                className="primary"
+                className="primary composer-send"
                 disabled={blocker !== null}
                 aria-busy={sending || undefined}
                 aria-describedby={describedBy}
+                aria-label="Start task"
                 onClick={onStart}
             >
-                {sending ? 'Starting…' : 'Start task'}
+                <Icon name="arrow-up" />
             </button>
             {/* Mounted even when silent — a live region can only announce a change it
                 survives — so the reason Start is dark reaches a screen reader the moment
@@ -520,6 +510,7 @@ export function TaskComposer({
     const readiness = repos === null ? undefined : repoReadiness(state.repo, repos);
 
     const promptTooLong = commandTooLong(state.draft);
+    const nearLimit = commandNearLimit(state.draft);
     const blocker = startBlocker({
         sending: frozen,
         executorMissing: state.executor === '',
@@ -568,21 +559,15 @@ export function TaskComposer({
                     </p>
                 ) : null}
                 <RestoredNotices notices={composer.notices} onDismiss={composer.dismissNotices} />
-                <AttachmentDropZone
-                    className="panel composer-prompt"
-                    accepts={() => limits !== null}
-                    onFiles={files.add}
-                >
-                    <div className="composer-prompt-head">
-                        <label htmlFor={PROMPT_ID}>What should the agent do?</label>
-                    </div>
-                    <p className="composer-helper" id="composer-prompt-helper">
-                        Include the outcome, relevant files or issue, and checks to run.
-                    </p>
+                <h2 className="composer-heading">What should we work on?</h2>
+                <AttachmentDropZone className="composer-surface" accepts={() => limits !== null} onFiles={files.add}>
+                    <label htmlFor={PROMPT_ID} className="composer-visually-hidden">
+                        What should the agent do?
+                    </label>
                     <textarea
                         id={PROMPT_ID}
                         className="field composer-input"
-                        aria-describedby="composer-prompt-helper composer-prompt-count"
+                        aria-describedby={nearLimit ? 'composer-prompt-count' : undefined}
                         aria-invalid={promptTooLong || undefined}
                         placeholder={PROMPT_PLACEHOLDER}
                         value={state.draft}
@@ -590,12 +575,14 @@ export function TaskComposer({
                         {...dropAndPaste}
                         onChange={(e) => update({ draft: e.target.value })}
                     />
-                    <p
-                        className={promptTooLong ? 'composer-counter is-over' : 'composer-counter'}
-                        id="composer-prompt-count"
-                    >
-                        {commandCount(state.draft)}
-                    </p>
+                    {nearLimit ? (
+                        <p
+                            className={promptTooLong ? 'composer-counter is-over' : 'composer-counter'}
+                            id="composer-prompt-count"
+                        >
+                            {commandCount(state.draft)}
+                        </p>
+                    ) : null}
                     <AttachmentChips
                         attachments={files.attachments}
                         onRemove={files.remove}
@@ -603,16 +590,18 @@ export function TaskComposer({
                         locked={frozen}
                     />
                     <div className="composer-bar">
-                        <ComposerContextRow
-                            repos={repos}
-                            executors={executors}
-                            workflows={workflows}
-                            state={state}
-                            update={update}
-                        />
-                        {limits === null ? null : (
-                            <AttachmentPicker limits={limits} onPick={files.add} disabled={frozen} />
-                        )}
+                        <div className="composer-toolbar">
+                            {limits === null ? null : (
+                                <AttachmentPicker limits={limits} onPick={files.add} disabled={frozen} />
+                            )}
+                            <ComposerContextRow
+                                repos={repos}
+                                executors={executors}
+                                workflows={workflows}
+                                state={state}
+                                update={update}
+                            />
+                        </div>
                         <ComposerLaunch blocker={blocker} sending={frozen} onStart={attemptStart} />
                     </div>
                     {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}

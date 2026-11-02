@@ -1,20 +1,22 @@
 import type { DefaultExecutor, WorkspaceExecutor } from '../api/useWorkspace.js';
+import { Icon } from '../components/Icon.js';
+import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
-import { EXECUTOR_GUIDANCE, executorTypeLabel } from '../workspace/executors.js';
+import { ADD_LABEL, executorTypeLabel } from '../workspace/executors.js';
 
 /**
  * One row per configured personal executor — each with the Edit action that reopens the dialog on
  * it, and the Make default action that stores the member's preference naming it (issue 391) — and
- * the empty state that makes "none" a sentence rather than a blank panel. The section's heading
- * and its Add action are the page header's; this panel is the list plus its scope context
- * (issue 183): "My workspace", and the guidance that explains the task-scoped runner choice.
+ * the empty state that makes "none" a sentence rather than a blank panel. The head carries the
+ * scope's own Add action beside "My workspace" (issue 183); the page's one disclosure explains the
+ * task-scoped runner choice. Edit is the row's inline action; the rest sit in its overflow menu.
  */
 
 /** The row action that flags an executor as the default (issue 215, re-cut as a preference by 391). */
 export const MAKE_DEFAULT_LABEL = 'Make default';
 
-/** The row the member's preference resolves to — the composer autoselects it. */
-export const DEFAULT_CAPTION = 'Default — selected on new tasks';
+/** The tag on the row the member's preference resolves to — the composer autoselects it. */
+export const DEFAULT_LABEL = 'Default';
 
 /** The lifecycle actions and status (issue 440), here so the e2e specs assert the strings the DOM renders. */
 export const SUSPENDED_LABEL = 'Suspended';
@@ -27,6 +29,7 @@ export const ALL_SUSPENDED_NOTE = 'Every executor is suspended. Resume one, or s
 export function WorkspaceExecutorsPanel({
     executors,
     defaultExecutor,
+    onAdd,
     onEdit,
     onMakeDefault,
     onSuspend,
@@ -36,29 +39,51 @@ export function WorkspaceExecutorsPanel({
     executors: readonly WorkspaceExecutor[];
     /** The member's resolved default, from the same poll; null when nothing is selectable. */
     defaultExecutor: DefaultExecutor | null;
+    onAdd: () => void;
     onEdit: (name: string) => void;
     onMakeDefault: (name: string) => void;
-    /** Suspends (true) or resumes (false) the row, by id. */
     onSuspend: (id: string, suspended: boolean) => void;
-    /** Opens the removal confirmation for the row; nothing is deleted from the click itself. */
     onRemove: (name: string) => void;
     saving: boolean;
 }) {
+    /** Overflow entries; the destructive Remove sorts last in `RowActions`. A suspended row cannot be a default (issue 440). */
+    const isDefaultRow = (executor: WorkspaceExecutor) =>
+        defaultExecutor !== null && defaultExecutor.scope === 'user' && defaultExecutor.name === executor.name;
+    const overflow = (executor: WorkspaceExecutor): RowAction[] => {
+        return [
+            ...(executor.suspended || isDefaultRow(executor)
+                ? []
+                : [{ label: MAKE_DEFAULT_LABEL, onSelect: () => onMakeDefault(executor.name) }]),
+            {
+                label: executor.suspended ? RESUME_LABEL : SUSPEND_LABEL,
+                onSelect: () => onSuspend(executor.id, !executor.suspended),
+            },
+            { label: REMOVE_LABEL, onSelect: () => onRemove(executor.name), danger: true },
+        ];
+    };
     return (
         <section className="panel">
-            <h2>My workspace</h2>
-            <p className="muted">{EXECUTOR_GUIDANCE}</p>
+            <div className="panel-head">
+                <h2>
+                    My workspace
+                    <span className="count">{executors.length}</span>
+                </h2>
+                <button type="button" className="executor-add" onClick={onAdd}>
+                    <Icon name="plus" />
+                    {ADD_LABEL}
+                </button>
+            </div>
             {executors.length > 0 && executors.every((executor) => executor.suspended) ? (
                 <p className="muted">{ALL_SUSPENDED_NOTE}</p>
             ) : null}
             {executors.length === 0 ? (
                 <p className="muted">
-                    No personal executors configured. Add one, or select an organization executor for a new task.
+                    No personal executors. Add one, or select an organization executor for a new task.
                 </p>
             ) : (
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
                 <section className="table-wrap" tabIndex={0} aria-label="Executors">
-                    <table className="data">
+                    <table className="data data-compact table-cards">
                         <thead>
                             <tr>
                                 <th scope="col">Name</th>
@@ -73,51 +98,37 @@ export function WorkspaceExecutorsPanel({
                         <tbody>
                             {executors.map((executor) => (
                                 <tr key={executor.name}>
-                                    <td>
+                                    <td data-label="Name">
                                         {executor.name}
-                                        {executor.suspended ? <span className="pill">{SUSPENDED_LABEL}</span> : null}
-                                        {defaultExecutor !== null &&
-                                        defaultExecutor.scope === 'user' &&
-                                        defaultExecutor.name === executor.name ? (
-                                            <p className="muted">{DEFAULT_CAPTION}</p>
+                                        {isDefaultRow(executor) || executor.suspended ? (
+                                            <span className="pill-list">
+                                                {isDefaultRow(executor) ? (
+                                                    <span className="pill">{DEFAULT_LABEL}</span>
+                                                ) : null}
+                                                {executor.suspended ? (
+                                                    <span className="pill">{SUSPENDED_LABEL}</span>
+                                                ) : null}
+                                            </span>
                                         ) : null}
                                     </td>
-                                    <td>
+                                    <td data-label="Type">
                                         <span className="pill">{executorTypeLabel(executor.type)}</span>
                                     </td>
-                                    <td>
+                                    <td data-label="Gate repair">
                                         {/* The default-workflow repair budget tasks on this executor
                                             launch with (#49); 0 means automatic repair is off. */}
                                         {executor.gateFixRounds}
                                     </td>
-                                    <td>{commitDate(executor.createdAt)}</td>
-                                    <td>
-                                        <button type="button" onClick={() => onEdit(executor.name)}>
-                                            Edit
-                                        </button>
-                                        {/* A suspended row cannot be a default (issue 440): resume it first. */}
-                                        {!executor.suspended &&
-                                        (defaultExecutor === null ||
-                                            defaultExecutor.name !== executor.name ||
-                                            defaultExecutor.scope !== 'user') ? (
-                                            <button
-                                                type="button"
-                                                disabled={saving}
-                                                onClick={() => onMakeDefault(executor.name)}
-                                            >
-                                                {MAKE_DEFAULT_LABEL}
-                                            </button>
-                                        ) : null}
-                                        <button
-                                            type="button"
+                                    <td data-label="Added" className="muted">
+                                        {commitDate(executor.createdAt)}
+                                    </td>
+                                    <td data-label="Actions">
+                                        <RowActions
+                                            rowName={executor.name}
+                                            primary={{ label: 'Edit', onSelect: () => onEdit(executor.name) }}
+                                            actions={overflow(executor)}
                                             disabled={saving}
-                                            onClick={() => onSuspend(executor.id, !executor.suspended)}
-                                        >
-                                            {executor.suspended ? RESUME_LABEL : SUSPEND_LABEL}
-                                        </button>
-                                        <button type="button" disabled={saving} onClick={() => onRemove(executor.name)}>
-                                            {REMOVE_LABEL}
-                                        </button>
+                                        />
                                     </td>
                                 </tr>
                             ))}

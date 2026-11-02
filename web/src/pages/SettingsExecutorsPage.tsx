@@ -7,7 +7,7 @@ import type { ConfirmRequest } from '../panels/org-executor-confirm.js';
 import { OrgExecutorsSection } from '../panels/OrgExecutorsSection.js';
 import { PersonalExecutorRemoval } from '../panels/PersonalExecutorRemoval.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
-import { ADD_LABEL, EXECUTOR_SCOPE, mergeExecutors } from '../workspace/executors.js';
+import { EXECUTOR_GUIDANCE, EXECUTOR_SCOPE, mergeExecutors } from '../workspace/executors.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
@@ -106,18 +106,11 @@ export function SettingsExecutorsPage() {
 
     return (
         <>
-            <PageHeader
-                eyebrow="Settings"
-                title="Executors"
-                description={EXECUTOR_SCOPE}
-                actions={
-                    data ? (
-                        <button type="button" className="primary" onClick={() => void openExecutorDialog(null)}>
-                            {ADD_LABEL}
-                        </button>
-                    ) : undefined
-                }
-            />
+            <PageHeader eyebrow="Settings" title="Executors" description={EXECUTOR_SCOPE} />
+            <details className="executor-about">
+                <summary>About executors</summary>
+                <p className="muted">{EXECUTOR_GUIDANCE}</p>
+            </details>
             <DraftReturnBanner />
             <p className="muted" role="status">
                 {savedMessage}
@@ -132,6 +125,7 @@ export function SettingsExecutorsPage() {
                     <WorkspaceExecutorsPanel
                         executors={data.executors}
                         defaultExecutor={data.defaultExecutor ?? null}
+                        onAdd={() => void openExecutorDialog(null)}
                         onEdit={(name) => void openExecutorDialog(name)}
                         onMakeDefault={makePersonalDefault}
                         onSuspend={suspendPersonal}

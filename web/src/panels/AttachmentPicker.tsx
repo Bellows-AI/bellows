@@ -24,7 +24,7 @@ export function AttachmentPicker({
         <>
             <button type="button" className="attachment-add" disabled={disabled} onClick={() => input.current?.click()}>
                 <Icon name="plus" />
-                Attach files
+                <span className="composer-visually-hidden">Attach files</span>
             </button>
             <input
                 ref={input}

@@ -1,6 +1,6 @@
 import type { ReactNode, RefObject } from 'react';
 import type { InstallationRepo } from '../api/useRepos.js';
-import { ConfigurationScope } from './ConfigurationScope.js';
+import { Icon } from './Icon.js';
 import { commitDate } from '../format.js';
 import { NOT_AVAILABLE, repoKey } from './repository-setup.js';
 
@@ -18,8 +18,9 @@ function NotAvailable() {
     return <span className="repo-na">{NOT_AVAILABLE}</span>;
 }
 
+type Installation = { account: string | null; repositorySelection: 'all' | 'selected' | null } | null;
+
 export interface RepositoryListNoticesProps {
-    installation: { account: string | null; repositorySelection: 'all' | 'selected' | null } | null;
     cachedError: string | null;
     /** When the cached list was fetched — shown beside the cached warning, never faked. */
     fetchedAt?: string | null;
@@ -31,7 +32,7 @@ export interface RepositoryListNoticesProps {
 }
 
 /** The installation line's sentence, or null when there is no installation to name yet. */
-function installationNote(installation: RepositoryListNoticesProps['installation']): string | null {
+function installationNote(installation: Installation): string | null {
     if (!installation) return null;
     const scope = installation.repositorySelection
         ? ` — access to ${installation.repositorySelection} repositories`
@@ -39,17 +40,23 @@ function installationNote(installation: RepositoryListNoticesProps['installation
     return `Installation: ${installation.account ?? 'GitHub App'}${scope}.`;
 }
 
-export function RepositoryListNotices({
+/** The header's one muted line: the organization and the GitHub installation it reads from. */
+export function RepositoryHeaderMeta({
+    organization,
     installation,
-    cachedError,
-    fetchedAt,
-    listNotice,
-}: RepositoryListNoticesProps) {
-    const note = installationNote(installation);
+}: {
+    organization: string | null;
+    installation: Installation;
+}) {
+    const parts = [organization ? `Organization: ${organization}` : null, installationNote(installation)];
+    const line = parts.filter(Boolean).join(' · ');
+    return line ? <span className="muted">{line}</span> : null;
+}
+
+export function RepositoryListNotices({ cachedError, fetchedAt, listNotice }: RepositoryListNoticesProps) {
     return (
         <>
             {listNotice ? <p className="status">{listNotice}</p> : null}
-            {note ? <p className="muted">{note}</p> : null}
             {cachedError ? (
                 <p className="status">
                     Showing a cached list{fetchedAt ? ` from ${commitDate(fetchedAt)}` : ''}: {cachedError}
@@ -82,13 +89,22 @@ function RepositoryRow({
     return (
         <tr className={configured === key ? 'repo-row-configured' : undefined}>
             <td data-label="Repository">
-                {key}
-                {repo.private ? <span className="pill">private</span> : null}
+                <span className="repo-name" title={key}>
+                    <Icon name="repo" />
+                    {key}
+                </span>{' '}
+                <span className="pill">{repo.private ? 'Private' : 'Public'}</span>
             </td>
-            <td data-label="Branch">{repo.defaultBranch ?? <NotAvailable />}</td>
+            <td data-label="Branch">
+                <span className="repo-branch">
+                    <Icon name="git-branch" />
+                    {repo.defaultBranch ?? <NotAvailable />}
+                </span>
+            </td>
             <td>
                 <button type="button" aria-current={configured === key} onClick={() => onConfigure(key)}>
                     Configure
+                    <Icon name="chevron-right" />
                 </button>
             </td>
         </tr>
@@ -117,17 +133,22 @@ export function RepositorySetupList({
     loaded,
 }: RepositorySetupListProps) {
     return (
-        <section className="panel" aria-label="Tracked repositories">
+        <section aria-label="Tracked repositories">
             <div className="repo-search">
-                <label htmlFor="repo-setup-search">Search repositories</label>
-                <input
-                    id="repo-setup-search"
-                    className="field"
-                    type="text"
-                    placeholder="owner/name"
-                    value={search}
-                    onChange={(e) => onSearch(e.target.value)}
-                />
+                <label htmlFor="repo-setup-search" className="visually-hidden">
+                    Search repositories
+                </label>
+                <span className="search-field">
+                    <Icon name="search" />
+                    <input
+                        id="repo-setup-search"
+                        className="field"
+                        type="text"
+                        placeholder="Search repositories"
+                        value={search}
+                        onChange={(e) => onSearch(e.target.value)}
+                    />
+                </span>
                 {search ? (
                     <button type="button" onClick={() => onSearch('')}>
                         Clear search
@@ -137,7 +158,7 @@ export function RepositorySetupList({
             {shown.length ? (
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
                 <section className="table-wrap" aria-label="Repositories" tabIndex={0}>
-                    <table className="data repo-table">
+                    <table className="data data-compact repo-table">
                         <thead>
                             <tr>
                                 <th scope="col">Repository</th>
@@ -176,8 +197,8 @@ export interface RepositoryConfigDetailProps {
 
 /**
  * The selected repository's environment detail, below the table. The scope truth — what it applies
- * to, who may edit it, the precedence order — is the shared ConfigurationScope (issue 180); the
- * mounted editor renders as children, so a save's echoed rows and its confirmation survive.
+ * to, who may edit it, the precedence order — renders in the mounted editor's head (the shared
+ * ConfigurationScope, issue 180), which arrives as children, so a save's echoed rows and its confirmation survive.
  */
 export function RepositoryConfigDetail({ repo, headingRef, children }: RepositoryConfigDetailProps) {
     if (!repo) return null;
@@ -186,7 +207,6 @@ export function RepositoryConfigDetail({ repo, headingRef, children }: Repositor
             <h2 ref={headingRef} tabIndex={-1}>
                 Selected repository: {repoKey(repo)}
             </h2>
-            <ConfigurationScope scope="repository" repository={repo} />
             {children}
         </section>
     );

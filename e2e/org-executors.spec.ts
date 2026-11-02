@@ -48,6 +48,12 @@ const orgTable = (page: Page) => page.getByRole('region', { name: 'Organization 
 const row = (page: Page, name: string) => orgTable(page).getByRole('row').filter({ hasText: name });
 const trigger = (page: Page, name: string) => page.getByRole('button', { name: `Actions for ${name}` });
 
+/** A personal row's overflow entry: the row keeps only Edit inline, like the Organization rows. */
+async function personalAction(page: Page, name: string, action: string) {
+    await trigger(page, name).click();
+    await page.getByRole('menu').getByRole('menuitem', { name: action }).click();
+}
+
 /** Admin, so the management actions exist to collapse. Test infrastructure — see the header. */
 async function setRole(role: string) {
     const sql = postgres(AUTH_DATABASE_URL, { max: 1 });
@@ -191,12 +197,36 @@ async function addPersonal(page: Page, name: string) {
 }
 
 async function removePersonal(page: Page, name: string) {
-    await personalRow(page, name).getByRole('button', { name: REMOVE_LABEL }).click();
+    await personalAction(page, name, REMOVE_LABEL);
     const dialog = page.getByRole('dialog');
     await dialog.getByRole('button', { name: confirmLabel({ action: 'remove', name }) }).click();
     await expect(dialog).toHaveCount(0);
     await expect(personalRow(page, name)).toHaveCount(0);
 }
+
+test('the compact executor tables render pills, dates and buttons in the sans face, not the data table mono', async ({
+    page,
+}) => {
+    await asAdmin(page);
+    await addPersonal(page, 'Alpha');
+    const mono = await page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+            .getPropertyValue('--font-mono')
+            .split(',')[0]!
+            .trim()
+            .replace(/["']/g, '')
+    );
+    const row = personalRow(page, 'Alpha');
+    for (const [label, target] of [
+        ['type pill', row.locator('[data-label="Type"] .pill')],
+        ['added date', row.locator('[data-label="Added"]')],
+        ['Edit button', row.getByRole('button', { name: 'Edit' })],
+    ] as const) {
+        const family = (await target.evaluate((el) => getComputedStyle(el).fontFamily)).replace(/["']/g, '');
+        expect(family, `${label} is not mono`).not.toContain(mono);
+    }
+    await removePersonal(page, 'Alpha');
+});
 
 test('Suspend keeps a personal profile but withholds Make default and the composer, and Resume restores it', async ({
     page,
@@ -205,9 +235,13 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
     for (const name of ['Alpha', 'Beta']) await addPersonal(page, name);
     await expect(personalRow(page, 'Alpha').getByText(/Default/)).toBeVisible();
 
-    await personalRow(page, 'Alpha').getByRole('button', { name: SUSPEND_LABEL }).click();
+    await personalAction(page, 'Alpha', SUSPEND_LABEL);
     await expect(personalRow(page, 'Alpha').getByText(SUSPENDED_LABEL)).toBeVisible();
-    await expect(personalRow(page, 'Alpha').getByRole('button', { name: MAKE_DEFAULT_LABEL })).toHaveCount(0);
+    await trigger(page, 'Alpha').click();
+    const menu = page.getByRole('menu');
+    await expect(menu.getByRole('menuitem', { name: MAKE_DEFAULT_LABEL })).toHaveCount(0);
+    await expect(menu.getByRole('menuitem', { name: RESUME_LABEL })).toBeVisible();
+    await page.keyboard.press('Escape');
     // The default falls to the first ACTIVE profile; the composer selects it and never offers Alpha.
     await expect(personalRow(page, 'Beta').getByText(/Default/)).toBeVisible();
     await page.goto('/tasks/new');
@@ -219,7 +253,7 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
     await expect(personalRow(page, 'Alpha').getByRole('button', { name: 'Edit' })).toBeVisible();
 
     // Resumed, the stored preference (Alpha, by position) is restored.
-    await personalRow(page, 'Alpha').getByRole('button', { name: RESUME_LABEL }).click();
+    await personalAction(page, 'Alpha', RESUME_LABEL);
     await expect(personalRow(page, 'Alpha').getByText(SUSPENDED_LABEL)).toHaveCount(0);
     await expect(personalRow(page, 'Alpha').getByText(/Default/)).toBeVisible();
 

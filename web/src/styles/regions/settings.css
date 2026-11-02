@@ -186,13 +186,6 @@
        scope context, a labeled search row, the full-width table of tracked repositories, and
        the selected repository's environment detail below it — the DOM order is the
        reading order at every width. */
-    .repo-scope {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-xl);
-        padding: 12px 16px;
-    }
-
     .repo-search {
         align-items: center;
         display: flex;
@@ -201,14 +194,35 @@
         margin: 8px 0;
     }
 
-    .repo-search label {
-        color: var(--ink-muted);
-        font-size: 12px;
+    /* The search field is the shared `.search-field`; the page only caps its width. */
+    .repo-search .search-field {
+        flex: 0 1 360px;
+        min-width: 12ch;
     }
 
-    .repo-search input {
-        flex: 1;
-        min-width: 12ch;
+    /* Identity and branch each sit beside their glyph; a long name wraps instead of widening the row. */
+    .repo-name,
+    .repo-branch {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    .repo-name {
+        font-weight: 600;
+        overflow-wrap: anywhere;
+    }
+
+    .repo-name .icon,
+    .repo-branch .icon {
+        color: var(--ink-muted);
+        flex: none;
+    }
+
+    .repo-table button {
+        align-items: center;
+        display: inline-flex;
+        gap: 4px;
     }
 
     /* An unmeasured fact, in words: quieter than a measurement, never a zero. */
@@ -359,8 +373,8 @@
         flex-wrap: wrap;
         gap: 12px;
         justify-content: flex-end;
-        margin-top: 24px;
-        padding-top: 16px;
+        margin-top: 12px;
+        padding-top: 12px;
     }
 
     .settings-dirty {
@@ -385,17 +399,69 @@
         margin-top: 8px;
     }
 
+    /* The notification channel cell: the mark shrinks to sit beside its name, and the Enabled
+       switch's label keeps a 36px hit area. */
+    .data-compact .provider-mark {
+        height: 24px;
+        margin-right: 8px;
+        padding: 4px;
+        vertical-align: middle;
+        width: 24px;
+    }
+
+    .data-compact .settings-toggle {
+        margin-top: 0;
+        min-height: 36px;
+    }
+
+    /* Default and Suspended tags sit under the executor's name, wrapping rather than widening the cell. */
+    .data-compact td > .pill-list {
+        margin-top: 4px;
+    }
+
+    /* The page's one explanation of executors: collapsed, so the lists are what the page opens on. */
+    .executor-about {
+        margin-bottom: 12px;
+    }
+
+    .executor-about > summary {
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 6px 0;
+    }
+
+    .pill-list .pill {
+        max-width: 24ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* The tabs and their actions share one line: tabs underlined on the leading edge, Add and the
+        .env toggle on the trailing one. */
+    .env-toolbar {
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: space-between;
+        margin-bottom: 8px;
+    }
+
     .env-tabs {
         display: flex;
-        gap: 6px;
-        margin-bottom: 8px;
+        gap: 4px;
     }
 
     .env-tab {
         background: transparent;
-        border: 1px solid transparent;
-        border-radius: var(--radius-lg);
+        border: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
         color: var(--ink-muted);
+        font-size: 13px;
+        margin-bottom: -1px;
         padding: 4px 10px;
     }
 
@@ -406,8 +472,7 @@
     /* The selected tab is the one carrying aria-selected — the attribute the roving focus moves
         with the keyboard, so state and semantics cannot drift apart. */
     .env-tab[aria-selected='true'] {
-        background: var(--surface-raised);
-        border-color: var(--line);
+        border-bottom-color: var(--accent);
         color: var(--accent);
     }
 
@@ -450,14 +515,14 @@
         border-color: var(--lamp-stop);
     }
 
-    /* The compact row beneath the table: Add stays a quiet outline, the .env disclosure trigger
-        stays plain text — neither competes with the panel's one `.primary` Save action. */
-    .env-row-actions {
+    /* Add stays a quiet outline, the .env disclosure trigger stays plain text — neither competes
+        with the panel's one `.primary` Save action. */
+    .env-toolbar-actions {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin-top: 8px;
+        padding-bottom: 4px;
     }
 
     .env-add {
@@ -589,36 +654,91 @@
         }
     }
 
-    /* The configuration overview's readiness items (issue 180) and the scope context block every
-       environment editor opens with. Status text carries the meaning; the tone class only tints
-       the item's edge, so no state is ever color alone. */
+    /* The settings content column and the configuration overview's compact rows, and below them the
+       scope context block every environment editor opens with. Status text carries the meaning; only
+       attention and pending wear a pill, so no state is ever color alone. */
 
-    .readiness {
-        display: grid;
-        gap: 12px;
-        grid-template-columns: 1fr;
+    /* Wide enough that a table row (channel, events, repos, switch, actions) keeps its tags on one
+       line at desktop width; prose lines stay short through their own measure. */
+    .settings-content {
+        max-width: 1040px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        min-width: 0;
+    }
+
+    /* An icon beside its label sits on the label's line, centered on it, not stacked above it. */
+    .settings-content button:has(> .icon) {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    /* The badge shares the tab label's type, so the label and its count are one line box. */
+    .env-tab .count {
+        font-size: inherit;
+    }
+
+    .settings-content .page-header-leading h1 {
+        font-size: 26px;
+        line-height: 34px;
+    }
+
+    .settings-group {
+        margin: 0 0 24px;
+    }
+
+    .settings-rows {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
         list-style: none;
         margin: 0;
         padding: 0;
     }
 
-    .readiness-item {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        min-width: 0;
-        padding: 14px 16px;
+    .settings-row-item + .settings-row-item {
+        border-top: 1px solid var(--line);
     }
 
-    /* The item's status is a toned pill — ok, bad or warn from the tone set — so the card's own
-       edge stays the neutral hairline. Its own row, so the action never rides beside it. */
-    .readiness-status {
+    .settings-row {
+        align-items: center;
+        color: inherit;
         display: flex;
-        margin: 0 0 8px;
-        width: fit-content;
+        gap: 12px;
+        min-height: 44px;
+        padding: 10px 16px;
+        text-decoration: none;
     }
 
-    .readiness-fact {
+    a.settings-row:hover {
+        background: var(--surface-strong);
+    }
+
+    .settings-row-icon,
+    .settings-row-chevron {
+        color: var(--ink-muted);
+        display: inline-flex;
+        flex: none;
+    }
+
+    .settings-row-text {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+
+    .settings-row-text h3 {
+        font-size: 15px;
+        line-height: 22px;
+        margin: 0;
+    }
+
+    .settings-row-status,
+    .settings-row-fact {
         color: var(--ink-muted);
         font-size: 13px;
         margin: 0;
@@ -626,15 +746,17 @@
         overflow-wrap: anywhere;
     }
 
-    .readiness-action {
-        display: inline-block;
-        margin-top: 10px;
+    .settings-row-status.pill {
+        width: fit-content;
     }
 
-    @media (min-width: 701px) {
-        .readiness {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
+    /* The environment's per-scope edits: siblings of the row's link, indented under its text. */
+    .settings-row-scopes {
+        color: var(--ink-muted);
+        font-size: 13px;
+        list-style: none;
+        margin: 0;
+        padding: 0 16px 10px 44px;
     }
 
     .scope-context {
@@ -646,13 +768,11 @@
         margin: 0 0 2px;
     }
 
-    .scope-context-label {
-        color: var(--ink-muted);
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.08em;
-        margin: 0 0 4px;
-        /* No text-transform: the repository label carries case-sensitive owner/name. */
+    /* The long precedence sentence, collapsed: the summary line above it already says who wins. */
+    .scope-detail > summary {
+        cursor: pointer;
+        font-size: 13px;
+        padding: 4px 0;
     }
 
     /* ── integrations: the member's connections as link cards, and one connection's page ── */
@@ -801,6 +921,7 @@
     /* ── settings touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .env-tab,
+        .scope-detail > summary,
         .settings-toggle,
         .repo-search input,
         .repo-search button,
@@ -808,6 +929,7 @@
         .settings-actions button,
         .unsaved-actions button,
         .env-add,
+        .executor-add,
         .org-executor-add,
         button.notification-subscription-add,
         .integration-actions button,
@@ -816,6 +938,7 @@
         .env-raw select,
         .env-raw button,
         .picker-advanced > summary,
+        .executor-about > summary,
         .picker-field-actions button,
         .picker-actions button {
             align-items: center;
@@ -825,7 +948,8 @@
         }
 
         /* The Advanced summary keeps its native disclosure marker. */
-        .picker-advanced > summary {
+        .picker-advanced > summary,
+        .executor-about > summary {
             display: list-item;
         }
 
@@ -835,8 +959,8 @@
             display: flex;
         }
 
-        .repo-search input {
-            min-width: 12ch;
+        .repo-search .search-field {
+            flex-basis: 100%;
         }
     }
 }

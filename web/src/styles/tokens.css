@@ -74,6 +74,11 @@
     --brand-github: oklch(0.970 0.010 248);
     --brand-gitlab: oklch(0.702 0.191 43);
     --brand-mcp: oklch(0.869 0.020 253);
+
+    /* The question tone (Question notification event tag only): purple at the accent's lightness, on its own wash. */
+    --question: oklch(0.720 0.140 300);
+    --question-wash: color-mix(in oklab, var(--question) 16%, transparent);
+    --question-border: color-mix(in oklab, var(--question) 30%, var(--surface-raised));
 }
 
 /* ---------- Semantic tokens: light ---------- */
@@ -137,6 +142,10 @@
     --brand-github: oklch(0.254 0.011 254);
     --brand-gitlab: oklch(0.611 0.200 32);
     --brand-mcp: oklch(0.372 0.039 257);
+
+    --question: oklch(0.520 0.190 300);
+    --question-wash: color-mix(in oklab, var(--question) 8%, var(--surface-raised));
+    --question-border: color-mix(in oklab, var(--question) 30%, var(--surface-raised));
 }
 
 /* ---------- Expose semantic tokens as utilities ----------

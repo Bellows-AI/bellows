@@ -2,11 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { EnvVarView, UseEnv } from '../api/useEnv.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
-import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { useUnsavedChanges } from '../components/UnsavedChangesDialog.js';
 import type { GuardApi } from '../components/UnsavedChangesDialog.js';
-import { RepositoryConfigDetail, RepositoryListNotices, RepositorySetupList } from '../components/RepositorySetup.js';
+import {
+    RepositoryConfigDetail,
+    RepositoryHeaderMeta,
+    RepositoryListNotices,
+    RepositorySetupList,
+} from '../components/RepositorySetup.js';
 import { matchesSearch, orderByRecency } from '../components/repository-setup.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
@@ -46,7 +50,7 @@ function ConfiguredRepoEnv({
         <EnvVarsPanel
             key={configured}
             title={configured}
-            hint=""
+            scope={{ scope: 'repository', repository: { owner, name } }}
             initialVars={scope?.vars ?? []}
             onSave={(vars) => env.saveRepo({ owner, name }, vars)}
             draftId={`repo:${configured}`}
@@ -120,19 +124,19 @@ export function SettingsRepositoriesPage() {
             <PageHeader
                 eyebrow="Settings"
                 title="Repositories"
-                description="Repositories this board tracks. Configure repository-wide environment."
+                description="Tracked repositories and their environment."
                 meta={
-                    session ? (
-                        <div className="repo-scope">
-                            <KeyValues pairs={[['Organization', session.organization.name]]} />
-                        </div>
+                    session || repos.data?.installation ? (
+                        <RepositoryHeaderMeta
+                            organization={session?.organization.name ?? null}
+                            installation={repos.data?.installation ?? null}
+                        />
                     ) : undefined
                 }
             />
             <DraftReturnBanner />
             {env.error ? <p className="status">{env.error}</p> : null}
             <RepositoryListNotices
-                installation={repos.data?.installation ?? null}
                 cachedError={repos.data?.meta.error ?? null}
                 fetchedAt={repos.data?.meta.fetchedAt ?? null}
                 listNotice={listNoticeOf(repos)}

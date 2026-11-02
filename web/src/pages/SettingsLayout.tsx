@@ -149,7 +149,9 @@ export function SettingsLayout() {
     const context: SettingsPageContext = { ...shell, workspace, repos, env };
     return (
         <UnsavedChangesProvider api={api}>
-            <Outlet context={context} />
+            <div className="settings-content">
+                <Outlet context={context} />
+            </div>
             {pending !== null ? (
                 <UnsavedChangesDialog
                     labels={

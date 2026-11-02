@@ -16,6 +16,7 @@ describe('Icon', () => {
                 'chevron-right',
                 'arrow-left',
                 'arrow-right',
+                'arrow-up',
                 'x',
                 'check',
                 'check-circle',

@@ -2,7 +2,7 @@ import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CAPTION } from '../src/panels/WorkspaceExecutorsPanel.js';
+import { DEFAULT_LABEL } from '../src/panels/WorkspaceExecutorsPanel.js';
 import {
     ADD_LABEL,
     ADVANCED_LABEL,
@@ -78,8 +78,8 @@ describe('the executor dialog', () => {
         // The page's scope sentence and the panel's guidance, asserted against the constants they render.
         await screen.findByRole('button', { name: ADD_LABEL });
         expect(document.querySelector('.page-header-description')?.textContent).toBe(EXECUTOR_SCOPE);
-        const panel = screen.getByRole('heading', { name: 'My workspace' }).closest('section') as HTMLElement;
-        expect(panel.textContent).toContain(EXECUTOR_GUIDANCE);
+        const guidance = screen.getByText('About executors').closest('details') as HTMLDetailsElement;
+        expect(guidance.textContent).toContain(EXECUTOR_GUIDANCE);
 
         const add = screen.getByRole('button', { name: ADD_LABEL });
         await openAdd(user);
@@ -108,8 +108,8 @@ describe('the executor dialog', () => {
         expect(status()).toContain(executorSavedMessage('main', false));
         await editButton('main');
         const row = (await editButton('main')).closest('tr') as HTMLElement;
-        expect(row.querySelector('.pill')?.textContent).toBe('Claude Code');
-        expect(screen.getAllByText(DEFAULT_CAPTION)).toHaveLength(1);
+        expect(row.querySelector('[data-label="Type"] .pill')?.textContent).toBe('Claude Code');
+        expect(within(row).getAllByText(DEFAULT_LABEL)).toHaveLength(1);
         expect(board.executors.map((executor) => executor.name)).toEqual(['main']);
     });
 

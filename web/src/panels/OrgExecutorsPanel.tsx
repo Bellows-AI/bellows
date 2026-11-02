@@ -1,11 +1,9 @@
 import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
-import { EXECUTOR_GUIDANCE, executorTypeLabel } from '../workspace/executors.js';
+import { Icon } from '../components/Icon.js';
+import { executorTypeLabel } from '../workspace/executors.js';
 import type { OrgExecutor } from '../api/useWorkspace.js';
-import { RESUME_LABEL, SUSPEND_LABEL, SUSPENDED_LABEL } from './WorkspaceExecutorsPanel.js';
-
-/** The org row the member's resolved default names — the composer autoselects it (issue 391). */
-export const ORG_DEFAULT_CAPTION = 'Default — selected on new tasks';
+import { DEFAULT_LABEL, RESUME_LABEL, SUSPEND_LABEL, SUSPENDED_LABEL } from './WorkspaceExecutorsPanel.js';
 
 /**
  * The organization's executor profiles (issue 391): managed by administrators, selectable by
@@ -116,20 +114,23 @@ export function OrgExecutorsPanel({
 }) {
     return (
         <section className="panel">
-            <h2>Organization</h2>
+            <div className="panel-head">
+                <h2>
+                    Organization
+                    <span className="count">{executors.length}</span>
+                </h2>
+                {onAdd ? (
+                    <button type="button" className="org-executor-add" onClick={onAdd}>
+                        <Icon name="plus" />
+                        Add organization executor
+                    </button>
+                ) : null}
+            </div>
             <p className="muted">
-                {EXECUTOR_GUIDANCE}{' '}
                 {isAdmin
                     ? 'As an admin you manage these profiles for everyone in the organization.'
                     : 'These are managed by your organization admins and available to every member.'}
             </p>
-            {onAdd ? (
-                <p>
-                    <button type="button" className="org-executor-add" onClick={onAdd}>
-                        Add organization executor
-                    </button>
-                </p>
-            ) : null}
             {executors.length === 0 ? (
                 <p className="muted">
                     {isAdmin
@@ -141,7 +142,7 @@ export function OrgExecutorsPanel({
                 <section className="table-wrap" tabIndex={0} aria-label="Organization executors">
                     {/* `table-cards`: at ≤640px the row reflows into a labeled card, the way the
                         env table does, instead of pushing the actions off a phone's screen. */}
-                    <table className="data table-cards">
+                    <table className="data data-compact table-cards">
                         <thead>
                             <tr>
                                 <th scope="col">Name</th>
@@ -157,15 +158,23 @@ export function OrgExecutorsPanel({
                                 <tr key={executor.name}>
                                     <td data-label="Name">
                                         {executor.name}
-                                        {executor.suspended ? <span className="pill">{SUSPENDED_LABEL}</span> : null}
-                                        {defaultName === executor.name ? (
-                                            <p className="muted">{ORG_DEFAULT_CAPTION}</p>
+                                        {defaultName === executor.name || executor.suspended ? (
+                                            <span className="pill-list">
+                                                {defaultName === executor.name ? (
+                                                    <span className="pill">{DEFAULT_LABEL}</span>
+                                                ) : null}
+                                                {executor.suspended ? (
+                                                    <span className="pill">{SUSPENDED_LABEL}</span>
+                                                ) : null}
+                                            </span>
                                         ) : null}
                                     </td>
                                     <td data-label="Type">
                                         <span className="pill">{executorTypeLabel(executor.type)}</span>
                                     </td>
-                                    <td data-label="Added">{commitDate(executor.createdAt)}</td>
+                                    <td data-label="Added" className="muted">
+                                        {commitDate(executor.createdAt)}
+                                    </td>
                                     <OrgExecutorActions
                                         executor={executor}
                                         isAdmin={isAdmin}

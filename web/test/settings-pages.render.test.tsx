@@ -118,8 +118,8 @@ describe('Settings organization page', () => {
         expect(html).toContain('Your role');
         expect(html).toContain('Admin');
         expect(html).not.toContain('bellows');
-        expect(html).toContain('Any member can edit.');
         expect(html).toContain('Loading environment…');
+        expect(html).not.toContain('Any member can edit.');
         expect(html).not.toContain('No variables configured.');
         expectNoPlaceholder(html);
     });
@@ -143,6 +143,7 @@ describe('Settings organization page', () => {
         // save-state rule, not a role gate.)
         expect(html.match(/<input [^>]*disabled/g) ?? []).toHaveLength(0);
         expect(html).not.toContain('shown here read-only');
+        expect(html).toContain('Any member can edit.');
     });
 
     it('carries no client-only admin gate in its source', () => {
@@ -192,10 +193,12 @@ describe('Settings workspace page', () => {
     it('owns the member\u2019s own scopes only: no checkout root, orphan list or checkout management', () => {
         // The page reads no workspace data: nothing is checked out on the board, so a cold render
         // is the whole page and it never waits on the workspace poll.
-        const html = render('/settings/workspace');
+        const html = render('/settings/workspace', {
+            env: { loading: false, data: { org: [], workspace: [], repos: [] } },
+        });
         expect(html).not.toContain('Loading your workspace');
         expect(html).toContain('My workspace');
-        expect(html).toContain('Applies only to tasks the current member starts.');
+        expect(html).toContain('Applies to tasks you start.');
         expect(html).toContain('Edited only by that member.');
         for (const gone of [
             'ORG_WORKSPACE_ROOT',
@@ -214,6 +217,7 @@ describe('Settings workspace page', () => {
     it('is unaffected by a failed workspace read: that error belongs to the executors', () => {
         const html = render('/settings/workspace', {
             workspace: { loading: false, error: 'The workspace request failed' },
+            env: { loading: false, data: { org: [], workspace: [], repos: [] } },
         });
         expect(html).not.toContain('The workspace request failed');
         expect(html).toContain('My workspace');
@@ -233,6 +237,23 @@ describe('Settings workspace page', () => {
         });
         expect(html).toContain('My workspace');
         expect(html).toContain('No variables configured.');
+    });
+
+    it('shows the title "My workspace" as visible text exactly once, as the editor\u2019s h2', () => {
+        const html = render('/settings/workspace', {
+            env: { loading: false, data: { org: [], workspace: [], repos: [] } },
+        });
+        expect(html.match(/>My workspace</g)).toHaveLength(1);
+        expect(html).toContain('<h2>My workspace</h2>');
+        expect(html).not.toContain('scope-context-label');
+    });
+
+    it('states precedence exactly once on the workspace and organization pages', () => {
+        const env = { loading: false, data: { org: [], workspace: [], repos: [] } };
+        for (const path of ['/settings/workspace', '/settings/organization']) {
+            const html = render(path, { env });
+            expect(html.match(/rightmost scope wins/g), path).toHaveLength(1);
+        }
     });
 
     it('keeps the way back to a task draft on the executor dialog’s credentials detour', () => {
@@ -312,18 +333,32 @@ describe('Settings executors page', () => {
             },
         });
         expect(html).toContain('page-header-description');
-        expect(html).toContain('Each task runs with its selected executor');
-        expect(html).toContain('<h2>My workspace</h2>');
-        // The resolved default names the personal row: that one carries the caption (issue 391's
+        expect(html).toContain('My workspace<span class="count">2</span>');
+        // The resolved default names the personal row: that one carries the tag (issue 391's
         // preference shape, the old isDefault flag's successor).
-        expect(html.match(/Default — selected on new tasks/g)?.length).toBe(1);
+        expect(html.match(/<span class="pill">Default<\/span>/g)?.length).toBe(1);
         // The organization panel renders below the personal one, with the shared profile.
-        expect(html).toContain('<h2>Organization</h2>');
+        expect(html).toContain('Organization<span class="count">1</span>');
         expect(html).toContain('team-runner');
         expect(html).toContain('Add executor');
         // The save announcement's region is mounted before any save, so the sentence is heard
         // when it arrives (issue 261).
         expect(html).toMatch(/<p class="muted" role="status"><\/p>/);
+    });
+
+    it('the executor guidance renders once, inside a disclosure', () => {
+        const html = render('/settings/executors', {
+            workspace: {
+                loading: false,
+                data: { executors: [], orgExecutors: [], defaultExecutor: null },
+            },
+        });
+        expect(html.match(/Each task runs with its selected executor/g)?.length).toBe(1);
+        expect(html).toMatch(
+            /<details[^>]*><summary[^>]*>About executors<\/summary>[\s\S]*Each task runs with its selected executor/
+        );
+        // The page header no longer owns an Add: each scope head does.
+        expect(html).not.toMatch(/class="primary"[^>]*>Add executor/);
     });
 
     it('renders no list after a failed workspace read — the error is the whole story', () => {
@@ -405,7 +440,7 @@ describe('Settings repositories page', () => {
         expect(html).toContain('acme/web');
         expect(html).toContain('acme/api');
         expect(html).toContain('>main<');
-        expect(html.match(/<button[^>]*>Configure<\/button>/g)?.length).toBe(2);
+        expect(html.match(/<button[^>]*>Configure<svg/g)?.length).toBe(2);
         for (const gone of [
             'type="checkbox"',
             'Save selection',
@@ -473,7 +508,7 @@ describe('Settings repositories page', () => {
 
     it('states the scope context in the header: the organization the repositories belong to', () => {
         const html = render('/settings/repos');
-        expect(html).toMatch(/class="page-header-meta"[\s\S]*<dt>Organization<\/dt><dd>Bellows AI<\/dd>/);
+        expect(html).toMatch(/class="page-header-meta"[\s\S]*Organization: Bellows AI/);
     });
 
     it('keeps the repositories table full width — no master/detail split', () => {
@@ -494,9 +529,10 @@ describe('settings scope context (issue 182 invariants)', () => {
 
     it('renders the org editor under its scope sentence, tabs counting the stored rows', () => {
         const html = render('/settings/organization', { env: { loading: false, data: envData } });
-        expect(html).toContain('Injected into every runner in this deployment');
-        expect(html).toContain('Variables (0)');
-        expect(html).toContain('Secrets (1)');
+        const text = html.replace(/<[^>]*>/g, '');
+        expect(text).toContain('Applies to every member\u2019s tasks in the organization.');
+        expect(text).toContain('Variables (0)');
+        expect(text).toContain('Secrets (1)');
         expect(html).not.toContain('Discard unsaved changes?');
     });
 
@@ -512,7 +548,7 @@ describe('settings scope context (issue 182 invariants)', () => {
             },
             env: { loading: false, data: envData },
         });
-        expect(html).toContain('Your own defaults, on every task you queue.');
+        expect(html).toContain('Applies to tasks you start.');
         expect(html).toContain('No variables configured.');
         expect(html).not.toContain('Discard unsaved changes?');
     });
@@ -554,7 +590,7 @@ describe('settings page headers', () => {
         expect(render('/settings/repos')).toContain('aria-label="Tracked repositories"');
     });
 
-    it('puts Add executor in the executors page header', () => {
+    it('puts Add executor in the My workspace head, not the page header', () => {
         const html = render('/settings/executors', {
             workspace: {
                 loading: false,
@@ -565,8 +601,8 @@ describe('settings page headers', () => {
                 },
             },
         });
-        expect(html).toContain('page-header-actions');
-        expect(html).toContain('Add executor');
+        expect(html).not.toContain('page-header-actions');
+        expect(html).toMatch(/<div class="panel-head"><h2>My workspace[\s\S]*?Add executor<\/button><\/div>/);
     });
 });
 

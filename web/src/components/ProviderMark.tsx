@@ -43,15 +43,16 @@ const GLYPHS: Record<string, { viewBox: string; d: string }> = {
     },
 };
 
-export function ProviderMark({ provider }: { provider: string }) {
+/** `decorative` is for a mark beside its own text label: hidden from assistive tech instead of announced twice. */
+export function ProviderMark({ provider, decorative = false }: { provider: string; decorative?: boolean }) {
     const glyph = GLYPHS[provider];
     const name = integrationProvider(provider)?.label ?? provider;
     return (
+        // biome-ignore lint/a11y/noSvgWithoutTitle: a decorative mark is aria-hidden beside its own text label; otherwise it carries role=img and an aria-label.
         <svg
             className="provider-mark"
             data-provider={provider}
-            role="img"
-            aria-label={`${name} logo`}
+            {...(decorative ? { 'aria-hidden': true } : { role: 'img', 'aria-label': `${name} logo` })}
             viewBox={glyph?.viewBox ?? '0 0 24 24'}
             fill={`var(--brand-${provider})`}
         >
