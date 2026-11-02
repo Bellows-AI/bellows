@@ -1,4 +1,4 @@
-import { BATCH_BRANCH_LIMIT } from './batch-plan.js';
+export const BATCH_BRANCH_LIMIT = 255;
 
 /**
  * The shape a task's base branch (and a batch target's) may have: the rule `driver/src/publish/publish-base.ts`

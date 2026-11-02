@@ -7,6 +7,7 @@
  * an unknown field (a `dependsOn` above all) is refused rather than ignored.
  */
 
+import { BATCH_BRANCH_LIMIT, isBranchName } from './branch-name.js';
 import { EXECUTOR_SCOPES, type ExecutorScope, USER_SCOPE } from './executors.js';
 
 export const BATCH_PLAN_VERSION = 1;
@@ -20,11 +21,11 @@ export const BATCH_COMPLETION_ACCEPTED = 'accepted';
 
 /** Stable identifiers: targets, stages and tasks are addressed by these, never by position. */
 export const BATCH_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+export { BATCH_BRANCH_LIMIT };
 export const BATCH_KEY_LIMIT = 40;
 export const BATCH_TITLE_LIMIT = 200;
 export const BATCH_TEXT_LIMIT = 4000;
 export const BATCH_REPO_LIMIT = 201;
-export const BATCH_BRANCH_LIMIT = 255;
 export const BATCH_EXECUTOR_LIMIT = 100;
 export const MAX_BATCH_TARGETS = 10;
 export const MAX_BATCH_STAGES = 20;
@@ -265,6 +266,7 @@ function parseTarget(raw: unknown, path: string, issues: Issues): BatchTarget | 
         issues.add(`${path}.repo`, 'must be owner/name');
     }
     const branch = optionalText(fields.branch, `${path}.branch`, BATCH_BRANCH_LIMIT, issues);
+    if (branch !== undefined && !isBranchName(branch)) issues.add(`${path}.branch`, 'must be a valid git branch name');
     return { key: targetKey!, repo: fields.repo as string, ...(branch === undefined ? {} : { branch }) };
 }
 
