@@ -763,6 +763,26 @@
         padding: 4px 0;
     }
 
+    /* Members roster: the initials avatar beside the login; a long login clips to one line inside
+       the cell (its full text is the span's title and the role control's aria-label). */
+    .member-identity {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .member-identity .avatar {
+        flex: none;
+    }
+
+    .member-login {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
     /* ── integrations: the member's connections as link cards, and one connection's page ── */
     .provider-mark {
         background: var(--surface-sunken);
