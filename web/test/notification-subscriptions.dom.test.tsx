@@ -8,7 +8,12 @@ import {
     testResultMessage,
     type SubscriptionView,
 } from '../src/api/notificationSubscriptions.js';
-import { ADD_SUBSCRIPTION_LABEL, MEMBER_NOTE } from '../src/panels/NotificationSubscriptionsPanel.js';
+import {
+    ADD_SUBSCRIPTION_LABEL,
+    EMPTY_WRITER_NOTE,
+    MEMBER_NOTE,
+    NO_SUBSCRIPTIONS_NOTE,
+} from '../src/panels/NotificationSubscriptionsPanel.js';
 import { renderApp, stubFetch, type FetchCall } from './dom.js';
 import { boardHandler, settingsBoard, subscription } from './settings-board.js';
 
@@ -429,5 +434,49 @@ describe('the compact notification rows', () => {
         const { table } = await open(['task.ready']);
         const toggle = within(table).getByRole('switch', { name: /^Enabled, Discord for/ });
         expect(toggle.classList.contains('switch')).toBe(true);
+    });
+});
+
+describe('the notification states are StateNote lines', () => {
+    const stateNote = () => document.querySelector('.state-note');
+
+    it('an empty organization shows the empty note and one Add button to an admin', async () => {
+        stubFetch(boardHandler(settingsBoard()));
+        renderApp('/settings/organization');
+
+        await screen.findByRole('region', { name: 'Organization notifications' });
+        expect(stateNote()?.textContent).toBe(`${NO_SUBSCRIPTIONS_NOTE} ${EMPTY_WRITER_NOTE}`);
+        expect(screen.getAllByRole('button', { name: ADD_SUBSCRIPTION_LABEL })).toHaveLength(1);
+        expect(screen.queryByRole('table')).toBeNull();
+    });
+
+    it('an empty organization shows a member the note alone and no Add button', async () => {
+        stubFetch(boardHandler(settingsBoard({ role: MEMBER_ROLE })));
+        renderApp('/settings/organization');
+
+        await screen.findByRole('region', { name: 'Organization notifications' });
+        expect(stateNote()?.textContent).toBe(NO_SUBSCRIPTIONS_NOTE);
+        expect(screen.queryByRole('button', { name: ADD_SUBSCRIPTION_LABEL })).toBeNull();
+    });
+
+    it('an empty personal list shows the empty note and one Add button', async () => {
+        stubFetch(boardHandler(settingsBoard({ role: MEMBER_ROLE })));
+        renderApp('/settings/workspace');
+
+        await screen.findByRole('region', { name: 'My notifications' });
+        expect(stateNote()?.textContent).toBe(`${NO_SUBSCRIPTIONS_NOTE} ${EMPTY_WRITER_NOTE}`);
+        expect(screen.getAllByRole('button', { name: ADD_SUBSCRIPTION_LABEL })).toHaveLength(1);
+    });
+
+    it('a failed read is a StateNote error, not the empty note', async () => {
+        stubFetch(
+            boardHandler(settingsBoard(), ({ method, url }) =>
+                method === 'GET' && url === ORG_PATH ? { status: 503, body: { error: 'store down' } } : undefined
+            )
+        );
+        renderApp('/settings/organization');
+
+        await waitFor(() => expect(document.querySelector('.state-note.error')?.textContent).toBe('store down'));
+        expect(screen.queryByText(NO_SUBSCRIPTIONS_NOTE)).toBeNull();
     });
 });
