@@ -64,6 +64,13 @@ describe.skipIf(!enabled)('oauth authorization codes', () => {
         expect(await w.store.findAccessToken(hashToken(tokens.accessToken))).toBeNull();
     });
 
+    it('refuses an access token once its family has expired', async () => {
+        const w = await fresh();
+        const tokens = okGrant(await grant(w));
+        await sql`update oauth_grant_family set expires_at = ${new Date(w.clock.now().getTime() - 1000)}`;
+        expect(await w.store.findAccessToken(hashToken(tokens.accessToken))).toBeNull();
+    });
+
     it('refuses an unknown or expired code', async () => {
         const w = await fresh();
         expect(await exchange(w, 'nope')).toEqual({ ok: false, error: 'invalid_grant' });
@@ -144,6 +151,25 @@ describe.skipIf(!enabled)('oauth clients', () => {
         });
         expect(await w.store.findClient(w.clientId)).toMatchObject({ kind: 'dcr', fetchedAt: null });
         expect(await w.store.findClient('missing')).toBeNull();
+    });
+
+    it('never lets a DCR upsert overwrite a CIMD client', async () => {
+        const w = await fresh();
+        const id = 'https://app.example.test/keep.json';
+        await w.store.upsertClient({
+            clientId: id,
+            kind: 'cimd',
+            name: 'Hosted',
+            redirectUris: [REDIRECT],
+            fetchedAt: w.clock.now(),
+        });
+        await w.store.upsertClient({
+            clientId: id,
+            kind: 'dcr',
+            name: 'Squatter',
+            redirectUris: ['https://evil.example.test/cb'],
+        });
+        expect(await w.store.findClient(id)).toMatchObject({ kind: 'cimd', name: 'Hosted', redirectUris: [REDIRECT] });
     });
 
     it('refreshes a CIMD client in place when its metadata is fetched again', async () => {

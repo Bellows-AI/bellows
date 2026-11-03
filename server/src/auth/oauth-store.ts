@@ -382,6 +382,7 @@ const clientOps = (ctx: Ctx): ClientOps => ({
             on conflict (client_id) do update set
                 client_name = excluded.client_name, redirect_uris = excluded.redirect_uris,
                 metadata = excluded.metadata, fetched_at = excluded.fetched_at
+            where oauth_client.kind = excluded.kind
         `;
     },
 
