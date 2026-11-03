@@ -401,7 +401,7 @@ describe('the batch tools', () => {
             idempotencyKey: 'start-key-0001',
         });
         expect(other.isError).toBe(true);
-        expect(other.data).toMatchObject({ outcome: 'refused' });
+        expect(other.data).toMatchObject({ outcome: 'refused', code: 'IDEMPOTENCY_KEY_REUSED' });
         expect(store.writes).toEqual(writes);
     });
 

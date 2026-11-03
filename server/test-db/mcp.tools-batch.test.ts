@@ -276,7 +276,7 @@ describe.skipIf(!enabled)('the batch tools — database', () => {
         expect(await jobCount(sql)).toBe(jobs);
         const other = await call(url, 'alice', 'start_batch', { batchId: id, version: 2, idempotencyKey: key });
         expect(other.isError).toBe(true);
-        expect(other.data).toMatchObject({ outcome: 'refused' });
+        expect(other.data).toMatchObject({ outcome: 'refused', code: 'IDEMPOTENCY_KEY_REUSED' });
         expect(await jobCount(sql)).toBe(jobs);
     });
 
