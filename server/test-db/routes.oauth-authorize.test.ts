@@ -3,7 +3,8 @@ import type { Sql } from 'postgres';
 import { testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import { REDIRECT } from './oauth-rig.js';
-import { AUTHORIZE, authorize, authorizeParams, startBoard, STATE, type Board } from './oauth-http-rig.js';
+import { MAX_RETURN_PATH, safeReturnPath } from '../src/auth/session.js';
+import { authorize, authorizeParams, PUBLIC_URL, startBoard, STATE, type Board } from './oauth-http-rig.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
@@ -76,14 +77,16 @@ describe.skipIf(!enabled)('GET /api/oauth/authorize', () => {
         expect(query.get('code')).toBeNull();
     });
 
-    it('sends a visitor without a session to sign in and back to this exact request', async () => {
+    it('sends a visitor without a session to sign in and back to a short resume link', async () => {
         const board = await start();
-        const params = authorizeParams(board);
-        const response = await authorize(board, params, null);
+        const response = await authorize(board, authorizeParams(board), null);
         expect(response.statusCode).toBe(HTTP_FOUND);
         const login = new URL(String(response.headers.location), 'http://board.test');
         expect(login.pathname).toBe('/api/auth/github');
-        expect(login.searchParams.get('returnTo')).toBe(`${AUTHORIZE}?${params.toString()}`);
+        const resume = String(login.searchParams.get('returnTo'));
+        expect(resume).toMatch(/^\/api\/oauth\/authorize\/resume\?id=[A-Za-z0-9_-]+$/);
+        expect(resume.length).toBeLessThan(MAX_RETURN_PATH);
+        expect(safeReturnPath(resume, PUBLIC_URL)).toBe(resume);
     });
 
     it('does not trust a forged or foreign session cookie', async () => {
@@ -92,11 +95,54 @@ describe.skipIf(!enabled)('GET /api/oauth/authorize', () => {
         expect(new URL(String(response.headers.location), 'http://board.test').pathname).toBe('/api/auth/github');
     });
 
-    it('refuses a request too long to survive the sign-in round trip', async () => {
+    it.each([
+        ['a 2 KB state', 's'.repeat(2048)],
+        ['an encoded backslash in the state', `a\\b${'s'.repeat(600)}`],
+    ])('carries %s through sign-in to the consent screen', async (_name, state) => {
         const board = await start();
-        const response = await authorize(board, authorizeParams(board, { state: 's'.repeat(520) }), null);
-        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
-        expect(response.headers.location).toBeUndefined();
+        const signedOut = await authorize(board, authorizeParams(board, { state }), null);
+        expect(signedOut.statusCode).toBe(HTTP_FOUND);
+        const login = new URL(String(signedOut.headers.location), 'http://board.test');
+        const resume = safeReturnPath(login.searchParams.get('returnTo'), PUBLIC_URL);
+        expect(resume).toContain('/api/oauth/authorize/resume');
+        const resumed = await board.app.inject({ method: 'GET', url: resume, headers: { cookie: board.cookie } });
+        expect(resumed.statusCode).toBe(HTTP_FOUND);
+        const location = new URL(String(resumed.headers.location));
+        expect(location.pathname).toBe('/oauth/consent');
+        const id = new URLSearchParams(location.hash.slice(1)).get('id') ?? '';
+        expect(await board.world.store.readConsent(id)).toMatchObject({
+            clientId: board.world.clientId,
+            redirectUri: REDIRECT,
+            scopes: ['factory:read'],
+            clientState: state,
+        });
+    });
+
+    it('resumes once, only for a signed-in session, and not after it expires', async () => {
+        const board = await start();
+        const resumeOf = async () => {
+            const response = await authorize(board, authorizeParams(board), null);
+            const login = new URL(String(response.headers.location), 'http://board.test');
+            return String(login.searchParams.get('returnTo'));
+        };
+        const get = (url: string, cookie: string | null = board.cookie) =>
+            board.app.inject({ method: 'GET', url, headers: cookie ? { cookie } : {} });
+
+        const link = await resumeOf();
+        // Still signed out: back to sign-in with the same link, nothing spent.
+        const again = await get(link, null);
+        expect(new URL(String(again.headers.location), 'http://board.test').pathname).toBe('/api/auth/github');
+        expect((await get(link)).statusCode).toBe(HTTP_FOUND);
+        // One time.
+        const replay = await get(link);
+        expect(replay.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(replay.headers.location).toBeUndefined();
+
+        const stale = await resumeOf();
+        board.world.clock.advance(3600);
+        expect((await get(stale)).statusCode).toBe(HTTP_BAD_REQUEST);
+        expect((await get('/api/oauth/authorize/resume?id=nope')).statusCode).toBe(HTTP_BAD_REQUEST);
+        expect((await get('/api/oauth/authorize/resume')).statusCode).toBe(HTTP_BAD_REQUEST);
     });
 
     it('opens a consent transaction for a signed-in member and carries it in the redirect fragment', async () => {

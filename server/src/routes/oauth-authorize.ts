@@ -2,7 +2,6 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { OAuthClient } from '../auth/oauth-store.js';
 import { SCOPES } from '../auth/route-class.js';
 import { createUserResolver } from '../auth/plugin.js';
-import { MAX_RETURN_PATH, safeReturnPath } from '../auth/session.js';
 import { redirectUriMatches } from '../oauth/redirect-match.js';
 import {
     CONSENT_PAGE_PATH,
@@ -20,17 +19,20 @@ import {
 } from './oauth-http.js';
 
 const HTTP_FOUND = 302;
-const STATE_LIMIT = 1024;
+const STATE_LIMIT = 4096;
 /** RFC 7636: a base64url SHA-256 digest, no padding. */
 const S256_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 
 type Vetted = { error: string; description: string } | { challenge: string; scopes: string[] };
+type Ask = {
+    client: OAuthClient;
+    redirectUri: string;
+    vetted: { challenge: string; scopes: string[] };
+    state: string | undefined;
+};
 
 /** The request parameters that need no store: everything the client can get wrong once its redirect is trusted. */
 const vet = (params: Map<string, string>, resource: string): Vetted => {
-    const state = params.get('state');
-    if (state !== undefined && state.length > STATE_LIMIT)
-        return { error: 'invalid_request', description: 'state is too long.' };
     if (params.get('response_type') !== 'code') {
         return { error: 'unsupported_response_type', description: 'Only response_type=code is supported.' };
     }
@@ -57,8 +59,9 @@ const vet = (params: Map<string, string>, resource: string): Vetted => {
  * Order matters: until the client and redirect URI are confirmed against a registered client, an error is shown to the
  * user and never redirected (an open redirect otherwise); after that every refusal goes to the redirect with `error`,
  * `state` and `iss`. A client lookup that could not be confirmed is 503, not "unknown client". A visitor with no session
- * is sent to sign in and back to this exact URL; a member gets a consent transaction (oauth-consent.ts) and a redirect
- * to the consent page, carrying the transaction in the fragment.
+ * is sent to sign in with the vetted request parked server-side and only an opaque id on the return path
+ * (`/authorize/resume`, which binds it once to the new session); a member gets a consent transaction and a redirect to
+ * the consent page, carrying the transaction in the fragment.
  */
 export const oauthAuthorizeRoutes =
     (deps: OAuthRouteDeps): FastifyPluginAsync =>
@@ -93,34 +96,8 @@ export const oauthAuthorizeRoutes =
             return { client, redirectUri };
         };
 
-        /** Phase 3: a member consents; anyone else signs in first. */
-        const proceed = async (
-            request: FastifyRequest,
-            reply: FastifyReply,
-            ask: {
-                client: OAuthClient;
-                redirectUri: string;
-                vetted: { challenge: string; scopes: string[] };
-                state: string | undefined;
-            }
-        ) => {
-            let caller: Awaited<ReturnType<typeof resolveUser>>;
-            try {
-                caller = await resolveUser(request);
-            } catch (e) {
-                return unavailable(reply, e as Error);
-            }
-            const sessionHash = sessionHashOf(request, sessionSecret);
-            if (!caller || !sessionHash) {
-                // The return path rides in the signed sign-in state, which caps it (MAX_RETURN_PATH).
-                if (safeReturnPath(request.url, issuer) !== request.url) {
-                    return shown(
-                        reply,
-                        `The request is too long to resume after sign-in (${MAX_RETURN_PATH} characters).`
-                    );
-                }
-                return reply.redirect(`/api/auth/github?returnTo=${encodeURIComponent(request.url)}`, HTTP_FOUND);
-            }
+        /** A consent transaction for this session, and the redirect to the page that renders it. */
+        const openConsent = async (reply: FastifyReply, sessionHash: Buffer, ask: Ask) => {
             try {
                 const transaction = await oauth.createConsent({
                     sessionHash,
@@ -138,6 +115,34 @@ export const oauthAuthorizeRoutes =
             }
         };
 
+        const signIn = (reply: FastifyReply, returnTo: string) =>
+            reply.redirect(`/api/auth/github?returnTo=${encodeURIComponent(returnTo)}`, HTTP_FOUND);
+
+        /** Phase 3: a member consents; anyone else signs in first, the request parked meanwhile. */
+        const proceed = async (request: FastifyRequest, reply: FastifyReply, ask: Ask) => {
+            let caller: Awaited<ReturnType<typeof resolveUser>>;
+            try {
+                caller = await resolveUser(request);
+            } catch (e) {
+                return unavailable(reply, e as Error);
+            }
+            const sessionHash = sessionHashOf(request, sessionSecret);
+            if (caller && sessionHash) return openConsent(reply, sessionHash, ask);
+            try {
+                const id = await oauth.createPending({
+                    clientId: ask.client.clientId,
+                    redirectUri: ask.redirectUri,
+                    resource,
+                    scopes: ask.vetted.scopes,
+                    codeChallenge: ask.vetted.challenge,
+                    clientState: ask.state ?? null,
+                });
+                return signIn(reply, `${OAUTH_PATHS.resume}?id=${id}`);
+            } catch (e) {
+                return unavailable(reply, e as Error);
+            }
+        };
+
         app.get(OAUTH_PATHS.authorize, async (request, reply) => {
             noStore(reply);
             const params = readParams(request.query);
@@ -148,12 +153,54 @@ export const oauthAuthorizeRoutes =
 
             // Phase 2: the request itself. Every refusal reaches the client's redirect with `iss`.
             const state = params.get('state');
-            const vetted = vet(params, resource);
-            if ('error' in vetted) {
-                const error = { error: vetted.error, error_description: vetted.description, state };
-                return reply.redirect(redirectWith(redirectUri, issuer, error), HTTP_FOUND);
+            const refuse = (error: string, description: string, echo: string | undefined) =>
+                reply.redirect(
+                    redirectWith(redirectUri, issuer, { error, error_description: description, state: echo }),
+                    HTTP_FOUND
+                );
+            // An oversized state is refused, not echoed back into the redirect.
+            if (state !== undefined && state.length > STATE_LIMIT) {
+                return refuse('invalid_request', 'state is too long.', undefined);
             }
+            const vetted = vet(params, resource);
+            if ('error' in vetted) return refuse(vetted.error, vetted.description, state);
 
             return proceed(request, reply, { client, redirectUri, vetted, state });
+        });
+
+        /** Spends the parked request for this session and opens its consent, if the client still accepts it. */
+        const bind = async (reply: FastifyReply, sessionHash: Buffer, id: string) => {
+            try {
+                const parked = await oauth.consumePending(id);
+                if (!parked) return shown(reply, 'This sign-in link has expired or was already used. Start again.');
+                const client = await resolveClient(parked.clientId);
+                if (!client || !redirectUriMatches(parked.redirectUri, client.redirectUris)) {
+                    return shown(reply, 'redirect_uri is not registered for this client.');
+                }
+                return openConsent(reply, sessionHash, {
+                    client,
+                    redirectUri: parked.redirectUri,
+                    vetted: { challenge: parked.codeChallenge, scopes: [...parked.scopes] },
+                    state: parked.clientState ?? undefined,
+                });
+            } catch (e) {
+                return unavailable(reply, e as Error);
+            }
+        };
+
+        // The way back from sign-in: the parked request binds to the session that has just appeared, once.
+        app.get(OAUTH_PATHS.resume, async (request, reply) => {
+            noStore(reply);
+            const id = readParams(request.query)?.get('id');
+            if (!id) return shown(reply, 'This sign-in link is not valid.');
+            let caller: Awaited<ReturnType<typeof resolveUser>>;
+            try {
+                caller = await resolveUser(request);
+            } catch (e) {
+                return unavailable(reply, e as Error);
+            }
+            const sessionHash = sessionHashOf(request, sessionSecret);
+            if (!caller || !sessionHash) return signIn(reply, `${OAUTH_PATHS.resume}?id=${encodeURIComponent(id)}`);
+            return bind(reply, sessionHash, id);
         });
     };

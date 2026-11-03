@@ -22,7 +22,7 @@ const count = async (table: string, clientId: string): Promise<number> => {
 };
 
 describe.skipIf(!enabled)('oauth purgeExpired', () => {
-    it('keeps everything live or recently expired, then drops expired codes, consent transactions and families', async () => {
+    it('keeps everything live or recently expired, then drops expired codes, consent transactions, parked authorizes and families', async () => {
         const w = await buildWorld(sql, ORG);
         const consent = () =>
             w.store.createConsent({
@@ -45,26 +45,34 @@ describe.skipIf(!enabled)('oauth purgeExpired', () => {
             });
         const issued = okGrant(await grant(w, ['factory:read']));
         await consent();
+        await w.store.createPending({
+            clientId: w.clientId,
+            redirectUri: REDIRECT,
+            resource: w.resource,
+            scopes: ['factory:read'],
+            codeChallenge: pkceChallenge(VERIFIER),
+        });
         await unspent();
 
         // Expired an hour ago: inside the retention, so nothing goes yet.
         w.clock.advance(3600);
-        expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, families: 0 });
+        expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, pending: 0, families: 0 });
 
         // A day on: the unspent code and the consent transaction go; the grant is live for 30 days.
         w.clock.advance(2 * DAY);
-        expect(await w.store.purgeExpired()).toEqual({ codes: 1, consents: 1, families: 0 });
+        expect(await w.store.purgeExpired()).toEqual({ codes: 1, consents: 1, pending: 1, families: 0 });
         expect(await count('oauth_consent_transaction', w.clientId)).toBe(0);
+        expect(await count('oauth_pending_authorize', w.clientId)).toBe(0);
         expect(await count('oauth_grant_family', w.clientId)).toBe(1);
 
         // Past the family's own expiry plus the retention, the grant, its tokens and its spent code go together.
         w.clock.advance(REFRESH_DAYS * DAY);
-        expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, families: 1 });
+        expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, pending: 0, families: 1 });
         expect(await count('oauth_authorization_code', w.clientId)).toBe(0);
         expect(await count('oauth_grant_family', w.clientId)).toBe(0);
         const tokens = await sql`select 1 from oauth_token where token_hash = ${hashToken(issued.accessToken)}`;
         expect(tokens).toHaveLength(0);
-        expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, families: 0 });
+        expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, pending: 0, families: 0 });
     });
 
     it('never touches a live grant, a live code or a live consent transaction', async () => {
@@ -87,7 +95,7 @@ describe.skipIf(!enabled)('oauth purgeExpired', () => {
             scopes: ['factory:read'],
             codeChallenge: pkceChallenge(VERIFIER),
         });
-        expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, families: 0 });
+        expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, pending: 0, families: 0 });
         expect(await w.store.findAccessToken(hashToken(issued.accessToken))).not.toBeNull();
         expect(okGrant(await exchange(w, code)).accessToken).toBeTruthy();
     });

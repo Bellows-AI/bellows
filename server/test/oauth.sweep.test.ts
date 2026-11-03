@@ -3,7 +3,7 @@ import { startOAuthSweep } from '../src/auth/oauth-sweep.js';
 
 afterEach(() => vi.useRealTimers());
 
-const store = (purge: () => Promise<{ codes: number; consents: number; families: number }>) => ({
+const store = (purge: () => Promise<{ codes: number; consents: number; pending: number; families: number }>) => ({
     purgeExpired: vi.fn(purge),
     deleteUnusedClients: vi.fn(async () => 0),
 });
@@ -18,7 +18,7 @@ describe('startOAuthSweep', () => {
             calls += 1;
             if (calls === 1) throw new Error('database down');
             if (calls === 2) await new Promise<void>((resolve) => (release = resolve));
-            return { codes: 0, consents: 0, families: 0 };
+            return { codes: 0, consents: 0, pending: 0, families: 0 };
         });
         const stop = startOAuthSweep(oauth, timed, 1000);
         await vi.advanceTimersByTimeAsync(0);

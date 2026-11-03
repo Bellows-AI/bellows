@@ -7,6 +7,7 @@ import type { AppConfig } from '../config.js';
 /** The authorization server's endpoints, under the public origin. One place, so metadata and routes cannot drift. */
 export const OAUTH_PATHS = {
     authorize: '/api/oauth/authorize',
+    resume: '/api/oauth/authorize/resume',
     token: '/api/oauth/token',
     revoke: '/api/oauth/revoke',
     consent: '/api/oauth/consent/:id',

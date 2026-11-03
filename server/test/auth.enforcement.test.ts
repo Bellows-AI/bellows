@@ -330,6 +330,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/.well-known/oauth-protected-resource/api/mcp', 'open'],
     ['/.well-known/oauth-authorization-server', 'open'],
     ['/api/oauth/authorize', 'open'],
+    ['/api/oauth/authorize/resume', 'open'],
     ['/api/oauth/token', 'open'],
     ['/api/oauth/revoke', 'open'],
     ['/api/oauth/consent/:id', 'user'],
