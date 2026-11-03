@@ -56,16 +56,37 @@ export function unsign(signed: string | undefined, secret: string): string | nul
     return timingSafeEqual(provided, expected) ? value : null;
 }
 
+/** Longest return path accepted; it rides inside the signed state, which travels in cookies and URLs. */
+export const MAX_RETURN_PATH = 512;
+
+/**
+ * The origin a path is resolved against when no deployment origin is at hand (a path read back out of
+ * a signed state was already vetted against the real one). The check is origin-independent: a path that
+ * stays on one origin stays on any.
+ */
+export const PATH_CHECK_ORIGIN = 'http://path-check.invalid';
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
+const UNSAFE_PATH_CHARS = /[\\\u0000-\u001f\u007f]|%(?:5c|[01][0-9a-f]|7f)/i;
+
 /**
  * A path this server will redirect a browser to after login.
  *
  * Anything that is not plainly a same-origin absolute path becomes `/`. A protocol-relative `//evil`
- * is a URL to another origin that merely looks like a path, and a full URL is one outright — either
- * would turn the callback into an open redirect for anyone who can craft a login link.
+ * is a URL to another origin that merely looks like a path, and a full URL is one outright; a
+ * backslash is read as a slash by browsers (`/\evil` is `//evil`), and control characters are stripped
+ * by them (`/\t/evil`). Any of those would turn the callback into an open redirect for anyone who can
+ * craft a login link, so the value must also resolve onto `publicUrl`'s own origin.
  */
-export function safeReturnPath(raw: string | undefined | null): string {
-    if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/';
-    return raw;
+export function safeReturnPath(raw: string | undefined | null, publicUrl: string): string {
+    if (!raw || raw.length > MAX_RETURN_PATH || !raw.startsWith('/') || raw.startsWith('//')) return '/';
+    if (UNSAFE_PATH_CHARS.test(raw)) return '/';
+    try {
+        const origin = new URL(publicUrl).origin;
+        return new URL(raw, origin).origin === origin ? raw : '/';
+    } catch {
+        return '/';
+    }
 }
 
 interface StatePayload {
@@ -97,7 +118,7 @@ const STATE_NONCE_BYTES = 16;
 export function encodeState(returnTo: string, secret: string, org?: string, reselect = false): string {
     const payload: StatePayload = {
         n: b64url(randomBytes(STATE_NONCE_BYTES)),
-        r: safeReturnPath(returnTo),
+        r: safeReturnPath(returnTo, PATH_CHECK_ORIGIN),
         ...(org ? { o: org } : {}),
         ...(reselect ? { x: 1 as const } : {}),
     };
@@ -115,7 +136,7 @@ export function decodeState(
         // The org is a decimal installation id, not a free-form string; anything else decodes as
         // "no preference" and the callback falls back to the first reported installation.
         const org = payload.o && /^\d+$/.test(payload.o) ? payload.o : null;
-        return { returnTo: safeReturnPath(payload.r), org, reselect: payload.x === 1 };
+        return { returnTo: safeReturnPath(payload.r, PATH_CHECK_ORIGIN), org, reselect: payload.x === 1 };
     } catch {
         return null;
     }
