@@ -180,6 +180,17 @@ describe('GET /api/integrations/:provider/callback', () => {
         expect(ctx.completed[0]!.signal).toBeInstanceOf(AbortSignal);
     });
 
+    it.each(['/.//attacker.example/x', '/%2e//attacker.example/x', '/a/..//attacker.example/x'])(
+        'never redirects off-origin whatever path was stored (%s)',
+        async (stored) => {
+            const ctx = await boot({ complete: () => ({ ok: true, returnTo: stored, connectionId: 'c-1' }) });
+            const response = await callback(ctx, `state=${SECRET_STATE}&code=${SECRET_CODE}`);
+            const location = response.headers.location as string;
+            expect(location.startsWith('//')).toBe(false);
+            expect(new URL(location, 'http://x').origin).toBe('http://x');
+        }
+    );
+
     it('redirects with the failure code, and with result=error when the flow throws', async () => {
         const failing = await boot({ complete: () => ({ ok: false, returnTo: '/', failure: 'site-mismatch' }) });
         const response = await callback(failing, `state=${SECRET_STATE}&error=access_denied`);
