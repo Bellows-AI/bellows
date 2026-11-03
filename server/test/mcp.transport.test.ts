@@ -36,12 +36,19 @@ import {
 } from './helpers-http.js';
 
 const TOOL_NAMES = [
+    'investigate_job',
+    'job_activity',
     'list_available_integrations',
     'list_connections',
     'list_executors',
+    'list_job_streams',
+    'list_jobs',
+    'list_questions',
     'list_repos',
     'list_skills',
+    'list_tasks',
     'preflight_task',
+    'read_job_log',
     'whoami',
 ];
 
