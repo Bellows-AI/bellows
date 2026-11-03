@@ -1,37 +1,44 @@
 import { parseArgs } from 'node:util';
 import type { BoardClient } from './board.js';
-import { preflightChecks } from './diagnostics.js';
-import type { ConfigSummary } from './diagnostics.js';
+import type { ConfigSummary, Preflight } from './diagnostics.js';
 import { parseOrUsage, UsageError } from './input.js';
 import { OUTCOME } from './outcome.js';
 import type { CommandResult } from './outcome.js';
 import { renderAuthStatus, renderPreflight } from './render.js';
 import { SELECTION_OPTIONS, selectionOf } from './selection.js';
-import { BoardError } from './transport.js';
+import { BoardError, NO_RESPONSE_STATUS } from './transport.js';
 import { USAGE } from './usage.js';
 
 /**
- * The diagnostic commands, `job preflight` and `auth status`. Both only issue GETs the board
- * already serves: no create, sync or token write.
+ * The diagnostic commands, `job preflight` and `auth status`. Neither creates, syncs or writes a
+ * token: preflight asks the board to check a selection and `auth status` only reads.
  */
 
 const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 const PREFLIGHT_NOTE = 'preflight is advisory: the board rechecks at create and at claim\n';
 
-/** A create's selection checked against the caller's reads, each read made only when the selection needs it. */
+const HTTP_SERVER_ERROR = 500;
+
+/** A create's selection checked by the board; a board that cannot answer is unreachable, never a refused selection. */
 export async function preflightCommand(args: readonly string[], boardFor: () => BoardClient): Promise<CommandResult> {
     const parsed = parseOrUsage(() =>
         parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...SELECTION_OPTIONS } })
     );
     if (parsed.positionals.length > 0) throw new UsageError(`preflight takes no command\n\n${USAGE}`);
-    const selection = selectionOf(parsed.values);
-    const client = boardFor();
-    const workspace = await client.workspace();
-    // Advisory like the rest: a list that cannot be read leaves the repo unverified, the board decides at create.
-    const repos = selection.repo === undefined ? null : await client.listRepos().catch(() => null);
-    const skills = selection.skills ? await client.listSkills() : [];
-    const connections = selection.connections === undefined ? [] : await client.listConnections();
-    const preflight = preflightChecks(selection, { workspace, repos, skills, connections });
+    let preflight: Preflight;
+    try {
+        preflight = await boardFor().preflight(selectionOf(parsed.values));
+    } catch (error) {
+        if (error instanceof BoardError && (error.status === NO_RESPONSE_STATUS || error.status >= HTTP_SERVER_ERROR)) {
+            const message = error.message;
+            return {
+                outcome: OUTCOME.unreachable,
+                error: { message, code: error.code, status: error.status },
+                stderr: `error: ${message}\n`,
+            };
+        }
+        throw error;
+    }
     const stdout = `${renderPreflight(preflight)}\n`;
     const blocked = preflight.checks.find((check) => check.status === 'blocked');
     if (!blocked) return { outcome: OUTCOME.ok, data: preflight, stdout, stderr: PREFLIGHT_NOTE };

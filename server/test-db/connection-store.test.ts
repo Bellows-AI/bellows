@@ -12,8 +12,10 @@ const ORG = testOrg();
 const OTHER_ORG = testOrg();
 const OWNER = testUser('conn-owner');
 const STRANGER = testUser('conn-stranger');
+/** One member per preview case: a default is judged against ALL of a member's connections, so none is shared. */
+const PREVIEW_USERS = Array.from({ length: 5 }, (_, i) => testUser(`conn-preview-${i}`));
 
-const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [OWNER, STRANGER] });
+const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [OWNER, STRANGER, ...PREVIEW_USERS] });
 
 let sql: Sql;
 let store: ConnectionStore;
@@ -176,5 +178,66 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
         expect((await store.candidates(OWNER.id, 'jira')).map((v) => v.id)).not.toContain(foreign.id);
         expect((await store.disconnect(foreign.id, { userId: OWNER.id })).disconnected).toBe(false);
         expect((await otherOrgStore.list(OWNER.id)).map((v) => v.id)).toContain(foreign.id);
+    });
+});
+
+describe.skipIf(!enabled)('connection store — preview', () => {
+    const [DEFAULTED, AMBIGUOUS, NONE, LAPSED, EXPLICIT] = PREVIEW_USERS as [
+        (typeof PREVIEW_USERS)[number],
+        (typeof PREVIEW_USERS)[number],
+        (typeof PREVIEW_USERS)[number],
+        (typeof PREVIEW_USERS)[number],
+        (typeof PREVIEW_USERS)[number],
+    ];
+    const ask = (user: { id: string }, explicit: string[] = []) =>
+        store.preview({ executionUser: user.id, explicit, providers: ['jira'], required: ['jira'] });
+
+    it("selects the member's one usable connection as the default, writing no binding", async () => {
+        const mine = await oauthConnection(sql, ORG, DEFAULTED.id);
+        const before = await sql`select 1 from job_connection_binding where org_id = ${ORG}`;
+        const answer = await ask(DEFAULTED);
+        expect(answer).toMatchObject({ ok: true, requirements: [] });
+        expect(answer.ok && answer.bindings).toEqual([
+            expect.objectContaining({ connectionId: mine.id, provider: 'jira', source: 'default' }),
+        ]);
+        expect(await sql`select 1 from job_connection_binding where org_id = ${ORG}`).toHaveLength(before.length);
+    });
+
+    it('reports two usable connections as ambiguous, not as missing', async () => {
+        await oauthConnection(sql, ORG, AMBIGUOUS.id);
+        await oauthConnection(sql, ORG, AMBIGUOUS.id);
+        expect(await ask(AMBIGUOUS)).toMatchObject({
+            ok: true,
+            bindings: [],
+            requirements: [{ provider: 'jira', reason: 'ambiguous' }],
+        });
+    });
+
+    it("reports a member with no connection as missing, and never offers another member's", async () => {
+        await oauthConnection(sql, ORG, STRANGER.id);
+        expect(await ask(NONE)).toMatchObject({
+            ok: true,
+            bindings: [],
+            requirements: [{ provider: 'jira', reason: 'missing' }],
+        });
+    });
+
+    it('does not count a connection whose grant lapsed: missing here, and listed as needing reconnect', async () => {
+        const lapsed = await oauthConnection(sql, ORG, LAPSED.id);
+        await sql`update integration_grant set status = 'reconnect_required' where id = ${lapsed.grantId}`;
+        expect(await ask(LAPSED)).toMatchObject({ ok: true, requirements: [{ provider: 'jira', reason: 'missing' }] });
+        expect(await ask(LAPSED, [lapsed.id])).toEqual({ ok: false, reason: 'not-authorized' });
+        expect(await store.list(LAPSED.id)).toEqual([expect.objectContaining({ id: lapsed.id, needsReconnect: true })]);
+    });
+
+    it("binds an explicit connection of the member and refuses another member's", async () => {
+        const mine = await oauthConnection(sql, ORG, EXPLICIT.id);
+        const theirs = await oauthConnection(sql, ORG, STRANGER.id);
+        expect(await ask(EXPLICIT, [mine.id])).toMatchObject({
+            ok: true,
+            bindings: [expect.objectContaining({ connectionId: mine.id, source: 'explicit' })],
+            requirements: [],
+        });
+        expect(await ask(EXPLICIT, [theirs.id])).toEqual({ ok: false, reason: 'not-authorized' });
     });
 });

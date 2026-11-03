@@ -1,5 +1,12 @@
 import type { Sql, TransactionSql } from 'postgres';
-import { lockThreadRootInTx, projectJiraConnectionInTx } from './connection-bindings.js';
+import {
+    lockThreadRootInTx,
+    projectJiraConnectionInTx,
+    resolveBindingsInTx,
+    type Resolution,
+    type ResolveInput,
+    type ResolveRefusal,
+} from './connection-bindings.js';
 import { revokeGrantIfOrphaned } from './connection-grants.js';
 
 const DISCONNECT_ATTEMPTS = 5;
@@ -30,6 +37,11 @@ export interface ConnectionStore {
     list(userId: string): Promise<ConnectionView[]>;
     /** The caller's own active connections for `provider`, newest first: the only default candidates. */
     candidates(userId: string, provider: string): Promise<ConnectionView[]>;
+    /**
+     * What a create by `executionUser` would bind: `resolveBindingsInTx` itself, in a transaction that writes
+     * nothing, so a preflight and the create share one verdict.
+     */
+    preview(input: Omit<ResolveInput, 'orgId'>): Promise<Resolution | ResolveRefusal>;
     /**
      * Disconnects the caller's own connection: the row stays and a grant left with no active connection is revoked.
      * `disconnected` is false when it is not theirs. An admin has no more reach than a member.
@@ -150,6 +162,10 @@ export function createConnectionStore({
                 order by c.created_at desc, c.id
             `;
             return rows.map(toView);
+        },
+        async preview(input) {
+            await gate();
+            return sql.begin((tx) => resolveBindingsInTx(tx, { ...input, orgId }));
         },
         async disconnect(connectionId, { userId }) {
             await gate();

@@ -45,7 +45,7 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
 before the task is created, and submits nothing if any check or upload fails. Progress goes to stderr; under
 --idempotency-key K the uploads are keyed K.a1, K.a2, ... so repeating the command replays them.
 
-preflight checks a create's selection against the board's reads and only reads. It is advisory:
+preflight asks the board to check a create's selection and creates nothing. It is advisory:
 the board rechecks at create and at claim, and its refusal is the answer.
 
 unattended use (cron, CI): mint a personal token (fat_...) from the board's settings page and hand
