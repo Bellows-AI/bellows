@@ -41,7 +41,8 @@ describe('boundedWait', () => {
     });
 
     it('asks for nothing when the budget cannot hold a second', async () => {
-        const hold = vi.fn(async (): Promise<Hold<string>> => ({ kind: 'open' }));
+        // Settling on a call makes a loop that starts a hold it should not fail the test, not spin on the frozen clock.
+        const hold = vi.fn(async (): Promise<Hold<string>> => ({ kind: 'settled', value: 'started' }));
         const end = await boundedWait({ budgetSeconds: 3.99, now: () => 0, signal: idle, hold });
         expect(end).toEqual({ kind: 'timeout' });
         expect(hold).not.toHaveBeenCalled();
@@ -68,7 +69,8 @@ describe('boundedWait', () => {
         const stop = new AbortController();
         const hold = vi.fn(async (): Promise<Hold<string>> => {
             stop.abort();
-            return { kind: 'open' };
+            // A loop that ignores the abort would spin forever on a frozen clock; settle it so the test fails instead.
+            return hold.mock.calls.length > 3 ? { kind: 'settled', value: 'runaway' } : { kind: 'open' };
         });
         expect(await boundedWait({ budgetSeconds: 45, now: () => 0, signal: stop.signal, hold })).toEqual({
             kind: 'aborted',
@@ -161,6 +163,7 @@ function rig(spec: Rig) {
             if (signal?.aborted) return { kind: 'inconclusive', reason: 'aborted' };
             if (request.url.includes('waitFor=')) {
                 const seconds = Number(new URL(request.url, 'http://x').searchParams.get('timeout'));
+                if (!(seconds >= 1)) throw new Error(`a hold of ${seconds}s was started`);
                 holdsAt.push({ at: t - start, seconds });
                 const step = spec.holds.shift();
                 if (!step) throw new Error('an unscripted hold was started');
