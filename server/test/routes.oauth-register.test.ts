@@ -148,4 +148,23 @@ describe('DCR rate limit (this process only)', () => {
         expect((await from('203.0.113.2')).statusCode).toBe(HTTP_CREATED);
         expect((await from('203.0.113.3')).statusCode).toBe(HTTP_TOO_MANY);
     });
+
+    it('does not charge the replica total for a request its own address already exhausted', async () => {
+        const app = await limited({ perAddress: 1, total: 3, windowMs: 60_000 });
+        const from = (ip: string) =>
+            app.inject({ method: 'POST', url: '/api/oauth/register', payload: GOOD, remoteAddress: ip });
+        expect((await from('203.0.113.1')).statusCode).toBe(HTTP_CREATED);
+        for (let i = 0; i < 10; i += 1) expect((await from('203.0.113.1')).statusCode).toBe(HTTP_TOO_MANY);
+        expect((await from('203.0.113.2')).statusCode).toBe(HTTP_CREATED);
+        expect((await from('203.0.113.3')).statusCode).toBe(HTTP_CREATED);
+    });
+
+    it('counts every address of one IPv6 /64 as one caller', async () => {
+        const app = await limited({ perAddress: 1, total: 100, windowMs: 60_000 });
+        const from = (ip: string) =>
+            app.inject({ method: 'POST', url: '/api/oauth/register', payload: GOOD, remoteAddress: ip });
+        expect((await from('2001:db8:1:2::1')).statusCode).toBe(HTTP_CREATED);
+        expect((await from('2001:db8:1:2:ffff::9')).statusCode).toBe(HTTP_TOO_MANY);
+        expect((await from('2001:db8:1:3::1')).statusCode).toBe(HTTP_CREATED);
+    });
 });

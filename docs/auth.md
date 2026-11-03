@@ -52,9 +52,10 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   shown, never redirected. `server/src/oauth/redirect-match.ts`, `server/test/oauth.redirect-match.test.ts`.
 - **Clients register two ways, both public (`none`) and both through one validator.** A URL `client_id` is a Client
   ID Metadata Document, fetched at authorize (never at `/token`, which reads the stored row) and cached in
-  `oauth_client` for an hour; a fetch that fails or returns a bad document keeps a cached client and otherwise leaves
-  the id unknown. `POST /api/oauth/register` (RFC 7591) mints a server-side `dcr_` id; unused ones expire after 30
-  days. Registration is unauthenticated, so it is never bridgeable and is rate limited per caller address and per
+  `oauth_client` for an hour; a fetch that fails or returns a bad document keeps a cached client for at most 24 hours
+  past its fetch. A fetch that could not be confirmed (timeout, network, busy, rate limited, or any failure past that
+  cap) is a 503, never an unknown client; only a definite refusal of an uncached id is. `POST /api/oauth/register`
+  (RFC 7591) mints a server-side `dcr_` id; unused `dcr` and `cimd` clients with no live grant expire after 30 days. Registration is unauthenticated, so it is never bridgeable and is rate limited per caller address and per
   replica **in this process only**, behind a proxy the address is the proxy's. A secret, another auth method or a
   grant this server does not issue is refused. `server/src/oauth/client-metadata.ts`, `server/src/oauth/client-resolver.ts`,
   `server/src/routes/oauth-register.ts`, `server/test/oauth.client-resolver.test.ts`, `server/test-db/oauth.client-registration.test.ts`.

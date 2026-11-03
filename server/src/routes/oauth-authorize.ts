@@ -173,12 +173,17 @@ export const oauthAuthorizeRoutes =
         const bind = async (reply: FastifyReply, sessionHash: Buffer, id: string) => {
             const signal = closeSignal(reply);
             try {
-                const parked = await oauth.consumePending(id);
-                if (!parked) return shown(reply, 'This sign-in link has expired or was already used. Start again.');
-                const client = await resolveClient(parked.clientId, signal);
-                if (!client || !redirectUriMatches(parked.redirectUri, client.redirectUris)) {
+                const expired = () => shown(reply, 'This sign-in link has expired or was already used. Start again.');
+                // The client is confirmed before the parked request is spent: an unconfirmed client throws to a 503
+                // and leaves the sign-in to be retried.
+                const peeked = await oauth.readPending(id);
+                if (!peeked) return expired();
+                const client = await resolveClient(peeked.clientId, signal);
+                if (!client || !redirectUriMatches(peeked.redirectUri, client.redirectUris)) {
                     return shown(reply, 'redirect_uri is not registered for this client.');
                 }
+                const parked = await oauth.consumePending(id);
+                if (!parked) return expired();
                 return openConsent(reply, sessionHash, {
                     client,
                     redirectUri: parked.redirectUri,

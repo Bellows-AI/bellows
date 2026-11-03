@@ -15,6 +15,8 @@ const MODERN = '2026-07-28';
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_FOUND = 302;
+const HTTP_UNAVAILABLE = 503;
+const DAY_MS = 86_400_000;
 const CALLBACK = `http://${LOCALHOST}:${CALLBACK_PORT}/callback`;
 
 let sql: Sql;
@@ -113,12 +115,36 @@ describe.skipIf(!enabled)('client registration against the real authorization se
         expect(await board.world.store.findClient(liar)).toBeNull();
     });
 
-    it('an unreachable document is an unknown client, shown to the user and never redirected', async () => {
+    it('an unreachable document is unconfirmed: a 503 shown to the user, never a redirect or an unknown client', async () => {
         const { board } = await boardOnLoopback();
         const gone = `http://${LOCALHOST}:${await freePort()}/oauth/client.json`;
         const response = await authorize(board, authorizeParams(board, { client_id: gone, redirect_uri: CALLBACK }));
-        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
         expect(response.headers.location).toBeUndefined();
+        expect(await board.world.store.findClient(gone)).toBeNull();
+    });
+
+    it('a sign-in parked for a client whose document cannot be confirmed survives the failed resume', async () => {
+        const { board } = await boardOnLoopback();
+        const clientId = await serveDocument((id) => ({ client_id: id, redirect_uris: [CALLBACK] }));
+        const parked = await authorize(
+            board,
+            authorizeParams(board, { client_id: clientId, redirect_uri: CALLBACK }),
+            null
+        );
+        expect(parked.statusCode).toBe(HTTP_FOUND);
+        const returnTo = new URL(String(parked.headers.location), 'http://board.invalid').searchParams.get('returnTo');
+        // The cached document is past the staleness cap and its server is gone: the resume cannot confirm the client.
+        for (const server of servers.splice(0)) server.close();
+        await sql`update oauth_client set fetched_at = ${new Date(Date.now() - 3 * DAY_MS)} where client_id = ${clientId}`;
+        const resume = () =>
+            board.app.inject({ method: 'GET', url: String(returnTo), headers: { cookie: board.cookie } });
+        expect((await resume()).statusCode).toBe(HTTP_UNAVAILABLE);
+        // The document is reachable again (here: the cache is fresh): the same parked sign-in still opens consent.
+        await sql`update oauth_client set fetched_at = ${new Date()} where client_id = ${clientId}`;
+        const again = await resume();
+        expect(again.statusCode).toBe(HTTP_FOUND);
+        expect(String(again.headers.location)).toContain('/consent');
     });
 
     it('a Dynamic Client Registration client: the SDK registers itself, then runs the whole flow', async () => {

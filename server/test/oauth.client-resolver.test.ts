@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { OAuthClient, OAuthStore } from '../src/auth/oauth-store.js';
 import { CimdFetchError, type CimdFetcher } from '../src/oauth/cimd-fetch.js';
-import { CIMD_TTL_MS, createClientResolver } from '../src/oauth/client-resolver.js';
+import { CIMD_MAX_STALE_MS, CIMD_TTL_MS, createClientResolver } from '../src/oauth/client-resolver.js';
 
 const ID = 'https://client.example.test/oauth/client.json';
 const DOC = {
@@ -81,10 +81,38 @@ describe('the client resolver', () => {
         }
     );
 
-    it('leaves an unknown client unknown when the first fetch fails', async () => {
-        const { resolve, rows } = rig(null, failing('timeout'));
-        expect(await resolve(ID)).toBeNull();
-        expect(rows.size).toBe(0);
+    it.each(['timeout', 'network', 'busy', 'rate_limited', 'aborted'] as const)(
+        'throws, and stores nothing, when a first fetch fails with %s: the client could not be confirmed',
+        async (code) => {
+            const { resolve, rows } = rig(null, failing(code));
+            await expect(resolve(ID)).rejects.toMatchObject({ code });
+            expect(rows.size).toBe(0);
+        }
+    );
+
+    it.each(['policy', 'address', 'redirect', 'status', 'malformed', 'too_large'] as const)(
+        'leaves an unknown client unknown when the first fetch is definitively refused with %s',
+        async (code) => {
+            const { resolve, rows } = rig(null, failing(code));
+            expect(await resolve(ID)).toBeNull();
+            expect(rows.size).toBe(0);
+        }
+    );
+
+    it.each(['timeout', 'busy', 'rate_limited', 'status'] as const)(
+        'stops serving a stale client once it is past the staleness cap: a failed refetch (%s) is unconfirmed',
+        async (code) => {
+            const old = cached(CIMD_MAX_STALE_MS + 1);
+            const { resolve, rows } = rig(old, failing(code));
+            await expect(resolve(ID)).rejects.toMatchObject({ code });
+            expect(rows.get(ID)).toEqual(old);
+        }
+    );
+
+    it('serves a stale client right up to the staleness cap', async () => {
+        const old = cached(CIMD_MAX_STALE_MS);
+        const { resolve } = rig(old, failing('rate_limited'));
+        expect(await resolve(ID)).toEqual(old);
     });
 
     it.each([

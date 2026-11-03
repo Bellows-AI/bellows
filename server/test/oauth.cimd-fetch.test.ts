@@ -67,18 +67,32 @@ describe('isSpecialUseAddress', () => {
         '::ffff:169.254.169.254',
         '64:ff9b::7f00:1',
         '2002:7f00:1::',
+        '2002:a00::1',
+        '2002:a9fe:a9fe::',
+        '64:ff9b:1::1',
+        '64:ff9b:1:abcd::8.8.8.8',
+        '::ffff:0:10.0.0.1',
+        '::ffff:0:a9fe:a9fe',
+        '64:ff9b::a00:1',
         '::127.0.0.1',
         '2001:db8::1',
     ])('refuses %s', (address) => {
         expect(isSpecialUseAddress(address)).toBe(true);
     });
 
-    it.each(['8.8.8.8', '1.1.1.1', '172.32.0.1', '100.63.255.255', '2606:4700:4700::1111', '::ffff:8.8.8.8'])(
-        'allows the public address %s',
-        (address) => {
-            expect(isSpecialUseAddress(address)).toBe(false);
-        }
-    );
+    it.each([
+        '8.8.8.8',
+        '1.1.1.1',
+        '172.32.0.1',
+        '100.63.255.255',
+        '2606:4700:4700::1111',
+        '::ffff:8.8.8.8',
+        '2002:808:808::1',
+        '::ffff:0:8.8.8.8',
+        '64:ff9b::808:808',
+    ])('allows the public address %s', (address) => {
+        expect(isSpecialUseAddress(address)).toBe(false);
+    });
 });
 
 describe('the CIMD fetcher: where it will not connect', () => {

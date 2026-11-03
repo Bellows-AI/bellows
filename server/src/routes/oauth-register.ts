@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import { parseClientMetadata, type ClientMetadata } from '../oauth/client-metadata.js';
-import { createRateLimiter } from '../oauth/rate-limit.js';
+import { addressKey, createRateLimiter } from '../oauth/rate-limit.js';
 import {
     HTTP_BAD_REQUEST,
     HTTP_UNAVAILABLE,
@@ -48,10 +48,10 @@ export const oauthRegisterRoutes =
         const perAddress = createRateLimiter({ limit: registrationLimits.perAddress, windowMs });
         const total = createRateLimiter({ limit: registrationLimits.total, windowMs });
 
-        /** A 429 when this caller or the replica is over its window, else null. */
+        /** The verdict for this caller: refused when it or the replica is over its window; a refused caller never spends the total. */
         const overLimit = (ip: string) => {
-            const verdicts = [perAddress.hit(ip), total.hit('*')];
-            return verdicts.find((verdict) => !verdict.ok) ?? null;
+            const own = perAddress.hit(addressKey(ip));
+            return own.ok ? total.hit('*') : own;
         };
 
         const created = (reply: FastifyReply, clientId: string, parsed: Extract<ClientMetadata, { ok: true }>) =>
@@ -72,7 +72,7 @@ export const oauthRegisterRoutes =
         app.post(OAUTH_PATHS.register, { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             noStore(reply);
             const refused = overLimit(request.ip);
-            if (refused && !refused.ok) return tooMany(reply, refused.retryAfterSeconds);
+            if (!refused.ok) return tooMany(reply, refused.retryAfterSeconds);
             const parsed = isObject(request.body)
                 ? parseClientMetadata(request.body)
                 : bad('invalid_client_metadata', 'The body must be a JSON object.');

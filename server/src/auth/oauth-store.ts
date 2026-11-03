@@ -135,6 +135,8 @@ export interface OAuthStore {
 
     /** Parks a vetted authorize request until its visitor has a session; returns the raw, unguessable id. */
     createPending(input: Omit<Parameters<OAuthStore['createConsent']>[0], 'sessionHash'>): Promise<string>;
+    /** The parked request without spending it, so a caller can confirm its client first; null if unknown, spent or expired. */
+    readPending(id: string): Promise<PendingAuthorize | null>;
     /** Spends a parked request once, whoever presents the id; null if unknown, spent or expired. */
     consumePending(id: string): Promise<PendingAuthorize | null>;
 }
@@ -429,7 +431,7 @@ const clientOps = (ctx: Ctx): ClientOps => ({
         const cutoff = plus(ctx.now(), -UNUSED_CLIENT_DAYS * DAY);
         const rows = await ctx.sql`
             delete from oauth_client c
-            where c.kind = 'dcr' and coalesce(c.last_used_at, c.created_at) < ${cutoff}
+            where coalesce(c.last_used_at, c.fetched_at, c.created_at) < ${cutoff}
               and not exists (select 1 from oauth_grant_family f where f.client_id = c.client_id)
               and not exists (select 1 from oauth_authorization_code a where a.client_id = c.client_id)
               and not exists (select 1 from oauth_consent_transaction t where t.client_id = c.client_id)
@@ -442,7 +444,7 @@ const clientOps = (ctx: Ctx): ClientOps => ({
 
 type ConsentOps = Pick<
     OAuthStore,
-    'createConsent' | 'readConsent' | 'consumeConsent' | 'createPending' | 'consumePending'
+    'createConsent' | 'readConsent' | 'consumeConsent' | 'createPending' | 'readPending' | 'consumePending'
 >;
 
 const consentOps = (ctx: Ctx): ConsentOps => ({
@@ -498,6 +500,16 @@ const consentOps = (ctx: Ctx): ConsentOps => ({
                     ${plus(at, input.ttlSeconds ?? PENDING_TTL_SECONDS)})
         `;
         return id;
+    },
+
+    async readPending(id) {
+        await ctx.gate();
+        const rows = await ctx.sql<PendingRow[]>`
+            select client_id, redirect_uri, resource, scopes, code_challenge, client_state
+            from oauth_pending_authorize
+            where id_hash = ${hashToken(id)} and used_at is null and expires_at > ${ctx.now()}
+        `;
+        return rows[0] ? toPending(rows[0]) : null;
     },
 
     async consumePending(id) {
