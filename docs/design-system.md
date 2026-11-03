@@ -27,6 +27,7 @@ never utilities, and every color it renders resolves through a token.
 | Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` (`npm run verify:ui:nightly`) |
 | Specimen sections (Surfaces, Type, Icons, Actions, Data, Forms, States, Tokens), one icon per `ICON_NAMES`, token explorer over `tokens.css` | `e2e/specimen/main.tsx`, `e2e/specimen/tokens.tsx`, `e2e/specimen/matrix.ts` (`GROUPS`, `SECTIONS`) | `e2e/specimen.spec.ts` (`specimen documentation`) |
 | Every route family's overflow at 4 widths in one theme; rendered contrast in both themes | — | `e2e/matrix.spec.ts` |
+| DOM regression matrix (`@nightly`, no screenshots): major routes plus batches list, draft and monitor in both themes at 1440 and 390 held to fit, no NaN text and a clean console; held reads are never an alert, refused reads announce as one | — | `e2e/state-matrix.spec.ts` |
 
 ## Invariants
 
