@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { resolveBatchPlan, validateBatchPlan, type BatchPlan, type ResolvedBatchPlan } from '@factory-ai/core';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
+import { readSnapshot } from '../src/db/batches/batch-store-report.js';
 import type { BatchStartInput, BatchStore } from '../src/db/batches/batch-store-types.js';
 import { IdempotencyKeyReusedError } from '../src/db/jobs/job-store-idempotency.js';
 import { useTestDb } from './harness.js';
@@ -335,6 +336,35 @@ describe.skipIf(!enabled)('the batch store', () => {
                 result: 'ok',
                 replayed: true,
             });
+        });
+    });
+
+    describe('snapshot', () => {
+        it('reads the record and the report in one transaction: a commit between them is in neither', async () => {
+            const { id } = await store.create(singlePlan(), ALICE);
+            await freeze(id, singlePlan());
+            const during = await readSnapshot(
+                sql,
+                { orgId: ORG, id },
+                {
+                    beforeUsage: async () => {
+                        // Another connection commits the fence after the record was read.
+                        await sql`update batch set cancelled_at = now() where org_id = ${ORG} and id = ${id}`;
+                    },
+                }
+            );
+            expect(during?.record.cancelledAt).toBeNull();
+            expect(during?.report?.cancelledAt).toBeNull();
+
+            const after = await store.snapshot(id);
+            expect(after?.record.cancelledAt).not.toBeNull();
+            expect(after?.report?.cancelledAt).toBe(after?.record.cancelledAt);
+        });
+
+        it('has no report for a draft, and is null for a stranger', async () => {
+            const { id } = await store.create(singlePlan(), ALICE);
+            expect((await store.snapshot(id))?.report).toBeNull();
+            expect(await otherStore.snapshot(id)).toBeNull();
         });
     });
 });

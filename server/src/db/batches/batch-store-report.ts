@@ -14,11 +14,18 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { TelemetrySource } from '../../telemetry/client.js';
 import { readUsageFacts } from '../../telemetry/usage-facts.js';
 import { type BatchPrObservation, readObservations } from './batch-store-observation.js';
-import { type BoardMergeRow, boardMergeColumns, boardMerging, readVerification } from './batch-store-rows.js';
+import {
+    type BoardMergeRow,
+    boardMergeColumns,
+    boardMerging,
+    readRecord,
+    readVerification,
+} from './batch-store-rows.js';
 import {
     ACCEPTANCE_PR_MERGED,
     BATCH_DRAFT,
     type BatchReport,
+    type BatchSnapshot,
     type BatchReportObservation,
     type BatchReportState,
     type BatchReportTask,
@@ -111,6 +118,19 @@ export function readReport(
     deps: ReportDeps = {}
 ): Promise<BatchReport | null> {
     return sql.begin('isolation level repeatable read, read only', (tx) => assembleReport(tx, { orgId, id }, deps));
+}
+
+/** The record and the report in ONE repeatable-read snapshot: the same instant of the same batch. */
+export function readSnapshot(
+    sql: Sql,
+    { orgId, id }: { orgId: string; id: string },
+    deps: ReportDeps = {}
+): Promise<BatchSnapshot | null> {
+    return sql.begin('isolation level repeatable read, read only', async (tx) => {
+        const record = await readRecord(tx, { orgId, id });
+        if (!record) return null;
+        return { record, report: await assembleReport(tx, { orgId, id }, deps) };
+    });
 }
 
 async function assembleReport(

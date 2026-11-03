@@ -37,6 +37,23 @@ const task = (key: string, execution: string, extra: Record<string, unknown> = {
     ...extra,
 });
 
+/** The board's verdict on a batch, stubbed: the CLI reads it and decides nothing from the raw record. */
+const standing = (verdict: string, extra: Record<string, unknown> = {}) => ({
+    verdict,
+    fence: null,
+    attention: [],
+    verificationFailures: [],
+    ...extra,
+});
+
+/** A person-waiting task as the board's `standing.attention` lists it. */
+const attends = (key: string, waitReason: string, pr: string | null = null) => ({
+    key,
+    stage: 'build',
+    waitReason,
+    pr,
+});
+
 const record = (status: string, tasks: unknown[], extra: Record<string, unknown> = {}) => ({
     id: ID,
     status,
@@ -51,6 +68,9 @@ const record = (status: string, tasks: unknown[], extra: Record<string, unknown>
     cancelledAt: null,
     expiredAt: null,
     verification: [],
+    standing: standing(status === 'draft' ? 'draft' : 'running'),
+    // The report the board read for the standing, in the same response.
+    report: status === 'draft' ? null : REPORT(),
     ...extra,
 });
 
@@ -362,26 +382,46 @@ describe('batch validate / start / inspect / list', () => {
     it('names a failed stage verification on inspect, under its stage, with the verdict it forces', async () => {
         const parked = record('running', [task('a', 'succeeded', { gate: 'passed' })], {
             verification: [verified('failed', 'checks on main fail: e2e failing')],
+            standing: standing('needs_attention'),
         });
         const result = await cli(['batch', 'inspect', ID], (sent) => json(isReport(sent) ? REPORT() : parked));
         expect(result.out).toContain('verdict needs_attention');
         expect(result.out).toContain('  verification failed: checks on main fail: e2e failing (at cd89f3d2)');
     });
 
-    it("reads an open PR the report's next leaves to the board as running on inspect, naming no action (#688)", async () => {
+    it("prints the board's standing on inspect: running names no action, a person's PR names it (#688)", async () => {
         const pr = 'https://github.com/o/api/pull/9';
-        const merging = record('running', [
-            task('a', 'succeeded', { pr, waitReason: `waiting for the board to merge ${pr}` }),
-        ]);
-        const report = REPORT();
-        const boardNext = { ...report, tasks: [{ ...report.tasks[0]!, next: { action: 'wait' } }] };
-        const result = await cli(['batch', 'inspect', ID], (sent) => json(isReport(sent) ? boardNext : merging));
-        expect(result.out).toContain('verdict running');
-        expect(result.out).not.toContain('needs action');
+        const reason = `waiting for the board to merge ${pr}`;
+        const tasks = [task('a', 'succeeded', { pr, waitReason: reason })];
+        const board = record('running', tasks, { standing: standing('running') });
+        const result = await cli(['batch', 'inspect', ID, '--json'], (sent) => json(isReport(sent) ? REPORT() : board));
+        expect(JSON.parse(result.out).data).toMatchObject({ verdict: 'running', needsAction: [] });
+        const human = await cli(['batch', 'inspect', ID], (sent) => json(isReport(sent) ? REPORT() : board));
+        expect(human.out).toContain('verdict running');
+        expect(human.out).not.toContain('needs action');
 
-        const person = await cli(['batch', 'inspect', ID], (sent) => json(isReport(sent) ? report : merging));
-        expect(person.out).toContain('verdict needs_attention');
-        expect(person.out).toContain(`needs action: waiting for the board to merge ${pr}`);
+        const handed = record('running', tasks, {
+            standing: standing('needs_attention', { attention: [attends('a', reason, pr)] }),
+        });
+        const person = await cli(['batch', 'inspect', ID, '--json'], (sent) =>
+            json(isReport(sent) ? REPORT() : handed)
+        );
+        expect(JSON.parse(person.out).data).toMatchObject({ verdict: 'needs_attention' });
+        expect(JSON.parse(person.out).data.needsAction).toEqual(handed.tasks);
+        const text = await cli(['batch', 'inspect', ID], (sent) => json(isReport(sent) ? REPORT() : handed));
+        expect(text.out).toContain('verdict needs_attention');
+        expect(text.out).toContain(`needs action: ${reason}`);
+    });
+
+    it('prints the verdict of a started batch on start and its replay, and none for the draft it came from', async () => {
+        const started = record('running', [task('a', 'running')], { standing: standing('running') });
+        const result = await cli(['batch', 'start', ID, '--version', '3'], () => json(started));
+        expect(result.out).toContain('verdict running');
+        const replay = await cli(['batch', 'start', ID, '--version', '3', '--idempotency-key', 'key-12345678'], () =>
+            json(started, 200, { 'idempotency-replayed': 'true' })
+        );
+        expect(replay.out).toContain('verdict running');
+        expect(replay.err).toContain('replayed');
     });
 
     it('carries the report of a started batch on inspect, and reads none for a draft', async () => {
@@ -456,10 +496,10 @@ describe('batch validate / start / inspect / list', () => {
 
 describe('batch wait', () => {
     /** Answers the batch reads in order, and every report read with `report`. */
-    const wait = (states: unknown[], argv: string[] = [], report: unknown = REPORT()) => {
+    const wait = (states: unknown[], argv: string[] = []) => {
         let reads = 0;
         return cli(['batch', 'wait', ID, '--json', ...argv], (sent) => {
-            if (isReport(sent)) return json(report);
+            if (isReport(sent)) return json(REPORT());
             reads += 1;
             return json(states[Math.min(reads, states.length) - 1]);
         });
@@ -468,7 +508,7 @@ describe('batch wait', () => {
     it('exits 0 once every task succeeded, polling until then', async () => {
         const result = await wait([
             record('running', [task('a', 'running')]),
-            record('completed', [task('a', 'succeeded')], { completedAt: 'done' }),
+            record('completed', [task('a', 'succeeded')], { completedAt: 'done', standing: standing('succeeded') }),
         ]);
         expect(result.code).toBe(0);
         expect(result.sent.filter((sent) => !isReport(sent))).toHaveLength(2);
@@ -476,24 +516,41 @@ describe('batch wait', () => {
     });
 
     it('exits 4 on a failed task, 5 on a cancelled batch', async () => {
-        const failed = await wait([record('running', [task('a', 'succeeded'), task('b', 'failed')])]);
-        const cancelled = await wait([record('running', [task('a', 'cancelled'), task('b', 'succeeded')])]);
+        const failed = await wait([
+            record('running', [task('a', 'succeeded'), task('b', 'failed')], { standing: standing('failed') }),
+        ]);
+        const cancelled = await wait([
+            record('running', [task('a', 'cancelled'), task('b', 'succeeded')], { standing: standing('cancelled') }),
+        ]);
         expect(failed.code).toBe(4);
         expect(cancelled.code).toBe(5);
     });
 
     it('reads a completed batch whose optional task a person force-closed as succeeded, not cancelled (#676)', async () => {
         const closed = task('b', 'cancelled', { closedAt: '2026-10-12T06:00:00.000Z' });
-        const result = await wait([record('completed', [task('a', 'succeeded'), closed], { completedAt: 'done' })]);
+        const result = await wait([
+            record('completed', [task('a', 'succeeded'), closed], {
+                completedAt: 'done',
+                standing: standing('succeeded'),
+            }),
+        ]);
         expect(result.code).toBe(0);
         expect(JSON.parse(result.out).outcome).toBe('succeeded');
     });
 
     it('exits 6 naming the human review gate and the PR needing action', async () => {
-        const waiting = record('running', [
-            task('a', 'running', { waitReason: 'human review', pr: 'https://github.com/o/api/pull/9' }),
-            task('b', 'running'),
-        ]);
+        const waiting = record(
+            'running',
+            [
+                task('a', 'running', { waitReason: 'human review', pr: 'https://github.com/o/api/pull/9' }),
+                task('b', 'running'),
+            ],
+            {
+                standing: standing('needs_attention', {
+                    attention: [attends('a', 'human review', 'https://github.com/o/api/pull/9')],
+                }),
+            }
+        );
         const result = await cli(['batch', 'wait', ID], (sent) => json(isReport(sent) ? REPORT() : waiting));
         expect(result.code).toBe(6);
         expect(result.out).toContain('a: human review (pr https://github.com/o/api/pull/9)');
@@ -502,28 +559,65 @@ describe('batch wait', () => {
         expect(JSON.parse(asJson.out).data.needsAction.map((entry: { key: string }) => entry.key)).toEqual(['a']);
     });
 
-    it("keeps waiting while the report's next says the board merges an open PR, and exits 6 once it hands it over (#688)", async () => {
+    it('keeps waiting while the standing says the board merges an open PR, and exits 6 once it hands it over (#688)', async () => {
         const pr = 'https://github.com/o/api/pull/9';
-        const merging = record('running', [
-            task('a', 'succeeded', { pr, waitReason: `waiting for the board to merge ${pr}` }),
-        ]);
-        const reportWith = (next: Record<string, unknown>) => {
-            const report = REPORT();
-            return { ...report, tasks: [{ ...report.tasks[0]!, next }] };
-        };
+        const reason = `waiting for the board to merge ${pr}`;
+        const tasks = [task('a', 'succeeded', { pr, waitReason: reason })];
 
-        const board = await wait([merging], ['--timeout', '12'], reportWith({ action: 'wait' }));
+        const board = await wait([record('running', tasks, { standing: standing('running') })], ['--timeout', '12']);
         expect(board.code).toBe(3);
         expect(JSON.parse(board.out).data.needsAction).toEqual([]);
 
-        const person = await wait([merging], [], reportWith({ action: 'merge', url: pr }));
+        const handed = standing('needs_attention', { attention: [attends('a', reason, pr)] });
+        const person = await wait([record('running', tasks, { standing: handed })]);
         expect(person.code).toBe(6);
         expect(JSON.parse(person.out).data.needsAction.map((entry: { key: string }) => entry.key)).toEqual(['a']);
+    });
+
+    it('renders from the one response: no report read, and an unread report ends a timeout with report null', async () => {
+        const unread = record('running', [task('a', 'running')], { standing: standing('inconclusive'), report: null });
+        const result = await cli(['batch', 'wait', ID, '--json', '--timeout', '12'], () => json(unread));
+        expect(result.code).toBe(3);
+        expect(JSON.parse(result.out)).toMatchObject({ outcome: 'timeout', data: { report: null } });
+        expect(result.sent.some(isReport)).toBe(false);
+        expect(JSON.parse(result.out).data.batch).not.toHaveProperty('report');
+    });
+
+    it('a failed standing stays failed: a fence the report would show later cannot be mixed in (one read)', async () => {
+        const failed = record('running', [task('a', 'failed')], { standing: standing('failed') });
+        const result = await cli(['batch', 'wait', ID, '--json'], (sent) =>
+            isReport(sent) ? json(REPORT('cancelled')) : json(failed)
+        );
+        expect(result.code).toBe(4);
+        expect(result.sent.some(isReport)).toBe(false);
+    });
+
+    it('prints no report read on inspect or start either', async () => {
+        const started = record('running', [task('a', 'running')]);
+        for (const argv of [
+            ['batch', 'inspect', ID],
+            ['batch', 'start', ID, '--version', '3'],
+        ]) {
+            const result = await cli(argv, () => json(started));
+            expect(result.sent.some(isReport)).toBe(false);
+        }
+    });
+
+    it('keeps waiting while the standing is inconclusive, and times out rather than settling', async () => {
+        const unread = record('completed', [task('a', 'succeeded')], { standing: standing('inconclusive') });
+        const result = await wait([unread], ['--timeout', '12']);
+        expect(result.code).toBe(3);
+        expect(JSON.parse(result.out).data.verdict).toBe('inconclusive');
     });
 
     it('exits 6 on a failed stage verification, naming the stage and why, though no task waits', async () => {
         const parked = record('running', [task('a', 'succeeded', { gate: 'passed' })], {
             verification: [verified('failed', 'checks on main at cd89f3d2 fail: e2e failing')],
+            standing: standing('needs_attention', {
+                verificationFailures: [
+                    { ...verified('failed', 'checks on main at cd89f3d2 fail: e2e failing'), checkedAt: undefined },
+                ],
+            }),
         });
         const result = await cli(['batch', 'wait', ID], (sent) => json(isReport(sent) ? REPORT() : parked));
         expect(result.code).toBe(6);
@@ -553,7 +647,9 @@ describe('batch wait', () => {
     });
 
     it('carries the report in what it ends with, whatever the ending', async () => {
-        const settled = await wait([record('completed', [task('a', 'succeeded')], { completedAt: 'done' })]);
+        const settled = await wait([
+            record('completed', [task('a', 'succeeded')], { completedAt: 'done', standing: standing('succeeded') }),
+        ]);
         const timedOut = await wait([record('running', [task('a', 'running')])], ['--timeout', '12']);
         expect(JSON.parse(settled.out).data.report).toEqual(REPORT());
         expect(JSON.parse(timedOut.out).data.report).toEqual(REPORT());
@@ -563,6 +659,8 @@ describe('batch wait', () => {
         const fenced = (status: 'expired' | 'cancelled') =>
             record(status, [task('a', 'succeeded', { waitReason: 'waiting for a person to merge x' })], {
                 [`${status}At`]: '2026-10-12T12:00:00.000Z',
+                standing: standing('cancelled', { fence: status }),
+                report: REPORT(status),
             });
         const expired = await cli(['batch', 'wait', ID], (sent) =>
             json(isReport(sent) ? REPORT('expired') : fenced('expired'))
@@ -575,7 +673,7 @@ describe('batch wait', () => {
         expect(cancelled.code).toBe(5);
         expect(cancelled.out).toContain(`${ID} cancelled`);
 
-        const asJson = await wait([fenced('expired')], [], REPORT('expired'));
+        const asJson = await wait([fenced('expired')]);
         expect(JSON.parse(asJson.out)).toMatchObject({ outcome: 'cancelled', data: { report: { state: 'expired' } } });
         expect(asJson.sent.every((sent) => sent.method === 'GET')).toBe(true);
     });
