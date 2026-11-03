@@ -959,6 +959,13 @@ describe('the design-system inventory', () => {
         expect(phone.some((block) => /\.kv\s*\{[^}]*grid-template-columns:\s*1fr/.test(block))).toBe(true);
     });
 
+    it('lets the identity head text shrink and break a long login instead of overflowing a phone', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/entry.css'), 'utf8'));
+        const body = (prelude: string) => rules(css).find(([p]) => p === prelude)?.[1] ?? '';
+        expect(body('.identity-head > div')).toMatch(/min-width:\s*0/);
+        expect(body('.identity-head p')).toMatch(/overflow-wrap:\s*anywhere/);
+    });
+
     it('styles the shared state note as quiet text, red only for an error', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
         const preludes = rules(css).map(([prelude]) => prelude);

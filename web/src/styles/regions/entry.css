@@ -435,6 +435,13 @@
 
     .identity-head p {
         margin: 0;
+        overflow-wrap: anywhere;
+    }
+
+    /* The text column shrinks below its longest unbroken run (a 39-character login) instead of
+       widening the flex row past a 390px page. */
+    .identity-head > div {
+        min-width: 0;
     }
 
     .identity-name {

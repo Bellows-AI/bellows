@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { AccessTokenView } from '../src/api/useAccessTokens.js';
+import { useState } from 'react';
 import { AccessTokensPanel } from '../src/panels/AccessTokensPanel.js';
 import './dom.js';
 
@@ -73,5 +74,36 @@ describe('AccessTokensPanel revoke confirmation', () => {
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
         expect(onRevoke).toHaveBeenCalledTimes(1);
         expect(onRevoke).toHaveBeenCalledWith('t2');
+    });
+});
+
+describe('AccessTokensPanel focus after a confirmed revoke', () => {
+    it('lands on a control that survives the refetch, never on the body', async () => {
+        function Harness() {
+            const [tokens, setTokens] = useState([token('t1', 'ci')]);
+            return (
+                <AccessTokensPanel
+                    title="Personal access tokens"
+                    hint=""
+                    tokens={tokens}
+                    loading={false}
+                    error={null}
+                    onCreate={async () => ({ ok: false, error: 'unused' })}
+                    onRevoke={async () => {
+                        setTokens([{ ...token('t1', 'ci'), revokedAt: '2026-02-01T00:00:00.000Z' }]);
+                        return null;
+                    }}
+                />
+            );
+        }
+        const user = userEvent.setup();
+        render(<Harness />);
+        await user.click(screen.getByRole('button', { name: 'Revoke ci' }));
+        await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /^Revoke/ }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await waitFor(() =>
+            expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Personal access tokens' }))
+        );
+        expect(document.activeElement).not.toBe(document.body);
     });
 });
