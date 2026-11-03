@@ -555,9 +555,10 @@ describe.skipIf(!enabled)('the task write tools — database', () => {
 
         // Another member of the org, and a member of another org, cannot bind alice's connection to her task.
         const carol = await bind('carol', id, body);
-        expect(carol.status).toBeGreaterThanOrEqual(400);
+        // Not the task's execution user reads as an unknown task (job-store-connections.ts), the same as another org.
+        expect(carol).toMatchObject({ status: 404, body: { code: 'NOT_FOUND' } });
         const bob = await bind('bob', id, body);
-        expect(bob.status).toBe(404);
+        expect(bob).toMatchObject({ status: 404, body: { code: 'NOT_FOUND' } });
         await stillParked();
 
         const bound = await bind('alice', id, body);
