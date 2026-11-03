@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util';
-import { BATCH_CANCELLED, BATCH_DRAFT, BATCH_EXPIRED, BATCH_UNSUPPORTED_CODE, batchVerdict } from './batch.js';
-import type { BatchRecord } from './batch.js';
+import { BATCH_DRAFT, BATCH_UNSUPPORTED_CODE } from './batch.js';
+import type { BatchRecord, BatchVerdict } from './batch.js';
 import {
     needsAction,
     renderBatch,
@@ -173,11 +173,11 @@ async function runInspect(args: readonly string[], _io: BatchIo, boardFor: Board
     const report = draft ? null : await client.getBatchReport(batch.id);
     const data = {
         batch,
-        verdict: draft ? null : batchVerdict(batch, report),
-        needsAction: needsAction(batch, report),
+        verdict: draft ? null : batch.standing.verdict,
+        needsAction: needsAction(batch),
         report,
     };
-    return ok(data, renderBatch(batch, report));
+    return ok(data, renderBatch(batch));
 }
 
 async function runReport(args: readonly string[], io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
@@ -229,34 +229,28 @@ async function runWait(args: readonly string[], io: BatchIo, boardFor: BoardFor)
     }
 }
 
-const FENCED: readonly string[] = [BATCH_CANCELLED, BATCH_EXPIRED];
-
 /**
- * How a wait ends, with the report beside the batch; null while it keeps watching. A fenced batch
- * starts nothing new: it ends as cancelled, named for the fence (`cancelled` or `expired`).
+ * How a wait ends, with the report beside the batch; null while it keeps watching. The board's
+ * standing decides: a fenced batch starts nothing new and ends as cancelled, named for the fence
+ * (`cancelled` or `expired`); an `inconclusive` standing is not settled, so the wait goes on.
  */
 async function waitEnd(
     client: BoardClient,
     run: { batch: BatchRecord; total: number; timedOut: boolean }
 ): Promise<CommandResult | null> {
     const { batch, total, timedOut } = run;
-    const fenced = FENCED.includes(batch.status);
-    if (!fenced && !SETTLED[batchVerdict(batch)] && !timedOut) return null;
-    // The record alone reads an automerge PR's wait reason as a person's; the report's `next` says whose it is.
-    const report = await client.getBatchReport(batch.id);
-    const verdict = batchVerdict(batch, report);
+    const { verdict, fence } = batch.standing;
     const settled = SETTLED[verdict];
-    if (!fenced && !settled && !timedOut) return null;
-    const data = { verdict, budgetSeconds: total, batch, needsAction: needsAction(batch, report), report };
-    if (FENCED.includes(report.state)) {
-        return { outcome: OUTCOME.cancelled, data, stdout: `${renderWaitEnd(batch, report, report.state)}\n` };
-    }
-    if (settled) return { outcome: settled, data, stdout: `${renderWaitEnd(batch, report)}\n` };
+    if (!settled && !timedOut) return null;
+    const report = await client.getBatchReport(batch.id);
+    const data = { verdict, budgetSeconds: total, batch, needsAction: needsAction(batch), report };
+    if (fence !== null) return { outcome: OUTCOME.cancelled, data, stdout: `${renderWaitEnd(batch, fence)}\n` };
+    if (settled) return { outcome: settled, data, stdout: `${renderWaitEnd(batch)}\n` };
     return { outcome: OUTCOME.timeout, data, stderr: `still running after ${total}s: ${batch.id}\n` };
 }
 
-/** How each settled verdict ends the command; `running` is absent — it is the loop's. */
-const SETTLED: Record<string, CommandResult['outcome'] | undefined> = {
+/** How each settled verdict ends the command; `running` and `inconclusive` are absent — they are the loop's. */
+const SETTLED: Partial<Record<BatchVerdict, CommandResult['outcome']>> = {
     succeeded: OUTCOME.succeeded,
     failed: OUTCOME.failed,
     cancelled: OUTCOME.cancelled,

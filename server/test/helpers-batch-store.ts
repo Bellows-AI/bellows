@@ -18,6 +18,7 @@ import {
     lifecycleOf,
     type BatchIdempotency,
     type BatchRecord,
+    type BatchReportTask,
     type BatchStore,
     type BatchTaskState,
 } from '../src/db/batches/batch-store-types.js';
@@ -34,6 +35,10 @@ export interface MemoryBatchStore extends BatchStore {
     mark(id: string, taskKey: string, state: Partial<BatchTaskState>): void;
     /** Plants a task's token usage block, standing in for the telemetry read the SQL store's own suite pins. */
     plantUsage(id: string, taskKey: string, block: UsageBlock): void;
+    /** Plants the stage verification rows the record and the report carry, standing in for the merge pass the SQL suite pins. */
+    plantVerification(id: string, rows: BatchRecord['verification']): void;
+    /** Plants the report's `next` for a task, standing in for the recovery read the SQL suite pins. */
+    plantNext(id: string, taskKey: string, next: BatchReportTask['next']): void;
     /** Stamps the batch's time limit as passed, standing in for the scheduler pass the SQL suite pins. */
     expire(id: string): void;
     /** Stamps the batch complete, standing in for the scheduler pass the SQL suite pins. */
@@ -49,6 +54,7 @@ export function memoryBatchStore(): MemoryBatchStore {
     const keys = new Map<string, { fingerprint: string; id: string }>();
     const writes: string[] = [];
     const planted = new Map<string, UsageBlock>();
+    const plantedNext = new Map<string, BatchReportTask['next']>();
     const scope = (caller: string | null, idem: BatchIdempotency) => [caller ?? '', idem.operation, idem.key].join('|');
     const recorded = (caller: string | null, idem: BatchIdempotency | undefined) => {
         if (!idem) return null;
@@ -228,7 +234,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                     timeLimitMinutes: batch.plan.timeLimitMinutes,
                 },
                 prs: { merged: [], open: [] },
-                verification: [],
+                verification: batch.verification,
                 tasks: batch.tasks.map((task) => ({
                     key: task.key,
                     stage: task.stage,
@@ -253,7 +259,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                         tokenUsageUnavailable: null,
                     },
                     observation: null,
-                    next: { action: 'none' as const },
+                    next: plantedNext.get(`${id}:${task.key}`) ?? { action: 'none' as const },
                 })),
                 latestObservationAt: null,
                 usageSnapshotAt: new Date().toISOString(),
@@ -289,6 +295,12 @@ export function memoryBatchStore(): MemoryBatchStore {
         complete(id) {
             const batch = batches.get(id)!;
             batches.set(id, { ...batch, completedAt: new Date().toISOString() });
+        },
+        plantVerification(id, rows) {
+            batches.set(id, { ...batches.get(id)!, verification: rows });
+        },
+        plantNext(id, taskKey, next) {
+            plantedNext.set(`${id}:${taskKey}`, next);
         },
         plantUsage(id, taskKey, block) {
             planted.set(`${id}:${taskKey}`, block);

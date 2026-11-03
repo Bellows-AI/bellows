@@ -201,6 +201,16 @@ export {
     TASK_STOPPED,
     TASK_SUCCEEDED,
 } from './batch-schedule.js';
+export { batchStanding } from './batch-standing.js';
+export type {
+    BatchAttention,
+    BatchFence,
+    BatchStanding,
+    BatchVerdict,
+    BatchVerificationFailure,
+    StandingRecord,
+    StandingReportTask,
+} from './batch-standing.js';
 export { HOUR } from './config.js';
 export {
     ENV_NAME,
