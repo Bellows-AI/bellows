@@ -37,7 +37,7 @@ const isField = (value: unknown): value is string => typeof value === 'string' &
  * the JSON-only body keeps a cross-site form out (a form post is 415, as on every other state-changing route).
  *
  * Approve and deny read nothing from the request but the id and the CSRF value: the client, redirect, resource and
- * scopes were frozen when the transaction was opened, and the the user comes from the live session, and the organization is the session's unless the approval names another the caller belongs to.
+ * scopes were frozen when the transaction was opened, and the user comes from the live session, and the organization is the session's unless the approval names another the caller belongs to.
  */
 export const oauthConsentRoutes =
     (deps: OAuthRouteDeps): FastifyPluginAsync =>
