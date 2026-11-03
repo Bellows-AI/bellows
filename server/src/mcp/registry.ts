@@ -8,8 +8,11 @@ import { secondsSince } from '../prometheus.js';
 import type { Tool, ToolContext } from './tool.js';
 import { listAvailableIntegrations, listConnections } from './tools/connections.js';
 import { listExecutors, listRepos } from './tools/discovery.js';
+import { listJobStreams, readJobLog } from './tools/logs.js';
 import { preflightTask } from './tools/preflight.js';
+import { investigateJob, jobActivity, listQuestions } from './tools/runs.js';
 import { listSkills } from './tools/skills.js';
+import { listJobs, listTasks } from './tools/tasks.js';
 import { whoami } from './tools/whoami.js';
 
 /** Alphabetical by name: `tools/list` is the same on every replica and every call. */
@@ -21,6 +24,13 @@ export const TOOLS: readonly Tool[] = [
     listConnections,
     listAvailableIntegrations,
     preflightTask,
+    listTasks,
+    listJobs,
+    investigateJob,
+    jobActivity,
+    listJobStreams,
+    readJobLog,
+    listQuestions,
 ].sort((a, b) => a.name.localeCompare(b.name));
 
 /** In-process cap on one caller's simultaneous tool calls (per replica). */

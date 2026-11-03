@@ -207,7 +207,7 @@ describe('the discovery tools over POST /api/mcp', () => {
     it('are listed read-only with an output schema', async () => {
         const client = await connect(await boot(), 'alice');
         const { tools } = await client.listTools();
-        expect(tools.map((tool) => tool.name)).toEqual(NAMES);
+        expect(tools.map((tool) => tool.name).filter((name) => NAMES.includes(name))).toEqual(NAMES);
         for (const tool of tools) {
             expect(tool.annotations?.readOnlyHint, tool.name).toBe(true);
             expect(tool.outputSchema?.type, tool.name).toBe('object');
