@@ -792,13 +792,12 @@
     /* ── integrations: the member's connections as link cards, and one connection's page ── */
     .provider-mark {
         background: var(--surface-sunken);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
+        border-radius: var(--radius-md);
         box-sizing: border-box;
         flex: none;
-        height: 40px;
-        padding: 8px;
-        width: 40px;
+        height: 32px;
+        padding: 6px;
+        width: 32px;
     }
 
     /* The glyph's brand color is the CSS rule's; the svg's own fill attribute is the same token, for a render with no stylesheet. */
@@ -837,8 +836,7 @@
 
     .integration-card {
         align-items: center;
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
+        background: var(--surface-soft);
         border-radius: var(--radius-lg);
         color: var(--ink);
         display: flex;
@@ -850,7 +848,7 @@
     }
 
     .integration-card:hover {
-        background: var(--surface-strong);
+        background: var(--surface-hover);
     }
 
     /* A basis the actions cannot squeeze below: when they do not fit beside it they wrap under it. */
@@ -928,7 +926,7 @@
         }
 
         .integration-card .pill {
-            margin-left: 52px;
+            margin-left: 44px;
         }
     }
 

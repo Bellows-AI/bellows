@@ -140,7 +140,7 @@ describe('the integrations catalog', () => {
             expect(await jira.findByText('Could not check whether Jira is available')).toBeTruthy();
             expect(jira.queryByRole('button', { name: /Connect/ })).toBeNull();
             expect(jira.queryByText('Not configured on this deployment')).toBeNull();
-            expect(jira.getByRole('button', { name: 'Retry' })).toBeTruthy();
+            expect(jira.getByRole('button', { name: 'Retry' }).className).toBe('tertiary');
             // The retry asks again.
             stubFetch(board());
             await user.click(jira.getByRole('button', { name: 'Retry' }));

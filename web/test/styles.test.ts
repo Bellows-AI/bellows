@@ -637,6 +637,18 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.settings-row-item + .settings-row-item')).toMatch(/border-top\s*:\s*1px solid var\(--line\)/);
     });
 
+    it('rests the integration cards on the soft tier with a quiet 32px provider mark', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.integration-card')).toMatch(/background\s*:\s*var\(--surface-soft\)/);
+        expect(body('.integration-card')).not.toMatch(/border\s*:\s*1px|surface-raised/);
+        expect(body('.integration-card:hover')).toContain('var(--surface-hover)');
+        expect(body('.provider-mark')).toMatch(/height\s*:\s*32px/);
+        expect(body('.provider-mark')).toMatch(/width\s*:\s*32px/);
+        expect(body('.provider-mark')).not.toMatch(/border\s*:/);
+    });
+
     it('paints the repos table sticky column on the canvas it sits on, not a raised tier', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
         const sticky = rules(css).filter(([, text]) => /position\s*:\s*sticky/.test(text));
