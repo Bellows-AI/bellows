@@ -10,6 +10,7 @@ import { buckets, createRegistry, timed, type GaugeFamily, type Registry } from 
 
 export type { AdmissionOccupancy } from './db/jobs/job-store-admission.js';
 
+export type McpToolOutcome = 'ok' | 'refused' | 'inconclusive';
 export type ClaimPollOutcome = 'claimed' | 'idle' | 'error';
 
 const HTTP_BUCKETS = buckets('0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10 30');
@@ -23,6 +24,8 @@ export interface ServerMetrics {
     /** One finished request: `route` is the matched pattern or `<unmatched>`. */
     request(method: string, route: string, statusCode: number, seconds: number): void;
     claimPoll(outcome: ClaimPollOutcome): void;
+    /** One finished MCP tool call: the registered tool name and how it ended; never an argument or a caller. */
+    mcpTool(tool: string, outcome: McpToolOutcome, seconds: number): void;
     claim: ClaimObserver;
     /**
      * Runs one pass of a board background loop and observes it: `timedPass('batch_reconcile', () => …)`.
@@ -120,12 +123,19 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
         ['loop', 'outcome'],
         PASS_BUCKETS
     );
+    const mcpCalls = registry.histogram(
+        'factory_mcp_tool_duration_seconds',
+        'MCP tool calls by registered tool and outcome (ok, refused, inconclusive); the rate of a tool is its _count.',
+        ['tool', 'outcome'],
+        HTTP_BUCKETS
+    );
     registerAdmission(registry, deps);
     return {
         render: () => registry.render(),
         request: (method, route, code, seconds) =>
             http.observe(seconds, { method, route, status_class: statusClass(code) }),
         claimPoll: (outcome) => polls.inc({ outcome }),
+        mcpTool: (tool, outcome, seconds) => mcpCalls.observe(seconds, { tool, outcome }),
         claim: {
             refusal: (scope) => refusals.inc({ scope }),
             wait: (kind, seconds) => wait.observe(seconds, { kind }),

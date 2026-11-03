@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { createUserResolver, resolveBearer } from '../auth/plugin.js';
+import { boundCallerOf } from '../auth/bridge-binding.js';
 import type { GitHubIdentity, GitHubIdentityClient } from '../auth/github.js';
 import { createGitHubAppClient, type InstallationRepo } from '../github/app-client.js';
 import { installationTokenProvider } from '../github/app-token.js';
@@ -352,6 +353,9 @@ export const authRoutes =
         // A present bearer is the credential here as on every person route — the CLI's `auth status`
         // asks who its token acts as; a bad one is its 401 and an `oat_` its 403, never a fall-through.
         const resolveMe = (reply: FastifyReply) => async (request: FastifyRequest) => {
+            // The MCP bridge's injected request carries its caller on the request class, never on a header.
+            const bound = boundCallerOf(request.raw);
+            if (bound) return bound;
             if (auth.mode !== 'none' && (await resolveBearer(request, reply, store))) {
                 return request.auth?.kind === 'user' ? request.auth.caller : null;
             }
@@ -382,6 +386,8 @@ export const authRoutes =
                     avatarUrl: caller.user.avatarUrl,
                 },
                 role: caller.role,
+                // What the credential may do: `'all'` for a session or a `fat_`, the granted scopes for the MCP bridge.
+                scopes: caller.scopes,
                 membership: caller.membership,
                 account: {
                     createdAt: caller.user.createdAt,

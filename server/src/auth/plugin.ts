@@ -12,7 +12,7 @@ import { withCaller } from '../mcp/server.js';
 import { originPermitted } from '../mcp/origin.js';
 import { challengeFor, resourceMetadataUrl } from './oauth-challenge.js';
 import type { OAuthStore } from './oauth-store.js';
-import { SCOPE_OF_CLASS, classOf, grantedScopes } from './route-class.js';
+import { SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes } from './route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
 
@@ -673,7 +673,13 @@ export async function registerAuth(
         const requirement = requirementOf(request);
         // A bridged request reaches human routes only: worker, connector, ingest, branch, commerce, mcp and open
         // routes have their own credentials, and the bridge holds none of them.
-        if (requirement !== 'user' && boundCallerOf(request.raw)) return refuseBridged(reply);
+        if (
+            requirement !== 'user' &&
+            boundCallerOf(request.raw) &&
+            !(requirement === 'open' && bridgeOpen(request.method, patternOf(request)))
+        ) {
+            return refuseBridged(reply);
+        }
         if (requirement === 'open') return Promise.resolve();
         return enforcers[requirement](request, reply);
     };
