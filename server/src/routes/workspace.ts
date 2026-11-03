@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { ERROR_CODES, type ExecutorScope, ORG_SCOPE, USER_SCOPE } from '@factory-ai/core';
+import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import { executorFieldRefusal, MAX_EXECUTORS_PER_USER, parseExecutorFields } from './executor-fields.js';
@@ -205,7 +206,10 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     if (!loaded.ok) return reply;
 
     return reply.code(HTTP_OK).send({
-        executors: loaded.value.map((row) => ({ ...personalRow(row), config: row.config })),
+        // A bridged (MCP) caller never reads the configuration, which may hold provider credentials.
+        executors: loaded.value.map((row) =>
+            isBridged(request.raw) ? personalRow(row) : { ...personalRow(row), config: row.config }
+        ),
     });
 }
 

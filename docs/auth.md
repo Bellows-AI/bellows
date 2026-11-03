@@ -12,6 +12,7 @@ Who a caller is, and which credential each route accepts.
 | Accounts, sessions, memberships, roles (SQL) | `server/src/auth/store.ts`, `server/migrations/010_auth.sql` | `server/test-db/auth-store.test.ts` |
 | Personal (`fat_`) and org (`oat_`) access tokens | `server/src/auth/access-token.ts`, `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts`, `server/test-db/auth-store.access-tokens.test.ts` |
 | MCP OAuth storage: clients (CIMD, DCR), codes, grant families, `mat_`/`mrt_` tokens, consent transaction | `server/src/auth/oauth-store.ts`, `server/src/auth/access-token.ts`, `server/migrations/122_oauth.sql` | `server/test-db/auth-store.oauth-codes.test.ts`, `server/test-db/auth-store.oauth-tokens.test.ts`, `server/test-db/auth-store.oauth-consent.test.ts`, `server/test-db/auth-store.oauth-concurrency.test.ts` |
+| Route classes (read / write per method + pattern), `Caller.scopes`, the bridged-caller binding, the `WWW-Authenticate` challenge | `server/src/auth/route-class.ts`, `server/src/auth/bridge-binding.ts`, `server/src/auth/oauth-challenge.ts`, `server/src/auth/plugin.ts` (`scopeAllows`) | `server/test/auth.enforcement.test.ts` ("has a row for every route"), `server/test/auth.route-class.test.ts` |
 | Roster reads and role writes | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
 | Commerce plan push: `commerce` requirement, bearer `COMMERCE_TOKEN`, enforced in both `AUTH_MODE`s (`enforceCommerce`; [commerce.md](commerce.md)) | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/routes.commerce.test.ts` |
 | GitHub-side removal, signed webhook | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
@@ -33,9 +34,17 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   `SameSite=Lax`: the callback is a cross-site top-level GET. `server/src/auth/session.ts`,
   `server/test/auth.session.test.ts`.
 - **The credential class is the matched route's, never a re-parse of the URL.** Every worker and connector pattern names its row `:id`. `server/src/auth/plugin.ts`, `server/test/auth.route-match.test.ts`.
-- **Three credential kinds, one per request, no fall-through.** A bearer on a session route wins over the
+- **Four credential kinds, one per request, no fall-through.** A bearer on a session route wins over the
   cookie; a worker token is refused on human routes and vice versa; an `oat_` reaches only `ORG_TOKEN_ROUTES`
-  and is `403` off it. `server/src/auth/plugin.ts`, `server/test/auth.enforcement.test.ts`.
+  and is `403` off it; a `mat_` is `401` on every route but `/api/mcp` and never falls back to a cookie
+  (`isAccessToken` does not match it). `server/src/auth/plugin.ts`, `server/test/auth.enforcement.test.ts`.
+- **A bridged caller exists only as a symbol on an injected request class.** It beats the cookie and the bearer, is
+  checked against its route class (`403 insufficient_scope` plus a `WWW-Authenticate` challenge; an unclassified route
+  is refused; credential, secret, connection and membership routes are class `none`, refused whatever the scopes; a
+  bound caller on a non-human route is refused), and no header, query or body can create one. A new human route needs a `ROUTE_CLASSES` row.
+  `server/src/auth/bridge-binding.ts`, `server/test/auth.enforcement.test.ts`, `server/test/auth.route-class.test.ts`.
+- **An MCP token is never logged.** Redaction is by value, so the guarantee is that no log line carries the
+  `Authorization` header. `server/test/auth.enforcement.test.ts`.
 - **`AUTH_MODE=none` synthesises a caller rather than skipping the hook**; it refuses a non-loopback `HOST`
   unless `AUTH_ALLOW_PUBLIC_BIND=1`, and `docker-compose.yml` pins `github`. `server/src/config.ts`,
   `server/src/db/migrate.ts` (`LOCAL_LOGIN`), `server/test/config.auth.test.ts`.

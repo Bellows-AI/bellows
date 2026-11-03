@@ -2,7 +2,9 @@ import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import Fastify, { type FastifyServerOptions } from 'fastify';
 import { buildApp } from '../src/app.js';
+import { bridgedRequestClass } from '../src/auth/bridge-binding.js';
 import { requirementFor } from '../src/auth/plugin.js';
+import { ROUTE_CLASSES, classOf } from '../src/auth/route-class.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import type { AuthConfig } from '../src/config.js';
 import type { Job } from '../src/db/jobs/job-store-types.js';
@@ -38,13 +40,14 @@ import {
 } from './helpers-http.js';
 
 // Every instance Fastify creates records each route it is handed, so the full app's patterns can be read back.
-const registered = vi.hoisted(() => ({ urls: [] as string[] }));
+const registered = vi.hoisted(() => ({ urls: [] as string[], routes: [] as { method: string; url: string }[] }));
 vi.mock('fastify', async (importOriginal) => {
     const original = await importOriginal<typeof import('fastify')>();
     const wrapped = ((options?: FastifyServerOptions) => {
         const instance = original.default(options);
         instance.addHook('onRoute', (route) => {
             registered.urls.push(route.url);
+            for (const method of [route.method].flat()) registered.routes.push({ method, url: route.url });
         });
         return instance;
     }) as typeof original.default;
@@ -370,6 +373,7 @@ describe('the route table', () => {
     // must be a decision recorded above.
     it('has a row for every route the full app registers', async () => {
         registered.urls.length = 0;
+        registered.routes.length = 0;
         const store = memoryAuthStore();
         const config = testConfig({
             auth: githubAuth(),
@@ -418,6 +422,14 @@ describe('the route table', () => {
             (p) => ['worker', 'connector'].includes(requirementFor(p)) && /:\w+/.test(p)
         );
         expect(rowed.filter((p) => !/^\/api\/(jobs|reclaims)\/:id(\/|$)/.test(p))).toEqual([]);
+
+        // Every human route is classified for a scoped caller (route-class.ts), one row per method and pattern, and no
+        // row outlives its route. Fastify's auto-created HEAD rides its GET row.
+        const human = registered.routes.filter((r) => r.method !== 'HEAD' && requirementFor(r.url) === 'user');
+        expect(human.length).toBeGreaterThan(0);
+        expect(human.filter((r) => classOf(r.method, r.url) === undefined)).toEqual([]);
+        const live = new Set(registered.routes.map((r) => `${r.method} ${r.url}`));
+        expect(ROUTE_CLASSES.filter(([m, p]) => !live.has(`${m} ${p}`))).toEqual([]);
     });
 });
 
@@ -1078,5 +1090,228 @@ describe('AUTH_MODE=none', () => {
         });
         // The API server keeps no member directory, so there is no path to report.
         expect(response.json()).not.toHaveProperty('workspacePath');
+    });
+});
+
+// A pattern's params, filled with values the router accepts.
+const concrete = (pattern: string): string =>
+    pattern.replace(/:(\w+)/g, (_m, name: string) => (name === 'key' ? 'a' : JOB_ID));
+const USER_ROUTES = ROUTE_CLASSES.map(([method, pattern, cls]) => ({ method, pattern, cls, url: concrete(pattern) }));
+const inject = (server: Awaited<ReturnType<typeof build>>, method: string, url: string, extra: object = {}) =>
+    server.inject({
+        method: method as 'GET',
+        url,
+        ...(method === 'GET' || method === 'DELETE' ? {} : { payload: {} }),
+        ...extra,
+    });
+
+describe('the MCP access token is honoured on the MCP route only', () => {
+    it.each(USER_ROUTES)(
+        '$method $pattern refuses a mat_ with 401 and never falls through to the cookie',
+        async (r) => {
+            const store = memoryAuthStore();
+            const server = await build(githubAuth(), store);
+            const cookie = await signedIn(store, store.seedMember(ORG, 'octocat', 'admin'));
+            const bare = await inject(server, r.method, r.url, { headers: { authorization: 'Bearer mat_abcdef' } });
+            expect(bare.statusCode).toBe(HTTP_UNAUTHORIZED);
+            // A valid session behind it must not rescue the request: that would let a rewritten header ride a session.
+            const withCookie = await inject(server, r.method, r.url, {
+                headers: { authorization: 'Bearer mat_abcdef', cookie },
+            });
+            expect(withCookie.statusCode).toBe(HTTP_UNAUTHORIZED);
+            expect(withCookie.json().code).toBe('UNAUTHENTICATED');
+        }
+    );
+
+    it('no header or query parameter creates a bridged caller', async () => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const forged = await inject(server, 'GET', '/api/jobs?scopes=factory:read&caller=1&bridge=1', {
+            headers: { 'x-factory-scopes': 'factory:read', 'x-factory-bridge': '1', 'x-factory-caller': 'octocat' },
+        });
+        expect(forged.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('forged scope headers cannot upgrade a read-only credential', async () => {
+        const store = memoryAuthStore();
+        const caller = { ...store.seedMember(ORG, 'octocat', 'admin'), scopes: ['factory:read' as const] };
+        const server = await build(githubAuth(), store);
+        const response = await inject(server, 'POST', '/api/jobs?scopes=factory:write', {
+            Request: bridgedRequestClass(caller),
+            headers: { 'x-factory-scopes': 'factory:write factory:read', 'x-factory-bridge': '1' },
+        });
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(response.json().error).toBe('insufficient_scope');
+    });
+});
+
+describe('an MCP token never reaches a log line', () => {
+    // Redaction in this codebase is by value (core/src/integrations/redact.ts), not by pattern, so there is no mat_/mrt_
+    // pattern to extend: the guarantee is that nothing logs the Authorization header, the request line or the body.
+    it('a refused mat_ and a bridged request leave neither token in the request log', async () => {
+        const lines: string[] = [];
+        const store = memoryAuthStore();
+        const app = track(
+            await buildWithAuth(
+                githubAuth(),
+                store,
+                { jobs: jobStub(), repos: staticRepoSource([{ owner: 'acme', name: 'web' }]) },
+                { logger: { level: 'trace', stream: { write: (line: string) => void lines.push(line) } } }
+            )
+        );
+        const access = 'mat_LOGPROBE-access-0123456789';
+        const refresh = 'mrt_LOGPROBE-refresh-0123456789';
+        await app.inject({ method: 'GET', url: '/api/jobs', headers: { authorization: `Bearer ${access}` } });
+        await app.inject({
+            method: 'POST',
+            url: '/api/jobs',
+            headers: { authorization: `Bearer ${refresh}` },
+            payload: { refresh },
+        });
+        expect(lines.length).toBeGreaterThan(0);
+        expect(lines.join('')).not.toMatch(/LOGPROBE/);
+    });
+});
+
+describe('a bridged caller carries scopes the route class is checked against', () => {
+    const scopedServer = async (scopes: readonly ('factory:read' | 'factory:write')[]) => {
+        const store = memoryAuthStore();
+        const caller = { ...store.seedMember(ORG, 'octocat', 'admin'), scopes };
+        const server = await build(githubAuth(), store);
+        return { server, Request: bridgedRequestClass(caller), store };
+    };
+
+    it.each(USER_ROUTES.filter((r) => r.cls === 'write'))(
+        '$method $pattern: a read scope is refused 403 insufficient_scope with the challenge',
+        async (r) => {
+            const { server, Request } = await scopedServer(['factory:read']);
+            const response = await inject(server, r.method, r.url, { Request });
+            expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+            expect(response.json().error).toBe('insufficient_scope');
+            expect(response.json().code).not.toBe('INTEGRATION_REQUIRED');
+            expect(response.headers['www-authenticate']).toMatch(/^Bearer .*error="insufficient_scope"/);
+            expect(response.headers['www-authenticate']).toContain('scope="factory:write"');
+        }
+    );
+
+    it.each(USER_ROUTES.filter((r) => r.cls === 'none'))(
+        '$method $pattern is never reachable by an MCP grant, whatever its scopes',
+        async (r) => {
+            const { server, Request } = await scopedServer(['factory:read', 'factory:write']);
+            const response = await inject(server, r.method, r.url, { Request });
+            expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+            expect(response.json().error).toBe('forbidden');
+            expect(response.headers['www-authenticate']).toBeUndefined();
+        }
+    );
+
+    it('the none class holds exactly the credential, secret, connection and org-admin routes', () => {
+        const none = USER_ROUTES.filter((r) => r.cls === 'none').map((r) => `${r.method} ${r.pattern}`);
+        expect(
+            none.filter((k) => /\/api\/(tokens|integrations\/:provider|connections)|\/connections$/.test(k))
+        ).not.toEqual([]);
+        for (const mustBeNone of [
+            'POST /api/tokens',
+            'POST /api/tokens/org',
+            'POST /api/integrations/:provider/authorizations',
+            'GET /api/integrations/:provider/callback',
+            'PUT /api/env/org',
+            'PUT /api/org/members/:userId/role',
+            'POST /api/org/executors',
+            'PUT /api/org/executors/:id',
+            'DELETE /api/org/executors/:id',
+            'POST /api/org/executors/:id/scope',
+            'POST /api/org/executors/:id/suspension',
+            'PUT /api/workspace/executors',
+            'PUT /api/workspace/executors/default',
+            'DELETE /api/workspace/executors/:id',
+            'POST /api/workspace/executors/:id/suspension',
+        ]) {
+            expect(none).toContain(mustBeNone);
+        }
+    });
+
+    it.each([
+        ['GET', '/api/health'],
+        ['POST', `/api/jobs/${JOB_ID}/heartbeat`],
+        ['POST', '/api/otlp/v1/traces'],
+        ['GET', '/api/sessions/branch'],
+    ])('a bound caller is refused on the non-human route %s %s', async (method, url) => {
+        const { server, Request } = await scopedServer(['factory:read', 'factory:write']);
+        const response = await inject(server, method, url, { Request });
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+    });
+
+    it('two concurrent bridged callers in different orgs never see each other', async () => {
+        const store = memoryAuthStore();
+        const a = { ...store.seedMember('org-a', 'alice', 'admin'), scopes: ['factory:read' as const] };
+        const b = { ...store.seedMember('org-b', 'bob', 'admin'), scopes: ['factory:read' as const] };
+        const server = await build(githubAuth(), store, undefined, ['org-a', 'org-b']);
+        const calls = Array.from({ length: 10 }, () => [
+            inject(server, 'GET', '/api/org/members', { Request: bridgedRequestClass(a) }),
+            inject(server, 'GET', '/api/org/members', { Request: bridgedRequestClass(b) }),
+        ]).flat();
+        const all = await Promise.all(calls);
+        const ra = all.filter((_r, i) => i % 2 === 0);
+        const rb = all.filter((_r, i) => i % 2 === 1);
+        const texts = (rs: { body: string }[]) => rs.map((r) => r.body);
+        for (const body of texts(ra)) expect(body).toContain('alice');
+        for (const body of texts(ra)) expect(body).not.toContain('bob');
+        for (const body of texts(rb)) expect(body).toContain('bob');
+        for (const body of texts(rb)) expect(body).not.toContain('alice');
+    });
+
+    it('a read scope is let through to the read routes, including the two dry-run POSTs', async () => {
+        const { server, Request } = await scopedServer(['factory:read']);
+        for (const [method, url] of [
+            ['GET', '/api/jobs'],
+            ['GET', '/api/repos'],
+            ['POST', `/api/batches/${JOB_ID}/validate`],
+            ['POST', '/api/jobs/preflight'],
+        ] as const) {
+            const response = await inject(server, method, url, { Request });
+            expect([HTTP_UNAUTHORIZED, HTTP_FORBIDDEN], `${method} ${url}`).not.toContain(response.statusCode);
+        }
+    });
+
+    it('GET and POST /api/jobs are classified separately', async () => {
+        const { server, Request } = await scopedServer(['factory:read']);
+        expect((await inject(server, 'GET', '/api/jobs', { Request })).statusCode).toBe(HTTP_OK);
+        expect((await inject(server, 'POST', '/api/jobs', { Request })).statusCode).toBe(HTTP_FORBIDDEN);
+    });
+
+    it('a write scope may queue a job', async () => {
+        const { server, Request } = await scopedServer(['factory:read', 'factory:write']);
+        const response = await inject(server, 'POST', '/api/jobs', {
+            Request,
+            payload: { command: 'echo hi', repo: 'acme/web' },
+        });
+        expect(response.statusCode).toBe(HTTP_CREATED);
+    });
+
+    it('an unclassified route is refused for a scoped caller', async () => {
+        const { server, Request } = await scopedServer(['factory:read', 'factory:write']);
+        const response = await inject(server, 'GET', '/api/no-such-route', { Request });
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+    });
+
+    it('the bound caller is THE credential: a foreign bearer or cookie beside it is never consulted', async () => {
+        const { server, Request, store } = await scopedServer(['factory:read']);
+        const other = await signedIn(store, store.seedMember(ORG, 'someone-else'));
+        const response = await inject(server, 'GET', '/api/jobs', {
+            Request,
+            headers: { authorization: 'Bearer fat_not-a-real-token', cookie: other },
+        });
+        expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    it('cookie and fat_ callers are unscoped: a member may write', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const cookie = await signedIn(store, store.seedMember(ORG, 'octocat'));
+        const response = await inject(server, 'POST', '/api/jobs', {
+            headers: { cookie },
+            payload: { command: 'echo hi', repo: 'acme/web' },
+        });
+        expect(response.statusCode).toBe(HTTP_CREATED);
     });
 });

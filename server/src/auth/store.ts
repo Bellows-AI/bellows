@@ -1,6 +1,7 @@
 import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
+import type { Scope } from './route-class.js';
 import { hashToken, mintToken } from './session.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
 
@@ -66,6 +67,11 @@ export interface Caller {
     org: { id: string; name: string };
     membership: Membership;
     role: Role;
+    /**
+     * What the credential may do: `'all'` for a cookie, a `fat_` and the local caller; the granted scopes for an MCP
+     * access token, checked against the route class (route-class.ts) in the auth hook.
+     */
+    scopes: readonly Scope[] | 'all';
 }
 
 export type AccessTokenKind = 'personal' | 'org';
@@ -255,6 +261,7 @@ export const toCaller = (row: CallerRow): Caller => ({
     },
     org: { id: row.org_id, name: row.org_name },
     membership: { invitedAt: toIso(row.invited_at), claimedAt: toIso(row.claimed_at) },
+    scopes: 'all',
     role: row.role,
 });
 

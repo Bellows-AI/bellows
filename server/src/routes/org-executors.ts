@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { ADMIN_ROLE, ERROR_CODES, ORG_SCOPE, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -151,7 +152,8 @@ async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest
 
     // The config may hold provider credentials: it travels to the admins who manage it, never to
     // the members who only select it — the same visibility split the workspace poll makes.
-    if (requireAdmin(caller)) {
+    // A bridged (MCP) caller gets the member view even as an admin: an MCP grant never reads credentials.
+    if (requireAdmin(caller) && !isBridged(request.raw)) {
         const loaded = await guard(
             reply,
             (e) => request.log.error({ err: e }),
