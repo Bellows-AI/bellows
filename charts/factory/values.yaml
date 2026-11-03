@@ -106,6 +106,13 @@ auth:
     # Not a secret: GitHub's OAuth App client id is public by design. REQUIRED.
     oauthClientId: ''
 
+# The board-hosted MCP server (docs/configuration.md). Off, `/api/mcp` answers 404. On, it needs an https
+# auth.publicUrl (validate.yaml refuses a render otherwise): the endpoint carries bearer tokens.
+mcp:
+    enabled: false
+    # Browser origins besides auth.publicUrl allowed to call the endpoint: exact origins, no wildcard.
+    trustedOrigins: []
+
 github:
     # The id and the key are required unless dashboard.offline: without them the server refuses to
     # boot — there is no no-fetch mode to fall back to.

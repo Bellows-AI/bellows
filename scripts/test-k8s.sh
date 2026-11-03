@@ -740,6 +740,17 @@ refuses() { # refuses <name> <needle> <helm args...>
     fi
 }
 refuses 'a missing publicUrl is refused' 'auth.publicUrl is required' "${GH_SETS[@]}" --set auth.publicUrl=
+# The board-hosted MCP server (BEL-104): off by default, https-only when on, origins rendered as one comma list.
+mcp_off="$(gh_render)"
+expect_contains 'MCP is off by default' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_off")" 'value: "false"'
+expect_contains 'no MCP origins render by default' "$(grep -A1 'name: MCP_TRUSTED_ORIGINS$' <<<"$mcp_off")" 'value: ""'
+refuses 'MCP over a non-https publicUrl is refused' 'mcp.enabled requires an https auth.publicUrl' \
+    "${GH_SETS[@]}" --set-string auth.publicUrl=http://board.example --set mcp.enabled=true
+mcp_on="$(gh_render --set-string auth.publicUrl=https://board.example --set mcp.enabled=true \
+    --set 'mcp.trustedOrigins={https://a.example,https://b.example}')"
+expect_contains 'MCP renders on under an https publicUrl' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_on")" 'value: "true"'
+expect_contains 'the trusted origins render as a comma list' "$(grep -A1 'name: MCP_TRUSTED_ORIGINS$' <<<"$mcp_on")" \
+    'value: "https://a.example,https://b.example"'
 # The artifact store (#764): the dashboard runs as its own ServiceAccount, which carries the IRSA
 # annotation, and the s3 backend refuses to render without a bucket.
 expect_contains 'the dashboard has its own ServiceAccount' "$gh" "serviceAccountName: $RELEASE-factory-dashboard"

@@ -2,8 +2,10 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
+import type { OAuthStore } from './auth/oauth-store.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
+import { mcpRoutes } from './mcp/routes.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
@@ -111,6 +113,8 @@ export interface AppDeps {
     commercePlanWriter?: CommercePlanWriter | undefined;
     /** The delivery channels a subscription may name; absent means none, so every create is UNKNOWN_CONNECTOR. */
     notificationConnectors?: ConnectorRegistry | undefined;
+    /** Resolves an MCP access token; the MCP endpoint in github mode needs it (absent, `/api/mcp` is not registered). */
+    oauth?: Pick<OAuthStore, 'findAccessToken'> | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -158,6 +162,19 @@ export function csp(dev: boolean): string {
         "base-uri 'none'",
         "form-action 'none'",
     ].join('; ');
+}
+
+/**
+ * The MCP endpoint exists exactly when MCP_ENABLED, and only behind the auth hook: github mode resolves its bearer
+ * through the OAuth store, so enabling it without one is a wiring fault, not a quiet 404.
+ */
+async function registerMcp(
+    app: FastifyInstance,
+    { config, oauth, version }: Pick<AppDeps, 'config' | 'oauth'> & { version: string }
+): Promise<void> {
+    if (!config.mcp.enabled) return;
+    if (config.auth.mode === 'github' && !oauth) throw new Error('MCP_ENABLED needs the OAuth store');
+    await app.register(mcpRoutes, { version, origin: new URL(config.mcp.resource).origin });
 }
 
 /** Each org's own installation mints its runners' tokens; an org without one has none to give. */
@@ -258,6 +275,7 @@ export async function buildApp({
     appSlug,
     installationListing,
     commercePlanWriter,
+    oauth,
     notificationConnectors = createConnectorRegistry([]),
     ready,
     version = readVersion(),
@@ -291,7 +309,7 @@ export async function buildApp({
     // Before every route, so nothing can be registered ahead of the wall by accident. Without a
     // store the property is still decorated, so `request.auth` reads the same everywhere rather than
     // being absent in one configuration and null in another.
-    if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfJob, orgOfReclaim });
+    if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfJob, orgOfReclaim, oauth });
     else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes(ready));
@@ -310,6 +328,7 @@ export async function buildApp({
         if (config.webhookSecret) {
             await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
+        await registerMcp(app, { config, oauth, version });
     }
     await app.register(skillRoutes(skillCatalog, orgs));
     await app.register(statsRoutes(config, orgs, auth, now));
