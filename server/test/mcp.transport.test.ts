@@ -612,3 +612,62 @@ describe('Host default ports', () => {
         expect(originPermitted(plain, { ...base, host: 'board.example:443' })).toBe(false);
     });
 });
+
+describe('a client that left before the handler ran', () => {
+    it('hands the SDK an already aborted signal', async () => {
+        const abortedAtCall: boolean[] = [];
+        const app = track(Fastify());
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat', 'admin');
+        let gone!: Promise<void>;
+        app.addHook('onRequest', async (request) => {
+            setAuthInfo(request, withCaller({ token: 't', clientId: 'c', scopes: [] }, caller));
+        });
+        app.addHook('preHandler', async (_request, reply) => {
+            // Hold the request until the client has gone, so 'close' fires before the route handler attaches.
+            gone = new Promise<void>((resolve) => reply.raw.once('close', resolve));
+            await gone;
+        });
+        await app.register(mcpRoutes, {
+            version: '0.0.0',
+            origin: 'http://127.0.0.1',
+            buildServer: () => {
+                const server = new McpServer({ name: 'probe', version: '0' }, { capabilities: { tools: {} } });
+                server.registerTool('probe', { description: 'records its signal' }, async (ctx) => {
+                    abortedAtCall.push(ctx.mcpReq.signal.aborted);
+                    return { content: [] };
+                });
+                return server;
+            },
+        });
+        await app.listen({ port: 0, host: LOCALHOST });
+        const address = app.server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        const call = {
+            ...modernList,
+            method: 'tools/call',
+            params: { ...modernList.params, name: 'probe', arguments: {} },
+        };
+        const req = httpRequest({
+            host: LOCALHOST,
+            port,
+            path: '/api/mcp',
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                accept: 'application/json, text/event-stream',
+                'mcp-protocol-version': MODERN,
+                'mcp-method': 'tools/call',
+                'mcp-name': 'probe',
+            },
+        });
+        req.on('error', () => undefined);
+        req.end(JSON.stringify(call));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        req.destroy();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        // A tool that ran with a live signal is the bug: it would keep working for a client that is gone.
+        expect(abortedAtCall).not.toContain(false);
+    });
+});

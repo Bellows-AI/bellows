@@ -103,6 +103,8 @@ export async function mcpRoutes(
         reply.raw.on('close', () => {
             if (!reply.raw.writableFinished) aborted.abort();
         });
+        // 'close' may already have fired while the body was parsed; the listener above would never hear it.
+        if (reply.raw.destroyed || reply.raw.closed) aborted.abort();
         reply.hijack();
         try {
             const response = await handler.fetch(webRequestOf(request, origin, aborted.signal), {
