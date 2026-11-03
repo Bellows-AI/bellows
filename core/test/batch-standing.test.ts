@@ -112,7 +112,14 @@ describe('batchStanding', () => {
             const standing = batchStanding(fenced, report(['a']));
             expect(standing.verdict).toBe('cancelled');
             expect(standing.fence).toBe(fence);
+            // A fenced batch's unmerged PR still needs its person: the list survives the fence.
+            expect(standing.attention.map((entry) => entry.key)).toEqual(['a']);
         }
+    });
+
+    it('keeps a fenced batch cancelled, with no attention claimed, when the report is unread', () => {
+        const fenced = record('cancelled', [task('a', 'succeeded', { waitReason: 'x' })], { cancelledAt: 'x' });
+        expect(batchStanding(fenced, null)).toMatchObject({ verdict: 'cancelled', fence: 'cancelled', attention: [] });
     });
 
     it('is inconclusive when the report is unread, malformed or partial, never a terminal verdict', () => {

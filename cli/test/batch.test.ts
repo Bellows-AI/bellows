@@ -572,6 +572,24 @@ describe('batch wait', () => {
         expect(JSON.parse(person.out).data.needsAction.map((entry: { key: string }) => entry.key)).toEqual(['a']);
     });
 
+    it('ends a timed-out wait with exit 3 though the report endpoint keeps failing', async () => {
+        const unread = record('running', [task('a', 'running')], { standing: standing('inconclusive') });
+        const result = await cli(['batch', 'wait', ID, '--json', '--timeout', '12'], (sent) =>
+            isReport(sent) ? json({ error: 'down' }, 500) : json(unread)
+        );
+        expect(result.code).toBe(3);
+        expect(JSON.parse(result.out)).toMatchObject({ outcome: 'timeout', data: { report: null } });
+        const settled = record('completed', [task('a', 'succeeded')], { standing: standing('succeeded') });
+        const done = await cli(['batch', 'wait', ID, '--json'], (sent) =>
+            isReport(sent) ? json({ error: 'down' }, 500) : json(settled)
+        );
+        expect(done.code).toBe(0);
+        const inspected = await cli(['batch', 'inspect', ID, '--json'], (sent) =>
+            isReport(sent) ? json({ error: 'down' }, 500) : json(unread)
+        );
+        expect(JSON.parse(inspected.out).data).toMatchObject({ verdict: 'inconclusive', report: null });
+    });
+
     it('keeps waiting while the standing is inconclusive, and times out rather than settling', async () => {
         const unread = record('completed', [task('a', 'succeeded')], { standing: standing('inconclusive') });
         const result = await wait([unread], ['--timeout', '12']);

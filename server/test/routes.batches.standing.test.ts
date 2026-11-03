@@ -137,6 +137,20 @@ describe('batch standing', () => {
         }
     );
 
+    it('honors a fence the report read saw after the record was read', async () => {
+        const { batches, started, standing } = await setup();
+        const id = await started();
+        batches.mark(id, 'a', { execution: 'succeeded', pr: PR, waitReason: 'waiting for a person to merge' });
+        const report = batches.report.bind(batches);
+        // The cancel lands between the record read and the report read.
+        batches.report = async (batchId) => ({ ...(await report(batchId))!, cancelledAt: '2026-10-12T07:00:00.000Z' });
+        expect(await standing(id)).toMatchObject({
+            verdict: 'cancelled',
+            fence: 'cancelled',
+            attention: [{ key: 'a', pr: PR }],
+        });
+    });
+
     it('an expired batch is cancelled, naming the expiry', async () => {
         const { batches, started, standing } = await setup();
         const id = await started();

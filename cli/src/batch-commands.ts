@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util';
 import { BATCH_DRAFT, BATCH_UNSUPPORTED_CODE } from './batch.js';
-import type { BatchRecord, BatchVerdict } from './batch.js';
+import type { BatchRecord, BatchReport, BatchVerdict } from './batch.js';
 import {
     needsAction,
     renderBatch,
@@ -164,13 +164,26 @@ async function runStart(args: readonly string[], _io: BatchIo, boardFor: BoardFo
     }
 }
 
-async function runInspect(args: readonly string[], _io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
+/**
+ * The report beside a batch read, for the envelope only: the board's standing already decided, so a
+ * report the board cannot answer leaves the outcome as it is and the envelope's `report` null.
+ */
+async function reportOrNull(client: BoardClient, id: string, signal?: AbortSignal): Promise<BatchReport | null> {
+    try {
+        return await client.getBatchReport(id);
+    } catch (error) {
+        if (error instanceof BoardError && !signal?.aborted) return null;
+        throw error;
+    }
+}
+
+async function runInspect(args: readonly string[], io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
     const { positionals } = positionalsOf(args, 'inspect', '<id>', {});
     const client = boardFor();
     const batch = await client.getBatch(positionals[0]!);
     const draft = batch.status === BATCH_DRAFT;
     // A draft has no report: the board refuses one until the batch starts.
-    const report = draft ? null : await client.getBatchReport(batch.id);
+    const report = draft ? null : await reportOrNull(client, batch.id, io.signal);
     const data = {
         batch,
         verdict: draft ? null : batch.standing.verdict,
@@ -223,7 +236,7 @@ async function runWait(args: readonly string[], io: BatchIo, boardFor: BoardFor)
             );
         }
         const remaining = deadline - now();
-        const ended = await waitEnd(client, { batch, total, timedOut: remaining <= 0 });
+        const ended = await waitEnd(client, { batch, total, timedOut: remaining <= 0, signal: io.signal });
         if (ended) return ended;
         await sleep(Math.min(WAIT_POLL_MS, remaining), io.signal);
     }
@@ -236,13 +249,13 @@ async function runWait(args: readonly string[], io: BatchIo, boardFor: BoardFor)
  */
 async function waitEnd(
     client: BoardClient,
-    run: { batch: BatchRecord; total: number; timedOut: boolean }
+    run: { batch: BatchRecord; total: number; timedOut: boolean; signal: AbortSignal | undefined }
 ): Promise<CommandResult | null> {
-    const { batch, total, timedOut } = run;
+    const { batch, total, timedOut, signal } = run;
     const { verdict, fence } = batch.standing;
     const settled = SETTLED[verdict];
     if (!settled && !timedOut) return null;
-    const report = await client.getBatchReport(batch.id);
+    const report = await reportOrNull(client, batch.id, signal);
     const data = { verdict, budgetSeconds: total, batch, needsAction: needsAction(batch), report };
     if (fence !== null) return { outcome: OUTCOME.cancelled, data, stdout: `${renderWaitEnd(batch, fence)}\n` };
     if (settled) return { outcome: settled, data, stdout: `${renderWaitEnd(batch)}\n` };

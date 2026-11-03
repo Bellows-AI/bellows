@@ -141,11 +141,18 @@ export async function withStanding(
     record: BatchRecord
 ): Promise<BatchRecord & { standing: BatchStanding }> {
     if (record.status === BATCH_DRAFT) return { ...record, standing: batchStanding(record, null) };
-    let tasks: unknown = null;
+    let report: Awaited<ReturnType<BatchStore['report']>> = null;
     try {
-        tasks = (await ctx.store.report(record.id))?.tasks ?? null;
+        report = await ctx.store.report(record.id);
     } catch (e) {
         request.log.error({ err: e }, 'batch standing report read failed');
     }
-    return { ...record, standing: batchStanding(record, tasks as readonly unknown[] | null) };
+    // The report is read after the record: a fence committed between the two reads is the later
+    // read's, so the standing honors either one.
+    const seen = {
+        ...record,
+        cancelledAt: record.cancelledAt ?? report?.cancelledAt ?? null,
+        expiredAt: record.expiredAt ?? report?.expiredAt ?? null,
+    };
+    return { ...record, standing: batchStanding(seen, (report?.tasks ?? null) as readonly unknown[] | null) };
 }
