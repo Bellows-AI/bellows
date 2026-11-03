@@ -17,6 +17,10 @@ const request = (overrides: Record<string, unknown> = {}) => ({
     resource: 'https://board.example.test/api/mcp',
     redirectUri: 'https://app.example.test/callback',
     organization: { id: 'o1', name: 'acme' },
+    organizations: [
+        { id: 'o1', name: 'acme' },
+        { id: 'o2', name: 'beta' },
+    ],
     user: { login: 'alice' },
     ...overrides,
 });
@@ -58,7 +62,7 @@ describe('the consent screen', () => {
         expect(screen.getByText(/metadata document at https:\/\/agent\.example\.test\/client\.json/)).toBeTruthy();
     });
 
-    it('approves with a fetch POST of id and csrf, then navigates to the returned redirect', async () => {
+    it('approves with a fetch POST of id, csrf and the session org, then navigates to the returned redirect', async () => {
         const { navigate, calls, user } = setup(request(), () => ({
             redirect: 'https://app.example.test/callback?code=c1',
         }));
@@ -66,7 +70,7 @@ describe('the consent screen', () => {
         await waitFor(() => expect(navigate).toHaveBeenCalledWith('https://app.example.test/callback?code=c1'));
         const post = calls.find((call) => call.method === 'POST');
         expect(post?.url).toBe('/api/oauth/consent/approve');
-        expect(post?.body).toEqual({ id: 'tx-1', csrf: 'csrf-1' });
+        expect(post?.body).toEqual({ id: 'tx-1', csrf: 'csrf-1', orgId: 'o1' });
     });
 
     it('denies through the deny route and follows its redirect', async () => {
@@ -112,5 +116,42 @@ describe('the consent screen', () => {
         expect(screen.getAllByRole('alert')[0]?.textContent).toMatch(/no longer valid/);
         expect(calls.filter((call) => call.method === 'GET')).toHaveLength(2);
         expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('lets the member pick which of their orgs the grant is for, defaulting to the signed-in one', async () => {
+        const { calls, user } = setup(request(), () => ({ redirect: 'https://app.example.test/callback?code=c1' }));
+        const picker = (await screen.findByRole('combobox', { name: /organization/i })) as HTMLSelectElement;
+        expect(picker.value).toBe('o1');
+        await user.selectOptions(picker, 'o2');
+        await user.click(screen.getByRole('button', { name: 'Allow' }));
+        await waitFor(() => expect(calls.some((call) => call.method === 'POST')).toBe(true));
+        expect(calls.find((call) => call.method === 'POST')?.body).toEqual({ id: 'tx-1', csrf: 'csrf-1', orgId: 'o2' });
+    });
+
+    it('drops the transaction from the address bar once it has been read', async () => {
+        const replace = vi.spyOn(window.history, 'replaceState');
+        setup(request());
+        await screen.findByRole('button', { name: 'Allow' });
+        const urls = replace.mock.calls.map((call) => String(call[2]));
+        expect(urls.length).toBeGreaterThan(0);
+        expect(urls.every((url) => !url.includes('#'))).toBe(true);
+        replace.mockRestore();
+    });
+
+    it('shows the name a metadata client claims as a claim, beside the host that was verified', async () => {
+        setup(
+            request({
+                client: { id: 'https://agent.example.test/client.json', kind: 'cimd', name: 'Trusted Corp', uri: null },
+            })
+        );
+        await screen.findByRole('button', { name: 'Allow' });
+        expect(screen.getByText(/calls itself .*Trusted Corp/i)).toBeTruthy();
+    });
+
+    it("shows an app's own redirect scheme with its full address, never as a web host", async () => {
+        setup(request({ redirectUri: 'myapp://evil.example/cb' }));
+        await screen.findByRole('button', { name: 'Allow' });
+        expect(screen.getByText(/myapp:\/\/evil\.example\/cb/)).toBeTruthy();
+        expect(screen.queryByText('evil.example')).toBeNull();
     });
 });

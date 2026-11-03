@@ -11,6 +11,8 @@ export interface ConsentRequest {
     resource: string;
     redirectUri: string;
     organization: { id: string; name: string };
+    /** Every org the caller belongs to; the grant is bound to the one they choose. */
+    organizations: { id: string; name: string }[];
     user: { login: string };
 }
 
@@ -92,13 +94,13 @@ export function useOAuthConsent(id: string | null, csrf: string | null) {
 
     /** Approve or deny: a JSON POST that answers the redirect to follow (the CSP keeps `form-action 'none'`). */
     const decide = useCallback(
-        async (approve: boolean): Promise<DecisionResult> => {
+        async (approve: boolean, orgId?: string): Promise<DecisionResult> => {
             if (!id || !csrf) return { ok: false, error: 'This request is missing its security token.' };
             try {
                 const response = await fetch(`/api/oauth/consent/${approve ? 'approve' : 'deny'}`, {
                     method: 'POST',
                     headers: JSON_HEADERS,
-                    body: JSON.stringify({ id, csrf }),
+                    body: JSON.stringify(approve ? { id, csrf, orgId } : { id, csrf }),
                 });
                 const { result, closed } = await readDecision(response);
                 // The server closed the request (spent, expired, tampered): re-read so the page shows the truth.

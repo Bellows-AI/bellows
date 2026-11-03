@@ -7,9 +7,11 @@ import { useResource } from './useResource.js';
 export interface OAuthGrantView {
     id: string;
     client: { id: string; name: string | null; kind: OAuthClientKind };
+    org: { id: string; name: string };
     scopes: string[];
     createdAt: string;
-    lastUsedAt: string | null;
+    /** When a token was last issued (not last used); null once all its tokens are swept. */
+    lastIssuedAt: string | null;
 }
 
 export interface UseOAuthGrants {

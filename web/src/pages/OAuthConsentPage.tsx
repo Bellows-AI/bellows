@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useOAuthConsent, type ConsentRequest } from '../api/useOAuthConsent.js';
 import { KeyValues } from '../components/KeyValues.js';
@@ -41,7 +41,17 @@ function ScopeList({ scopes }: { scopes: readonly string[] }) {
 }
 
 /** What is being asked, said plainly: who is asking, for what, and where the browser goes next. */
-function RequestDetails({ request }: { request: ConsentRequest }) {
+function RequestDetails({
+    request,
+    orgId,
+    onOrg,
+    disabled,
+}: {
+    request: ConsentRequest;
+    orgId: string;
+    onOrg: (id: string) => void;
+    disabled: boolean;
+}) {
     const identity = clientIdentity(request.client);
     return (
         <>
@@ -52,10 +62,32 @@ function RequestDetails({ request }: { request: ConsentRequest }) {
                 pairs={[
                     ['App', identity.label],
                     ['Where this comes from', identity.basis],
+                    ...(identity.claimedName
+                        ? ([['Name it gives', `It calls itself "${identity.claimedName}" (its own claim)`]] as [
+                              string,
+                              string,
+                          ][])
+                        : []),
                     ...(request.client.uri ? ([['Site it claims', request.client.uri]] as [string, string][]) : []),
                     ['Access requested', <ScopeList key="scopes" scopes={request.scopes} />],
                     ['You will return to', redirectTarget(request.redirectUri)],
-                    ['Signed in as', `${request.user.login}, in ${request.organization.name}`],
+                    ['Signed in as', request.user.login],
+                    [
+                        'Organization',
+                        <select
+                            key="org"
+                            aria-label="Organization the app gets access to"
+                            value={orgId}
+                            disabled={disabled}
+                            onChange={(event) => onOrg(event.target.value)}
+                        >
+                            {request.organizations.map((org) => (
+                                <option key={org.id} value={org.id}>
+                                    {org.name}
+                                </option>
+                            ))}
+                        </select>,
+                    ],
                 ]}
             />
             <p className="muted">
@@ -73,15 +105,25 @@ function RequestDetails({ request }: { request: ConsentRequest }) {
  */
 export function OAuthConsentPage({ navigate = followRedirect }: { navigate?: (url: string) => void }) {
     const { hash } = useLocation();
-    const { id, csrf } = transactionOf(hash);
+    // Read once: the fragment is dropped below, and a later render must not lose the transaction with it.
+    const [{ id, csrf }] = useState(() => transactionOf(hash));
     const { state, decide } = useOAuthConsent(id, csrf);
     const [busy, setBusy] = useState(false);
     const [failure, setFailure] = useState<string | null>(null);
+    const [chosenOrg, setChosenOrg] = useState<string | null>(null);
+
+    // The id and CSRF value live only in this page: once read, the address bar, history and any referrer lose them.
+    useEffect(() => {
+        if (hash !== '') {
+            window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        }
+        // Once, on mount: the transaction was already taken from `hash` above.
+    }, []);
 
     const answer = async (approve: boolean) => {
         setBusy(true);
         setFailure(null);
-        const result = await decide(approve);
+        const result = await decide(approve, orgId);
         if (result.ok) {
             navigate(result.redirect);
             return;
@@ -89,6 +131,8 @@ export function OAuthConsentPage({ navigate = followRedirect }: { navigate?: (ur
         setFailure(result.error);
         setBusy(false);
     };
+
+    const orgId = chosenOrg ?? (state.phase === 'ready' ? state.request.organization.id : '');
 
     if (state.phase === 'loading') {
         return (
@@ -115,7 +159,7 @@ export function OAuthConsentPage({ navigate = followRedirect }: { navigate?: (ur
     }
     return (
         <ConsentShell>
-            <RequestDetails request={state.request} />
+            <RequestDetails request={state.request} orgId={orgId} onOrg={setChosenOrg} disabled={busy} />
             {failure ? <StateNote state="error">{failure}</StateNote> : null}
             <div className="onboarding-actions">
                 <button type="button" disabled={busy} onClick={() => void answer(true)}>

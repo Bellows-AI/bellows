@@ -8,9 +8,10 @@ import './dom.js';
 const grant = (id: string, overrides: Record<string, unknown> = {}) => ({
     id,
     client: { id: `dcr_${id}`, name: 'Planner', kind: 'dcr' },
+    org: { id: 'o1', name: 'acme' },
     scopes: ['factory:read'],
     createdAt: '2026-01-15T09:30:00.000Z',
-    lastUsedAt: '2026-01-16T10:00:00.000Z',
+    lastIssuedAt: '2026-01-16T10:00:00.000Z',
     ...overrides,
 });
 
@@ -21,7 +22,7 @@ describe('the connected apps panel', () => {
                 grant('g1'),
                 grant('g2', {
                     client: { id: 'https://agent.example.test/c.json', name: 'X', kind: 'cimd' },
-                    lastUsedAt: null,
+                    lastIssuedAt: null,
                 }),
             ],
         }));
@@ -33,6 +34,10 @@ describe('the connected apps panel', () => {
         expect(within(table).getAllByText(/Read tasks/)).toHaveLength(2);
         expect(within(table).getAllByText('2026-01-15 09:30')).toHaveLength(2);
         expect(within(table).getByText('2026-01-16 10:00')).toBeTruthy();
+        expect(within(table).getByRole('columnheader', { name: 'Org' })).toBeTruthy();
+        expect(within(table).getAllByText('acme')).toHaveLength(2);
+        expect(within(table).getByRole('columnheader', { name: 'Last token issued' })).toBeTruthy();
+        expect(within(table).getByText('—')).toBeTruthy();
     });
 
     it('says there are no apps only after the read succeeded', async () => {

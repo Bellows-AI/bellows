@@ -8,9 +8,9 @@ const HTTP_NOT_FOUND = 404;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The connected-apps API (BEL-103; docs/auth.md): a member lists and ends the MCP grant families they hold in the
- * organization they are signed into. Cookie session only, and route-class `none`, so an MCP token can neither list the
- * grants nor end one. A family that is not the caller's, not in this organization, unknown or already ended is 404 alike.
+ * The connected-apps API (BEL-103; docs/auth.md): a member lists and ends the MCP grant families they hold in every
+ * organization they belong to. Cookie session only, and route-class `none`, so an MCP token can neither list the
+ * grants nor end one. A family that is not the caller's, unknown or already ended is 404 alike.
  */
 export const oauthGrantsRoutes =
     (deps: OAuthRouteDeps): FastifyPluginAsync =>
@@ -28,7 +28,7 @@ export const oauthGrantsRoutes =
             try {
                 const session = await sessionOf(request, reply);
                 if (!session) return reply;
-                const grants = await oauth.listGrants({ userId: session.caller.user.id, orgId: session.caller.org.id });
+                const grants = await oauth.listGrants({ userId: session.caller.user.id });
                 return reply.code(HTTP_OK).send({ grants });
             } catch (e) {
                 return unconfirmed(reply, e as Error);
@@ -41,9 +41,7 @@ export const oauthGrantsRoutes =
                 const session = await sessionOf(request, reply);
                 if (!session) return reply;
                 const { id } = request.params as { id: string };
-                const revoked =
-                    UUID.test(id) &&
-                    (await oauth.revokeGrant({ id, userId: session.caller.user.id, orgId: session.caller.org.id }));
+                const revoked = UUID.test(id) && (await oauth.revokeGrant({ id, userId: session.caller.user.id }));
                 if (!revoked) return bad(reply, ERROR_CODES.NOT_FOUND, 'No such connected app', HTTP_NOT_FOUND);
                 return reply.code(HTTP_OK).send({ id, revoked: true });
             } catch (e) {

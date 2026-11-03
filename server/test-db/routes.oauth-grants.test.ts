@@ -6,7 +6,11 @@ import { useTestDb } from './harness.js';
 import {
     approveCode,
     codeForm,
+    decide,
+    memberOf,
     otherMember,
+    startConsent,
+    APPROVE,
     startBoard,
     tokenRequest,
     type Board,
@@ -60,7 +64,7 @@ describe.skipIf(!enabled)('the connected-apps API', () => {
             scopes: ['factory:read'],
         });
         expect(typeof grants[0]?.createdAt).toBe('string');
-        expect(typeof grants[0]?.lastUsedAt).toBe('string');
+        expect(typeof grants[0]?.lastIssuedAt).toBe('string');
         expect(JSON.stringify(grants)).not.toMatch(/mat_|mrt_|token/i);
     });
 
@@ -75,9 +79,23 @@ describe.skipIf(!enabled)('the connected-apps API', () => {
         const board = await start();
         const token = await connect(board);
         const [grant] = (await listOf(board)).grants;
+        const callMcp = () =>
+            board.app.inject({
+                method: 'POST',
+                url: '/api/mcp',
+                headers: {
+                    host: '127.0.0.1:8080',
+                    authorization: `Bearer ${token.access_token}`,
+                    'content-type': 'application/json',
+                    accept: 'application/json, text/event-stream',
+                },
+                payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'whoami', arguments: {} } },
+            });
+        expect((await callMcp()).statusCode).toBe(HTTP_OK);
         const revoked = await revoke(board, String(grant?.id));
         expect(revoked.statusCode).toBe(HTTP_OK);
         expect((await listOf(board)).grants).toEqual([]);
+        expect((await callMcp()).statusCode).toBe(HTTP_UNAUTHORIZED);
         const refresh = await tokenRequest(board, {
             grant_type: 'refresh_token',
             refresh_token: token.refresh_token,
@@ -131,5 +149,36 @@ describe.skipIf(!enabled)('the connected-apps API', () => {
             ]);
         }
         expect((await listOf(board)).grants).toHaveLength(1);
+    });
+
+    it("lists the member's grants across every org they belong to, each with its org", async () => {
+        const board = await start();
+        const member = await memberOf(board, [ORG, OTHER_ORG]);
+        for (const orgId of [ORG, OTHER_ORG]) {
+            const tx = await startConsent(board, {}, member.cookie);
+            const approved = await decide(board, APPROVE, { ...tx, orgId }, member.cookie);
+            const code = new URL((approved.json() as { redirect: string }).redirect).searchParams.get('code');
+            await tokenRequest(board, codeForm(board, String(code)));
+        }
+        const { grants } = await listOf(board, member.cookie);
+        expect(
+            grants
+                .map((g) => g.org)
+                .sort((a, b) => String((a as { id: string }).id).localeCompare(String((b as { id: string }).id)))
+        ).toEqual([ORG, OTHER_ORG].sort().map((id) => ({ id, name: id })));
+    });
+
+    it("revokes by member: a grant in another of the member's orgs ends, another member still gets 404", async () => {
+        const board = await start();
+        const member = await memberOf(board, [ORG, OTHER_ORG]);
+        const tx = await startConsent(board, {}, member.cookie);
+        const approved = await decide(board, APPROVE, { ...tx, orgId: OTHER_ORG }, member.cookie);
+        const code = new URL((approved.json() as { redirect: string }).redirect).searchParams.get('code');
+        await tokenRequest(board, codeForm(board, String(code)));
+        const [grant] = (await listOf(board, member.cookie)).grants;
+        const stranger = await otherMember(board);
+        expect((await revoke(board, String(grant?.id), stranger.cookie)).statusCode).toBe(HTTP_NOT_FOUND);
+        expect((await revoke(board, String(grant?.id), member.cookie)).statusCode).toBe(HTTP_OK);
+        expect((await listOf(board, member.cookie)).grants).toEqual([]);
     });
 });

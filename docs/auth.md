@@ -61,11 +61,12 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   `server/src/routes/oauth-register.ts`, `server/test/oauth.client-resolver.test.ts`, `server/test-db/oauth.client-registration.test.ts`.
 - **Consent is the cookie session and nothing else.** Approve and deny need the signed-in session, the transaction id
   and its CSRF value (carried once, in the fragment of the redirect to `/oauth/consent`), a JSON body, and read nothing
-  else: scopes, redirect, resource and client were frozen at authorize, user and organization come from the live session.
+  else but an optional `orgId` (default the session's, refused unless the caller belongs to it; the grant binds to it):
+  scopes, redirect, resource and client were frozen at authorize, the user comes from the live session.
   A `mat_` or `fat_` never approves its own grant. `server/test-db/routes.oauth-consent.test.ts`.
 - **The connected-apps routes are the cookie session and route-class `none`.** A member lists and ends only their own
-  live grant families in the organization they are signed into; another member's, another organization's, unknown and
-  ended ids are one 404, and an MCP token can neither list nor end a grant. `server/src/routes/oauth-grants.ts`,
+  live grant families across every organization they belong to (each row names its org; `lastIssuedAt` is the newest
+  token minted, not the last use); another member's, unknown and ended ids are one 404, and an MCP token can neither list nor end a grant. `server/src/routes/oauth-grants.ts`,
   `server/test-db/routes.oauth-grants.test.ts`.
 - **No page frames the app:** the CSP carries `frame-ancestors 'none'` and every response `X-Frame-Options: DENY`, so
   the consent screen cannot be clickjacked. `server/src/app.ts`, `server/test/app.csp.test.ts`.

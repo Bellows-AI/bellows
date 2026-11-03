@@ -15,9 +15,10 @@ function GrantRow({ grant, busy, onRevoke }: { grant: OAuthGrantView; busy: bool
                 {identity.label}
                 {grant.client.kind === 'dcr' ? <span className="muted"> (unverified name)</span> : null}
             </td>
+            <td data-label="Org">{grant.org.name}</td>
             <td data-label="Access">{grant.scopes.map(scopeLabel).join('; ')}</td>
             <td data-label="Connected">{taskTime(grant.createdAt)}</td>
-            <td data-label="Last used">{taskTime(grant.lastUsedAt)}</td>
+            <td data-label="Last token issued">{taskTime(grant.lastIssuedAt)}</td>
             <td data-label="Disconnect">
                 <button type="button" disabled={busy} aria-label={`Disconnect ${identity.label}`} onClick={onRevoke}>
                     Disconnect
@@ -87,24 +88,33 @@ export function ConnectedAppsPanel({ grants, loading, error, onRevoke }: Connect
                 <StateNote state="empty">No apps are connected.</StateNote>
             ) : null}
             {grants !== null && grants.length > 0 ? (
-                <table className="data table-cards" aria-label="Connected apps">
-                    <thead>
-                        <tr>
-                            <th scope="col">App</th>
-                            <th scope="col">Access</th>
-                            <th scope="col">Connected</th>
-                            <th scope="col">Last used</th>
-                            <th scope="col">
-                                <span className="visually-hidden">Disconnect</span>
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {grants.map((grant) => (
-                            <GrantRow key={grant.id} grant={grant} busy={revoking} onRevoke={() => setPending(grant)} />
-                        ))}
-                    </tbody>
-                </table>
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
+                <section className="table-wrap" tabIndex={0} aria-label="Connected apps list">
+                    <table className="data table-cards" aria-label="Connected apps">
+                        <thead>
+                            <tr>
+                                <th scope="col">App</th>
+                                <th scope="col">Org</th>
+                                <th scope="col">Access</th>
+                                <th scope="col">Connected</th>
+                                <th scope="col">Last token issued</th>
+                                <th scope="col">
+                                    <span className="visually-hidden">Disconnect</span>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {grants.map((grant) => (
+                                <GrantRow
+                                    key={grant.id}
+                                    grant={grant}
+                                    busy={revoking}
+                                    onRevoke={() => setPending(grant)}
+                                />
+                            ))}
+                        </tbody>
+                    </table>
+                </section>
             ) : null}
             <ConfirmDialog
                 open={pending !== null}

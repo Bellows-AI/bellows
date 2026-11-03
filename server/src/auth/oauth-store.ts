@@ -52,10 +52,11 @@ export interface OAuthClient {
 export interface GrantSummary {
     id: string;
     client: { id: string; name: string | null; kind: OAuthClientKind };
+    org: { id: string; name: string };
     scopes: readonly string[];
     createdAt: Date;
-    /** When the grant last minted a token pair (the code exchange, then each refresh). */
-    lastUsedAt: Date | null;
+    /** When a token was last issued for the grant (the code exchange, then each refresh), not when it was last used; null when all its tokens are swept. */
+    lastIssuedAt: Date | null;
 }
 
 export interface ConsentView {
@@ -120,10 +121,10 @@ export interface OAuthStore {
     /** RFC 7009: a refresh token ends its family, an access token only itself; another client's token is ignored. */
     revoke(input: { token: string; clientId: string }): Promise<void>;
     revokeFamily(familyId: string): Promise<void>;
-    /** The unrevoked, unexpired families of one member in one organization, newest first. */
-    listGrants(input: { userId: string; orgId: string }): Promise<GrantSummary[]>;
-    /** Ends a family only when it belongs to this member in this organization; false when there was no such live family. */
-    revokeGrant(input: { id: string; userId: string; orgId: string }): Promise<boolean>;
+    /** The unrevoked, unexpired families of one member across every organization they still belong to, newest first. */
+    listGrants(input: { userId: string }): Promise<GrantSummary[]>;
+    /** Ends a family only if it is this member's; false when there was no such live family. */
+    revokeGrant(input: { id: string; userId: string }): Promise<boolean>;
     findAccessToken(tokenHash: Buffer): Promise<McpCaller | null>;
     /**
      * Deletes what can no longer be used, a day after it expired (clock skew between replicas, and a replay of a spent
@@ -602,43 +603,46 @@ const grantOps = (ctx: Ctx): GrantOps => ({
         });
     },
 
-    async listGrants({ userId, orgId }) {
+    async listGrants({ userId }) {
         await ctx.gate();
         const rows = await ctx.sql<
             {
                 id: string;
-                client_id: string;
-                client_name: string | null;
-                kind: OAuthClientKind;
+                client: GrantSummary['client'];
+                org: { id: string; name: string };
                 scopes: string[];
                 created_at: Date;
-                last_used_at: Date | null;
+                last_issued_at: Date | null;
             }[]
         >`
-            select f.id, f.client_id, c.client_name, c.kind, f.scopes, f.created_at,
-                (select max(t.created_at) from oauth_token t where t.family_id = f.id) as last_used_at
-            from oauth_grant_family f join oauth_client c on c.client_id = f.client_id
-            where f.user_id = ${userId} and f.org_id = ${orgId}
-                and f.revoked_at is null and f.expires_at > ${ctx.now()}
+            select f.id, f.scopes, f.created_at,
+                jsonb_build_object('id', c.client_id, 'name', c.client_name, 'kind', c.kind) as client,
+                jsonb_build_object('id', o.id, 'name', o.name) as org,
+                (select max(t.created_at) from oauth_token t where t.family_id = f.id) as last_issued_at
+            from oauth_grant_family f
+                join oauth_client c on c.client_id = f.client_id
+                join organization o on o.id = f.org_id
+                join org_membership m on m.user_id = f.user_id and m.org_id = f.org_id
+            where f.user_id = ${userId} and f.revoked_at is null and f.expires_at > ${ctx.now()}
             order by f.created_at desc, f.id
         `;
         return rows.map((row) => ({
             id: row.id,
-            client: { id: row.client_id, name: row.client_name, kind: row.kind },
+            client: row.client,
+            org: row.org,
             scopes: row.scopes,
             createdAt: row.created_at,
-            lastUsedAt: row.last_used_at,
+            lastIssuedAt: row.last_issued_at,
         }));
     },
 
-    async revokeGrant({ id, userId, orgId }) {
+    async revokeGrant({ id, userId }) {
         await ctx.gate();
         const at = ctx.now();
         return ctx.sql.begin(async (tx) => {
             const owned = await tx<{ id: string }[]>`
                 select id from oauth_grant_family
-                where id = ${id} and user_id = ${userId} and org_id = ${orgId} and revoked_at is null
-                    and expires_at > ${at}
+                where id = ${id} and user_id = ${userId} and revoked_at is null and expires_at > ${at}
                 for update
             `;
             if (owned.length === 0) return false;

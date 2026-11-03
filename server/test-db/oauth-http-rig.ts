@@ -69,6 +69,19 @@ export const otherMember = async (board: Board): Promise<{ caller: Caller; cooki
     return { caller, cookie: await signedIn(board.auth, caller) };
 };
 
+/** A member of every listed org, signed in to the first; their own grants are the only thing they share with the board. */
+export const memberOf = async (
+    board: Board,
+    orgIds: readonly string[]
+): Promise<{ caller: Caller; cookie: string }> => {
+    const caller = await board.auth.signIn(
+        { githubUserId: randomGithubId(), login: `multi-${orgIds[0]}`, displayName: null, avatarUrl: null },
+        orgIds[0]!,
+        orgIds.map((id) => ({ id, name: id }))
+    );
+    return { caller, cookie: await signedIn(board.auth, caller) };
+};
+
 export const authorizeParams = (board: Board, overrides: Record<string, string | undefined> = {}): URLSearchParams => {
     const base: Record<string, string | undefined> = {
         response_type: 'code',

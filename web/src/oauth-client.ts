@@ -17,6 +17,8 @@ export interface ClientIdentity {
     label: string;
     /** One sentence on where that label comes from, and how far to trust it. */
     basis: string;
+    /** A metadata-document client's own `client_name`: its claim, shown as one beside the verified host. */
+    claimedName: string | null;
 }
 
 const UNNAMED = 'An unnamed app';
@@ -33,19 +35,22 @@ export function clientIdentity(client: OAuthClientView): ClientIdentity {
         } catch {
             // Not a URL: the id is shown whole rather than guessed at.
         }
-        return { label: host, basis: `Identified by the metadata document at ${client.id}.` };
+        return { label: host, basis: `Identified by the metadata document at ${client.id}.`, claimedName: client.name };
     }
     return {
         label: client.name ?? UNNAMED,
         basis: 'Registered itself; this name is unverified and anyone can pick it.',
+        claimedName: null,
     };
 }
 
-/** The place an approval sends the browser: the host of a web redirect, the scheme of an app's own. */
+/** The place an approval sends the browser: the host of a web redirect, the whole address of an app's own scheme. */
 export function redirectTarget(redirectUri: string): string {
     try {
         const url = new URL(redirectUri);
-        return url.host !== '' ? url.host : `${url.protocol} (an app on this device)`;
+        if (url.protocol === 'https:' || url.protocol === 'http:') return url.host;
+        // A custom scheme names an app on this device, and whatever follows it is that app's to read: shown whole.
+        return `${redirectUri} (opens an app on this device)`;
     } catch {
         return redirectUri;
     }

@@ -18,7 +18,8 @@ const SHOTS = 'artifacts/ui';
 const BASE = `http://127.0.0.1:${AUTH_PORT}`;
 const RESOURCE = `${BASE}/api/mcp`;
 /** A loopback redirect (RFC 8252): nothing listens here; the spec answers the navigation itself. */
-const REDIRECT_PORT = 9;
+/** Not Chromium's restricted ports (port 9 is on that list and the navigation would fail unsafe-port). */
+const REDIRECT_PORT = 59173;
 const REDIRECT = `http://127.0.0.1:${REDIRECT_PORT}/callback`;
 const MODERN = '2026-07-28';
 const HTTP_UNAUTHORIZED = 401;
@@ -37,8 +38,8 @@ async function register(page: Page, name: string): Promise<string> {
     return ((await response.json()) as { client_id: string }).client_id;
 }
 
-/** Opens an authorization request as the signed-in member; the browser ends on the consent screen. */
-async function authorize(page: Page, clientId: string, challenge: string): Promise<void> {
+/** Opens an authorization request as the signed-in member; the browser ends on the consent screen. Answers the consent URL the redirect carried. */
+async function authorize(page: Page, clientId: string, challenge: string): Promise<string> {
     const params = new URLSearchParams({
         response_type: 'code',
         client_id: clientId,
@@ -49,8 +50,14 @@ async function authorize(page: Page, clientId: string, challenge: string): Promi
         state: 'e2e-state',
         resource: RESOURCE,
     });
+    const redirected = page.waitForResponse((r) => r.url().includes('/api/oauth/authorize'));
     await page.goto(`/api/oauth/authorize?${params.toString()}`);
     await expect(page.getByRole('heading', { level: 1, name: 'Connect an app to Bellows' })).toBeVisible();
+    const location = (await redirected).headers().location ?? '';
+    expect(location).toContain('#id=');
+    // The transaction is read once and then dropped from the address bar.
+    await expect.poll(() => new URL(page.url()).hash).toBe('');
+    return new URL(location, BASE).toString();
 }
 
 /** The redirect the page navigates to after a decision; nothing listens there, so the spec fulfils it. */
@@ -120,7 +127,9 @@ test('Allow returns a code, the connected app lists, and Disconnect makes the ne
     await expect(row).toBeVisible();
     await page.screenshot({ path: `${SHOTS}/account-connected-apps.png`, fullPage: true });
     await row.getByRole('button', { name: `Disconnect ${name}` }).click();
+    const revoked = page.waitForResponse((r) => r.url().includes('/revoke') && r.request().method() === 'POST');
     await page.getByRole('dialog').getByRole('button', { name: 'Disconnect' }).click();
+    expect((await revoked).status()).toBe(200);
     await expect(page.getByRole('row', { name: new RegExp(name) })).toHaveCount(0);
 
     const after = await fetch(RESOURCE, {
@@ -130,9 +139,14 @@ test('Allow returns a code, the connected app lists, and Disconnect makes the ne
             'content-type': 'application/json',
             accept: 'application/json, text/event-stream',
         },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'whoami', arguments: {} },
+        }),
     });
-    expect(after.status).toBe(HTTP_UNAUTHORIZED);
+    expect(after.status, await after.text()).toBe(HTTP_UNAUTHORIZED);
 });
 
 test('Deny returns access_denied with the state, no code, and connects nothing', async ({ page }) => {
@@ -153,8 +167,7 @@ test('Deny returns access_denied with the state, no code, and connects nothing',
 
 test('a spent request says it is no longer valid and offers no Allow', async ({ page }) => {
     const clientId = await register(page, `E2E Spent ${Date.now()}`);
-    await authorize(page, clientId, pkce().challenge);
-    const consentUrl = page.url();
+    const consentUrl = await authorize(page, clientId, pkce().challenge);
     await captureRedirect(page, () => page.getByRole('button', { name: 'Deny' }).click());
 
     await page.goto(consentUrl);
