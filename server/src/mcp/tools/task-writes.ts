@@ -155,7 +155,10 @@ export const answerQuestion = defineTool({
     description:
         'Answer a question an agent asked (see list_questions). `answers` holds one answer per prompt, in the order list_questions shows the prompts; give the option label, or free text. The board refuses an answer that arrives after the question was answered, expired or closed. Needs read access as well, to look up the prompts. Never use this to complete an integration connect.',
     scope: 'factory:write',
-    routes: [['POST', '/api/jobs/:id/questions/:questionId/answer']],
+    routes: [
+        ['GET', '/api/jobs/:id/thread'],
+        ['POST', '/api/jobs/:id/questions/:questionId/answer'],
+    ],
     annotations: WRITES,
     input: JobIdInput.extend({
         questionId: z.string().min(1).max(MAX_NAME_CHARS).describe('The question id from list_questions.'),
@@ -174,12 +177,19 @@ export const answerQuestion = defineTool({
                     `question ${questionId} has ${asked.questions.length} prompt(s); give one answer for each, in order (got ${answers.length})`
                 );
             }
+            const prompts = asked.questions.map((prompt) => prompt.question);
+            if (new Set(prompts).size !== prompts.length) {
+                return refused(
+                    'duplicate_prompts',
+                    `question ${questionId} repeats a prompt text, so answers cannot be told apart by prompt; refusing to send fewer answers than prompts`
+                );
+            }
             return ctx.call(
                 {
                     method: 'POST',
                     url: `${jobPath(run.id)}/questions/${encodeURIComponent(questionId)}/answer`,
                     body: {
-                        answers: Object.fromEntries(asked.questions.map((prompt, i) => [prompt.question, answers[i]])),
+                        answers: Object.fromEntries(prompts.map((prompt, i) => [prompt, answers[i]])),
                     },
                 },
                 AnsweredSchema,

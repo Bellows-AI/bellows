@@ -4,7 +4,13 @@ import { z } from 'zod';
 import { SCOPE_OF_CLASS, bridgeOpen, classOf } from '../src/auth/route-class.js';
 import type { Caller } from '../src/auth/store.js';
 import type { Bridge, BridgeLimits } from '../src/mcp/bridge.js';
-import { MAX_CONCURRENT_CALLS_PER_CALLER, TOOLS, registerTools, type ToolRuntime } from '../src/mcp/registry.js';
+import {
+    MAX_CONCURRENT_CALLS_PER_CALLER,
+    TOOLS,
+    registerTools,
+    requiredScopes,
+    type ToolRuntime,
+} from '../src/mcp/registry.js';
 import { DESTRUCTIVE, READ_ONLY, WRITES, defineTool } from '../src/mcp/tool.js';
 import { memoryAuthStore } from './helpers.js';
 
@@ -27,7 +33,9 @@ describe('the static registry', () => {
                     expect(tool.scope).toBe('factory:read');
                 } else {
                     expect(routeClass, `${method} ${pattern} is never reachable by a scoped caller`).not.toBe('none');
-                    expect(tool.scope).toBe(SCOPE_OF_CLASS[routeClass as 'read' | 'write']);
+                    // A tool that reaches any write route is a write tool; the gate asks for every route's scope too.
+                    if (routeClass === 'write') expect(tool.scope).toBe('factory:write');
+                    expect(requiredScopes(tool)).toContain(SCOPE_OF_CLASS[routeClass as 'read' | 'write']);
                 }
             }
         }
@@ -109,9 +117,9 @@ const probe = defineTool({
     confirm: true,
     input: z.object({ id: z.string() }),
     output: z.object({ n: z.number() }),
-    run: async (args, ctx) => {
+    run: async (_args, ctx) => {
         await ctx.progress(1, 2, 'half');
-        return ctx.call({ method: 'POST', url: `/x/${args.id}` }, z.object({ n: z.number() }), (d) => `n=${d.n}`);
+        return ctx.call({ method: 'POST', url: '/api/workflows' }, z.object({ n: z.number() }), (d) => `n=${d.n}`);
     },
 });
 
@@ -128,6 +136,33 @@ describe('the tool wrapper', () => {
         const done = await handlers.get('probe')!({ id: 'a', confirm: true }, ctxOf());
         expect(done.isError).toBeUndefined();
         expect(done.structuredContent).toEqual({ n: 1 });
+    });
+
+    it('requires the scope of every declared route, and refuses a call to a route the tool did not declare', async () => {
+        const { server, handlers } = capture();
+        const bridge = { call: vi.fn(okBridge.call) };
+        const reachesRead = defineTool({
+            ...probe,
+            name: 'reaches_read',
+            routes: [
+                ['GET', '/api/jobs/:id/thread'],
+                ['POST', '/api/workflows'],
+            ],
+            run: (_args, ctx) =>
+                ctx.fetch({ method: 'GET', url: '/api/jobs/abc/thread' }).then(() => probe.run(_args, ctx)),
+        });
+        const undeclared = defineTool({
+            ...probe,
+            name: 'undeclared',
+            run: (_args, ctx) => ctx.fetch({ method: 'GET', url: '/api/jobs' }).then(() => probe.run(_args, ctx)),
+        });
+        expect(requiredScopes(reachesRead)).toEqual(['factory:write', 'factory:read']);
+        registerTools(server, callerWith(['factory:write']), runtimeOf(bridge), [reachesRead, undeclared]);
+        const refused = await handlers.get('reaches_read')!({ id: 'a', confirm: true }, ctxOf());
+        expect(refused.structuredContent).toMatchObject({ code: 'insufficient_scope' });
+        const stray = await handlers.get('undeclared')!({ id: 'a', confirm: true }, ctxOf());
+        expect(stray.structuredContent).toMatchObject({ outcome: 'inconclusive' });
+        expect(bridge.call).not.toHaveBeenCalled();
     });
 
     it('refuses a caller without the tool scope before the bridge is touched', async () => {
@@ -199,7 +234,8 @@ describe('the tool wrapper', () => {
             annotations: READ_ONLY,
             input: z.object({}),
             output: z.object({ n: z.number() }),
-            run: async (_args, ctx) => ctx.call({ method: 'GET', url: '/x' }, z.object({}).loose(), () => 'ok'),
+            run: async (_args, ctx) =>
+                ctx.call({ method: 'GET', url: '/api/org/members' }, z.object({}).loose(), () => 'ok'),
         });
         const bridge: Bridge = { call: async () => ({ kind: 'response', status: 200, body: { n: 'one' } }) };
         const runtime = runtimeOf(bridge);

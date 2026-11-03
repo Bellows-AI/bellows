@@ -1,6 +1,6 @@
 import type { CallToolResult, McpServer, ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import type { Scope } from '../auth/route-class.js';
+import { SCOPE_OF_CLASS, classOf, type Scope } from '../auth/route-class.js';
 import type { Caller } from '../auth/store.js';
 import type { Bridge, BridgeRequest } from './bridge.js';
 import { mapResult, refusal, inconclusive, type Tagged, type ToolOutcome } from './result.js';
@@ -61,6 +61,16 @@ const CONFIRM_FIELD = z
 
 const holds = (caller: Caller, scope: Scope): boolean => caller.scopes === 'all' || caller.scopes.includes(scope);
 
+/** The tool's own scope plus the scope of every route it declares: a tool is callable only by a caller who can pass each hop. */
+export const requiredScopes = (tool: Tool): readonly Scope[] => {
+    const scopes = new Set<Scope>([tool.scope]);
+    for (const [method, pattern] of tool.routes) {
+        const routeClass = classOf(method, pattern);
+        if (routeClass !== undefined && routeClass !== 'none') scopes.add(SCOPE_OF_CLASS[routeClass]);
+    }
+    return [...scopes];
+};
+
 const callerKey = (caller: Caller): string => `${caller.org.id}:${caller.user.id}`;
 
 /** Registers every tool on a per-request server. */
@@ -86,6 +96,14 @@ export function registerTools(
     }
 }
 
+const declares = (tool: Tool, request: BridgeRequest): boolean => {
+    const path = request.url.split('?')[0] ?? '';
+    return tool.routes.some(
+        ([method, pattern]) =>
+            method === request.method && new RegExp(`^${pattern.replace(/:[^/]+/g, '[^/]+')}$`).test(path)
+    );
+};
+
 interface Execution {
     readonly tool: Tool;
     readonly args: Record<string, unknown>;
@@ -97,8 +115,9 @@ interface Execution {
 
 async function execute({ tool, args, ctx, caller, runtime, now }: Execution): Promise<Tagged> {
     if (!caller) return { outcome: 'refused', result: refusal('unauthorized', 'No caller was resolved') };
-    if (!holds(caller, tool.scope)) {
-        return { outcome: 'refused', result: refusal('insufficient_scope', `This tool needs ${tool.scope}`) };
+    const needed = requiredScopes(tool);
+    if (!needed.every((scope) => holds(caller, scope))) {
+        return { outcome: 'refused', result: refusal('insufficient_scope', `This tool needs ${needed.join(' and ')}`) };
     }
     if (tool.confirm && args.confirm !== true) {
         return {
@@ -118,7 +137,11 @@ async function execute({ tool, args, ctx, caller, runtime, now }: Execution): Pr
     try {
         const deadlineAt = now() + runtime.deadlineMs;
         const signal = ctx.mcpReq.signal;
-        const fetch = (request: BridgeRequest) => runtime.bridge.call(caller, request, { signal, deadlineAt });
+        const fetch = (request: BridgeRequest) => {
+            // A tool reaches only the routes it declares, so the scope gate above covers every hop.
+            if (!declares(tool, request)) throw new Error(`${tool.name} called an undeclared route`);
+            return runtime.bridge.call(caller, request, { signal, deadlineAt });
+        };
         const toolCtx: ToolContext = {
             caller,
             signal,

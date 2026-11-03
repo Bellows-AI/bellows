@@ -58,6 +58,7 @@ interface Board {
     stop?: unknown;
     remove?: unknown;
     done?: unknown;
+    prompts?: unknown[];
 }
 
 const PROMPTS = [
@@ -115,7 +116,7 @@ const storeOf = (board: Board) => {
         stop: record('stop', () => board.stop ?? { result: 'stopped' }),
         removeThread: record('removeThread', () => board.remove ?? 'removed'),
         reopen: record('reopen', () => 'reopened'),
-        thread: async () => [RUN],
+        thread: async () => [{ ...RUN, questions: [{ ...QUESTION, questions: board.prompts ?? PROMPTS }] }],
         answerQuestion: record('answerQuestion', () => ({
             result: 'ok',
             question: { ...QUESTION, status: 'answered', answers: { 'Which db?': 'pg', 'Which port?': '8080' } },
@@ -417,6 +418,30 @@ describe('the task write tools', () => {
         expect(short.data).toMatchObject({ outcome: 'refused', code: 'answers_mismatch' });
         const unknown = await call(url, 'both', 'answer_question', { jobId: JOB, questionId: 'nope', answers: ['a'] });
         expect(unknown.data).toMatchObject({ outcome: 'refused', code: 'question_not_found' });
+        expect(board.calls).toEqual([]);
+    });
+
+    it('refuses a question whose prompts repeat a text, rather than send the board fewer answers than prompts', async () => {
+        const board: Board = { calls: [], prompts: [PROMPTS[0], PROMPTS[0]] };
+        const { url } = await boot(board);
+        const refused = await call(url, 'both', 'answer_question', {
+            jobId: JOB,
+            questionId: 'toolu_1',
+            answers: ['pg', 'sqlite'],
+        });
+        expect(refused.data).toMatchObject({ outcome: 'refused', code: 'duplicate_prompts' });
+        expect(board.calls).toEqual([]);
+    });
+
+    it('refuses answer_question for a write-only token at the gate: the thread read it needs is not allowed', async () => {
+        const board: Board = { calls: [] };
+        const { url } = await boot(board);
+        const refused = await call(url, 'writer', 'answer_question', {
+            jobId: JOB,
+            questionId: 'toolu_1',
+            answers: ['pg', '8080'],
+        });
+        expect(refused.data).toMatchObject({ outcome: 'refused', code: 'insufficient_scope' });
         expect(board.calls).toEqual([]);
     });
 });

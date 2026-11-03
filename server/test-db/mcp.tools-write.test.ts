@@ -16,7 +16,7 @@ import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { githubAuth, staticRegistry, stubTelemetryClient, telemetryStoreStub, testConfig } from '../test/helpers.js';
 import { BATCH_REPO, batchPlan, headOf, prTask, rootOf, startBatch } from './batch-fixtures.js';
-import { testOrg } from './fixtures.js';
+import { oauthConnection, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import { buildWorld } from './oauth-rig.js';
 
@@ -505,5 +505,33 @@ describe.skipIf(!enabled)('the task write tools — database', () => {
             expect(outsider.data, name).toMatchObject({ outcome: 'refused', status: 404 });
         }
         expect(await commandOf(id)).toBeDefined();
+    });
+
+    it('a task created with a missing integration parks on a requirement; the same user connecting resumes that task, no new one', async () => {
+        const { url, userOf } = await boot();
+        const id = await created(url, 'alice', { skills: ['jira'] });
+        const before = await countJobs();
+        const requirement = () =>
+            sql<{ source: string; satisfied_at: Date | null }[]>`
+                select source, satisfied_at from job_integration_requirement where root_job_id = ${id}`;
+        expect(await requirement()).toMatchObject([{ source: 'create', satisfied_at: null }]);
+        // Held: the claim loop never hands the parked task to a worker.
+        for (let attempt = 0; attempt < 50; attempt++) {
+            const claim = await jobs.claim(`w-${randomUUID()}`, LEASE_SECONDS);
+            if (!claim) break;
+            expect(claim.id).not.toBe(id);
+        }
+
+        const userId = userOf('alice');
+        const connection = await oauthConnection(sql, ORG, userId);
+        const [row] = await sql<{ rev: number }[]>`select binding_revision as rev from job where id = ${id}`;
+        expect(
+            await jobs.bindConnection(id, { connectionId: connection.id, bindingRevision: row!.rev }, userId)
+        ).toMatchObject({ ok: true });
+
+        expect(await requirement()).toMatchObject([{ source: 'create' }]);
+        expect((await requirement())[0]?.satisfied_at).not.toBeNull();
+        expect((await claimed(id)).id).toBe(id);
+        expect(await countJobs()).toBe(before);
     });
 });
