@@ -14,6 +14,7 @@ import { investigateJob, jobActivity, listQuestions } from './tools/runs.js';
 import { listSkills } from './tools/skills.js';
 import { listJobs, listTasks } from './tools/tasks.js';
 import { getTask, getTaskResult } from './tools/task-detail.js';
+import { waitTask } from './tools/task-wait.js';
 import { TASK_WRITE_TOOLS } from './tools/task-writes.js';
 import { whoami } from './tools/whoami.js';
 
@@ -29,6 +30,7 @@ export const TOOLS: readonly Tool[] = [
     listTasks,
     getTask,
     getTaskResult,
+    waitTask,
     listJobs,
     investigateJob,
     jobActivity,
@@ -158,6 +160,7 @@ async function execute({ tool, args, ctx, caller, runtime, now }: Execution): Pr
         const toolCtx: ToolContext = {
             caller,
             signal,
+            now,
             fetch,
             call: async (request, schema, summarize) => mapResult(await fetch(request), schema, summarize),
             progress: async (progress, total, message) => {

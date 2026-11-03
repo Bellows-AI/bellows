@@ -222,7 +222,6 @@ describe('the task write tools', () => {
         const tools = await listed(url);
         const byName = new Map(tools.map((tool) => [tool.name, tool]));
         for (const [name] of WRITE_CALLS) expect(byName.has(name), name).toBe(true);
-        expect(byName.has('wait_task')).toBe(false);
         for (const name of ['stop_task', 'force_close_task', 'remove_task']) {
             expect(byName.get(name)?.annotations, name).toMatchObject({ readOnlyHint: false, destructiveHint: true });
             expect(JSON.stringify(byName.get(name)?.inputSchema), name).toContain('confirm');
