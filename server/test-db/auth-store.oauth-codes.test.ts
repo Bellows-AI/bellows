@@ -206,4 +206,36 @@ describe.skipIf(!enabled)('oauth clients', () => {
         expect(await w.store.findClient('idle')).toBeNull();
         expect(await w.store.findClient(used)).not.toBeNull();
     });
+
+    it('expires an idle CIMD client by its last fetch, keeping one fetched since or one a parked sign-in names', async () => {
+        const w = await fresh();
+        const cimd = (name: string) => `https://${name}.example.test/c.json`;
+        const store = async (name: string) =>
+            w.store.upsertClient({
+                clientId: cimd(name),
+                kind: 'cimd',
+                name: null,
+                redirectUris: [REDIRECT],
+                fetchedAt: w.clock.now(),
+            });
+        await store('idle');
+        await store('parked');
+        await store('refetched');
+        await w.store.createPending({
+            clientId: cimd('parked'),
+            redirectUri: REDIRECT,
+            resource: w.resource,
+            scopes: ['factory:read'],
+            codeChallenge: pkceChallenge(VERIFIER),
+            ttlSeconds: 90 * 86400,
+        });
+        w.clock.advance(25 * 86400);
+        await store('refetched');
+        w.clock.advance(6 * 86400);
+        // The world's own unused DCR client goes with it.
+        expect(await w.store.deleteUnusedClients()).toBe(2);
+        expect(await w.store.findClient(cimd('idle'))).toBeNull();
+        expect(await w.store.findClient(cimd('parked'))).not.toBeNull();
+        expect(await w.store.findClient(cimd('refetched'))).not.toBeNull();
+    });
 });

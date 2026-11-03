@@ -15,6 +15,7 @@ import {
     redirectWith,
     scopesOf,
     sessionHashOf,
+    closeSignal,
     type OAuthRouteDeps,
 } from './oauth-http.js';
 
@@ -79,13 +80,13 @@ export const oauthAuthorizeRoutes =
             oauthError(reply, HTTP_BAD_REQUEST, 'invalid_request', description);
 
         /** Phase 1: who is asking, and where may the answer go. Nothing here redirects. */
-        const confirmClient = async (params: Map<string, string>, reply: FastifyReply) => {
+        const confirmClient = async (params: Map<string, string>, reply: FastifyReply, signal: AbortSignal) => {
             const clientId = params.get('client_id');
             const redirectUri = params.get('redirect_uri');
             if (!clientId) return shown(reply, 'client_id is required.');
             let client: Awaited<ReturnType<typeof resolveClient>>;
             try {
-                client = await resolveClient(clientId);
+                client = await resolveClient(clientId, signal);
             } catch (e) {
                 return unavailable(reply, e as Error);
             }
@@ -147,7 +148,7 @@ export const oauthAuthorizeRoutes =
             noStore(reply);
             const params = readParams(request.query);
             if (!params) return shown(reply, 'Repeated or malformed parameters.');
-            const confirmed = await confirmClient(params, reply);
+            const confirmed = await confirmClient(params, reply, closeSignal(reply));
             if ('statusCode' in confirmed) return confirmed;
             const { client, redirectUri } = confirmed;
 
@@ -170,13 +171,19 @@ export const oauthAuthorizeRoutes =
 
         /** Spends the parked request for this session and opens its consent, if the client still accepts it. */
         const bind = async (reply: FastifyReply, sessionHash: Buffer, id: string) => {
+            const signal = closeSignal(reply);
             try {
-                const parked = await oauth.consumePending(id);
-                if (!parked) return shown(reply, 'This sign-in link has expired or was already used. Start again.');
-                const client = await resolveClient(parked.clientId);
-                if (!client || !redirectUriMatches(parked.redirectUri, client.redirectUris)) {
+                const expired = () => shown(reply, 'This sign-in link has expired or was already used. Start again.');
+                // The client is confirmed before the parked request is spent: an unconfirmed client throws to a 503
+                // and leaves the sign-in to be retried.
+                const peeked = await oauth.readPending(id);
+                if (!peeked) return expired();
+                const client = await resolveClient(peeked.clientId, signal);
+                if (!client || !redirectUriMatches(peeked.redirectUri, client.redirectUris)) {
                     return shown(reply, 'redirect_uri is not registered for this client.');
                 }
+                const parked = await oauth.consumePending(id);
+                if (!parked) return expired();
                 return openConsent(reply, sessionHash, {
                     client,
                     redirectUri: parked.redirectUri,

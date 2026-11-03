@@ -11,12 +11,13 @@ export const protectedResourceMetadata = (issuer: string, resource: string) => (
     bearer_methods_supported: ['header'],
 });
 
-/** RFC 8414. Public clients only (`none`, PKCE S256); every authorization response carries `iss` (RFC 9207). */
+/** RFC 8414 (+ RFC 7591 registration, + the Client ID Metadata Document draft). Public clients only (`none`, PKCE S256); every authorization response carries `iss` (RFC 9207). */
 export const authorizationServerMetadata = (issuer: string) => ({
     issuer,
     authorization_endpoint: `${issuer}${OAUTH_PATHS.authorize}`,
     token_endpoint: `${issuer}${OAUTH_PATHS.token}`,
     revocation_endpoint: `${issuer}${OAUTH_PATHS.revoke}`,
+    registration_endpoint: `${issuer}${OAUTH_PATHS.register}`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
@@ -24,6 +25,7 @@ export const authorizationServerMetadata = (issuer: string) => ({
     revocation_endpoint_auth_methods_supported: ['none'],
     scopes_supported: [...SCOPES],
     authorization_response_iss_parameter_supported: true,
+    client_id_metadata_document_supported: true,
 });
 
 const CACHE = 'public, max-age=300';

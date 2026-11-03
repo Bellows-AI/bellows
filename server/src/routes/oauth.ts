@@ -3,6 +3,7 @@ import { oauthAuthorizeRoutes } from './oauth-authorize.js';
 import { oauthConsentRoutes } from './oauth-consent.js';
 import { identityOf, type OAuthRouteDeps } from './oauth-http.js';
 import { oauthMetadataRoutes } from './oauth-metadata.js';
+import { oauthRegisterRoutes } from './oauth-register.js';
 import { oauthTokenRoutes } from './oauth-token.js';
 
 /** The inbound OAuth authorization server of the MCP endpoint (docs/mcp.md): discovery, authorize, consent, token, revoke. */
@@ -14,4 +15,5 @@ export const oauthRoutes =
         await app.register(oauthAuthorizeRoutes(deps));
         await app.register(oauthConsentRoutes(deps));
         await app.register(oauthTokenRoutes(deps));
+        await app.register(oauthRegisterRoutes(deps));
     };

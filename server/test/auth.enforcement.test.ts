@@ -333,6 +333,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/oauth/authorize/resume', 'open'],
     ['/api/oauth/token', 'open'],
     ['/api/oauth/revoke', 'open'],
+    ['/api/oauth/register', 'open'],
+    ['/api/oauth/register/x', 'user'],
     ['/api/oauth/consent/:id', 'user'],
     ['/api/oauth/consent/approve', 'user'],
     ['/api/oauth/consent/deny', 'user'],

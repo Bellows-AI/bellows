@@ -154,7 +154,7 @@ const OPEN_ROUTES: readonly RegExp[] = [
     /^\/api\/github\/webhook$/,
     // The OAuth authorization server's public endpoints (docs/auth.md): a client has no credential until it has
     // been through them. The authorize endpoint reads the session cookie itself, as `/api/auth/me` does.
-    /^\/api\/oauth\/(authorize(\/resume)?|token|revoke)$/,
+    /^\/api\/oauth\/(authorize(\/resume)?|token|revoke|register)$/,
 ];
 
 /**

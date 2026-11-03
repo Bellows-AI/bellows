@@ -61,6 +61,7 @@ describe('OAuth discovery metadata', () => {
             authorization_endpoint: `${PUBLIC_URL}/api/oauth/authorize`,
             token_endpoint: `${PUBLIC_URL}/api/oauth/token`,
             revocation_endpoint: `${PUBLIC_URL}/api/oauth/revoke`,
+            registration_endpoint: `${PUBLIC_URL}/api/oauth/register`,
             response_types_supported: ['code'],
             grant_types_supported: ['authorization_code', 'refresh_token'],
             code_challenge_methods_supported: ['S256'],
@@ -68,6 +69,7 @@ describe('OAuth discovery metadata', () => {
             revocation_endpoint_auth_methods_supported: ['none'],
             scopes_supported: ['factory:read', 'factory:write'],
             authorization_response_iss_parameter_supported: true,
+            client_id_metadata_document_supported: true,
         });
     });
 
@@ -97,7 +99,7 @@ describe('OAuth discovery metadata', () => {
         ]) {
             expect((await get(app, url)).statusCode, url).toBe(HTTP_NOT_FOUND);
         }
-        for (const url of ['/api/oauth/token', '/api/oauth/revoke']) {
+        for (const url of ['/api/oauth/token', '/api/oauth/revoke', '/api/oauth/register']) {
             expect((await app.inject({ method: 'POST', url, payload: {} })).statusCode, url).toBe(HTTP_NOT_FOUND);
         }
     });

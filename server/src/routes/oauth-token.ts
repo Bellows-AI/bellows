@@ -106,7 +106,6 @@ export const oauthTokenRoutes =
     async (app) => {
         const { config, oauth } = deps;
         const { resource } = identityOf(config);
-        const resolveClient = deps.resolveClient ?? ((clientId: string) => oauth.findClient(clientId));
 
         app.addContentTypeParser(
             FORM_CONTENT_TYPE,
@@ -130,7 +129,7 @@ export const oauthTokenRoutes =
             if ('refusal' in parsed) return oauthError(reply, ...parsed.refusal);
             let result: TokenResult;
             try {
-                if (!(await resolveClient(parsed.clientId)))
+                if (!(await oauth.findClient(parsed.clientId)))
                     return oauthError(reply, HTTP_UNAUTHORIZED, 'invalid_client');
                 result = await parsed.run(oauth);
             } catch (e) {
