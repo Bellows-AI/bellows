@@ -1,6 +1,5 @@
 import {
     ATTACHMENT_FORMATS,
-    ATTACHMENT_NAME_HEADER,
     CONTENT_TYPE_HEADER,
     type AttachmentLimits,
     ERROR_CODES,
@@ -12,34 +11,20 @@ import {
     OCTET_STREAM_CONTENT_TYPE,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { callerOf, orgOf } from '../auth/plugin.js';
-import {
-    AttachmentGoneError,
-    AttachmentIntegrityError,
-    AttachmentUnavailableError,
-} from '../attachments/attachment-store.js';
-import { normalizeAttachmentName } from '../attachments/name.js';
-import { sniffAttachment } from '../attachments/sniff.js';
-import { IdempotencyKeyReusedError } from '../db/jobs/job-store-idempotency.js';
+import type { UploadCapabilityStore } from '../attachments/upload-capability-store.js';
 import type { OrgRegistry } from '../orgs.js';
+import { gate, receiveFile, storing, unavailable } from './attachment-ingest.js';
+import { registerUploadRoutes } from './attachment-uploads.js';
 import { bad } from './helpers.js';
 import { IDEMPOTENCY_REPLAYED_HEADER, idempotencyOf } from './jobs/job-idempotency.js';
 
 const HTTP_OK = 200;
 const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
-const HTTP_GONE = 410;
-const HTTP_PAYLOAD_TOO_LARGE = 413;
-const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
-const HTTP_UNAVAILABLE = 503;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONTROL_BODY_LIMIT = 4096;
-const MEDIA_TYPE_HEADER = 'x-attachment-media-type';
 const RETRY_AFTER_SECONDS = '5';
 /** One process buffers at most this many uploads at once (N x MAX_FILE_BYTES of memory); the rest are shed with 503. */
 export const DEFAULT_MAX_IN_FLIGHT_UPLOADS = 4;
@@ -54,118 +39,28 @@ const LIMITS: AttachmentLimits = {
     formats: ATTACHMENT_FORMATS,
 };
 
-const unavailable = (reply: FastifyReply, message: string) =>
-    bad(reply, ERROR_CODES.ATTACHMENTS_UNAVAILABLE, message, HTTP_UNAVAILABLE);
-
 const notFound = (reply: FastifyReply) =>
     bad(reply, ERROR_CODES.ATTACHMENT_NOT_FOUND, 'No such attachment', HTTP_NOT_FOUND);
-
-/** The org's store and the signed-in member, or null once the refusal has been sent. */
-async function gate(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = (await orgs.for(orgOf(request)))?.attachments;
-    if (!store) {
-        unavailable(reply, 'No attachment storage is configured for this organization');
-        return null;
-    }
-    const caller = callerOf(request);
-    if (!caller) {
-        bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-        return null;
-    }
-    return { store, uploaderId: caller.user.id };
-}
-
-/** A storage failure is a 503 naming nothing about the object; the row stays for the sweep. */
-async function storing<T>(request: FastifyRequest, reply: FastifyReply, run: () => Promise<T>): Promise<T | undefined> {
-    try {
-        return await run();
-    } catch (error) {
-        if (error instanceof IdempotencyKeyReusedError) {
-            await bad(reply, ERROR_CODES.IDEMPOTENCY_KEY_REUSED, error.message, HTTP_CONFLICT);
-            return undefined;
-        }
-        if (error instanceof AttachmentGoneError) {
-            await bad(reply, ERROR_CODES.ATTACHMENT_GONE, 'The upload expired; upload the file again', HTTP_GONE);
-            return undefined;
-        }
-        request.log.error({ err: error });
-        const known = error instanceof AttachmentUnavailableError || error instanceof AttachmentIntegrityError;
-        await unavailable(reply, known ? error.message : 'Attachment storage failed');
-        return undefined;
-    }
-}
 
 const idOf = (request: FastifyRequest): string | null => {
     const { id } = request.params as { id?: string };
     return typeof id === 'string' && UUID.test(id) ? id : null;
 };
 
-const REASON_STATUS = {
-    unsupported: HTTP_UNSUPPORTED_MEDIA_TYPE,
-    mismatch: HTTP_UNSUPPORTED_MEDIA_TYPE,
-    malformed: HTTP_BAD_REQUEST,
-    'image-too-large': HTTP_PAYLOAD_TOO_LARGE,
-} as const;
-
-const REASON_CODE = {
-    unsupported: ERROR_CODES.ATTACHMENT_UNSUPPORTED,
-    mismatch: ERROR_CODES.ATTACHMENT_UNSUPPORTED,
-    malformed: ERROR_CODES.BAD_ATTACHMENT,
-    'image-too-large': ERROR_CODES.ATTACHMENT_TOO_LARGE,
-} as const;
-
-const REASON_TEXT = {
-    unsupported: 'This file type is not accepted. See GET /api/attachments/limits for the formats.',
-    mismatch: 'The declared media type does not match the file',
-    malformed: 'The file is empty or its header is unreadable',
-    'image-too-large': 'The image dimensions exceed the limits. See GET /api/attachments/limits.',
-} as const;
-
-/** The display name from its percent-encoded header, or a reason it is unusable. */
-function nameOf(request: FastifyRequest): { name: string } | { error: string } {
-    const raw = request.headers[ATTACHMENT_NAME_HEADER];
-    if (typeof raw !== 'string')
-        return { error: `${ATTACHMENT_NAME_HEADER} (the percent-encoded file name) is required` };
-    let decoded: string;
-    try {
-        decoded = decodeURIComponent(raw);
-    } catch {
-        return { error: `${ATTACHMENT_NAME_HEADER} is not valid percent-encoding` };
-    }
-    const normal = normalizeAttachmentName(decoded);
-    return normal.ok ? { name: normal.name } : { error: 'The file name is empty, too long or has control characters' };
-}
-
 async function handleUpload(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await gate(orgs, request, reply);
     if (!ctx) return reply;
-    const named = nameOf(request);
-    if ('error' in named) return bad(reply, ERROR_CODES.BAD_ATTACHMENT, named.error);
-    if (!Buffer.isBuffer(request.body)) {
-        return bad(
-            reply,
-            ERROR_CODES.BAD_ATTACHMENT,
-            `The body must be the raw file, sent as ${OCTET_STREAM_CONTENT_TYPE}`
-        );
-    }
-    const bytes: Uint8Array = request.body;
-    const declared = request.headers[MEDIA_TYPE_HEADER];
-    const sniffed = sniffAttachment(bytes, {
-        name: named.name,
-        ...(typeof declared === 'string' ? { mediaType: declared } : {}),
-    });
-    if (!sniffed.ok) {
-        return bad(reply, REASON_CODE[sniffed.reason], REASON_TEXT[sniffed.reason], REASON_STATUS[sniffed.reason]);
-    }
+    const file = await receiveFile(request, reply);
+    if (!file) return reply;
     // The key's alphabet and length are checked here; the store's own fingerprint (sha256, size, name) decides a replay.
     const keyed = idempotencyOf(request, reply, 'attachment-upload', {});
     if (!keyed.ok) return reply;
-    const stored = await storing(request, reply, () =>
+    const stored = await storing(request.log, reply, () =>
         ctx.store.upload({
             uploaderId: ctx.uploaderId,
-            name: named.name,
-            mediaType: sniffed.mediaType,
-            bytes,
+            name: file.name,
+            mediaType: file.mediaType,
+            bytes: file.bytes,
             idempotencyKey: keyed.value?.key,
         })
     );
@@ -179,7 +74,7 @@ async function handleMeta(orgs: OrgRegistry, request: FastifyRequest, reply: Fas
     if (!ctx) return reply;
     const id = idOf(request);
     if (!id) return notFound(reply);
-    const found = await storing(request, reply, () => ctx.store.meta(id, ctx.uploaderId));
+    const found = await storing(request.log, reply, () => ctx.store.meta(id, ctx.uploaderId));
     if (found === undefined) return reply;
     return found ? reply.code(HTTP_OK).send(found) : notFound(reply);
 }
@@ -194,7 +89,7 @@ async function handleContent(orgs: OrgRegistry, request: FastifyRequest, reply: 
     if (!ctx) return reply;
     const id = idOf(request);
     if (!id) return notFound(reply);
-    const found = await storing(request, reply, () => ctx.store.read(id, ctx.uploaderId));
+    const found = await storing(request.log, reply, () => ctx.store.read(id, ctx.uploaderId));
     if (found === undefined) return reply;
     if (!found) return notFound(reply);
     const { disposition } = request.query as { disposition?: string };
@@ -219,7 +114,7 @@ async function handleDelete(orgs: OrgRegistry, request: FastifyRequest, reply: F
     if (!ctx) return reply;
     const id = idOf(request);
     if (!id) return notFound(reply);
-    const outcome = await storing(request, reply, () => ctx.store.remove(id, ctx.uploaderId));
+    const outcome = await storing(request.log, reply, () => ctx.store.remove(id, ctx.uploaderId));
     if (outcome === undefined) return reply;
     return outcome === 'deleted' ? reply.code(HTTP_NO_CONTENT).send() : notFound(reply);
 }
@@ -228,9 +123,15 @@ export const attachmentRoutes =
     ({
         orgs,
         maxInFlight = DEFAULT_MAX_IN_FLIGHT_UPLOADS,
+        uploads,
+        origin = null,
     }: {
         orgs: OrgRegistry;
         maxInFlight?: number | undefined;
+        /** The upload capabilities (BEL-248); with it the upload-request routes and the capability PUT exist. */
+        uploads?: UploadCapabilityStore | undefined;
+        /** The board's public origin, which an upload URL handed to a client is rooted at; null where it has none. */
+        origin?: string | null | undefined;
     }): FastifyPluginAsync =>
     async (app) => {
         // A child scope, so the raw-bytes parser reaches only these routes.
@@ -266,5 +167,6 @@ export const attachmentRoutes =
                 handleContent(orgs, request, reply)
             );
             scope.delete('/api/attachments/:id', (request, reply) => handleDelete(orgs, request, reply));
+            if (uploads) registerUploadRoutes(scope, { orgs, uploads, origin, admit, log: app.log });
         });
     };

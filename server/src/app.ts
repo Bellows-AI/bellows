@@ -15,6 +15,7 @@ import type { OrgRegistry } from './orgs.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import { batchRoutes } from './routes/batches/batches.js';
+import type { UploadCapabilityStore } from './attachments/upload-capability-store.js';
 import { attachmentRoutes } from './routes/attachments.js';
 import { connectionRoutes, type DestroyRevokedSecret } from './routes/connections.js';
 import { type ConnectionListing, connectionCredentialRoutes } from './routes/connection-credential.js';
@@ -147,6 +148,8 @@ export interface AppDeps {
     destroyRevokedSecret?: DestroyRevokedSecret | undefined;
     /** Uploads one process buffers at once; absent takes the route's default. */
     attachmentMaxInFlight?: number | undefined;
+    /** The single-use upload capabilities (BEL-248); with it the upload-request routes and the capability PUT exist. */
+    uploadCapabilities?: UploadCapabilityStore | undefined;
 }
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR
@@ -290,6 +293,7 @@ export async function buildApp({
     connectionListing,
     destroyRevokedSecret,
     attachmentMaxInFlight,
+    uploadCapabilities,
     identity,
     appSlug,
     installationListing,
@@ -359,7 +363,14 @@ export async function buildApp({
     await app.register(jobRoutes({ orgs, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
     await app.register(preflightRoutes(orgs));
     if (metrics) await app.register(prometheusRoutes(metrics));
-    await app.register(attachmentRoutes({ orgs, maxInFlight: attachmentMaxInFlight }));
+    await app.register(
+        attachmentRoutes({
+            orgs,
+            maxInFlight: attachmentMaxInFlight,
+            uploads: uploadCapabilities,
+            origin: config.mcp.enabled ? new URL(config.mcp.resource).origin : null,
+        })
+    );
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.

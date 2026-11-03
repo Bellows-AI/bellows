@@ -155,6 +155,9 @@ const OPEN_ROUTES: readonly RegExp[] = [
     // The OAuth authorization server's public endpoints (docs/auth.md): a client has no credential until it has
     // been through them. The authorize endpoint reads the session cookie itself, as `/api/auth/me` does.
     /^\/api\/oauth\/(authorize(\/resume)?|token|revoke|register)$/,
+    // An attachment upload capability (BEL-248): the unguessable, single-use, short-lived path segment IS the
+    // credential, resolved by the route itself against the store. A bridged call is refused on it like any open route.
+    /^\/api\/attachments\/uploads\/[^/]+$/,
 ];
 
 /**
@@ -552,6 +555,7 @@ async function enforceMcp(deps: McpAuthDeps, request: FastifyRequest, reply: Fas
         membership: found.membership,
         role: found.role,
         scopes,
+        grantFamilyId: found.familyId,
     };
     request.auth = { kind: 'user', caller };
     setAuthInfo(

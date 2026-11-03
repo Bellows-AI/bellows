@@ -72,6 +72,8 @@ export interface Caller {
      * access token, checked against the route class (route-class.ts) in the auth hook.
      */
     scopes: readonly Scope[] | 'all';
+    /** The OAuth grant family an MCP access token belongs to; absent for every other credential. */
+    grantFamilyId?: string | undefined;
 }
 
 export type AccessTokenKind = 'personal' | 'org';

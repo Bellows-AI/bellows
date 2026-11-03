@@ -40,6 +40,7 @@ const TOOL_NAMES = [
     'answer_question',
     'batch_report',
     'cancel_batch',
+    'create_attachment_upload',
     'create_task',
     'edit_task',
     'follow_up_task',
@@ -248,6 +249,8 @@ describe('the endpoint, github mode', () => {
             new ModernTransport(board.url, { requestInit: { headers: bearer() }, fetch: fetchRecording })
         );
         expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
+        // The registry is 40 tools: BEL-248's create_attachment_upload is the last addition (docs/mcp.md).
+        expect(TOOL_NAMES).toHaveLength(40);
         expect(client.getServerVersion()?.name).toBe('factory');
         // The request headers of the modern era name the revision on every call, so none went out as 2025-11-25.
         expect(new Set(versions.filter(Boolean))).toEqual(new Set([MODERN]));
