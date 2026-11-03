@@ -5,6 +5,7 @@ import { UUID } from '../../identifiers.js';
 import {
     BATCH_DRAFT,
     type BatchRecord,
+    type BatchReport,
     type BatchStore,
     type BatchWriteRefusal,
 } from '../../db/batches/batch-store-types.js';
@@ -131,7 +132,7 @@ export async function loadBatch(
 }
 
 /**
- * The record with the board's verdict on it. A started batch's standing reads the report's `next`;
+ * The record with the board's verdict on it, and the report that verdict was read from. A started batch's standing reads the report's `next`;
  * a report that cannot be read whole leaves the standing `inconclusive` and the body still answers,
  * because the write that led here (a start, a cancel) has already happened.
  */
@@ -139,8 +140,8 @@ export async function withStanding(
     ctx: Context,
     request: FastifyRequest,
     record: BatchRecord
-): Promise<BatchRecord & { standing: BatchStanding }> {
-    if (record.status === BATCH_DRAFT) return { ...record, standing: batchStanding(record, null) };
+): Promise<BatchRecord & { standing: BatchStanding; report: BatchReport | null }> {
+    if (record.status === BATCH_DRAFT) return { ...record, standing: batchStanding(record, null), report: null };
     let report: Awaited<ReturnType<BatchStore['report']>> = null;
     try {
         report = await ctx.store.report(record.id);
@@ -154,5 +155,10 @@ export async function withStanding(
         cancelledAt: record.cancelledAt ?? report?.cancelledAt ?? null,
         expiredAt: record.expiredAt ?? report?.expiredAt ?? null,
     };
-    return { ...record, standing: batchStanding(seen, (report?.tasks ?? null) as readonly unknown[] | null) };
+    // The report rides the same body, so a client renders the one snapshot the standing was computed from.
+    return {
+        ...record,
+        standing: batchStanding(seen, (report?.tasks ?? null) as readonly unknown[] | null),
+        report,
+    };
 }

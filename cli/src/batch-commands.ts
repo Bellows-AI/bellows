@@ -164,31 +164,19 @@ async function runStart(args: readonly string[], _io: BatchIo, boardFor: BoardFo
     }
 }
 
-/**
- * The report beside a batch read, for the envelope only: the board's standing already decided, so a
- * report the board cannot answer leaves the outcome as it is and the envelope's `report` null.
- */
-async function reportOrNull(client: BoardClient, id: string, signal?: AbortSignal): Promise<BatchReport | null> {
-    try {
-        return await client.getBatchReport(id);
-    } catch (error) {
-        if (error instanceof BoardError && !signal?.aborted) return null;
-        throw error;
-    }
+/** The batch and the report it carries, split: the board answered both in one response. */
+function splitReport(batch: BatchRecord): { batch: Omit<BatchRecord, 'report'>; report: BatchReport | null } {
+    const { report, ...rest } = batch;
+    return { batch: rest, report };
 }
 
-async function runInspect(args: readonly string[], io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
+async function runInspect(args: readonly string[], _io: BatchIo, boardFor: BoardFor): Promise<CommandResult> {
     const { positionals } = positionalsOf(args, 'inspect', '<id>', {});
-    const client = boardFor();
-    const batch = await client.getBatch(positionals[0]!);
-    const draft = batch.status === BATCH_DRAFT;
-    // A draft has no report: the board refuses one until the batch starts.
-    const report = draft ? null : await reportOrNull(client, batch.id, io.signal);
+    const batch = await boardFor().getBatch(positionals[0]!);
     const data = {
-        batch,
-        verdict: draft ? null : batch.standing.verdict,
+        ...splitReport(batch),
+        verdict: batch.status === BATCH_DRAFT ? null : batch.standing.verdict,
         needsAction: needsAction(batch),
-        report,
     };
     return ok(data, renderBatch(batch));
 }
@@ -236,27 +224,23 @@ async function runWait(args: readonly string[], io: BatchIo, boardFor: BoardFor)
             );
         }
         const remaining = deadline - now();
-        const ended = await waitEnd(client, { batch, total, timedOut: remaining <= 0, signal: io.signal });
+        const ended = waitEnd({ batch, total, timedOut: remaining <= 0 });
         if (ended) return ended;
         await sleep(Math.min(WAIT_POLL_MS, remaining), io.signal);
     }
 }
 
 /**
- * How a wait ends, with the report beside the batch; null while it keeps watching. The board's
+ * How a wait ends, with the report the same response carried; null while it keeps watching. The board's
  * standing decides: a fenced batch starts nothing new and ends as cancelled, named for the fence
  * (`cancelled` or `expired`); an `inconclusive` standing is not settled, so the wait goes on.
  */
-async function waitEnd(
-    client: BoardClient,
-    run: { batch: BatchRecord; total: number; timedOut: boolean; signal: AbortSignal | undefined }
-): Promise<CommandResult | null> {
-    const { batch, total, timedOut, signal } = run;
+function waitEnd(run: { batch: BatchRecord; total: number; timedOut: boolean }): CommandResult | null {
+    const { batch, total, timedOut } = run;
     const { verdict, fence } = batch.standing;
     const settled = SETTLED[verdict];
     if (!settled && !timedOut) return null;
-    const report = await reportOrNull(client, batch.id, signal);
-    const data = { verdict, budgetSeconds: total, batch, needsAction: needsAction(batch), report };
+    const data = { ...splitReport(batch), verdict, budgetSeconds: total, needsAction: needsAction(batch) };
     if (fence !== null) return { outcome: OUTCOME.cancelled, data, stdout: `${renderWaitEnd(batch, fence)}\n` };
     if (settled) return { outcome: settled, data, stdout: `${renderWaitEnd(batch)}\n` };
     return { outcome: OUTCOME.timeout, data, stderr: `still running after ${total}s: ${batch.id}\n` };

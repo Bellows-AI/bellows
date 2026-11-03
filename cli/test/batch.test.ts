@@ -69,6 +69,8 @@ const record = (status: string, tasks: unknown[], extra: Record<string, unknown>
     expiredAt: null,
     verification: [],
     standing: standing(status === 'draft' ? 'draft' : 'running'),
+    // The report the board read for the standing, in the same response.
+    report: status === 'draft' ? null : REPORT(),
     ...extra,
 });
 
@@ -494,10 +496,10 @@ describe('batch validate / start / inspect / list', () => {
 
 describe('batch wait', () => {
     /** Answers the batch reads in order, and every report read with `report`. */
-    const wait = (states: unknown[], argv: string[] = [], report: unknown = REPORT()) => {
+    const wait = (states: unknown[], argv: string[] = []) => {
         let reads = 0;
         return cli(['batch', 'wait', ID, '--json', ...argv], (sent) => {
-            if (isReport(sent)) return json(report);
+            if (isReport(sent)) return json(REPORT());
             reads += 1;
             return json(states[Math.min(reads, states.length) - 1]);
         });
@@ -572,22 +574,33 @@ describe('batch wait', () => {
         expect(JSON.parse(person.out).data.needsAction.map((entry: { key: string }) => entry.key)).toEqual(['a']);
     });
 
-    it('ends a timed-out wait with exit 3 though the report endpoint keeps failing', async () => {
-        const unread = record('running', [task('a', 'running')], { standing: standing('inconclusive') });
-        const result = await cli(['batch', 'wait', ID, '--json', '--timeout', '12'], (sent) =>
-            isReport(sent) ? json({ error: 'down' }, 500) : json(unread)
-        );
+    it('renders from the one response: no report read, and an unread report ends a timeout with report null', async () => {
+        const unread = record('running', [task('a', 'running')], { standing: standing('inconclusive'), report: null });
+        const result = await cli(['batch', 'wait', ID, '--json', '--timeout', '12'], () => json(unread));
         expect(result.code).toBe(3);
         expect(JSON.parse(result.out)).toMatchObject({ outcome: 'timeout', data: { report: null } });
-        const settled = record('completed', [task('a', 'succeeded')], { standing: standing('succeeded') });
-        const done = await cli(['batch', 'wait', ID, '--json'], (sent) =>
-            isReport(sent) ? json({ error: 'down' }, 500) : json(settled)
+        expect(result.sent.some(isReport)).toBe(false);
+        expect(JSON.parse(result.out).data.batch).not.toHaveProperty('report');
+    });
+
+    it('a failed standing stays failed: a fence the report would show later cannot be mixed in (one read)', async () => {
+        const failed = record('running', [task('a', 'failed')], { standing: standing('failed') });
+        const result = await cli(['batch', 'wait', ID, '--json'], (sent) =>
+            isReport(sent) ? json(REPORT('cancelled')) : json(failed)
         );
-        expect(done.code).toBe(0);
-        const inspected = await cli(['batch', 'inspect', ID, '--json'], (sent) =>
-            isReport(sent) ? json({ error: 'down' }, 500) : json(unread)
-        );
-        expect(JSON.parse(inspected.out).data).toMatchObject({ verdict: 'inconclusive', report: null });
+        expect(result.code).toBe(4);
+        expect(result.sent.some(isReport)).toBe(false);
+    });
+
+    it('prints no report read on inspect or start either', async () => {
+        const started = record('running', [task('a', 'running')]);
+        for (const argv of [
+            ['batch', 'inspect', ID],
+            ['batch', 'start', ID, '--version', '3'],
+        ]) {
+            const result = await cli(argv, () => json(started));
+            expect(result.sent.some(isReport)).toBe(false);
+        }
     });
 
     it('keeps waiting while the standing is inconclusive, and times out rather than settling', async () => {
@@ -647,6 +660,7 @@ describe('batch wait', () => {
             record(status, [task('a', 'succeeded', { waitReason: 'waiting for a person to merge x' })], {
                 [`${status}At`]: '2026-10-12T12:00:00.000Z',
                 standing: standing('cancelled', { fence: status }),
+                report: REPORT(status),
             });
         const expired = await cli(['batch', 'wait', ID], (sent) =>
             json(isReport(sent) ? REPORT('expired') : fenced('expired'))
@@ -659,7 +673,7 @@ describe('batch wait', () => {
         expect(cancelled.code).toBe(5);
         expect(cancelled.out).toContain(`${ID} cancelled`);
 
-        const asJson = await wait([fenced('expired')], [], REPORT('expired'));
+        const asJson = await wait([fenced('expired')]);
         expect(JSON.parse(asJson.out)).toMatchObject({ outcome: 'cancelled', data: { report: { state: 'expired' } } });
         expect(asJson.sent.every((sent) => sent.method === 'GET')).toBe(true);
     });

@@ -94,6 +94,8 @@ export interface BatchRecord {
     tasks: BatchTaskState[];
     verification: BatchStageVerification[];
     standing: BatchStanding;
+    /** The report the standing was computed from, in the same response; null for a draft or an unread report. */
+    report: BatchReport | null;
     /** Not in the body: read off the board's `Idempotency-Replayed` header. */
     replayed?: boolean;
 }

@@ -151,6 +151,29 @@ describe('batch standing', () => {
         });
     });
 
+    it('returns the report the standing was computed from in the same body, null for a draft or an unread report', async () => {
+        const { call, batches, draft, started } = await setup();
+        const id = await started();
+        batches.mark(id, 'a', { execution: 'succeeded', pr: PR, waitReason: 'waiting for a person to merge' });
+        const report = batches.report.bind(batches);
+        let reads = 0;
+        batches.report = async (batchId) => {
+            reads += 1;
+            return { ...(await report(batchId))!, cancelledAt: '2026-10-12T07:00:00.000Z' };
+        };
+        const body = (await call('GET', `/api/batches/${id}`)).json();
+        expect(reads).toBe(1);
+        expect(body.standing.fence).toBe('cancelled');
+        expect(body.report).toMatchObject({ id, cancelledAt: '2026-10-12T07:00:00.000Z' });
+        expect(body.report.tasks.map((entry: { key: string }) => entry.key)).toEqual(['a', 'b']);
+
+        expect((await call('GET', `/api/batches/${await draft()}`)).json().report).toBeNull();
+        batches.report = async () => {
+            throw new Error('db down');
+        };
+        expect((await call('GET', `/api/batches/${id}`)).json().report).toBeNull();
+    });
+
     it('an expired batch is cancelled, naming the expiry', async () => {
         const { batches, started, standing } = await setup();
         const id = await started();
