@@ -350,6 +350,7 @@ describe('deriveReadiness — organization identity', () => {
 const fullSession = memberSession({
     user: { githubUserId: 1 },
     mode: 'none',
+    mcp: false,
 });
 
 const idleWorkspace = {

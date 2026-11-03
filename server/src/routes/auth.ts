@@ -400,6 +400,8 @@ export const authRoutes =
                 // So the SPA knows whether to offer a sign-out at all: under AUTH_MODE=none there is
                 // no session to end, and a button that cannot work is worse than no button.
                 mode: auth.mode,
+                // Whether this board serves MCP: the account page shows the connected apps only when it does.
+                mcp: config.mcp.enabled,
             });
         });
 

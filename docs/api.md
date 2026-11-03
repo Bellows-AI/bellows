@@ -49,7 +49,7 @@ codes, query parameters and error codes are read there, never restated here.
 ## Invariants
 
 - A route is authenticated unless `requirementFor` deliberately exempts it. `server/test/auth.enforcement.test.ts`.
-- `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`.
+- `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`. A signed-in answer carries `mcp`, whether this board serves MCP (the Account page shows connected apps only then).
   `server/test/auth.oauth.me.test.ts`.
 - Artifact upload is authorized by the claim sequence the request names, never by the lease; a read of
   another org's job is `404`. `server/test/routes.artifacts.test.ts`, `server/test/routes.artifacts-read.test.ts`.

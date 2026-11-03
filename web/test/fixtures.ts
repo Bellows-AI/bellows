@@ -33,6 +33,7 @@ export function memberSession(
         organization: BELLOWS,
         organizations: [BELLOWS],
         mode: 'github',
+        mcp: false,
         ...rest,
     };
 }
