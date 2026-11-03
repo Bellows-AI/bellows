@@ -11,8 +11,8 @@ export const SCOPES = ['factory:read', 'factory:write'] as const;
 export type Scope = (typeof SCOPES)[number];
 /**
  * `none` is never available to a scoped caller, whatever it holds: the routes that mint, rotate, list or revoke a
- * credential, write a secret or a connection grant, authorize a provider, or administer membership and outbound
- * destinations. An MCP grant must not be exchangeable for a longer-lived credential or a wider reach.
+ * credential, write a secret or a connection grant, authorize a provider, or administer membership, outbound
+ * destinations and executor profiles (whose `config` may hold provider credentials). An MCP grant must not be exchangeable for a longer-lived credential or a wider reach.
  */
 export type RouteClass = 'read' | 'write' | 'none';
 
@@ -28,10 +28,10 @@ export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string,
     // destination is `none`.
     ['DELETE', '/api/attachments/:id', 'write'],
     ['DELETE', '/api/connections/:id', 'none'],
-    ['DELETE', '/api/org/executors/:id', 'write'],
+    ['DELETE', '/api/org/executors/:id', 'none'],
     ['DELETE', '/api/org/notification-subscriptions/:id', 'none'],
     ['DELETE', '/api/workflows/:id', 'write'],
-    ['DELETE', '/api/workspace/executors/:id', 'write'],
+    ['DELETE', '/api/workspace/executors/:id', 'none'],
     ['DELETE', '/api/workspace/notification-subscriptions/:id', 'none'],
     ['GET', '/api/attachments/:id', 'read'],
     ['GET', '/api/attachments/:id/content', 'read'],
@@ -89,9 +89,9 @@ export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string,
     ['POST', '/api/jobs/:id/wait/cancel', 'write'],
     ['POST', '/api/jobs/:id/wait/poke', 'write'],
     ['POST', '/api/jobs/preflight', 'read'],
-    ['POST', '/api/org/executors', 'write'],
-    ['POST', '/api/org/executors/:id/scope', 'write'],
-    ['POST', '/api/org/executors/:id/suspension', 'write'],
+    ['POST', '/api/org/executors', 'none'],
+    ['POST', '/api/org/executors/:id/scope', 'none'],
+    ['POST', '/api/org/executors/:id/suspension', 'none'],
     ['POST', '/api/org/notification-subscriptions', 'none'],
     ['POST', '/api/org/notification-subscriptions/:id/test', 'none'],
     ['POST', '/api/tokens', 'none'],
@@ -99,19 +99,19 @@ export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string,
     ['POST', '/api/tokens/org', 'none'],
     ['POST', '/api/tokens/org/:id/revoke', 'none'],
     ['POST', '/api/workflows', 'write'],
-    ['POST', '/api/workspace/executors/:id/suspension', 'write'],
+    ['POST', '/api/workspace/executors/:id/suspension', 'none'],
     ['POST', '/api/workspace/notification-subscriptions', 'none'],
     ['POST', '/api/workspace/notification-subscriptions/:id/test', 'none'],
     ['PUT', '/api/batches/:id', 'write'],
     ['PUT', '/api/env/org', 'none'],
     ['PUT', '/api/env/repo', 'none'],
     ['PUT', '/api/env/workspace', 'none'],
-    ['PUT', '/api/org/executors/:id', 'write'],
+    ['PUT', '/api/org/executors/:id', 'none'],
     ['PUT', '/api/org/members/:userId/role', 'none'],
     ['PUT', '/api/org/notification-subscriptions/:id', 'none'],
     ['PUT', '/api/workflows/:id', 'write'],
-    ['PUT', '/api/workspace/executors', 'write'],
-    ['PUT', '/api/workspace/executors/default', 'write'],
+    ['PUT', '/api/workspace/executors', 'none'],
+    ['PUT', '/api/workspace/executors/default', 'none'],
     ['PUT', '/api/workspace/notification-subscriptions/:id', 'none'],
 ];
 

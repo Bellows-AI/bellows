@@ -24,3 +24,6 @@ export const bridgedRequestClass = (caller: BridgedCaller): typeof IncomingMessa
 /** The bound caller of a raw request, or null for every request that arrived over the network. */
 export const boundCallerOf = (raw: IncomingMessage): Caller | null =>
     (raw as IncomingMessage & { [BOUND]?: Caller })[BOUND] ?? null;
+
+/** True for a request the MCP bridge injected: a response built for it must omit credential-bearing fields. */
+export const isBridged = (raw: IncomingMessage): boolean => boundCallerOf(raw) !== null;

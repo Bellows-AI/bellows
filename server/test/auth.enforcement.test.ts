@@ -1216,6 +1216,15 @@ describe('a bridged caller carries scopes the route class is checked against', (
             'GET /api/integrations/:provider/callback',
             'PUT /api/env/org',
             'PUT /api/org/members/:userId/role',
+            'POST /api/org/executors',
+            'PUT /api/org/executors/:id',
+            'DELETE /api/org/executors/:id',
+            'POST /api/org/executors/:id/scope',
+            'POST /api/org/executors/:id/suspension',
+            'PUT /api/workspace/executors',
+            'PUT /api/workspace/executors/default',
+            'DELETE /api/workspace/executors/:id',
+            'POST /api/workspace/executors/:id/suspension',
         ]) {
             expect(none).toContain(mustBeNone);
         }

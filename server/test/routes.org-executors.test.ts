@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { bridgedRequestClass } from '../src/auth/bridge-binding.js';
 import type { AppConfig } from '../src/config.js';
 import type { AuthStore } from '../src/auth/store.js';
 import { MAX_EXECUTORS_PER_ORG, MAX_EXECUTORS_PER_USER } from '../src/routes/executor-fields.js';
@@ -590,5 +591,34 @@ describe('the workspace poll and the personal routes after 391', () => {
         const cookie = await signedIn(auth, member);
         const response = await instance.inject({ method: 'GET', url: '/api/org/executors', headers: { cookie } });
         expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+    });
+});
+
+describe('executor lists to a bridged (MCP) caller', () => {
+    it('omit the configuration, which may hold provider credentials; a cookie admin still gets it', async () => {
+        const { instance, admin, adminCookie } = await boot();
+        await instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie: adminCookie },
+            payload: CLAUDE_CODE,
+        });
+        await instance.inject({
+            method: 'PUT',
+            url: '/api/workspace/executors',
+            headers: { cookie: adminCookie },
+            payload: { executors: [CLAUDE_CODE] },
+        });
+        const Request = bridgedRequestClass({ ...admin, scopes: ['factory:read'] });
+        for (const url of ['/api/org/executors', '/api/workspace/executors']) {
+            const bridged = await instance.inject({ method: 'GET', url, Request });
+            expect(bridged.statusCode, url).toBe(HTTP_OK);
+            const rows = bridged.json().executors as Record<string, unknown>[];
+            expect(rows.length, url).toBeGreaterThan(0);
+            for (const row of rows) expect(row, url).not.toHaveProperty('config');
+            const cookie = await instance.inject({ method: 'GET', url, headers: { cookie: adminCookie } });
+            for (const row of cookie.json().executors as Record<string, unknown>[])
+                expect(row, url).toHaveProperty('config');
+        }
     });
 });
