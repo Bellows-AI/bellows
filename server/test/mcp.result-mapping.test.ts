@@ -74,4 +74,15 @@ describe('mapping a bridge outcome to a tool result', () => {
         expect(text.startsWith('VALIDATION_FAILED: ')).toBe(true);
         expect(unsafe(text)).toBe(false);
     });
+
+    it('uses a code-less error text as the code only when it is a plain identifier', () => {
+        const odd = map(respond(400, { error: `<b>nope</b> ${'y'.repeat(900)}` }));
+        const structured = odd.result.structuredContent as { code: string; message: string };
+        expect(structured.code).toBe('board_refused');
+        expect(structured.message.length).toBeLessThanOrEqual(500);
+        expect(unsafe(structured.message)).toBe(false);
+        expect(map(respond(403, { error: 'insufficient_scope' })).result.structuredContent).toMatchObject({
+            code: 'insufficient_scope',
+        });
+    });
 });

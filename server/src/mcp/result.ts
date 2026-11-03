@@ -42,6 +42,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const MAX_MESSAGE_CHARS = 500;
+const CODE_LIKE = /^[a-z0-9_]{1,64}$/i;
+const FALLBACK_CODE = 'board_refused';
 const SPACE = 0x20;
 const DELETE = 0x7f;
 
@@ -65,10 +67,11 @@ const textOf = (value: unknown, fallback: string): string => {
  */
 function refusalOf(status: number, body: unknown): Tagged {
     if (isRecord(body)) {
-        const code = typeof body.code === 'string' && body.code ? body.code : body.error;
-        if (typeof code === 'string' && code) {
-            return { outcome: 'refused', result: refusal(code, textOf(body.error, code), status) };
-        }
+        const named = typeof body.code === 'string' && body.code ? body.code : undefined;
+        // Without a `code`, the error text is the code only when it is a plain identifier (`insufficient_scope`).
+        const fromError = typeof body.error === 'string' && CODE_LIKE.test(body.error) ? body.error : undefined;
+        const code = named ?? fromError ?? (typeof body.error === 'string' && body.error ? FALLBACK_CODE : undefined);
+        if (code !== undefined) return { outcome: 'refused', result: refusal(code, textOf(body.error, code), status) };
     }
     return { outcome: 'inconclusive', result: inconclusive(`malformed ${status} response`) };
 }
