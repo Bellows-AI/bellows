@@ -41,8 +41,8 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
 - **A bridged caller exists only as a symbol on an injected request class.** It beats the cookie and the bearer, is
   checked against its route class (`403 insufficient_scope` plus a `WWW-Authenticate` challenge; an unclassified route
   is refused; credential, secret, connection and membership routes are class `none`, refused whatever the scopes; a
-  bound caller on a non-human route is refused), and no header, query or body can create one. A new human route needs a `ROUTE_CLASSES` row.
-  `server/src/auth/bridge-binding.ts`, `server/test/auth.enforcement.test.ts`, `server/test/auth.route-class.test.ts`.
+  bound caller on a non-human route is refused), and no header, query or body can create one. A new human route needs a `ROUTE_CLASSES` row. The one exception to "human routes only" is `BRIDGE_OPEN_ROUTES` (`bridgeOpen`: `GET /api/auth/me`, `GET /api/version`), which the `whoami` tool reads; every other open route is refused.
+  `server/src/auth/bridge-binding.ts`, `server/test/auth.enforcement.test.ts`, `server/test/auth.route-class.test.ts`, `server/test/auth.me-bridged.test.ts`.
 - **An MCP token is never logged.** Redaction is by value, so the guarantee is that no log line carries the
   `Authorization` header. `server/test/auth.enforcement.test.ts`.
 - **`AUTH_MODE=none` synthesises a caller rather than skipping the hook**; it refuses a non-loopback `HOST`

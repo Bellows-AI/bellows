@@ -1,6 +1,8 @@
 import { createMcpHandler, type McpServer } from '@modelcontextprotocol/server';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from '@factory-ai/core';
+import { createBridge } from './bridge.js';
+import type { McpToolMetrics } from './registry.js';
 import { callerOfAuthInfo, createBoardMcpServer, type BoardMcpContext } from './server.js';
 import { authInfoOf } from './auth-info.js';
 import { pipeResponse } from './pipe.js';
@@ -8,6 +10,9 @@ import { MCP_PATH } from '../config-mcp.js';
 
 /** A tool call's arguments are small; 1 MiB bounds what an unauthenticated-looking body can cost before parsing. */
 const MCP_BODY_LIMIT_BYTES = 1_048_576;
+
+/** Claude Code stops waiting for a tool at 60 s; the board answers (even inconclusively) before that. */
+const TOOL_DEADLINE_MS = 55_000;
 
 /** The one protocol revision the SDK still answers that this board refuses: it predates Streamable HTTP. */
 const REFUSED_PROTOCOL_VERSION = '2024-11-05';
@@ -63,6 +68,9 @@ export interface McpRouteDeps {
     /** The board's public origin; only the base of the Request the SDK is handed, never a trust decision. */
     readonly origin: string;
     /** Builds the per-request server; defaults to the board's own. A seam for tests that need a tool of their own. */
+    readonly metrics?: McpToolMetrics | undefined;
+    /** One tool call's wall-clock budget; it stays under Claude Code's 60 s hard stop. Tests compress it. */
+    readonly toolDeadlineMs?: number;
     readonly buildServer?: (version: string, context: BoardMcpContext) => McpServer;
 }
 
@@ -72,10 +80,11 @@ export interface McpRouteDeps {
  */
 export async function mcpRoutes(
     app: FastifyInstance,
-    { version, origin, buildServer = createBoardMcpServer }: McpRouteDeps
+    { version, origin, metrics, toolDeadlineMs = TOOL_DEADLINE_MS, buildServer = createBoardMcpServer }: McpRouteDeps
 ): Promise<void> {
+    const tools = { bridge: createBridge(app), deadlineMs: toolDeadlineMs, metrics, active: new Map<string, number>() };
     const handler = createMcpHandler(
-        (context) => buildServer(version, { era: context.era, caller: callerOfAuthInfo(context.authInfo) }),
+        (context) => buildServer(version, { era: context.era, caller: callerOfAuthInfo(context.authInfo), tools }),
         { legacy: 'stateless', onerror: (error) => app.log.error(error) }
     );
     app.addHook('onClose', async () => handler.close());

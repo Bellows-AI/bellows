@@ -115,6 +115,18 @@ export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string,
     ['PUT', '/api/workspace/notification-subscriptions/:id', 'none'],
 ];
 
+/**
+ * The open routes (no credential of their own) a bridged request may still reach: the MCP `whoami` tool reads the
+ * caller's identity and the build version through them. Every other open route is refused to a bridged request.
+ */
+export const BRIDGE_OPEN_ROUTES: readonly (readonly [method: string, pattern: string])[] = [
+    ['GET', '/api/auth/me'],
+    ['GET', '/api/version'],
+];
+
+export const bridgeOpen = (method: string, pattern: string | undefined): boolean =>
+    BRIDGE_OPEN_ROUTES.some(([m, p]) => m === (method === 'HEAD' ? 'GET' : method) && p === pattern);
+
 const TABLE = new Map(ROUTE_CLASSES.map(([method, pattern, routeClass]) => [`${method} ${pattern}`, routeClass]));
 
 /** The class of a method on a registered pattern; HEAD rides the GET row, as Fastify's auto-created HEAD route does. */

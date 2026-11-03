@@ -205,7 +205,7 @@ describe('the endpoint, github mode', () => {
         await client.connect(
             new ModernTransport(board.url, { requestInit: { headers: bearer() }, fetch: fetchRecording })
         );
-        expect((await client.listTools()).tools).toEqual([]);
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['whoami']);
         expect(client.getServerVersion()?.name).toBe('factory');
         // The request headers of the modern era name the revision on every call, so none went out as 2025-11-25.
         expect(new Set(versions.filter(Boolean))).toEqual(new Set([MODERN]));
@@ -217,7 +217,7 @@ describe('the endpoint, github mode', () => {
         const client = new ModernClient({ name: 'auto', version: '1' }, { versionNegotiation: { mode: 'auto' } });
         await client.connect(new ModernTransport(board.url, { requestInit: { headers: bearer() } }));
         expect(client.getNegotiatedProtocolVersion()).toBe(MODERN);
-        expect((await client.listTools()).tools).toEqual([]);
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['whoami']);
         await client.close();
     });
 
@@ -227,7 +227,7 @@ describe('the endpoint, github mode', () => {
         const transport = new LegacyTransport(board.url, { requestInit: { headers: bearer() } });
         await client.connect(transport);
         expect(client.getServerVersion()?.name).toBe('factory');
-        expect((await client.listTools()).tools).toEqual([]);
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['whoami']);
         expect(transport.sessionId).toBeUndefined();
         await client.close();
     });
@@ -412,7 +412,7 @@ describe('the endpoint, none mode', () => {
         const board = await boot('none');
         const client = new ModernClient({ name: 'auto', version: '1' }, { versionNegotiation: { mode: 'auto' } });
         await client.connect(new ModernTransport(board.url));
-        expect((await client.listTools()).tools).toEqual([]);
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['whoami']);
         await client.close();
     });
 });

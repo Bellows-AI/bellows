@@ -170,11 +170,11 @@ export function csp(dev: boolean): string {
  */
 async function registerMcp(
     app: FastifyInstance,
-    { config, oauth, version }: Pick<AppDeps, 'config' | 'oauth'> & { version: string }
+    { config, oauth, version, metrics }: Pick<AppDeps, 'config' | 'oauth' | 'metrics'> & { version: string }
 ): Promise<void> {
     if (!config.mcp.enabled) return;
     if (config.auth.mode === 'github' && !oauth) throw new Error('MCP_ENABLED needs the OAuth store');
-    await app.register(mcpRoutes, { version, origin: new URL(config.mcp.resource).origin });
+    await app.register(mcpRoutes, { version, origin: new URL(config.mcp.resource).origin, metrics });
 }
 
 /** Each org's own installation mints its runners' tokens; an org without one has none to give. */
@@ -328,7 +328,7 @@ export async function buildApp({
         if (config.webhookSecret) {
             await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
-        await registerMcp(app, { config, oauth, version });
+        await registerMcp(app, { config, oauth, version, metrics });
     }
     await app.register(skillRoutes(skillCatalog, orgs));
     await app.register(statsRoutes(config, orgs, auth, now));
