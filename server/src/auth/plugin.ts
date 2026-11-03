@@ -5,10 +5,14 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AppConfig, AuthConfig } from '../config.js';
 import { LOCAL_ORG_ID, UUID } from '../identifiers.js';
 import { guard } from '../routes/helpers.js';
-import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
+import { MCP_ACCESS_PREFIX, ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { boundCallerOf } from './bridge-binding.js';
+import { setAuthInfo } from '../mcp/auth-info.js';
+import { withCaller } from '../mcp/server.js';
+import { originPermitted } from '../mcp/origin.js';
 import { challengeFor, resourceMetadataUrl } from './oauth-challenge.js';
-import { SCOPE_OF_CLASS, classOf } from './route-class.js';
+import type { OAuthStore } from './oauth-store.js';
+import { SCOPE_OF_CLASS, classOf, grantedScopes } from './route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
 
@@ -156,7 +160,13 @@ const OPEN_ROUTES: readonly RegExp[] = [
  */
 const COMMERCE_ROUTES: readonly RegExp[] = [/^\/api\/commerce\/orgs\/[^/]+\/plan$/];
 
-type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector' | 'commerce';
+/**
+ * The MCP endpoint (docs/mcp.md): answered to an audience-bound `mat_` in github mode, to the local caller in `none`
+ * mode. Anchored so nothing else under `/api/mcp` inherits the class.
+ */
+const MCP_ROUTES: readonly RegExp[] = [/^\/api\/mcp$/];
+
+type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector' | 'commerce' | 'mcp';
 
 /** Exported so the enforcement test can drive the table rather than re-deriving it. */
 /** `path` is a registered route pattern (`/api/jobs/:id/heartbeat`), not a request URL. */
@@ -165,6 +175,7 @@ export function requirementFor(path: string): Requirement {
     if (OPEN_ROUTES.some((route) => route.test(path))) return 'open';
     if (CONNECTOR_ROUTES.some((route) => route.test(path))) return 'connector';
     if (COMMERCE_ROUTES.some((route) => route.test(path))) return 'commerce';
+    if (MCP_ROUTES.some((route) => route.test(path))) return 'mcp';
     if (WORKER_ROUTES.some((route) => route.test(path))) return 'worker';
     if (BRANCH_ROUTES.some((route) => route.test(path))) return 'branch';
     if (INGEST_ROUTES.some((route) => route.test(path))) return 'ingest';
@@ -220,12 +231,13 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 
-const BEARER_PREFIX = 'Bearer ';
+// RFC 6750: the auth scheme is case-insensitive.
+const BEARER_PREFIX = /^bearer\s+/i;
 
 const bearer = (request: FastifyRequest): string | null => {
     const header = request.headers.authorization;
-    if (!header?.startsWith(BEARER_PREFIX)) return null;
-    return header.slice(BEARER_PREFIX.length).trim() || null;
+    if (!header || !BEARER_PREFIX.test(header)) return null;
+    return header.replace(BEARER_PREFIX, '').trim() || null;
 };
 
 export interface AuthPluginDeps {
@@ -248,6 +260,8 @@ export interface AuthPluginDeps {
      */
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
+    /** Resolves a `mat_` for the MCP endpoint; only consulted in github mode, and required there when MCP is enabled. */
+    oauth?: Pick<OAuthStore, 'findAccessToken'> | undefined;
 }
 
 /**
@@ -460,6 +474,89 @@ async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, repl
     request.auth = { kind: 'worker', orgId };
 }
 
+interface McpAuthDeps {
+    config: AppConfig;
+    oauth: Pick<OAuthStore, 'findAccessToken'> | undefined;
+    resolveUser: (request: FastifyRequest) => Promise<Caller | null>;
+}
+
+async function refuseMcp(reply: FastifyReply, status: number, error: string, challenge?: string): Promise<void> {
+    if (challenge) reply.header('www-authenticate', challenge);
+    await reply
+        .code(status)
+        .send({ error, code: status === HTTP_FORBIDDEN ? ERROR_CODES.FORBIDDEN : ERROR_CODES.UNAUTHENTICATED });
+}
+
+/**
+ * The MCP endpoint's gate. Disabled, the route does not exist (404) before anything is read. Then the Origin and
+ * Host check, in both modes and before any credential work. Then the credential: in github mode only an
+ * audience-bound `mat_` (a cookie, `fat_` or `oat_` is refused, and no fall-through), under `none` the local caller.
+ * A credential lookup that fails to answer throws, so the hook's `guard` makes it a 503, never a 401.
+ */
+async function enforceMcp(deps: McpAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const { config, oauth, resolveUser } = deps;
+    const { mcp, auth } = config;
+    if (!mcp.enabled) {
+        await reply.code(HTTP_NOT_FOUND).send({ error: 'Not found', code: ERROR_CODES.NOT_FOUND });
+        return;
+    }
+    const header = (name: string): string | undefined => {
+        const value = request.headers[name];
+        return typeof value === 'string' ? value : undefined;
+    };
+    const publicOrigin = new URL(mcp.resource).origin;
+    const permitted = originPermitted(
+        {
+            publicOrigin,
+            trustedOrigins: mcp.trustedOrigins,
+            mode: auth.mode === 'github' ? 'github' : 'none',
+            port: request.socket.localPort,
+        },
+        { origin: header('origin'), host: header('host'), forwardedHost: header('x-forwarded-host') }
+    );
+    if (!permitted) {
+        await refuseMcp(reply, HTTP_FORBIDDEN, 'Origin or host not allowed');
+        return;
+    }
+
+    if (auth.mode === 'none') {
+        const caller = await resolveUser(request);
+        if (!caller) {
+            await refuseMcp(reply, HTTP_UNAUTHORIZED, 'Sign in required');
+            return;
+        }
+        request.auth = { kind: 'user', caller };
+        setAuthInfo(request, withCaller({ token: '', clientId: 'local', scopes: [] }, caller));
+        return;
+    }
+
+    const challenge = challengeFor({ kind: 'unauthorized', metadataUrl: resourceMetadataUrl(auth.publicUrl) });
+    const token = bearer(request);
+    if (!token?.startsWith(MCP_ACCESS_PREFIX)) {
+        await refuseMcp(reply, HTTP_UNAUTHORIZED, 'MCP access token required', challenge);
+        return;
+    }
+    if (!oauth) throw new Error('MCP is enabled but no OAuth store is configured');
+    const found = await oauth.findAccessToken(hashToken(token));
+    if (!found || found.resource !== mcp.resource) {
+        await refuseMcp(reply, HTTP_UNAUTHORIZED, 'Invalid access token', challenge);
+        return;
+    }
+    const scopes = grantedScopes(found.scopes);
+    const caller: Caller = {
+        user: found.user,
+        org: found.org,
+        membership: found.membership,
+        role: found.role,
+        scopes,
+    };
+    request.auth = { kind: 'user', caller };
+    setAuthInfo(
+        request,
+        withCaller({ token, clientId: found.clientId, scopes, resource: new URL(found.resource) }, caller)
+    );
+}
+
 async function refuseBridged(reply: FastifyReply): Promise<void> {
     await reply
         .code(HTTP_FORBIDDEN)
@@ -550,7 +647,7 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
  */
 export async function registerAuth(
     app: FastifyInstance,
-    { config, store, orgOfLease, orgOfJob, orgOfReclaim }: AuthPluginDeps
+    { config, store, orgOfLease, orgOfJob, orgOfReclaim, oauth }: AuthPluginDeps
 ): Promise<void> {
     const { auth } = config;
     await app.register(fastifyCookie);
@@ -562,18 +659,23 @@ export async function registerAuth(
 
     app.decorateRequest('auth', null);
 
+    type Enforcer = (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    const enforcers: Record<Exclude<Requirement, 'open'>, Enforcer> = {
+        ingest: (request, reply) => enforceIngest(auth, request, reply),
+        connector: enforceConnector,
+        commerce: (request, reply) => enforceCommerce(config.commerce, request, reply),
+        mcp: (request, reply) => enforceMcp({ config, oauth, resolveUser }, request, reply),
+        branch: (request, reply) => enforceBranch({ auth, store, leaseOrgOf }, request, reply),
+        worker: (request, reply) => enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply),
+        user: (request, reply) => enforceUser({ auth, store, resolveUser }, request, reply),
+    };
     const enforce = (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
         const requirement = requirementOf(request);
-        // A bridged request reaches human routes only: worker, connector, ingest, branch, commerce and open routes
-        // have their own credentials, and the bridge holds none of them.
+        // A bridged request reaches human routes only: worker, connector, ingest, branch, commerce, mcp and open
+        // routes have their own credentials, and the bridge holds none of them.
         if (requirement !== 'user' && boundCallerOf(request.raw)) return refuseBridged(reply);
         if (requirement === 'open') return Promise.resolve();
-        if (requirement === 'ingest') return enforceIngest(auth, request, reply);
-        if (requirement === 'connector') return enforceConnector(request, reply);
-        if (requirement === 'commerce') return enforceCommerce(config.commerce, request, reply);
-        if (requirement === 'branch') return enforceBranch({ auth, store, leaseOrgOf }, request, reply);
-        if (requirement === 'worker') return enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply);
-        return enforceUser({ auth, store, resolveUser }, request, reply);
+        return enforcers[requirement](request, reply);
     };
 
     // A credential lookup that cannot reach the database is a 503 like any store call, never a 500.

@@ -40,6 +40,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Workflow definitions and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |
 | Notification subscriptions, org and personal, test send ([notifications.md](notifications.md)) | `server/src/routes/notification-subscriptions.ts` | `server/test-db/notification-subscriptions.routes.test.ts`, `server/test-db/notification-workspace-subscriptions.routes.test.ts` |
 | Commerce, registered only with `COMMERCE_ENABLED` ([commerce.md](commerce.md)) | `server/src/routes/commerce.ts` | `server/test/routes.commerce.test.ts` |
+| `POST /api/mcp`, registered only with `MCP_ENABLED`: Streamable HTTP, stateless, an audience-bound `mat_` in github mode | `server/src/mcp/routes.ts`, `server/src/auth/plugin.ts` (`enforceMcp`) | `server/test/mcp.transport.test.ts` |
 | GitHub webhook deliveries | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
 | Which credential a path needs | `server/src/auth/plugin.ts` (`requirementFor`) | `server/test/auth.enforcement.test.ts` |
 | Error codes (one home; `lint/no-shared-literals.grit` enforces) | `core/src/error-codes.ts` | `core/test/error-codes.test.ts` |

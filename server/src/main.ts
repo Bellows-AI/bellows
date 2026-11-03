@@ -2,6 +2,7 @@ import { jiraApiBase } from '@factory-ai/core';
 import postgres, { type Sql } from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
+import { createOAuthStore } from './auth/oauth-store.js';
 import { createAuthStore } from './auth/store.js';
 import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
@@ -254,6 +255,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         secrets,
         integrations: { ...integrations, configured: jira.configured },
         auth: authStore,
+        oauth: createOAuthStore({ sql, ready }),
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
         // org-less job query, because the pair's answer IS the org. The worker-route resolvers

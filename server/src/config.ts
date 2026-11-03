@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
 import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
+import { loadMcpConfig, type McpConfig } from './config-mcp.js';
 import type { TelemetrySource } from './telemetry/client.js';
 
 export interface Repo {
@@ -171,6 +172,8 @@ export interface AppConfig {
     };
     /** The optional commerce service (COMMERCE_*); off by default. See `config-commerce.ts`. */
     readonly commerce: CommerceConfig;
+    /** The board-hosted MCP server (MCP_*); off by default. See `config-mcp.ts`. */
+    readonly mcp: McpConfig;
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -687,6 +690,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         admission: loadAdmission(env),
         integrations: { callbackOrigin: publicOriginOrNull(env, host, port)?.origin ?? null, jira: loadJiraOAuth(env) },
         commerce: loadCommerceConfig(env),
+        mcp: loadMcpConfig(
+            env,
+            bool(env.MCP_ENABLED, false, 'MCP_ENABLED'),
+            publicOriginOrNull(env, host, port),
+            LOOPBACK_HOSTS.has(host)
+        ),
     });
 }
 

@@ -321,6 +321,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/commerce/orgs/:orgId/plan', 'commerce'],
     ['/api/commerce/orgs/:orgId/plan/x', 'user'],
     ['/api/commerce/orgs/:orgId', 'user'],
+    // BEL-104: the MCP endpoint answers to its own gate (Origin/Host, then an audience-bound mat_), anchored to the one path.
+    ['/api/mcp', 'mcp'],
+    ['/api/mcp/x', 'user'],
     // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
     // repo must never choose the org it lands in, so the credential does. Its own requirement,
     // between worker and ingest — the pair is the attempt's, the bearer a member's.
