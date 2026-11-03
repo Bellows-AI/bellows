@@ -6,6 +6,8 @@ import type { OAuthStore } from './auth/oauth-store.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
 import { mcpRoutes } from './mcp/routes.js';
+import { createCimdFetcher } from './oauth/cimd-fetch.js';
+import { createClientResolver } from './oauth/client-resolver.js';
 import { oauthRoutes } from './routes/oauth.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { ServerMetrics } from './metrics.js';
@@ -182,7 +184,12 @@ async function registerMcp(
     if (!config.mcp.enabled) return;
     if (config.auth.mode === 'github' && !oauth) throw new Error('MCP_ENABLED needs the OAuth store');
     // Discovery, authorize, consent, token and revoke exist only where there are accounts to authorize.
-    if (config.auth.mode === 'github' && oauth) await app.register(oauthRoutes({ config, auth, oauth }));
+    if (config.auth.mode === 'github' && oauth) {
+        // A board on http loopback is a dev board: its clients may be too (the config refuses http anywhere else).
+        const fetcher = createCimdFetcher({ allowLoopback: new URL(config.mcp.resource).protocol === 'http:' });
+        const resolveClient = createClientResolver({ oauth, fetcher, log: app.log });
+        await app.register(oauthRoutes({ config, auth, oauth, resolveClient }));
+    }
     await app.register(mcpRoutes, { version, origin: new URL(config.mcp.resource).origin, metrics });
 }
 

@@ -3,6 +3,7 @@ import { SESSION_COOKIE, hashToken, unsign } from '../auth/session.js';
 import type { OAuthClient, OAuthStore } from '../auth/oauth-store.js';
 import type { AuthStore } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
+import type { RegistrationLimits } from './oauth-register.js';
 
 /** The authorization server's endpoints, under the public origin. One place, so metadata and routes cannot drift. */
 export const OAUTH_PATHS = {
@@ -10,6 +11,7 @@ export const OAUTH_PATHS = {
     resume: '/api/oauth/authorize/resume',
     token: '/api/oauth/token',
     revoke: '/api/oauth/revoke',
+    register: '/api/oauth/register',
     consent: '/api/oauth/consent/:id',
     approve: '/api/oauth/consent/approve',
     deny: '/api/oauth/consent/deny',
@@ -29,9 +31,12 @@ export interface OAuthRouteDeps {
     oauth: OAuthStore;
     /**
      * Resolves a client id to a registered client, or null when none is known. A throw means the answer could not be
-     * confirmed. Defaults to the store's rows; the CIMD fetch (BEL-102 part 3) plugs in here.
+     * confirmed. Defaults to the store's rows; the CIMD fetch (`oauth/client-resolver.ts`) plugs in here. The signal
+     * is the request's: a caller that went away cancels an in-flight fetch.
      */
-    resolveClient?: ((clientId: string) => Promise<OAuthClient | null>) | undefined;
+    resolveClient?: ((clientId: string, signal?: AbortSignal) => Promise<OAuthClient | null>) | undefined;
+    /** Dynamic Client Registration limits (this process only); the defaults apply when absent. */
+    registrationLimits?: RegistrationLimits | undefined;
 }
 
 /** The board's origin as the OAuth issuer, and the resource an access token is bound to. */
@@ -71,6 +76,15 @@ export const readParams = (raw: unknown): Map<string, string> | null => {
         params.set(key, value);
     }
     return params;
+};
+
+/** Aborts when the client goes away before the reply is finished, so work done for it (a CIMD fetch) stops. */
+export const closeSignal = (reply: FastifyReply): AbortSignal => {
+    const controller = new AbortController();
+    reply.raw.once('close', () => {
+        if (!reply.raw.writableFinished) controller.abort();
+    });
+    return controller.signal;
 };
 
 /** The session token behind the request's cookie (never a bearer), as the hash the consent transaction binds to. */

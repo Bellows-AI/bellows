@@ -1,15 +1,10 @@
-import { createServer } from 'node:net';
-import {
-    Client,
-    StreamableHTTPClientTransport,
-    UnauthorizedError,
-    type OAuthClientProvider,
-} from '@modelcontextprotocol/client';
+import { Client, StreamableHTTPClientTransport, UnauthorizedError } from '@modelcontextprotocol/client';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
+import { CALLBACK_PORT, LOCALHOST, MemoryProvider, freePort } from './oauth-sdk-rig.js';
 import {
     APPROVE,
     REVOKE,
@@ -24,13 +19,11 @@ import {
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const db = useTestDb({ orgs: [ORG] });
-const LOCALHOST = '127.0.0.1';
 const MODERN = '2026-07-28';
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FOUND = 302;
-const CALLBACK_PORT = 54321;
 
 let sql: Sql;
 beforeAll(() => {
@@ -40,55 +33,6 @@ const boards: Board[] = [];
 afterEach(async () => {
     for (const board of boards.splice(0)) await board.app.close();
 });
-
-const freePort = (): Promise<number> =>
-    new Promise((resolve, reject) => {
-        const probe = createServer();
-        probe.once('error', reject);
-        probe.listen(0, LOCALHOST, () => {
-            const address = probe.address();
-            const port = typeof address === 'object' && address ? address.port : 0;
-            probe.close(() => resolve(port));
-        });
-    });
-
-/** A public client that keeps its state in memory and hands the authorization URL to the test, which plays the browser. */
-class MemoryProvider implements OAuthClientProvider {
-    authorizationUrl: URL | undefined;
-    private saved: Awaited<ReturnType<OAuthClientProvider['tokens']>>;
-    private verifier = '';
-    constructor(private readonly clientId: string) {}
-    get redirectUrl() {
-        return `http://${LOCALHOST}:${CALLBACK_PORT}/callback`;
-    }
-    get clientMetadata() {
-        return {
-            redirect_uris: [this.redirectUrl],
-            client_name: 'Flow test',
-            token_endpoint_auth_method: 'none',
-            grant_types: ['authorization_code', 'refresh_token'],
-            response_types: ['code'],
-        };
-    }
-    clientInformation() {
-        return { client_id: this.clientId };
-    }
-    tokens() {
-        return this.saved;
-    }
-    saveTokens(tokens: NonNullable<typeof this.saved>) {
-        this.saved = tokens;
-    }
-    redirectToAuthorization(url: URL) {
-        this.authorizationUrl = url;
-    }
-    saveCodeVerifier(verifier: string) {
-        this.verifier = verifier;
-    }
-    codeVerifier() {
-        return this.verifier;
-    }
-}
 
 describe.skipIf(!enabled)('the MCP SDK client against the real authorization server', () => {
     it('401 -> discovery -> authorize -> consent -> token -> whoami -> revoke -> 401', async () => {
