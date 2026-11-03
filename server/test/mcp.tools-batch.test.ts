@@ -20,7 +20,7 @@ import {
 import { trackApps } from './helpers-http.js';
 
 /**
- * The batch tools (import, update, validate, start, list, inspect, report) through the real auth plugin, bridge and batch
+ * The batch tools (import, update, validate, start, list, inspect, report, wait, retry, accept, cancel, task list) through the real auth plugin, bridge and batch
  * routes, driven by a v2 client over `POST /api/mcp`, on the in-memory batch store.
  * `server/test-db/mcp.tools-batch.test.ts` runs them over the real stores.
  */
@@ -195,11 +195,11 @@ interface PlanSchema {
     properties: { stages: { maxItems: number } };
 }
 
-const READ_TOOLS = ['validate_batch', 'inspect_batch', 'list_batches', 'batch_report'];
-const WRITE_TOOLS = ['import_batch', 'update_batch', 'start_batch'];
+const READ_TOOLS = ['validate_batch', 'inspect_batch', 'list_batches', 'batch_report', 'wait_batch', 'get_batch_tasks'];
+const WRITE_TOOLS = ['import_batch', 'update_batch', 'start_batch', 'retry_batch_task', 'accept_batch_task'];
 
 describe('the batch tools', () => {
-    it('lists the seven tools with the annotations their route class implies, and the board plan schema as the plan input', async () => {
+    it('lists the batch tools with the annotations their route class implies, and the board plan schema as the plan input', async () => {
         const { url } = await boot();
         const byName = new Map((await listed(url)).map((tool) => [tool.name, tool]));
         for (const name of READ_TOOLS) {
@@ -208,6 +208,8 @@ describe('the batch tools', () => {
         for (const name of WRITE_TOOLS) {
             expect(byName.get(name)?.annotations, name).toMatchObject({ readOnlyHint: false, destructiveHint: false });
         }
+        expect(byName.get('cancel_batch')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+        expect(byName.get('cancel_batch')?.description).toMatch(/confirm: true/);
         for (const name of ['import_batch', 'update_batch']) {
             const advertised = byName.get(name)?.inputSchema as unknown as { properties: Record<string, PlanSchema> };
             const planSchema = advertised.properties.plan!;
@@ -225,7 +227,12 @@ describe('the batch tools', () => {
         '%s: a read-scope token is refused insufficient_scope and the store is untouched',
         async (name) => {
             const { url, store } = await boot();
-            const refused = await call(url, 'reader', name, { plan: plan(), batchId: UNKNOWN_BATCH, version: 1 });
+            const refused = await call(url, 'reader', name, {
+                plan: plan(),
+                batchId: UNKNOWN_BATCH,
+                version: 1,
+                task: 'a',
+            });
             expect(refused.isError).toBe(true);
             expect(refused.data).toMatchObject({ outcome: 'refused', code: 'insufficient_scope' });
             expect(store.writes).toEqual([]);
@@ -453,6 +460,11 @@ describe('the batch tools', () => {
             ['validate_batch', { batchId: mine }],
             ['update_batch', { batchId: mine, version: 1, plan: plan() }],
             ['start_batch', { batchId: mine, version: 1 }],
+            ['wait_batch', { batchId: mine, budgetSeconds: 5 }],
+            ['get_batch_tasks', { batchId: mine }],
+            ['retry_batch_task', { batchId: mine, task: 'a' }],
+            ['accept_batch_task', { batchId: mine, task: 'a' }],
+            ['cancel_batch', { batchId: mine, confirm: true }],
         ];
         for (const [name, args] of attempts) {
             const foreign = await call(url, 'outsider', name, args);
@@ -468,8 +480,8 @@ describe('the batch tools', () => {
     it('answers an unknown or malformed batch id with the board 404', async () => {
         const { url } = await boot();
         for (const batchId of [UNKNOWN_BATCH, 'not-a-uuid']) {
-            for (const name of ['inspect_batch', 'batch_report', 'validate_batch']) {
-                const missing = await call(url, 'both', name, { batchId });
+            for (const name of ['inspect_batch', 'batch_report', 'validate_batch', 'wait_batch', 'get_batch_tasks']) {
+                const missing = await call(url, 'both', name, { batchId, budgetSeconds: 5 });
                 expect(missing.data, `${name} ${batchId}`).toMatchObject({ outcome: 'refused', code: 'NOT_FOUND' });
             }
         }
@@ -561,5 +573,409 @@ describe('the batch tools', () => {
         expect(inspected.isError).toBeFalsy();
         expect(inspected.data.standing.verdict).toBe('inconclusive');
         expect(inspected.data.report).toBeNull();
+    });
+});
+
+const PR_URL = 'https://example.test/acme/web/pull/7';
+
+const acceptedPlan = () =>
+    plan({
+        stages: [
+            {
+                key: 'one',
+                tasks: [task('a', { completion: { kind: 'accepted', condition: 'reviewed' } }), task('b')],
+            },
+        ],
+    });
+
+type Marked = (id: string, key: string, state: Record<string, unknown>) => void;
+
+describe('wait_batch through the real routes', () => {
+    const markAll = (store: MemoryBatchStore, id: string, executions: Record<string, string>) => {
+        for (const [key, execution] of Object.entries(executions)) {
+            (store.mark as Marked)(id, key, { execution, gate: execution === 'succeeded' ? 'passed' : 'open' });
+        }
+    };
+
+    it('answers needs_attention with the attention list when a task waits on a person', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        store.mark(id, 'a', { execution: 'succeeded', pr: PR_URL, waitReason: 'waiting for a person to merge' });
+        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 8 });
+        expect(out.isError, JSON.stringify(out.data)).toBeFalsy();
+        expect(out.data).toMatchObject({ result: 'needs_attention', verdict: 'needs_attention', batchId: id });
+        expect(out.data.attention).toEqual([
+            { key: 'a', stage: 'one', waitReason: 'waiting for a person to merge', pr: PR_URL },
+        ]);
+        expect(out.data.verificationFailures).toEqual([]);
+    });
+
+    it('carries a failed stage verification with the needs_attention answer', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        store.plantVerification(id, [
+            {
+                stage: 'one',
+                state: 'failed',
+                detail: 'tests red',
+                headSha: 'abc123',
+                checkedAt: '2026-01-01T00:00:00.000Z',
+            },
+        ]);
+        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 8 });
+        expect(out.data).toMatchObject({ result: 'needs_attention' });
+        expect(out.data.verificationFailures).toEqual([
+            { stage: 'one', state: 'failed', detail: 'tests red', headSha: 'abc123' },
+        ]);
+    });
+
+    it('answers succeeded and failed from the board standing of a settled batch', async () => {
+        const good = await boot();
+        const goodId = await started(good.url);
+        markAll(good.store, goodId, { a: 'succeeded', b: 'succeeded', c: 'succeeded' });
+        good.store.complete(goodId);
+        const ok = await call(good.url, 'both', 'wait_batch', { batchId: goodId, budgetSeconds: 8 });
+        expect(ok.data).toMatchObject({ result: 'succeeded', verdict: 'succeeded', status: 'completed' });
+
+        const bad = await boot();
+        const badId = await started(bad.url);
+        markAll(bad.store, badId, { a: 'failed', b: 'succeeded', c: 'cancelled' });
+        bad.store.complete(badId);
+        const failed = await call(bad.url, 'both', 'wait_batch', { batchId: badId, budgetSeconds: 8 });
+        expect(failed.data).toMatchObject({ result: 'failed', verdict: 'failed' });
+    });
+
+    it('answers cancelled with the fence after a cancel, and expired batches as cancelled naming the expiry', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        const cancelled = await call(url, 'both', 'cancel_batch', { batchId: id, confirm: true });
+        expect(cancelled.isError, JSON.stringify(cancelled.data)).toBeFalsy();
+        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 8 });
+        expect(out.data).toMatchObject({ result: 'cancelled', fence: 'cancelled' });
+
+        const late = await started(url);
+        store.expire(late);
+        const expired = await call(url, 'both', 'wait_batch', { batchId: late, budgetSeconds: 8 });
+        expect(expired.data).toMatchObject({ result: 'cancelled', fence: 'expired' });
+    });
+
+    it('ends in timeout when the batch is still moving when the budget runs out, and cancels nothing', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        store.mark(id, 'a', { execution: 'running' });
+        const writes = [...store.writes];
+        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 4 });
+        expect(out.isError).toBeFalsy();
+        expect(out.data).toMatchObject({ result: 'timeout', batchId: id, verdict: 'running', budgetSeconds: 4 });
+        expect(store.writes.filter((w) => w === 'cancel')).toEqual([]);
+        expect(store.writes.slice(0, writes.length)).toEqual(writes);
+    });
+
+    it('is inconclusive when the board could not read the report, never a verdict', async () => {
+        const { url } = await boot((store) => ({
+            ...store,
+            snapshot: async () => {
+                throw new Error('snapshot unreadable');
+            },
+        }));
+        const id = await started(url);
+        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 8 });
+        expect(out.isError).toBe(true);
+        expect(out.data).toMatchObject({ outcome: 'inconclusive' });
+        expect(out.data.result).toBeUndefined();
+    });
+
+    it('is inconclusive rather than spinning when the board parks a batch whose standing is still running', async () => {
+        const { url } = await boot();
+        const id = await started(url);
+        // Nothing runs and nothing is marked: the board parks the poll at once, while the standing reads running.
+        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 8 });
+        expect(out.isError).toBe(true);
+        expect(out.data).toMatchObject({ outcome: 'inconclusive' });
+    });
+
+    it('refuses a draft with the board code', async () => {
+        const { url } = await boot();
+        const { id } = await imported(url);
+        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 8 });
+        expect(out.data).toMatchObject({ outcome: 'refused', code: 'BATCH_NOT_STARTED' });
+    });
+});
+
+describe('retry_batch_task, accept_batch_task and cancel_batch', () => {
+    it('retries a failed task and answers the batch with the board standing', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        store.mark(id, 'a', { execution: 'failed' });
+        const out = await call(url, 'both', 'retry_batch_task', { batchId: id, task: 'a' });
+        expect(out.isError, JSON.stringify(out.data)).toBeFalsy();
+        expect(out.data).toMatchObject({ id, status: 'running' });
+        expect(out.data.tasks.find((t: { key: string }) => t.key === 'a')).toMatchObject({ execution: 'retry' });
+        expect(store.writes).toContain('retry');
+    });
+
+    it('refuses to retry a task that is not retryable, an unknown task and a draft, writing nothing', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        const writes = [...store.writes];
+        const running = await call(url, 'both', 'retry_batch_task', { batchId: id, task: 'a' });
+        expect(running.data).toMatchObject({ outcome: 'refused', code: 'BATCH_TASK_NOT_RETRYABLE' });
+        const unknown = await call(url, 'both', 'retry_batch_task', { batchId: id, task: 'zzz' });
+        expect(unknown.data).toMatchObject({ outcome: 'refused', code: 'NOT_FOUND' });
+        const { id: draft } = await imported(url);
+        const early = await call(url, 'both', 'retry_batch_task', { batchId: draft, task: 'a' });
+        expect(early.data).toMatchObject({ outcome: 'refused', code: 'BATCH_NOT_STARTED' });
+        expect(store.writes.filter((w) => w === 'retry')).toEqual([]);
+        expect(store.writes.slice(0, writes.length)).toEqual(writes);
+    });
+
+    it('accepts a finished task whose plan completion is an acceptance, as the caller', async () => {
+        const { url, store } = await boot();
+        const id = await started(url, acceptedPlan());
+        store.mark(id, 'a', { execution: 'succeeded' });
+        const out = await call(url, 'both', 'accept_batch_task', { batchId: id, task: 'a' });
+        expect(out.isError, JSON.stringify(out.data)).toBeFalsy();
+        expect(out.data.tasks.find((t: { key: string }) => t.key === 'a')).toMatchObject({ gate: 'passed' });
+        expect(store.writes.some((w) => w.startsWith('accept:'))).toBe(true);
+    });
+
+    it('refuses to accept a task still running or one that a merged PR completes, writing nothing', async () => {
+        const { url, store } = await boot();
+        const id = await started(url, acceptedPlan());
+        const notReady = await call(url, 'both', 'accept_batch_task', { batchId: id, task: 'a' });
+        expect(notReady.data).toMatchObject({ outcome: 'refused', code: 'BATCH_TASK_NOT_ACCEPTABLE' });
+        store.mark(id, 'b', { execution: 'succeeded' });
+        const byPr = await call(url, 'both', 'accept_batch_task', { batchId: id, task: 'b' });
+        expect(byPr.data).toMatchObject({ outcome: 'refused', code: 'BATCH_TASK_NOT_ACCEPTABLE' });
+        expect(store.writes.some((w) => w.startsWith('accept:'))).toBe(false);
+    });
+
+    it('cancel_batch without confirm: true is refused before anything is sent to the board', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        const writes = [...store.writes];
+        for (const args of [{ batchId: id }, { batchId: id, confirm: false }]) {
+            const out = await call(url, 'both', 'cancel_batch', args);
+            expect(out.isError).toBe(true);
+            expect(out.data).toMatchObject({ outcome: 'refused', code: 'confirmation_required' });
+        }
+        expect(store.writes).toEqual(writes);
+        const after = await call(url, 'both', 'inspect_batch', { batchId: id });
+        expect(after.data.standing.fence).toBeNull();
+    });
+
+    it('cancel_batch with confirm: true fences the batch, and a repeat answers the same', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        const out = await call(url, 'both', 'cancel_batch', { batchId: id, confirm: true });
+        expect(out.isError, JSON.stringify(out.data)).toBeFalsy();
+        expect(out.data).toMatchObject({ id, standing: { verdict: 'cancelled', fence: 'cancelled' } });
+        const again = await call(url, 'both', 'cancel_batch', { batchId: id, confirm: true });
+        expect(again.isError).toBeFalsy();
+        expect(store.writes.filter((w) => w === 'cancel')).toHaveLength(1);
+    });
+
+    it('refuses to cancel a draft, and a finished batch, with the board codes', async () => {
+        const { url, store } = await boot();
+        const { id } = await imported(url);
+        const early = await call(url, 'both', 'cancel_batch', { batchId: id, confirm: true });
+        expect(early.data).toMatchObject({ outcome: 'refused', code: 'BATCH_NOT_STARTED' });
+        const done = await started(url);
+        store.complete(done);
+        const finished = await call(url, 'both', 'cancel_batch', { batchId: done, confirm: true });
+        expect(finished.data).toMatchObject({ outcome: 'refused', code: 'BATCH_FINISHED' });
+    });
+
+    it('a read-scope token cannot cancel, even with confirm: true', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        const writes = [...store.writes];
+        const out = await call(url, 'reader', 'cancel_batch', { batchId: id, confirm: true });
+        expect(out.data).toMatchObject({ outcome: 'refused', code: 'insufficient_scope' });
+        expect(store.writes).toEqual(writes);
+    });
+});
+
+describe('get_batch_tasks', () => {
+    // biome-ignore lint/suspicious/noExplicitAny: structured content is asserted field by field below
+    const keysOf = (data: Record<string, any>) => data.tasks.map((t: { key: string }) => t.key);
+
+    it('pages through a multi-stage plan in plan order with a cursor that does not move', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        const writes = [...store.writes];
+        const first = await call(url, 'reader', 'get_batch_tasks', { batchId: id, limit: 2 });
+        expect(first.isError, JSON.stringify(first.data)).toBeFalsy();
+        expect(keysOf(first.data)).toEqual(['a', 'b']);
+        expect(first.data.cursor).toEqual(expect.any(String));
+        expect(first.data.total).toBe(3);
+        const second = await call(url, 'reader', 'get_batch_tasks', {
+            batchId: id,
+            limit: 2,
+            cursor: first.data.cursor,
+        });
+        expect(keysOf(second.data)).toEqual(['c']);
+        expect(second.data.cursor).toBeNull();
+        // The same cursor gives the same page again.
+        const replay = await call(url, 'reader', 'get_batch_tasks', {
+            batchId: id,
+            limit: 2,
+            cursor: first.data.cursor,
+        });
+        expect(keysOf(replay.data)).toEqual(['c']);
+        expect(store.writes).toEqual(writes);
+    });
+
+    it('keeps the plan key, stage, target, canonical repo@branch, PR and task id of every task', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        store.mark(id, 'a', { execution: 'succeeded', pr: PR_URL, rootJobId: '33333333-3333-4333-8333-333333333333' });
+        const out = await call(url, 'reader', 'get_batch_tasks', { batchId: id });
+        expect(out.data.tasks[0]).toMatchObject({
+            key: 'a',
+            stage: 'one',
+            target: 'web',
+            repo: WEB,
+            branch: 'main',
+            ref: `${WEB}@main`,
+            execution: 'succeeded',
+            pr: PR_URL,
+            taskId: '33333333-3333-4333-8333-333333333333',
+            next: { action: 'none' },
+        });
+        expect(out.data.tasks[1]).toMatchObject({ key: 'b', pr: null, taskId: null });
+        expect(out.data.standing).toMatchObject({ verdict: 'running' });
+    });
+
+    it('filters by stage, by state and by target', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        store.mark(id, 'b', { execution: 'failed' });
+        const byStage = await call(url, 'reader', 'get_batch_tasks', { batchId: id, stage: 'two' });
+        expect(keysOf(byStage.data)).toEqual(['c']);
+        const byState = await call(url, 'reader', 'get_batch_tasks', { batchId: id, state: 'failed' });
+        expect(keysOf(byState.data)).toEqual(['b']);
+        expect(byState.data.total).toBe(1);
+        const none = await call(url, 'reader', 'get_batch_tasks', { batchId: id, stage: 'two', state: 'failed' });
+        expect(none.data.tasks).toEqual([]);
+        const { id: draft } = await imported(url, twoRepoPlan());
+        const byTarget = await call(url, 'reader', 'get_batch_tasks', { batchId: draft, target: 'api' });
+        expect(keysOf(byTarget.data)).toEqual(['b']);
+        expect(byTarget.data.tasks[0]).toMatchObject({ target: 'api', repo: API });
+        const web = await call(url, 'reader', 'get_batch_tasks', { batchId: draft, target: 'web' });
+        expect(keysOf(web.data)).toEqual(['a']);
+    });
+
+    it('lists the tasks of a draft from the record, without a report', async () => {
+        const { url } = await boot();
+        const { id } = await imported(url);
+        const out = await call(url, 'reader', 'get_batch_tasks', { batchId: id });
+        expect(out.isError, JSON.stringify(out.data)).toBeFalsy();
+        expect(keysOf(out.data)).toEqual(['a', 'b', 'c']);
+        expect(out.data.tasks[0]).toMatchObject({ execution: 'pending', next: null });
+        expect(out.data.standing.verdict).toBe('draft');
+    });
+
+    it('shows the stage verification evidence beside the tasks of that stage', async () => {
+        const { url, store } = await boot();
+        const id = await started(url);
+        store.plantVerification(id, [
+            {
+                stage: 'one',
+                state: 'failed',
+                detail: 'tests red',
+                headSha: 'abc123',
+                checkedAt: '2026-01-01T00:00:00.000Z',
+            },
+        ]);
+        const out = await call(url, 'reader', 'get_batch_tasks', { batchId: id });
+        expect(out.data.tasks[0].verification).toEqual([
+            { stage: 'one', state: 'failed', detail: 'tests red', headSha: 'abc123' },
+        ]);
+        expect(out.data.tasks[2].verification).toEqual([]);
+    });
+
+    it('passes on the PR observation and its source SHA as the board has them, stale when the board says so', async () => {
+        const { url } = await boot((store) => ({
+            ...store,
+            report: async (batchId) => {
+                const whole = await store.report(batchId);
+                if (!whole) return whole;
+                const observation = {
+                    outcome: 'open',
+                    checks: 'passing',
+                    mergeability: 'clean',
+                    review: null,
+                    headSha: 'abc123',
+                    targetSha: 'def456',
+                    stale: true,
+                    observedAt: '2026-01-01T00:00:00.000Z',
+                    error: null,
+                };
+                return { ...whole, tasks: whole.tasks.map((t, n) => (n === 0 ? { ...t, observation } : t)) };
+            },
+        }));
+        const id = await started(url);
+        const out = await call(url, 'reader', 'get_batch_tasks', { batchId: id });
+        expect(out.data.stale).toBe(true);
+        expect(out.data.tasks[0]).toMatchObject({
+            sourceSha: 'abc123',
+            observation: { stale: true, checks: 'passing' },
+        });
+        expect(out.data.tasks[1].sourceSha).toBeNull();
+    });
+
+    it('is inconclusive, listing no task and claiming no verdict, when the report omits a task', async () => {
+        const { url } = await boot((store) => ({
+            ...store,
+            report: async (batchId) => {
+                const whole = await store.report(batchId);
+                return whole && { ...whole, tasks: whole.tasks.slice(1) };
+            },
+        }));
+        const id = await started(url);
+        const out = await call(url, 'reader', 'get_batch_tasks', { batchId: id });
+        expect(out.isError).toBe(true);
+        expect(out.data).toMatchObject({ outcome: 'inconclusive' });
+        expect(out.data.tasks).toBeUndefined();
+    });
+
+    it('is inconclusive when the report cannot be read at all', async () => {
+        const { url } = await boot((store) => ({
+            ...store,
+            snapshot: async () => {
+                throw new Error('snapshot unreadable');
+            },
+        }));
+        const id = await started(url);
+        const out = await call(url, 'reader', 'get_batch_tasks', { batchId: id });
+        expect(out.isError).toBe(true);
+        expect(out.data).toMatchObject({ outcome: 'inconclusive' });
+    });
+
+    it('refuses a cursor it did not issue, and one from another version of the draft', async () => {
+        const { url } = await boot();
+        const { id } = await imported(url);
+        const page = await call(url, 'reader', 'get_batch_tasks', { batchId: id, limit: 1 });
+        expect(page.data.cursor).toEqual(expect.any(String));
+        const garbage = await call(url, 'reader', 'get_batch_tasks', { batchId: id, cursor: 'not-a-cursor' });
+        expect(garbage.data).toMatchObject({ outcome: 'refused', code: 'BAD_CURSOR' });
+        const updated = await call(url, 'both', 'update_batch', {
+            batchId: id,
+            version: 1,
+            plan: plan({ title: 'Other' }),
+        });
+        expect(updated.isError, JSON.stringify(updated.data)).toBeFalsy();
+        const stale = await call(url, 'reader', 'get_batch_tasks', { batchId: id, cursor: page.data.cursor });
+        expect(stale.data).toMatchObject({ outcome: 'refused', code: 'stale_cursor' });
+    });
+
+    it('answers a batch of another organization and an unknown batch with the board refusal', async () => {
+        const { url } = await boot();
+        const mine = await started(url);
+        const foreign = await call(url, 'outsider', 'get_batch_tasks', { batchId: mine });
+        expect(foreign.data).toMatchObject({ outcome: 'refused', code: 'NOT_FOUND', status: 404 });
+        const unknown = await call(url, 'reader', 'get_batch_tasks', { batchId: UNKNOWN_BATCH });
+        expect(unknown.data).toMatchObject({ outcome: 'refused', code: 'NOT_FOUND', status: 404 });
     });
 });

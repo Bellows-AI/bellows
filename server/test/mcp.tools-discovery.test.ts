@@ -195,7 +195,9 @@ const call = async (url: URL, who: Who, name: string, args: Record<string, unkno
 
 /** The tools that write (`mcp.tools-write.test.ts`): every other listed tool is read-only. */
 const WRITE_TOOL_NAMES = [
+    'accept_batch_task',
     'answer_question',
+    'cancel_batch',
     'create_task',
     'edit_task',
     'follow_up_task',
@@ -204,6 +206,7 @@ const WRITE_TOOL_NAMES = [
     'mark_task_done',
     'remove_task',
     'reopen_task',
+    'retry_batch_task',
     'retry_task',
     'start_batch',
     'stop_task',
