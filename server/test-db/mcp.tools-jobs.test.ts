@@ -171,6 +171,39 @@ describe.skipIf(!enabled)('the task, job, log and question tools — database', 
         }
     });
 
+    it('reports a task and its verified outcome from the real stores, to its own org only', async () => {
+        const url = await boot();
+        const { id, claim, repo } = await running();
+        const asked = await call(url, 'alice', 'get_task_result', { taskId: id });
+        expect(asked.data).toMatchObject({ taskId: id, runId: id, status: 'running', state: 'running' });
+        await jobs.askQuestion(id, claim.leaseToken, {
+            questionId: 'toolu_r',
+            questions: [{ question: 'Which db?', header: 'Pick', multiSelect: false, options: [{ label: 'pg' }] }],
+        });
+        const waiting = await call(url, 'alice', 'get_task_result', { taskId: id });
+        expect(waiting.data).toMatchObject({ state: 'needs_attention', attention: { openQuestions: 1 } });
+
+        const detail = await call(url, 'alice', 'get_task', { taskId: id });
+        expect(detail.data).toMatchObject({ taskId: id, headRunId: id, repo, state: 'needs_attention', done: false });
+        expect(detail.data.attachments).toEqual([]);
+
+        for (const tool of ['get_task', 'get_task_result']) {
+            const refused = await call(url, 'bob', tool, { taskId: id });
+            expect(refused.isError, tool).toBe(true);
+            expect(refused.data, tool).toMatchObject({ outcome: 'refused', status: 404 });
+        }
+    });
+
+    it('reports a finished task as succeeded with the summary the board recorded', async () => {
+        const url = await boot();
+        const { id, claim } = await running();
+        await jobs.complete(id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const { data } = await call(url, 'alice', 'get_task_result', { taskId: id });
+        expect(data).toMatchObject({ taskId: id, status: 'succeeded', state: 'succeeded', outcome: 'final' });
+        expect(data).not.toHaveProperty('pullRequest');
+        expect(data).not.toHaveProperty('error');
+    });
+
     it('reads the log of a run in capped pages, with the stream state, to the last byte', async () => {
         const url = await boot();
         const { id } = await running();

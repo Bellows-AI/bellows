@@ -36,6 +36,8 @@ import {
 } from './helpers-http.js';
 
 const TOOL_NAMES = [
+    'get_task',
+    'get_task_result',
     'investigate_job',
     'job_activity',
     'list_available_integrations',

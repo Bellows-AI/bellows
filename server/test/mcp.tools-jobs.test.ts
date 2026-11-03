@@ -237,6 +237,8 @@ const call = async (url: URL, who: Who, name: string, args: Record<string, unkno
 };
 
 const NAMES = [
+    'get_task',
+    'get_task_result',
     'investigate_job',
     'job_activity',
     'list_job_streams',
@@ -265,7 +267,7 @@ describe('the task, job, log and question tools over POST /api/mcp', () => {
     it('refuse a caller without factory:read before reaching the board', async () => {
         const url = await boot({ a: {} });
         for (const name of NAMES) {
-            const result = await call(url, 'dave', name, { jobId: JOB_A });
+            const result = await call(url, 'dave', name, { jobId: JOB_A, taskId: JOB_A });
             expect(result.isError, name).toBe(true);
             expect(result.data, name).toMatchObject({ outcome: 'refused', code: 'insufficient_scope' });
         }
@@ -713,5 +715,259 @@ describe('list_job_streams and read_job_log', () => {
         expect(data).toMatchObject({ outcome: 'refused', status: 404 });
         expect(theirs.reads).toEqual([]);
         expect(mine.reads).toEqual([]);
+    });
+});
+
+const requirement = {
+    provider: 'jira',
+    label: 'Jira',
+    reason: 'reconnect',
+    source: 'runtime',
+    connectionId: null,
+    target: null,
+    createdAt: '2026-01-01T00:02:00.000Z',
+};
+
+describe('get_task', () => {
+    const thread = [
+        run(JOB_A, {
+            status: 'failed',
+            attachments: [
+                {
+                    id: 'att-1',
+                    name: 'spec.md',
+                    mediaType: 'text/markdown',
+                    size: 12,
+                    sha256: 'ab'.repeat(32),
+                    state: 'bound',
+                    url: 'https://files.example/signed?sig=secret',
+                    content: 'raw bytes',
+                },
+            ],
+        }),
+        run(FOLLOW_A, {
+            followUpTo: JOB_A,
+            status: 'running',
+            doneAt: null,
+            baseBranch: 'main',
+            publication: {
+                prUrl: 'https://git.example/acme/web/pull/7',
+                prNumber: 7,
+                headBranch: 'agent/x',
+                baseBranch: 'main',
+            },
+            integrationRequirements: [requirement],
+            questions: [question('q1')],
+        }),
+    ];
+
+    it('describes the task from any of its runs: head run, runs, pull request, attention, attachment metadata only', async () => {
+        const url = await boot({ a: { thread }, b: { thread: [run(JOB_B, { rootJobId: JOB_B })] } });
+        for (const id of [JOB_A, FOLLOW_A]) {
+            const { data } = await call(url, 'alice', 'get_task', { taskId: id });
+            expect(data).toMatchObject({
+                taskId: JOB_A,
+                headRunId: FOLLOW_A,
+                status: 'running',
+                state: 'needs_attention',
+                repo: 'acme/web',
+                baseBranch: 'main',
+                author: 'alice',
+                pullRequest: { url: 'https://git.example/acme/web/pull/7', number: 7, headBranch: 'agent/x' },
+                openQuestions: 1,
+                integrationRequirements: [{ provider: 'jira', label: 'Jira', reason: 'reconnect', source: 'runtime' }],
+            });
+            expect(data.runs.map((r: { id: string; state: string }) => [r.id, r.state])).toEqual([
+                [JOB_A, 'failed'],
+                [FOLLOW_A, 'needs_attention'],
+            ]);
+            expect(data.attachments).toEqual([
+                {
+                    id: 'att-1',
+                    runId: JOB_A,
+                    name: 'spec.md',
+                    mediaType: 'text/markdown',
+                    size: 12,
+                    sha256: 'ab'.repeat(32),
+                    state: 'bound',
+                },
+            ]);
+            expect(JSON.stringify(data)).not.toMatch(/secret|raw bytes/);
+        }
+    });
+
+    it("does not reveal another org's task, and says not found for an unknown one", async () => {
+        const url = await boot({ a: { thread }, b: { thread: [run(JOB_B, { rootJobId: JOB_B })] } });
+        for (const id of [JOB_B, '99999999-9999-4999-8999-999999999999']) {
+            const { isError, data } = await call(url, 'alice', 'get_task', { taskId: id });
+            expect(isError).toBe(true);
+            expect(data).toMatchObject({ outcome: 'refused', status: 404 });
+        }
+    });
+
+    it('is inconclusive when the thread cannot be read', async () => {
+        const { isError, data } = await call(await boot({ a: { thread, threadFails: true } }), 'alice', 'get_task', {
+            taskId: JOB_A,
+        });
+        expect(isError).toBe(true);
+        expect(data).toMatchObject({ outcome: 'inconclusive' });
+    });
+
+    it('bounds a long command and says it was cut', async () => {
+        const long = [run(JOB_A, { command: 'x'.repeat(50_000) })];
+        const { data } = await call(await boot({ a: { thread: long } }), 'alice', 'get_task', { taskId: JOB_A });
+        expect(data.command.length).toBeLessThan(2500);
+        expect(data.commandTruncated).toBe(true);
+    });
+});
+
+describe('get_task_result', () => {
+    const result = async (head: Record<string, unknown>, before: ReturnType<typeof run>[] = []) => {
+        const thread = [...before, run(JOB_A, head)];
+        const { data, isError } = await call(await boot({ a: { thread } }), 'alice', 'get_task_result', {
+            taskId: JOB_A,
+        });
+        return { data, isError };
+    };
+
+    it.each([
+        ['queued', 'pending', 'in_progress'],
+        ['running', 'running', 'in_progress'],
+        ['succeeded', 'succeeded', 'final'],
+        ['failed', 'failed', 'final'],
+        ['dead', 'failed', 'final'],
+        ['stopped', 'cancelled', 'final'],
+        ['melting', 'inconclusive', 'inconclusive'],
+    ])('maps the board status %s to %s (%s)', async (status, state, outcome) => {
+        const { data, isError } = await result({ status });
+        expect(isError).toBeFalsy();
+        expect(data).toMatchObject({ taskId: JOB_A, runId: JOB_A, status, state, outcome });
+    });
+
+    it('maps an open question or integration requirement to needs_attention, except on a stopped run', async () => {
+        const asked = { questions: [question('q1')] };
+        const waiting = { integrationRequirements: [requirement] };
+        for (const status of ['running', 'failed']) {
+            const q = await result({ status, ...asked });
+            expect(q.data).toMatchObject({ state: 'needs_attention', outcome: 'needs_attention' });
+            expect(q.data.attention).toEqual({ openQuestions: 1, integrationRequirements: [] });
+            const i = await result({ status, ...waiting });
+            expect(i.data).toMatchObject({ state: 'needs_attention' });
+            expect(i.data.attention.integrationRequirements).toEqual([
+                { provider: 'jira', label: 'Jira', reason: 'reconnect', source: 'runtime' },
+            ]);
+        }
+        const stopped = await result({ status: 'stopped', ...asked, ...waiting });
+        expect(stopped.data).toMatchObject({ state: 'cancelled', outcome: 'final' });
+        expect(stopped.data).not.toHaveProperty('attention');
+    });
+
+    it('a settled question does not hold the task for attention', async () => {
+        const { data } = await result({ questions: [question('q1', { status: 'answered', answerable: false })] });
+        expect(data).toMatchObject({ state: 'succeeded' });
+    });
+
+    it('reports verified pull request, checks and summary of a successful head run', async () => {
+        const { data } = await result({
+            publication: {
+                prUrl: 'https://git.example/acme/web/pull/7',
+                prNumber: 7,
+                headBranch: 'agent/x',
+                baseBranch: 'main',
+            },
+            gates: [
+                { name: 'lint', status: 'passed', exitCode: 0, output: 'long tail' },
+                { name: 'test', status: 'passed', exitCode: 0, output: 'long tail' },
+            ],
+        });
+        expect(data).toMatchObject({
+            state: 'succeeded',
+            summary: 'did the thing',
+            pullRequest: {
+                url: 'https://git.example/acme/web/pull/7',
+                number: 7,
+                headBranch: 'agent/x',
+                baseBranch: 'main',
+            },
+            checks: {
+                verdict: 'passed',
+                gates: [
+                    { name: 'lint', status: 'passed', exitCode: 0 },
+                    { name: 'test', status: 'passed', exitCode: 0 },
+                ],
+            },
+            updatedAt: '2026-01-01T00:05:00.000Z',
+        });
+        expect(JSON.stringify(data)).not.toContain('long tail');
+        expect(data).not.toHaveProperty('error');
+    });
+
+    it('never calls a check that is not known to have passed a pass', async () => {
+        const failing = await result({
+            gates: [
+                { name: 'a', status: 'passed' },
+                { name: 'b', status: 'failed', exitCode: 1 },
+            ],
+        });
+        expect(failing.data.checks.verdict).toBe('failed');
+        const open = await result({
+            gates: [
+                { name: 'a', status: 'passed' },
+                { name: 'b', status: 'running' },
+            ],
+        });
+        expect(open.data.checks.verdict).toBe('incomplete');
+        const none = await result({ gates: null });
+        expect(none.data).not.toHaveProperty('checks');
+        expect(none.data).not.toHaveProperty('pullRequest');
+    });
+
+    it('carries the failure of a failed head run and no summary the board did not record', async () => {
+        const { data } = await result({
+            status: 'failed',
+            exitCode: 2,
+            failureKind: 'gate',
+            failureCause: 'lint failed',
+            summary: null,
+        });
+        expect(data).toMatchObject({ state: 'failed', error: { kind: 'gate', cause: 'lint failed', exitCode: 2 } });
+        expect(data).not.toHaveProperty('summary');
+    });
+
+    it('judges the head run of the thread, not an earlier one', async () => {
+        const { data } = await result({ id: FOLLOW_A, status: 'running', followUpTo: JOB_A }, [
+            run(JOB_A, { status: 'failed', failureKind: 'gate' }),
+        ]);
+        expect(data).toMatchObject({ taskId: JOB_A, runId: FOLLOW_A, state: 'running' });
+        expect(data).not.toHaveProperty('error');
+    });
+
+    it("does not reveal another org's task", async () => {
+        const url = await boot({ a: { thread: [run(JOB_A)] }, b: { thread: [run(JOB_B, { rootJobId: JOB_B })] } });
+        const { isError, data } = await call(url, 'alice', 'get_task_result', { taskId: JOB_B });
+        expect(isError).toBe(true);
+        expect(data).toMatchObject({ outcome: 'refused', status: 404 });
+    });
+
+    it('is inconclusive, never a negative verdict, when the board cannot answer or answers garbage', async () => {
+        const down = await call(
+            await boot({ a: { thread: [run(JOB_A)], threadFails: true } }),
+            'alice',
+            'get_task_result',
+            {
+                taskId: JOB_A,
+            }
+        );
+        expect(down.isError).toBe(true);
+        expect(down.data).toMatchObject({ outcome: 'inconclusive' });
+        expect(down.data).not.toHaveProperty('state');
+        const garbled = await call(
+            await boot({ a: { thread: [{ id: JOB_A, status: 42 }] as never } }),
+            'alice',
+            'get_task_result',
+            { taskId: JOB_A }
+        );
+        expect(garbled.isError).toBe(true);
+        expect(garbled.data).toMatchObject({ outcome: 'inconclusive' });
     });
 });

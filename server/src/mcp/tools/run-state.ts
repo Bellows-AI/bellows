@@ -97,6 +97,15 @@ const RequirementSchema = z.object({
     source: z.enum(['create', 'runtime']),
 });
 
+const AttachmentSchema = z.object({
+    id: z.string(),
+    name: z.string(),
+    mediaType: z.string(),
+    size: z.number(),
+    sha256: z.string(),
+    state: z.string(),
+});
+
 /** The fields of a run (`GET /api/jobs`, `/api/jobs/:id`, `/api/jobs/:id/thread`) these tools read. */
 export const BoardRunSchema = z.object({
     id: z.string(),
@@ -122,14 +131,29 @@ export const BoardRunSchema = z.object({
     waitReason: text,
     author: UserRef,
     gates: z.array(z.object({ name: z.string(), status: z.string(), exitCode: z.number().nullish() })).nullish(),
-    publication: z.object({ prUrl: z.string(), prNumber: z.number() }).partial().nullish(),
+    publication: z
+        .object({ prUrl: z.string(), prNumber: z.number(), headBranch: z.string(), baseBranch: z.string() })
+        .partial()
+        .nullish(),
+    doneAt: text,
+    /** File metadata only; the schema drops everything else a board row may carry (content, links). */
+    attachments: z.array(AttachmentSchema).optional(),
     questions: z.array(QuestionSchema).optional(),
     integrationRequirements: z.array(RequirementSchema).optional(),
 });
 export type BoardRun = z.infer<typeof BoardRunSchema>;
 
-export const questionsOpen = (run: BoardRun): boolean =>
+export const questionsOpen = (run: Pick<BoardRun, 'questions'>): boolean =>
     (run.questions ?? []).some((q) => q.status === 'pending' && q.answerable);
+
+/**
+ * The board attaches the root's open integration requirements to every run of the thread; only the head run is
+ * waiting on them, so every other run reads with none.
+ */
+export const ownRequirements = <R extends Pick<BoardRun, 'id' | 'integrationRequirements'>>(
+    run: R,
+    head: Pick<BoardRun, 'id'> | undefined
+): R => (run.id === head?.id ? run : { ...run, integrationRequirements: [] });
 
 /** The run as an agent reads it: the board's facts under the shared state, free text bounded, no gate output. */
 export function runView(run: BoardRun, detail: boolean) {
