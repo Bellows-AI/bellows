@@ -133,20 +133,35 @@ describe('oauth state', () => {
     });
 });
 
+const PUBLIC = 'https://board.example';
+
 describe('return paths', () => {
     it('keeps an ordinary same-origin path', () => {
-        expect(safeReturnPath('/reports?range=week')).toBe('/reports?range=week');
+        expect(safeReturnPath('/reports?range=week', PUBLIC)).toBe('/reports?range=week');
     });
 
     it('refuses anything that leaves this origin', () => {
         // The whole open-redirect surface. `//evil.test` is the subtle one: it is a URL to another
         // origin that merely looks like a path.
-        expect(safeReturnPath('//evil.test/phish')).toBe('/');
-        expect(safeReturnPath('https://evil.test')).toBe('/');
-        expect(safeReturnPath('javascript:alert(1)')).toBe('/');
-        expect(safeReturnPath('')).toBe('/');
-        expect(safeReturnPath(null)).toBe('/');
-        expect(safeReturnPath(undefined)).toBe('/');
+        expect(safeReturnPath('//evil.test/phish', PUBLIC)).toBe('/');
+        expect(safeReturnPath('https://evil.test', PUBLIC)).toBe('/');
+        expect(safeReturnPath('javascript:alert(1)', PUBLIC)).toBe('/');
+        expect(safeReturnPath('', PUBLIC)).toBe('/');
+        expect(safeReturnPath(null, PUBLIC)).toBe('/');
+        expect(safeReturnPath(undefined, PUBLIC)).toBe('/');
+    });
+
+    it.each([
+        ['a backslash', '/\\attacker.example/x'],
+        ['an encoded backslash', '/%5Cattacker'],
+        ['a tab', '/\t/attacker.example'],
+        ['a newline', '/\n/attacker.example'],
+        ['a NUL', '/a\u0000b'],
+        ['a DEL', '/a\u007fb'],
+        ['an encoded control character', '/%09/attacker.example'],
+        ['an over-long path', `/${'a'.repeat(600)}`],
+    ])('refuses %s', (_name, raw) => {
+        expect(safeReturnPath(raw, PUBLIC)).toBe('/');
     });
 
     it('survives a return path smuggled through the state', () => {
