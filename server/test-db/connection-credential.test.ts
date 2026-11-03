@@ -201,17 +201,37 @@ describe.skipIf(!enabled)('the managed-connection broker — on a real attempt',
         expect(res.body).not.toContain('legacy-secret-token');
     });
 
-    it('refuses a stale pair after a reclaim rotates the lease, and serves the new one', async () => {
+    // BEL-243: a lapsed lease or the pair one claim back, on a task that still runs, is transient.
+    it('answers 503 LEASE_PENDING to a lapsed or superseded pair on the credential route and the list route', async () => {
         const r = await rig();
         expect((await r.ask()).statusCode).toBe(HTTP_OK);
         await expireLease(r.sql, r.claim.id);
-        expect((await r.ask()).statusCode).toBe(HTTP_FORBIDDEN);
+        const lapsed = await r.ask();
+        expect(lapsed.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(lapsed.headers['retry-after']).toBe('1');
+        expect(lapsed.json()).toMatchObject({ code: 'LEASE_PENDING', retryable: true });
+        noToken(lapsed);
         const second = (await r.jobs.claim('w2', LEASE_SECONDS)) as Claim;
         expect(second.id).toBe(r.claim.id);
         const stale = await r.ask();
-        expect(stale.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(stale.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(stale.json().code).toBe('LEASE_PENDING');
         noToken(stale);
+        const staleList = await r.list({ id: r.claim.id, leaseToken: r.claim.leaseToken });
+        expect(staleList.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(staleList.json().code).toBe('LEASE_PENDING');
         expect((await r.askAs({ id: second.id, leaseToken: second.leaseToken })).statusCode).toBe(HTTP_OK);
+    });
+
+    // Pin, green before the fix: a Stop clears the lease and stays terminal.
+    it('keeps 403 for a stopped attempt', async () => {
+        const r = await rig();
+        await r.sql`update job set cancel_requested_at = now(), lease_token = null where id = ${r.claim.id}`;
+        await expireLease(r.sql, r.claim.id);
+        const res = await r.ask();
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
+        noToken(res);
     });
 
     it.each<{ name: string; settle: (r: Awaited<ReturnType<typeof rig>>) => Promise<unknown> }>([
@@ -398,8 +418,10 @@ describe.skipIf(!enabled)('the managed-connection broker — on a real attempt',
         expect(res.statusCode).toBe(HTTP_UNAVAILABLE);
     });
 
+    // A lapse on a running task is pending (503); a terminal refusal, here a stopped attempt, stays 403.
     it('a lease refusal on the list is 403', async () => {
         const r = await rig();
+        await r.sql`update job set cancel_requested_at = now() where id = ${r.claim.id}`;
         await expireLease(r.sql, r.claim.id);
         expect((await r.list({ id: r.claim.id, leaseToken: r.claim.leaseToken })).statusCode).toBe(HTTP_FORBIDDEN);
     });

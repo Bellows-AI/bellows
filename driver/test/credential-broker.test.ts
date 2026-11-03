@@ -321,6 +321,48 @@ describe('one wall-clock deadline', () => {
         expect(r.sleeps).toEqual([]);
         expect(r.elapsed()).toBe(0);
     });
+
+    // BEL-243: a takeover relays the adopting claim's pair; every try presents the pair as it is now.
+    it('re-reads the pair on every try: a pending answer under the old lease is followed by the relayed lease', async () => {
+        const NEW = '44444444-4444-4444-8444-444444444444';
+        const r = rig((call) => {
+            if (call.headers['x-factory-job-lease-token'] === NEW) return minted('ghs_adopted_secret');
+            r.relayed.lease = NEW;
+            return { status: 503, headers: { 'retry-after': '1' }, body: { code: 'LEASE_PENDING', retryable: true } };
+        });
+        expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ ok: true, token: 'ghs_adopted_secret' });
+        expect(r.calls.map((call) => call.headers['x-factory-job-lease-token'])).toEqual([LEASE, NEW]);
+        expect(r.sleeps).toEqual([SECOND_MS]);
+        // The entry is the NEW pair's: readable under it, and nothing the old pair can read.
+        r.relayed.lease = null;
+        expect(entries(r.deps.dir)).toHaveLength(1);
+        const calls = r.calls.length;
+        r.relayed.lease = NEW;
+        expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ token: 'ghs_adopted_secret' });
+        expect(r.calls).toHaveLength(calls);
+    });
+
+    // Pin, green before the fix: a pending answer that never clears ends on a transient outcome, never `refused`.
+    it('a pending answer that outlasts the deadline ends transient, never refused', async () => {
+        const r = rig(() => ({
+            status: 503,
+            headers: { 'retry-after': '1' },
+            body: { code: 'LEASE_PENDING', retryable: true },
+        }));
+        const result = await broker.obtain(r.deps, broker.GITHUB_KEY);
+        expect(result.ok).toBe(false);
+        expect(result.reason).not.toBe('refused');
+        expect(r.elapsed()).toBeLessThanOrEqual(broker.DEADLINE_MS);
+        expect(r.stderr.join('\n')).not.toContain('report it');
+    });
+
+    // Pin: a terminal refusal is one call and no sleep.
+    it('a 403 is still refused at once: one call, no sleep', async () => {
+        const r = rig(() => ({ status: 403, body: { error: 'refused' } }));
+        expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ ok: false, reason: 'refused' });
+        expect(r.calls).toHaveLength(1);
+        expect(r.sleeps).toEqual([]);
+    });
 });
 
 describe('typed stops', () => {

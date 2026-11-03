@@ -195,6 +195,8 @@ export interface Job {
      */
     doneBy: UserRef | null;
     /** The agent session this attempt runs as, once its driver has reported it. */
+    /** The branch the thread bases on (batch target, else the root's request), or null for the remote default. Filled by the detail reads (get/thread) only. */
+    baseBranch: string | null;
     sessionId: string | null;
     exitCode: number | null;
     output: string | null;
@@ -613,7 +615,8 @@ export interface Claim {
     rootJobId: string;
     /**
      * The branch the run bases its checkout and its PR on: the frozen target branch of the batch
-     * task the thread works. Absent outside a batch, where the remote default (`origin/HEAD`) is the base.
+     * task the thread works, else the branch the thread's root was created with. Absent
+     * when neither names one, where the remote default (`origin/HEAD`) is the base.
      */
     baseBranch?: string;
     /**

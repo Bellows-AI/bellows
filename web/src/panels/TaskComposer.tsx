@@ -9,7 +9,9 @@ import { AttachmentChips } from './AttachmentList.js';
 import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
 import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from '../composer-draft.js';
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
+import { BranchCombobox } from '../components/BranchCombobox.js';
 import { Icon } from '../components/Icon.js';
+import { SlashSkillMenu, useSlashMenu } from '../components/SlashSkillMenu.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
     COMMAND_LIMIT_TEXT,
@@ -125,6 +127,13 @@ function ComposerContextRow({
                         })}
                     </ListboxOptions>
                 </Listbox>
+            </div>
+            <div className="composer-context-item">
+                <BranchCombobox
+                    repo={repo}
+                    value={state.baseBranch}
+                    onChange={(baseBranch) => update({ baseBranch })}
+                />
             </div>
             <div className="composer-context-item">
                 <Listbox
@@ -505,6 +514,12 @@ export function TaskComposer({
         files,
     });
     const { state, update, declaredParams, paramValues } = composer;
+    const slash = useSlashMenu({
+        text: state.draft,
+        setText: (draft) => update({ draft }),
+        repoSkills: composer.repoSkills,
+        disabled: frozen,
+    });
     // Null while the list has not answered: that screen is the loading/error state, never the
     // "no repositories tracked" verdict.
     const readiness = repos === null ? undefined : repoReadiness(state.repo, repos);
@@ -573,8 +588,13 @@ export function TaskComposer({
                         value={state.draft}
                         readOnly={frozen}
                         {...dropAndPaste}
-                        onChange={(e) => update({ draft: e.target.value })}
+                        {...slash.fieldProps}
+                        onChange={(e) => {
+                            update({ draft: e.target.value });
+                            slash.onTextChange(e.target);
+                        }}
                     />
+                    {slash.menu === null ? null : <SlashSkillMenu {...slash.menu} />}
                     {nearLimit ? (
                         <p
                             className={promptTooLong ? 'composer-counter is-over' : 'composer-counter'}

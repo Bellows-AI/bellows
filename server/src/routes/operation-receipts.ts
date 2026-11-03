@@ -9,7 +9,7 @@ import {
     type ReceiptStatus,
 } from '../db/operation-receipts.js';
 import { UUID } from '../identifiers.js';
-import { bad, body as jsonBody } from './helpers.js';
+import { bad, body as jsonBody, leasePending } from './helpers.js';
 
 /**
  * `POST /api/jobs/:id/operations` and `PUT /api/jobs/:id/operations/:receiptId` (docs/connections.md): the
@@ -100,6 +100,10 @@ const unavailable = (reply: FastifyReply) =>
 const refused = (reply: FastifyReply, message: string) =>
     bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, message, HTTP_FORBIDDEN);
 
+/** The reply to a refused check: transient while the task still runs, else the terminal 403. */
+const refusedBy = (reply: FastifyReply, check: { pending: boolean }) =>
+    check.pending ? leasePending(reply) : refused(reply, ATTEMPT_REFUSED);
+
 /** The request's pair, or why it is no request for this route. */
 function pairOf(request: FastifyRequest): { jobId: string; leaseToken: string } | 'unauthenticated' | 'malformed' {
     const { id: jobId } = request.params as { id: string };
@@ -132,7 +136,7 @@ export function operationReceiptRoutes({
         if (!parsed) return bad(reply, ERROR_CODES.BAD_BODY, 'The operation request is not valid');
         try {
             const attempt = await attemptOfLease(pair.jobId, pair.leaseToken);
-            if (!attempt.ok) return refused(reply, ATTEMPT_REFUSED);
+            if (!attempt.ok) return refusedBy(reply, attempt);
             if (!(await receipts.isBound(attempt.orgId, attempt.rootJobId, parsed.connectionId))) {
                 return refused(reply, NOT_PERMITTED);
             }
@@ -161,7 +165,7 @@ export function operationReceiptRoutes({
         try {
             // No liveness: a Stop or a settle must not stop the runner recording a write that already happened.
             const matched = await pairMatches(pair.jobId, pair.leaseToken);
-            if (!matched.ok) return refused(reply, ATTEMPT_REFUSED);
+            if (!matched.ok) return refusedBy(reply, matched);
             const moved = await receipts.transition({
                 orgId: matched.orgId,
                 jobId: pair.jobId,

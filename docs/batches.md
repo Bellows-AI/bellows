@@ -37,7 +37,8 @@ scheduler runs one stage at a time as ordinary job threads.
   unresolved merge per repository and target (`batch_merge_slot_idx`); a stage advances only on a passed combined
   verification. `core/test/batch-merge.test.ts`, `server/test-db/batch-merge.test.ts`.
 - **A task runs on its target's branch on both executors** via the claim's `baseBranch`.
-  `server/src/db/jobs/job-store-claim.ts`, `driver/test/base-branch-executors.test.ts`.
+  `server/src/db/jobs/job-store-claim.ts`, `driver/test/base-branch-executors.test.ts`; a target branch must pass
+  `isBranchName`, `core/test/batch-plan.test.ts`.
 - **A task's PR is observed from GitHub, never inferred from `failure_kind`**; webhooks only mark rows stale.
   `server/test/webhook.batch-observation.test.ts`.
 - **Recovery budgets freeze at start and count durable `batch_attempt` rows**; a spent budget or unclassified

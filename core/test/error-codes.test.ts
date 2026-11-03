@@ -28,4 +28,8 @@ describe('ERROR_CODES', () => {
         expect(ERROR_CODES.UNKNOWN_CONNECTOR).toBe('UNKNOWN_CONNECTOR');
         expect(ERROR_CODES.BAD_CONNECTOR_CONFIG).toBe('BAD_CONNECTOR_CONFIG');
     });
+
+    it('carries the lease-pending answer the runner helpers retry on', () => {
+        expect(ERROR_CODES.LEASE_PENDING).toBe('LEASE_PENDING');
+    });
 });

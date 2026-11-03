@@ -324,6 +324,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // Both fall through to 'user' rather than being listed anywhere, which is the point: the
     // default is the safe one, so a new route is walled unless somebody deliberately opens it.
     ['/api/repos', 'user'],
+    ['/api/repos/:owner/:name/branches', 'user'],
+    ['/api/repos/:owner/:name/skills', 'user'],
     ['/api/skills', 'user'],
     // Access-token management: a person's settings act, so session cookie or personal bearer —
     // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
@@ -381,8 +383,8 @@ describe('the route table', () => {
                 auth: store,
                 commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
                 // The runner credential routes exist exactly when their per-call check does.
-                attemptOfLease: async () => ({ ok: false }),
-                pairMatches: async () => ({ ok: false }),
+                attemptOfLease: async () => ({ ok: false, pending: false }),
+                pairMatches: async () => ({ ok: false, pending: false }),
                 integrations: {
                     flowOf: () => ({
                         startAuthorization: async () => ({ ok: false as const, reason: 'unknown-provider' as const }),

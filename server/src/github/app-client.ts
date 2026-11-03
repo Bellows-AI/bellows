@@ -8,6 +8,7 @@ import {
 } from '@factory-ai/core';
 import type { GitHubConfig, Repo } from '../config.js';
 import type { InstallationTokenProvider } from './app-token.js';
+import { BranchCursorError, createBranchLister, type BranchPage, type PagedCall } from './branch-list.js';
 import { readRepoFileAtBranchTip, type RepoFileRead } from './file-read.js';
 import { classifyMergeFailure, GitHubMergeError, readMergeResponse, type MergeResult } from './pr-merge.js';
 import {
@@ -18,6 +19,7 @@ import {
     readPullRequest,
     type BranchState,
 } from './pr-read.js';
+import { readRepoSkills, type RepoSkillRead } from './skill-read.js';
 
 /**
  * What the App installation reports it can see. This replaced ORG_REPOS: the credential and the
@@ -44,6 +46,8 @@ export interface InstallationListing {
     readonly installation: Installation;
 }
 
+export { BranchCursorError, type BranchPage } from './branch-list.js';
+
 export interface GitHubAppClient {
     /**
      * The repositories and the installation that owns them, in one call.
@@ -68,6 +72,12 @@ export interface GitHubAppClient {
     mergePullRequest(repo: string, number: number, request: { sha: string; method: string }): Promise<MergeResult>;
     /** A branch's tip, whether it holds each commit, and the tip's checks (the stage's combined verification). */
     readBranchState(repo: string, branch: string, shas: readonly string[]): Promise<BranchState>;
+    /**
+     * One page of a repository's branch names: the listing, or a prefix search when `query` is set. The
+     * cursor is opaque and bound to the mode and query that issued it (`BranchCursorError` otherwise); a
+     * failed or malformed read rejects with a `GitHubReadError`, never a shorter list.
+     */
+    listBranches(repo: string, request: { query?: string; cursor?: string }): Promise<BranchPage>;
     /** A branch's tip commit, or null when it cannot be read. */
     readBranchHead(repo: string, branch: string): Promise<string | null>;
     /**
@@ -76,6 +86,12 @@ export interface GitHubAppClient {
      * `GitHubReadError` for a failure that says nothing about the repository (rate limit, transport).
      */
     readFileAtBranchTip(repo: string, branch: string | null, path: string): Promise<RepoFileRead | null>;
+    /**
+     * The repository's own `.claude/skills` at the tip of `branch` (the default branch when null).
+     * Resolves only for a confirmed answer (a 404 skills directory is `skills: []`); every other
+     * failure, including `signal` aborting or the deadline, rejects.
+     */
+    listRepoSkills(repo: string, branch: string | null, signal?: AbortSignal): Promise<RepoSkillRead>;
 }
 
 /**
@@ -103,13 +119,15 @@ interface RepoPayload {
     owner?: { login?: string };
 }
 
-export function createGitHubAppClient(
+/** One authenticated GET: the parsed body and the `Link` header; a non-2xx is a classified `GitHubReadError`. */
+function pagedCaller(
     github: Extract<GitHubConfig, { mode: 'app' }>,
     tokens: InstallationTokenProvider,
-    fetchFn: typeof fetch = fetch,
-    now: () => number = Date.now
-): GitHubAppClient {
-    const call = async (path: string): Promise<unknown> => {
+    fetchFn: typeof fetch,
+    now: () => number
+): PagedCall {
+    return async (path, signal) => {
+        const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         const response = await fetchFn(`${github.apiUrl}${path}`, {
             headers: {
                 authorization: `Bearer ${await tokens.get()}`,
@@ -118,14 +136,24 @@ export function createGitHubAppClient(
                 'user-agent': 'factory-ai',
             },
             // Well under the observation lease: a stalled request must fail as transport, not hold a pass.
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         });
         if (!response.ok) {
             const detail = (await response.text().catch(() => '')).slice(0, ERROR_DETAIL_LIMIT);
             throw classifyReadFailure(path, { status: response.status, headers: response.headers, detail }, now());
         }
-        return response.json();
+        return { body: await response.json(), link: response.headers.get('link') };
     };
+}
+
+export function createGitHubAppClient(
+    github: Extract<GitHubConfig, { mode: 'app' }>,
+    tokens: InstallationTokenProvider,
+    fetchFn: typeof fetch = fetch,
+    now: () => number = Date.now
+): GitHubAppClient {
+    const callPage = pagedCaller(github, tokens, fetchFn, now);
+    const call = async (path: string, signal?: AbortSignal): Promise<unknown> => (await callPage(path, signal)).body;
 
     // Only successful ruleset answers are kept; a failure is asked again next time.
     const rules = new Map<string, { at: number; body: unknown }>();
@@ -188,6 +216,8 @@ export function createGitHubAppClient(
         return { repos, selection };
     };
 
+    const listBranchPage = createBranchLister(callPage, github.apiUrl);
+
     // A dropped connection or a token mint that failed is the provider being unreachable.
     const readError = (e: unknown): GitHubReadError =>
         e instanceof GitHubReadError ? e : new GitHubReadError((e as Error).message, READ_TRANSPORT);
@@ -233,6 +263,15 @@ export function createGitHubAppClient(
             }
         },
 
+        async listBranches(repo, request) {
+            try {
+                return await listBranchPage(repo, request);
+            } catch (e) {
+                if (e instanceof BranchCursorError) throw e;
+                throw readError(e);
+            }
+        },
+
         async readBranchHead(repo, branch) {
             try {
                 return await readBranchHead(call, repo, branch);
@@ -244,6 +283,14 @@ export function createGitHubAppClient(
         async readFileAtBranchTip(repo, branch, path) {
             try {
                 return await readRepoFileAtBranchTip(call, repo, branch, path);
+            } catch (e) {
+                throw readError(e);
+            }
+        },
+
+        async listRepoSkills(repo, branch, signal) {
+            try {
+                return await readRepoSkills(call, repo, branch, signal ? { signal } : {});
             } catch (e) {
                 throw readError(e);
             }

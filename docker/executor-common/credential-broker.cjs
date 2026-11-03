@@ -170,9 +170,10 @@ async function ask(deps, pair, key, remainingMs) {
 /** The credential for a key: the cached one while it has more than the skew left, else a renewed one. */
 async function obtain(deps, key) {
     const { env } = deps;
-    // Read on every call: an adopting claim rotates the lease under a container whose env stays as it was.
+    // Read on every call and on every try: an adopting claim rotates the lease under a container whose env stays
+    // as it was, and a try made under the superseded lease is answered pending until the relayed pair is read.
     if (!env.FACTORY_STATS_URL) return fail(deps, 'no_pair');
-    const pair = await deps.pair(env);
+    let pair = await deps.pair(env);
     if (!pair.jobId || !pair.leaseToken) return fail(deps, 'no_pair');
     const cached = readEntry(deps, pair, key);
     if (cached) {
@@ -182,7 +183,14 @@ async function obtain(deps, key) {
     // A helper with its own wall-clock budget (BEL-61) passes the part it has left, never a fresh one.
     const deadline = deps.now() + (deps.deadlineMs ?? DEADLINE_MS);
     let backoff = BACKOFF_MS;
+    let tried = false;
     while (deps.now() < deadline) {
+        if (tried) {
+            pair = await deps.pair(env);
+            if (!pair.jobId || !pair.leaseToken) return fail(deps, 'no_pair');
+            if (deps.now() >= deadline) break;
+        }
+        tried = true;
         const answer = await ask(deps, pair, key, deadline - deps.now());
         if (answer.credential) {
             const { token, expiresAt, scopes, resource } = answer.credential;

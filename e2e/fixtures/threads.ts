@@ -110,6 +110,8 @@ export interface ThreadJob {
     rootJobId: string;
     workflowNode: string | null;
     workflowName: string | null;
+    /** The branch the thread bases on; null means the repository default. */
+    baseBranch: string | null;
     /** The task's stored execution mode (issue 543): workflow on every row of a named workflow's thread. */
     mode: JobMode;
     doneAt: string | null;
@@ -246,6 +248,7 @@ function run(fields: RunFields): ThreadJob {
         rootJobId: fields.id,
         workflowNode: null,
         workflowName: null,
+        baseBranch: null,
         mode: fields.workflowName != null ? WORKFLOW_MODE : OBJECTIVE_MODE,
         doneAt: null,
         cancelRequestedAt: null,

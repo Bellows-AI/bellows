@@ -7,6 +7,7 @@ import { UUID } from '../identifiers.js';
 import type { ResolveResult } from '../integrations/credential-resolver.js';
 import type { IntegrationRuntime } from '../integrations/integration-recovery.js';
 import { contextOfExecution } from '../integrations/trusted-context.js';
+import { leasePending } from './helpers.js';
 
 /**
  * `POST /api/jobs/:id/credentials/connections/:connectionId` (docs/connections.md): a running attempt's
@@ -70,6 +71,10 @@ const unavailable = (reply: FastifyReply, extra: Record<string, unknown> = {}) =
 
 const refused = (reply: FastifyReply, message: string, extra: Record<string, unknown> = {}) =>
     reply.code(HTTP_FORBIDDEN).send({ error: message, code: ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ...extra });
+
+/** The reply to a refused check: transient while the task still runs, else the terminal 403. */
+const refusedBy = (reply: FastifyReply, check: { pending: boolean }) =>
+    check.pending ? leasePending(reply) : refused(reply, ATTEMPT_REFUSED);
 
 /** The closed HTTP answer of a resolver outcome. */
 function answerOutcome(reply: FastifyReply, outcome: IntegrationOutcome) {
@@ -189,6 +194,7 @@ export function connectionCredentialRoutes({
         // The exchange took time: the attempt must still be the live one before the token leaves.
         const still = await check(pair);
         if (still === null) return unavailable(reply);
+        if (!still.ok && still.pending) return leasePending(reply);
         if (!sameAttempt(attempt, still)) return refused(reply, ATTEMPT_REFUSED);
         const { credential, resource, lifecycle } = resolved;
         return reply.send({
@@ -212,7 +218,7 @@ export function connectionCredentialRoutes({
             request.log.warn({ jobId: pair.jobId }, 'connection credential lease check failed');
             return unavailable(reply);
         }
-        if (!attempt.ok) return refused(reply, ATTEMPT_REFUSED);
+        if (!attempt.ok) return refusedBy(reply, attempt);
         // The deadline bounds the resolve; a client that went away stops it too.
         const closed = untilClosed(reply);
         try {
@@ -241,7 +247,7 @@ export function connectionCredentialRoutes({
                 request.log.warn({ jobId: pair.jobId }, 'connection list lease check failed');
                 return unavailable(reply);
             }
-            if (!attempt.ok) return refused(reply, ATTEMPT_REFUSED);
+            if (!attempt.ok) return refusedBy(reply, attempt);
             try {
                 return reply.send({ connections: await listedFor(source, attempt) });
             } catch {

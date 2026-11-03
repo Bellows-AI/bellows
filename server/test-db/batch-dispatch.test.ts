@@ -1648,6 +1648,25 @@ describe.skipIf(!enabled)('the claim carries the batch target branch', () => {
         expect(looseClaim).toMatchObject({ id: loose.id });
         expect(looseClaim).not.toHaveProperty('baseBranch');
     });
+
+    it('get and thread report the batch target branch, the one the claim bases on', async () => {
+        const readJobs = createJobStore({ sql, orgId: CLAIM_ORG });
+        const readBatches = createBatchStore({
+            sql,
+            orgId: CLAIM_ORG,
+            stop: (id, by) => readJobs.stop(id, by),
+            close: (id, by) => readJobs.markDone(id, by),
+        });
+        const sandbox = batchPlan('Sandbox reads', [{ key: 'one', tasks: [task('a')] }], {
+            targets: [{ key: 'web', repo: BATCH_REPO, branch: 'release/1' }],
+        });
+        const id = await startBatch(readBatches, sandbox, ALICE);
+        await readBatches.reconcile(id);
+        const root = (await readBatches.get(id))!.tasks[0]!.rootJobId!;
+
+        expect((await readJobs.get(root))?.baseBranch).toBe('release/1');
+        expect((await readJobs.thread(root))?.map((job) => job.baseBranch)).toEqual(['release/1']);
+    });
 });
 
 describe.skipIf(!enabled)('batch report usage', () => {

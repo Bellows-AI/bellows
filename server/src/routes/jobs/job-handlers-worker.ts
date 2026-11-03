@@ -3,12 +3,21 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { refusedAsUnusable } from './executor-usable.js';
-import { type FairBoardScanner, boardsFor, executorsFor, reposFor, storeFor, workflowsFor } from './job-context.js';
+import {
+    type FairBoardScanner,
+    boardsFor,
+    branchHeadFor,
+    executorsFor,
+    reposFor,
+    storeFor,
+    workflowsFor,
+} from './job-context.js';
 import { taskRefsOf } from './job-task-refs.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { createIdempotencyOf, guardKeyed, sendQueued } from './job-idempotency.js';
 import {
     type ResolvedWorkflow,
+    validateBaseBranchField,
     validateCommandField,
     validateExecutorField,
     validateExecutorScopeField,
@@ -83,6 +92,75 @@ async function refusedAsUntracked(
     if (verdict.ok) return false;
     bad(reply, verdict.code, verdict.message, verdict.status);
     return true;
+}
+
+const HTTP_UNPROCESSABLE = 422;
+/** The wall-clock bound on the whole create-time branch check; past it the read is inconclusive. */
+const BASE_BRANCH_CHECK_DEADLINE_MS = 5000;
+
+/**
+ * Whether the create's `baseBranch` is confirmed absent on the remote: only a branch read that
+ * answers `null` (GitHub's 404) refuses, with `422 UNKNOWN_BASE_BRANCH`. A throw, a timeout past
+ * the deadline or a board that cannot read GitHub is inconclusive and accepts — the claim-time
+ * `missing_base_branch` is the backstop. True once the refusal has landed on `reply`.
+ */
+async function refusedAsUnknownBranch(
+    orgs: OrgRegistry,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    opts: { repo: string | null; baseBranch: string | null }
+): Promise<boolean> {
+    const { repo, baseBranch } = opts;
+    if (repo === null || baseBranch === null) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<'deadline'>((resolve) => {
+        timer = setTimeout(() => resolve('deadline'), BASE_BRANCH_CHECK_DEADLINE_MS);
+    });
+    try {
+        const read = (async () => {
+            const branchHead = await branchHeadFor(orgs, request);
+            return branchHead ? await branchHead(repo, baseBranch) : 'unchecked';
+        })();
+        // A read that loses the race may reject later: swallow it so it is never unhandled.
+        read.catch(() => undefined);
+        const head = await Promise.race([read, deadline]);
+        if (head !== null) return false;
+    } catch (e) {
+        request.log.warn({ err: e }, 'base branch check inconclusive; accepting');
+        return false;
+    } finally {
+        clearTimeout(timer);
+    }
+    bad(
+        reply,
+        ERROR_CODES.UNKNOWN_BASE_BRANCH,
+        `"${repo}" has no branch ${baseBranch} the board can read`,
+        HTTP_UNPROCESSABLE
+    );
+    return true;
+}
+
+/**
+ * The create's target: the repository must be tracked, and the body's `baseBranch` well-formed and not
+ * confirmed absent. Resolves to the validated branch (null when none was asked for), or undefined once a
+ * refusal — `400 BAD_BASE_BRANCH` for the shape, `422 UNKNOWN_BASE_BRANCH` for a confirmed-absent
+ * branch — has landed on `reply`.
+ */
+async function checkedTarget(
+    orgs: OrgRegistry,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    opts: { repo: string | null; rawBaseBranch: unknown }
+): Promise<string | null | undefined> {
+    const { repo } = opts;
+    if (await refusedAsUntracked(request, reply, { repos: await reposFor(orgs, request), repo })) return undefined;
+    const result = validateBaseBranchField(opts.rawBaseBranch);
+    if (!result.ok) {
+        bad(reply, ERROR_CODES.BAD_BASE_BRANCH, result.message);
+        return undefined;
+    }
+    if (await refusedAsUnknownBranch(orgs, request, reply, { repo, baseBranch: result.value })) return undefined;
+    return result.value;
 }
 
 /**
@@ -160,7 +238,8 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     ) {
         return reply;
     }
-    if (await refusedAsUntracked(request, reply, { repos: await reposFor(orgs, request), repo })) return reply;
+    const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
+    if (baseBranch === undefined) return reply;
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
         fields,
@@ -190,6 +269,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 executor,
                 executorScope,
                 skills,
+                baseBranch,
                 ...refs,
                 ...(workflow ? { workflow } : {}),
                 idempotency: idempotency.value,

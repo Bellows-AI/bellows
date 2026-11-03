@@ -84,6 +84,11 @@ export interface JobActionStore {
              */
             skills?: readonly string[];
             /**
+             * The branch the task bases its checkout and PR on; null or absent is the remote default.
+             * Stored on the ROOT row only: every later row of the thread reads it from there at claim.
+             */
+            baseBranch?: string | null;
+            /**
              * The connections (054, 094) the task names, bound on the ROOT in the create
              * transaction: each must be bindable by the author or the create is refused with
              * `ConnectionRefusedError`. A bindable provider the author has exactly one personal
@@ -372,7 +377,7 @@ export async function insertJobInTx(
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
-                execution_user_id, skills
+                execution_user_id, skills, base_branch
             )
             select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
@@ -382,7 +387,8 @@ export async function insertJobInTx(
                    ${jsonOrNull(sql, target.workflow?.params)},
                    ${mode},
                    ${createdBy},
-                   ${sql.array([...(target.skills ?? [])])}::text[]
+                   ${sql.array([...(target.skills ?? [])])}::text[],
+                   ${target.baseBranch ?? null}
             from (select gen_random_uuid() as x) s
             returning id
         `;

@@ -116,6 +116,23 @@ describe('bellows job create', () => {
         expect(calls[1]!.body).toEqual({ command: 'npm test' });
     });
 
+    it('job create --base-branch sends baseBranch', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        const code = await run(['job', 'create', '--base-branch', 'release/1.2', '--', 'npm test'], io);
+
+        expect(code).toBe(0);
+        expect(calls[0]!.body).toEqual({ command: 'npm test', baseBranch: 'release/1.2' });
+    });
+
+    it('omitted --base-branch sends no baseBranch', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        expect(await run(['job', 'create', '--', 'npm test'], io)).toBe(0);
+
+        expect(calls[0]!.body).toEqual({ command: 'npm test' });
+    });
+
     it('sends no scope when the flag is absent — the board defaults to personal', async () => {
         const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
 
@@ -209,6 +226,19 @@ describe('bellows job investigate', () => {
 
         expect(code).toBe(0);
         expect(out.join('')).toMatch(/scope:\s+org/);
+    });
+
+    it('job investigate renders base: <branch> and base: default', async () => {
+        for (const [baseBranch, expected] of [
+            ['release/1.2', /base:\s+release\/1\.2/],
+            [null, /base:\s+default/],
+        ] as const) {
+            const detail = job({ baseBranch });
+            const { out, io } = harness(ENV, (index) => (index === 0 ? json(detail) : json({ jobs: [detail] })));
+
+            expect(await run(['job', 'investigate', 'job-1'], io)).toBe(0);
+            expect(out.join('')).toMatch(expected);
+        }
     });
 
     it('prints a failure cause beside its kind, the half a batch recovery decides on', async () => {

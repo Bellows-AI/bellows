@@ -212,4 +212,19 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         expect(second.masterPrompt).toBe(first.masterPrompt);
         expect(second.masterPrompt).toContain('- Selected skills: github');
     });
+
+    it('a claimed job whose command holds a /name token gets the load-skill line, one without does not', async () => {
+        const store = storeWithEnv(PLAIN_ENV);
+        const withToken = await store.create('/fix the flaky test', null, { repo: null, executor: null });
+        if (typeof withToken === 'string') throw new Error(withToken);
+        const claimed = await claim(store);
+        expect(claimed.id).toBe(withToken.id);
+        expect(claimed.masterPrompt).toContain('A `/name` in the task names a skill');
+
+        const without = await store.create('fix the flaky test', null, { repo: null, executor: null });
+        if (typeof without === 'string') throw new Error(without);
+        const second = await claim(store);
+        expect(second.id).toBe(without.id);
+        expect(second.masterPrompt).not.toContain('A `/name` in the task names a skill');
+    });
 });

@@ -10,7 +10,8 @@ codes, query parameters and error codes are read there, never restated here.
 | Personal and org access tokens | `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts` |
 | Liveness and readiness probes | `server/src/routes/health.ts` | `server/test/routes.health.test.ts` |
 | Release version (`/api/version`, open) | `server/src/routes/version.ts` | `server/test/routes.version.test.ts` |
-| Skill discovery (`GET /api/skills`; never the instructions) | `server/src/routes/skills.ts` | `server/test/skills.test.ts` |
+| Skill discovery (`GET /api/skills`; never the instructions) and the repo slash-menu list (`GET /api/repos/:owner/:name/skills?branch=`: built-ins + `.claude/skills` at the tip; an unconfirmed repo read is `repoError`) | `server/src/routes/skills.ts`, `server/src/github/skill-read.ts` | `server/test/skills.test.ts`, `server/test/routes.repo-skills.test.ts`, `server/test/github.skill-read.test.ts` |
+| `baseBranch` on `POST /api/jobs` (`BAD_BASE_BRANCH` 400; `UNKNOWN_BASE_BRANCH` 422 only on a confirmed 404, an unconfirmed read accepts) | `server/src/routes/jobs/job-handlers-worker.ts` | `server/test/routes.jobs-base-branch.test.ts` |
 | Dashboard payload (`/api/stats`) | `server/src/routes/stats.ts`, `core/src/types.ts` (`StatsUsage`) | `server/test/routes.stats.get.test.ts`, `server/test/routes.stats.scope.test.ts` |
 | OTLP ingest, `/api/sessions/branch` | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |
 | Prometheus scrape (`GET /api/metrics`, worker credential only) | `server/src/routes/prometheus.ts` | `server/test/routes.prometheus.test.ts` |
@@ -31,6 +32,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Runner credentials and operation receipts ([connections.md](connections.md)) | `server/src/routes/github-credential.ts`, `server/src/routes/connection-credential.ts`, `server/src/routes/operation-receipts.ts` | `server/test/routes.github-credential.test.ts`, `server/test/routes.connection-credential.test.ts`, `server/test/routes.operation-receipts.test.ts` |
 | Batches (`/api/batches`; [batches.md](batches.md)) | `server/src/routes/batches/batches.ts`, `server/src/routes/batches/batch-handlers.ts` | `server/test/routes.batches.test.ts` |
 | Repo picker (`/api/repos`) | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
+| Branch list and prefix search (`GET /api/repos/:owner/:name/branches?q=&cursor=`; `400 BAD_BRANCH_QUERY`/`BAD_BRANCH_CURSOR`, `503 BRANCHES_UNAVAILABLE` on any unconfirmed read) | `server/src/routes/repos.ts`, `server/src/github/app-client.ts` | `server/test/routes.repos.test.ts`, `server/test/github.app-client.test.ts` |
 | Runner env in three scopes | `server/src/routes/env.ts` | `server/test/routes.env.test.ts` |
 | Workspace payload, personal executors | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
 | Organization executor profiles, member roster | `server/src/routes/org-executors.ts`, `server/src/routes/org-members.ts` | `server/test/routes.org-executors.test.ts`, `server/test/routes.org-members.test.ts` |

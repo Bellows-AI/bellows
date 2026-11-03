@@ -20,6 +20,7 @@ export const SELECTION_OPTIONS = {
     repo: { type: 'string' },
     executor: { type: 'string' },
     'executor-scope': { type: 'string' },
+    'base-branch': { type: 'string' },
     skill: { type: 'string', multiple: true },
     connection: { type: 'string', multiple: true },
 } as const;
@@ -28,6 +29,7 @@ export function selectionOf(values: {
     repo?: string | undefined;
     executor?: string | undefined;
     'executor-scope'?: string | undefined;
+    'base-branch'?: string | undefined;
     skill?: string[] | undefined;
     connection?: string[] | undefined;
 }): PreflightSelection {
@@ -35,6 +37,7 @@ export function selectionOf(values: {
         repo: values.repo,
         executor: values.executor,
         executorScope: parseExecutorScope(values['executor-scope']),
+        baseBranch: values['base-branch'],
         skills: values.skill,
         // The board authorizes each against the author; a connection that is not theirs is its 403.
         connections: values.connection,

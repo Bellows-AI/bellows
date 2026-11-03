@@ -170,6 +170,8 @@ export interface Job {
     repo: string | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */
     executor: string | null;
+    /** The branch the task was started from, on detail reads; null or absent is the default branch. */
+    baseBranch?: string | null;
     /**
      * The workflow node this run walks, when the task runs a workflow — the graph position, and
      * what the task view labels the turn with. Null on every other row.

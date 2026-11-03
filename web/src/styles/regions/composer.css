@@ -275,6 +275,82 @@
         white-space: nowrap;
     }
 
+    /* The base-branch chip: the shared trigger's frame around a glyph button and the search field.
+       The field holds only the search; the chosen branch is its placeholder, shown in full ink. */
+    .composer-branch {
+        cursor: text;
+    }
+
+    .composer-branch:focus-within {
+        background: var(--accent-wash);
+    }
+
+    .composer-branch-toggle {
+        align-items: center;
+        background: none;
+        border: none;
+        color: inherit;
+        cursor: pointer;
+        display: inline-flex;
+        flex: none;
+        /* Fills the chip, so the touch target is the chip's height, not the glyph's. */
+        align-self: stretch;
+        padding: 0;
+    }
+
+    .composer-branch-input {
+        background: transparent;
+        border: none;
+        color: inherit;
+        font: inherit;
+        /* The global focus ring stays: it is the keyboard cue. */
+        align-self: stretch;
+        min-width: 0;
+        padding: 0;
+        width: 12ch;
+    }
+
+    .composer-branch-input::placeholder {
+        color: var(--ink);
+        opacity: 1;
+    }
+
+    /* Load more and Retry act on the list; they are not branches, so they read as actions. */
+    .composer-branch-action {
+        color: var(--accent);
+        font-weight: 600;
+    }
+
+    .composer-note.composer-branch-error {
+        color: var(--lamp-stop);
+    }
+
+    /* The prompt's `/` menu: the shared popover under the textarea, one row per skill. */
+    .composer-skill-menu {
+        max-width: min(480px, calc(100vw - 16px));
+    }
+
+    .composer-skill-option {
+        flex-wrap: wrap;
+    }
+
+    .composer-skill-name {
+        font-family: var(--font-mono);
+        font-weight: 600;
+    }
+
+    .composer-skill-description {
+        color: var(--ink-muted);
+        flex: 1;
+        font-size: 13px;
+        min-width: 0;
+    }
+
+    .composer-skill-source {
+        color: var(--ink-muted);
+        font-size: 12px;
+    }
+
     /* What a field is, said at the top of its open listbox; not an option. */
     .composer-note {
         color: var(--ink-muted);
@@ -493,6 +569,12 @@
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
+        }
+
+        /* The base-branch chip's two controls fill the chip, so each one is a full-height target. */
+        .composer-branch-toggle,
+        .composer-branch-input {
+            min-height: 44px;
         }
     }
 }
