@@ -12,6 +12,7 @@ Who a caller is, and which credential each route accepts.
 | Accounts, sessions, memberships, roles (SQL) | `server/src/auth/store.ts`, `server/migrations/010_auth.sql` | `server/test-db/auth-store.test.ts` |
 | Personal (`fat_`) and org (`oat_`) access tokens | `server/src/auth/access-token.ts`, `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts`, `server/test-db/auth-store.access-tokens.test.ts` |
 | MCP OAuth storage: clients (CIMD, DCR), codes, grant families, `mat_`/`mrt_` tokens, consent transaction | `server/src/auth/oauth-store.ts`, `server/src/auth/access-token.ts`, `server/migrations/122_oauth.sql` | `server/test-db/auth-store.oauth-codes.test.ts`, `server/test-db/auth-store.oauth-tokens.test.ts`, `server/test-db/auth-store.oauth-consent.test.ts`, `server/test-db/auth-store.oauth-concurrency.test.ts` |
+| MCP OAuth authorization server (only with `MCP_ENABLED` in github mode): discovery metadata, `/api/oauth/authorize`, `/token`, `/revoke`, the consent transaction API (`/api/oauth/consent/*`), the redirect-URI rule, the expiry sweep | `server/src/routes/oauth*.ts`, `server/src/oauth/redirect-match.ts`, `server/src/auth/oauth-sweep.ts` | `server/test/routes.oauth-metadata.test.ts`, `server/test/oauth.redirect-match.test.ts`, `server/test-db/routes.oauth-*.test.ts`, `server/test-db/oauth.sdk-flow.test.ts`, `server/test-db/auth-store.oauth-purge.test.ts` |
 | Route classes (read / write per method + pattern), `Caller.scopes`, the bridged-caller binding, the `WWW-Authenticate` challenge | `server/src/auth/route-class.ts`, `server/src/auth/bridge-binding.ts`, `server/src/auth/oauth-challenge.ts`, `server/src/auth/plugin.ts` (`scopeAllows`) | `server/test/auth.enforcement.test.ts` ("has a row for every route"), `server/test/auth.route-class.test.ts` |
 | Roster reads and role writes | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
 | Commerce plan push: `commerce` requirement, bearer `COMMERCE_TOKEN`, enforced in both `AUTH_MODE`s (`enforceCommerce`; [commerce.md](commerce.md)) | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/routes.commerce.test.ts` |
@@ -43,6 +44,19 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   is refused; credential, secret, connection and membership routes are class `none`, refused whatever the scopes; a
   bound caller on a non-human route is refused), and no header, query or body can create one. A new human route needs a `ROUTE_CLASSES` row. The one exception to "human routes only" is `BRIDGE_OPEN_ROUTES` (`bridgeOpen`: `GET /api/auth/me`, `GET /api/version`), which the `whoami` tool reads; every other open route is refused.
   `server/src/auth/bridge-binding.ts`, `server/test/auth.enforcement.test.ts`, `server/test/auth.route-class.test.ts`, `server/test/auth.me-bridged.test.ts`.
+- **The OAuth server is S256-only and public-client-only.** `plain` or a missing challenge is refused at authorize
+  (the store has no method column); the token endpoint takes a form or JSON body, and the form parser exists in that
+  one plugin scope so no other route accepts a form post. A redirect URI matches a registered one exactly, except an
+  RFC 8252 section 7.3 loopback URI (`http` on `127.0.0.1`, `[::1]` or `localhost`) where only the port may differ;
+  that portless registration is a deliberate non-conformance with exact matching. An unknown client or redirect is
+  shown, never redirected. `server/src/oauth/redirect-match.ts`, `server/test/oauth.redirect-match.test.ts`.
+- **Consent is the cookie session and nothing else.** Approve and deny need the signed-in session, the transaction id
+  and its CSRF value (carried once, in the fragment of the redirect to `/oauth/consent`), a JSON body, and read nothing
+  else: scopes, redirect, resource and client were frozen at authorize, user and organization come from the live session.
+  A `mat_` or `fat_` never approves its own grant. `server/test-db/routes.oauth-consent.test.ts`.
+- **A refresh narrows against the presented token's scopes**, not the family's: once narrowed, a grant cannot widen
+  back. A store call that throws on the token, revoke or authorize path is `503`, never `invalid_grant`.
+  `server/test-db/routes.oauth-token.test.ts`.
 - **An MCP token is never logged.** Redaction is by value, so the guarantee is that no log line carries the
   `Authorization` header. `server/test/auth.enforcement.test.ts`.
 - **`AUTH_MODE=none` synthesises a caller rather than skipping the hook**; it refuses a non-loopback `HOST`

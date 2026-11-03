@@ -108,6 +108,12 @@ export interface OAuthStore {
     revoke(input: { token: string; clientId: string }): Promise<void>;
     revokeFamily(familyId: string): Promise<void>;
     findAccessToken(tokenHash: Buffer): Promise<McpCaller | null>;
+    /**
+     * Deletes what can no longer be used, a day after it expired (clock skew between replicas, and a replay of a spent
+     * code stays recognisable until its family goes): unspent codes, consent transactions, and grant families with
+     * their tokens and spent codes. Every row is judged by its own stored expiry, never by a failed read.
+     */
+    purgeExpired(): Promise<{ codes: number; consents: number; families: number }>;
 
     createConsent(input: {
         sessionHash: Buffer;
@@ -139,6 +145,7 @@ const DAY = 86400;
 const CODE_TTL_SECONDS = 60;
 const CONSENT_TTL_SECONDS = 600;
 const UNUSED_CLIENT_DAYS = 30;
+const PURGE_GRACE_SECONDS = DAY;
 const SECRET_BYTES = 32;
 const MS_PER_SECOND = 1000;
 const REFRESH_DAYS = 30;
@@ -465,7 +472,7 @@ const consentOps = (ctx: Ctx): ConsentOps => ({
 
 type GrantOps = Pick<
     OAuthStore,
-    'createCode' | 'consumeCode' | 'refresh' | 'revoke' | 'revokeFamily' | 'findAccessToken'
+    'createCode' | 'consumeCode' | 'refresh' | 'revoke' | 'revokeFamily' | 'findAccessToken' | 'purgeExpired'
 >;
 
 type AccessRow = CallerRow & { scopes: string[]; client_id: string; resource: string; family_id: string };
@@ -524,6 +531,22 @@ const grantOps = (ctx: Ctx): GrantOps => ({
         const at = ctx.now();
         await ctx.sql.begin(async (tx) => {
             if (await lockFamily(tx, familyId)) await revokeLocked(tx, familyId, at);
+        });
+    },
+
+    async purgeExpired() {
+        await ctx.gate();
+        const cutoff = plus(ctx.now(), -PURGE_GRACE_SECONDS);
+        return ctx.sql.begin(async (tx) => {
+            // A spent code belongs to a family and goes with it (on delete cascade); only the unspent ones are here.
+            const codes = await tx`
+                delete from oauth_authorization_code where family_id is null and expires_at < ${cutoff} returning 1
+            `;
+            const consents = await tx`
+                delete from oauth_consent_transaction where expires_at < ${cutoff} returning 1
+            `;
+            const families = await tx`delete from oauth_grant_family where expires_at < ${cutoff} returning 1`;
+            return { codes: codes.length, consents: consents.length, families: families.length };
         });
     },
 

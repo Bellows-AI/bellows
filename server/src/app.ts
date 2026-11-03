@@ -6,6 +6,7 @@ import type { OAuthStore } from './auth/oauth-store.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
 import { mcpRoutes } from './mcp/routes.js';
+import { oauthRoutes } from './routes/oauth.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
@@ -113,8 +114,8 @@ export interface AppDeps {
     commercePlanWriter?: CommercePlanWriter | undefined;
     /** The delivery channels a subscription may name; absent means none, so every create is UNKNOWN_CONNECTOR. */
     notificationConnectors?: ConnectorRegistry | undefined;
-    /** Resolves an MCP access token; the MCP endpoint in github mode needs it (absent, `/api/mcp` is not registered). */
-    oauth?: Pick<OAuthStore, 'findAccessToken'> | undefined;
+    /** The inbound OAuth store: resolves an MCP access token and backs the authorization server; github mode with MCP on needs it. */
+    oauth?: OAuthStore | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -170,10 +171,18 @@ export function csp(dev: boolean): string {
  */
 async function registerMcp(
     app: FastifyInstance,
-    { config, oauth, version, metrics }: Pick<AppDeps, 'config' | 'oauth' | 'metrics'> & { version: string }
+    {
+        config,
+        auth,
+        oauth,
+        version,
+        metrics,
+    }: Pick<AppDeps, 'config' | 'oauth' | 'metrics'> & { auth: AuthStore; version: string }
 ): Promise<void> {
     if (!config.mcp.enabled) return;
     if (config.auth.mode === 'github' && !oauth) throw new Error('MCP_ENABLED needs the OAuth store');
+    // Discovery, authorize, consent, token and revoke exist only where there are accounts to authorize.
+    if (config.auth.mode === 'github' && oauth) await app.register(oauthRoutes({ config, auth, oauth }));
     await app.register(mcpRoutes, { version, origin: new URL(config.mcp.resource).origin, metrics });
 }
 
@@ -328,7 +337,7 @@ export async function buildApp({
         if (config.webhookSecret) {
             await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
-        await registerMcp(app, { config, oauth, version, metrics });
+        await registerMcp(app, { config, auth, oauth, version, metrics });
     }
     await app.register(skillRoutes(skillCatalog, orgs));
     await app.register(statsRoutes(config, orgs, auth, now));
@@ -384,7 +393,8 @@ export async function buildApp({
         const { default: fastifyStatic } = await import('@fastify/static');
         await app.register(fastifyStatic, { root: config.webRoot });
         app.setNotFoundHandler(async (request, reply) => {
-            if (request.url.startsWith('/api/')) return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
+            if (request.url.startsWith('/api/') || request.url.startsWith('/.well-known/'))
+                return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
             return reply.sendFile('index.html');
         });
     }

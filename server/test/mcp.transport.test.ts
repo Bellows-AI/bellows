@@ -181,7 +181,7 @@ async function boot(
             orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
             store: telemetryStoreStub(),
             auth: store,
-            oauth,
+            oauth: oauth as OAuthStore,
         })
     );
     await app.listen({ port, host: LOCALHOST });

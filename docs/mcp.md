@@ -10,6 +10,7 @@ The board's MCP endpoint (`POST /api/mcp`): a stateless Streamable HTTP server w
 | Result mapping: 2xx data, board refusal with its own code, everything else `inconclusive` | `server/src/mcp/result.ts` | `server/test/mcp.result-mapping.test.ts` |
 | Tool declaration (`defineTool`), annotation presets, the `ToolContext` a tool body gets | `server/src/mcp/tool.ts` | `server/test/mcp.registry.test.ts` |
 | The static tool list, scope check, `confirm`, per-caller cap, metrics, one server per request | `server/src/mcp/registry.ts`, `server/src/mcp/server.ts` | `server/test/mcp.registry.test.ts` |
+| The authorization server a client discovers from the 401 challenge: metadata, authorize, consent, token, revoke ([auth.md](auth.md)) | `server/src/routes/oauth.ts`, `server/src/routes/oauth-http.ts` | `server/test-db/oauth.sdk-flow.test.ts` |
 | Tools, one file each | `server/src/mcp/tools/*.ts` | `server/test/mcp.whoami.test.ts`, `server/test-db/mcp.whoami.test.ts` |
 | Which routes a scoped caller may reach, and which open routes a bridged call may | `server/src/auth/route-class.ts` | `server/test/auth.enforcement.test.ts`, `server/test/auth.me-bridged.test.ts` |
 | `factory_mcp_tool_duration_seconds{tool,outcome}` | `server/src/metrics.ts` | `server/test/mcp.whoami.test.ts` |
