@@ -90,7 +90,7 @@ const BATCH_MONITOR: Shot = batchShot('batches', 'monitor', async (page) => {
 const BATCHES_EMPTY: Shot = batchShot('batches', 'empty', async (page) => {
     await page.route(/\/api\/batches(\?|$)/, (route) => route.fulfill({ status: 200, json: { batches: [] } }));
     await page.goto('/batches');
-    return page.getByRole('heading', { level: 1, name: 'Batches' });
+    return page.getByText('No batches yet.');
 });
 
 /** Settled pages, both themes. The anonymous entry pages need no sign-in; the signed-in account does. */
@@ -111,20 +111,17 @@ interface Held {
     route: string;
     path: string;
     read: RegExp;
-    /** False where the page shows a refused read as plain text, not an alert: a defect BEL-241 owns. The
-     *  cell still holds those pages to the fit contract in the error state. */
-    announces: boolean;
 }
 
 const HELD: readonly Held[] = [
-    { route: 'dashboard', path: '/', read: /\/api\/stats/, announces: false },
-    { route: 'inbox', path: '/tasks', read: /\/api\/tasks/, announces: true },
-    { route: 'batches', path: '/batches', read: /\/api\/batches(\?|$)/, announces: true },
-    { route: 'settings-repos', path: '/settings/repos', read: /\/api\/repos/, announces: false },
-    { route: 'settings-workspace', path: '/settings/workspace', read: /\/api\/workspace(\?|$)/, announces: false },
-    { route: 'settings-executors', path: '/settings/executors', read: /\/api\/workspace\/executors/, announces: false },
-    { route: 'settings-integrations', path: '/settings/integrations', read: /\/api\/connections/, announces: true },
-    { route: 'settings-organization', path: '/settings/organization', read: /\/api\/env/, announces: true },
+    { route: 'dashboard', path: '/', read: /\/api\/stats/ },
+    { route: 'inbox', path: '/tasks', read: /\/api\/tasks/ },
+    { route: 'batches', path: '/batches', read: /\/api\/batches(\?|$)/ },
+    { route: 'settings-repos', path: '/settings/repos', read: /\/api\/repos/ },
+    { route: 'settings-workspace', path: '/settings/workspace', read: /\/api\/env/ },
+    { route: 'settings-executors', path: '/settings/executors', read: /\/api\/workspace(\?|$)/ },
+    { route: 'settings-integrations', path: '/settings/integrations', read: /\/api\/connections/ },
+    { route: 'settings-organization', path: '/settings/organization', read: /\/api\/env/ },
 ];
 
 for (const theme of THEMES) {
@@ -170,13 +167,9 @@ for (const theme of THEMES) {
                         route.fulfill({ status: 500, json: { error: 'Matrix refusal' } })
                     );
                     await page.goto(held.path);
-                    if (held.announces) {
-                        await expect(page.getByRole('alert').first(), 'a refused read is announced').toBeVisible({
-                            timeout: SLOW,
-                        });
-                    } else {
-                        await expect(page.locator('main')).toBeVisible({ timeout: SLOW });
-                    }
+                    await expect(page.getByRole('alert').first(), 'a refused read is announced').toBeVisible({
+                        timeout: SLOW,
+                    });
                     await assertFits(page, width);
                 }
                 expect(unexpected(problems)).toEqual([]);

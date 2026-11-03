@@ -317,6 +317,7 @@ describe('the shared state model', () => {
     it('renders one error region and no metric shells when a read fails with no data', () => {
         const html = render(null, { error: 'connection refused' });
         expect(html).toContain('connection refused');
+        expect(html).toMatch(/role="alert"[^>]*>connection refused/);
         expect(html).not.toContain('usage-summary');
         expect(html).not.toContain('class="card"');
         // The Refresh control is gone; the error copy must not instruct the reader to use it.

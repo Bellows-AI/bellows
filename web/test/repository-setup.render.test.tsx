@@ -67,7 +67,12 @@ describe('RepositoryListNotices', () => {
     });
 
     it('carries the list posture (loading, or a hard failure) when there is one', () => {
-        expect(notices({ listNotice: 'Loading repositories…' })).toContain('Loading repositories…');
+        expect(notices({ listNotice: { state: 'loading', text: 'Loading repositories…' } })).toMatch(
+            /role="status">Loading repositories…/
+        );
+        expect(notices({ listNotice: { state: 'error', text: 'Could not reach GitHub' } })).toMatch(
+            /role="alert">Could not reach GitHub/
+        );
         expect(notices()).not.toContain('class="status"');
     });
 

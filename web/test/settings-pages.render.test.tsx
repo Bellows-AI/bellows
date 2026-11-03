@@ -256,6 +256,13 @@ describe('Settings workspace page', () => {
         expect(html).toContain('My workspace');
     });
 
+    it('announces a failed environment read as an alert', () => {
+        const html = render('/settings/workspace', {
+            env: { loading: false, error: 'The environment request failed' },
+        });
+        expect(html).toMatch(/<p class="state-note error" role="alert">The environment request failed/);
+    });
+
     it('renders the personal environment editor when its store answers', () => {
         const html = render('/settings/workspace', {
             workspace: {
@@ -403,6 +410,7 @@ describe('Settings executors page', () => {
         expect(html).toContain('The workspace request failed');
         expect(html).not.toContain('No personal executors configured');
         expect(html).not.toContain('Add executor');
+        expect(html).toMatch(/<p class="state-note error" role="alert">The workspace request failed/);
     });
 
     it('fetches nothing on mount — the config read belongs to the dialog open, not the page', () => {
@@ -492,6 +500,7 @@ describe('Settings repositories page', () => {
         const html = render('/settings/repos', { repos: { loading: false, error: 'Request failed (503)' } });
         expect(html).toContain('Request failed (503)');
         expect(html).not.toContain('not installed on any repositories');
+        expect(html).toMatch(/<p class="state-note error" role="alert">Could not reach GitHub: Request failed \(503\)/);
     });
 
     it('does not depend on the workspace poll: a failed one is not the repositories page\u2019s error', () => {

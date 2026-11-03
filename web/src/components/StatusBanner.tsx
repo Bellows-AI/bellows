@@ -1,5 +1,6 @@
 import type { FetchState } from '../api/useStats.js';
 import { relativeTime } from '../format.js';
+import { StateNote } from './StateNote.js';
 
 /**
  * The page-level status region — every load, refresh, staleness and error state of the stats
@@ -24,12 +25,12 @@ export function StatusBanner({
 }) {
     if (error) {
         return (
-            <p className="status error">
+            <StateNote state="error">
                 {error}
                 {hasData && lastGoodSelection
                     ? ` — showing the last successful read (${lastGoodSelection}), fetched ${relativeTime(fetchedAt, now)}.`
                     : ' — nothing has rendered yet. Check the telemetry store; the next poll retries automatically.'}
-            </p>
+            </StateNote>
         );
     }
     if (!progress) return null;
