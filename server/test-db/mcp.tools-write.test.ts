@@ -14,7 +14,14 @@ import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
-import { githubAuth, staticRegistry, stubTelemetryClient, telemetryStoreStub, testConfig } from '../test/helpers.js';
+import {
+    githubAuth,
+    signedIn,
+    staticRegistry,
+    stubTelemetryClient,
+    telemetryStoreStub,
+    testConfig,
+} from '../test/helpers.js';
 import { BATCH_REPO, batchPlan, headOf, prTask, rootOf, startBatch } from './batch-fixtures.js';
 import { oauthConnection, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
@@ -104,16 +111,30 @@ async function boot() {
     const orgA = staticRegistry({ config, telemetry: stubTelemetryClient(), repos, jobs, batches });
     const orgB = staticRegistry({ config, telemetry: stubTelemetryClient(), repos, jobs: otherJobs });
     const orgs: OrgRegistry = { ...orgA, for: (id) => (id === OTHER_ORG ? orgB.for(id) : orgA.for(id)) };
+    const auth = createAuthStore({ sql });
     const app = await buildApp({
         config,
         orgs,
         store: telemetryStoreStub(),
-        auth: createAuthStore({ sql }),
+        auth,
         oauth: oauth as OAuthStore,
     });
     closers.push(() => app.close());
     await app.listen({ port, host: LOCALHOST });
-    return { url: new URL(resource), userOf: (who: Who) => people[who].user.id };
+    return {
+        url: new URL(resource),
+        userOf: (who: Who) => people[who].user.id,
+        /** The board's own HTTP route as the member's signed-in session: what the web app calls. */
+        bind: async (who: Who, id: string, body: Record<string, unknown>) => {
+            const response = await app.inject({
+                method: 'POST',
+                url: `/api/jobs/${id}/connections`,
+                headers: { cookie: await signedIn(auth, people[who]), 'content-type': 'application/json' },
+                payload: JSON.stringify(body),
+            });
+            return { status: response.statusCode, body: response.json() as Record<string, unknown> };
+        },
+    };
 }
 
 const call = async (url: URL, who: Who, name: string, args: Record<string, unknown> = {}) => {
@@ -497,9 +518,7 @@ describe.skipIf(!enabled)('the task write tools — database', () => {
         expect(await countJobs()).toBe(before);
         expect(await commandOf(id)).toBeDefined();
 
-        for (const [name, args] of WRITE_TOOLS.filter(
-            ([tool]) => tool !== 'create_task' && tool !== 'answer_question'
-        )) {
+        for (const [name, args] of WRITE_TOOLS.filter(([tool]) => tool !== 'create_task')) {
             const outsider = await call(url, 'bob', name, args(id));
             expect(outsider.isError, name).toBe(true);
             expect(outsider.data, name).toMatchObject({ outcome: 'refused', status: 404 });
@@ -508,7 +527,7 @@ describe.skipIf(!enabled)('the task write tools — database', () => {
     });
 
     it('a task created with a missing integration parks on a requirement; the same user connecting resumes that task, no new one', async () => {
-        const { url, userOf } = await boot();
+        const { url, userOf, bind } = await boot();
         const id = await created(url, 'alice', { skills: ['jira'] });
         const before = await countJobs();
         const requirement = () =>
@@ -522,12 +541,27 @@ describe.skipIf(!enabled)('the task write tools — database', () => {
             expect(claim.id).not.toBe(id);
         }
 
-        const userId = userOf('alice');
-        const connection = await oauthConnection(sql, ORG, userId);
+        const connection = await oauthConnection(sql, ORG, userOf('alice'));
         const [row] = await sql<{ rev: number }[]>`select binding_revision as rev from job where id = ${id}`;
-        expect(
-            await jobs.bindConnection(id, { connectionId: connection.id, bindingRevision: row!.rev }, userId)
-        ).toMatchObject({ ok: true });
+        const body = { connectionId: connection.id, bindingRevision: row!.rev };
+        const stillParked = async () => {
+            expect((await requirement())[0]?.satisfied_at).toBeNull();
+            for (let attempt = 0; attempt < 50; attempt++) {
+                const claim = await jobs.claim(`w-${randomUUID()}`, LEASE_SECONDS);
+                if (!claim) break;
+                expect(claim.id).not.toBe(id);
+            }
+        };
+
+        // Another member of the org, and a member of another org, cannot bind alice's connection to her task.
+        const carol = await bind('carol', id, body);
+        expect(carol.status).toBeGreaterThanOrEqual(400);
+        const bob = await bind('bob', id, body);
+        expect(bob.status).toBe(404);
+        await stillParked();
+
+        const bound = await bind('alice', id, body);
+        expect(bound.status, JSON.stringify(bound.body)).toBe(200);
 
         expect(await requirement()).toMatchObject([{ source: 'create' }]);
         expect((await requirement())[0]?.satisfied_at).not.toBeNull();

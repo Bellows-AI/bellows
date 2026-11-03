@@ -25,19 +25,19 @@ describe('the static registry', () => {
         '%s: its scope agrees with the class of every backing route',
         (_name, tool) => {
             expect(tool.routes.length).toBeGreaterThan(0);
+            let reachesWrite = false;
             for (const [method, pattern] of tool.routes) {
                 const routeClass = classOf(method, pattern);
                 if (routeClass === undefined) {
                     // Only the open identity routes the bridge is allowed through carry no class.
                     expect(bridgeOpen(method, pattern), `${method} ${pattern} has no class`).toBe(true);
-                    expect(tool.scope).toBe('factory:read');
                 } else {
                     expect(routeClass, `${method} ${pattern} is never reachable by a scoped caller`).not.toBe('none');
-                    // A tool that reaches any write route is a write tool; the gate asks for every route's scope too.
-                    if (routeClass === 'write') expect(tool.scope).toBe('factory:write');
+                    if (routeClass === 'write') reachesWrite = true;
                     expect(requiredScopes(tool)).toContain(SCOPE_OF_CLASS[routeClass as 'read' | 'write']);
                 }
             }
+            expect(tool.scope).toBe(reachesWrite ? 'factory:write' : 'factory:read');
         }
     );
 
@@ -163,6 +163,23 @@ describe('the tool wrapper', () => {
         const stray = await handlers.get('undeclared')!({ id: 'a', confirm: true }, ctxOf());
         expect(stray.structuredContent).toMatchObject({ outcome: 'inconclusive' });
         expect(bridge.call).not.toHaveBeenCalled();
+    });
+
+    it('logs the tool, method and declared routes when a tool calls an undeclared route', async () => {
+        const { server, handlers } = capture();
+        const log = { error: vi.fn() };
+        const stray = defineTool({
+            ...probe,
+            name: 'stray',
+            run: (_args, ctx) => ctx.fetch({ method: 'GET', url: '/api/jobs?x=1' }).then(() => probe.run(_args, ctx)),
+        });
+        registerTools(server, callerWith('all'), { ...runtimeOf(okBridge), log }, [stray]);
+        const result = await handlers.get('stray')!({ id: 'a', confirm: true }, ctxOf());
+        expect(result.structuredContent).toMatchObject({ outcome: 'inconclusive' });
+        expect(log.error).toHaveBeenCalledWith(
+            { tool: 'stray', method: 'GET', path: '/api/jobs', declared: ['POST /api/workflows'] },
+            expect.stringContaining('undeclared route')
+        );
     });
 
     it('refuses a caller without the tool scope before the bridge is touched', async () => {

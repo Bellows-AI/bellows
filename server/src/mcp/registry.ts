@@ -52,6 +52,8 @@ export interface ToolRuntime {
     readonly metrics?: McpToolMetrics | undefined;
     readonly now?: () => number;
     readonly active: Map<string, number>;
+    /** Where a tool's programming error is reported; the caller only ever sees an inconclusive result. */
+    readonly log?: { error(fields: object, message: string): void } | undefined;
 }
 
 const CONFIRM_FIELD = z
@@ -139,7 +141,18 @@ async function execute({ tool, args, ctx, caller, runtime, now }: Execution): Pr
         const signal = ctx.mcpReq.signal;
         const fetch = (request: BridgeRequest) => {
             // A tool reaches only the routes it declares, so the scope gate above covers every hop.
-            if (!declares(tool, request)) throw new Error(`${tool.name} called an undeclared route`);
+            if (!declares(tool, request)) {
+                runtime.log?.error(
+                    {
+                        tool: tool.name,
+                        method: request.method,
+                        path: request.url.split('?')[0],
+                        declared: tool.routes.map(([method, pattern]) => `${method} ${pattern}`),
+                    },
+                    'mcp tool called an undeclared route'
+                );
+                throw new Error(`${tool.name} called an undeclared route`);
+            }
             return runtime.bridge.call(caller, request, { signal, deadlineAt });
         };
         const toolCtx: ToolContext = {

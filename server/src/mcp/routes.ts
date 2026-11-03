@@ -82,7 +82,13 @@ export async function mcpRoutes(
     app: FastifyInstance,
     { version, origin, metrics, toolDeadlineMs = TOOL_DEADLINE_MS, buildServer = createBoardMcpServer }: McpRouteDeps
 ): Promise<void> {
-    const tools = { bridge: createBridge(app), deadlineMs: toolDeadlineMs, metrics, active: new Map<string, number>() };
+    const tools = {
+        bridge: createBridge(app),
+        deadlineMs: toolDeadlineMs,
+        metrics,
+        active: new Map<string, number>(),
+        log: app.log,
+    };
     const handler = createMcpHandler(
         (context) => buildServer(version, { era: context.era, caller: callerOfAuthInfo(context.authInfo), tools }),
         { legacy: 'stateless', onerror: (error) => app.log.error(error) }
