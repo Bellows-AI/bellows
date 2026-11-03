@@ -34,6 +34,19 @@ are written next to them and open with
   sends nothing at all while it has no date yet.
 - The sparsest range (Today on the seeded data) renders empty rather than broken.
 
+## Reviewer checklist (v3)
+
+A UI change passes only when each holds; the matrix is `e2e/state-matrix.spec.ts` and `e2e/org-states.spec.ts` (DOM assertions, no screenshots).
+
+- Surface tier is deliberate: flat (`panel-flat`), soft (resting `panel`) or raised (dialogs, popovers, composer).
+- One primary call to action per view; the rest are `tertiary` or `icon-button`.
+- Mono (`.mono`) only for identifiers: SHAs, ids, tokens, branch names.
+- Icons come from the frozen `ICON_NAMES` set at the sized contract (nav 20, inline 16, banner 24).
+- Loading and error use `StateNote` (`status` / `alert`); an error or a held read never renders as empty.
+- Compact targets reach the 44px floor on narrow shells.
+- Both themes checked, light and dark.
+- Nothing renders data or actions the API lacks; the reference image is illustrative only.
+
 ## Extending it
 
 Specs live in `e2e/`. `vitest.config.ts` lists its includes explicitly, so nothing in `e2e/`

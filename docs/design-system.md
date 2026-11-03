@@ -61,6 +61,9 @@ never utilities, and every color it renders resolves through a token.
 - Fonts are self-hosted: the CSP is `font-src 'self'` and `verify:ui` runs offline, so a remote
   font link falls back silently exactly where faces are checked.
 - The icon set is frozen (`ICON_NAMES`, pinned by `icon.test.tsx`); a lane that needs a glyph asks for a foundation change. Sizes: nav 20, inline and action 16, banner 24.
+- One primary call to action per view (`button.primary`); every other action is `tertiary` or `icon-button`. `e2e/specimen/main.tsx`.
+- A surface renders only fields and actions the API payload carries; a missing value reads as `StateNote` or an em dash, never invented data. `e2e/state-matrix.spec.ts`, `e2e/org-states.spec.ts`.
+- A UI change is checked against the reviewer checklist in `.claude/skills/ui-verify/SKILL.md`.
 
 ## Stated limits
 
