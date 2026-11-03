@@ -132,7 +132,7 @@ export const updateBatch = defineTool({
 export const validateBatch = defineTool({
     name: 'validate_batch',
     description:
-        'Run the launch checks on a draft batch without starting it or writing anything: target visibility, branch resolution, what the executors can run, executors. Returns the resolved plan, or the board refusal (for a multi-target plan, BATCH_UNSUPPORTED) verbatim.',
+        'Run the launch checks on a draft batch without starting it or writing anything: target visibility, branch resolution, what the executors can run, executors. Returns the resolved plan, or the board refusal verbatim: for a plan this board cannot run, code BATCH_UNSUPPORTED with a `reason` of multi_target (more than one repository) or automerge (an automerge stage and no merger).',
     scope: 'factory:read',
     routes: [['POST', '/api/batches/:id/validate']],
     annotations: READ_ONLY,
@@ -148,7 +148,7 @@ export const validateBatch = defineTool({
 
 export const startBatch = defineTool({
     name: 'start_batch',
-    description: `Freeze a draft at \`version\` and start it: the board runs the launch checks, then schedules one stage at a time. A plan the board cannot run is refused (a multi-target plan: BATCH_UNSUPPORTED, verbatim) and the batch stays a draft; it never degrades to one repository. ${keyNote('batch')} Returns the batch with the board's standing.`,
+    description: `Freeze a draft at \`version\` and start it: the board runs the launch checks, then schedules one stage at a time. A plan the board cannot run is refused verbatim (BATCH_UNSUPPORTED, reason multi_target or automerge) and the batch stays a draft; it never degrades to one repository. ${keyNote('batch')} Returns the batch with the board's standing.`,
     scope: 'factory:write',
     routes: [['POST', '/api/batches/:id/start']],
     annotations: WRITES,

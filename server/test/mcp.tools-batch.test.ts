@@ -360,6 +360,51 @@ describe('the batch tools', () => {
         expect(store.writes).toEqual(writes);
     });
 
+    it('refuses an automerge stage on a board that cannot merge, telling it apart by reason', async () => {
+        const { url, store } = await boot();
+        const { id } = await imported(url, plan({ stages: [{ key: 'one', policy: 'automerge', tasks: [task('a')] }] }));
+        const writes = [...store.writes];
+        for (const name of ['validate_batch', 'start_batch']) {
+            const refused = await call(url, 'both', name, { batchId: id, version: 1 });
+            expect(refused.isError, name).toBe(true);
+            expect(refused.data, name).toMatchObject({
+                outcome: 'refused',
+                code: 'BATCH_UNSUPPORTED',
+                reason: 'automerge',
+                status: 409,
+            });
+        }
+        expect(store.writes).toEqual(writes);
+    });
+
+    it('starts once per idempotency key: a retry returns the same batch and writes nothing twice', async () => {
+        const { url, store } = await boot();
+        const { id } = await imported(url);
+        const first = await call(url, 'both', 'start_batch', {
+            batchId: id,
+            version: 1,
+            idempotencyKey: 'start-key-0001',
+        });
+        expect(first.isError, JSON.stringify(first.data)).toBeFalsy();
+        const writes = [...store.writes];
+        const again = await call(url, 'both', 'start_batch', {
+            batchId: id,
+            version: 1,
+            idempotencyKey: 'start-key-0001',
+        });
+        expect(again.isError, JSON.stringify(again.data)).toBeFalsy();
+        expect(again.data.id).toBe(id);
+        expect(store.writes).toEqual(writes);
+        const other = await call(url, 'both', 'start_batch', {
+            batchId: id,
+            version: 2,
+            idempotencyKey: 'start-key-0001',
+        });
+        expect(other.isError).toBe(true);
+        expect(other.data).toMatchObject({ outcome: 'refused' });
+        expect(store.writes).toEqual(writes);
+    });
+
     it('refuses a start at a stale version and leaves the draft a draft', async () => {
         const { url, store } = await boot();
         const { id } = await imported(url);
@@ -375,10 +420,20 @@ describe('the batch tools', () => {
         const { url, store } = await boot();
         const { id } = await imported(url, twoRepoPlan());
         const refusedValidate = await call(url, 'both', 'validate_batch', { batchId: id });
-        expect(refusedValidate.data).toMatchObject({ outcome: 'refused', code: 'BATCH_UNSUPPORTED', status: 409 });
+        expect(refusedValidate.data).toMatchObject({
+            outcome: 'refused',
+            code: 'BATCH_UNSUPPORTED',
+            reason: 'multi_target',
+            status: 409,
+        });
         const refused = await call(url, 'both', 'start_batch', { batchId: id, version: 1 });
         expect(refused.isError).toBe(true);
-        expect(refused.data).toMatchObject({ outcome: 'refused', code: 'BATCH_UNSUPPORTED', status: 409 });
+        expect(refused.data).toMatchObject({
+            outcome: 'refused',
+            code: 'BATCH_UNSUPPORTED',
+            reason: 'multi_target',
+            status: 409,
+        });
         expect(refused.data.message).toBe(
             'A batch runs against one repository and branch for now; this plan uses more than one'
         );

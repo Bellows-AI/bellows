@@ -246,12 +246,38 @@ describe.skipIf(!enabled)('the batch tools — database', () => {
         const jobsBefore = await jobCount(sql);
         const refused = await call(url, 'alice', 'start_batch', { batchId: id, version: 1 });
         expect(refused.isError).toBe(true);
-        expect(refused.data).toMatchObject({ outcome: 'refused', code: 'BATCH_UNSUPPORTED', status: 409 });
+        expect(refused.data).toMatchObject({
+            outcome: 'refused',
+            code: 'BATCH_UNSUPPORTED',
+            reason: 'multi_target',
+            status: 409,
+        });
         expect(refused.data.message).toContain('one repository and branch');
         expect(await batches.get(id)).toMatchObject({ status: 'draft', startedAt: null });
         expect(await jobCount(sql)).toBe(jobsBefore);
         const validate = await call(url, 'alice', 'validate_batch', { batchId: id });
-        expect(validate.data).toMatchObject({ outcome: 'refused', code: 'BATCH_UNSUPPORTED' });
+        expect(validate.data).toMatchObject({
+            outcome: 'refused',
+            code: 'BATCH_UNSUPPORTED',
+            reason: 'multi_target',
+        });
+    });
+
+    it('starts once per idempotency key: a retry returns the same batch and launches nothing twice', async () => {
+        const { url } = await boot();
+        const id = await imported(url, `start-keyed ${randomUUID()}`);
+        const key = `start-${randomUUID()}`;
+        const first = await call(url, 'alice', 'start_batch', { batchId: id, version: 1, idempotencyKey: key });
+        expect(first.isError, JSON.stringify(first.data)).toBeFalsy();
+        const jobs = await jobCount(sql);
+        const again = await call(url, 'alice', 'start_batch', { batchId: id, version: 1, idempotencyKey: key });
+        expect(again.isError, JSON.stringify(again.data)).toBeFalsy();
+        expect(again.data.id).toBe(id);
+        expect(await jobCount(sql)).toBe(jobs);
+        const other = await call(url, 'alice', 'start_batch', { batchId: id, version: 2, idempotencyKey: key });
+        expect(other.isError).toBe(true);
+        expect(other.data).toMatchObject({ outcome: 'refused' });
+        expect(await jobCount(sql)).toBe(jobs);
     });
 
     it('imports once per idempotency key', async () => {

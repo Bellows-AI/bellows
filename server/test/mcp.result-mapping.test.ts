@@ -84,6 +84,33 @@ describe('mapping a bridge outcome to a tool result', () => {
         expect(text).toContain('BAD_BATCH: The batch plan is not valid (stages[0].key: must be a key; (plan): a plan');
     });
 
+    it('keeps a code-like `reason` beside the code, and drops one that is not an identifier', () => {
+        const kept = map(
+            respond(409, { error: 'one repository only', code: 'BATCH_UNSUPPORTED', reason: 'multi_target' })
+        );
+        expect(kept.result.structuredContent).toMatchObject({
+            outcome: 'refused',
+            code: 'BATCH_UNSUPPORTED',
+            reason: 'multi_target',
+        });
+        const hostile = map(respond(409, { error: 'no', code: 'BATCH_UNSUPPORTED', reason: '<b>multi target</b>' }));
+        expect(hostile.result.structuredContent).not.toHaveProperty('reason');
+        const absent = map(respond(409, { error: 'no', code: 'BATCH_UNSUPPORTED' }));
+        expect(absent.result.structuredContent).not.toHaveProperty('reason');
+    });
+
+    it('lists only the first few issues in the text and counts the rest; the data keeps the bounded list', () => {
+        const issues = Array.from({ length: 20 }, (_, n) => ({ path: `p${n}`, message: 'm'.repeat(500) }));
+        const mapped = map(respond(400, { error: 'The batch plan is not valid', code: 'BAD_BATCH', issues }));
+        const structured = mapped.result.structuredContent as { issues: unknown[] };
+        expect(structured.issues).toHaveLength(20);
+        const text = (mapped.result.content[0] as { text: string }).text;
+        expect(text).toContain('p0: ');
+        expect(text).toContain('(+17 more)');
+        expect(text).not.toContain('p19: ');
+        expect(text.length).toBeLessThan(2500);
+    });
+
     it('keeps the code verbatim but bounds the message and strips control characters and HTML tags', () => {
         const hostile = `<script>alert(1)</script>bad\u0000\u001b[31m input ${'x'.repeat(2000)}`;
         const mapped = map(respond(400, { error: hostile, code: 'VALIDATION_FAILED' }));
