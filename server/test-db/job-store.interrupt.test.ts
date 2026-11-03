@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore, INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from '../src/db/jobs/job-store.js';
+import {
+    createJobStore,
+    INTERRUPTION_BUDGET,
+    INTERRUPTION_WINDOW_MS,
+    LEASE_EXPIRED_REASON,
+} from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { spendInterruptionBudget, testOrg } from './fixtures.js';
@@ -302,6 +307,43 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
         expect(row!.interruptions.map((i) => i.claimSeq)).toEqual(
             Array.from({ length: INTERRUPTION_BUDGET }, (_, n) => n + 1)
         );
+    });
+
+    // Sets the `at` of every recorded interruption to `ago` milliseconds back, from the process clock that wrote them.
+    const backdate = (id: string, ago: number, malformed = false) =>
+        sql`update job set interruptions = (
+                select jsonb_agg(jsonb_set(e, '{at}', to_jsonb(${malformed ? 'garbage' : new Date(Date.now() - ago).toISOString()}::text)))
+                from jsonb_array_elements(interruptions) as e
+            ) where id = ${id}`;
+
+    it('forgives interruptions older than the window: a long task under sparse churn is never retired', async () => {
+        const id = await queue();
+        await claim();
+        await spendInterruptionBudget(sql, id);
+        await backdate(id, INTERRUPTION_WINDOW_MS + 60_000);
+        await age(id);
+
+        expect(await claim()).toMatchObject({ id, attempts: 1, lastAttempt: false });
+    });
+
+    it('still exhausts a task whose budget of interruptions all fall inside the window', async () => {
+        const id = await queue();
+        await claim();
+        await spendInterruptionBudget(sql, id);
+        await backdate(id, INTERRUPTION_WINDOW_MS - 60_000);
+        await age(id);
+
+        expect(await claim()).toMatchObject({ id, attempts: 2 });
+    });
+
+    it('counts an interruption whose time is malformed as spent', async () => {
+        const id = await queue();
+        await claim();
+        await spendInterruptionBudget(sql, id);
+        await backdate(id, 0, true);
+        await age(id);
+
+        expect(await claim()).toMatchObject({ id, attempts: 2 });
     });
 
     it('spends an attempt on an expiry once the budget is spent', async () => {

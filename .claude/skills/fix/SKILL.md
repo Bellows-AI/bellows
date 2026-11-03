@@ -116,9 +116,9 @@ every agent it spawns — copy them into each brief.
 (`git branch --show-current`), this run is a Factory board task — the worktree and the branch
 already exist and the board resumes follow-ups on that exact checkout. Skip the creation steps
 below: WORKTREE is the current directory, and wherever this phase says `fix/<N>-<slug>`,
-read the task branch you are on. Never create or switch branches in this tree — leaving it off the
-task branch strands the run: the board's resume gate refuses a follow-up whose checkout is not on
-`factory/<uuid>`, and the work becomes unreachable to the thread that owns it.
+read the task branch you are on. Never create or switch branches in this tree — the board names
+`factory/<uuid>` as the thread's branch, and work kept on it is what every follow-up and the
+thread's pull request build on.
 
 1. Resolve the repo root (`git rev-parse --show-toplevel`) and the default branch
    (`gh repo view --json defaultBranchRef -q .defaultBranchRef.name`), then update the base:

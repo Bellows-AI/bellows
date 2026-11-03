@@ -6,8 +6,8 @@
 //   1. partial-clones the remote like the startup sync (under the claim's credential helper);
 //   2. fetches every commit the BUNDLE itself says it needs and the clone lacks — a prerequisite the
 //      remote no longer has (a force-push, a deleted branch) is `checkpoint_unrestorable`;
-//   3. unbundles, puts the task branch on the checkpoint's parent and `read-tree -u --reset`s the
-//      checkpoint's tree into the working tree, then resets the index to the parent. The restored tree
+//   3. unbundles, puts the branch the checkpoint recorded (the task branch if the header's is invalid) on the
+//      checkpoint's parent and `read-tree -u --reset`s the checkpoint's tree into the working tree, then resets the index to the parent. The restored tree
 //      keeps every uncommitted change UNSTAGED (the staging area is not part of a checkpoint);
 //   4. SESSIONS_DIR set: rebuilds every Claude session file of the thread byte for byte from the board's raw
 //      transcript streams (a session two attempts wrote is its streams joined in order), each chunk's sha256
@@ -28,7 +28,7 @@
 // Environment (set by the driver and the supervisor):
 //   CHECKOUT      — the task's own tree (`/task/<repo segment>`), to be created;
 //   REMOTE        — where it is cloned from;
-//   BRANCH        — the task branch;
+//   BRANCH        — the task branch, the fallback when the header names no valid branch;
 //   CHUNKS        — JSON [{offset,length,sha256}]: the checkpoint stream, from the board's pointer;
 //   RESTORE_URL / RESTORE_TOKEN — the control endpoint serving the chunks, and its bearer (the supervisor adds them);
 //   SESSIONS_DIR  — optional: where the Claude session files go (`<transcript dir>/projects/<working dir>`);
@@ -345,6 +345,17 @@ const ensureAllPresent = (repo, shas) => {
     }
 };
 
+/** Whether `name` is a branch name git accepts: false for a non-string or a name `check-ref-format` rejects. */
+const validBranch = (repo, name) => {
+    if (typeof name !== 'string' || !name) return false;
+    try {
+        git(repo, ['check-ref-format', '--branch', name]);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
 /** Git-ignores the `.factory/` state namespace, as the startup sync does: the checkpoint never carries it. */
 const excludeFactoryState = (repo) => {
     let exclude = git(repo, ['rev-parse', '--git-path', 'info/exclude']);
@@ -361,15 +372,16 @@ const rebuild = (repo, header, bundle) => {
         throw unrestorable('the checkpoint bundle does not carry the commit the tree sat on');
     }
     excludeFactoryState(repo);
-    git(repo, ['symbolic-ref', 'HEAD', 'refs/heads/' + branch]);
-    if (header.parent) git(repo, ['update-ref', 'refs/heads/' + branch, header.parent]);
+    const target = validBranch(repo, header.branch) ? header.branch : branch;
+    git(repo, ['symbolic-ref', 'HEAD', 'refs/heads/' + target]);
+    if (header.parent) git(repo, ['update-ref', 'refs/heads/' + target, header.parent]);
     git(repo, ['read-tree', '-u', '--reset', header.tip]);
     // The index returns to the branch's commit: every uncommitted change stays in the working tree, unstaged.
     if (header.parent) git(repo, ['reset', '--quiet']);
     else git(repo, ['read-tree', '--empty']);
-    if (missingOf(repo, [`refs/remotes/origin/${branch}`]).length === 0) {
-        git(repo, ['config', 'branch.' + branch + '.remote', 'origin']);
-        git(repo, ['config', 'branch.' + branch + '.merge', 'refs/heads/' + branch]);
+    if (missingOf(repo, [`refs/remotes/origin/${target}`]).length === 0) {
+        git(repo, ['config', 'branch.' + target + '.remote', 'origin']);
+        git(repo, ['config', 'branch.' + target + '.merge', 'refs/heads/' + target]);
     }
 };
 

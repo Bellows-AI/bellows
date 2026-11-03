@@ -226,6 +226,41 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
         expect(readdirSync(restoreDir())).toEqual(['factory']);
     });
 
+    it('rebuilds the tree on the branch the checkpoint recorded', async () => {
+        workedTree();
+        git(fx.checkout(), 'switch', '-c', 'factory/agent-work');
+        fx.commitIn(fx.checkout(), 'agent.txt', 'agent work\n', 'the agent commit');
+        const head = git(fx.checkout(), 'rev-parse', 'HEAD');
+        writeFileSync(join(fx.checkout(), 'README.md'), '# agent edit\n');
+        const { stream, chunks } = checkpointStream();
+        const { url } = await serve(stream);
+
+        expect(await restore(chunks, url)).toMatchObject({ ok: true, restored: true });
+
+        expect(git(restoredTree(), 'branch', '--show-current')).toBe('factory/agent-work');
+        expect(git(restoredTree(), 'rev-parse', 'HEAD')).toBe(head);
+        expect(status(restoredTree())).toContain('M README.md');
+        expect(readFileSync(join(restoredTree(), 'README.md'), 'utf8')).toBe('# agent edit\n');
+    });
+
+    it('falls back to the task branch when the header names an invalid branch', async () => {
+        workedTree();
+        const { stream } = checkpointStream();
+        const newline = stream.indexOf(0x0a);
+        const header = { ...JSON.parse(stream.subarray(0, newline).toString('utf8')), branch: '../x' };
+        const forged = Buffer.concat([Buffer.from(`${JSON.stringify(header)}\n`), stream.subarray(newline + 1)]);
+        const chunks: { offset: number; length: number; sha256: string }[] = [];
+        for (let offset = 0; offset < forged.length; offset += CHUNK) {
+            const bytes = forged.subarray(offset, offset + CHUNK);
+            chunks.push({ offset, length: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+        }
+        const { url } = await serve(forged);
+
+        expect(await restore(chunks, url)).toMatchObject({ ok: true, restored: true });
+
+        expect(git(restoredTree(), 'branch', '--show-current')).toBe(fx.branch());
+    });
+
     it('leaves the factory state namespace ignored, as the startup sync does', async () => {
         workedTree();
         const { stream, chunks } = checkpointStream();

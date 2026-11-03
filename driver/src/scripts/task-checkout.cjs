@@ -17,8 +17,9 @@
 //                 mid-flight, and git operations that touch the remote belong to the task's
 //                 beginning and end, never its middle. No fetch, no rebase: the existing tree is
 //                 left byte-for-byte as the run before it left it. A missing tree is a named
-//                 failure (there is nothing to continue), never a fresh clone, and a tree standing
-//                 on another branch or a detached HEAD is a named refusal. No credential helper is
+//                 failure (there is nothing to continue), never a fresh clone, and a tree on a
+//                 detached HEAD is a named refusal; one on any named branch, the task branch or one
+//                 the agent switched to, is continued there, as publish would. No credential helper is
 //                 needed, because nothing here talks to the remote.
 //   CRED_HELPER — optional, STARTING claims only: the git credential-helper program the clone and
 //                 the fetch run (`-c credential.helper=`), set only beside the GITHUB_TOKEN the
@@ -37,7 +38,9 @@
 //                 attempt and kept as it is after — still with no fetch and no rebase, because
 //                 nothing a reviewer needs is on the remote.
 //
-// STARTING claims, tree present: rebased onto the new default with --autostash, so a follow-up
+// STARTING claims, tree present (an existing tree on a named branch other than its base is rebased on that
+// branch, as publish pushes it; one on its base or a detached HEAD is put on the task branch; a failure aborts only the rebase this sync started; a rebase the run left is
+// never aborted): rebased onto the new default with --autostash, so a follow-up
 // works whether or not the previous run left uncommitted edits; the edits are stashed for the
 // rebase and reapplied on the new base. Git exits 0 even when the reapplied STASH conflicts (the
 // rebase itself succeeded), so the script re-checks for unmerged entries. A conflict is HANDED
@@ -163,14 +166,12 @@ const rebaseDir = (name) => {
 };
 /** Whether a rebase is stopped in the tree — conflicted, or resolved but not yet continued. */
 const rebaseInProgress = () => REBASE_DIRS.some((name) => present(rebaseDir(name)));
-/** The branch a stopped rebase is rebasing, or '' when its state names none. */
+/** The branch a stopped rebase is rebasing, or '' when its state names none (a rebase of a detached HEAD). */
 const rebasedBranch = () => {
     for (const name of REBASE_DIRS) {
         try {
-            return fs
-                .readFileSync(path.join(rebaseDir(name), 'head-name'), 'utf8')
-                .trim()
-                .replace('refs/heads/', '');
+            const head = fs.readFileSync(path.join(rebaseDir(name), 'head-name'), 'utf8').trim();
+            return head.startsWith('refs/heads/') ? head.slice('refs/heads/'.length) : '';
         } catch {}
     }
     return '';
@@ -205,7 +206,7 @@ const handOver = () => {
 const KIND_BRANCH_UNRESTORABLE = 'branch_unrestorable';
 const KIND_MISSING_BASE_BRANCH = 'missing_base_branch';
 const fail = (r, kind) => {
-    if (!restore) {
+    if (!restore && startedRebase) {
         try {
             inw('rebase', '--abort');
         } catch {}
@@ -222,6 +223,8 @@ const buildDirOf = (final) => path.join(path.dirname(final), '.' + path.basename
 const discardTree = (dir) => fs.rmSync(dir, { recursive: true, force: true });
 // The build in progress, removed if the script leaves before it is moved into place.
 let building = null;
+// Whether this sync began a rebase: only that one is aborted on failure, never one the run left.
+let startedRebase = false;
 process.on('exit', () => {
     if (building) discardTree(building);
 });
@@ -272,6 +275,17 @@ const hasRemoteRef = (name) => {
         return true;
     } catch {
         return false;
+    }
+};
+
+/** Whether the tree has the local branch; only git's exit 1 is "no", any other failure is not an answer and throws. */
+const hasLocalRef = (name) => {
+    try {
+        inw('rev-parse', '--verify', '--quiet', 'refs/heads/' + name);
+        return true;
+    } catch (e) {
+        if (e && e.status === 1) return false;
+        throw e;
     }
 };
 
@@ -370,15 +384,16 @@ const syncRestore = () => {
             KIND_BRANCH_UNRESTORABLE
         );
     }
-    // A stopped rebase detaches HEAD; the branch it is rebasing is the task's own.
+    // The checkout is task-owned, so any named branch the run left it on is the task's work (publish
+    // pushes it too); only a detached HEAD names none. A stopped rebase detaches HEAD; the branch it
+    // is rebasing is the one it stands on.
     const on = rebaseInProgress() ? rebasedBranch() : inw('branch', '--show-current');
-    if (on !== branch) {
+    if (!on) {
         refuse(
-            'the task checkout stands on ' +
-                (on ? 'branch ' + on : 'a detached HEAD') +
-                ' instead of the task branch ' +
-                branch +
-                ' — a resumed job must never run in the wrong checkout',
+            'the task checkout ' +
+                wt +
+                ' stands on a detached HEAD: a resumed job continues on the branch the run left it on, and a ' +
+                'detached HEAD names none (re-queue the task to start it over)',
             KIND_BRANCH_UNRESTORABLE
         );
     }
@@ -433,21 +448,24 @@ const cloneInto = (dest) =>
         { cwd: path.dirname(dest), encoding: 'utf8' }
     );
 
-/** Puts an existing tree on its task branch and rebases it onto the base; a conflicted tree is handed over. */
+/** Rebases an existing tree onto the base, on the named branch it stands on (the task branch from its base or a detached HEAD); a conflicted tree is handed over. */
 const rebaseExisting = (base, hasBase) => {
     // An existing tree over an empty remote has no new base to rebase onto: it is left as it is.
     if (!hasBase) return synced();
     // A tree a previous attempt left conflicted is handed over as it is: a second rebase would
     // refuse to start over its markers.
     if (rebaseInProgress() || unmergedPaths().length) return handOver();
+    // A tree on a named branch other than its base stays on it, as publish pushes it; one on its base, or on
+    // a detached HEAD, is put on the task branch.
     const on = inw('branch', '--show-current');
-    if (on !== branch) {
-        try {
+    if (!on || on === base) {
+        if (hasLocalRef(branch)) {
             inwFetching('checkout', branch);
-        } catch {
+        } else {
             inwFetching('checkout', '-b', branch, hasRemoteRef(branch) ? 'origin/' + branch : 'origin/' + base);
         }
     }
+    startedRebase = true;
     try {
         inwFetching('rebase', '--autostash', 'origin/' + base);
     } catch (e) {

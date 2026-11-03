@@ -115,6 +115,20 @@ describe.skipIf(!hasGit())('the checkpoint script', () => {
         expect(show('untracked.txt')).toBe('never added\n');
     });
 
+    it('records the branch the checkout stands on, not the task branch', () => {
+        workedTree();
+        git(fx.checkout(), 'switch', '-c', 'factory/agent-work');
+
+        expect(checkpoint().header?.branch).toBe('factory/agent-work');
+    });
+
+    it('records the task branch for a detached HEAD', () => {
+        workedTree();
+        git(fx.checkout(), 'switch', '--detach');
+
+        expect(checkpoint().header?.branch).toBe(fx.branch());
+    });
+
     it('records the commit it sits on and what the remote already has as prerequisites', () => {
         workedTree();
         git(fx.checkout(), 'push', '--quiet', 'origin', fx.branch());
