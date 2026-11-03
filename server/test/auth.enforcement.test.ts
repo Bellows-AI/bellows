@@ -201,6 +201,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/settings/integrations/jira/00000000-0000-4000-8000-000000000001', 'open'],
     ['/api/stats', 'user'],
     ['/api/jobs', 'user'],
+    ['/api/jobs/preflight', 'user'],
     ['/api/jobs/:id', 'user'],
     // All three are person's actions on a finished task — a follow-up asks for adjustments,
     // retry re-runs the thread head's command fresh, done declares the task finished by

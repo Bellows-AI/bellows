@@ -66,6 +66,9 @@ function memoryConnections(revokedGrantId: string | null = null): ConnectionStor
                 .map(view)
                 .reverse();
         },
+        async preview() {
+            return { ok: true, bindings: [], requirements: [] };
+        },
         async disconnect(id, { userId }) {
             const at = rows.findIndex((r) => r.id === id && r.ownerUserId === userId);
             if (at === -1) return { disconnected: false, revokedGrantId: null };
