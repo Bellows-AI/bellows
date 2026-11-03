@@ -1,4 +1,4 @@
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { Client as ModernClient, StreamableHTTPClientTransport as ModernTransport } from '@modelcontextprotocol/client';
 import { Client as LegacyClient } from '@modelcontextprotocol/sdk/client/index.js';
@@ -12,6 +12,8 @@ import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { hashToken } from '../src/auth/session.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { setAuthInfo } from '../src/mcp/auth-info.js';
+import { originPermitted } from '../src/mcp/origin.js';
+import { pipeResponse } from '../src/mcp/pipe.js';
 import { mcpRoutes } from '../src/mcp/routes.js';
 import { withCaller } from '../src/mcp/server.js';
 import {
@@ -41,6 +43,8 @@ const HTTP_METHOD_NOT_ALLOWED = 405;
 const MODERN = '2026-07-28';
 const TOKEN = 'mat_transport-test-token-0123456789';
 const WRONG_AUDIENCE_TOKEN = 'mat_wrong-audience-token-0123456789';
+const EXPIRED_TOKEN = 'mat_expired-token-0123456789';
+const REVOKED_TOKEN = 'mat_revoked-token-0123456789';
 const TRUSTED = 'https://trusted.example';
 
 const freePort = (): Promise<number> =>
@@ -145,13 +149,17 @@ async function boot(
     const known = new Map<string, string>([
         [hashToken(TOKEN).toString('hex'), resource],
         [hashToken(WRONG_AUDIENCE_TOKEN).toString('hex'), 'https://elsewhere.example/api/mcp'],
+        [hashToken(EXPIRED_TOKEN).toString('hex'), resource],
+        [hashToken(REVOKED_TOKEN).toString('hex'), resource],
     ]);
+    // The real store's SQL filters these two rows out, so its answer for them is null.
+    const lapsed = new Set([hashToken(EXPIRED_TOKEN).toString('hex'), hashToken(REVOKED_TOKEN).toString('hex')]);
     const oauth: Pick<OAuthStore, 'findAccessToken'> = {
         async findAccessToken(hash): Promise<McpCaller | null> {
             seen.lookups += 1;
             if (failLookup) throw new Error('connection refused');
             const audience = known.get(hash.toString('hex'));
-            if (!audience) return null;
+            if (!audience || lapsed.has(hash.toString('hex'))) return null;
             return {
                 ...caller,
                 scopes: ['factory:read'],
@@ -300,6 +308,16 @@ describe('the auth gate, github mode', () => {
             expect(reply.status).toBe(HTTP_UNAUTHORIZED);
             expect(reply.headers['www-authenticate']).toBe(challenge(board));
         }
+    });
+
+    it('answers an expired and a revoked mat_ with the same 401', async () => {
+        const board = await boot('github');
+        for (const token of [EXPIRED_TOKEN, REVOKED_TOKEN]) {
+            const reply = await post(board.port, legacyInitialize('2025-11-25'), bearer(token));
+            expect(reply.status).toBe(HTTP_UNAUTHORIZED);
+            expect(reply.headers['www-authenticate']).toBe(challenge(board));
+        }
+        expect(board.seen.lookups).toBe(2);
     });
 
     it('accepts only a mat_: a personal token, an org token or a session cookie is a 401', async () => {
@@ -484,5 +502,113 @@ describe('a client that disconnects', () => {
             if (seen?.aborted) resolve();
         });
         expect(seen?.aborted).toBe(true);
+    });
+});
+
+describe('pipeResponse when the client is already gone', () => {
+    it('settles and cancels the body when the connection closed before the response was ready', async () => {
+        let cancelled = false;
+        // An endless body: only a departed client can end the pipe.
+        const response = new Response(
+            new ReadableStream<Uint8Array>({
+                pull(controller) {
+                    controller.enqueue(new Uint8Array(65_536));
+                },
+                cancel() {
+                    cancelled = true;
+                },
+            })
+        );
+        let settled!: Promise<void>;
+        const server = createHttpServer((_req, res) => {
+            // The fetch "resolves" only after the client disconnected: 'close' has already fired by now.
+            res.once('close', () => {
+                settled = pipeResponse(response, res);
+            });
+        });
+        await new Promise<void>((resolve) => server.listen(0, LOCALHOST, resolve));
+        const address = server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        try {
+            const req = httpRequest({ host: LOCALHOST, port, method: 'POST' });
+            req.on('error', () => undefined);
+            req.end('{}');
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            req.destroy();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            await Promise.race([
+                settled,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('pipeResponse never settled')), 2000)),
+            ]);
+            expect(cancelled).toBe(true);
+        } finally {
+            server.close();
+        }
+    });
+
+    it('leaves no drain listener behind when the client leaves mid-backpressure', async () => {
+        let listeners = -1;
+        let settled!: Promise<void>;
+        const endless = new Response(
+            new ReadableStream<Uint8Array>({
+                pull(controller) {
+                    controller.enqueue(new Uint8Array(65_536));
+                },
+            })
+        );
+        const server = createHttpServer((_req, res) => {
+            settled = pipeResponse(endless, res).then(() => {
+                listeners = res.listenerCount('drain');
+            });
+        });
+        await new Promise<void>((resolve) => server.listen(0, LOCALHOST, resolve));
+        const address = server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        try {
+            const req = httpRequest({ host: LOCALHOST, port, method: 'POST' });
+            req.on('error', () => undefined);
+            // Never read the response: the server's socket buffer fills and the pipe waits for a drain.
+            req.on('response', (res) => res.pause());
+            req.end('{}');
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            req.destroy();
+            await Promise.race([
+                settled,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('pipeResponse never settled')), 2000)),
+            ]);
+            expect(listeners).toBe(0);
+        } finally {
+            server.close();
+        }
+    });
+});
+
+describe('Bearer scheme', () => {
+    it('is matched case-insensitively (RFC 6750)', async () => {
+        const board = await boot('github');
+        for (const scheme of ['bearer', 'BEARER']) {
+            const reply = await post(board.port, legacyInitialize('2025-11-25'), {
+                authorization: `${scheme} ${TOKEN}`,
+            });
+            expect(reply.status).toBe(HTTP_OK);
+        }
+    });
+});
+
+describe('Host default ports', () => {
+    it('accepts the public host written with its scheme default port', async () => {
+        const origin = {
+            publicOrigin: 'https://board.example',
+            trustedOrigins: [],
+            mode: 'github',
+            port: undefined,
+        } as const;
+        const base = { origin: undefined, forwardedHost: undefined };
+        expect(originPermitted(origin, { ...base, host: 'board.example:443' })).toBe(true);
+        expect(originPermitted(origin, { ...base, host: 'board.example' })).toBe(true);
+        expect(originPermitted(origin, { ...base, host: 'board.example:8443' })).toBe(false);
+        const plain = { ...origin, publicOrigin: 'http://board.example' } as const;
+        expect(originPermitted(plain, { ...base, host: 'board.example:80' })).toBe(true);
+        expect(originPermitted(plain, { ...base, host: 'board.example:443' })).toBe(false);
     });
 });

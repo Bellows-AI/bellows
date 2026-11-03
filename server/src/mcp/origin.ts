@@ -25,9 +25,15 @@ const splitHost = (host: string): { name: string; port: string } | null => {
 const hostAllowed = (policy: OriginPolicy, headers: OriginHeaders): boolean => {
     if (policy.mode === 'github') {
         const publicHost = new URL(policy.publicOrigin).host;
+        const scheme = new URL(policy.publicOrigin).protocol;
+        const defaultPort = scheme === 'https:' ? ':443' : ':80';
+        const bare = (host: string | undefined): string | undefined => {
+            const lower = host?.toLowerCase();
+            return lower?.endsWith(defaultPort) ? lower.slice(0, -defaultPort.length) : lower;
+        };
         // `X-Forwarded-Host` counts only when it is the very host the board is published under, so a caller cannot
         // steer the check by naming another one.
-        return headers.host?.toLowerCase() === publicHost || headers.forwardedHost?.toLowerCase() === publicHost;
+        return bare(headers.host) === publicHost || bare(headers.forwardedHost) === publicHost;
     }
     const parts = headers.host ? splitHost(headers.host) : null;
     if (!parts || !LOOPBACK_NAMES.has(parts.name)) return false;

@@ -231,12 +231,13 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 
-const BEARER_PREFIX = 'Bearer ';
+// RFC 6750: the auth scheme is case-insensitive.
+const BEARER_PREFIX = /^bearer\s+/i;
 
 const bearer = (request: FastifyRequest): string | null => {
     const header = request.headers.authorization;
-    if (!header?.startsWith(BEARER_PREFIX)) return null;
-    return header.slice(BEARER_PREFIX.length).trim() || null;
+    if (!header || !BEARER_PREFIX.test(header)) return null;
+    return header.replace(BEARER_PREFIX, '').trim() || null;
 };
 
 export interface AuthPluginDeps {

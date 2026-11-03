@@ -12,17 +12,26 @@ export async function pipeResponse(response: Response, raw: ServerResponse): Pro
         return;
     }
     const reader = response.body.getReader();
-    const gone = new Promise<void>((resolve) => raw.once('close', resolve));
+    // Built before anything is awaited: a client that left during the fetch has already fired 'close'.
+    const gone =
+        raw.destroyed || raw.closed ? Promise.resolve() : new Promise<void>((resolve) => raw.once('close', resolve));
+    let onDrain: (() => void) | undefined;
     try {
-        for (;;) {
+        while (!raw.destroyed) {
             const chunk = await Promise.race([reader.read(), gone.then(() => null)]);
-            if (chunk === null || chunk.done) break;
+            if (chunk === null || chunk.done || raw.destroyed) break;
             if (!raw.write(chunk.value)) {
-                await Promise.race([new Promise<void>((resolve) => raw.once('drain', resolve)), gone]);
+                await Promise.race([
+                    new Promise<void>((resolve) => {
+                        onDrain = resolve;
+                        raw.once('drain', resolve);
+                    }),
+                    gone,
+                ]);
             }
-            if (raw.destroyed) break;
         }
     } finally {
+        if (onDrain) raw.off('drain', onDrain);
         await reader.cancel().catch(() => undefined);
         if (!raw.destroyed) raw.end();
     }
