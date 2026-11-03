@@ -177,6 +177,8 @@ const SHARED_TOUCH_TARGETS = [
     '.mobile-nav .sidenav-sublink',
     '.mobile-nav .sidenav-newtask',
     '.select-trigger',
+    ".tabs [role='tab']",
+    '.tabs a',
     '.page-header-actions button',
     'table.data button',
 ];
@@ -191,7 +193,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.inbox-clear',
         '.inbox-footer button',
         '.inbox-error button',
-        '.inbox-banner-body button',
+        '.inbox-counts a',
     ],
     'styles/regions/composer.css': [
         '.composer-start button',
@@ -210,7 +212,6 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.question button',
     ],
     'styles/regions/settings.css': [
-        '.env-tab',
         '.settings-toggle',
         '.repo-search input',
         '.repo-search button',
@@ -370,13 +371,14 @@ describe('the stylesheet', () => {
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
     });
 
-    it('lays each metric card out as a 40px icon disc beside its figure (issue 283)', () => {
+    it('lays the metrics out as one open strip', () => {
         const css = stripComments(shippedCss());
         const body = (selector: string) => rules(css).find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
-        expect(body('.usage-group')).toMatch(/flex-direction:\s*row/);
-        expect(body('.usage-disc')).toMatch(/width:\s*40px/);
-        expect(body('.usage-disc')).toMatch(/height:\s*40px/);
-        expect(body('.usage-disc')).toMatch(/border-radius:\s*50%/);
+        // No per-group box: the figures sit open on the page, set apart by hairlines alone.
+        expect(body('.usage-group')).not.toMatch(/background|border-radius|border:|box-shadow/);
+        expect(body('.usage-groups')).toMatch(/border-(top|bottom):\s*1px solid var\(--line\)/);
+        // The 40px icon disc is gone with its rules.
+        expect(rules(css).some(([prelude]) => /\.usage-disc/.test(prelude))).toBe(false);
         expect(body('.usage-caption')).toMatch(/font-size:\s*13px/);
         // The six-measure grid is gone with its rules.
         expect(rules(css).some(([prelude]) => /\.usage-(measure|tokens)\b/.test(prelude))).toBe(false);
@@ -384,10 +386,24 @@ describe('the stylesheet', () => {
 });
 
 describe('the stylesheet — sizing and motion (#189)', () => {
+    it('takes page widths from width tokens', () => {
+        const css = stripComments(shippedCss());
+        const body = (selector: string) => rules(css).find(([prelude]) => prelude === selector)?.[1] ?? '';
+        expect(body('.page')).toMatch(/max-width:\s*var\(--page-dense\)/);
+        expect(body('.settings-content')).toMatch(/max-width:\s*var\(--page-standard\)/);
+        expect(body('.composer-surface')).toMatch(/max-width:\s*var\(--page-form\)/);
+        expect(body('.composer-heading')).toMatch(/max-width:\s*var\(--page-form\)/);
+        const literal = [...stripComments(shippedCss()).matchAll(/^\s*max-width:\s*(\d+)px/gm)].filter(
+            (m) => Number(m[1]) >= 600
+        );
+        expect(literal.map((m) => m[0])).toEqual([]);
+    });
+
     it('gives the settings column room for a table row and lays an icon button on one line', () => {
         const css = stripComments(shippedCss());
         const body = (selector: string) => rules(css).find(([prelude]) => prelude === selector)?.[1] ?? '';
-        expect(Number(body('.settings-content').match(/max-width:\s*(\d+)px/)?.[1])).toBeGreaterThanOrEqual(1040);
+        const token = body('.settings-content').match(/max-width:\s*var\((--page-[a-z]+)\)/)?.[1] ?? '';
+        expect(Number(css.match(new RegExp(`${token}:\\s*(\\d+)px`))?.[1])).toBeGreaterThanOrEqual(1040);
         expect(body('.settings-content button:has(> .icon)')).toMatch(/display:\s*inline-flex/);
     });
 
@@ -541,6 +557,149 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(offScale).toEqual([]);
     });
 
+    it('lights every current navigation row with the one soft fill: no border, no accent text', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const body = (selector: string) =>
+            rules(css)
+                .filter(([prelude]) => prelude.split(',').some((part) => part.trim() === selector))
+                .map(([, decls]) => decls)
+                .join('\n');
+        for (const selector of [
+            '.sidenav-link.is-active',
+            '.sidenav-sublink.is-active',
+            '.sidenav-task.is-active',
+            '.sidenav-newtask.is-active',
+        ]) {
+            const decls = body(selector);
+            expect(decls, selector).toMatch(/background:\s*var\(--surface-strong\)/);
+            expect(decls, selector).toMatch(/color:\s*var\(--ink\)/);
+            expect(decls, selector).not.toMatch(/border|outline|box-shadow/);
+        }
+    });
+
+    it('defines the soft surface tier in both theme blocks and .panel rests on it without a frame', () => {
+        const css = stripComments(shippedCss());
+        const blocks = tokenSpans(css).map(([start, end]) => css.slice(start, end));
+        expect(blocks.filter((block) => /--surface-soft\s*:/.test(block))).toHaveLength(2);
+        const body = rules(css).find(([prelude]) => prelude.trim() === '.panel')?.[1] ?? '';
+        expect(body).toContain('var(--surface-soft)');
+        expect(body).not.toMatch(/border\s*:[^;]*--line/);
+        const flat = rules(css).find(([prelude]) => prelude.trim() === '.panel.panel-flat')?.[1] ?? '';
+        expect(flat).toContain('var(--surface)');
+        expect(flat).toMatch(/border[a-z-]*\s*:[^;]*var\(--line\)/);
+    });
+
+    it('rests the sign-in card on the soft tier without a frame', () => {
+        const css = stripComments(shippedCss());
+        const body = rules(css).find(([prelude]) => prelude.trim() === '.login-card')?.[1] ?? '';
+        expect(body).toContain('var(--surface-soft)');
+        expect(body).not.toMatch(/border\s*:/);
+    });
+
+    it('rests secondary buttons without a visible frame and gives them the quiet soft fill', () => {
+        const css = stripComments(shippedCss());
+        const body = (selector: string) => rules(css).find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        const bare = body('button');
+        expect(bare).toMatch(/border\s*:\s*1px solid transparent/);
+        expect(bare).toContain('background: var(--surface-strong)');
+        expect(body('button:disabled')).toMatch(/cursor\s*:\s*not-allowed/);
+        expect(body('button.danger')).not.toMatch(/border[a-z-]*\s*:/);
+        expect(body('button.danger')).toMatch(/background\s*:\s*transparent/);
+    });
+
+    it('ships tertiary, icon-button and tabs variants whose focus falls to the global ring', () => {
+        const css = stripComments(shippedCss());
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('button.tertiary')).toMatch(/background\s*:\s*transparent/);
+        expect(body('button.icon-button')).toMatch(/min-width\s*:\s*36px/);
+        expect(body(".tabs [role='tab'][aria-selected='true']")).toContain('var(--accent)');
+        for (const variant of ['button.tertiary', 'button.icon-button']) {
+            const hover = all.find(([prelude]) => prelude.includes(`${variant}:hover:not(:disabled)`));
+            expect(hover?.[1], `${variant} hover fill`).toContain('var(--surface-hover)');
+        }
+        for (const verdict of ['.chat-done', '.chat-stop', '.chat-remove']) {
+            expect(body(verdict), `${verdict} rests transparent`).toMatch(/background\s*:\s*transparent/);
+        }
+        const ring = all.find(([prelude]) => /:where\([^)]*\bbutton\b[^)]*\):focus-visible/.test(prelude));
+        expect(ring?.[1]).toMatch(/outline\s*:\s*2px solid var\(--accent\)/);
+        for (const [prelude, text] of all) {
+            if (/tertiary|icon-button|\.tabs/.test(prelude))
+                expect(text, prelude).not.toMatch(/outline\s*:\s*(none|0)/);
+        }
+    });
+
+    it('rests the settings overview rows flat on dividers, with no raised box around them', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.settings-rows')).not.toMatch(/background|border\s*:|border-radius/);
+        expect(body('.settings-row-item + .settings-row-item')).toMatch(/border-top\s*:\s*1px solid var\(--line\)/);
+    });
+
+    it('rests the integration cards on the soft tier with a quiet 32px provider mark', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.integration-card')).toMatch(/background\s*:\s*var\(--surface-soft\)/);
+        expect(body('.integration-card')).not.toMatch(/border\s*:\s*1px|surface-raised/);
+        expect(body('.integration-card:hover')).toContain('var(--surface-hover)');
+        expect(body('.provider-mark')).toMatch(/height\s*:\s*32px/);
+        expect(body('.provider-mark')).toMatch(/width\s*:\s*32px/);
+        expect(body('.provider-mark')).not.toMatch(/border\s*:/);
+    });
+
+    it('paints the repos table sticky column on the canvas it sits on, not a raised tier', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
+        const sticky = rules(css).filter(([, text]) => /position\s*:\s*sticky/.test(text));
+        expect(sticky.length).toBeGreaterThan(0);
+        for (const [prelude, text] of sticky) {
+            expect(text, prelude).toMatch(/background\s*:\s*var\(--surface\)/);
+            expect(text, prelude).not.toMatch(/surface-raised|box-shadow/);
+        }
+        const configured = rules(css).find(
+            ([p]) => p.trim() === 'table.repo-table tr.repo-row-configured td:last-child'
+        );
+        expect(configured?.[1]).not.toContain('surface-raised');
+    });
+
+    it('keeps the composer the one raised tier and its chips on the shared quiet trigger', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.composer-surface')).toMatch(/background:\s*var\(--surface-raised\)/);
+        expect(body('.composer-surface')).toMatch(/box-shadow:\s*0 \d+px \d+px var\(--shadow-float\)/);
+        expect(body('.composer-surface')).not.toMatch(/--line-strong/);
+        expect(body('.composer-context .select-trigger')).not.toMatch(/border|background/);
+    });
+
+    it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/inbox.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(all.some(([prelude]) => /\.inbox-card/.test(prelude))).toBe(false);
+        expect(body('.inbox-list')).not.toMatch(/surface-raised|border\s*:/);
+        expect(body('.inbox-empty')).not.toMatch(/surface-raised|border\s*:/);
+        // The age is a quiet label, never the mono identifier face.
+        expect(css).not.toMatch(/\.inbox-when[^{]*\{[^}]*font-family/);
+    });
+
+    it('keeps the panel rules on the spacing scale', () => {
+        const SCALE = [0, 4, 8, 12, 16, 24, 32, 48];
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const offScale = rules(css)
+            .filter(([prelude]) => /^\.panel(?![\w-])/.test(prelude.trim()))
+            .flatMap(([prelude, body]) =>
+                [...body.matchAll(/(?:padding|margin)[a-z-]*:([^;]+);/g)].flatMap((decl) =>
+                    [...decl[1]!.matchAll(/(\d+(?:\.\d+)?)px/g)]
+                        .map((pixels) => Number(pixels[1]))
+                        .filter((pixels) => !SCALE.includes(pixels))
+                        .map((pixels) => `${prelude} { ${decl[0]!.trim()} } is ${pixels}px`)
+                )
+            );
+        expect(offScale).toEqual([]);
+    });
+
     it('bootstraps the theme before paint with no inline or remote script (CSP: script-src self)', () => {
         const html = readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
         // The external same-origin bootstrap must execute before the application entry, so the
@@ -560,16 +719,60 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(css.match(/transition\s*:[^;{}]*/gi) ?? []).toEqual([]);
     });
 
-    it("the compact table resets the data table's mono cells to the inherited face", () => {
+    it('sets mono on no generic table cell or status line', () => {
         const css = stripComments(shippedCss());
-        const mono = css.indexOf('table.data td:not(:first-child)');
-        expect(mono, 'the data table sets mono on its non-first cells').toBeGreaterThanOrEqual(0);
-        const reset = rules(css).find(
-            ([prelude, body]) =>
-                prelude.includes('.data-compact') && /\btd\b/.test(prelude) && /font-family\s*:\s*inherit/.test(body)
-        );
-        expect(reset, 'a .data-compact td rule sets font-family: inherit').toBeDefined();
-        expect(css.indexOf(reset![0]), 'the reset follows the mono rule').toBeGreaterThan(mono);
+        const offenders = rules(css)
+            .filter(
+                ([prelude, body]) =>
+                    /table\.data\s+td|\.status(?![\w-])/.test(prelude) &&
+                    /font-family\s*:\s*var\(--font-mono\)/.test(body)
+            )
+            .map(([prelude]) => prelude.trim());
+        expect(offenders).toEqual([]);
+    });
+
+    it('sets mono only on code, identifier, log and chart-axis surfaces, never on a date or count', () => {
+        const css = stripComments(shippedCss());
+        const allowed = new Set([
+            'code',
+            'kbd',
+            '.mono',
+            '.sidenav-task-summary',
+            '.composer-param-details code',
+            '.composer-skill-name',
+            '.tick',
+            '.chart-tooltip',
+            '.json-editor',
+            '.chat-output.gate-output',
+            '.task-branch',
+            '.chat-exit',
+            '.chat-activity',
+            '.task-summary',
+        ]);
+        const offenders = rules(css)
+            .filter(([, body]) => /font-family\s*:\s*var\(--font-mono\)/.test(body))
+            .map(([prelude]) => prelude.trim())
+            .filter((prelude) => !allowed.has(prelude));
+        expect(offenders).toEqual([]);
+    });
+
+    it('sets mono on no statistics-dialog figure, date or model cell', () => {
+        const css = stripComments(shippedCss());
+        const offenders = rules(css)
+            .filter(
+                ([prelude, body]) => /\.task-stats/.test(prelude) && /font-family\s*:\s*var\(--font-mono\)/.test(body)
+            )
+            .map(([prelude]) => prelude.trim());
+        expect(offenders).toEqual([]);
+    });
+
+    it('offers one mono identifier primitive and ships Inter as the sans face', () => {
+        const css = stripComments(shippedCss());
+        const mono = rules(css).find(([prelude]) => prelude.trim() === '.mono');
+        expect(mono, 'a .mono rule exists').toBeDefined();
+        expect(mono![1]).toMatch(/font-family\s*:\s*var\(--font-mono\)/);
+        expect(css).toMatch(/--font-sans:\s*'Inter'/);
+        expect(css).not.toMatch(/Barlow/i);
     });
 });
 
@@ -747,5 +950,27 @@ describe('the design-system inventory', () => {
         }
         expect([...found.prefixes]).toEqual(['repo-card-disc-']);
         for (const prose of ['ghost', 'cards', 'four']) expect(found.tokens, prose).not.toContain(prose);
+    });
+
+    it('stacks the key/value list into one column at phone width and keeps two columns above it', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const kv = rules(css).filter(([prelude]) => prelude === '.kv');
+        expect(kv.some(([, body]) => /grid-template-columns:\s*auto auto/.test(body))).toBe(true);
+        const phone = [...css.matchAll(/@media \(max-width: 640px\)\s*\{([\s\S]*?)\n {4}\}/g)].map((m) => m[1]!);
+        expect(phone.some((block) => /\.kv\s*\{[^}]*grid-template-columns:\s*1fr/.test(block))).toBe(true);
+    });
+
+    it('lets the identity head text shrink and break a long login instead of overflowing a phone', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/entry.css'), 'utf8'));
+        const body = (prelude: string) => rules(css).find(([p]) => p === prelude)?.[1] ?? '';
+        expect(body('.identity-head > div')).toMatch(/min-width:\s*0/);
+        expect(body('.identity-head p')).toMatch(/overflow-wrap:\s*anywhere/);
+    });
+
+    it('styles the shared state note as quiet text, red only for an error', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const preludes = rules(css).map(([prelude]) => prelude);
+        expect(preludes.some((p) => p.includes('.state-note'))).toBe(true);
+        expect(preludes.some((p) => p.includes('.state-note.error'))).toBe(true);
     });
 });

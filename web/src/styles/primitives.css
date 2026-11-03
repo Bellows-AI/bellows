@@ -47,9 +47,9 @@
            control is displaced or hidden, whatever the account login's length. */
         row-gap: 2px;
         justify-content: space-between;
-        /* 56px border-box: a 40px control, 4px above and below, and the 1px bottom edge fit
+        /* 48px border-box: a 36px control, 4px above and below, and the 1px bottom edge fit
            inside it (issue 274). */
-        min-height: 56px;
+        min-height: 48px;
         padding: 4px 24px;
         position: sticky;
         top: 0;
@@ -59,6 +59,23 @@
     .appbar-trigger,
     .appbar-brand {
         display: none;
+    }
+
+    /* Compact desktop chrome: 36px quiet triggers fit the 48px bar. The compact floor in
+       touch-targets.css (44px) takes over at 900px, so this stays desktop-only. The appearance
+       trigger names itself through its visually hidden label and the sun/moon glyph. */
+    @media (min-width: 901px) {
+        .appbar .select-trigger {
+            min-height: 36px;
+        }
+    }
+
+    .appbar .theme-label {
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
     }
 
     .appbar-actions {
@@ -126,7 +143,9 @@
         align-items: center;
         display: flex;
         flex: none;
+        flex-wrap: wrap;
         gap: 8px;
+        max-width: 100%;
     }
 
     /* Header actions are primary-sized controls on desktop (the 36px floor below stays the
@@ -135,12 +154,13 @@
         min-height: 40px;
     }
 
-    /* The secondary button — every button's default: an outline on the page, filled only on
-       hover. `primary` and `danger` below are the two variants. */
+    /* The secondary button — every button's default: a quiet fill at rest and no visible frame
+       (the border stays transparent, so a state that adds one back shifts nothing). `primary`,
+       `tertiary`, `icon-button` and `danger` below are the variants. */
     button {
-        background: transparent;
+        background: var(--surface-strong);
         color: var(--ink);
-        border: 1px solid var(--line-strong);
+        border: 1px solid transparent;
         border-radius: var(--radius-lg);
         /* Desktop control floor (issue 189): padding alone lands a 31px control; every button,
            tab and verdict clears 36. The compact shell restates 44 for touch below. */
@@ -155,7 +175,7 @@
        a skin with status text or no frame restates its own hover. Disabled comes after, so a dead
        button never lights up. */
     button:hover {
-        background: var(--surface-strong);
+        background: var(--surface-hover);
     }
 
     /* Held down (issue 265): a press must look different from a hover, or a member cannot tell a
@@ -168,8 +188,7 @@
     button:disabled {
         background: transparent;
         color: var(--ink-muted);
-        cursor: default;
-        border-color: var(--line);
+        cursor: not-allowed;
     }
 
     /* The page's one main action. Disabled trades the accent for the strong surface, so a
@@ -200,9 +219,30 @@
         cursor: not-allowed;
     }
 
-    /* The destructive variant: the stop lamp's text and edge, its wash on hover. */
+    /* The quietest action: no fill until hovered, never the page's one main thing. */
+    button.tertiary {
+        background: transparent;
+    }
+
+    button.tertiary:hover:not(:disabled),
+    button.icon-button:hover:not(:disabled) {
+        background: var(--surface-hover);
+    }
+
+    /* An icon alone in a button: a square tertiary target on the 36px floor. */
+    button.icon-button {
+        align-items: center;
+        background: transparent;
+        display: inline-flex;
+        justify-content: center;
+        min-width: 36px;
+        padding: 4px;
+    }
+
+    /* The destructive variant: the stop lamp's text with no frame or fill at rest, its wash on
+       hover. Never filled: danger is never visually primary. */
     button.danger {
-        border-color: var(--bad-border);
+        background: transparent;
         color: var(--lamp-stop);
     }
 
@@ -219,8 +259,55 @@
     }
 
     button.danger:disabled {
-        border-color: var(--line);
         color: var(--ink-muted);
+    }
+
+    /* The shared tab strip: a row of `role="tab"` buttons, the selected one (aria-selected, the
+       attribute roving focus moves) marked by an accent underline and ink. Lanes migrate their own
+       tab skins onto it. */
+    .tabs {
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    .tabs [role='tab'] {
+        background: transparent;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        color: var(--ink-muted);
+        margin-bottom: -1px;
+    }
+
+    .tabs [role='tab']:hover:not(:disabled, [aria-selected='true']) {
+        background: var(--surface-strong);
+    }
+
+    .tabs [role='tab'][aria-selected='true'] {
+        border-bottom-color: var(--accent);
+        color: var(--accent);
+    }
+
+    /* The same strip over links: a tab that is a URL (the task inbox) is an anchor whose current
+       page, not aria-selected, marks it; the lane sets its control floor. */
+    .tabs a {
+        align-items: center;
+        border-bottom: 2px solid transparent;
+        color: var(--ink-muted);
+        display: inline-flex;
+        margin-bottom: -1px;
+        padding: 4px 12px;
+        text-decoration: none;
+    }
+
+    .tabs a:hover:not([aria-current='page']) {
+        background: var(--surface-strong);
+    }
+
+    .tabs a[aria-current='page'] {
+        border-bottom-color: var(--accent);
+        color: var(--accent);
     }
 
     /* The one text-field skin (inputs, selects and textareas alike): sunken, framed by the
@@ -322,7 +409,7 @@
     .select-trigger:disabled {
         border-color: transparent;
         color: var(--ink-muted);
-        cursor: default;
+        cursor: not-allowed;
     }
 
     /* The chevron is the "a choice is available here" cue; a disabled trigger has none to make. */
@@ -349,6 +436,16 @@
         illegible anyway (~700px); past 900px the whole selector leaves the bar for the drawer. */
     .org-select {
         max-width: 220px;
+        min-width: 0;
+    }
+
+    /* The visible name clips to one line with an ellipsis; the trigger's aria-label keeps the
+       full name for assistive tech. */
+    .org-select-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     /* The routed page's content container (issue 160) — a class, not a `main` element selector,
@@ -359,13 +456,15 @@
         display: flex;
         flex-direction: column;
         gap: 20px;
-        max-width: 1400px;
+        max-width: var(--page-dense);
         min-width: 0;
     }
 
+    /* Soft tier: a quiet fill, no frame. The border stays as a transparent slot so `.bad` can name
+       a meaning with it and `panel-flat` can draw the canvas tier's hairline without a reflow. */
     .panel {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
+        background: var(--surface-soft);
+        border: 1px solid transparent;
         border-radius: var(--radius-xl);
         padding: 24px;
     }
@@ -387,7 +486,12 @@
     .panel > :where(ul) {
         list-style: disc;
         margin: 0 0 12px;
-        padding-left: 20px;
+        padding-left: 24px;
+    }
+
+    .panel.panel-flat {
+        background: var(--surface);
+        border-color: var(--line);
     }
 
     .panel.bad {
@@ -420,7 +524,6 @@
 
     .status {
         color: var(--ink-muted);
-        font-family: var(--font-mono);
         margin: 0;
     }
 
@@ -495,19 +598,15 @@
         content: ' ↓';
     }
 
-    table.data td:not(:first-child) {
+    /* The identifier primitive: SHAs, ids, tokens, branch names and code — the only mono a table
+       cell or line of text takes. */
+    .mono {
         font-family: var(--font-mono);
-    }
-
-    /* A compact table: hairline rows, no mono. Placed after the mono rule so every cell, pills and
-       buttons included, reads in the inherited sans face. */
-    table.data.data-compact td {
-        font-family: inherit;
     }
 
     table.data.data-compact th,
     table.data.data-compact td {
-        padding: 8px 12px;
+        padding: 8px 8px;
         vertical-align: middle;
     }
 
@@ -596,8 +695,17 @@
        widening its column past a 320px page (issue 287). */
     .kv dd {
         margin: 0;
-        font-family: var(--font-mono);
         overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 640px) {
+        .kv {
+            grid-template-columns: 1fr;
+        }
+
+        .kv dd {
+            margin-bottom: 8px;
+        }
     }
 
     footer {
@@ -682,7 +790,7 @@
         overflow-y: auto;
     }
 
-    /* The text wordmark, on the app bar's 56px line so the two chrome edges read as one. */
+    /* The text wordmark, on the app bar's 48px line so the two chrome edges read as one. */
     .sidenav-brand {
         align-items: center;
         color: var(--ink);
@@ -691,7 +799,7 @@
         font-weight: 600;
         letter-spacing: 0.12em;
         margin-bottom: 8px;
-        min-height: 56px;
+        min-height: 48px;
         padding: 0 12px;
         text-transform: uppercase;
     }
@@ -764,8 +872,8 @@
     }
 
     .sidenav-sublink.is-active {
-        background: var(--surface-raised);
-        color: var(--accent);
+        background: var(--surface-strong);
+        color: var(--ink);
     }
 
     /* The recent tasks, nested under the Tasks item. A command is long; the label clips and the full
@@ -845,7 +953,8 @@
     }
 
     .sidenav-task.is-active {
-        color: var(--accent);
+        background: var(--surface-strong);
+        color: var(--ink);
     }
 
     /* The status dot before a task's name: the task's state in one painted pixel, the legend being the
@@ -933,7 +1042,8 @@
     }
 
     .sidenav-newtask.is-active {
-        color: var(--accent);
+        background: var(--surface-strong);
+        color: var(--ink);
     }
 
     /* Below this the two columns stop fitting side by side: 224 of nav leaves under 680 for a grid
@@ -1447,11 +1557,16 @@
     }
 
     .usage-coverage,
-    .usage-state-note {
+    .usage-state-note,
+    .state-note {
         color: var(--ink-muted);
         font-size: 12px;
         font-weight: 400;
         margin: 4px 0;
+    }
+
+    .state-note.error {
+        color: var(--lamp-stop);
     }
 
     ul.usage-coverage {

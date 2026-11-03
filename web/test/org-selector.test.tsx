@@ -48,7 +48,7 @@ describe('OrgSelector', () => {
 
     it('shows the current organization on the trigger', () => {
         // Selection display is the trigger's text now; the options themselves are client-side.
-        expect(render(CONFIG)).toContain('>Bellows AI</button>');
+        expect(render(CONFIG)).toContain('<span class="org-select-name">Bellows AI</span></button>');
     });
 
     it('leaves the control live in directory mode', () => {

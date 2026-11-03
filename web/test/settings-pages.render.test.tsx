@@ -119,9 +119,20 @@ describe('Settings organization page', () => {
         expect(html).toContain('Admin');
         expect(html).not.toContain('bellows');
         expect(html).toContain('Loading environment…');
+        expect(html).toMatch(/<p class="state-note" role="status">Loading environment…/);
         expect(html).not.toContain('Any member can edit.');
         expect(html).not.toContain('No variables configured.');
         expectNoPlaceholder(html);
+    });
+
+    it('shows identity as a compact header row, and keeps one h1 over h2 sections', () => {
+        const html = render('/settings/organization');
+        expect(html).not.toMatch(/<section class="panel">[\s\S]*Your role/);
+        expect(html).toMatch(
+            /class="org-identity"[^>]*>[\s\S]*<svg[\s\S]*Bellows AI[\s\S]*Your role[\s\S]*pill[^>]*>Admin/
+        );
+        expect(html.match(/<h1[ >]/g)).toHaveLength(1);
+        expect(html).not.toMatch(/<h[3-6][ >]/);
     });
 
     it('leaves the editor enabled for a member — the server route is the authorization', () => {
@@ -153,6 +164,26 @@ describe('Settings organization page', () => {
         }
     });
 
+    it('renders the organization-wide scope line and both tab counts once the environment arrives', () => {
+        const html = render('/settings/organization', {
+            env: {
+                loading: false,
+                data: {
+                    org: [
+                        { name: 'LOG_LEVEL', value: 'debug', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' },
+                        { name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' },
+                    ],
+                    workspace: [],
+                    repos: [],
+                },
+            },
+        });
+        expect(html).toContain('Applies to every member');
+        expect(html).toContain('Any member can edit.');
+        expect(html.replace(/<[^>]+>/g, '')).toContain('Variables (1)');
+        expect(html.replace(/<[^>]+>/g, '')).toContain('Secrets (1)');
+    });
+
     it('renders no editor after a failed environment read — the error is the whole story', () => {
         // loading is false and data is null: the ternary's "else" arm. An editor mounted here
         // would be an ENABLED empty draft whose save wipes whatever is stored.
@@ -160,6 +191,8 @@ describe('Settings organization page', () => {
             env: { loading: false, error: 'The environment request failed' },
         });
         expect(html).toContain('The environment request failed');
+        expect(html).toMatch(/<p class="state-note error" role="alert">The environment request failed/);
+        expect(html).toContain('<h1');
         expect(html).not.toContain('No variables configured.');
         expect(html).not.toContain('Add variable');
     });
@@ -221,6 +254,13 @@ describe('Settings workspace page', () => {
         });
         expect(html).not.toContain('The workspace request failed');
         expect(html).toContain('My workspace');
+    });
+
+    it('announces a failed environment read as an alert', () => {
+        const html = render('/settings/workspace', {
+            env: { loading: false, error: 'The environment request failed' },
+        });
+        expect(html).toMatch(/<p class="state-note error" role="alert">The environment request failed/);
     });
 
     it('renders the personal environment editor when its store answers', () => {
@@ -370,6 +410,7 @@ describe('Settings executors page', () => {
         expect(html).toContain('The workspace request failed');
         expect(html).not.toContain('No personal executors configured');
         expect(html).not.toContain('Add executor');
+        expect(html).toMatch(/<p class="state-note error" role="alert">The workspace request failed/);
     });
 
     it('fetches nothing on mount — the config read belongs to the dialog open, not the page', () => {
@@ -459,6 +500,7 @@ describe('Settings repositories page', () => {
         const html = render('/settings/repos', { repos: { loading: false, error: 'Request failed (503)' } });
         expect(html).toContain('Request failed (503)');
         expect(html).not.toContain('not installed on any repositories');
+        expect(html).toMatch(/<p class="state-note error" role="alert">Could not reach GitHub: Request failed \(503\)/);
     });
 
     it('does not depend on the workspace poll: a failed one is not the repositories page\u2019s error', () => {

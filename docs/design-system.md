@@ -7,7 +7,8 @@ never utilities, and every color it renders resolves through a token.
 | --- | --- | --- |
 | Entry, import order, cascade | `web/src/styles.css` | `web/test/styles.test.ts` |
 | Tokens — both `:root` blocks, the `@theme` blocks | `web/src/styles/tokens.css` | `web/test/styles.test.ts` |
-| Self-hosted faces | `web/src/styles/fonts.css`, `web/public/fonts/` | `web/test/styles.test.ts` |
+| Self-hosted faces (Inter sans, Plex Mono) | `web/src/styles/fonts.css`, `web/public/fonts/` | `web/test/styles.test.ts` |
+| Mono identifier primitive `.mono` (SHAs, ids, tokens, branch names; no generic cell or `.status`) | `web/src/styles/primitives.css` | `web/test/styles.test.ts` |
 | Type scale, bare content link, 36px control floor | `web/src/styles/base.css` | `e2e/polish.spec.ts` |
 | Shared primitives (shell, panels, pills, fields, buttons, selectors, dialogs, tables) | `web/src/styles/primitives.css` | `e2e/polish.spec.ts` |
 | A lane's own rules | `web/src/styles/regions/<lane>.css` | `web/test/styles.test.ts` |
@@ -18,12 +19,15 @@ never utilities, and every color it renders resolves through a token.
 | Downward-only popover anchoring | `web/src/anchor.ts` | `web/test/anchor.test.ts` |
 | Token usage: four figures, breakdown, notes (no data fetch, no combined total) | `web/src/components/usage/` (`TokenFigures.tsx`, `PrecisionBadge.tsx`, `CoverageNote.tsx`, `UsageBreakdown.tsx`, `UsageDiagnostics.tsx`, `UsageStateNote.tsx`, `usage-format.ts`) | `web/test/usage-components.render.test.tsx`, `web/test/usage-breakdown.dom.test.tsx`, `web/test/usage-format.test.ts`, `e2e/specimen.spec.ts` |
 | Icon set and `ICON_NAMES` | `web/src/components/Icon.tsx` | `web/test/icon.test.tsx` |
+| Page content widths: `--page-dense` (`.page`), `--page-standard` (settings), `--page-form` (composer); `--measure-wide`, `--measure-narrow` (task stats, onboarding) | `web/src/styles/tokens.css`, `web/src/styles/primitives.css` | `web/test/styles.test.ts` |
 | One-`h1` page heading contract | `web/src/components/PageHeader.tsx` | `web/test/page-header.test.tsx` |
 | Table sorting, row actions, ≤640px card reflow | `web/src/components/DataTable.tsx`, `RowActions.tsx` | `web/test/data-table.test.tsx`, `web/test/dashboard.dom.test.tsx`, `web/test/row-actions.render.test.tsx` |
 | Shell, sidenav, drawer | `web/src/components/AppShell.tsx`, `SideNav.tsx`, `MobileNavDialog.tsx` | `web/test/shell.test.tsx`, `web/test/navigation.dom.test.tsx`, `web/test/sidenav.test.tsx`, `e2e/navigation.spec.ts` |
 | Component interaction under jsdom + Testing Library (the `dom` project) | `web/test/dom.tsx`, `vitest.config.ts` | `web/test/*.dom.test.tsx` |
 | Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` (`npm run verify:ui:nightly`) |
+| Specimen sections (Surfaces, Type, Icons, Actions, Data, Forms, States, Tokens), one icon per `ICON_NAMES`, token explorer over `tokens.css` | `e2e/specimen/main.tsx`, `e2e/specimen/tokens.tsx`, `e2e/specimen/matrix.ts` (`GROUPS`, `SECTIONS`) | `e2e/specimen.spec.ts` (`specimen documentation`) |
 | Every route family's overflow at 4 widths in one theme; rendered contrast in both themes | — | `e2e/matrix.spec.ts` |
+| DOM regression matrix (`@nightly`, no screenshots): major routes plus batches list, draft and monitor in both themes at 1440 and 390 held to fit, no NaN text and a clean console; held reads are never an alert, every refused read (dashboard `StatusBanner` included) announces as one | `web/src/components/StatusBanner.tsx` | `e2e/state-matrix.spec.ts`, `web/test/dashboard-telemetry.test.tsx` |
 
 ## Invariants
 
@@ -44,6 +48,7 @@ never utilities, and every color it renders resolves through a token.
   finished well, red failed, grey parked, amber warnings only, purple a question and only on the Question notification event tag. The text label always renders and
   the icon is `aria-hidden`. The per-state maps are `TONE` in `web/src/panels/TaskHeader.tsx` and
   `STATE_PILL` in `web/src/pages/TaskInboxPage.tsx`, keyed by `taskTone` in `web/src/task-tree.ts`.
+- Surface tiers: flat = `--surface` + `--line` (`panel-flat`), soft = `--surface-soft` (the resting `panel`, borderless; `bad` keeps its border), raised = `--surface-raised` (dialogs, popovers, composer). `web/test/styles.test.ts`, `e2e/specimen/main.tsx`.
 - The light washes are opaque tints mixed into `--surface-raised`; the dark ones are translucent.
   `e2e/polish.spec.ts` measures every pill, chip and banner on raised, canvas and sunken in both
   themes — a translucent light wash drops below AA on the light canvas.
@@ -55,7 +60,10 @@ never utilities, and every color it renders resolves through a token.
   Under `prefers-reduced-motion` the lamp stills at full strength, so no state rides on movement.
 - Fonts are self-hosted: the CSP is `font-src 'self'` and `verify:ui` runs offline, so a remote
   font link falls back silently exactly where faces are checked.
-- The icon set is frozen at the foundation; a lane that needs a glyph asks for a foundation change.
+- The icon set is frozen (`ICON_NAMES`, pinned by `icon.test.tsx`); a lane that needs a glyph asks for a foundation change. Sizes: nav 20, inline and action 16, banner 24.
+- One primary call to action per view (`button.primary`); every other action is `tertiary` or `icon-button`. `e2e/specimen/main.tsx`.
+- A surface renders only fields and actions the API payload carries; a missing value reads as `StateNote` or an em dash, never invented data. `e2e/state-matrix.spec.ts`, `e2e/org-states.spec.ts`.
+- A UI change is checked against the reviewer checklist in `.claude/skills/ui-verify/SKILL.md`.
 
 ## Stated limits
 
@@ -78,12 +86,12 @@ Shell and navigation: `shell-main`, `page-header-eyebrow`, `page-header-leading`
 `sidenav-dot-failed`, `sidenav-dot-done`, `sidenav-dot-review`, `mobile-nav-head`,
 `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `is-active`.
 
-Controls and overlays: `primary`, `danger`, `select-trigger`, `popover-option`, `popover-separator`,
-`theme-field`, `theme-label`, `org-selector`, `user-menu-button`, `user-menu-login`,
+Controls and overlays: `primary`, `tertiary`, `icon-button`, `danger`, `tabs`, `select-trigger`, `popover-option`, `popover-separator`,
+`theme-field`, `theme-label`, `org-selector`, `org-select-name`, `user-menu-button`, `user-menu-login`,
 `user-menu-panel`, `avatar-fallback`, `avatar-lg`, `task-avatar`, `row-actions-trigger`,
 `dialog-layer`, `dialog-backdrop`, `dialog-position`, `lamp-glow`.
 
-Surfaces and feedback: `panel-head`, `panel-actions`, `status`, `alert`, `error`, `muted`,
+Surfaces and feedback: `panel-flat`, `panel-head`, `panel-actions`, `status`, `alert`, `error`, `muted`,
 `badge-warn`, `banner-warn`, `banner-bad`, `banner-info`, `banner-title`, `pill-ok`, `pill-warn`,
 `pill-bad`, `pill-done`, `pill-accent`, `pill-question`, `pill-list`, `count`, `switch`, `inbox-chip`.
 
@@ -94,11 +102,13 @@ Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-preci
 `usage-precision-words`, `usage-coverage`, `usage-breakdown`, `usage-breakdown-toggle`,
 `usage-variants`, `usage-child-row`, `usage-diagnostics`, `usage-state-note`.
 
+Shared state line: `state-note` (+ `error`) via `StateNote.tsx` — loading `role=status`, error `role=alert`, empty plain; `web/test/state-note.dom.test.tsx`.
+
 ## Shared UI units
 
 `AppBar.tsx`, `AppShell.tsx`, `Avatar.tsx`, `ConfirmDialog.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
 `MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`,
-`SideNav.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
+`SideNav.tsx`, `StateNote.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
 `SettingsLayout.tsx`, `TasksLayout.tsx` (`web/src/pages/`).
 
 ## Lanes

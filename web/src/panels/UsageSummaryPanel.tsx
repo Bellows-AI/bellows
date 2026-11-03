@@ -3,35 +3,15 @@ import { inputTokens, type TelemetryStats } from '@factory-ai/core';
 import type { StatsPayload } from '../api/useStats.js';
 import { duration, int, num, pct, tokens } from '../format.js';
 import { selectionText } from '../dashboardSummary.js';
-import { Icon, type IconName } from '../components/Icon.js';
 import { TokenFigures } from '../components/usage/TokenFigures.js';
 import { UsageBreakdown } from '../components/usage/UsageBreakdown.js';
 import { UsageDiagnostics } from '../components/usage/UsageDiagnostics.js';
 import { UsageStateNote } from '../components/usage/UsageStateNote.js';
 
-/** The glyph inside a card's 40px disc. */
-const DISC_ICON_SIZE = 24;
-
-/** One metric card: the icon disc, then the figure, its label and its captions. */
-function MetricCard({
-    icon,
-    value,
-    label,
-    ok = false,
-    children,
-}: {
-    icon: IconName;
-    value: string;
-    label: string;
-    /** Edit acceptance's disc sits on the ok wash; every other disc on the accent wash. */
-    ok?: boolean;
-    children: ReactNode;
-}) {
+/** One metric of the open strip: the figure, its label and its captions. */
+function MetricCard({ value, label, children }: { value: string; label: string; children: ReactNode }) {
     return (
         <div className="usage-group">
-            <span className={ok ? 'usage-disc usage-disc-ok' : 'usage-disc'} aria-hidden="true">
-                <Icon name={icon} size={DISC_ICON_SIZE} />
-            </span>
             <div className="usage-body">
                 <strong>{value}</strong>
                 <span className="usage-label">{label}</span>
@@ -73,8 +53,8 @@ function AttributionReadouts({ telemetry }: { telemetry: TelemetryStats }) {
 }
 
 /**
- * The metric summary: four cards — Sessions, Tokens, Active time, Edit acceptance — each an icon
- * disc beside its figure. The Tokens card headlines total input (the four token types are never
+ * The metric summary: one open strip — Sessions, Tokens, Active time, Edit acceptance — each a figure
+ * with its label and captions, no box and no glyph. The Tokens card headlines total input (the four token types are never
  * summed into one figure) with output, cache hit rate and the input parts in its captions. No
  * trend, comparison or cost: the payload carries none. Every figure speaks for the
  * payload it rendered from: the Sessions line names the rendered selection, never the
@@ -107,10 +87,10 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                 {meta.telemetry.source === 'fixture' ? <span className="badge">synthetic fixture</span> : null}
             </h2>
             <div className="usage-groups">
-                <MetricCard icon="users" value={num(t.sessions, 0)} label="Sessions">
+                <MetricCard value={num(t.sessions, 0)} label="Sessions">
                     <span className="usage-caption">{selectionText(meta.range, meta.scope)}</span>
                 </MetricCard>
-                <MetricCard icon="layers" value={tokens(input.total)} label="Total input tokens">
+                <MetricCard value={tokens(input.total)} label="Total input tokens">
                     <span className="usage-caption">
                         {input.cacheHitRatio === null
                             ? 'Cache hit rate not measured'
@@ -118,14 +98,14 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                     </span>
                     <TokenFigures tokens={tk} precision={usage.precision} coverage={usage.coverage} />
                 </MetricCard>
-                <MetricCard icon="clock" value={duration(t.activeHours)} label="Active time">
+                <MetricCard value={duration(t.activeHours)} label="Active time">
                     <span className="usage-caption">
                         {t.activeHours === null
                             ? 'Not measured'
                             : `Across ${num(t.sessions, 0)} sessions · idle time excluded`}
                     </span>
                 </MetricCard>
-                <MetricCard icon="check" value={pct(ea.ratio)} label="Edit acceptance" ok>
+                <MetricCard value={pct(ea.ratio)} label="Edit acceptance">
                     <span className="usage-caption">{editNote}</span>
                 </MetricCard>
             </div>

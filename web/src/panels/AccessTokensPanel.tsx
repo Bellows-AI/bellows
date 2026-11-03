@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AccessTokenView, MintResult } from '../api/useAccessTokens.js';
 import { useAccessTokens } from '../api/useAccessTokens.js';
+import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { taskTime } from '../format.js';
 
 /** One token row: its label and timestamps, and Revoke — or the fact that it already is one.
@@ -143,6 +144,8 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
     const [copied, setCopied] = useState(false);
     const [failure, setFailure] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [pending, setPending] = useState<AccessTokenView | null>(null);
+    const [revoking, setRevoking] = useState(false);
 
     const submit = async () => {
         setBusy(true);
@@ -161,10 +164,36 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
         }
     };
 
-    const revoke = async (id: string) => {
+    const revoke = async (id: string): Promise<boolean> => {
         setFailure(null);
         const reason = await onRevoke(id);
         if (reason) setFailure(reason);
+        return !reason;
+    };
+
+    // A revoked row loses its Revoke button on the refetch, so the dialog's own focus return would
+    // land on a removed control: after a confirmed revoke focus moves to the panel heading, which
+    // outlives every row. A refused revoke keeps its button, so the library's return stands.
+    const headingRef = useRef<HTMLHeadingElement>(null);
+    const [focusHeading, setFocusHeading] = useState(false);
+    useEffect(() => {
+        if (!focusHeading) return;
+        const timer = setTimeout(() => {
+            headingRef.current?.focus();
+            setFocusHeading(false);
+        }, 0);
+        return () => clearTimeout(timer);
+    }, [focusHeading]);
+
+    const confirmRevoke = async () => {
+        if (pending === null) return;
+        setRevoking(true);
+        try {
+            if (await revoke(pending.id)) setFocusHeading(true);
+        } finally {
+            setRevoking(false);
+            setPending(null);
+        }
     };
 
     const copy = async () => {
@@ -181,7 +210,9 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
     return (
         <section className="panel">
             <div className="panel-head">
-                <h2>{title}</h2>
+                <h2 ref={headingRef} tabIndex={-1}>
+                    {title}
+                </h2>
             </div>
             {hint ? <p className="muted">{hint}</p> : null}
             {error ? <p className="status">{error}</p> : null}
@@ -202,9 +233,23 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
                     onSubmit={() => void submit()}
                     loading={loading}
                     tokens={tokens}
-                    onRevoke={(id) => void revoke(id)}
+                    onRevoke={(id) => setPending(tokens.find((t) => t.id === id) ?? null)}
                 />
             )}
+            <ConfirmDialog
+                open={pending !== null}
+                busy={revoking}
+                title={`Revoke ${pending?.label ?? ''}?`}
+                confirmClassName="chat-remove"
+                confirmText={revoking ? 'Revoking…' : 'Revoke'}
+                onClose={() => setPending(null)}
+                onConfirm={() => void confirmRevoke()}
+            >
+                <p>
+                    Anything using the token “{pending?.label}” stops working at once. This cannot be undone; a revoked
+                    token is replaced by creating a new one.
+                </p>
+            </ConfirmDialog>
         </section>
     );
 }

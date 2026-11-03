@@ -1,5 +1,6 @@
 import { Label, Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { useDownwardAnchor } from '../anchor.js';
+import { Icon } from './Icon.js';
 import { useTheme } from '../theme.js';
 import type { ThemePreference } from '../theme.js';
 
@@ -36,6 +37,8 @@ export function ThemeSelector() {
                     Appearance
                 </Label>
                 <ListboxButton id={THEME_BUTTON_ID} ref={setReference} className="select-trigger">
+                    {preference === 'light' ? <Icon name="sun" /> : null}
+                    {preference === 'dark' ? <Icon name="moon" /> : null}
                     {current.label}
                 </ListboxButton>
                 <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">

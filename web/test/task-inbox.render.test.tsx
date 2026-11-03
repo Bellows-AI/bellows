@@ -102,7 +102,7 @@ describe('TaskInboxPage header', () => {
     });
 });
 
-describe('TaskInboxPage count cards', () => {
+describe('TaskInboxPage count strip', () => {
     it('links each organization count to its state tab, named as a sentence', () => {
         const html = renderInbox({
             navigation: navigation({ review: 12, running: 3, past: 86 }),
@@ -116,7 +116,11 @@ describe('TaskInboxPage count cards', () => {
         expect(html).toContain('aria-label="12 tasks need review across the organization"');
         expect(html).toContain('aria-label="3 running tasks across the organization"');
         expect(html).toContain('aria-label="86 past tasks across the organization"');
-        expect((html.match(/Organization total/g) ?? []).length).toBe(3);
+        // One quiet strip: a single list of three links under one caption, no per-count card.
+        expect((html.match(/Organization total/g) ?? []).length).toBe(1);
+        expect((html.match(/<ul class="inbox-counts"/g) ?? []).length).toBe(1);
+        expect((html.match(/<li class="inbox-count"/g) ?? []).length).toBe(3);
+        expect(html).not.toContain('inbox-card');
     });
 
     it('reads the same counts, and the same bare links, whatever the filters', () => {
@@ -431,6 +435,43 @@ describe('TaskInboxPage page states', () => {
         });
         expect(html).toContain('load more tasks — Request failed (503)');
         expect(html).toContain('fix the flaky login test');
+    });
+});
+
+describe('TaskInboxPage states and tabs', () => {
+    it('draws the state tabs on the shared .tabs strip, still links with aria-current', () => {
+        const html = renderInbox({
+            navigation: navigation(),
+            items: [taskSummary()],
+            nextCursor: null,
+            initial: false,
+        });
+        expect(html).toMatch(/<nav class="tabs inbox-tabs" aria-label="Task state">/);
+        expect(html).toContain('aria-current="page"');
+    });
+
+    it('says loading, no-results and a failed first page through the shared state note', () => {
+        const loading = renderInbox({ navigation: null, items: null, nextCursor: null, initial: true });
+        expect(loading).toContain('<p class="state-note" role="status">Loading tasks…</p>');
+        const none = renderInbox({
+            navigation: navigation({ review: 3 }),
+            items: [],
+            nextCursor: null,
+            initial: false,
+        });
+        expect(none).toContain('<p class="state-note">No tasks match these filters</p>');
+        const failed = renderInbox({
+            navigation: null,
+            items: null,
+            nextCursor: null,
+            initial: false,
+            error: 'database is down',
+            refreshError: 'database is down',
+        });
+        expect(failed).toContain('state-note error');
+        expect(failed).not.toContain('No tasks yet');
+        expect(failed).not.toContain('No tasks match');
+        expect(failed).not.toMatch(/inbox-count"/);
     });
 });
 

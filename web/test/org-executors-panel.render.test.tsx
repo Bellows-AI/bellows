@@ -71,6 +71,14 @@ describe('the organization executors panel', () => {
         expect(html).not.toContain('>Make personal<');
     });
 
+    it('leads each row with an initial avatar beside the name, and invents no model or runtime', () => {
+        const html = renderPanel({ defaultName: 'team-runner' });
+        expect(html).toMatch(
+            /<span class="member-identity"><span class="avatar avatar-fallback" aria-hidden="true">T<\/span><span class="member-login" title="team-runner">team-runner<\/span><span class="pill-list"><span class="pill">Default<\/span><\/span><\/span>/
+        );
+        expect(html).not.toMatch(/model|runtime/i);
+    });
+
     it('shows a member Make default and no overflow trigger', () => {
         const html = renderPanel();
         expect(html.match(/>Make default</g)?.length).toBe(1);

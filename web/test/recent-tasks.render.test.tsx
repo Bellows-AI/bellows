@@ -69,6 +69,13 @@ const render = (jobs: Job[] | null, error: string | null) =>
     );
 
 describe('the task board section', () => {
+    it('keeps titles and dates out of the identifier face and right-aligns the figures', () => {
+        const html = render([job({})], null);
+        expect(html).not.toContain('class="mono"');
+        expect(html).not.toMatch(/class="[^"]*\bmono\b/);
+        expect((html.match(/<td class="align-end">/g) ?? []).length).toBe(3);
+    });
+
     it('heads the section Recent tasks with a Task board pill and the range/scope caption', () => {
         const html = render([job({})], null);
         expect(html).toContain('<h2 id="task-board-heading">Recent tasks</h2>');

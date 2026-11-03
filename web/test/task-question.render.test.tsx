@@ -58,6 +58,10 @@ const liveRegion = (html: string): string => {
 };
 
 describe('TaskQuestion: the form', () => {
+    it('is a labelled group of its own, apart from the history around it', () => {
+        expect(render(question())).toMatch(/<div class="question" role="group" aria-label="[^"]*question[^"]*"/i);
+    });
+
     it('renders one fieldset per question, a legend holding the header chip and the text, native radios and Other', () => {
         const html = render(question({ questions: [question().questions[0]!, colours] }));
         expect(html.match(/<fieldset/g)?.length).toBe(2);

@@ -1,13 +1,15 @@
-import { StrictMode } from 'react';
+import { Fragment, StrictMode } from 'react';
 import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { OrganizationMeta } from '@factory-ai/core';
-import { Icon } from '../../web/src/components/Icon.js';
+import { Icon, ICON_NAMES } from '../../web/src/components/Icon.js';
 import { OrgSelector } from '../../web/src/components/OrgSelector.js';
 import { PageHeader } from '../../web/src/components/PageHeader.js';
 import { RowActions } from '../../web/src/components/RowActions.js';
+import { StateNote } from '../../web/src/components/StateNote.js';
 import { UsageSpecimen } from './usage.js';
-import { COLUMNS, cellId, LONG_LABEL, OPEN_SELECTOR_ORG, ROWS } from './matrix.js';
+import { TokenExplorer } from './tokens.js';
+import { COLUMNS, cellId, GROUPS, LONG_LABEL, OPEN_SELECTOR_ORG, ROWS } from './matrix.js';
 import type { Column, Row } from './matrix.js';
 import '../../web/src/styles.css';
 import './specimen.css';
@@ -218,6 +220,31 @@ const CELLS: Record<Row, Partial<Record<Column, ReactNode>>> = {
     'Primary button': button('primary', 'Start task', 'Starting…'),
     'Secondary button': button(undefined, 'Cancel', 'Saving…'),
     'Destructive button': button('danger', 'Remove task', 'Removing…'),
+    'Tertiary button': button('tertiary', 'Skip', 'Skipping…'),
+    'Icon button': {
+        Default: (
+            <button type="button" className="icon-button" aria-label="Refresh">
+                <Icon name="clock" size={16} />
+            </button>
+        ),
+        Disabled: (
+            <button type="button" className="icon-button" aria-label="Refresh, disabled" disabled>
+                <Icon name="clock" size={16} />
+            </button>
+        ),
+    },
+    Tabs: {
+        Default: (
+            <div className="tabs" role="tablist" aria-label="Specimen tabs">
+                <button type="button" role="tab" aria-selected="true">
+                    Overview
+                </button>
+                <button type="button" role="tab" aria-selected="false">
+                    Activity
+                </button>
+            </div>
+        ),
+    },
     'Text field': {
         Default: <Field name="Repository" />,
         Selected: <Field name="Repository, filled" value="bellows-ai/bellows" />,
@@ -415,6 +442,22 @@ function Specimen() {
                 title="Component states"
                 description="Every shared primitive in every state, from the app's own stylesheet."
             />
+            <section aria-labelledby="specimen-type-title" className="specimen-block">
+                <h2 id="specimen-type-title">Type</h2>
+                <p className="specimen-sans">Inter, the sans face: headings, labels and running text.</p>
+                <p className="mono specimen-mono">IBM Plex Mono, the identifier face: 4f9c2a1 feature/branch-name</p>
+            </section>
+            <section aria-labelledby="specimen-icons-title" className="specimen-block">
+                <h2 id="specimen-icons-title">Icons</h2>
+                <ul className="specimen-icons">
+                    {ICON_NAMES.map((name) => (
+                        <li key={name} data-icon={name}>
+                            <Icon name={name} size={20} />
+                            <span>{name}</span>
+                        </li>
+                    ))}
+                </ul>
+            </section>
             <table className="specimen-grid">
                 <thead>
                     <tr>
@@ -428,31 +471,59 @@ function Specimen() {
                 </thead>
                 <tbody>
                     {ROWS.map((row) => (
-                        <tr key={row}>
-                            <th scope="row">{row}</th>
-                            {columnsOf(row).map((column) => {
-                                const cell = CELLS[row][column];
-                                return cell === undefined ? (
-                                    <td key={column} className="specimen-na" data-label={column}>
-                                        —
-                                    </td>
-                                ) : (
-                                    <td
-                                        key={column}
-                                        colSpan={SPANS[row]?.[column]}
-                                        className={row === 'Selector (open)' ? 'specimen-open-slot' : undefined}
-                                        data-label={column}
-                                        data-cell={cellId(row, column)}
-                                    >
-                                        <div className="specimen-cell">{cell}</div>
-                                    </td>
-                                );
-                            })}
-                        </tr>
+                        <Fragment key={row}>
+                            {GROUPS.filter(([, first]) => first === row).map(([group]) => (
+                                <tr key={group} className="specimen-group">
+                                    <th colSpan={COLUMNS.length + 1} scope="colgroup">
+                                        <h2>{group}</h2>
+                                    </th>
+                                </tr>
+                            ))}
+                            <tr>
+                                <th scope="row">{row}</th>
+                                {columnsOf(row).map((column) => {
+                                    const cell = CELLS[row][column];
+                                    return cell === undefined ? (
+                                        <td key={column} className="specimen-na" data-label={column}>
+                                            —
+                                        </td>
+                                    ) : (
+                                        <td
+                                            key={column}
+                                            colSpan={SPANS[row]?.[column]}
+                                            className={row === 'Selector (open)' ? 'specimen-open-slot' : undefined}
+                                            data-label={column}
+                                            data-cell={cellId(row, column)}
+                                        >
+                                            <div className="specimen-cell">{cell}</div>
+                                        </td>
+                                    );
+                                })}
+                            </tr>
+                        </Fragment>
                     ))}
                 </tbody>
             </table>
+            <section className="specimen-tiers" aria-labelledby="specimen-tiers-title">
+                <h2 id="specimen-tiers-title">Surfaces</h2>
+                <div className="panel panel-flat">
+                    <p>Flat: the canvas with a section hairline.</p>
+                </div>
+                <div className="panel">
+                    <p>Soft: the resting panel, no frame.</p>
+                </div>
+                <div className="dialog">
+                    <p>Raised: dialogs, popovers and the composer.</p>
+                </div>
+            </section>
+            <section aria-labelledby="specimen-state-title">
+                <h2 id="specimen-state-title">States</h2>
+                <StateNote state="loading">Loading tasks…</StateNote>
+                <StateNote state="empty">No tasks yet.</StateNote>
+                <StateNote state="error">Tasks could not be read.</StateNote>
+            </section>
             <UsageSpecimen />
+            <TokenExplorer />
         </main>
     );
 }

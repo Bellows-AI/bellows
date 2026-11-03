@@ -37,6 +37,19 @@ describe('the members panel', () => {
         expect(html).not.toContain('2026-09-01T00:00:00.000Z');
     });
 
+    it('leads each row with the initials avatar and a truncating login that keeps its full name', () => {
+        const html = renderPanel({ members: [member('very-long-login-name-that-must-truncate', 'member')] });
+        expect(html).toContain('avatar avatar-fallback');
+        expect(html).toContain('>V</span>');
+        expect(html).not.toContain('<img');
+        expect(html).toContain('class="member-login" title="very-long-login-name-that-must-truncate"');
+    });
+
+    it('wears the quiet select-trigger skin on every role control', () => {
+        const html = renderPanel();
+        expect(html.match(/<select class="select-trigger"/g)?.length).toBe(2);
+    });
+
     it('gives an admin a role control per row', () => {
         const html = renderPanel();
         expect(html.match(/<select /g)?.length).toBe(2);

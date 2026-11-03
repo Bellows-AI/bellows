@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { THEMES, VIEWPORTS } from './screenshot-matrix.js';
-import { COLUMNS, cellId, OPEN_SELECTOR_ORG, ROWS, USAGE_STATES, usageCellId } from './specimen/matrix.js';
+import { ICON_NAMES } from '../web/src/components/Icon.js';
+import { COLUMNS, cellId, OPEN_SELECTOR_ORG, ROWS, SECTIONS, USAGE_STATES, usageCellId } from './specimen/matrix.js';
 import type { Column, Row } from './specimen/matrix.js';
 import { noHorizontalOverflow } from './viewport.js';
 
@@ -55,6 +57,15 @@ const TARGETS: Target[] = [
         focusable: true,
         pressable: true,
     },
+    {
+        name: 'tertiary-button',
+        row: 'Tertiary button',
+        hover: (c) => c.getByRole('button'),
+        focusable: true,
+        pressable: true,
+    },
+    { name: 'icon-button', row: 'Icon button', hover: (c) => c.getByRole('button'), focusable: true },
+    { name: 'tabs', row: 'Tabs', hover: (c) => c.getByRole('tab').nth(1), focusable: true },
     { name: 'field', row: 'Text field', hover: (c) => c.getByRole('textbox'), focusable: true },
     { name: 'textarea', row: 'Textarea', hover: (c) => c.getByRole('textbox'), focusable: true },
     { name: 'checkbox', row: 'Checkbox', hover: (c) => c.getByRole('checkbox'), focusable: true },
@@ -140,6 +151,14 @@ test.describe('component-state specimen', () => {
                     const target = id === null ? undefined : pending.get(id);
                     if (!target) continue;
                     pending.delete(id!);
+                    // The global ring serves every variant: a tertiary, icon-only or tab control keeps it.
+                    const outline = await page.evaluate(() => {
+                        const s = getComputedStyle(document.activeElement!);
+                        return `${s.outlineStyle} ${s.outlineWidth}`;
+                    });
+                    if (/^(Tertiary button|Icon button|Tabs)$/.test(target.row)) {
+                        expect(outline, `${target.name} focus ring`).toBe('solid 2px');
+                    }
                     await cell(page, target.row, 'Default').screenshot({
                         path: `${STATES_OUT}/${target.name}-focus-${theme}-${viewport.width}.png`,
                     });
@@ -155,5 +174,45 @@ test.describe('component-state specimen', () => {
                 await expect(page.getByRole('listbox')).toHaveCount(0);
             });
         }
+    }
+});
+
+/** The dark `:root` block's custom properties: what the token explorer must list, one row each. */
+const darkTokenNames = (): string[] => {
+    const css = readFileSync('web/src/styles/tokens.css', 'utf8');
+    const open = css.indexOf('{', css.indexOf(':root {'));
+    const body = css.slice(open + 1, css.indexOf('\n}', open));
+    return [...body.matchAll(/^\s*(--[\w-]+):/gm)].map((match) => match[1] as string);
+};
+
+// Living documentation, asserted on the DOM: no screenshot baselines are kept (none are committed).
+test.describe('specimen documentation', () => {
+    for (const theme of THEMES) {
+        test(`sections, icons and tokens (${theme})`, async ({ page }) => {
+            await page.goto('/');
+            await page.evaluate((t) => {
+                document.documentElement.dataset.theme = t;
+            }, theme);
+            await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+
+            for (const section of SECTIONS) {
+                await expect(page.getByRole('heading', { name: section, exact: true }), section).toBeAttached();
+            }
+            // One rendered glyph per icon in the frozen set, each under its own name.
+            await expect(page.locator('[data-icon] svg')).toHaveCount(ICON_NAMES.length);
+            for (const name of ICON_NAMES) {
+                await expect(page.locator(`[data-icon="${name}"] svg`), name).toHaveCount(1);
+            }
+            // Every token of tokens.css is a row, and its live swatch resolves under this theme.
+            const names = darkTokenNames();
+            expect(names.length).toBeGreaterThan(0);
+            await expect(page.locator('[data-token]')).toHaveCount(names.length);
+            const surface = await page
+                .locator('[data-token="--surface"] .specimen-swatch')
+                .evaluate((el) => getComputedStyle(el).backgroundColor);
+            const canvas = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+            expect(surface, '--surface swatch resolves the live token').toBe(canvas);
+            await noHorizontalOverflow(page);
+        });
     }
 });

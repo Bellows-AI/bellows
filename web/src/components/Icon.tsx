@@ -1,7 +1,7 @@
 /**
- * The foundation's whole glyph set (redesign plan §1.6), drawn on a 24px grid for a 1.75px round
- * stroke. Hand-drawn in the Lucide idiom rather than imported: no dependency, and the set is
- * frozen — a lane that needs a glyph asks the foundation for it, it does not add one here.
+ * The whole glyph set, drawn on a 24px grid for a 1.75px round stroke. Hand-drawn in the Lucide
+ * idiom rather than imported: no dependency, and the set is frozen — a lane that needs a glyph
+ * asks for a foundation change, it does not add one in its own slice.
  */
 const GLYPHS = {
     home: ['M3 10.5 12 3l9 7.5', 'M5 9v11h5v-6h4v6h5V9'],
@@ -78,6 +78,44 @@ const GLYPHS = {
         'M16 2v4',
         'M8 2v4',
         'M3 10h18',
+    ],
+    sun: [
+        'M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0',
+        'M12 2v2',
+        'M12 20v2',
+        'M4.93 4.93l1.41 1.41',
+        'M17.66 17.66l1.41 1.41',
+        'M2 12h2',
+        'M20 12h2',
+        'M6.34 17.66l-1.41 1.41',
+        'M19.07 4.93l-1.41 1.41',
+    ],
+    moon: ['M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z'],
+    bell: ['M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9', 'M10.3 21a1.94 1.94 0 0 0 3.4 0'],
+    plug: ['M12 22v-5', 'M9 8V2', 'M15 8V2', 'M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z'],
+    key: ['M21 2l-9.6 9.6', 'M2 15.5a5.5 5.5 0 1 0 11 0a5.5 5.5 0 1 0 -11 0', 'M15.5 7.5l3 3L22 7l-3-3'],
+    lock: ['M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z', 'M7 11V7a5 5 0 0 1 10 0v4'],
+    trash: ['M3 6h18', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6', 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'],
+    paperclip: [
+        'M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48',
+    ],
+    'message-square': ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
+    'help-circle': ['M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0', 'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3', 'M12 17h.01'],
+    'bar-chart': ['M12 20V10', 'M18 20V4', 'M6 20v-4'],
+    building: [
+        'M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18',
+        'M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2',
+        'M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2',
+        'M10 6h4',
+        'M10 10h4',
+        'M10 14h4',
+        'M10 18h4',
+    ],
+    server: [
+        'M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z',
+        'M4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2z',
+        'M6 6h.01',
+        'M6 18h.01',
     ],
 } satisfies Record<string, readonly string[]>;
 

@@ -211,6 +211,12 @@
         }
     }
 
+    /* The conversation sits on the canvas: no fill, no frame. The exchanges separate by their own
+       hairlines; the soft tier belongs to the rail and the supporting panels. */
+    .task-conversation > .panel-head {
+        margin-bottom: 4px;
+    }
+
     .chat-exchange {
         border-top: 1px solid var(--line);
         padding-top: 10px;
@@ -425,6 +431,7 @@
     /* The user's verdict on a finished task. Same greens as a ready checkout: it is a good state, and
        it is one no run can reach by itself. */
     .chat-done {
+        background: transparent;
         border-color: var(--ok-border);
         color: var(--lamp-run);
     }
@@ -432,12 +439,14 @@
     /* Stop wears the same amber as a queued run: a request in flight, not yet a verdict. The darkened
        pill is its request-landed state — the run is coming down but has not parked yet. */
     .chat-stop {
+        background: transparent;
         border-color: var(--warn-border);
         color: var(--lamp-wait);
     }
 
     /* Remove is the thread's end: the red a failed run wears, because it is the same finality. */
     .chat-remove {
+        background: transparent;
         border-color: var(--bad-border);
         color: var(--lamp-stop);
     }
@@ -466,13 +475,13 @@
         flex: none;
         flex-wrap: wrap;
         gap: 8px;
+        max-width: 100%;
     }
 
-    /* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
+    /* The overall wall clock in the head: a neutral reading, not a verdict — muted like the
         activity line, never the exit code's red. */
     .task-clock {
         color: var(--ink-muted);
-        font-family: var(--font-mono);
         font-size: 12px;
         white-space: nowrap;
     }
@@ -618,7 +627,7 @@
     .task-stats {
         display: grid;
         gap: 16px;
-        max-width: 720px;
+        max-width: var(--measure-wide);
     }
 
     .task-stats-head {
@@ -651,7 +660,7 @@
     }
 
     .task-stats-totals dd {
-        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
         margin: 0;
     }
 
@@ -662,7 +671,7 @@
     .task-stats-line {
         display: flex;
         flex-wrap: wrap;
-        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
         gap: 4px 12px;
     }
 
@@ -712,7 +721,7 @@
     }
 
     .task-stats-runs td {
-        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
     }
 
     /* An agent question inside its run's exchange: a form while the run waits, the asked

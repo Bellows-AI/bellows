@@ -43,7 +43,7 @@
         margin-left: auto;
     }
 
-    /* The gate centers one raised card — the dialog's recipe without the float. */
+    /* The gate centers one soft card — the panel tier, no frame. */
     .login-gate {
         align-items: center;
         display: flex;
@@ -53,8 +53,7 @@
     }
 
     .login-card {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
+        background: var(--surface-soft);
         border-radius: var(--radius-xl);
         display: flex;
         flex-direction: column;
@@ -75,7 +74,7 @@
         margin: 0;
     }
 
-    .login-card .banner-bad {
+    .login-card .state-note {
         text-align: left;
     }
 
@@ -113,7 +112,7 @@
         flex-direction: column;
         gap: 16px;
         margin: 0 auto;
-        max-width: 640px;
+        max-width: var(--measure-narrow);
         padding: 32px 24px 48px;
     }
 
@@ -258,7 +257,6 @@
     .onboarding-repo {
         align-items: center;
         display: flex;
-        font-family: var(--font-mono);
         font-size: 13px;
         gap: 8px;
         min-height: 24px;
@@ -437,10 +435,21 @@
 
     .identity-head p {
         margin: 0;
+        overflow-wrap: anywhere;
+    }
+
+    /* The text column shrinks below its longest unbroken run (a 39-character login) instead of
+       widening the flex row past a 390px page. */
+    .identity-head > div {
+        min-width: 0;
     }
 
     .identity-name {
         font-weight: 600;
+    }
+
+    .identity-head .identity-login {
+        color: var(--ink-muted);
     }
 
     /* ── entry touch targets (44px, issue 189) ── */

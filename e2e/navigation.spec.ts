@@ -122,7 +122,7 @@ test.describe('appearance', () => {
 });
 
 test.describe('the desktop shell', () => {
-    test('the persistent nav holds 224px and the 56px app bar sticks without an h1', async ({ page }) => {
+    test('the persistent nav holds 224px and the 48px app bar sticks without an h1', async ({ page }) => {
         await page.goto('/');
         const nav = page.locator('nav[aria-label="Primary"]');
         await expect(nav).toBeVisible();
@@ -135,7 +135,7 @@ test.describe('the desktop shell', () => {
 
         const bar = page.locator('.appbar');
         await expect(bar).toBeVisible();
-        expect((await bar.boundingBox())?.height).toBe(56);
+        expect((await bar.boundingBox())?.height).toBe(48);
         expect(await bar.locator('h1').count()).toBe(0);
 
         // Scroll the tallest page to the bottom: the bar must still sit at the top edge.
@@ -340,6 +340,59 @@ test.describe('the responsive shell', () => {
         await page.goto('/');
         await settle(page, '/');
         await page.screenshot({ path: `${SHOTS}/zoom-200-dashboard.png`, fullPage: true });
+    });
+});
+
+test.describe('the appbar identity controls (BEL-226)', () => {
+    const LONG_ORG = 'An Extraordinarily Long Organization Name That Would Crowd The Account Menu Entirely';
+
+    /** Serve the stats payload with a long organization name, whatever the seeded one is. */
+    async function longOrganization(page: Page): Promise<void> {
+        await page.route('**/api/stats**', async (route) => {
+            const response = await route.fetch();
+            const body = (await response.json()) as { meta: { organization: { current: { name: string } } } };
+            body.meta.organization.current.name = LONG_ORG;
+            await route.fulfill({ response, json: body });
+        });
+    }
+
+    /** The trigger keeps the full name for assistive tech while the visible text is clipped. */
+    async function expectEllipsized(scope: ReturnType<Page['locator']>): Promise<void> {
+        const trigger = scope.locator('.org-select');
+        await expect(trigger).toBeVisible();
+        await expect(trigger).toHaveAttribute('aria-label', `Organization: ${LONG_ORG}`);
+        const name = trigger.locator('.org-select-name');
+        await expect(name).toHaveCSS('text-overflow', 'ellipsis');
+        const clipped = await name.evaluate((el) => el.scrollWidth > el.clientWidth);
+        expect(clipped, 'the long name is clipped, not wrapped').toBe(true);
+    }
+
+    test('a long organization name is ellipsized in the desktop appbar', async ({ page }) => {
+        await longOrganization(page);
+        await page.setViewportSize({ width: 1280, height: 800 });
+        await page.goto('/');
+        await expectEllipsized(page.locator('.appbar'));
+        await noHorizontalOverflow(page);
+    });
+
+    test('a long organization name is ellipsized in the drawer and the bar does not overflow at 390px', async ({
+        page,
+    }) => {
+        await longOrganization(page);
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto('/');
+        await noHorizontalOverflow(page);
+        await page.locator('.appbar-trigger').click();
+        await expectEllipsized(page.locator('.mobile-nav'));
+        await noHorizontalOverflow(page);
+    });
+
+    test('the appbar triggers have no border at rest', async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height: 800 });
+        await page.goto('/');
+        for (const trigger of [appearance(page), page.locator('.appbar .org-select')]) {
+            await expect(trigger).toHaveCSS('border-top-color', 'rgba(0, 0, 0, 0)');
+        }
     });
 });
 

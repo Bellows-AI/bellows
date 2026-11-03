@@ -21,12 +21,16 @@ const BOUNDARY_THRESHOLD = 3;
 const TEXT_PAIRS: readonly Pair[] = [
     ['--ink', '--surface'],
     ['--ink', '--surface-raised'],
+    ['--ink', '--surface-soft'],
     ['--ink', '--surface-sunken'],
     ['--ink-muted', '--surface'],
     ['--ink-muted', '--surface-raised'],
+    ['--ink-muted', '--surface-soft'],
     ['--ink-muted', '--surface-sunken'],
     ['--accent', '--surface'],
     ['--accent', '--surface-raised'],
+    ['--accent', '--surface-soft'],
+    ['--accent', '--surface-sunken'],
     ['--ink-inverse', '--accent'],
     ['--on-warn', '--lamp-wait'],
     ['--on-bad', '--lamp-stop'],
@@ -36,6 +40,18 @@ const TEXT_PAIRS: readonly Pair[] = [
     ['--lamp-wait', '--surface-raised'],
     ['--lamp-stop', '--surface'],
     ['--lamp-stop', '--surface-raised'],
+    ['--lamp-run', '--surface-soft'],
+    ['--lamp-wait', '--surface-soft'],
+    ['--lamp-stop', '--surface-soft'],
+    ['--lamp-run', '--surface-sunken'],
+    ['--lamp-wait', '--surface-sunken'],
+    ['--lamp-stop', '--surface-sunken'],
+    ['--lamp-done', '--surface'],
+    ['--lamp-done', '--surface-soft'],
+    ['--lamp-done', '--surface-raised'],
+    ['--question', '--surface'],
+    ['--question', '--surface-soft'],
+    ['--question', '--surface-raised'],
 ] as const;
 
 /** Non-text pairs at the 3:1 boundary threshold: the series fill and the focus ring's worst
@@ -49,9 +65,9 @@ const BOUNDARY_PAIRS: readonly Pair[] = [
  * then any translucent wash painted over it. */
 type Composite = readonly [label: string, text: string, layers: readonly string[]];
 
-/** The surfaces a status pill, chip or banner actually sits on: panels (raised), the page (a
+/** The surfaces a status pill, chip or banner actually sits on: panels (soft), dialogs (raised), the page (a
  * header's status pill), and a hovered table row (sunken). */
-const SITTING_ON = ['--surface-raised', '--surface', '--surface-sunken'] as const;
+const SITTING_ON = ['--surface-raised', '--surface-soft', '--surface', '--surface-sunken'] as const;
 
 /** Every wash-backed text pair the primitives render (redesign plan §1.1). The opaque matrix
  * above cannot measure these: its canvas paints each token opaque, so a 16% wash would read as
@@ -73,7 +89,20 @@ const COMPOSITE_PAIRS: readonly Composite[] = [
     ['primary button hover', '--ink-inverse', ['--accent-hover']],
     ['primary button pressed', '--ink-inverse', ['--accent-pressed']],
     ['primary button disabled', '--ink-muted', ['--surface-strong']],
-    ['secondary button hover', '--ink', ['--surface-strong']],
+    // The tinted verdict buttons (.chat-remove, .chat-stop, .chat-done, danger) rest transparent, so their
+    // label is measured on each surface they sit on, then on their own hover wash.
+    ...(
+        [
+            ['chat-remove / danger', '--lamp-stop', '--bad-wash'],
+            ['chat-stop', '--lamp-wait', '--warn-wash'],
+            ['chat-done', '--lamp-run', '--ok-wash'],
+        ] as const
+    ).flatMap(([name, ink, wash]): Composite[] => [
+        ...SITTING_ON.map((surface): Composite => [`${name} at rest on ${surface}`, ink, [surface]]),
+        ...SITTING_ON.map((surface): Composite => [`${name} hover on ${surface}`, ink, [surface, wash]]),
+    ]),
+    ['secondary button', '--ink', ['--surface-strong']],
+    ['secondary button hover', '--ink', ['--surface-hover']],
     ['secondary button pressed', '--ink', ['--surface-pressed']],
     ['danger button hover', '--lamp-stop', ['--surface', '--bad-wash']],
     ['avatar initials', '--ink', ['--surface-strong']],
@@ -277,4 +306,26 @@ test.describe('polish (issue 189)', () => {
         await page.goto('/tasks');
         await assertRing(inboxRepo(page), 'inbox repository select');
     });
+});
+
+test('data cells and status lines read in Inter with tabular figures, never mono (BEL-221)', async ({ page }) => {
+    let cells = 0;
+    for (const route of ['/', '/settings/organization']) {
+        await page.goto(route);
+        await page.waitForLoadState('networkidle');
+        const seen = await page.locator('table.data td:not(:first-child), .status').evaluateAll((nodes) =>
+            nodes.map((node) => {
+                const style = getComputedStyle(node);
+                return { family: style.fontFamily, numeric: style.fontVariantNumeric, table: node.tagName === 'TD' };
+            })
+        );
+        for (const cell of seen) {
+            expect(cell.family).toMatch(/^"?Inter/);
+            expect(cell.family).not.toMatch(/IBM Plex Mono|monospace/);
+            if (cell.table) expect(cell.numeric).toContain('tabular-nums');
+        }
+        cells += seen.length;
+    }
+    expect(cells, 'at least one data cell or status line was measured').toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.fonts.check('14px "Inter"'))).toBe(true);
 });

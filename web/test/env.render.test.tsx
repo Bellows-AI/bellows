@@ -40,6 +40,14 @@ describe('the env draft editor', () => {
         expect(html).toContain('debug');
     });
 
+    it('draws the env tabs with the shared .tabs strip, not a private skin', () => {
+        const html = renderToStaticMarkup(
+            <EnvVarsPanel title="Core" scope={ORG} initialVars={[...oneVar, ...oneSecret]} onSave={noop} />
+        );
+        expect(html).toMatch(/role="tablist"[^>]*class="tabs"|class="tabs"[^>]*role="tablist"/);
+        expect(html).not.toContain('env-tab');
+    });
+
     it('renders a real tablist with live counts and roving focus', () => {
         const html = renderToStaticMarkup(
             <EnvVarsPanel title="Core" scope={ORG} initialVars={[...oneVar, ...oneSecret]} onSave={noop} />

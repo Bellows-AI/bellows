@@ -1,6 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import type { ConfigurationScopeProps } from '../components/ConfigurationScope.js';
+import { Icon } from '../components/Icon.js';
 import { countActive, SECRET_STATE_LABEL, secretState } from './env-draft.js';
 import type { EnvRowState, RowFieldErrors } from './env-draft.js';
 
@@ -135,7 +136,7 @@ export function EnvEditableRow({
                     disabled={locked}
                     aria-label={`Remove ${row.name.trim() || kind}`}
                 >
-                    ✕
+                    <Icon name="x" />
                 </button>
             </td>
         </tr>
@@ -230,7 +231,7 @@ export function EnvTabsBar({
     onKeyDown: (index: number, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
 }) {
     return (
-        <div role="tablist" aria-label="Environment variable categories" className="env-tabs">
+        <div role="tablist" aria-label="Environment variable categories" className="tabs">
             {(['variables', 'secrets'] as const).map((key, index) => (
                 <button
                     key={key}
@@ -240,7 +241,6 @@ export function EnvTabsBar({
                     aria-selected={tab === key}
                     aria-controls={`${uid}-panel-${key}`}
                     tabIndex={tab === key ? 0 : -1}
-                    className="env-tab"
                     ref={(el) => {
                         tabRefs.current[index] = el;
                     }}

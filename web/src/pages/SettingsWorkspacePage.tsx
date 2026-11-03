@@ -1,5 +1,6 @@
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { StateNote } from '../components/StateNote.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
 import type { UseEnv } from '../api/useEnv.js';
@@ -37,7 +38,7 @@ export function SettingsWorkspacePage() {
 
             <NotificationSubscriptionsSection session={session} scope="workspace" />
 
-            {env.error ? <p className="status">{env.error}</p> : null}
+            {env.error ? <StateNote state="error">{env.error}</StateNote> : null}
             {/* Same data gate as the organization page: the editor mounts only when the scope's
                 rows exist, never as an enabled empty draft over a failed read. */}
             <WorkspaceEnvEditor env={env} />

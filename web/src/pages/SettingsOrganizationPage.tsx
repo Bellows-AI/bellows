@@ -1,6 +1,7 @@
 import { roleLabel } from '../api/useSession.js';
-import { KeyValues } from '../components/KeyValues.js';
+import { Icon } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { StateNote } from '../components/StateNote.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { MembersSection } from '../panels/MembersSection.js';
 import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
@@ -27,16 +28,14 @@ export function SettingsOrganizationPage() {
             />
 
             {session ? (
-                <section className="panel">
+                <div className="org-identity">
                     {/* Identity, not authority: the display name and the role title. No internal id,
                         no powers inferred beyond what the API grants. */}
-                    <KeyValues
-                        pairs={[
-                            ['Organization', session.organization.name],
-                            ['Your role', roleLabel(session.role)],
-                        ]}
-                    />
-                </section>
+                    <Icon name="building" size={20} />
+                    <strong className="org-identity-name">{session.organization.name}</strong>
+                    <span className="muted">Your role</span>
+                    <span className="pill">{roleLabel(session.role)}</span>
+                </div>
             ) : (
                 <p className="muted">Checking your session…</p>
             )}
@@ -47,7 +46,7 @@ export function SettingsOrganizationPage() {
 
             <NotificationSubscriptionsSection session={session} scope="org" />
 
-            {env.error ? <p className="status">{env.error}</p> : null}
+            {env.error ? <StateNote state="error">{env.error}</StateNote> : null}
             {/*
                 The editor mounts only on DATA, not merely when the request settles: its draft is
                 seeded from initialVars in a state initializer, so mounting it early would freeze
@@ -56,7 +55,7 @@ export function SettingsOrganizationPage() {
                 posture; a retry is the page's next full render.
             */}
             {env.loading && !env.data ? (
-                <p className="status">Loading environment…</p>
+                <StateNote state="loading">Loading environment…</StateNote>
             ) : env.data ? (
                 <EnvVarsPanel
                     title="Core (organization)"

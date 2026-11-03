@@ -137,3 +137,21 @@ describe('the task inbox poll', () => {
         expect(new Set(hrefs).size, 'each loaded task renders once').toBe(hrefs.length);
     });
 });
+
+describe('the drawer and the desktop column', () => {
+    it('list the same primary items, in the same order, with the same hrefs', async () => {
+        board();
+        const { container } = renderApp('/tasks');
+        await settle();
+        const links = (root: ParentNode) =>
+            [...root.querySelectorAll<HTMLAnchorElement>('a.sidenav-link')].map((a) => [
+                a.textContent?.replace(/\d+$/, '').trim(),
+                a.getAttribute('href'),
+            ]);
+        const desktop = links(container.querySelector('.sidenav')!);
+        await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }));
+        const drawer = links(screen.getByRole('dialog', { name: 'Navigation' }));
+        expect(drawer).toEqual(desktop);
+        expect(desktop.length).toBeGreaterThan(2);
+    });
+});

@@ -1,6 +1,7 @@
 import type { ReactNode, RefObject } from 'react';
 import type { InstallationRepo } from '../api/useRepos.js';
 import { Icon } from './Icon.js';
+import { StateNote } from './StateNote.js';
 import { commitDate } from '../format.js';
 import { NOT_AVAILABLE, repoKey } from './repository-setup.js';
 
@@ -28,7 +29,7 @@ export interface RepositoryListNoticesProps {
      * The list's transient posture — loading in flight, or a hard failure with no rows in hand.
      * Stated here because an absent list is not an empty one.
      */
-    listNotice: string | null;
+    listNotice: { state: 'loading' | 'error'; text: string } | null;
 }
 
 /** The installation line's sentence, or null when there is no installation to name yet. */
@@ -56,7 +57,7 @@ export function RepositoryHeaderMeta({
 export function RepositoryListNotices({ cachedError, fetchedAt, listNotice }: RepositoryListNoticesProps) {
     return (
         <>
-            {listNotice ? <p className="status">{listNotice}</p> : null}
+            {listNotice ? <StateNote state={listNotice.state}>{listNotice.text}</StateNote> : null}
             {cachedError ? (
                 <p className="status">
                     Showing a cached list{fetchedAt ? ` from ${commitDate(fetchedAt)}` : ''}: {cachedError}

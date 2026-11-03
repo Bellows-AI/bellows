@@ -221,7 +221,7 @@ function StageEditor({ plan, stage, stageIndex, ...rest }: EditorProps & { stage
     const path = `stages[${stageIndex}]`;
     const policyId = useId();
     return (
-        <section className="panel batch-stage" aria-label={`Stage ${stageIndex + 1}`}>
+        <section className="batch-stage" aria-label={`Stage ${stageIndex + 1}`}>
             <div className="batch-stage-head">
                 <h3>
                     Stage {stageIndex + 1} <span className="muted">({stage.key})</span>

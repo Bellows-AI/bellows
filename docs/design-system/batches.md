@@ -8,9 +8,9 @@ the batch contract: [../batches.md](../batches.md).
 | --- | --- | --- |
 | List, new draft, detail routes | `web/src/App.tsx`, `web/src/pages/BatchesPage.tsx`, `web/src/pages/BatchNewPage.tsx`, `web/src/pages/BatchDetailPage.tsx` | `web/test/batch-pages.render.test.tsx`, `e2e/batches.spec.ts` |
 | Draft: save, check launch, start | `web/src/panels/BatchDraft.tsx`, `web/src/api/useBatches.ts` | `web/test/batch-pages.render.test.tsx`, `e2e/batches.spec.ts` |
-| Draft form: stages, parallel tasks, policies, per-field issues | `web/src/panels/BatchEditor.tsx`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
+| Draft form: stages as flat divided rows (one `.panel`, the batch settings), parallel tasks, policies, per-field issues | `web/src/panels/BatchEditor.tsx`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts`, `web/test/batch-pages.render.test.tsx` |
 | Inherited versus overridden, shown before launch | `web/src/panels/BatchPlanReview.tsx`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts`, `e2e/batches.spec.ts` |
-| Monitor: stage rows, task cards, human gate, retry, accept, report | `web/src/panels/BatchMonitor.tsx` | `web/test/batch-pages.render.test.tsx`, `web/test/batch-detail.dom.test.tsx` |
+| Monitor: stages as flat divided rows (a fully accepted stage muted, never collapsed), task cards, human gate before the cards, retry, accept, report | `web/src/panels/BatchMonitor.tsx` | `web/test/batch-pages.render.test.tsx`, `web/test/batch-detail.dom.test.tsx` |
 | Token usage: batch section, task-card figures, provisional and partial notes | `web/src/panels/BatchUsage.tsx`, `web/src/batch-model.ts` (`batchUsageState`), `web/src/components/usage/` | `web/test/batch-model.test.ts`, `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` |
 | Verdict, task state labels, retry eligibility, morning report | `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
 | Task page backlink | `web/src/components/BatchBacklink.tsx`, `server/src/routes/batches/batch-handlers.ts` (`?task=`) | `server/test/routes.batches.test.ts`, `e2e/batches.spec.ts` |
@@ -32,7 +32,7 @@ the batch contract: [../batches.md](../batches.md).
   and a second target is added or removed through the CLI.
 
 Classes defined here: `batch-new`, `batch-editor`, `batch-form`, `batch-field-row`, `batch-field`,
-`batch-problem`, `batch-check`, `batch-task-edit`, `batch-actions`, `batch-stage`,
+`batch-problem`, `batch-check`, `batch-task-edit`, `batch-actions`, `batch-stage`, `is-complete`,
 `batch-stage-head`, `batch-tasks`, `batch-task`, `batch-task-head`, `batch-objective`,
 `batch-links`, `batch-wait`, `batch-usage`, `batch-task-usage`, `batch-usage-more`, `batch-gate`,
 `batch-origin`, `batch-review-stages`, `batch-backlink`.

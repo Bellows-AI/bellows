@@ -36,6 +36,7 @@ describe('the login gate', () => {
         const signIn = await screen.findByRole('link', { name: 'Sign in with GitHub' });
         const gate = signIn.closest('.login-gate') as HTMLElement;
         expect(within(gate).getByRole('alert').textContent).toBe('Sign-in was cancelled.');
+        expect(within(gate).getByRole('alert').className).toBe('state-note error');
         expect(screen.queryByText('the dashboard')).toBeNull();
     });
 });
@@ -135,7 +136,7 @@ const stats = (scope: 'org' | 'mine'): StatsPayload => ({
     },
 });
 
-describe('the dashboard scope dropdown', () => {
+describe('the dashboard scope tabs', () => {
     it('re-polls the figures for the signed-in member, and back to the organization', async () => {
         const calls = stubFetch(({ url }) => {
             if (url === '/api/auth/me') return member;
@@ -145,26 +146,22 @@ describe('the dashboard scope dropdown', () => {
         const user = userEvent.setup();
         renderApp('/');
 
-        const trigger = await waitFor(() => {
-            const found = document.getElementById('scope-select');
-            expect(found).not.toBeNull();
-            return found as HTMLElement;
-        });
-        expect(trigger.textContent).toBe('Organization');
+        const tab = async (name: string) => screen.findByRole('tab', { name });
+        const selected = async () => (await screen.findByRole('tab', { selected: true })).textContent;
+        await tab('Organization');
+        expect(await selected()).toBe('Organization');
         expect(statsCalls().every((url) => !url.includes('scope=mine'))).toBe(true);
 
-        await user.click(trigger);
-        await user.click(await screen.findByRole('option', { name: 'Personal' }));
+        await user.click(await tab('Personal'));
         await waitFor(() => expect(statsCalls().at(-1)).toContain('scope=mine'));
-        expect(trigger.textContent).toBe('Personal');
+        expect(await selected()).toBe('Personal');
         // No seeded figures for this member: the ONE empty state, no per-task figures.
         await waitFor(() => expect(document.querySelector('.usage-empty')).not.toBeNull());
         expect(screen.queryByText('Per-task usage')).toBeNull();
 
         // Back to org: `scope=org` is not a URL form — its absence IS the org request.
-        await user.click(trigger);
-        await user.click(await screen.findByRole('option', { name: 'Organization' }));
+        await user.click(await tab('Organization'));
         await waitFor(() => expect(statsCalls().at(-1)).not.toContain('scope=mine'));
-        expect(trigger.textContent).toBe('Organization');
+        expect(await selected()).toBe('Organization');
     });
 });

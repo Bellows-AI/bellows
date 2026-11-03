@@ -5,9 +5,9 @@ Gate, onboarding, account page. `web/src/styles/regions/entry.css`; shared syste
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Signed-out gate and the public chrome both public pages carry | `web/src/components/LoginGate.tsx`, `web/src/components/PublicPageHeader.tsx` | `e2e/auth.spec.ts`, `web/test/auth.dom.test.tsx`, `web/test/theme.test.tsx` |
-| Onboarding screen, one org's card, selection state and blockers | `web/src/pages/OnboardingPage.tsx`, `web/src/components/OnboardingOrganization.tsx`, `web/src/onboarding.ts` | `web/test/onboarding.render.test.tsx` |
-| Account page: identity, access tokens, tracked orgs | `web/src/pages/AccountPage.tsx`, `web/src/panels/IdentityPanel.tsx`, `web/src/panels/AccessTokensPanel.tsx`, `web/src/panels/TrackedOrgsPanel.tsx` | `web/test/settings.render.test.tsx` |
+| Signed-out gate and the public chrome both public pages carry | `web/src/components/LoginGate.tsx`, `web/src/components/PublicPageHeader.tsx`, `web/src/components/StateNote.tsx` | `e2e/auth.spec.ts`, `web/test/auth.dom.test.tsx`, `web/test/theme.test.tsx`, `web/test/styles.test.ts` |
+| Onboarding screen, one org's card, selection state and blockers | `web/src/pages/OnboardingPage.tsx`, `web/src/components/OnboardingOrganization.tsx`, `web/src/onboarding.ts`, `web/src/components/StateNote.tsx` | `web/test/onboarding.render.test.tsx` |
+| Account page: identity head (avatar, name, `identity-login`) over one sans `.kv` list with only the GitHub id `.mono`; `.kv dd` is sans, true identifiers opt in with `.mono`; revoking a personal token asks via `ConfirmDialog` naming it, focus returns on every exit | `web/src/pages/AccountPage.tsx`, `web/src/panels/IdentityPanel.tsx`, `web/src/panels/AccessTokensPanel.tsx`, `web/src/panels/TrackedOrgsPanel.tsx` | `web/test/settings.render.test.tsx`, `web/test/access-tokens.dom.test.tsx`, `web/test/styles.test.ts` |
 
 ## Invariants
 

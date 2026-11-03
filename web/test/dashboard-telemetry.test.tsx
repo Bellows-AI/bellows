@@ -259,20 +259,20 @@ describe('analytics toolbar', () => {
         expect(html).toContain('<p class="analytics-summary" aria-live="polite">');
     });
 
-    it('renders a read-only Organization scope in open mode, never a dead Scope dropdown', () => {
+    it('renders a read-only Organization scope in open mode, never a dead Scope control', () => {
         // No session (signed out) and the none-mode local stand-in both get the read-only value.
         for (const session of [null, LOCAL_SESSION]) {
             const html = render(READY, { session });
             expect(html).toContain('id="range-select"');
             expect(html).toContain('<span class="toolbar-value">Organization</span>');
-            expect(html).not.toContain('id="scope-select"');
+            expect(html).not.toContain('role="tablist"');
         }
     });
 
-    it('renders the Scope dropdown when the session carries a personal scope', () => {
+    it('renders the Scope tabs when the session carries a personal scope', () => {
         const html = render(READY, { session: GITHUB_SESSION });
-        expect(html).toContain('id="scope-select"');
-        expect(html).toContain('>Organization</button>');
+        expect(html).toContain('role="tablist" aria-label="Scope"');
+        expect(html).toMatch(/aria-selected="true"[^>]*>Organization<\/button>/);
     });
 });
 
@@ -317,6 +317,7 @@ describe('the shared state model', () => {
     it('renders one error region and no metric shells when a read fails with no data', () => {
         const html = render(null, { error: 'connection refused' });
         expect(html).toContain('connection refused');
+        expect(html).toMatch(/role="alert"[^>]*>connection refused/);
         expect(html).not.toContain('usage-summary');
         expect(html).not.toContain('class="card"');
         // The Refresh control is gone; the error copy must not instruct the reader to use it.

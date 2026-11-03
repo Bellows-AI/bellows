@@ -43,14 +43,14 @@ function JiraState({
             {pill ? <span className={pill.className}>{pill.text}</span> : null}
             {rows.length > 0 ? <Link to={RETURN_TO}>Manage</Link> : null}
             {state === 'loading' ? (
-                <button type="button" disabled>
+                <button type="button" className="tertiary" disabled>
                     Checking…
                 </button>
             ) : null}
             {state === 'error' ? (
                 <>
                     <span className="muted">Could not check whether Jira is available</span>
-                    <button type="button" onClick={config.retry}>
+                    <button type="button" className="tertiary" onClick={config.retry}>
                         Retry
                     </button>
                 </>

@@ -180,7 +180,12 @@ export function TaskQuestionView({
     const submitting = view === 'submitting';
     const ready = composeAnswers(question.questions, drafts) !== null;
     return (
-        <div className="question">
+        // biome-ignore lint/a11y/useSemanticElements: a fieldset here would nest the per-question fieldsets; the group role names the whole prompt
+        <div
+            className="question"
+            role="group"
+            aria-label={open ? 'Question waiting for your answer' : 'Agent question'}
+        >
             {open ? (
                 <form
                     aria-describedby={error !== null ? errorId : undefined}
