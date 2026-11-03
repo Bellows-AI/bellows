@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { inconclusive, judge, refusal, success, type Tagged } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
-import { MAX_CURSOR_CHARS, MAX_NAME_CHARS, pageOf, PAGING_INPUT, queryOf } from './paging.js';
+import { MAX_NAME_CHARS, pageOf, PAGING_INPUT, queryOf } from './paging.js';
 import { encodeCursor as encodeBoardCursor } from '../../artifacts/artifact-read.js';
 import { JobIdInput, jobPath } from './runs.js';
 
@@ -13,6 +13,8 @@ export const LOG_DEFAULT_BYTES = LOG_DEFAULT_KIB * KIB;
 export const LOG_MAX_BYTES = LOG_MAX_KIB * KIB;
 /** No UTF-8 character is longer, so a cut always finds a boundary inside the page. */
 const LOG_MIN_BYTES = 16;
+/** The cursor holds stream coordinates, which have no length bound of their own; wider than the paging default. */
+const LOG_CURSOR_MAX_CHARS = 4096;
 
 const StreamView = z.object({
     attempt: z.number(),
@@ -105,7 +107,8 @@ const boardCursorAt = (id: ChunkId): string =>
 
 /**
  * This tool's cursor: the board's cursor of the page to fetch next, and, when a chunk was cut, that chunk and how
- * many of its bytes were read. The board cursor then points at the chunk itself, so what comes back first must be it.
+ * many of its bytes were read. The board cursor is rebuilt from that chunk (stored once, names are unbounded), so
+ * what comes back first must be it.
  */
 const OwnCursor = z
     .object({ c: z.string().nullable(), s: z.number().int().min(0), at: ChunkId.optional() })
@@ -201,7 +204,7 @@ export const readJobLog = defineTool({
         ...Selection,
         cursor: z
             .string()
-            .max(MAX_CURSOR_CHARS)
+            .max(LOG_CURSOR_MAX_CHARS)
             .optional()
             .describe('The cursor of the previous page; omit for the first.'),
         limitBytes: z.number().int().min(LOG_MIN_BYTES).max(LOG_MAX_BYTES).optional(),
@@ -218,7 +221,11 @@ export const readJobLog = defineTool({
     async run({ jobId, cursor, limitBytes = LOG_DEFAULT_BYTES, ...selection }, ctx) {
         const own = decode(cursor);
         if (!own) return badCursor();
-        const query = queryOf({ ...selection, limit: limitBytes, cursor: own.c ?? undefined });
+        const query = queryOf({
+            ...selection,
+            limit: limitBytes,
+            cursor: (own.at ? boardCursorAt(own.at) : own.c) ?? undefined,
+        });
         const judged = judge(
             await ctx.fetch({ method: 'GET', url: `${jobPath(jobId)}/artifacts/read${query}` }),
             BoardPage
@@ -239,11 +246,11 @@ export const readJobLog = defineTool({
         }
         const { segments, next: resumeAt, cut: truncated } = fitted;
         const next = resumeAt
-            ? encode({
-                  c: boardCursorAt(resumeAt.chunk),
-                  s: resumeAt.skip,
-                  ...(resumeAt.skip > 0 && { at: resumeAt.chunk }),
-              })
+            ? encode(
+                  resumeAt.skip > 0
+                      ? { c: null, s: resumeAt.skip, at: resumeAt.chunk }
+                      : { c: boardCursorAt(resumeAt.chunk), s: 0 }
+              )
             : page.nextCursor === null
               ? null
               : encode({ c: page.nextCursor, s: 0 });

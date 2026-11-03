@@ -620,6 +620,15 @@ describe('list_job_streams and read_job_log', () => {
         expect(textOf(pages)).toBe(big);
     });
 
+    it('accepts the cursor it issued for a cut chunk of a stream with very long coordinates', async () => {
+        const big = `${'€'.repeat(1500)}END`;
+        const session = `s${'x'.repeat(250)}`;
+        const url = await boot({ a: board([stream({ session, executor: `e${'y'.repeat(150)}` }, [big])]) });
+        const pages = await readPages(url, 1000);
+        expect(pages.length).toBeGreaterThan(2);
+        expect(textOf(pages)).toBe(big);
+    });
+
     it('does not repeat deleted chunks that sit ahead of the chunk it cut', async () => {
         const big = `${'€'.repeat(1500)}END`;
         const s = stream({}, ['gone\n', big]);
