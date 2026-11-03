@@ -29,6 +29,8 @@ const TEXT_PAIRS: readonly Pair[] = [
     ['--ink-muted', '--surface-sunken'],
     ['--accent', '--surface'],
     ['--accent', '--surface-raised'],
+    ['--accent', '--surface-soft'],
+    ['--accent', '--surface-sunken'],
     ['--ink-inverse', '--accent'],
     ['--on-warn', '--lamp-wait'],
     ['--on-bad', '--lamp-stop'],
@@ -38,6 +40,18 @@ const TEXT_PAIRS: readonly Pair[] = [
     ['--lamp-wait', '--surface-raised'],
     ['--lamp-stop', '--surface'],
     ['--lamp-stop', '--surface-raised'],
+    ['--lamp-run', '--surface-soft'],
+    ['--lamp-wait', '--surface-soft'],
+    ['--lamp-stop', '--surface-soft'],
+    ['--lamp-run', '--surface-sunken'],
+    ['--lamp-wait', '--surface-sunken'],
+    ['--lamp-stop', '--surface-sunken'],
+    ['--lamp-done', '--surface'],
+    ['--lamp-done', '--surface-soft'],
+    ['--lamp-done', '--surface-raised'],
+    ['--question', '--surface'],
+    ['--question', '--surface-soft'],
+    ['--question', '--surface-raised'],
 ] as const;
 
 /** Non-text pairs at the 3:1 boundary threshold: the series fill and the focus ring's worst

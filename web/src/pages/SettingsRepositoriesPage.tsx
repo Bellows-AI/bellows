@@ -9,6 +9,7 @@ import {
     RepositoryConfigDetail,
     RepositoryHeaderMeta,
     RepositoryListNotices,
+    type RepositoryListNoticesProps,
     RepositorySetupList,
 } from '../components/RepositorySetup.js';
 import { matchesSearch, orderByRecency } from '../components/repository-setup.js';
@@ -17,10 +18,10 @@ import { useSettingsPage } from './SettingsLayout.js';
 
 /** The list's transient postures, worded like the page has always worded them: a load in flight
  * says so, and a hard failure is named rather than rendered as an empty list. */
-function listNoticeOf(repos: UseRepos): string | null {
+function listNoticeOf(repos: UseRepos): RepositoryListNoticesProps['listNotice'] {
     if (repos.data) return null;
-    if (repos.loading) return 'Loading repositories…';
-    if (repos.error) return `Could not reach GitHub: ${repos.error}`;
+    if (repos.loading) return { state: 'loading', text: 'Loading repositories…' };
+    if (repos.error) return { state: 'error', text: `Could not reach GitHub: ${repos.error}` };
     return null;
 }
 

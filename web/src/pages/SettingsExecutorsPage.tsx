@@ -3,6 +3,7 @@ import type { WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { StateNote } from '../components/StateNote.js';
 import type { ConfirmRequest } from '../panels/org-executor-confirm.js';
 import { OrgExecutorsSection } from '../panels/OrgExecutorsSection.js';
 import { PersonalExecutorRemoval } from '../panels/PersonalExecutorRemoval.js';
@@ -115,7 +116,7 @@ export function SettingsExecutorsPage() {
             <p className="muted" role="status">
                 {savedMessage}
             </p>
-            {error ? <p className="status">{error}</p> : null}
+            {error ? <StateNote state="error">{error}</StateNote> : null}
 
             {/* Requiring `data` keeps the failed-poll state honest: with no response there is no
                 list to reason about, and the empty sentence beside the error would claim
