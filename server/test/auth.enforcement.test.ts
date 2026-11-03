@@ -338,6 +338,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/oauth/consent/:id', 'user'],
     ['/api/oauth/consent/approve', 'user'],
     ['/api/oauth/consent/deny', 'user'],
+    ['/api/oauth/grants', 'user'],
+    ['/api/oauth/grants/:id/revoke', 'user'],
     ['/api/oauth/authorize/x', 'user'],
     // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
     // repo must never choose the org it lands in, so the credential does. Its own requirement,

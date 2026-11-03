@@ -48,6 +48,16 @@ export interface OAuthClient {
     fetchedAt: Date | null;
 }
 
+/** One live grant family as its owner sees it in the connected-apps list: never a token or its hash. */
+export interface GrantSummary {
+    id: string;
+    client: { id: string; name: string | null; kind: OAuthClientKind };
+    scopes: readonly string[];
+    createdAt: Date;
+    /** When the grant last minted a token pair (the code exchange, then each refresh). */
+    lastUsedAt: Date | null;
+}
+
 export interface ConsentView {
     sessionHash: Buffer;
     clientId: string;
@@ -110,6 +120,10 @@ export interface OAuthStore {
     /** RFC 7009: a refresh token ends its family, an access token only itself; another client's token is ignored. */
     revoke(input: { token: string; clientId: string }): Promise<void>;
     revokeFamily(familyId: string): Promise<void>;
+    /** The unrevoked, unexpired families of one member in one organization, newest first. */
+    listGrants(input: { userId: string; orgId: string }): Promise<GrantSummary[]>;
+    /** Ends a family only when it belongs to this member in this organization; false when there was no such live family. */
+    revokeGrant(input: { id: string; userId: string; orgId: string }): Promise<boolean>;
     findAccessToken(tokenHash: Buffer): Promise<McpCaller | null>;
     /**
      * Deletes what can no longer be used, a day after it expired (clock skew between replicas, and a replay of a spent
@@ -526,7 +540,15 @@ const consentOps = (ctx: Ctx): ConsentOps => ({
 
 type GrantOps = Pick<
     OAuthStore,
-    'createCode' | 'consumeCode' | 'refresh' | 'revoke' | 'revokeFamily' | 'findAccessToken' | 'purgeExpired'
+    | 'createCode'
+    | 'consumeCode'
+    | 'refresh'
+    | 'revoke'
+    | 'revokeFamily'
+    | 'listGrants'
+    | 'revokeGrant'
+    | 'findAccessToken'
+    | 'purgeExpired'
 >;
 
 type AccessRow = CallerRow & { scopes: string[]; client_id: string; resource: string; family_id: string };
@@ -577,6 +599,51 @@ const grantOps = (ctx: Ctx): GrantOps => ({
                 return;
             }
             await tx`update oauth_token set revoked_at = ${at} where token_hash = ${tokenHash} and revoked_at is null`;
+        });
+    },
+
+    async listGrants({ userId, orgId }) {
+        await ctx.gate();
+        const rows = await ctx.sql<
+            {
+                id: string;
+                client_id: string;
+                client_name: string | null;
+                kind: OAuthClientKind;
+                scopes: string[];
+                created_at: Date;
+                last_used_at: Date | null;
+            }[]
+        >`
+            select f.id, f.client_id, c.client_name, c.kind, f.scopes, f.created_at,
+                (select max(t.created_at) from oauth_token t where t.family_id = f.id) as last_used_at
+            from oauth_grant_family f join oauth_client c on c.client_id = f.client_id
+            where f.user_id = ${userId} and f.org_id = ${orgId}
+                and f.revoked_at is null and f.expires_at > ${ctx.now()}
+            order by f.created_at desc, f.id
+        `;
+        return rows.map((row) => ({
+            id: row.id,
+            client: { id: row.client_id, name: row.client_name, kind: row.kind },
+            scopes: row.scopes,
+            createdAt: row.created_at,
+            lastUsedAt: row.last_used_at,
+        }));
+    },
+
+    async revokeGrant({ id, userId, orgId }) {
+        await ctx.gate();
+        const at = ctx.now();
+        return ctx.sql.begin(async (tx) => {
+            const owned = await tx<{ id: string }[]>`
+                select id from oauth_grant_family
+                where id = ${id} and user_id = ${userId} and org_id = ${orgId} and revoked_at is null
+                    and expires_at > ${at}
+                for update
+            `;
+            if (owned.length === 0) return false;
+            await revokeLocked(tx, id, at);
+            return true;
         });
     },
 

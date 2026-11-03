@@ -164,6 +164,8 @@ export function csp(dev: boolean): string {
         "font-src 'self'",
         "base-uri 'none'",
         "form-action 'none'",
+        // Nothing embeds the SPA; the consent screen (BEL-103) must never be framed.
+        "frame-ancestors 'none'",
     ].join('; ');
 }
 
@@ -304,6 +306,7 @@ export async function buildApp({
     const header = csp(config.webRoot === null);
     app.addHook('onSend', async (_request, reply) => {
         reply.header('Content-Security-Policy', header);
+        reply.header('X-Frame-Options', 'DENY');
         reply.header('X-Content-Type-Options', 'nosniff');
         reply.header('Referrer-Policy', 'no-referrer');
     });

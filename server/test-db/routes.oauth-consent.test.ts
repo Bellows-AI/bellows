@@ -56,12 +56,15 @@ describe.skipIf(!enabled)('the consent transaction API', () => {
         });
         expect(own.statusCode).toBe(HTTP_OK);
         expect(own.json()).toMatchObject({
-            client: { id: board.world.clientId, name: 'Test client' },
+            client: { id: board.world.clientId, name: 'Test client', kind: 'dcr', uri: null },
             scopes: ['factory:read'],
             redirectUri: REDIRECT,
             organization: { id: ORG },
         });
         expect(own.body).not.toContain(tx.csrf);
+        // The page that asks must not be framed (clickjacking), whichever header a browser honours.
+        expect(own.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+        expect(own.headers['x-frame-options']).toBe('DENY');
 
         const other = await otherMember(board);
         for (const cookie of [other.cookie, undefined]) {
