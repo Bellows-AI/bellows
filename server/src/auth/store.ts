@@ -208,7 +208,7 @@ export interface AuthStore {
     revokeOrgToken(orgId: string, id: string): Promise<'revoked' | 'missing'>;
 }
 
-interface CallerRow {
+export interface CallerRow {
     id: string;
     github_user_id: string | number;
     github_login: string;
@@ -241,7 +241,7 @@ const toTokenView = (row: TokenRow): AccessTokenView => ({
     revokedAt: toIso(row.revoked_at),
 });
 
-const toCaller = (row: CallerRow): Caller => ({
+export const toCaller = (row: CallerRow): Caller => ({
     user: {
         id: row.id,
         // bigint arrives as a string from postgres.js, and Number() on it is exact well past any id
