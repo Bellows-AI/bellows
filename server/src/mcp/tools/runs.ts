@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
-import { BoardRunSchema, RunViewSchema, runView, type BoardRun } from './run-state.js';
+import { BoardRunSchema, ownRequirements, RunViewSchema, runView, type BoardRun } from './run-state.js';
 
 const MAX_ID_CHARS = 64;
 export const JobIdInput = z.object({
@@ -32,9 +32,8 @@ export const investigateJob = defineTool({
         if (!job.ok) return job.tagged;
         const jobs = judge(thread, ThreadSchema);
         if (!jobs.ok) return jobs.tagged;
-        // The board attaches the root's open requirements to every run of the thread; only the head run is waiting on them.
         const head = jobs.data.jobs.at(-1);
-        const own = (run: BoardRun): BoardRun => (run.id === head?.id ? run : { ...run, integrationRequirements: [] });
+        const own = (run: BoardRun): BoardRun => ownRequirements(run, head);
         const view = runView(own(job.data), true);
         return {
             outcome: 'ok',

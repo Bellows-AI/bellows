@@ -13,6 +13,7 @@ import { preflightTask } from './tools/preflight.js';
 import { investigateJob, jobActivity, listQuestions } from './tools/runs.js';
 import { listSkills } from './tools/skills.js';
 import { listJobs, listTasks } from './tools/tasks.js';
+import { getTask, getTaskResult } from './tools/task-detail.js';
 import { whoami } from './tools/whoami.js';
 
 /** Alphabetical by name: `tools/list` is the same on every replica and every call. */
@@ -25,6 +26,8 @@ export const TOOLS: readonly Tool[] = [
     listAvailableIntegrations,
     preflightTask,
     listTasks,
+    getTask,
+    getTaskResult,
     listJobs,
     investigateJob,
     jobActivity,
