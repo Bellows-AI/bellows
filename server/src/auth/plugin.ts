@@ -152,6 +152,9 @@ const OPEN_ROUTES: readonly RegExp[] = [
     // The installation webhook answers to the HMAC signature over its body — a credential the
     // route verifies itself — so the session hook must not demand a cookie of it.
     /^\/api\/github\/webhook$/,
+    // The OAuth authorization server's public endpoints (docs/auth.md): a client has no credential until it has
+    // been through them. The authorize endpoint reads the session cookie itself, as `/api/auth/me` does.
+    /^\/api\/oauth\/(authorize(\/resume)?|token|revoke)$/,
 ];
 
 /**

@@ -67,7 +67,7 @@ async function boot(mode: 'github' | 'none', metrics?: ServerMetrics) {
             }),
             store: telemetryStoreStub(),
             auth: store,
-            oauth,
+            oauth: oauth as OAuthStore,
             version: VERSION,
             ...(metrics ? { metrics } : {}),
         })

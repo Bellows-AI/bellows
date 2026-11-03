@@ -6,6 +6,7 @@ import { bridgedRequestClass } from '../src/auth/bridge-binding.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { ROUTE_CLASSES, classOf } from '../src/auth/route-class.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
+import type { OAuthStore } from '../src/auth/oauth-store.js';
 import type { AuthConfig } from '../src/config.js';
 import type { Job } from '../src/db/jobs/job-store-types.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
@@ -324,6 +325,18 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // BEL-104: the MCP endpoint answers to its own gate (Origin/Host, then an audience-bound mat_), anchored to the one path.
     ['/api/mcp', 'mcp'],
     ['/api/mcp/x', 'user'],
+    // The OAuth authorization server: the public endpoints are open, the consent routes are the cookie session.
+    ['/.well-known/oauth-protected-resource', 'open'],
+    ['/.well-known/oauth-protected-resource/api/mcp', 'open'],
+    ['/.well-known/oauth-authorization-server', 'open'],
+    ['/api/oauth/authorize', 'open'],
+    ['/api/oauth/authorize/resume', 'open'],
+    ['/api/oauth/token', 'open'],
+    ['/api/oauth/revoke', 'open'],
+    ['/api/oauth/consent/:id', 'user'],
+    ['/api/oauth/consent/approve', 'user'],
+    ['/api/oauth/consent/deny', 'user'],
+    ['/api/oauth/authorize/x', 'user'],
     // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
     // repo must never choose the org it lands in, so the credential does. Its own requirement,
     // between worker and ingest — the pair is the attempt's, the bearer a member's.
@@ -381,6 +394,8 @@ describe('the route table', () => {
         const config = testConfig({
             auth: githubAuth(),
             webRoot: tmpdir(),
+            // The OAuth and MCP routes exist only with MCP on; their rows must be live too.
+            mcp: { enabled: true, resource: 'https://board.example.test/api/mcp', trustedOrigins: [] },
             commerce: { enabled: true, url: 'https://commerce.example/', token: 'commerce-token-0123456789abcdef-xyz' },
         });
         const app = track(
@@ -389,6 +404,7 @@ describe('the route table', () => {
                 orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
                 store: telemetryStoreStub(),
                 auth: store,
+                oauth: {} as OAuthStore,
                 commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
                 // The runner credential routes exist exactly when their per-call check does.
                 attemptOfLease: async () => ({ ok: false, pending: false }),

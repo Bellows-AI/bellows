@@ -58,6 +58,9 @@ export interface ConsentView {
     clientState: string | null;
 }
 
+/** An authorize request parked while its visitor signs in: a consent transaction before there is a session. */
+export type PendingAuthorize = Omit<ConsentView, 'sessionHash'>;
+
 export interface OAuthStore {
     upsertClient(input: {
         clientId: string;
@@ -108,6 +111,12 @@ export interface OAuthStore {
     revoke(input: { token: string; clientId: string }): Promise<void>;
     revokeFamily(familyId: string): Promise<void>;
     findAccessToken(tokenHash: Buffer): Promise<McpCaller | null>;
+    /**
+     * Deletes what can no longer be used, a day after it expired (clock skew between replicas, and a replay of a spent
+     * code stays recognisable until its family goes): unspent codes, consent transactions, parked authorize requests, and grant families with
+     * their tokens and spent codes. Every row is judged by its own stored expiry, never by a failed read.
+     */
+    purgeExpired(): Promise<{ codes: number; consents: number; pending: number; families: number }>;
 
     createConsent(input: {
         sessionHash: Buffer;
@@ -123,6 +132,11 @@ export interface OAuthStore {
     readConsent(id: string): Promise<ConsentView | null>;
     /** Spends the transaction once, for the session and CSRF value it was created with; a wrong value burns nothing. */
     consumeConsent(input: { id: string; sessionHash: Buffer; csrf: string }): Promise<ConsentView | null>;
+
+    /** Parks a vetted authorize request until its visitor has a session; returns the raw, unguessable id. */
+    createPending(input: Omit<Parameters<OAuthStore['createConsent']>[0], 'sessionHash'>): Promise<string>;
+    /** Spends a parked request once, whoever presents the id; null if unknown, spent or expired. */
+    consumePending(id: string): Promise<PendingAuthorize | null>;
 }
 
 export interface OAuthStoreOptions {
@@ -138,7 +152,9 @@ const HOUR = 3600;
 const DAY = 86400;
 const CODE_TTL_SECONDS = 60;
 const CONSENT_TTL_SECONDS = 600;
+const PENDING_TTL_SECONDS = 900;
 const UNUSED_CLIENT_DAYS = 30;
+const PURGE_GRACE_SECONDS = DAY;
 const SECRET_BYTES = 32;
 const MS_PER_SECOND = 1000;
 const REFRESH_DAYS = 30;
@@ -202,10 +218,11 @@ interface ConsentRow {
     client_state: string | null;
 }
 
+type PendingRow = Omit<ConsentRow, 'session_hash'>;
+
 type Tx = TransactionSql;
 
-const toConsent = (row: ConsentRow): ConsentView => ({
-    sessionHash: row.session_hash,
+const toPending = (row: PendingRow): PendingAuthorize => ({
     clientId: row.client_id,
     redirectUri: row.redirect_uri,
     resource: row.resource,
@@ -213,6 +230,8 @@ const toConsent = (row: ConsentRow): ConsentView => ({
     codeChallenge: row.code_challenge,
     clientState: row.client_state,
 });
+
+const toConsent = (row: ConsentRow): ConsentView => ({ sessionHash: row.session_hash, ...toPending(row) });
 
 interface Ctx {
     sql: Sql;
@@ -414,13 +433,17 @@ const clientOps = (ctx: Ctx): ClientOps => ({
               and not exists (select 1 from oauth_grant_family f where f.client_id = c.client_id)
               and not exists (select 1 from oauth_authorization_code a where a.client_id = c.client_id)
               and not exists (select 1 from oauth_consent_transaction t where t.client_id = c.client_id)
+              and not exists (select 1 from oauth_pending_authorize p where p.client_id = c.client_id)
             returning c.client_id
         `;
         return rows.length;
     },
 });
 
-type ConsentOps = Pick<OAuthStore, 'createConsent' | 'readConsent' | 'consumeConsent'>;
+type ConsentOps = Pick<
+    OAuthStore,
+    'createConsent' | 'readConsent' | 'consumeConsent' | 'createPending' | 'consumePending'
+>;
 
 const consentOps = (ctx: Ctx): ConsentOps => ({
     async createConsent(input) {
@@ -461,11 +484,37 @@ const consentOps = (ctx: Ctx): ConsentOps => ({
         `;
         return rows[0] ? toConsent(rows[0]) : null;
     },
+
+    async createPending(input) {
+        await ctx.gate();
+        const id = secret();
+        const at = ctx.now();
+        await ctx.sql`
+            insert into oauth_pending_authorize
+                (id_hash, client_id, redirect_uri, resource, scopes, code_challenge, client_state, created_at,
+                 expires_at)
+            values (${hashToken(id)}, ${input.clientId}, ${input.redirectUri}, ${input.resource},
+                    ${ctx.sql.array([...input.scopes])}, ${input.codeChallenge}, ${input.clientState ?? null}, ${at},
+                    ${plus(at, input.ttlSeconds ?? PENDING_TTL_SECONDS)})
+        `;
+        return id;
+    },
+
+    async consumePending(id) {
+        await ctx.gate();
+        const at = ctx.now();
+        const rows = await ctx.sql<PendingRow[]>`
+            update oauth_pending_authorize set used_at = ${at}
+            where id_hash = ${hashToken(id)} and used_at is null and expires_at > ${at}
+            returning client_id, redirect_uri, resource, scopes, code_challenge, client_state
+        `;
+        return rows[0] ? toPending(rows[0]) : null;
+    },
 });
 
 type GrantOps = Pick<
     OAuthStore,
-    'createCode' | 'consumeCode' | 'refresh' | 'revoke' | 'revokeFamily' | 'findAccessToken'
+    'createCode' | 'consumeCode' | 'refresh' | 'revoke' | 'revokeFamily' | 'findAccessToken' | 'purgeExpired'
 >;
 
 type AccessRow = CallerRow & { scopes: string[]; client_id: string; resource: string; family_id: string };
@@ -524,6 +573,30 @@ const grantOps = (ctx: Ctx): GrantOps => ({
         const at = ctx.now();
         await ctx.sql.begin(async (tx) => {
             if (await lockFamily(tx, familyId)) await revokeLocked(tx, familyId, at);
+        });
+    },
+
+    async purgeExpired() {
+        await ctx.gate();
+        const cutoff = plus(ctx.now(), -PURGE_GRACE_SECONDS);
+        return ctx.sql.begin(async (tx) => {
+            // A spent code belongs to a family and goes with it (on delete cascade); only the unspent ones are here.
+            const codes = await tx`
+                delete from oauth_authorization_code where family_id is null and expires_at < ${cutoff} returning 1
+            `;
+            const consents = await tx`
+                delete from oauth_consent_transaction where expires_at < ${cutoff} returning 1
+            `;
+            const pending = await tx`
+                delete from oauth_pending_authorize where expires_at < ${cutoff} returning 1
+            `;
+            const families = await tx`delete from oauth_grant_family where expires_at < ${cutoff} returning 1`;
+            return {
+                codes: codes.length,
+                consents: consents.length,
+                pending: pending.length,
+                families: families.length,
+            };
         });
     },
 
