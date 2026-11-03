@@ -32,6 +32,8 @@ const CLI_SETTLED_OUTCOME: Record<string, string | null> = {
 };
 /** `EXIT_CODE_OF` of `cli/src/outcome.ts`, copied for the outcomes a wait ends in. */
 const CLI_EXIT_CODE = { succeeded: 0, failed: 4, cancelled: 5, needs_attention: 6, timeout: 3 } as const;
+/** `WAIT_POLL_MS` of `cli/src/batch-commands.ts`, copied: the CLI re-reads an unsettled batch this often. */
+const CLI_WAIT_POLL_S = 5;
 
 type Handler = (
     args: Record<string, unknown>,
@@ -75,6 +77,7 @@ function rig(spec: Rig) {
     let t = 1_700_000_000_000;
     const urls: string[] = [];
     const holdsAt: { at: number; seconds: number }[] = [];
+    const sleeps: { at: number; ms: number }[] = [];
     const start = t;
     const bridge: Bridge = {
         call: async (_c, request, { signal }) => {
@@ -93,7 +96,12 @@ function rig(spec: Rig) {
             return (spec.reread.length > 1 ? spec.reread.shift() : spec.reread[0]) as BridgeOutcome;
         },
     };
-    const runtime: ToolRuntime = { bridge, deadlineMs: 55 * SECOND, active: new Map(), now: () => t };
+    // A sleep spends the fake clock the way a real one spends the wall clock.
+    const sleep = async (ms: number) => {
+        sleeps.push({ at: t - start, ms });
+        t += ms;
+    };
+    const runtime: ToolRuntime = { bridge, deadlineMs: 55 * SECOND, active: new Map(), now: () => t, sleep };
     const handlers = new Map<string, Handler>();
     const server = { registerTool: (name: string, _c: unknown, handler: Handler) => handlers.set(name, handler) };
     registerTools(server as unknown as McpServer, caller, runtime, [waitBatch]);
@@ -106,7 +114,7 @@ function rig(spec: Rig) {
                 notify,
             },
         } as unknown as ServerContext);
-    return { call, urls, holdsAt, notify, at: () => t - start };
+    return { call, urls, holdsAt, sleeps, notify, at: () => t - start };
 }
 
 const holdUrls = (urls: string[]) => urls.filter((u) => u.includes('waitFor='));
@@ -260,19 +268,60 @@ describe('wait_batch', () => {
         expect(holdsAt).toHaveLength(2);
     });
 
-    it('ends inconclusive when the board keeps answering settled over a standing that is not, rather than spinning', async () => {
-        const { call, holdsAt } = rig({
-            holds: [
-                { spend: 0, outcome: settle('parked', batch('running')) },
-                { spend: 0, outcome: settle('parked', batch('running')) },
-                { spend: 0, outcome: settle('parked', batch('running')) },
-            ],
+    it('paces a settled poll over a standing that is not like the CLI, until the budget ends in timeout', async () => {
+        // The board parks a batch whose last stage is terminal while verification has not passed: it answers `parked`
+        // at once, and the standing still reads running. The CLI re-reads it every WAIT_POLL_MS to the timeout (exit 3).
+        const { call, holdsAt, sleeps, at } = rig({
+            holds: Array.from({ length: 40 }, () => ({ spend: 0, outcome: settle('parked', batch('running')) })),
             reread: json(batch('running')),
         });
         const out = await call();
-        expect(out.isError).toBe(true);
+        expect(out.isError).toBeUndefined();
+        expect(out.structuredContent).toMatchObject({ result: 'timeout', verdict: 'running', batchId: BATCH });
+        expect(CLI_EXIT_CODE.timeout).toBe(3);
+        // No busy loop: every hold after the first starts one pace after the last one did, bar the last short hold.
+        expect(holdsAt.length).toBeGreaterThan(2);
+        expect(holdsAt.length).toBeLessThanOrEqual(WAIT_BUDGET_DEFAULT_S / CLI_WAIT_POLL_S + 1);
+        for (const [i, hold] of holdsAt.slice(1).entries()) {
+            expect(hold.at - holdsAt[i]!.at, `gap before hold ${i + 1}`).toBe(
+                Math.min(CLI_WAIT_POLL_S, holdsAt[i]!.seconds) * SECOND
+            );
+        }
+        // No sleep outlasts the hold it stands in for, and nothing is held or slept past the absolute deadline.
+        for (const [i, sleep] of sleeps.entries()) {
+            expect(sleep.ms, `sleep ${i}`).toBeLessThanOrEqual(holdsAt[i]!.seconds * SECOND);
+            expect(sleep.ms).toBeLessThanOrEqual(CLI_WAIT_POLL_S * SECOND);
+        }
+        for (const hold of holdsAt) expect(hold.at + hold.seconds * SECOND).toBeLessThanOrEqual(45 * SECOND);
+        expect(at()).toBeLessThanOrEqual(45 * SECOND);
+    });
+
+    it('settles when a paced standing finally settles: parked over running twice, then the verdict', async () => {
+        const { call, holdsAt, sleeps } = rig({
+            holds: Array.from({ length: 3 }, () => ({ spend: 0, outcome: settle('parked', batch('running')) })),
+            reread: [json(batch('running')), json(batch('running')), json(batch('succeeded', { status: 'completed' }))],
+        });
+        const out = await call();
+        expect(out.structuredContent).toMatchObject({ result: 'succeeded', status: 'completed' });
+        expect(holdsAt.map((h) => h.at)).toEqual([0, CLI_WAIT_POLL_S * SECOND, 2 * CLI_WAIT_POLL_S * SECOND]);
+        expect(sleeps).toHaveLength(2);
+    });
+
+    it('stops pacing when the client leaves during the pace: no further hold', async () => {
+        const controller = new AbortController();
+        const { call, holdsAt } = rig({
+            holds: Array.from({ length: 5 }, () => ({
+                spend: 0,
+                outcome: () => {
+                    controller.abort();
+                    return settle('parked', batch('running'));
+                },
+            })),
+            reread: json(batch('running')),
+        });
+        const out = await call({}, { signal: controller.signal });
         expect(out.structuredContent).toMatchObject({ outcome: 'inconclusive' });
-        expect(holdsAt.length).toBeLessThanOrEqual(2);
+        expect(holdsAt).toHaveLength(1);
     });
 
     it('ends inconclusive when the re-read standing is inconclusive: no verdict is claimed', async () => {

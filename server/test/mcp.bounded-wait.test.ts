@@ -5,6 +5,7 @@ import type { Bridge, BridgeOutcome } from '../src/mcp/bridge.js';
 import {
     WAIT_BUDGET_DEFAULT_S,
     WAIT_BUDGET_MAX_S,
+    abortableSleep,
     boundedWait,
     holdSecondsLeft,
     type Hold,
@@ -520,5 +521,22 @@ describe('wait_task', () => {
         const gone = await before.call({}, { signal: stop.signal });
         expect(gone.structuredContent).toMatchObject({ outcome: 'inconclusive' });
         expect(before.urls).toEqual([]);
+    });
+});
+
+describe('abortableSleep', () => {
+    it('waits out its time, and ends at once when the client has left or leaves', async () => {
+        const waited = Date.now();
+        await abortableSleep(30, new AbortController().signal);
+        expect(Date.now() - waited).toBeGreaterThanOrEqual(25);
+        const gone = new AbortController();
+        gone.abort();
+        const before = Date.now();
+        await abortableSleep(10_000, gone.signal);
+        const leaving = new AbortController();
+        const pending = abortableSleep(10_000, leaving.signal);
+        leaving.abort();
+        await pending;
+        expect(Date.now() - before).toBeLessThan(1000);
     });
 });

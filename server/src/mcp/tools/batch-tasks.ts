@@ -1,9 +1,8 @@
-import { ERROR_CODES } from '@factory-ai/core';
 import { z } from 'zod';
 import { inconclusive, judge, refusal, success, type Tagged } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
 import { BatchIdInput, BatchViewSchema, ReportTaskSchema, StandingSchema, batchPath, reportCovers } from './batches.js';
-import { MAX_NAME_CHARS, PAGING_INPUT, DEFAULT_PAGE } from './paging.js';
+import { CURSOR_CODES, MAX_NAME_CHARS, PAGING_INPUT, DEFAULT_PAGE } from './paging.js';
 
 /**
  * A paged projection over what `GET /api/batches/:id` already carries: the record, the plan, the stage verification and
@@ -88,18 +87,37 @@ type TaskItem = z.infer<typeof TaskItemSchema>;
 const STATUS_DRAFT = 'draft';
 const TASK_NO_PR = 'none';
 
-interface Cursor {
+/** What a cursor is good for: one batch under one filter set. A cursor replayed elsewhere is refused, never applied. */
+interface Scope {
+    readonly b: string;
+    readonly f: readonly [stage: string | null, state: string | null, target: string | null];
+}
+
+interface Cursor extends Scope {
     readonly v: number;
     readonly s: string;
     readonly k: string;
 }
+
+const scopeOf = (
+    batchId: string,
+    filters: { stage?: string | undefined; state?: string | undefined; target?: string | undefined }
+): Scope => ({ b: batchId, f: [filters.stage ?? null, filters.state ?? null, filters.target ?? null] });
 
 const encodeCursor = (cursor: Cursor): string => Buffer.from(JSON.stringify(cursor)).toString('base64url');
 
 const decodeCursor = (raw: string): Cursor | null => {
     try {
         const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
-        const shape = z.object({ v: z.number().int(), s: z.string(), k: z.string() }).safeParse(parsed);
+        const shape = z
+            .object({
+                v: z.number().int(),
+                s: z.string(),
+                k: z.string(),
+                b: z.string(),
+                f: z.tuple([z.string().nullable(), z.string().nullable(), z.string().nullable()]),
+            })
+            .safeParse(parsed);
         return shape.success ? shape.data : null;
     } catch {
         return null;
@@ -180,20 +198,26 @@ function itemsOf(view: View): { list: TaskItem[] } | { reason: string } {
 }
 
 /** The index in plan order the page starts after (-1 for the first page), or the refusal a cursor earns. */
-function positionAfter(cursor: string | undefined, list: readonly TaskItem[], version: number): number | Tagged {
+function positionAfter(
+    cursor: string | undefined,
+    list: readonly TaskItem[],
+    seen: { version: number; scope: Scope }
+): number | Tagged {
     if (cursor === undefined) return -1;
     const at = decodeCursor(cursor);
-    if (at === null) return refused(ERROR_CODES.BAD_CURSOR, 'the cursor is not one this tool issued');
+    if (at === null || at.b !== seen.scope.b || at.f.some((filter, i) => filter !== seen.scope.f[i])) {
+        return refused(CURSOR_CODES.bad, 'the cursor was not issued by this tool for this batch and these filters');
+    }
     const index = list.findIndex((item) => item.stage === at.s && item.key === at.k);
-    if (at.v !== version || index < 0) {
-        return refused('stale_cursor', 'the batch changed since the cursor was issued; read from the first page');
+    if (at.v !== seen.version || index < 0) {
+        return refused(CURSOR_CODES.stale, 'the batch changed since the cursor was issued; read from the first page');
     }
     return index;
 }
 
 export const getBatchTasks = defineTool({
     name: 'get_batch_tasks',
-    description: `List the tasks of one batch, a page at a time in plan order (stage, then task), each with its plan key, stage, target and canonical repo@branch, state, PR, logical task id, next step, the PR head SHA the board last observed and the verification rows of its stage. Filter with stage, state (the task's execution state) and target (the plan target's key). Pass the returned cursor to read the next page; a cursor from another version of a draft is refused (stale_cursor). The board's \`standing\` rides along and is never computed here. A report that does not cover every task, or that could not be read, is inconclusive: no tasks are listed. \`stale\` is true when a PR observation is marked stale by the board or the standing is inconclusive; those values are the board's last reading. A draft is listed from its plan. Reading never changes the batch; inspect_batch is the whole-batch summary and batch_report the full report.`,
+    description: `List the tasks of one batch, a page at a time in plan order (stage, then task), each with its plan key, stage, target and canonical repo@branch, state, PR, logical task id, next step, the PR head SHA the board last observed and the verification rows of its stage. Filter with stage, state (the task's execution state) and target (the plan target's key). Pass the returned cursor to read the next page; a cursor is good for the batch and the filters it was issued with (anything else is refused, bad_cursor) and for the version it was issued at (stale_cursor). The board's \`standing\` rides along and is never computed here. A report that does not cover every task, or that could not be read, is inconclusive: no tasks are listed. \`stale\` is true when a PR observation is marked stale by the board or the standing is inconclusive; those values are the board's last reading. A draft is listed from its plan. Reading never changes the batch; inspect_batch is the whole-batch summary and batch_report the full report.`,
     scope: 'factory:read',
     routes: [['GET', '/api/batches/:id']],
     annotations: READ_ONLY,
@@ -223,7 +247,8 @@ export const getBatchTasks = defineTool({
         const view = read.data;
         const items = itemsOf(view);
         if ('reason' in items) return { outcome: 'inconclusive', result: inconclusive(items.reason) };
-        const after = positionAfter(cursor, items.list, view.version);
+        const scope = scopeOf(batchId, { stage, state, target });
+        const after = positionAfter(cursor, items.list, { version: view.version, scope });
         if (typeof after !== 'number') return after;
         const matching = items.list
             .map((item, index) => ({ item, index }))
@@ -247,7 +272,7 @@ export const getBatchTasks = defineTool({
                     total: matching.length,
                     cursor:
                         last && rest.length > page.length
-                            ? encodeCursor({ v: view.version, s: last.item.stage, k: last.item.key })
+                            ? encodeCursor({ ...scope, v: view.version, s: last.item.stage, k: last.item.key })
                             : null,
                     stale,
                 },

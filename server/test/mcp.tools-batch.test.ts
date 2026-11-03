@@ -685,13 +685,19 @@ describe('wait_batch through the real routes', () => {
         expect(out.data.result).toBeUndefined();
     });
 
-    it('is inconclusive rather than spinning when the board parks a batch whose standing is still running', async () => {
+    it('waits out the budget in timeout, paced, when the board parks a batch whose standing is still running', async () => {
         const { url } = await boot();
         const id = await started(url);
-        // Nothing runs and nothing is marked: the board parks the poll at once, while the standing reads running.
-        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 8 });
-        expect(out.isError).toBe(true);
-        expect(out.data).toMatchObject({ outcome: 'inconclusive' });
+        // Nothing runs and nothing is marked: the board parks the poll at once, while the standing reads running. The
+        // CLI keeps re-reading such a batch to its timeout (exit 3); so does the tool, without a busy loop and without
+        // outlasting the budget.
+        const begun = Date.now();
+        const out = await call(url, 'both', 'wait_batch', { batchId: id, budgetSeconds: 5 });
+        const spent = Date.now() - begun;
+        expect(out.isError, JSON.stringify(out.data)).toBeFalsy();
+        expect(out.data).toMatchObject({ result: 'timeout', verdict: 'running', batchId: id });
+        expect(spent).toBeGreaterThanOrEqual(1500);
+        expect(spent).toBeLessThan(5000);
     });
 
     it('refuses a draft with the board code', async () => {
@@ -959,7 +965,7 @@ describe('get_batch_tasks', () => {
         const page = await call(url, 'reader', 'get_batch_tasks', { batchId: id, limit: 1 });
         expect(page.data.cursor).toEqual(expect.any(String));
         const garbage = await call(url, 'reader', 'get_batch_tasks', { batchId: id, cursor: 'not-a-cursor' });
-        expect(garbage.data).toMatchObject({ outcome: 'refused', code: 'BAD_CURSOR' });
+        expect(garbage.data).toMatchObject({ outcome: 'refused', code: 'bad_cursor' });
         const updated = await call(url, 'both', 'update_batch', {
             batchId: id,
             version: 1,
@@ -968,6 +974,63 @@ describe('get_batch_tasks', () => {
         expect(updated.isError, JSON.stringify(updated.data)).toBeFalsy();
         const stale = await call(url, 'reader', 'get_batch_tasks', { batchId: id, cursor: page.data.cursor });
         expect(stale.data).toMatchObject({ outcome: 'refused', code: 'stale_cursor' });
+    });
+
+    it('refuses a cursor replayed on another batch, never reading that batch from the other one position', async () => {
+        const { url } = await boot();
+        const mine = await started(url);
+        const other = await started(url);
+        expect(other).not.toBe(mine);
+        const page = await call(url, 'reader', 'get_batch_tasks', { batchId: mine, limit: 1 });
+        expect(page.data.cursor).toEqual(expect.any(String));
+        const replay = await call(url, 'reader', 'get_batch_tasks', { batchId: other, cursor: page.data.cursor });
+        expect(replay.data).toMatchObject({ outcome: 'refused', code: 'bad_cursor' });
+        const same = await call(url, 'reader', 'get_batch_tasks', {
+            batchId: mine,
+            limit: 1,
+            cursor: page.data.cursor,
+        });
+        expect(same.isError, JSON.stringify(same.data)).toBeFalsy();
+    });
+
+    it.each([
+        ['stage', { stage: 'one' }],
+        ['state', { state: 'queued' }],
+        ['target', { target: 'web' }],
+    ])('refuses a cursor replayed under another filter set (%s)', async (_name, filters) => {
+        const { url } = await boot();
+        const id = await started(url);
+        const page = await call(url, 'reader', 'get_batch_tasks', { batchId: id, limit: 1 });
+        expect(page.data.cursor).toEqual(expect.any(String));
+        const replay = await call(url, 'reader', 'get_batch_tasks', {
+            batchId: id,
+            cursor: page.data.cursor,
+            ...filters,
+        });
+        expect(replay.data).toMatchObject({ outcome: 'refused', code: 'bad_cursor' });
+    });
+
+    it('takes a cursor back under the filters it was issued with, and refuses it once they differ', async () => {
+        const { url } = await boot();
+        const id = await started(url);
+        const filters = { stage: 'one' };
+        const first = await call(url, 'reader', 'get_batch_tasks', { batchId: id, limit: 1, ...filters });
+        expect(keysOf(first.data)).toEqual(['a']);
+        expect(first.data.cursor).toEqual(expect.any(String));
+        const next = await call(url, 'reader', 'get_batch_tasks', {
+            batchId: id,
+            limit: 1,
+            cursor: first.data.cursor,
+            ...filters,
+        });
+        expect(next.isError, JSON.stringify(next.data)).toBeFalsy();
+        expect(keysOf(next.data)).toEqual(['b']);
+        const other = await call(url, 'reader', 'get_batch_tasks', {
+            batchId: id,
+            cursor: first.data.cursor,
+            stage: 'two',
+        });
+        expect(other.data).toMatchObject({ outcome: 'refused', code: 'bad_cursor' });
     });
 
     it('answers a batch of another organization and an unknown batch with the board refusal', async () => {

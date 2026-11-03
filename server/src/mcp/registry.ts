@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { SCOPE_OF_CLASS, classOf, type Scope } from '../auth/route-class.js';
 import type { Caller } from '../auth/store.js';
 import type { Bridge, BridgeRequest } from './bridge.js';
+import { abortableSleep } from './bounded-wait.js';
 import { mapResult, refusal, inconclusive, type Tagged, type ToolOutcome } from './result.js';
 import { secondsSince } from '../prometheus.js';
 import type { Tool, ToolContext } from './tool.js';
@@ -59,6 +60,8 @@ export interface ToolRuntime {
     readonly deadlineMs: number;
     readonly metrics?: McpToolMetrics | undefined;
     readonly now?: () => number;
+    /** Waits `ms`; defaults to a timer that ends early when the client leaves. Tests spend a fake clock here. */
+    readonly sleep?: ((ms: number) => Promise<void>) | undefined;
     readonly active: Map<string, number>;
     /** Where a tool's programming error is reported; the caller only ever sees an inconclusive result. */
     readonly log?: { error(fields: object, message: string): void } | undefined;
@@ -167,6 +170,7 @@ async function execute({ tool, args, ctx, caller, runtime, now }: Execution): Pr
             caller,
             signal,
             now,
+            sleep: runtime.sleep ?? ((ms) => abortableSleep(ms, signal)),
             fetch,
             call: async (request, schema, summarize) => mapResult(await fetch(request), schema, summarize),
             progress: async (progress, total, message) => {

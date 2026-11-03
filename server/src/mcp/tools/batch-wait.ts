@@ -2,10 +2,12 @@ import type { BatchVerdict } from '@factory-ai/core';
 import { z } from 'zod';
 import {
     boundedWait,
+    paceMs,
     effectiveBudgetSeconds,
     WAIT_BUDGET_DEFAULT_S,
     WAIT_BUDGET_MAX_S,
     WAIT_HEADROOM_S,
+    WAIT_PACE_S,
     type Hold,
 } from '../bounded-wait.js';
 import { inconclusive, judge, success } from '../result.js';
@@ -39,12 +41,9 @@ type Settled = {
     readonly result: Exclude<BatchWaitResult, 'timeout'>;
 };
 
-/** The board answering "settled" this many times over a standing that is not, in a row, is a disagreement, not a race. */
-const UNSETTLED_ANSWERS_MAX = 2;
-
 export const waitBatch = defineTool({
     name: 'wait_batch',
-    description: `Wait, for at most budgetSeconds (default ${WAIT_BUDGET_DEFAULT_S}, never more than ${WAIT_BUDGET_MAX_S}), until a started batch settles, then answer with the board's standing read after the wait: \`result\` is succeeded (CLI exit 0), failed (a task failed, 4), cancelled (cancelled or expired; \`fence\` names which, 5), needs_attention (a task waits on a person or a stage verification failed, 6; \`attention\` and \`verificationFailures\` say which) or timeout (the budget ran out, 3). A timeout is not a failure: the batch is still going; call wait_batch again. Leaving the wait never cancels the batch. A read that cannot be confirmed, or a standing the board marks inconclusive, is an inconclusive call, never a verdict; call again. About ${WAIT_HEADROOM_S} seconds of the budget are kept for the answer. Progress is reported between holds when the client sent a progress token. A draft has no wait (BATCH_NOT_STARTED).`,
+    description: `Wait, for at most budgetSeconds (default ${WAIT_BUDGET_DEFAULT_S}, never more than ${WAIT_BUDGET_MAX_S}), until a started batch settles, then answer with the board's standing read after the wait: \`result\` is succeeded (CLI exit 0), failed (a task failed, 4), cancelled (cancelled or expired; \`fence\` names which, 5), needs_attention (a task waits on a person or a stage verification failed, 6; \`attention\` and \`verificationFailures\` say which) or timeout (the budget ran out, 3). A timeout is not a failure: the batch is still going; call wait_batch again. Leaving the wait never cancels the batch. A read that cannot be confirmed is an inconclusive call, never a verdict; so is a standing the board marks inconclusive, on the first re-read that shows it (the CLI keeps watching to its timeout); call again. A batch the board calls settled while its standing is still running (a last stage awaiting verification) is waited on, re-read every ${WAIT_PACE_S} seconds, until the budget ends in timeout. About ${WAIT_HEADROOM_S} seconds of the budget are kept for the answer. Progress is reported between holds when the client sent a progress token. A draft has no wait (BATCH_NOT_STARTED).`,
     scope: 'factory:read',
     routes: [['GET', '/api/batches/:id']],
     annotations: READ_ONLY,
@@ -73,7 +72,6 @@ export const waitBatch = defineTool({
         // Where the batch was last seen: the poll that is still waiting, or the re-read behind the last settled poll.
         // Every field of a `timeout` answer comes from here, never from a poll that settled on a batch that moved on.
         const last: { seen: { status: string; version: number; verdict: BatchVerdict } | null } = { seen: null };
-        let unsettled = 0;
         const end = await boundedWait<Settled>({
             budgetSeconds,
             now: ctx.now,
@@ -89,7 +87,6 @@ export const waitBatch = defineTool({
                 if (!polled.ok) return { kind: 'stop', tagged: polled.tagged };
                 const poll = polled.data;
                 if (poll.result === 'timeout') {
-                    unsettled = 0;
                     const seen = poll.batch;
                     last.seen = { status: seen.status, version: seen.version, verdict: seen.standing.verdict };
                     return { kind: 'open' };
@@ -113,18 +110,10 @@ export const waitBatch = defineTool({
                 // A fence ends the batch whatever else it reads, as `bellows batch wait` names it.
                 const result = fence === null ? RESULT_OF_VERDICT[verdict] : 'cancelled';
                 if (result !== null) return { kind: 'settled', value: { view, result } };
-                // The board said settled and the standing says moving: a race with a retry, once; the same answer again
-                // would be re-polled into at once, so it ends the call instead of spinning.
-                unsettled += 1;
-                if (unsettled >= UNSETTLED_ANSWERS_MAX) {
-                    return {
-                        kind: 'stop',
-                        tagged: {
-                            outcome: 'inconclusive',
-                            result: inconclusive(`the board answers ${poll.result} while the batch stands ${verdict}`),
-                        },
-                    };
-                }
+                // The board said settled and the standing says moving (a race with a retry, or a last stage whose
+                // verification has not passed yet: the board parks it at once). The same answer would be re-polled into
+                // without holding, so the poll is paced like `bellows batch wait`, never ended and never spun on.
+                await ctx.sleep(paceMs(seconds));
                 return { kind: 'open' };
             },
             progress: (elapsed, total) =>

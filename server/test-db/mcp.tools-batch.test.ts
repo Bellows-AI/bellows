@@ -399,13 +399,35 @@ describe.skipIf(!enabled)('the batch tools — database', () => {
         expect(waiting.data.attention).toMatchObject([{ key: 'a', stage: 'one' }]);
 
         const tasks = await call(url, 'alice', 'get_batch_tasks', { batchId: id });
-        expect(tasks.data.tasks[0]).toMatchObject({ key: 'a', stage: 'one', target: 'web', repo: BATCH_REPO });
+        expect(tasks.data.tasks[0]).toMatchObject({
+            key: 'a',
+            stage: 'one',
+            target: 'web',
+            repo: BATCH_REPO,
+            branch: 'main',
+            ref: `${BATCH_REPO}@main`,
+        });
         expect(tasks.data.tasks[0].taskId).toBe(await rootOf(batches, id, 'a'));
 
         const accepted = await call(url, 'alice', 'accept_batch_task', { batchId: id, task: 'a' });
         expect(accepted.isError, JSON.stringify(accepted.data)).toBeFalsy();
         const rows = await sql`select accepted_by from batch_acceptance where batch_id = ${id}`;
         expect(rows).toEqual([{ accepted_by: userOf('alice') }]);
+    });
+
+    it('get_batch_tasks reports the evidence a task does not have as missing, never inferred', async () => {
+        const { url } = await boot();
+        const id = await started(url, `evidence ${randomUUID()}`);
+        const tasks = await call(url, 'alice', 'get_batch_tasks', { batchId: id });
+        expect(tasks.isError, JSON.stringify(tasks.data)).toBeFalsy();
+        expect(tasks.data.tasks[0]).toMatchObject({
+            key: 'a',
+            ref: `${BATCH_REPO}@main`,
+            pr: null,
+            sourceSha: null,
+            observation: null,
+            verification: [],
+        });
     });
 
     it('retry_batch_task refuses a task that is not retryable and writes nothing', async () => {
