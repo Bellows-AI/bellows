@@ -61,6 +61,7 @@ const TOOL_NAMES = [
     'reopen_task',
     'retry_task',
     'stop_task',
+    'wait_task',
     'whoami',
 ];
 

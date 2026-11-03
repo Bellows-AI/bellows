@@ -16,7 +16,7 @@ import {
 import { jobPath } from './runs.js';
 
 const MAX_ID_CHARS = 64;
-const TaskIdInput = z.object({
+export const TaskIdInput = z.object({
     taskId: z
         .string()
         .min(1)
@@ -30,8 +30,8 @@ const TaskIdInput = z.object({
  * text so `get_task_result` can say `inconclusive` instead of failing the whole read.
  */
 const LenientRun = BoardRunSchema.extend({ status: z.string() });
-const Thread = z.object({ jobs: z.array(LenientRun).min(1) });
-type LenientRun = z.infer<typeof LenientRun>;
+export const Thread = z.object({ jobs: z.array(LenientRun).min(1) });
+export type LenientRun = z.infer<typeof LenientRun>;
 
 const known = (status: string): status is (typeof BOARD_STATUSES)[number] =>
     (BOARD_STATUSES as readonly string[]).includes(status);
@@ -68,7 +68,7 @@ const pullRequestOf = (run: Pick<BoardRun, 'publication'>) =>
         : null;
 
 /** The state of a head run in the shared vocabulary; a status the board does not define is `inconclusive`. */
-const stateOf = (run: Pick<LenientRun, 'status' | 'questions' | 'integrationRequirements'>) =>
+export const stateOf = (run: Pick<LenientRun, 'status' | 'questions' | 'integrationRequirements'>) =>
     known(run.status)
         ? stateOfRun({
               status: run.status,
@@ -78,7 +78,7 @@ const stateOf = (run: Pick<LenientRun, 'status' | 'questions' | 'integrationRequ
         : ('inconclusive' as const);
 
 /** The newest run is the task's present tense; the thread read is never empty (`min(1)`). */
-const headOf = (jobs: LenientRun[]): LenientRun => jobs.at(-1) as LenientRun;
+export const headOf = (jobs: LenientRun[]): LenientRun => jobs.at(-1) as LenientRun;
 
 export const getTask = defineTool({
     name: 'get_task',
@@ -195,6 +195,68 @@ const verdictOf = (gates: { status: string }[]): z.infer<typeof CheckVerdict> =>
     return gates.every((g) => g.status === 'passed') ? 'passed' : 'incomplete';
 };
 
+export const TaskResultSchema = z.object({
+    taskId: z.string(),
+    runId: z.string(),
+    status: z.string(),
+    state: RunStateSchema,
+    outcome: z.enum(['final', 'in_progress', 'needs_attention', 'inconclusive']),
+    summary: z.string().optional(),
+    pullRequest: PullRequestView.optional(),
+    checks: z
+        .object({
+            verdict: CheckVerdict,
+            gates: z.array(z.object({ name: z.string(), status: z.string(), exitCode: z.number().nullable() })),
+        })
+        .optional(),
+    attention: z.object({ openQuestions: z.number(), integrationRequirements: z.array(RequirementView) }).optional(),
+    error: z
+        .object({ kind: z.string().nullable(), cause: z.string().nullable(), exitCode: z.number().nullable() })
+        .optional(),
+    updatedAt: z.string().describe('The newest time the board recorded on the head run, questions included.'),
+});
+
+/** The verified result of a task from its head run alone: what `get_task_result` and a settled `wait_task` both say. */
+export const taskResultOf = (head: LenientRun) => {
+    const state = stateOf(head);
+    const integrationRequirements = requirementsOf(head);
+    const openQuestions = (head.questions ?? []).filter((q) => q.status === 'pending' && q.answerable).length;
+    const outcome = (
+        {
+            pending: 'in_progress',
+            running: 'in_progress',
+            succeeded: 'final',
+            failed: 'final',
+            cancelled: 'final',
+            needs_attention: 'needs_attention',
+            unreachable: 'inconclusive',
+            inconclusive: 'inconclusive',
+        } as const
+    )[state];
+    const summary = cut(head.summary, MAX_TEXT_CHARS).text;
+    const pullRequest = pullRequestOf(head);
+    const gates = (head.gates ?? []).map(({ name, status, exitCode }) => ({
+        name,
+        status,
+        exitCode: exitCode ?? null,
+    }));
+    const failed = known(head.status) && (head.status === 'failed' || head.status === 'dead');
+    const data = {
+        taskId: head.rootJobId,
+        runId: head.id,
+        status: head.status,
+        state,
+        outcome,
+        ...(summary === null ? {} : { summary }),
+        ...(pullRequest === null ? {} : { pullRequest }),
+        ...(gates.length === 0 ? {} : { checks: { verdict: verdictOf(gates), gates } }),
+        ...(state === 'needs_attention' ? { attention: { openQuestions, integrationRequirements } } : {}),
+        ...(failed ? { error: { kind: head.failureKind, cause: head.failureCause, exitCode: head.exitCode } } : {}),
+        updatedAt: latestOf(head),
+    };
+    return data;
+};
+
 export const getTaskResult = defineTool({
     name: 'get_task_result',
     description:
@@ -203,68 +265,11 @@ export const getTaskResult = defineTool({
     routes: [['GET', '/api/jobs/:id/thread']],
     annotations: READ_ONLY,
     input: TaskIdInput,
-    output: z.object({
-        taskId: z.string(),
-        runId: z.string(),
-        status: z.string(),
-        state: RunStateSchema,
-        outcome: z.enum(['final', 'in_progress', 'needs_attention', 'inconclusive']),
-        summary: z.string().optional(),
-        pullRequest: PullRequestView.optional(),
-        checks: z
-            .object({
-                verdict: CheckVerdict,
-                gates: z.array(z.object({ name: z.string(), status: z.string(), exitCode: z.number().nullable() })),
-            })
-            .optional(),
-        attention: z
-            .object({ openQuestions: z.number(), integrationRequirements: z.array(RequirementView) })
-            .optional(),
-        error: z
-            .object({ kind: z.string().nullable(), cause: z.string().nullable(), exitCode: z.number().nullable() })
-            .optional(),
-        updatedAt: z.string().describe('The newest time the board recorded on the head run, questions included.'),
-    }),
+    output: TaskResultSchema,
     async run({ taskId }, ctx) {
         const judged = judge(await ctx.fetch({ method: 'GET', url: `${jobPath(taskId)}/thread` }), Thread);
         if (!judged.ok) return judged.tagged;
-        const head = headOf(judged.data.jobs);
-        const state = stateOf(head);
-        const integrationRequirements = requirementsOf(head);
-        const openQuestions = (head.questions ?? []).filter((q) => q.status === 'pending' && q.answerable).length;
-        const outcome = (
-            {
-                pending: 'in_progress',
-                running: 'in_progress',
-                succeeded: 'final',
-                failed: 'final',
-                cancelled: 'final',
-                needs_attention: 'needs_attention',
-                unreachable: 'inconclusive',
-                inconclusive: 'inconclusive',
-            } as const
-        )[state];
-        const summary = cut(head.summary, MAX_TEXT_CHARS).text;
-        const pullRequest = pullRequestOf(head);
-        const gates = (head.gates ?? []).map(({ name, status, exitCode }) => ({
-            name,
-            status,
-            exitCode: exitCode ?? null,
-        }));
-        const failed = known(head.status) && (head.status === 'failed' || head.status === 'dead');
-        const data = {
-            taskId: head.rootJobId,
-            runId: head.id,
-            status: head.status,
-            state,
-            outcome,
-            ...(summary === null ? {} : { summary }),
-            ...(pullRequest === null ? {} : { pullRequest }),
-            ...(gates.length === 0 ? {} : { checks: { verdict: verdictOf(gates), gates } }),
-            ...(state === 'needs_attention' ? { attention: { openQuestions, integrationRequirements } } : {}),
-            ...(failed ? { error: { kind: head.failureKind, cause: head.failureCause, exitCode: head.exitCode } } : {}),
-            updatedAt: latestOf(head),
-        };
-        return { outcome: 'ok', result: success(data, `${data.taskId}: ${state} (${head.status})`) };
+        const data = taskResultOf(headOf(judged.data.jobs));
+        return { outcome: 'ok', result: success(data, `${data.taskId}: ${data.state} (${data.status})`) };
     },
 });
