@@ -737,7 +737,6 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             'code',
             'kbd',
             '.mono',
-            '.kv dd',
             '.sidenav-task-summary',
             '.composer-param-details code',
             '.tick',

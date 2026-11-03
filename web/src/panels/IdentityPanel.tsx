@@ -30,6 +30,13 @@ export function IdentityPanel({ session }: { session: Session }) {
                 )}
                 <div>
                     <p className="identity-name">{user.name ?? user.login}</p>
+                    <p className="identity-login">
+                        {local ? (
+                            <code>{user.login}</code>
+                        ) : (
+                            <a href={`https://github.com/${user.login}`}>{user.login}</a>
+                        )}
+                    </p>
                     {local ? (
                         <p className="muted">
                             This deployment has authentication off (<code>AUTH_MODE=none</code>); everything is
@@ -42,18 +49,9 @@ export function IdentityPanel({ session }: { session: Session }) {
             </div>
             <KeyValues
                 pairs={[
-                    [
-                        'Login',
-                        local ? (
-                            <code>{user.login}</code>
-                        ) : (
-                            <a href={`https://github.com/${user.login}`}>{user.login}</a>
-                        ),
-                    ],
-                    ['Name', user.name ?? '—'],
                     // A 0 is the stand-in marker, not an id; the dash says "no GitHub id here" and
                     // the sentence above explains why.
-                    ['GitHub id', local ? '—' : String(user.githubUserId)],
+                    ['GitHub id', local ? '—' : <span className="mono">{user.githubUserId}</span>],
                     ['Role', role],
                     // 'First seen' — there are no invites any more (#99); the row's creation is
                     // the first sign-in that reported this membership.

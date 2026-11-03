@@ -695,7 +695,6 @@
        widening its column past a 320px page (issue 287). */
     .kv dd {
         margin: 0;
-        font-family: var(--font-mono);
         overflow-wrap: anywhere;
     }
 

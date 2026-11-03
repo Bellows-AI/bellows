@@ -114,8 +114,8 @@ export function SettingsIntegrationDetailPage() {
                 <section className="panel" aria-label={`${label} connection`}>
                     <KeyValues
                         pairs={[
-                            ['Site', connection.site],
-                            ['Account', connection.account],
+                            ['Site', <span className="mono">{connection.site}</span>],
+                            ['Account', <span className="mono">{connection.account}</span>],
                             ['Access', accessSentence(label, connection.access)],
                             ['Connected on', commitDate(connection.createdAt)],
                             ['Status', STATE_PILL[connectionState(connection)].text],

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { AccessTokenView, MintResult } from '../api/useAccessTokens.js';
 import { useAccessTokens } from '../api/useAccessTokens.js';
+import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { taskTime } from '../format.js';
 
 /** One token row: its label and timestamps, and Revoke — or the fact that it already is one.
@@ -143,6 +144,8 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
     const [copied, setCopied] = useState(false);
     const [failure, setFailure] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [pending, setPending] = useState<AccessTokenView | null>(null);
+    const [revoking, setRevoking] = useState(false);
 
     const submit = async () => {
         setBusy(true);
@@ -165,6 +168,17 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
         setFailure(null);
         const reason = await onRevoke(id);
         if (reason) setFailure(reason);
+    };
+
+    const confirmRevoke = async () => {
+        if (pending === null) return;
+        setRevoking(true);
+        try {
+            await revoke(pending.id);
+        } finally {
+            setRevoking(false);
+            setPending(null);
+        }
     };
 
     const copy = async () => {
@@ -202,9 +216,23 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
                     onSubmit={() => void submit()}
                     loading={loading}
                     tokens={tokens}
-                    onRevoke={(id) => void revoke(id)}
+                    onRevoke={(id) => setPending(tokens.find((t) => t.id === id) ?? null)}
                 />
             )}
+            <ConfirmDialog
+                open={pending !== null}
+                busy={revoking}
+                title={`Revoke ${pending?.label ?? ''}?`}
+                confirmClassName="chat-remove"
+                confirmText={revoking ? 'Revoking…' : 'Revoke'}
+                onClose={() => setPending(null)}
+                onConfirm={() => void confirmRevoke()}
+            >
+                <p>
+                    Anything using the token “{pending?.label}” stops working at once. This cannot be undone; a revoked
+                    token is replaced by creating a new one.
+                </p>
+            </ConfirmDialog>
         </section>
     );
 }

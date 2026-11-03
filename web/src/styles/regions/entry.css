@@ -441,6 +441,10 @@
         font-weight: 600;
     }
 
+    .identity-head .identity-login {
+        color: var(--ink-muted);
+    }
+
     /* ── entry touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .login-button,

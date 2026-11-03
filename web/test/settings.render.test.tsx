@@ -48,6 +48,22 @@ describe('IdentityPanel', () => {
         expect(html).not.toContain('/workspaces/');
     });
 
+    it('leads with avatar, display name and the GitHub login link; the metadata is one sans kv list', () => {
+        const html = renderToStaticMarkup(<IdentityPanel session={session} />);
+        const head = html.slice(html.indexOf('identity-head'), html.indexOf('<dl'));
+        expect(head).toContain('avatar');
+        expect(head).toContain('The Octocat');
+        expect(head).toContain('href="https://github.com/octocat"');
+        expect(html.match(/<dl /g)?.length).toBe(1);
+        for (const label of ['GitHub id', 'Role', 'First seen', 'Member since', 'Account created', 'Last sign-in']) {
+            expect(html).toContain(`<dt>${label}</dt>`);
+        }
+        // Dates and roles are prose, not identifiers: only the numeric id takes the mono class.
+        expect(html).not.toMatch(/class="mono"[^>]*>2026-/);
+        expect(html).not.toMatch(/class="mono"[^>]*>admin/);
+        expect(html).toMatch(/class="mono"[^>]*>4242/);
+    });
+
     it('never emits a placeholder value for an absent field', () => {
         const html = renderToStaticMarkup(<IdentityPanel session={local} />);
         expectNoPlaceholder(html);
