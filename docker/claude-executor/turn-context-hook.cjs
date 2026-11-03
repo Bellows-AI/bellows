@@ -9,9 +9,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// One-shot: the file is renamed once read, so later prompts do not repeat it; until the first prompt it is untouched.
 const readNote = () => {
+    const file = path.join(process.cwd(), '.factory', 'rebuilt-from-remote');
     try {
-        return fs.readFileSync(path.join(process.cwd(), '.factory', 'rebuilt-from-remote'), 'utf8').trim();
+        const note = fs.readFileSync(file, 'utf8').trim();
+        fs.renameSync(file, file + '.delivered');
+        return note;
     } catch {
         return '';
     }

@@ -44,8 +44,10 @@ describe('the turn-context hook', () => {
             hookSpecificOutput: { additionalContext: string };
         };
         expect(out.hookSpecificOutput.additionalContext).toBe('ctx\n\nrebuilt from the pushed branch b');
-        expect(JSON.parse(runHook({}, tree)).hookSpecificOutput.additionalContext).toBe(
-            'rebuilt from the pushed branch b'
+        // Delivered once: the second prompt carries only the claim's own context.
+        expect(runHook({}, tree)).toBe('');
+        expect(JSON.parse(runHook({ FACTORY_TURN_CONTEXT: 'ctx' }, tree)).hookSpecificOutput.additionalContext).toBe(
+            'ctx'
         );
     });
 
