@@ -32,6 +32,8 @@ export interface ToolContext {
     readonly signal: AbortSignal;
     /** The clock the call's deadline is measured on. */
     readonly now: () => number;
+    /** Waits `ms` on the same clock, or less when the client leaves (`signal`). */
+    sleep(ms: number): Promise<void>;
     /** One board call, unjudged. Every call of a tool call shares one wall-clock deadline. */
     fetch(request: BridgeRequest): Promise<BridgeOutcome>;
     /** One board call whose 2xx data (checked by `schema`) is the whole result. */

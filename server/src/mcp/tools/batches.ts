@@ -1,16 +1,16 @@
 import { BATCH_PLAN_JSON_SCHEMA, type BatchVerdict } from '@factory-ai/core';
 import { z } from 'zod';
 import { inconclusive, judge, success, type Tagged } from '../result.js';
-import { defineTool, READ_ONLY, WRITES } from '../tool.js';
+import { defineTool, DESTRUCTIVE, READ_ONLY, WRITES } from '../tool.js';
 import { MAX_NAME_CHARS } from './paging.js';
 import { idempotencyKey, keyNote } from './task-writes.js';
 
 /** Plan and batch tools: each is one board batch route as the caller, board refusals verbatim (docs/batches.md). */
 
-const BatchIdInput = z.object({
+export const BatchIdInput = z.object({
     batchId: z.string().min(1).max(MAX_NAME_CHARS).describe('A batch id (list_batches).'),
 });
-const batchPath = (batchId: string): string => `/api/batches/${encodeURIComponent(batchId)}`;
+export const batchPath = (batchId: string): string => `/api/batches/${encodeURIComponent(batchId)}`;
 
 /** The plan, advertised with the board's own schema (core); the board's parser stays the authority and answers every issue by path. */
 const PlanInput = z.record(z.string(), z.unknown()).meta(BATCH_PLAN_JSON_SCHEMA);
@@ -29,7 +29,7 @@ const VERDICTS = {
 } satisfies Record<BatchVerdict, true>;
 
 /** The board's verdict on the batch (core `batchStanding`): this tool layer reads it and never computes one. */
-const StandingSchema = z.object({
+export const StandingSchema = z.object({
     verdict: z.enum(Object.keys(VERDICTS) as [BatchVerdict, ...BatchVerdict[]]),
     fence: z.enum(['cancelled', 'expired']).nullable(),
     attention: z.array(
@@ -48,7 +48,7 @@ const StandingSchema = z.object({
 const BatchTaskSchema = z.object({ key: z.string(), stage: z.string(), execution: z.string() }).loose();
 
 /** A batch as the board reads it: the record, its `standing`, and the report read in the same snapshot (null when unreadable). */
-const BatchViewSchema = z
+export const BatchViewSchema = z
     .object({
         id: z.string(),
         status: z.string(),
@@ -76,7 +76,7 @@ const ListSchema = z.object({
     ),
 });
 
-const ReportTaskSchema = z
+export const ReportTaskSchema = z
     .object({
         key: z.string(),
         stage: z.string(),
@@ -91,6 +91,9 @@ const draftSummary = (verb: string) => (data: z.infer<typeof DraftSchema>) =>
 
 const viewSummary = (verb: string) => (data: z.infer<typeof BatchViewSchema>) =>
     `${verb} batch ${data.id}: ${data.status}, standing ${data.standing.verdict}`;
+
+const viewNote = (text: string) => (data: z.infer<typeof BatchViewSchema>) =>
+    `${text} (batch ${data.id}: ${data.status}, standing ${data.standing.verdict})`;
 
 const withKey = (key: string | undefined) => (key === undefined ? {} : { idempotencyKey: key });
 
@@ -191,6 +194,20 @@ export const listBatches = defineTool({
         ctx.call({ method: 'GET', url: '/api/batches' }, ListSchema, (data) => `${data.batches.length} batches`),
 });
 
+/** True when the report names exactly the tasks of the batch it was read for: a partial report is no basis for a verdict. */
+export const reportCovers = (
+    report: { id: string; tasks: readonly { key: string }[] },
+    batch: { id: string; tasks: readonly { key: string }[] }
+): boolean => {
+    const covered = new Set(report.tasks.map((task) => task.key));
+    return (
+        report.id === batch.id &&
+        covered.size === report.tasks.length &&
+        batch.tasks.length === covered.size &&
+        batch.tasks.every((task) => covered.has(task.key))
+    );
+};
+
 const refusedFirst = (...tagged: Tagged[]): Tagged => tagged.find((one) => one.outcome === 'refused') ?? tagged[0]!;
 
 export const batchReport = defineTool({
@@ -215,13 +232,7 @@ export const batchReport = defineTool({
         if (!report.ok || !batch.ok) {
             return refusedFirst(...[report, batch].flatMap((one) => (one.ok ? [] : [one.tagged])));
         }
-        const covered = new Set(report.data.tasks.map((task) => task.key));
-        const complete =
-            report.data.id === batch.data.id &&
-            covered.size === report.data.tasks.length &&
-            batch.data.tasks.length === covered.size &&
-            batch.data.tasks.every((task) => covered.has(task.key));
-        if (!complete) {
+        if (!reportCovers(report.data, batch.data)) {
             return {
                 outcome: 'inconclusive',
                 result: inconclusive('the report does not cover every task of the batch'),
@@ -240,6 +251,64 @@ export const batchReport = defineTool({
     },
 });
 
+const TaskInput = BatchIdInput.extend({
+    task: z.string().min(1).max(MAX_NAME_CHARS).describe("A task's plan key (inspect_batch, get_batch_tasks)."),
+});
+const taskPath = (batchId: string, task: string, verb: string): string =>
+    `${batchPath(batchId)}/tasks/${encodeURIComponent(task)}/${verb}`;
+
+export const retryBatchTask = defineTool({
+    name: 'retry_batch_task',
+    description:
+        'Send one failed or stopped task of a started batch (or one whose gate refused it) in the active stage back to the board scheduler, which launches it when a slot is free. The board refuses a task that is not retryable (BATCH_TASK_NOT_RETRYABLE), an unknown task, a draft, and a cancelled or expired batch (BATCH_CANCELLED, BATCH_EXPIRED). Returns the batch with the board standing.',
+    scope: 'factory:write',
+    routes: [['POST', '/api/batches/:id/tasks/:key/retry']],
+    annotations: WRITES,
+    input: TaskInput,
+    output: BatchViewSchema,
+    run: ({ batchId, task }, ctx) =>
+        ctx.call(
+            { method: 'POST', url: taskPath(batchId, task, 'retry') },
+            BatchViewSchema,
+            viewNote(`retry requested for ${task}`)
+        ),
+});
+
+export const acceptBatchTask = defineTool({
+    name: 'accept_batch_task',
+    description:
+        'Record your acceptance of a finished, successful task whose plan completion is an acceptance, so its stage can advance. The board refuses a task a merged PR completes, one with no finished successful run, one whose stage already advanced, an unknown task and a draft or cancelled batch (BATCH_TASK_NOT_ACCEPTABLE, BATCH_CANCELLED, BATCH_NOT_STARTED). Returns the batch with the board standing.',
+    scope: 'factory:write',
+    routes: [['POST', '/api/batches/:id/tasks/:key/accept']],
+    annotations: WRITES,
+    input: TaskInput,
+    output: BatchViewSchema,
+    run: ({ batchId, task }, ctx) =>
+        ctx.call(
+            { method: 'POST', url: taskPath(batchId, task, 'accept') },
+            BatchViewSchema,
+            viewNote(`accepted ${task}`)
+        ),
+});
+
+export const cancelBatch = defineTool({
+    name: 'cancel_batch',
+    description:
+        'Cancel a started batch: the board fences it, starts nothing new and stops its moving tasks; a pull request a task already opened stays open. Cannot be undone, and a repeat answers the same. The board refuses a draft (BATCH_NOT_STARTED) and a batch that already finished (BATCH_FINISHED). Destructive: requires confirm: true. Returns the batch with the board standing.',
+    scope: 'factory:write',
+    routes: [['POST', '/api/batches/:id/cancel']],
+    annotations: DESTRUCTIVE,
+    confirm: true,
+    input: BatchIdInput,
+    output: BatchViewSchema,
+    run: ({ batchId }, ctx) =>
+        ctx.call(
+            { method: 'POST', url: `${batchPath(batchId)}/cancel` },
+            BatchViewSchema,
+            viewNote('cancel requested')
+        ),
+});
+
 export const BATCH_TOOLS = [
     importBatch,
     updateBatch,
@@ -248,4 +317,7 @@ export const BATCH_TOOLS = [
     inspectBatch,
     listBatches,
     batchReport,
+    retryBatchTask,
+    acceptBatchTask,
+    cancelBatch,
 ];

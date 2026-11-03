@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { inconclusive, judge, refusal, success, type Tagged } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
-import { MAX_NAME_CHARS, pageOf, PAGING_INPUT, queryOf } from './paging.js';
+import { CURSOR_CODES, MAX_NAME_CHARS, pageOf, PAGING_INPUT, queryOf } from './paging.js';
 import { encodeCursor as encodeBoardCursor } from '../../artifacts/artifact-read.js';
 import { JobIdInput, jobPath } from './runs.js';
 
@@ -191,7 +191,7 @@ function withinCap(
 
 const badCursor = (): Tagged => ({
     outcome: 'refused',
-    result: refusal('bad_cursor', 'cursor was not issued by this tool for this query'),
+    result: refusal(CURSOR_CODES.bad, 'cursor was not issued by this tool for this query'),
 });
 
 export const readJobLog = defineTool({

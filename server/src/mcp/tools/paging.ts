@@ -9,6 +9,9 @@ export const MAX_SELECTED = 50;
 export const MAX_CONNECTIONS = 8;
 export const MAX_CATALOG_PAGE = 100;
 
+/** The refusals of a cursor, tool-local like `confirmation_required`: not one this call issued, and one a changed batch outdated. */
+export const CURSOR_CODES = { bad: 'bad_cursor', stale: 'stale_cursor' } as const;
+
 /** The `limit` and `cursor` inputs every list tool shares; the cursor is the last key returned, opaque to the caller. */
 export const PAGING_INPUT = {
     limit: z

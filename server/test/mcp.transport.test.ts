@@ -36,12 +36,15 @@ import {
 } from './helpers-http.js';
 
 const TOOL_NAMES = [
+    'accept_batch_task',
     'answer_question',
     'batch_report',
+    'cancel_batch',
     'create_task',
     'edit_task',
     'follow_up_task',
     'force_close_task',
+    'get_batch_tasks',
     'get_task',
     'get_task_result',
     'import_batch',
@@ -63,11 +66,13 @@ const TOOL_NAMES = [
     'read_job_log',
     'remove_task',
     'reopen_task',
+    'retry_batch_task',
     'retry_task',
     'start_batch',
     'stop_task',
     'update_batch',
     'validate_batch',
+    'wait_batch',
     'wait_task',
     'whoami',
 ];
