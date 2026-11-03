@@ -107,11 +107,12 @@ async function repoCheck(log: FastifyBaseLogger, repo: string | null, rt: Runtim
     const unread = { subject: 'repo', name: repo, status: 'unverified' } as const;
     const read = await attempt(log, 'tracked repositories', () => rt.repos.detail());
     if (!read.ok) return { ...unread, detail: 'the tracked repositories could not be read' };
+    // A list that came with a refresh error is stale: neither membership nor absence in it is a verdict.
+    if (read.value.error !== null) {
+        return { ...unread, detail: `the tracked list may be stale: ${read.value.error}` };
+    }
     if (read.value.repos.some((candidate) => `${candidate.owner}/${candidate.name}` === repo)) {
         return { subject: 'repo', name: repo, status: 'ok', detail: 'tracked by this board' };
-    }
-    if (read.value.error !== null) {
-        return { ...unread, detail: `${repo} is not in the tracked list, which may be stale: ${read.value.error}` };
     }
     return { subject: 'repo', name: repo, status: 'blocked', detail: `${repo} is not tracked by this board` };
 }
@@ -220,15 +221,19 @@ async function connectionStanding(
     const listRead = await attempt(log, 'connections', () => store.list(userId));
     const listed = listRead.ok ? listRead.value : null;
     const usable: string[] = [];
+    let unconfirmed = false;
     const checks: Check[] = [];
     for (const id of selection.connections) {
         const one = await attempt(log, 'connection', () =>
             store.preview({ executionUser: userId, explicit: [id], providers: [], required: [] })
         );
         checks.push(explicitCheck(id, one.ok ? one.value : null, listed));
-        if (one.ok && one.value.ok) usable.push(id);
+        if (!one.ok) unconfirmed = true;
+        else if (one.value.ok) usable.push(id);
     }
     if (required.length === 0) return { checks, resolution: { ok: true, bindings: [], requirements: [] }, listed };
+    // An explicit selection that could not be read may be the one that decides the defaults: no verdict without it.
+    if (unconfirmed) return { checks, resolution: null, listed };
     const resolved = await attempt(log, 'default connections', () =>
         store.preview({ executionUser: userId, explicit: usable, providers: [...BINDABLE_PROVIDERS], required })
     );

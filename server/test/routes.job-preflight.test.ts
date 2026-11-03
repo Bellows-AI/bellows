@@ -58,6 +58,10 @@ interface Scenario {
     resolution?: Resolution | Error;
     repos?: { owner: string; name: string }[];
     repoError?: string | Error;
+    /** Keep the repos listed beside `repoError`: a refresh that failed and left the stale list. */
+    staleRepos?: boolean;
+    /** Connection ids whose single-id preview read throws. */
+    unreadable?: string[];
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -75,6 +79,7 @@ async function boot(scenario: Scenario = {}) {
         },
         async preview(input: { executionUser: string; explicit: string[] }): Promise<Resolution | ResolveRefusal> {
             asked.push({ userId: input.executionUser, explicit: input.explicit });
+            if (input.explicit.some((id) => scenario.unreadable?.includes(id))) throw new Error('read failed');
             if (input.explicit.some((id) => !allowed.has(id))) return { ok: false, reason: 'not-authorized' };
             const resolution = scenario.resolution ?? { ok: true, bindings: [], requirements: [] };
             if (resolution instanceof Error) throw resolution;
@@ -89,7 +94,8 @@ async function boot(scenario: Scenario = {}) {
                   ...base,
                   detail: async () => {
                       if (scenario.repoError instanceof Error) throw scenario.repoError;
-                      return { repos: [], installation: null, error: scenario.repoError ?? null };
+                      const { repos } = scenario.staleRepos ? await base.detail() : { repos: [] };
+                      return { repos, installation: null, error: scenario.repoError ?? null };
                   },
               };
     const config = testConfig({ auth: githubAuth() });
@@ -148,6 +154,16 @@ describe('POST /api/jobs/preflight repo', () => {
         expect(check).toMatchObject({ status: 'unverified' });
         expect(check?.detail).toContain('rate limited');
         expect(body.ready).toBe(true);
+    });
+
+    it('is unverified, not ok, when the refresh failed and the stale list still names the repo', async () => {
+        const { check } = await verdict(
+            await boot({ staleRepos: true, repoError: 'rate limited' }),
+            { repo: 'acme/web', executor: 'main' },
+            'repo'
+        );
+        expect(check).toMatchObject({ status: 'unverified' });
+        expect(check?.detail).toContain('rate limited');
     });
 
     it('is unverified when the tracked list cannot be read', async () => {
@@ -365,6 +381,28 @@ describe('POST /api/jobs/preflight connections', () => {
             'connection'
         );
         expect(check).toMatchObject({ status: 'unverified' });
+    });
+
+    it('keeps an explicit selection whose read failed: the skill is unverified, not blocked as ambiguous', async () => {
+        const resolution: Resolution = {
+            ok: true,
+            bindings: [],
+            requirements: [{ provider: 'jira', reason: 'ambiguous' }],
+        };
+        const { body } = await verdict(
+            await boot({
+                allowed: [CONN_A],
+                unreadable: [CONN_A],
+                resolution,
+                listed: [view(CONN_A), view(CONN_B)],
+            }),
+            { ...base, skills: ['jira'], connections: [CONN_A] },
+            'skill',
+            'jira'
+        );
+        expect(body.checks.find((c) => c.subject === 'skill')).toMatchObject({ status: 'unverified' });
+        expect(body.checks.find((c) => c.subject === 'connection')).toMatchObject({ status: 'unverified' });
+        expect(body.ready).toBe(true);
     });
 
     it('is ready when the only non-ok checks are unverified', async () => {
