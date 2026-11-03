@@ -6,6 +6,9 @@ import type { AppConfig, AuthConfig } from '../config.js';
 import { LOCAL_ORG_ID, UUID } from '../identifiers.js';
 import { guard } from '../routes/helpers.js';
 import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
+import { boundCallerOf } from './bridge-binding.js';
+import { challengeFor, resourceMetadataUrl } from './oauth-challenge.js';
+import { SCOPE_OF_CLASS, classOf } from './route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
 
@@ -457,6 +460,40 @@ async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, repl
     request.auth = { kind: 'worker', orgId };
 }
 
+/**
+ * A scoped caller's route-class check: the route must be classified and the caller must hold the class's scope.
+ * Unclassified is refused, never assumed read. Answers true when the request may continue.
+ */
+async function scopeAllows(
+    auth: AuthConfig,
+    caller: Caller,
+    request: FastifyRequest,
+    reply: FastifyReply
+): Promise<boolean> {
+    if (caller.scopes === 'all') return true;
+    const pattern = patternOf(request);
+    const routeClass = pattern === undefined ? undefined : classOf(request.method, pattern);
+    const needed = routeClass === undefined ? SCOPE_OF_CLASS.write : SCOPE_OF_CLASS[routeClass];
+    if (routeClass !== undefined && caller.scopes.includes(needed)) return true;
+    await reply
+        .code(HTTP_FORBIDDEN)
+        .header(
+            'www-authenticate',
+            challengeFor({
+                kind: 'insufficient_scope',
+                metadataUrl: auth.mode === 'github' ? resourceMetadataUrl(auth.publicUrl) : null,
+                scopes: [needed],
+            })
+        )
+        .send({
+            error: 'insufficient_scope',
+            error_description:
+                routeClass === undefined ? 'This route is not available to an MCP grant' : `Needs ${needed}`,
+            code: ERROR_CODES.FORBIDDEN,
+        });
+    return false;
+}
+
 interface UserAuthDeps {
     auth: AuthConfig;
     store: AuthStore;
@@ -465,6 +502,14 @@ interface UserAuthDeps {
 
 async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const { auth, store, resolveUser } = deps;
+    // A request the MCP bridge injected carries its caller on the request class (bridge-binding.ts); a network
+    // request cannot. It is THE credential: no cookie or bearer beside it is consulted.
+    const bound = boundCallerOf(request.raw);
+    if (bound) {
+        if (!(await scopeAllows(auth, bound, request, reply))) return;
+        request.auth = { kind: 'user', caller: bound };
+        return;
+    }
     // The bearer is THE credential when present: a CLI never sends a cookie and a browser never
     // sends a bearer, so both at once means something between them is rewriting, and the cookie
     // behind a failed or foreign bearer must not be consulted — that would let a rewritten header

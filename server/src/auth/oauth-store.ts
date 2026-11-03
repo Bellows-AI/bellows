@@ -28,7 +28,8 @@ export interface TokenGrant {
 }
 
 /** What `findAccessToken` resolves: the live caller plus the grant that authorizes it. */
-export type McpCaller = Caller & {
+export type McpCaller = Omit<Caller, 'scopes'> & {
+    /** As stored; the bridge narrows them with `grantedScopes` (route-class.ts) before binding the caller. */
     scopes: readonly string[];
     clientId: string;
     resource: string;

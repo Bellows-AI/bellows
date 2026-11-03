@@ -186,6 +186,7 @@ function callerFor(state: AuthState, user: User, member: Member): Caller {
         org: { id: member.orgId, name: orgNameOf(state, member.orgId) },
         membership: { invitedAt: member.invitedAt, claimedAt: member.claimedAt },
         role: member.role,
+        scopes: 'all',
     };
 }
 
