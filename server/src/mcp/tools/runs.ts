@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
-import { BoardRunSchema, RunViewSchema, runView } from './run-state.js';
+import { BoardRunSchema, RunViewSchema, runView, type BoardRun } from './run-state.js';
 
 const MAX_ID_CHARS = 64;
 export const JobIdInput = z.object({
@@ -14,7 +14,7 @@ const ThreadSchema = z.object({ jobs: z.array(BoardRunSchema) });
 export const investigateJob = defineTool({
     name: 'investigate_job',
     description:
-        'Read one run and the whole thread it belongs to (oldest run first): status, the shared `state` (an open question or integration requirement is needs_attention), failure kind and cause, gates, pull request, and the run output cut to a bound. Both reads must succeed; one that cannot be confirmed makes the call inconclusive rather than a partial answer.',
+        'Read one run and the whole thread it belongs to (oldest run first): status, the shared `state` (an open question is needs_attention, and so is an integration requirement the head run waits on), failure kind and cause, gates, pull request, and the run output cut to a bound. Both reads must succeed; one that cannot be confirmed makes the call inconclusive rather than a partial answer.',
     scope: 'factory:read',
     routes: [
         ['GET', '/api/jobs/:id'],
@@ -32,11 +32,14 @@ export const investigateJob = defineTool({
         if (!job.ok) return job.tagged;
         const jobs = judge(thread, ThreadSchema);
         if (!jobs.ok) return jobs.tagged;
-        const view = runView(job.data, true);
+        // The board attaches the root's open requirements to every run of the thread; only the head run is waiting on them.
+        const head = jobs.data.jobs.at(-1);
+        const own = (run: BoardRun): BoardRun => (run.id === head?.id ? run : { ...run, integrationRequirements: [] });
+        const view = runView(own(job.data), true);
         return {
             outcome: 'ok',
             result: success(
-                { job: view, thread: jobs.data.jobs.map((run) => runView(run, true)) },
+                { job: view, thread: jobs.data.jobs.map((run) => runView(own(run), true)) },
                 `${view.id}: ${view.state}`
             ),
         };

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { inconclusive, judge, refusal, success, type Tagged } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
 import { MAX_CURSOR_CHARS, MAX_NAME_CHARS, pageOf, PAGING_INPUT, queryOf } from './paging.js';
+import { encodeCursor as encodeBoardCursor } from '../../artifacts/artifact-read.js';
 import { JobIdInput, jobPath } from './runs.js';
 
 /** What one `read_job_log` page may carry: a small default and a hard cap, both in bytes of text. */
@@ -85,8 +86,30 @@ const BoardPage = z.object({
     nextCursor: z.string().nullable(),
 });
 
-/** This tool's cursor: the board's cursor of the page it was cut from, and how many bytes of its first chunk were read. */
-const OwnCursor = z.object({ c: z.string().nullable(), s: z.number().int().min(0) });
+/** The chunk a cut stopped inside: its coordinates and where it starts in its stream. */
+const ChunkId = z.object({
+    a: z.number().int(),
+    e: z.string(),
+    n: z.string(),
+    t: z.string(),
+    o: z.number().int(),
+});
+type ChunkId = z.infer<typeof ChunkId>;
+type BoardSegment = z.infer<typeof BoardSegment>;
+const idOf = (s: BoardSegment): ChunkId => ({ a: s.attempt, e: s.executor, n: s.session, t: s.stream, o: s.offset });
+const sameChunk = (s: BoardSegment, id: ChunkId): boolean =>
+    s.attempt === id.a && s.executor === id.e && s.session === id.n && s.stream === id.t && s.offset === id.o;
+/** The board's own cursor to a chunk's start: it positions by stream coordinates and offset, so no page shift moves it. */
+const boardCursorAt = (id: ChunkId): string =>
+    encodeBoardCursor({ claimSeq: id.a, executor: id.e, session: id.n, stream: id.t }, id.o);
+
+/**
+ * This tool's cursor: the board's cursor of the page to fetch next, and, when a chunk was cut, that chunk and how
+ * many of its bytes were read. The board cursor then points at the chunk itself, so what comes back first must be it.
+ */
+const OwnCursor = z
+    .object({ c: z.string().nullable(), s: z.number().int().min(0), at: ChunkId.optional() })
+    .refine((cursor) => cursor.s > 0 === (cursor.at !== undefined));
 type OwnCursor = z.infer<typeof OwnCursor>;
 const encode = (cursor: OwnCursor): string => Buffer.from(JSON.stringify(cursor)).toString('base64url');
 function decode(raw: string | undefined): OwnCursor | null {
@@ -109,17 +132,39 @@ function boundary(buf: Buffer, max: number): number {
     return end;
 }
 
-type Fitted = { segments: z.infer<typeof BoardSegment>[]; cutAt: number | null } | 'bad_cursor' | 'over_cap';
+/** The page opens with the readable chunk `id` names. */
+const startsWith = (source: readonly BoardSegment[], id: ChunkId): boolean => {
+    const first = source[0];
+    return first !== undefined && first.text !== null && sameChunk(first, id);
+};
+
+/** `segment` narrowed to `buf`, which starts at byte `from` of its text. */
+const narrowed = (segment: BoardSegment, from: number, buf: Buffer): BoardSegment => ({
+    ...segment,
+    offset: segment.offset + from,
+    length: buf.length,
+    text: buf.toString('utf8'),
+});
+
+type Fitted =
+    | { segments: BoardSegment[]; next: { chunk: ChunkId; skip: number } | null; cut: boolean }
+    | 'bad_cursor'
+    | 'vanished';
 
 /**
- * The page's segments within `limit` bytes of text, the first text segment read from byte `skip`. Only that one
- * can be cut: the board fills a page with whole chunks and stops at the first that does not fit, so a later
- * segment over the cap means the board broke its own bound.
+ * The page's segments within `limit` bytes of text, the first read from byte `skip` of the chunk `resume` names.
+ * The page ends before the first chunk that does not fit, or inside the first one when it alone is over the cap
+ * (the board returns a chunk whole however large); `next` says where to go on.
  */
-function withinCap(source: readonly z.infer<typeof BoardSegment>[], skip: number, limit: number): Fitted {
-    const segments: z.infer<typeof BoardSegment>[] = [];
+function withinCap(
+    source: readonly BoardSegment[],
+    resume: { chunk: ChunkId; skip: number } | null,
+    limit: number
+): Fitted {
+    if (resume && !startsWith(source, resume.chunk)) return 'vanished';
+    const segments: BoardSegment[] = [];
     let used = 0;
-    let from = skip;
+    let from = resume?.skip ?? 0;
     for (const segment of source) {
         if (segment.text === null) {
             segments.push(segment);
@@ -129,25 +174,16 @@ function withinCap(source: readonly z.infer<typeof BoardSegment>[], skip: number
         if (from > whole.length) return 'bad_cursor';
         const buf = whole.subarray(from);
         if (buf.length > limit - used) {
-            if (used > 0) return 'over_cap';
+            if (used > 0) return { segments, next: { chunk: idOf(segment), skip: 0 }, cut: false };
             const end = boundary(buf, limit);
-            const cut = {
-                ...segment,
-                offset: segment.offset + from,
-                length: end,
-                text: buf.subarray(0, end).toString('utf8'),
-            };
-            return { segments: [...segments, cut], cutAt: from + end };
+            const cut = narrowed(segment, from, buf.subarray(0, end));
+            return { segments: [...segments, cut], next: { chunk: idOf(segment), skip: from + end }, cut: true };
         }
-        segments.push(
-            from === 0
-                ? segment
-                : { ...segment, offset: segment.offset + from, length: buf.length, text: buf.toString('utf8') }
-        );
+        segments.push(from === 0 ? segment : narrowed(segment, from, buf));
         used += buf.length;
         from = 0;
     }
-    return { segments, cutAt: null };
+    return { segments, next: null, cut: false };
 }
 
 const badCursor = (): Tagged => ({
@@ -157,7 +193,7 @@ const badCursor = (): Tagged => ({
 
 export const readJobLog = defineTool({
     name: 'read_job_log',
-    description: `Read one page of a run's log text, in attempt, session, stream and offset order. A page holds at most \`limitBytes\` bytes (default ${LOG_DEFAULT_BYTES}, at most ${LOG_MAX_BYTES}); keep passing \`cursor\` until it is null to read to the end. The text is what the board stored, with the runner's secrets already masked. \`complete\` is true only when every selected stream is finalized and nothing on the page is missing or deleted; \`truncated\` says one chunk was cut at the cap and the cursor continues inside it.`,
+    description: `Read one page of a run's log text, in attempt, session, stream and offset order. A page holds at most \`limitBytes\` bytes (default ${LOG_DEFAULT_BYTES}, at most ${LOG_MAX_BYTES}); keep passing \`cursor\` until it is null to read to the end. The text is what the board stored, with the runner's secrets already masked. \`complete\` is true only when every selected stream is finalized and nothing on the page is missing or deleted; \`truncated\` says one chunk was cut at the cap and the cursor continues inside it; if that chunk is gone by the next call the answer is inconclusive, and reading again without a cursor starts over.`,
     scope: 'factory:read',
     routes: [['GET', '/api/jobs/:id/artifacts/read']],
     annotations: READ_ONLY,
@@ -190,19 +226,27 @@ export const readJobLog = defineTool({
         if (!judged.ok) return judged.tagged;
         const page = judged.data;
 
-        const fitted = withinCap(page.segments, own.s, limitBytes);
+        const resume = own.at ? { chunk: own.at, skip: own.s } : null;
+        const fitted = withinCap(page.segments, resume, limitBytes);
         if (fitted === 'bad_cursor') return badCursor();
-        if (fitted === 'over_cap') {
-            return { outcome: 'inconclusive', result: inconclusive('the board page exceeded the byte cap') };
+        if (fitted === 'vanished') {
+            return {
+                outcome: 'inconclusive',
+                result: inconclusive(
+                    'the chunk this cursor stopped inside is no longer readable; start again without a cursor'
+                ),
+            };
         }
-        const { segments, cutAt } = fitted;
-        const truncated = cutAt !== null;
-        const next =
-            cutAt !== null
-                ? encode({ c: own.c, s: cutAt })
-                : page.nextCursor === null
-                  ? null
-                  : encode({ c: page.nextCursor, s: 0 });
+        const { segments, next: resumeAt, cut: truncated } = fitted;
+        const next = resumeAt
+            ? encode({
+                  c: boardCursorAt(resumeAt.chunk),
+                  s: resumeAt.skip,
+                  ...(resumeAt.skip > 0 && { at: resumeAt.chunk }),
+              })
+            : page.nextCursor === null
+              ? null
+              : encode({ c: page.nextCursor, s: 0 });
         const complete =
             page.streams.length > 0 &&
             page.streams.every((s) => s.state === 'complete') &&

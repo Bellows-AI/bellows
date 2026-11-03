@@ -228,6 +228,43 @@ describe.skipIf(!enabled)('the task, job, log and question tools — database', 
         expect(done.data).toMatchObject({ cursor: null, complete: true });
     });
 
+    it('cuts a chunk larger than the cap on a character boundary and reaches its last byte', async () => {
+        const url = await boot();
+        const { id } = await running();
+        const scope = (await jobs.artifactScope(id))!;
+        const ref = {
+            member: scope.member ?? 'unattributed',
+            root: scope.root,
+            job: id,
+            claimSeq: scope.claimSeq,
+            executor: 'claude-code',
+            session: randomUUID(),
+            stream: 'log',
+        };
+        const big = `${'€'.repeat(300)}END`;
+        await artifacts.putChunk(ref, 0, bytes(big));
+
+        let text = '';
+        let cuts = 0;
+        let cursor: string | undefined;
+        for (let guard = 0; guard < 20; guard += 1) {
+            const { data } = await call(url, 'alice', 'read_job_log', {
+                jobId: id,
+                limitBytes: 256,
+                ...(cursor ? { cursor } : {}),
+            });
+            const got = data.segments.map((s: { text: string }) => s.text).join('');
+            expect(got).not.toContain('\uFFFD');
+            expect(Buffer.byteLength(got)).toBeLessThanOrEqual(256);
+            if (data.truncated) cuts += 1;
+            text += got;
+            if (data.cursor === null) break;
+            cursor = data.cursor;
+        }
+        expect(cuts).toBeGreaterThan(1);
+        expect(text).toBe(big);
+    });
+
     it('reads the activity of a run without inventing a measurement', async () => {
         const url = await boot();
         const { id } = await running();

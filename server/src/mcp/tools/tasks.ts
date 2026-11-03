@@ -47,7 +47,7 @@ const BoardTasks = z.object({
 export const listTasks = defineTool({
     name: 'list_tasks',
     description:
-        "List tasks (one per conversation) as the board's inbox shows them. `state` filters the inbox: attention (default), running, review or past. Each row carries the head run's status and a `state` in the shared vocabulary (pending, running, succeeded, failed, cancelled, needs_attention); a task with an open question is needs_attention. Pass `nextCursor` back as `cursor` with the same filters until it is null.",
+        "List tasks (one per conversation) as the board's inbox shows them. `state` filters the inbox: attention (default), running, review or past. Each row carries the head run's status and a `state` in the shared vocabulary (pending, running, succeeded, failed, cancelled, needs_attention); a task with an open question is needs_attention. A task waiting on an integration connection shows only its status here; investigate_job shows the requirement. Pass `nextCursor` back as `cursor` with the same filters until it is null.",
     scope: 'factory:read',
     routes: [['GET', '/api/tasks']],
     annotations: READ_ONLY,

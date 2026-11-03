@@ -18,6 +18,8 @@ export interface FakeChunk {
     text: string;
     /** The object is gone from the store; the index still lists it. */
     deleted?: boolean;
+    /** What the index claims the chunk's length is, when a test needs it to disagree with the body. */
+    reportedLength?: number;
 }
 export interface FakeStream {
     ref: StreamRef;
@@ -54,7 +56,7 @@ export function stream(
     let offset = 0;
     const chunks = texts.map((text) => {
         const chunk = { offset, text };
-        offset += text.length;
+        offset += Buffer.byteLength(text);
         return chunk;
     });
     return { ref: ref(over), chunks, manifest: m };
@@ -74,7 +76,7 @@ export function fakeArtifacts(streams: FakeStream[]) {
                 .map((s) => ({
                     ...s.ref,
                     chunks: s.chunks.length,
-                    bytes: s.chunks.reduce((n, c) => n + c.text.length, 0),
+                    bytes: s.chunks.reduce((n, c) => n + Buffer.byteLength(c.text), 0),
                     manifest: s.manifest,
                 }))
                 .sort((a, b) => a.claimSeq - b.claimSeq || a.session.localeCompare(b.session));
@@ -83,7 +85,7 @@ export function fakeArtifacts(streams: FakeStream[]) {
             const found = streams.find((s) => same(s.ref, r));
             return (found?.chunks ?? []).map((c) => ({
                 offset: c.offset,
-                length: c.text.length,
+                length: c.reportedLength ?? Buffer.byteLength(c.text),
                 sha256: '0'.repeat(64),
             }));
         },
@@ -94,7 +96,7 @@ export function fakeArtifacts(streams: FakeStream[]) {
             if (chunk.deleted) throw new ArtifactObjectMissingError('gone');
             return {
                 offset,
-                length: chunk.text.length,
+                length: Buffer.byteLength(chunk.text),
                 sha256: '0'.repeat(64),
                 body: new TextEncoder().encode(chunk.text),
             };

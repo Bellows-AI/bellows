@@ -256,6 +256,9 @@ describe('the task, job, log and question tools over POST /api/mcp', () => {
             expect(tool?.annotations?.readOnlyHint, name).toBe(true);
             expect(tool?.outputSchema?.type, name).toBe('object');
         }
+        for (const name of ['list_tasks', 'list_jobs']) {
+            expect(tools.find((t) => t.name === name)?.description, name).toMatch(/integration/);
+        }
         await client.close();
     });
 
@@ -404,6 +407,35 @@ describe('investigate_job and list_questions', () => {
         ]);
     });
 
+    it('shows an open integration requirement on the head run only, not on the finished runs before it', async () => {
+        const requirement = {
+            provider: 'jira',
+            label: 'Jira',
+            reason: 'missing',
+            source: 'runtime',
+            connectionId: null,
+            target: null,
+            createdAt: '2026-01-01T00:02:00.000Z',
+        };
+        const both = [
+            run(JOB_A, { status: 'failed', integrationRequirements: [requirement] }),
+            run(FOLLOW_A, {
+                rootJobId: JOB_A,
+                status: 'running',
+                followUpTo: JOB_A,
+                integrationRequirements: [requirement],
+            }),
+        ];
+        const url = await boot({ a: { thread: both } });
+        const head = await call(url, 'alice', 'investigate_job', { jobId: FOLLOW_A });
+        expect(head.data.thread.map((j: { id: string; state: string }) => [j.id, j.state])).toEqual([
+            [JOB_A, 'failed'],
+            [FOLLOW_A, 'needs_attention'],
+        ]);
+        const older = await call(url, 'alice', 'investigate_job', { jobId: JOB_A });
+        expect(older.data.job).toMatchObject({ id: JOB_A, state: 'failed', integrationRequirements: [] });
+    });
+
     it("does not reveal another org's job, and says not found for an unknown one", async () => {
         const url = await boot({ a: { thread }, b: { thread: [run(JOB_B, { rootJobId: JOB_B })] } });
         for (const tool of ['investigate_job', 'list_questions']) {
@@ -535,6 +567,103 @@ describe('list_job_streams and read_job_log', () => {
         }
         expect(truncated).toBeGreaterThan(0);
         expect(text).toBe(`${big}tail\n`);
+    });
+
+    type Seg = { text: string | null; offset: number; length: number; state: string };
+    type LogPage = { segments: Seg[]; cursor: string | null; truncated: boolean };
+    const readPages = async (
+        url: URL,
+        limitBytes: number,
+        between: (page: number) => void = () => {}
+    ): Promise<LogPage[]> => {
+        const pages: LogPage[] = [];
+        let cursor: string | undefined;
+        for (let guard = 0; guard < 500; guard += 1) {
+            const { data } = await call(url, 'alice', 'read_job_log', {
+                jobId: JOB_A,
+                limitBytes,
+                ...(cursor ? { cursor } : {}),
+            });
+            pages.push(data as LogPage);
+            if (data.cursor === null) break;
+            cursor = data.cursor;
+            between(pages.length);
+        }
+        return pages;
+    };
+    const textOf = (pages: LogPage[]) => pages.flatMap((p) => p.segments.map((s) => s.text ?? '')).join('');
+
+    it('cuts on a character boundary for 3- and 4-byte characters and an odd cap, with offsets that chain', async () => {
+        const big = `${'€'.repeat(2000)}${'😀'.repeat(500)}END`;
+        const url = await boot({ a: board([stream({}, [big])]) });
+        const pages = await readPages(url, 1000);
+        const cut = pages.flatMap((p) => p.segments);
+        expect(pages.length).toBeGreaterThan(4);
+        for (const segment of cut) {
+            expect(segment.text).not.toContain('�');
+            expect(Buffer.byteLength(segment.text ?? '')).toBe(segment.length);
+            expect(segment.length).toBeLessThanOrEqual(1000);
+        }
+        for (let i = 1; i < cut.length; i += 1) {
+            expect(cut[i]!.offset).toBe(cut[i - 1]!.offset + cut[i - 1]!.length);
+        }
+        expect(textOf(pages)).toBe(big);
+    });
+
+    it('keeps reading the chunk it cut when a stream that sorts earlier appears between two pages', async () => {
+        const big = `${'€'.repeat(1500)}END`;
+        const streams = [stream({ session: 'sess-b' }, [big])];
+        const url = await boot({ a: board(streams) });
+        const pages = await readPages(url, 1000, (n) => {
+            if (n === 1) streams.push(stream({ session: 'sess-a', stream: 'log' }, ['newcomer '.repeat(200)]));
+        });
+        expect(textOf(pages)).toBe(big);
+    });
+
+    it('does not repeat deleted chunks that sit ahead of the chunk it cut', async () => {
+        const big = `${'€'.repeat(1500)}END`;
+        const s = stream({}, ['gone\n', big]);
+        s.chunks[0]!.deleted = true;
+        const url = await boot({ a: board([s]) });
+        const pages = await readPages(url, 1000);
+        const deleted = pages.flatMap((p) => p.segments).filter((x) => x.state === 'deleted');
+        expect(deleted).toHaveLength(1);
+        expect(textOf(pages)).toBe(big);
+    });
+
+    it('is inconclusive, not a skip into the next chunk, when the chunk it cut vanishes between pages', async () => {
+        for (const vanish of ['unindexed', 'object_missing'] as const) {
+            const big = `${'€'.repeat(1500)}END`;
+            const s = stream({}, [big, 'next chunk\n']);
+            const url = await boot({ a: board([s]) });
+            const first = await call(url, 'alice', 'read_job_log', { jobId: JOB_A, limitBytes: 1000 });
+            expect(first.data.truncated).toBe(true);
+            if (vanish === 'unindexed') s.chunks.shift();
+            else s.chunks[0]!.deleted = true;
+            const second = await call(url, 'alice', 'read_job_log', {
+                jobId: JOB_A,
+                limitBytes: 1000,
+                cursor: first.data.cursor,
+            });
+            expect(second.data, vanish).toMatchObject({ outcome: 'inconclusive' });
+            expect(JSON.stringify(second.data), vanish).not.toContain('next chunk');
+        }
+    });
+
+    it('ends a page at a chunk boundary and goes on when the board overfills it', async () => {
+        const first = 'x'.repeat(10);
+        const second = 'y'.repeat(30);
+        const s = stream({}, [first, second]);
+        s.chunks.forEach((c) => {
+            c.reportedLength = 1;
+        });
+        const url = await boot({ a: board([s]) });
+        const pages = await readPages(url, 20);
+        expect(pages.length).toBeGreaterThan(1);
+        for (const page of pages) {
+            expect(Buffer.byteLength(textOf([page]))).toBeLessThanOrEqual(20);
+        }
+        expect(textOf(pages)).toBe(first + second);
     });
 
     it('applies a small default and refuses a limit above the hard cap', async () => {
