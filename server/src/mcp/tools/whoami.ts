@@ -24,6 +24,14 @@ export const whoami = defineTool({
     ],
     annotations: READ_ONLY,
     input: z.object({}),
+    output: z.object({
+        account: z.object({ id: z.string(), login: z.string(), name: z.string().nullable().optional() }),
+        role: z.string(),
+        organization: z.object({ id: z.string() }).loose(),
+        scopes: z.union([z.literal('all'), z.array(z.string())]),
+        mode: z.string(),
+        version: z.string(),
+    }),
     async run(_args, ctx) {
         const [me, build] = await Promise.all([
             ctx.fetch({ method: 'GET', url: '/api/auth/me' }),

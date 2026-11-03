@@ -56,6 +56,8 @@ export interface ToolSpec<I extends z.ZodObject = z.ZodObject> {
     /** A destructive tool sets this: an optional `confirm` argument is added and `confirm: true` is required to act. */
     readonly confirm?: true;
     readonly input: I;
+    /** The shape of a success's structured content; required, so a tool cannot skip it. A result that fails it is inconclusive. */
+    readonly output: z.ZodObject;
     run(args: z.output<I>, ctx: ToolContext): Promise<Tagged>;
 }
 

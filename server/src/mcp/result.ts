@@ -41,7 +41,23 @@ export const success = (data: Record<string, unknown>, summary: string): CallToo
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const textOf = (value: unknown, fallback: string): string => (typeof value === 'string' && value ? value : fallback);
+const MAX_MESSAGE_CHARS = 500;
+const SPACE = 0x20;
+const DELETE = 0x7f;
+
+/** The board's error text as a client may show it: no tags, no control characters, at most 500 characters. */
+const textOf = (value: unknown, fallback: string): string => {
+    if (typeof value !== 'string') return fallback;
+    const stripped = value.replace(/<[^>]*>/g, '');
+    const printable = Array.from(stripped)
+        .filter((ch) => {
+            const code = ch.codePointAt(0) ?? 0;
+            return code >= SPACE && code !== DELETE && ch !== '<' && ch !== '>';
+        })
+        .join('')
+        .trim();
+    return printable ? printable.slice(0, MAX_MESSAGE_CHARS) : fallback;
+};
 
 /**
  * A board 4xx carries `{ error, code? }`. The code is the board's own, verbatim (`insufficient_scope` has only

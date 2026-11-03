@@ -91,6 +91,7 @@ describe('whoami through POST /api/mcp', () => {
         const url = await boot('github');
         const client = await connect(url, TOKEN_A);
         const { tools } = await client.listTools();
+        expect(tools.every((tool) => tool.outputSchema?.type === 'object')).toBe(true);
         expect(tools.map((tool) => ({ name: tool.name, annotations: tool.annotations }))).toEqual([
             {
                 name: 'whoami',

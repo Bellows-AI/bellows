@@ -48,7 +48,7 @@ export function registerTools(
         const inputSchema = tool.confirm ? tool.input.extend({ confirm: CONFIRM_FIELD }) : tool.input;
         server.registerTool(
             tool.name,
-            { description: tool.description, inputSchema, annotations: tool.annotations },
+            { description: tool.description, inputSchema, outputSchema: tool.output, annotations: tool.annotations },
             async (args: Record<string, unknown>, ctx: ServerContext): Promise<CallToolResult> => {
                 const started = performance.now();
                 const tagged = await execute({ tool, args, ctx, caller, runtime, now });
@@ -112,7 +112,11 @@ async function execute({ tool, args, ctx, caller, runtime, now }: Execution): Pr
             },
         };
         const { confirm: _confirm, ...rest } = args;
-        return await tool.run(tool.confirm ? rest : args, toolCtx);
+        const tagged = await tool.run(tool.confirm ? rest : args, toolCtx);
+        if (tagged.outcome === 'ok' && !tool.output.safeParse(tagged.result.structuredContent).success) {
+            return { outcome: 'inconclusive', result: inconclusive('the board answer did not match the tool output') };
+        }
+        return tagged;
     } catch {
         // A tool that threw reached no verdict about the board; the error text is not a result the caller can act on.
         return { outcome: 'inconclusive', result: inconclusive('the tool failed before it could finish') };

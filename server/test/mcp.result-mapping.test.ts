@@ -6,6 +6,9 @@ import { mapResult } from '../src/mcp/result.js';
 const Schema = z.object({ items: z.array(z.string()), stale: z.boolean().optional() }).loose();
 const summarize = (data: z.output<typeof Schema>) => `${data.items.length} items`;
 const respond = (status: number, body: unknown): BridgeOutcome => ({ kind: 'response', status, body });
+/** True when the text holds a tag bracket or a control character. */
+const unsafe = (text: string): boolean =>
+    Array.from(text).some((ch) => ch === '<' || ch === '>' || (ch.codePointAt(0) ?? 0) < 0x20);
 const map = (outcome: BridgeOutcome) => mapResult(outcome, Schema, summarize);
 
 describe('mapping a bridge outcome to a tool result', () => {
@@ -57,5 +60,18 @@ describe('mapping a bridge outcome to a tool result', () => {
     it('a 4xx that has only an error name uses it as the code (insufficient_scope)', () => {
         const mapped = map(respond(403, { error: 'insufficient_scope' }));
         expect(mapped.result.structuredContent).toMatchObject({ outcome: 'refused', code: 'insufficient_scope' });
+    });
+
+    it('keeps the code verbatim but bounds the message and strips control characters and HTML tags', () => {
+        const hostile = `<script>alert(1)</script>bad\u0000\u001b[31m input ${'x'.repeat(2000)}`;
+        const mapped = map(respond(400, { error: hostile, code: 'VALIDATION_FAILED' }));
+        const structured = mapped.result.structuredContent as { code: string; message: string };
+        expect(structured.code).toBe('VALIDATION_FAILED');
+        expect(structured.message.length).toBeLessThanOrEqual(500);
+        expect(unsafe(structured.message)).toBe(false);
+        expect(structured.message).toContain('bad');
+        const text = (mapped.result.content[0] as { text: string }).text;
+        expect(text.startsWith('VALIDATION_FAILED: ')).toBe(true);
+        expect(unsafe(text)).toBe(false);
     });
 });

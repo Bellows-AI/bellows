@@ -10,17 +10,17 @@ The board's MCP endpoint (`POST /api/mcp`): a stateless Streamable HTTP server w
 | Result mapping: 2xx data, board refusal with its own code, everything else `inconclusive` | `server/src/mcp/result.ts` | `server/test/mcp.result-mapping.test.ts` |
 | Tool declaration (`defineTool`), annotation presets, the `ToolContext` a tool body gets | `server/src/mcp/tool.ts` | `server/test/mcp.registry.test.ts` |
 | The static tool list, scope check, `confirm`, per-caller cap, metrics, one server per request | `server/src/mcp/registry.ts`, `server/src/mcp/server.ts` | `server/test/mcp.registry.test.ts` |
-| Tools, one file each | `server/src/mcp/tools/*.ts` | `server/test/mcp.whoami.test.ts` |
+| Tools, one file each | `server/src/mcp/tools/*.ts` | `server/test/mcp.whoami.test.ts`, `server/test-db/mcp.whoami.test.ts` |
 | Which routes a scoped caller may reach, and which open routes a bridged call may | `server/src/auth/route-class.ts` | `server/test/auth.enforcement.test.ts`, `server/test/auth.me-bridged.test.ts` |
 | `factory_mcp_tool_duration_seconds{tool,outcome}` | `server/src/metrics.ts` | `server/test/mcp.whoami.test.ts` |
 
 ## Adding a tool
 
-Create `server/src/mcp/tools/<name>.ts` with `defineTool({ name, description, scope, routes, annotations, input, run })`
+Create `server/src/mcp/tools/<name>.ts` with `defineTool({ name, description, scope, routes, annotations, input, output, run })`
 and add it to `TOOLS` in `registry.ts`. `run(args, ctx)` returns a `Tagged` result: `ctx.call(request, schema, summarize)`
 for one board call, or `ctx.fetch` plus `judge`/`success` from `result.ts` when several are composed.
 `routes` lists each backing route as registered; `mcp.registry.test.ts` fails when `scope` disagrees with a route's class
-in `route-class.ts`, or when a route has none. A destructive tool takes `annotations: DESTRUCTIVE, confirm: true`.
+in `route-class.ts`, or when a route has none; `output` (a zod object) is required, advertised as `outputSchema`, and a success that fails it is `inconclusive`. A destructive tool takes `annotations: DESTRUCTIVE, confirm: true`.
 
 ## Invariants
 

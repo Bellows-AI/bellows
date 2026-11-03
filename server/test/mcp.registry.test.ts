@@ -33,6 +33,10 @@ describe('the static registry', () => {
         }
     );
 
+    it.each(TOOLS.map((tool) => [tool.name, tool] as const))('%s: it declares an output schema', (_name, tool) => {
+        expect(tool.output).toBeInstanceOf(z.ZodObject);
+    });
+
     it.each(TOOLS.map((tool) => [tool.name, tool] as const))(
         '%s: its annotations state all four hints and agree with its scope',
         (_name, tool) => {
@@ -56,9 +60,13 @@ type Handler = (
 
 const capture = () => {
     const handlers = new Map<string, Handler>();
-    const configs = new Map<string, { inputSchema: z.ZodObject; annotations: unknown }>();
+    const configs = new Map<string, { inputSchema: z.ZodObject; outputSchema: z.ZodObject; annotations: unknown }>();
     const server = {
-        registerTool: (name: string, config: { inputSchema: z.ZodObject; annotations: unknown }, handler: Handler) => {
+        registerTool: (
+            name: string,
+            config: { inputSchema: z.ZodObject; outputSchema: z.ZodObject; annotations: unknown },
+            handler: Handler
+        ) => {
             handlers.set(name, handler);
             configs.set(name, config);
         },
@@ -100,6 +108,7 @@ const probe = defineTool({
     annotations: DESTRUCTIVE,
     confirm: true,
     input: z.object({ id: z.string() }),
+    output: z.object({ n: z.number() }),
     run: async (args, ctx) => {
         await ctx.progress(1, 2, 'half');
         return ctx.call({ method: 'POST', url: `/x/${args.id}` }, z.object({ n: z.number() }), (d) => `n=${d.n}`);
@@ -174,6 +183,33 @@ describe('the tool wrapper', () => {
         expect((await run()).isError).toBeUndefined();
     });
 
+    it('advertises the output schema to the server', () => {
+        const { server, configs } = capture();
+        registerTools(server, callerWith('all'), runtimeOf(okBridge), [probe]);
+        expect(configs.get('probe')?.outputSchema).toBe(probe.output);
+    });
+
+    it('a success whose structured content fails the output schema is inconclusive, not success', async () => {
+        const { server, handlers } = capture();
+        const drifted = defineTool({
+            name: 'drifted',
+            description: 'test',
+            scope: 'factory:read',
+            routes: [['GET', '/api/org/members']],
+            annotations: READ_ONLY,
+            input: z.object({}),
+            output: z.object({ n: z.number() }),
+            run: async (_args, ctx) => ctx.call({ method: 'GET', url: '/x' }, z.object({}).loose(), () => 'ok'),
+        });
+        const bridge: Bridge = { call: async () => ({ kind: 'response', status: 200, body: { n: 'one' } }) };
+        const runtime = runtimeOf(bridge);
+        registerTools(server, callerWith('all'), runtime, [drifted]);
+        const result = await handlers.get('drifted')!({}, ctxOf());
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({ outcome: 'inconclusive' });
+        expect(runtime.observed[0]?.[1]).toBe('inconclusive');
+    });
+
     it('turns a thrown tool into an inconclusive result and records the outcome', async () => {
         const { server, handlers } = capture();
         const boom = defineTool({
@@ -183,6 +219,7 @@ describe('the tool wrapper', () => {
             routes: [['GET', '/api/org/members']],
             annotations: READ_ONLY,
             input: z.object({}),
+            output: z.object({}),
             run: async () => {
                 throw new Error('secret detail');
             },
