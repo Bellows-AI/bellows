@@ -212,6 +212,12 @@ export interface BatchReportTask {
 export type BatchReportState = 'running' | 'parked' | 'completed' | 'cancelled' | 'expired';
 
 /** The durable report (docs/batches.md): assembled from rows on every read, so it survives a restart. */
+/** A batch record and the report read in the same snapshot. */
+export interface BatchSnapshot {
+    record: BatchRecord;
+    report: BatchReport | null;
+}
+
 export interface BatchReport {
     id: string;
     title: string;
@@ -279,6 +285,12 @@ export interface BatchStore {
     cancel(id: string, cancelledBy: string | null): Promise<{ result: 'ok'; replayed: boolean } | BatchCancelRefusal>;
     /** Queues a failed, stopped or gate-refused task for another attempt in its own thread. */
     retry(id: string, taskKey: string): Promise<{ result: 'ok' } | BatchRetryRefusal>;
+    /**
+     * The record and its report read in ONE snapshot, so a transition between them (a fence, an
+     * automerge completing) cannot mix states. The report is null for a draft; the whole is null
+     * when this org has no such batch.
+     */
+    snapshot(id: string): Promise<BatchSnapshot | null>;
     /** The morning report of a started batch; null when this org has no such batch or it is a draft. */
     report(id: string): Promise<BatchReport | null>;
     /** Records a person's acceptance of a finished `accepted`-completion task, passing its gate. */

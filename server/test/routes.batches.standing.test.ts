@@ -137,34 +137,30 @@ describe('batch standing', () => {
         }
     );
 
-    it('honors a fence the report read saw after the record was read', async () => {
-        const { batches, started, standing } = await setup();
+    it('a fence committed after the snapshot is in neither the record, the report nor the standing', async () => {
+        const { call, batches, started } = await setup();
         const id = await started();
         batches.mark(id, 'a', { execution: 'succeeded', pr: PR, waitReason: 'waiting for a person to merge' });
-        const report = batches.report.bind(batches);
-        // The cancel lands between the record read and the report read.
-        batches.report = async (batchId) => ({ ...(await report(batchId))!, cancelledAt: '2026-10-12T07:00:00.000Z' });
-        expect(await standing(id)).toMatchObject({
-            verdict: 'cancelled',
-            fence: 'cancelled',
-            attention: [{ key: 'a', pr: PR }],
-        });
+        const snapshot = batches.snapshot.bind(batches);
+        batches.snapshot = async (batchId) => {
+            const taken = await snapshot(batchId);
+            await batches.cancel(id, null);
+            return taken;
+        };
+        const body = (await call('GET', `/api/batches/${id}`)).json();
+        expect(body.cancelledAt).toBeNull();
+        expect(body.report.cancelledAt).toBeNull();
+        expect(body.standing).toMatchObject({ verdict: 'needs_attention', fence: null });
     });
 
     it('returns the report the standing was computed from in the same body, null for a draft or an unread report', async () => {
         const { call, batches, draft, started } = await setup();
         const id = await started();
         batches.mark(id, 'a', { execution: 'succeeded', pr: PR, waitReason: 'waiting for a person to merge' });
-        const report = batches.report.bind(batches);
-        let reads = 0;
-        batches.report = async (batchId) => {
-            reads += 1;
-            return { ...(await report(batchId))!, cancelledAt: '2026-10-12T07:00:00.000Z' };
-        };
+        await call('POST', `/api/batches/${id}/cancel`, {});
         const body = (await call('GET', `/api/batches/${id}`)).json();
-        expect(reads).toBe(1);
         expect(body.standing.fence).toBe('cancelled');
-        expect(body.report).toMatchObject({ id, cancelledAt: '2026-10-12T07:00:00.000Z' });
+        expect(body.report.cancelledAt).toBe(body.cancelledAt);
         expect(body.report.tasks.map((entry: { key: string }) => entry.key)).toEqual(['a', 'b']);
 
         expect((await call('GET', `/api/batches/${await draft()}`)).json().report).toBeNull();
@@ -172,6 +168,24 @@ describe('batch standing', () => {
             throw new Error('db down');
         };
         expect((await call('GET', `/api/batches/${id}`)).json().report).toBeNull();
+    });
+
+    it('reads the record and the report from one snapshot: an automerge completing mid-read cannot mix states', async () => {
+        const { batches, started, standing } = await setup();
+        const id = await started();
+        const pr = { pr: PR, waitReason: 'waiting for the board to merge' };
+        batches.mark(id, 'a', { execution: 'succeeded', gate: 'open', ...pr });
+        batches.mark(id, 'b', { execution: 'succeeded', gate: 'passed' });
+        batches.plantNext(id, 'a', { action: 'wait' });
+        // The merge completes just after the snapshot: the old record + a later report must not combine.
+        const snapshot = batches.snapshot.bind(batches);
+        batches.snapshot = async (batchId) => {
+            const taken = await snapshot(batchId);
+            batches.mark(id, 'a', { gate: 'passed', waitReason: null, pr: 'none' });
+            batches.plantNext(id, 'a', { action: 'none' });
+            return taken;
+        };
+        expect(await standing(id)).toMatchObject({ verdict: 'running', attention: [] });
     });
 
     it('an expired batch is cancelled, naming the expiry', async () => {

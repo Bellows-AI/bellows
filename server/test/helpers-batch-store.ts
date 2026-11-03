@@ -216,6 +216,12 @@ export function memoryBatchStore(): MemoryBatchStore {
             writes.push(`accept:${acceptedBy}`);
             return { result: 'ok' };
         },
+        async snapshot(id) {
+            // Atomic by construction here: nothing runs between the two reads.
+            const record = await this.get(id);
+            if (!record) return null;
+            return { record, report: await this.report(id) };
+        },
         async report(id) {
             const batch = batches.get(id);
             if (!batch || batch.status === BATCH_DRAFT) return null;

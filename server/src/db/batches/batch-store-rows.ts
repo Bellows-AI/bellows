@@ -184,7 +184,7 @@ export async function readVerification(
 }
 
 /** The batch with its plan and per-task state, or null when this org has no such batch. */
-export async function readRecord(sql: Sql, { orgId, id }: BatchAddress): Promise<BatchRecord | null> {
+export async function readRecord(sql: Sql | TransactionSql, { orgId, id }: BatchAddress): Promise<BatchRecord | null> {
     const [batch] = await sql<BatchRow[]>`
         select id, status, version, plan_version, title, default_target, executor, executor_scope, policy, concurrency,
                infra_retries, repairs, time_limit_minutes, created_by, started_by, created_at, updated_at,

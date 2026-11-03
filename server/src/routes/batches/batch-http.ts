@@ -132,9 +132,11 @@ export async function loadBatch(
 }
 
 /**
- * The record with the board's verdict on it, and the report that verdict was read from. A started batch's standing reads the report's `next`;
- * a report that cannot be read whole leaves the standing `inconclusive` and the body still answers,
- * because the write that led here (a start, a cancel) has already happened.
+ * The batch with the board's verdict on it, and the report that verdict was read from, all from ONE
+ * store snapshot: the record fields, `standing` and `report` describe the same instant, so a fence
+ * or a merge landing between two reads cannot mix states. When the snapshot cannot be read the
+ * record in hand is answered with `inconclusive` and no report, because the write that led here
+ * (a start, a cancel) has already happened and a 503 would hide it.
  */
 export async function withStanding(
     ctx: Context,
@@ -142,22 +144,15 @@ export async function withStanding(
     record: BatchRecord
 ): Promise<BatchRecord & { standing: BatchStanding; report: BatchReport | null }> {
     if (record.status === BATCH_DRAFT) return { ...record, standing: batchStanding(record, null), report: null };
-    let report: Awaited<ReturnType<BatchStore['report']>> = null;
+    let snapshot: Awaited<ReturnType<BatchStore['snapshot']>> = null;
     try {
-        report = await ctx.store.report(record.id);
+        snapshot = await ctx.store.snapshot(record.id);
     } catch (e) {
-        request.log.error({ err: e }, 'batch standing report read failed');
+        request.log.error({ err: e }, 'batch snapshot read failed');
     }
-    // The report is read after the record: a fence committed between the two reads is the later
-    // read's, so the standing honors either one.
-    const seen = {
-        ...record,
-        cancelledAt: record.cancelledAt ?? report?.cancelledAt ?? null,
-        expiredAt: record.expiredAt ?? report?.expiredAt ?? null,
-    };
-    // The report rides the same body, so a client renders the one snapshot the standing was computed from.
+    const { record: seen, report } = snapshot ?? { record, report: null };
     return {
-        ...record,
+        ...seen,
         standing: batchStanding(seen, (report?.tasks ?? null) as readonly unknown[] | null),
         report,
     };
