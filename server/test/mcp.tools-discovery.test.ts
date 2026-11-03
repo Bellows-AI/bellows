@@ -193,6 +193,20 @@ const call = async (url: URL, who: Who, name: string, args: Record<string, unkno
     }
 };
 
+/** The tools that write (`mcp.tools-write.test.ts`): every other listed tool is read-only. */
+const WRITE_TOOL_NAMES = [
+    'answer_question',
+    'create_task',
+    'edit_task',
+    'follow_up_task',
+    'force_close_task',
+    'mark_task_done',
+    'remove_task',
+    'reopen_task',
+    'retry_task',
+    'stop_task',
+];
+
 const NAMES = [
     'list_available_integrations',
     'list_connections',
@@ -209,7 +223,7 @@ describe('the discovery tools over POST /api/mcp', () => {
         const { tools } = await client.listTools();
         expect(tools.map((tool) => tool.name).filter((name) => NAMES.includes(name))).toEqual(NAMES);
         for (const tool of tools) {
-            expect(tool.annotations?.readOnlyHint, tool.name).toBe(true);
+            expect(tool.annotations?.readOnlyHint, tool.name).toBe(!WRITE_TOOL_NAMES.includes(tool.name));
             expect(tool.outputSchema?.type, tool.name).toBe('object');
         }
         await client.close();

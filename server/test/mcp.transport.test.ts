@@ -36,6 +36,11 @@ import {
 } from './helpers-http.js';
 
 const TOOL_NAMES = [
+    'answer_question',
+    'create_task',
+    'edit_task',
+    'follow_up_task',
+    'force_close_task',
     'get_task',
     'get_task_result',
     'investigate_job',
@@ -49,8 +54,13 @@ const TOOL_NAMES = [
     'list_repos',
     'list_skills',
     'list_tasks',
+    'mark_task_done',
     'preflight_task',
     'read_job_log',
+    'remove_task',
+    'reopen_task',
+    'retry_task',
+    'stop_task',
     'whoami',
 ];
 
