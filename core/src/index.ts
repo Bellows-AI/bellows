@@ -338,3 +338,4 @@ export * from './integrations/operation.js';
 export * from './integrations/outcomes.js';
 export * from './integrations/redact.js';
 export * from './attachments.js';
+export * from './integration-catalog.js';

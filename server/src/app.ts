@@ -20,6 +20,7 @@ import { connectionRoutes, type DestroyRevokedSecret } from './routes/connection
 import { type ConnectionListing, connectionCredentialRoutes } from './routes/connection-credential.js';
 import type { OperationReceipts } from './db/operation-receipts.js';
 import { operationReceiptRoutes } from './routes/operation-receipts.js';
+import { integrationCatalogRoutes } from './routes/integration-catalog.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
@@ -364,6 +365,8 @@ export async function buildApp({
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
     await app.register(batchRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
+    // The provider catalog exists on every board; where no OAuth client is wired every OAuth provider reads `unavailable`.
+    await app.register(integrationCatalogRoutes({ orgs, configured: integrations?.configured }));
     // Managed connector connections (list, disconnect) and the runner-facing routes that spend them.
     await app.register(
         connectionRoutes({

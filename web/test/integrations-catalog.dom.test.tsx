@@ -160,9 +160,9 @@ describe('the integrations catalog', () => {
 
     it('offers a filter only for a category it has a provider in', async () => {
         stubFetch(board());
-        const { INTEGRATION_PROVIDERS } = await import('../src/settings/integration-providers.js');
+        const { INTEGRATION_CATALOG } = await import('@factory-ai/core');
         renderAt(
-            <SettingsIntegrationsCatalogPage providers={INTEGRATION_PROVIDERS.filter((p) => p.id === 'jira')} />,
+            <SettingsIntegrationsCatalogPage providers={INTEGRATION_CATALOG.filter((p) => p.id === 'jira')} />,
             PATH
         );
 

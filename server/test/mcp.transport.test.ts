@@ -35,6 +35,16 @@ import {
     trackApps,
 } from './helpers-http.js';
 
+const TOOL_NAMES = [
+    'list_available_integrations',
+    'list_connections',
+    'list_executors',
+    'list_repos',
+    'list_skills',
+    'preflight_task',
+    'whoami',
+];
+
 const track = trackApps();
 
 const ORG = 'test-org';
@@ -205,7 +215,7 @@ describe('the endpoint, github mode', () => {
         await client.connect(
             new ModernTransport(board.url, { requestInit: { headers: bearer() }, fetch: fetchRecording })
         );
-        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['whoami']);
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
         expect(client.getServerVersion()?.name).toBe('factory');
         // The request headers of the modern era name the revision on every call, so none went out as 2025-11-25.
         expect(new Set(versions.filter(Boolean))).toEqual(new Set([MODERN]));
@@ -217,7 +227,7 @@ describe('the endpoint, github mode', () => {
         const client = new ModernClient({ name: 'auto', version: '1' }, { versionNegotiation: { mode: 'auto' } });
         await client.connect(new ModernTransport(board.url, { requestInit: { headers: bearer() } }));
         expect(client.getNegotiatedProtocolVersion()).toBe(MODERN);
-        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['whoami']);
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
         await client.close();
     });
 
@@ -227,7 +237,7 @@ describe('the endpoint, github mode', () => {
         const transport = new LegacyTransport(board.url, { requestInit: { headers: bearer() } });
         await client.connect(transport);
         expect(client.getServerVersion()?.name).toBe('factory');
-        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['whoami']);
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
         expect(transport.sessionId).toBeUndefined();
         await client.close();
     });
@@ -412,7 +422,7 @@ describe('the endpoint, none mode', () => {
         const board = await boot('none');
         const client = new ModernClient({ name: 'auto', version: '1' }, { versionNegotiation: { mode: 'auto' } });
         await client.connect(new ModernTransport(board.url));
-        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['whoami']);
+        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
         await client.close();
     });
 });

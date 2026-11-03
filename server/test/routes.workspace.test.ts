@@ -31,12 +31,17 @@ async function boot() {
 }
 
 describe('GET /api/workspace', () => {
-    it('keys are exactly executors, orgExecutors, defaultExecutor', async () => {
+    it('keys are exactly executors, orgExecutors, defaultExecutor, executorsAvailable', async () => {
         const { app, cookie } = await boot();
         const response = await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
 
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(Object.keys(response.json()).sort()).toEqual(['defaultExecutor', 'executors', 'orgExecutors']);
+        expect(Object.keys(response.json()).sort()).toEqual([
+            'defaultExecutor',
+            'executors',
+            'executorsAvailable',
+            'orgExecutors',
+        ]);
     });
 });
 

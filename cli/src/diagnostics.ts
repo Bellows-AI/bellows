@@ -55,6 +55,8 @@ export interface PreflightCheck {
     /** `unverified`: only the board can say, and it does at claim. */
     status: 'ok' | 'blocked' | 'unverified';
     detail: string;
+    /** On a blocked check only a connection of the caller's own clears: which provider, and why. */
+    integration?: { provider: string; reason: 'missing' | 'ambiguous' | 'reconnect' | 'unknown' };
 }
 
 export interface Preflight {

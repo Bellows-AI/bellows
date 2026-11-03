@@ -1,15 +1,10 @@
+import { canConnect, integrationProvider, LISTED_PROVIDERS } from '@factory-ai/core';
 import { Link } from 'react-router-dom';
 import { useConnections } from '../api/useConnections.js';
 import { IntegrationNoticeBanner } from '../components/IntegrationNoticeBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { ProviderMark } from '../components/ProviderMark.js';
-import {
-    connectionState,
-    integrationProvider,
-    LISTED_PROVIDERS,
-    canConnect,
-    type ConnectionState,
-} from '../settings/integration-providers.js';
+import { connectionState, type ConnectionState } from '../settings/integration-providers.js';
 import { useIntegrationNotice } from '../settings/useIntegrationNotice.js';
 
 /** What a state is called, and the pill it wears: Connected is the ok lamp, Needs reconnect asks for the member. */
