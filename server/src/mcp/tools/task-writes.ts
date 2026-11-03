@@ -8,10 +8,12 @@ import { JobIdInput, jobPath } from './runs.js';
 /** The board's key bound (`Idempotency-Key must be 8 to 128 characters`); the board checks the rest of the format. */
 const MAX_KEY_CHARS = 128;
 
-const KEY_NOTE =
-    'Pass idempotencyKey (8 to 128 characters of letters, digits, ".", "_", ":" or "-") and, if the answer is lost or the call times out, retry with the SAME key: a repeat of the same request returns the task the first attempt made instead of a second one, and a different request under the same key is refused.';
+export const keyNote = (what: string): string =>
+    `Pass idempotencyKey (8 to 128 characters of letters, digits, ".", "_", ":" or "-") and, if the answer is lost or the call times out, retry with the SAME key: a repeat of the same request returns the ${what} the first attempt made instead of a second one, and a different request under the same key is refused.`;
 
-const idempotencyKey = z
+const KEY_NOTE = keyNote('task');
+
+export const idempotencyKey = z
     .string()
     .min(1)
     .max(MAX_KEY_CHARS)

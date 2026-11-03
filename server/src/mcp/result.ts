@@ -21,9 +21,43 @@ const failure = (structured: Record<string, unknown>, text: string): CallToolRes
     structuredContent: structured,
 });
 
-/** A refusal the board (or the tool layer) gave: the caller was heard and the answer is no. `code` is the board's. */
-export const refusal = (code: string, message: string, status?: number): CallToolResult =>
-    failure({ outcome: 'refused', code, message, ...(status === undefined ? {} : { status }) }, `${code}: ${message}`);
+/** One path-addressed problem a board refusal listed (a refused batch plan names each). */
+export interface RefusalIssue {
+    readonly path: string;
+    readonly message: string;
+}
+
+const issueText = (issue: RefusalIssue): string => `${issue.path || '(plan)'}: ${issue.message}`;
+
+/** Past this many issues the text counts the rest; `structuredContent` keeps the whole bounded list. */
+const TEXT_ISSUES = 3;
+
+const issuesTextOf = (issues: readonly RefusalIssue[]): string => {
+    const shown = issues.slice(0, TEXT_ISSUES).map(issueText).join('; ');
+    return issues.length > TEXT_ISSUES ? `${shown}; (+${issues.length - TEXT_ISSUES} more)` : shown;
+};
+
+/**
+ * A refusal the board (or the tool layer) gave: the caller was heard and the answer is no. `code` is the board's;
+ * `reason` is its machine-readable sub-reason when it sent one (`BATCH_UNSUPPORTED` / `multi_target`).
+ */
+export const refusal = (
+    code: string,
+    message: string,
+    status?: number,
+    { issues = [], reason }: { readonly issues?: readonly RefusalIssue[]; readonly reason?: string | undefined } = {}
+): CallToolResult =>
+    failure(
+        {
+            outcome: 'refused',
+            code,
+            message,
+            ...(reason === undefined ? {} : { reason }),
+            ...(status === undefined ? {} : { status }),
+            ...(issues.length === 0 ? {} : { issues }),
+        },
+        issues.length === 0 ? `${code}: ${message}` : `${code}: ${message} (${issuesTextOf(issues)})`
+    );
 
 /** No verdict: the board did not answer, or answered something that cannot be trusted. Never success, never failure. */
 export const inconclusive = (reason: string): CallToolResult =>
@@ -42,7 +76,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const MAX_MESSAGE_CHARS = 500;
+const MAX_ISSUES = 20;
 const CODE_LIKE = /^[a-z0-9_]{1,64}$/i;
+/** The value when it is a plain identifier (a code, a reason), else undefined. */
+const codeLike = (value: unknown): string | undefined =>
+    typeof value === 'string' && CODE_LIKE.test(value) ? value : undefined;
 const FALLBACK_CODE = 'board_refused';
 const SPACE = 0x20;
 const DELETE = 0x7f;
@@ -61,17 +99,32 @@ const textOf = (value: unknown, fallback: string): string => {
     return printable ? printable.slice(0, MAX_MESSAGE_CHARS) : fallback;
 };
 
+/** The `issues` a board 4xx lists, each cleaned like the message; anything not a `{ path, message }` pair is dropped. */
+const issuesOf = (body: Record<string, unknown>): RefusalIssue[] => {
+    if (!Array.isArray(body.issues)) return [];
+    return (body.issues as unknown[])
+        .filter(isRecord)
+        .filter((issue) => typeof issue.path === 'string' && typeof issue.message === 'string')
+        .slice(0, MAX_ISSUES)
+        .map((issue) => ({ path: textOf(issue.path, ''), message: textOf(issue.message, '') }));
+};
+
 /**
- * A board 4xx carries `{ error, code? }`. The code is the board's own, verbatim (`insufficient_scope` has only
+ * A board 4xx carries `{ error, code?, reason?, issues? }`. The code is the board's own, verbatim (`insufficient_scope` has only
  * `error`); a 4xx that names neither is not a board answer and is inconclusive.
  */
 function refusalOf(status: number, body: unknown): Tagged {
     if (isRecord(body)) {
         const named = typeof body.code === 'string' && body.code ? body.code : undefined;
         // Without a `code`, the error text is the code only when it is a plain identifier (`insufficient_scope`).
-        const fromError = typeof body.error === 'string' && CODE_LIKE.test(body.error) ? body.error : undefined;
+        const fromError = codeLike(body.error);
         const code = named ?? fromError ?? (typeof body.error === 'string' && body.error ? FALLBACK_CODE : undefined);
-        if (code !== undefined) return { outcome: 'refused', result: refusal(code, textOf(body.error, code), status) };
+        const reason = codeLike(body.reason);
+        if (code !== undefined)
+            return {
+                outcome: 'refused',
+                result: refusal(code, textOf(body.error, code), status, { issues: issuesOf(body), reason }),
+            };
     }
     return { outcome: 'inconclusive', result: inconclusive(`malformed ${status} response`) };
 }

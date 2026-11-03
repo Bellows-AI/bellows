@@ -200,11 +200,14 @@ const WRITE_TOOL_NAMES = [
     'edit_task',
     'follow_up_task',
     'force_close_task',
+    'import_batch',
     'mark_task_done',
     'remove_task',
     'reopen_task',
     'retry_task',
+    'start_batch',
     'stop_task',
+    'update_batch',
 ];
 
 const NAMES = [

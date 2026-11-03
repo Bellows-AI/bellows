@@ -6,6 +6,7 @@ import type { Bridge, BridgeRequest } from './bridge.js';
 import { mapResult, refusal, inconclusive, type Tagged, type ToolOutcome } from './result.js';
 import { secondsSince } from '../prometheus.js';
 import type { Tool, ToolContext } from './tool.js';
+import { BATCH_TOOLS } from './tools/batches.js';
 import { listAvailableIntegrations, listConnections } from './tools/connections.js';
 import { listExecutors, listRepos } from './tools/discovery.js';
 import { listJobStreams, readJobLog } from './tools/logs.js';
@@ -38,6 +39,7 @@ export const TOOLS: readonly Tool[] = [
     readJobLog,
     listQuestions,
     ...TASK_WRITE_TOOLS,
+    ...BATCH_TOOLS,
 ].sort((a, b) => a.name.localeCompare(b.name));
 
 /** In-process cap on one caller's simultaneous tool calls (per replica). */
