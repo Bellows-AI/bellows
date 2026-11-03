@@ -41,7 +41,7 @@ interface Check {
     status: Status;
     detail: string;
     /** Set on a blocked check that only a connection of the caller's own can clear: which provider and why. */
-    integration?: { provider: string; reason: 'missing' | 'ambiguous' | 'reconnect' };
+    integration?: { provider: string; reason: IntegrationReason };
 }
 
 type Read<T> = { ok: true; value: T } | { ok: false };
@@ -175,6 +175,9 @@ async function executorCheck(
     return { subject: 'executor', name: executor, status: 'ok', detail: `${scope} ${row.value.type}` };
 }
 
+/** `unknown`: the caller's connection list could not be read, so `missing` would be a guess. */
+type IntegrationReason = 'missing' | 'ambiguous' | 'reconnect' | 'unknown';
+
 /** What the caller's connections answered: the explicit ids that passed, the display list, and the resolution. */
 interface Standing {
     checks: Check[];
@@ -294,12 +297,15 @@ function skillChecks(selection: Selection, standing: Standing): Check[] {
 }
 
 /** A lapsed grant of the provider outranks `missing`: the member has a connection, it needs reconnecting. */
-function openReason(provider: string, reason: 'missing' | 'ambiguous', standing: Standing) {
+function openReason(provider: string, reason: 'missing' | 'ambiguous', standing: Standing): IntegrationReason {
     if (reason === 'ambiguous') return reason;
-    return standing.listed?.some((c) => c.provider === provider && c.needsReconnect) ? 'reconnect' : reason;
+    if (!standing.listed) return 'unknown';
+    return standing.listed.some((c) => c.provider === provider && c.needsReconnect) ? 'reconnect' : reason;
 }
 
-function openDetail(provider: string, reason: 'missing' | 'ambiguous' | 'reconnect'): string {
+function openDetail(provider: string, reason: IntegrationReason): string {
+    if (reason === 'unknown')
+        return `no usable ${provider} connection was found, and your connections could not be listed`;
     if (reason === 'ambiguous')
         return `several ${provider} connections could serve: pass connections with the one to use`;
     if (reason === 'reconnect') return `your ${provider} connection's grant is no longer active: reconnect it`;

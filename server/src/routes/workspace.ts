@@ -186,6 +186,9 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
         // The member's resolved default: their stored preference while it still resolves, else the
         // deterministic fallback the store computes — what a new task draft autoselects.
         defaultExecutor,
+        // False where this board has no executor store: the empty lists above are then "nothing was read",
+        // which a client that must not report a confirmed "none" (the MCP list_executors tool) can tell apart.
+        executorsAvailable: executors !== undefined,
     });
 }
 

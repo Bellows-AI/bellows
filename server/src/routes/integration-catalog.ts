@@ -1,5 +1,4 @@
 import {
-    createJiraIntegration,
     ERROR_CODES,
     INTEGRATION_CATEGORIES,
     INTEGRATION_CATALOG,
@@ -52,10 +51,9 @@ export interface IntegrationCatalogDeps {
 const SORTED = [...INTEGRATION_CATALOG].sort((a, b) => a.id.localeCompare(b.id));
 
 /** What the provider's integration definition declares it can do, where it has one. */
-const capabilitiesOf = (id: string): CatalogEntry['capabilities'] => {
-    if (id !== 'jira') return undefined;
-    const { capabilities } = createJiraIntegration();
-    return { read: [...(capabilities.read ?? [])], write: [...(capabilities.write ?? [])] };
+const capabilitiesOf = (provider: IntegrationProvider): CatalogEntry['capabilities'] => {
+    const capabilities = provider.integration?.capabilities;
+    return capabilities ? { read: [...(capabilities.read ?? [])], write: [...(capabilities.write ?? [])] } : undefined;
 };
 
 function entryOf(provider: IntegrationProvider, configured: boolean, own: ConnectionView[]): CatalogEntry {
@@ -69,11 +67,11 @@ function entryOf(provider: IntegrationProvider, configured: boolean, own: Connec
     if (provider.availability === 'organization') {
         return { ...base, state: 'unavailable', reason: 'organization_managed', connections: 0 };
     }
-    if (!configured) return { ...base, state: 'unavailable', reason: 'not_configured', connections: 0 };
     const active = own.filter((row) => row.provider === provider.id && row.status === 'active');
+    if (!configured) return { ...base, state: 'unavailable', reason: 'not_configured', connections: active.length };
     const healthy = active.some((row) => !row.needsReconnect);
     const state: State = healthy ? 'connected' : active.length > 0 ? 'needs_reconnect' : 'connectable';
-    const capabilities = capabilitiesOf(provider.id);
+    const capabilities = capabilitiesOf(provider);
     return {
         ...base,
         state,

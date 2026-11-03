@@ -4,6 +4,9 @@
  * the deployment's configuration, never a guess from what is installed.
  */
 
+import { createJiraIntegration } from './integrations/jira.js';
+import type { IntegrationDefinition } from './integrations/definition.js';
+
 /** The closed list a provider is filed under. */
 export const INTEGRATION_CATEGORIES = ['Issue tracking', 'Communication', 'Agent tools', 'CI / DevOps'] as const;
 export type IntegrationCategory = (typeof INTEGRATION_CATEGORIES)[number];
@@ -20,6 +23,8 @@ export interface IntegrationProvider {
     category: IntegrationCategory;
     availability: IntegrationAvailability;
     description: string;
+    /** The integration definition behind the provider, where one exists: its capabilities are the catalog's. */
+    integration?: IntegrationDefinition;
 }
 
 export const INTEGRATION_CATALOG: readonly IntegrationProvider[] = [
@@ -29,6 +34,7 @@ export const INTEGRATION_CATALOG: readonly IntegrationProvider[] = [
         category: 'Issue tracking',
         availability: 'oauth',
         description: 'Let tasks look up and comment on your Jira issues.',
+        integration: createJiraIntegration(),
     },
     {
         id: 'slack',

@@ -8,7 +8,9 @@ const Check = z.object({
     name: z.string().nullable(),
     status: z.enum(['ok', 'blocked', 'unverified']),
     detail: z.string(),
-    integration: z.object({ provider: z.string(), reason: z.enum(['missing', 'ambiguous', 'reconnect']) }).optional(),
+    integration: z
+        .object({ provider: z.string(), reason: z.enum(['missing', 'ambiguous', 'reconnect', 'unknown']) })
+        .optional(),
 });
 const PreflightSchema = z.object({ ready: z.boolean(), checks: z.array(Check).min(1) });
 
@@ -57,7 +59,11 @@ export const preflightTask = defineTool({
         ready: z.boolean(),
         checks: z.array(Check),
         integrationRequired: z.array(
-            z.object({ provider: z.string(), reason: z.enum(['missing', 'ambiguous', 'reconnect']), check: z.string() })
+            z.object({
+                provider: z.string(),
+                reason: z.enum(['missing', 'ambiguous', 'reconnect', 'unknown']),
+                check: z.string(),
+            })
         ),
     }),
     async run(args, ctx) {

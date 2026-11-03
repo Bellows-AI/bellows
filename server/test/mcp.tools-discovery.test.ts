@@ -72,6 +72,8 @@ interface Scenario {
     resolution?: Resolution;
     connectionsThrow?: boolean;
     withFlow?: boolean;
+    /** Boot org A with no executor store at all. */
+    noExecutorStore?: boolean;
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -136,7 +138,7 @@ async function boot(scenario: Scenario = {}) {
         telemetry: stubTelemetryClient(),
         repos,
         connections,
-        userExecutors: executors,
+        ...(scenario.noExecutorStore ? {} : { userExecutors: executors }),
     });
     const orgB = staticRegistry({
         config,
@@ -289,6 +291,13 @@ describe('list_executors', () => {
     });
 });
 
+describe('list_executors without an executor store', () => {
+    it('is inconclusive, never a confirmed empty list', async () => {
+        const { data } = await call(await boot({ noExecutorStore: true }), 'alice', 'list_executors');
+        expect(data).toMatchObject({ outcome: 'inconclusive' });
+    });
+});
+
 describe('list_connections', () => {
     it("lists only the caller's own connections with a derived state and no credential field", async () => {
         const rows = {
@@ -385,6 +394,18 @@ describe('list_available_integrations', () => {
         expect(data.providers).toMatchObject([{ provider: 'jira', state: 'unavailable', reason: 'not_configured' }]);
     });
 
+    it("still counts the caller's active connections where no OAuth client is wired", async () => {
+        const { data } = await call(
+            await boot({ withFlow: false, rows: { alice: [view('a1')] } }),
+            'alice',
+            'list_available_integrations',
+            { q: 'jira' }
+        );
+        expect(data.providers).toMatchObject([
+            { provider: 'jira', state: 'unavailable', reason: 'not_configured', connections: 1 },
+        ]);
+    });
+
     it('is inconclusive when the connections cannot be read', async () => {
         const { data } = await call(await boot({ connectionsThrow: true }), 'alice', 'list_available_integrations');
         expect(data).toMatchObject({ outcome: 'inconclusive' });
@@ -434,6 +455,22 @@ describe('preflight_task', () => {
         expect(lapsed.data.integrationRequired).toMatchObject([{ reason: 'reconnect' }]);
     });
 
+    it('does not type a blocker as missing when the connection list could not be read', async () => {
+        const resolution: Resolution = {
+            ok: true,
+            bindings: [],
+            requirements: [{ provider: 'jira', reason: 'missing' }],
+        };
+        const { data } = await call(await boot({ resolution, connectionsThrow: true }), 'alice', 'preflight_task', {
+            ...selection,
+            skills: ['jira'],
+        });
+        expect(data).toMatchObject({
+            verdict: 'integration_required',
+            integrationRequired: [{ provider: 'jira', reason: 'unknown' }],
+        });
+    });
+
     it('is blocked, not integration_required, when a non-connection blocker sits beside a missing connection', async () => {
         const resolution: Resolution = {
             ok: true,
@@ -463,6 +500,6 @@ describe('preflight_task', () => {
             'preflight_task',
             selection
         );
-        expect(down.data.verdict === 'ready').toBe(false);
+        expect(down.data.verdict).toBe('unverified');
     });
 });

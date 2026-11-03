@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { judge, success } from '../result.js';
+import { inconclusive, judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
 import { pageOf, PAGING_INPUT } from './paging.js';
 
@@ -66,6 +66,7 @@ const WorkspaceSchema = z.object({
     executors: z.array(ExecutorRow),
     orgExecutors: z.array(ExecutorRow),
     defaultExecutor: z.object({ scope: z.string(), name: z.string() }).nullable(),
+    executorsAvailable: z.boolean(),
 });
 
 /** The executor profiles a task may name: the caller's own, then the organization's. */
@@ -91,7 +92,10 @@ export const listExecutors = defineTool({
     async run(_args, ctx) {
         const judged = judge(await ctx.fetch({ method: 'GET', url: '/api/workspace' }), WorkspaceSchema);
         if (!judged.ok) return judged.tagged;
-        const { executors, orgExecutors, defaultExecutor } = judged.data;
+        const { executors, orgExecutors, defaultExecutor, executorsAvailable } = judged.data;
+        if (!executorsAvailable) {
+            return { outcome: 'inconclusive', result: inconclusive('this board has no executor store to read') };
+        }
         const row = (scope: 'user' | 'org', profile: z.infer<typeof ExecutorRow>) => ({
             scope,
             name: profile.name,
