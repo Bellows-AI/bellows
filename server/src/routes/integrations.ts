@@ -1,6 +1,7 @@
 import { ERROR_CODES, selectedBy } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
+import { safeReturnPath } from '../auth/session.js';
 import type { AuthorizationFlow, StartAuthorizationInput } from '../integrations/authorization-flow.js';
 import { INTEGRATIONS_RETURN_PATH } from '../integrations/authorization-types.js';
 import { contextOfSession } from '../integrations/trusted-context.js';
@@ -53,7 +54,8 @@ const queryValue = (raw: unknown): string | undefined =>
 
 /** `returnTo` with the outcome appended, as a path only. */
 function redirectTo(returnTo: string, provider: string, result: string): string {
-    const url = new URL(returnTo, REDIRECT_BASE);
+    // Re-vetted here: a stored path predates any check, and dot segments must not collapse to `//host`.
+    const url = new URL(safeReturnPath(returnTo, REDIRECT_BASE), REDIRECT_BASE);
     url.searchParams.set('integration', provider);
     url.searchParams.set('result', result);
     return `${url.pathname}${url.search}${url.hash}`;
