@@ -4,7 +4,6 @@ import { loadDriverConfig } from '../../src/config.js';
 import { TASK_ROOT_LABEL } from '../../src/task-volume.js';
 import { createDockerRunner } from '../../src/docker/docker-runner.js';
 import { untilStandDown } from '../../src/docker/docker-runner-support.js';
-import { remoteRebuildNote } from '../../src/publish/publish.js';
 import { gateName, reviewerName } from '../../src/docker/docker-group.js';
 import { supervisorName } from '../../src/docker/docker-mailbox.js';
 import {
@@ -333,44 +332,13 @@ describe('the docker runner restoring a task volume', () => {
         ['none', { state: 'none' as const }],
         ['gone', { state: 'gone' as const }],
         ['truncated', { state: 'found' as const, checkpoint: { bytes: 1, truncated: true, chunks: [] } }],
-    ])('ends an OpenCode follow-up with checkpoint_unrestorable on a %s checkpoint and no volume', async (_n, read) => {
+    ])('ends a follow-up with checkpoint_unrestorable on a %s checkpoint and no volume', async (_n, read) => {
         const steps = fakeSteps();
         const { d, runner: r } = runner([], steps, { checkpoint: async () => read });
-        const result = await r.syncCheckout(restoreJob({ executorType: 'opencode' }), undefined, null, 'ghs_x');
+        const result = await r.syncCheckout(restoreJob(), undefined, null, 'ghs_x');
         expect(result).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
         expect(steps.submitted).toEqual([]);
         expect(taskCreates(d.calls)).toEqual([]);
-    });
-
-    describe('a remote rebuild (no complete checkpoint)', () => {
-        const claude = () => restoreJob({ executorType: 'claude-code', turnContext: 'board context' });
-
-        // The agent's env is built from the job, so the note travels in the tree the step leaves (the hook reads
-        // it), not in the job: the same on both executors.
-        it('hands the step the credential and the note to leave in the tree, and leaves the job context alone', async () => {
-            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
-            const { runner: r } = runner([], steps, { checkpoint: async () => ({ state: 'none' as const }) });
-            const j = claude();
-
-            expect(await r.syncCheckout(j, undefined, null, 'ghs_x')).toEqual({ ok: true, reason: null });
-
-            expect(restoreStep(steps)?.step.env).toMatchObject({
-                FROM_REMOTE: '1',
-                REBUILD_NOTE: remoteRebuildNote('{branch}'),
-                CRED_HELPER: expect.any(String),
-            });
-            expect(j.turnContext).toBe('board context');
-        });
-
-        it('asks nothing of the remote when a complete checkpoint rebuilds the tree', async () => {
-            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
-            const { runner: r } = runner([], steps, { checkpoint: async () => POINTER });
-
-            await r.syncCheckout(claude(), undefined, null, 'ghs_x');
-
-            expect(restoreStep(steps)?.step.env).not.toHaveProperty('FROM_REMOTE');
-            expect(restoreStep(steps)?.step.env).not.toHaveProperty('REBUILD_NOTE');
-        });
     });
 
     it('starts a first claim on generation 1 with a fresh clone and no restore', async () => {

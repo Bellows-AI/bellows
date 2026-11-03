@@ -14,9 +14,6 @@
 //      and each stream's length checked, any gap or mismatch `checkpoint_unrestorable`;
 //   5. OPENCODE_DB set and the stream carrying an OpenCode snapshot: writes it there, temp file then rename,
 //      the old database's WAL and SHM sidecars removed first.
-// FROM_REMOTE=1 and no complete checkpoint (none given, or a truncated header): the tree is the pushed branch (a
-// truncated header's, else BRANCH), checked out under the credential helper, its sessions rebuilt as in step 4; a
-// branch never pushed is `checkpoint_unrestorable`, a failed clone or fetch is `transient`.
 // CHECKOUT unset with OPENCODE_DB (a repository-free OpenCode thread) keeps the database on the volume, else installs it
 // from the checkpoint, else is unrestorable. CHECKOUT unset otherwise (a Claude thread: no tree, no checkpoint) runs step 4 alone: a session file already on
 // the volume is kept, it may be newer than the board's streams; the missing ones are rebuilt. Nothing else is made.
@@ -24,7 +21,7 @@
 // a directory the next claim removes, never a half-made checkout. A checkout that already exists is
 // the restore's own earlier success: nothing is fetched and nothing is touched.
 // One execFileSync per git call: no value can become a command. One JSON verdict on the last line:
-//   {ok:true, reason:null, restored:boolean, fromRemote?:true, branch?:string}   the last two only for a FROM_REMOTE rebuild
+//   {ok:true, reason:null, restored:boolean}
 //   {ok:false, reason, kind?:'checkpoint_unrestorable', absent?:true}   `kind` only for a refusal no retry
 //                 fixes; `absent` only when the volume holds no tree and no checkpoint was given.
 //
@@ -35,8 +32,6 @@
 //   CHUNKS        — JSON [{offset,length,sha256}]: the checkpoint stream, from the board's pointer;
 //   RESTORE_URL / RESTORE_TOKEN — the control endpoint serving the chunks, and its bearer (the supervisor adds them);
 //   SESSIONS_DIR  — optional: where the Claude session files go (`<transcript dir>/projects/<working dir>`);
-//   FROM_REMOTE   — optional '1': no complete checkpoint, rebuild the tree from the pushed branch;
-//   REBUILD_NOTE  — optional: with FROM_REMOTE, the note (`{branch}` filled in) left in `.factory/rebuilt-from-remote`;
 //   OPENCODE_DB   — optional: where the OpenCode session database goes;
 //   CRED_HELPER   — optional: the git credential-helper program (the token itself is in the environment).
 const { execFileSync } = require('node:child_process');
@@ -68,8 +63,6 @@ const token = process.env.RESTORE_TOKEN;
 const credHelper = process.env.CRED_HELPER;
 const sessionsDir = process.env.SESSIONS_DIR;
 const opencodeDb = process.env.OPENCODE_DB;
-const fromRemote = process.env.FROM_REMOTE === '1';
-const rebuildNote = process.env.REBUILD_NOTE;
 const SESSION_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 
 class Unrestorable extends Error {}
@@ -448,82 +441,6 @@ const sessionsOnly = async () => {
     }
 };
 
-/** Clones the remote (partial, no checkout) into `tree`, the way the full path does. */
-const cloneInto = (work, tree) =>
-    git(work, [
-        'clone',
-        '--filter=blob:none',
-        '--no-checkout',
-        '--config',
-        'core.sharedRepository=group',
-        '--origin',
-        'origin',
-        '--',
-        remote,
-        tree,
-    ]);
-
-/**
- * No complete checkpoint: the tree is the pushed branch, `headerBranch` (a truncated header's) else BRANCH. The
- * sessions are downloaded first, the tree renamed into place last. A branch absent after a clone that succeeded is
- * a verdict; a clone or fetch failure is not (it throws, and the driver treats it as transient).
- */
-const fromPushedBranch = async (work, headerBranch) => {
-    const sessions = sessionsDir ? await downloadSessions() : [];
-    const tree = path.join(work, 'tree');
-    cloneInto(work, tree);
-    const target = validBranch(tree, headerBranch) ? headerBranch : branch;
-    const upstream = `refs/remotes/origin/${target}`;
-    if (missingOf(tree, [upstream]).length > 0) {
-        throw unrestorable(
-            'the volume, its checkpoint and any pushed branch ' + target + ' are gone: nothing to continue'
-        );
-    }
-    excludeFactoryState(tree);
-    git(tree, ['symbolic-ref', 'HEAD', 'refs/heads/' + target]);
-    git(tree, ['update-ref', 'refs/heads/' + target, upstream]);
-    git(tree, ['read-tree', '-u', '--reset', 'HEAD']);
-    git(tree, ['config', 'branch.' + target + '.remote', 'origin']);
-    git(tree, ['config', 'branch.' + target + '.merge', 'refs/heads/' + target]);
-    // The provenance stays in the tree (git-ignored `.factory/`): the agent's env is built before this step runs, and
-    // a claim after an interruption finds the tree with no verdict to say how it was made. The image's hook reads it.
-    if (rebuildNote) {
-        fs.mkdirSync(path.join(tree, '.factory'), { recursive: true });
-        fs.writeFileSync(
-            path.join(tree, '.factory', 'rebuilt-from-remote'),
-            rebuildNote.split('{branch}').join(target) + '\n'
-        );
-    }
-    for (const file of sessions) fs.renameSync(file.temp, file.final);
-    fs.renameSync(tree, checkout);
-    return { ok: true, reason: null, restored: true, fromRemote: true, branch: target };
-};
-
-/** The full path: the checkpoint's bundle (and sessions, database) rebuilt into `work/tree`, then moved into place. */
-const fromCheckpoint = async (work, chunks) => {
-    const stream = path.join(work, 'stream');
-    await download(stream, chunks);
-    const line = readUntil(stream, 0, '\n', HEADER_MAX_BYTES);
-    const header = JSON.parse(line.toString('utf8'));
-    if (header.truncated && fromRemote) return fromPushedBranch(work, header.branch);
-    if (header.truncated) throw unrestorable('the checkpoint was cut at its size cap and carries no tree');
-    if (!/^[0-9a-f]{40,64}$/.test(String(header.tip))) throw unrestorable('the checkpoint header names no tip');
-    const bundle = path.join(work, 'bundle');
-    copyRange(stream, line.length + 1, header.bundleBytes, bundle);
-    const sessions = sessionsDir ? await downloadSessions() : [];
-    const tree = path.join(work, 'tree');
-    cloneInto(work, tree);
-    rebuild(tree, header, bundle);
-    const database = opencodeDb && header.sqliteBytes > 0 ? stageDatabase(stream, header, line.length + 1) : null;
-    fs.rmSync(bundle, { force: true });
-    fs.rmSync(stream, { force: true });
-    // The commit: sessions and database in place, the tree last — a checkout that exists is the whole restore done.
-    for (const file of sessions) fs.renameSync(file.temp, file.final);
-    if (database) installDatabase(database);
-    fs.renameSync(tree, checkout);
-    return { ok: true, reason: null, restored: true };
-};
-
 const main = async () => {
     if (!checkout) return sessionsOnly();
     if (exists(path.join(checkout, '.git'))) return { ok: true, reason: null, restored: false };
@@ -535,10 +452,39 @@ const main = async () => {
     fs.mkdirSync(work, { recursive: true });
     try {
         const chunks = JSON.parse(process.env.CHUNKS || '[]');
-        if (chunks.length === 0 && fromRemote) return await fromPushedBranch(work, undefined);
         if (chunks.length === 0)
             throw new Absent('the tree is not on this volume and no complete checkpoint is stored');
-        return await fromCheckpoint(work, chunks);
+        const stream = path.join(work, 'stream');
+        await download(stream, chunks);
+        const line = readUntil(stream, 0, '\n', HEADER_MAX_BYTES);
+        const header = JSON.parse(line.toString('utf8'));
+        if (header.truncated) throw unrestorable('the checkpoint was cut at its size cap and carries no tree');
+        if (!/^[0-9a-f]{40,64}$/.test(String(header.tip))) throw unrestorable('the checkpoint header names no tip');
+        const bundle = path.join(work, 'bundle');
+        copyRange(stream, line.length + 1, header.bundleBytes, bundle);
+        const sessions = sessionsDir ? await downloadSessions() : [];
+        const tree = path.join(work, 'tree');
+        git(work, [
+            'clone',
+            '--filter=blob:none',
+            '--no-checkout',
+            '--config',
+            'core.sharedRepository=group',
+            '--origin',
+            'origin',
+            '--',
+            remote,
+            tree,
+        ]);
+        rebuild(tree, header, bundle);
+        const database = opencodeDb && header.sqliteBytes > 0 ? stageDatabase(stream, header, line.length + 1) : null;
+        fs.rmSync(bundle, { force: true });
+        fs.rmSync(stream, { force: true });
+        // The commit: sessions and database in place, the tree last — a checkout that exists is the whole restore done.
+        for (const file of sessions) fs.renameSync(file.temp, file.final);
+        if (database) installDatabase(database);
+        fs.renameSync(tree, checkout);
+        return { ok: true, reason: null, restored: true };
     } finally {
         for (const temp of temps) fs.rmSync(temp, { force: true });
         fs.rmSync(work, { recursive: true, force: true });

@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -22,8 +22,6 @@ interface Verdict {
     reason: string | null;
     kind?: string;
     restored?: boolean;
-    fromRemote?: boolean;
-    branch?: string;
 }
 
 const run = promisify(execFile);
@@ -361,114 +359,6 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
         expect(verdict.ok).toBe(false);
         expect(verdict.kind).toBeUndefined();
     });
-    describe('FROM_REMOTE: no complete checkpoint, the tree is the pushed branch', () => {
-        const NOTE = 'rebuilt from the pushed branch {branch}';
-        const REMOTE_ENV = { FROM_REMOTE: '1', REBUILD_NOTE: NOTE };
-        const pushed = (name: string) => {
-            fx.commitIn(fx.checkout(), `${name.replace('/', '-')}.txt`, 'pushed work\n', 'a pushed commit');
-            git(fx.checkout(), 'push', '--quiet', 'origin', `HEAD:refs/heads/${name}`);
-            return git(fx.checkout(), 'rev-parse', 'HEAD');
-        };
-
-        it('rebuilds from origin/<branch> when no checkpoint is given', async () => {
-            workedTree();
-            const tip = pushed(fx.branch());
-            const { url } = await serve(Buffer.alloc(0));
-
-            const verdict = await restore([], url, REMOTE_ENV);
-
-            expect(verdict).toEqual({ ok: true, reason: null, restored: true, fromRemote: true, branch: fx.branch() });
-            expect(git(restoredTree(), 'rev-parse', 'HEAD')).toBe(tip);
-            expect(git(restoredTree(), 'branch', '--show-current')).toBe(fx.branch());
-            expect(git(restoredTree(), 'config', `branch.${fx.branch()}.remote`)).toBe('origin');
-            expect(git(restoredTree(), 'config', `branch.${fx.branch()}.merge`)).toBe(`refs/heads/${fx.branch()}`);
-            expect(status(restoredTree())).toBe('');
-            mkdirSync(join(restoredTree(), '.factory'), { recursive: true });
-            writeFileSync(join(restoredTree(), '.factory', 'state.json'), '{}\n');
-            expect(status(restoredTree())).not.toContain('.factory');
-            expect(readdirSync(restoreDir())).toEqual(['factory']);
-        });
-
-        it('leaves the note in the tree, so the agent gets it after an interruption too, and the hook delivers it', async () => {
-            workedTree();
-            pushed(fx.branch());
-            const { url } = await serve(Buffer.alloc(0));
-
-            await restore([], url, REMOTE_ENV);
-            // The claim after an interruption finds the tree: the verdict carries no provenance, the tree does.
-            expect(await restore([], url, REMOTE_ENV)).toMatchObject({ ok: true, restored: false });
-
-            const out = execFileSync(
-                'node',
-                [join(SCRIPTS, '..', '..', '..', 'docker/claude-executor/turn-context-hook.cjs')],
-                {
-                    cwd: restoredTree(),
-                    env: { PATH: process.env.PATH ?? '' },
-                    input: '{}',
-                }
-            ).toString();
-            expect(JSON.parse(out).hookSpecificOutput.additionalContext).toBe(
-                `rebuilt from the pushed branch ${fx.branch()}`
-            );
-            expect(status(restoredTree())).toBe('');
-        });
-
-        it('takes the branch a truncated header names', async () => {
-            workedTree();
-            git(fx.checkout(), 'switch', '-c', 'factory/agent-work');
-            const tip = pushed('factory/agent-work');
-            const { stream, chunks } = checkpointStream({ CAP_BYTES: '1' });
-            const { url } = await serve(stream);
-
-            const verdict = await restore(chunks, url, REMOTE_ENV);
-
-            expect(verdict).toMatchObject({ ok: true, restored: true, fromRemote: true, branch: 'factory/agent-work' });
-            expect(git(restoredTree(), 'branch', '--show-current')).toBe('factory/agent-work');
-            expect(git(restoredTree(), 'rev-parse', 'HEAD')).toBe(tip);
-        });
-
-        it('rebuilds the inherited Claude session beside the remote tree', async () => {
-            workedTree();
-            pushed(fx.branch());
-            const alpha = Buffer.from(`${'{"a":1,"pad":"' + 'x'.repeat(90) + '"}\n'}`.repeat(60));
-            const transcripts: Transcripts = {
-                streams: [transcriptStream(JOB_A, 1, 'alpha', { bytes: alpha })],
-                data: new Map([[`${JOB_A}/1/alpha`, alpha]]),
-            };
-            const { url } = await serve(Buffer.alloc(0), { transcripts });
-            const sessions = join(fx.dir(), 'transcripts', 'projects', '-task-factory');
-
-            const verdict = await restore([], url, { ...REMOTE_ENV, SESSIONS_DIR: sessions });
-
-            expect(verdict).toMatchObject({ ok: true, restored: true, fromRemote: true });
-            expect(readFileSync(join(sessions, 'alpha.jsonl')).equals(alpha)).toBe(true);
-            expect(existsSync(join(restoredTree(), '.git'))).toBe(true);
-        });
-
-        it('is checkpoint_unrestorable when the branch was never pushed', async () => {
-            workedTree();
-            const { url } = await serve(Buffer.alloc(0));
-
-            const verdict = await restore([], url, REMOTE_ENV);
-
-            expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
-            expect(verdict.reason).toContain('the volume, its checkpoint and any pushed branch');
-            expect(verdict).not.toHaveProperty('absent');
-            expect(existsSync(restoredTree())).toBe(false);
-        });
-
-        it('answers transient, and builds nothing, when the clone fails', async () => {
-            workedTree();
-            const { url } = await serve(Buffer.alloc(0));
-
-            const verdict = await restore([], url, { ...REMOTE_ENV, REMOTE: `file://${fx.dir()}/no-such-remote` });
-
-            expect(verdict).toMatchObject({ ok: false });
-            expect(verdict).toHaveProperty('transient', true);
-            expect(existsSync(restoredTree())).toBe(false);
-        });
-    });
-
     describe('the Claude sessions of the thread', () => {
         // A multi-line JSONL whose lines straddle chunk edges, and a session that two attempts wrote in turn.
         const jsonl = (label: string, lines: number) =>

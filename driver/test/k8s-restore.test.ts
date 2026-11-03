@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import type { CheckpointRead } from '../src/board/board-checkpoint.js';
-import { remoteRebuildNote } from '../src/publish/publish.js';
 import { TASK_ROOT_LABEL, taskVolumeName } from '../src/task-volume.js';
 import { k8sSyncRun } from './k8s-sync-step.js';
 
@@ -110,41 +109,11 @@ describe('the kubernetes runner restoring a task volume', () => {
         ['none', { state: 'none' } as CheckpointRead],
         ['gone', { state: 'gone' } as CheckpointRead],
         ['truncated', { state: 'found', checkpoint: { bytes: 1, truncated: true, chunks: [] } } as CheckpointRead],
-    ])('ends an OpenCode follow-up with checkpoint_unrestorable on a %s checkpoint and no claim', async (_n, read) => {
-        const run = await k8sSyncRun(job({ executorType: 'opencode' }), { checkpoints: board(read), answer: () => OK });
+    ])('ends a follow-up with checkpoint_unrestorable on a %s checkpoint and no claim', async (_n, read) => {
+        const run = await k8sSyncRun(job(), { checkpoints: board(read), answer: () => OK });
         expect(run).toMatchObject({ value: { ok: false, kind: 'checkpoint_unrestorable' } });
         expect(run.steps).toEqual([]);
         expect(claimsCreated(run.calls)).toEqual([]);
-    });
-
-    describe('a remote rebuild (no complete checkpoint)', () => {
-        // The pod's env, the turn context included, is frozen when the group launches, before the restore runs: the
-        // note travels in the tree the step leaves (the claude hook reads it), not in the job.
-        it('creates the next generation and hands the step the credential and the note to leave in the tree', async () => {
-            const j = job({ turnContext: 'board context' });
-            const run = await k8sSyncRun(j, {
-                githubToken: 'ghs_x',
-                checkpoints: board({ state: 'none' }),
-                answer: () => OK,
-            });
-
-            expect(run).toMatchObject({ value: { ok: true } });
-            expect(claimsCreated(run.calls)).toEqual([taskVolumeName(j, 2)]);
-            expect(run.steps.find((s) => s.id.endsWith('-restore'))?.env).toMatchObject({
-                FROM_REMOTE: '1',
-                REBUILD_NOTE: remoteRebuildNote('{branch}'),
-                CRED_HELPER: expect.any(String),
-            });
-            expect(run.job.turnContext).toBe('board context');
-        });
-
-        it('asks nothing of the remote when a complete checkpoint rebuilds the tree', async () => {
-            const run = await k8sSyncRun(job(), { checkpoints: board(FOUND), answer: () => OK });
-
-            const env = run.steps.find((s) => s.id.endsWith('-restore'))?.env;
-            expect(env).not.toHaveProperty('FROM_REMOTE');
-            expect(env).not.toHaveProperty('REBUILD_NOTE');
-        });
     });
 
     it('starts a first claim on generation 1 with a fresh clone and no restore', async () => {

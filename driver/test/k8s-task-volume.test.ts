@@ -216,12 +216,10 @@ describe('ensureTaskVolume', () => {
         ['gone', { state: 'gone' } as CheckpointRead],
         ['truncated', { state: 'found', checkpoint: { bytes: 1, truncated: true, chunks: [] } } as CheckpointRead],
     ])(
-        'fails checkpoint_unrestorable, creating nothing, on an OpenCode follow-up with a %s checkpoint',
+        'fails checkpoint_unrestorable, creating nothing, on a follow-up with a %s checkpoint',
         async (_n, checkpoint) => {
             const { deps, calls } = server({ checkpoint });
-            await expect(ensureTaskVolume(deps, { ...continuing(), executorType: 'opencode' })).rejects.toBeInstanceOf(
-                CheckpointUnrestorable
-            );
+            await expect(ensureTaskVolume(deps, continuing())).rejects.toBeInstanceOf(CheckpointUnrestorable);
             expect(posts(calls)).toEqual([]);
         }
     );

@@ -143,17 +143,7 @@ describe('the checkout sync answer', () => {
     it.each([
         ['a repo on a starting claim', { ...job(1), repo: 'org/repo' }, 1],
         ['no repo', job(1), 0],
-        [
-            'an OpenCode follow-up restoring its tree',
-            { ...job(1), repo: 'org/repo', followUp: true, executorType: 'opencode' } as BoardJob,
-            0,
-        ],
-        // Its restore step clones the pushed branch when no checkpoint is stored, which needs the credential.
-        [
-            'a Claude follow-up restoring its tree',
-            { ...job(1), repo: 'org/repo', followUp: true, executorType: 'claude-code' } as BoardJob,
-            1,
-        ],
+        ['a follow-up restoring its tree', { ...job(1), repo: 'org/repo', followUp: true }, 0],
     ])('asks GitHub for the sync token for %s', async (_label, claimed, asks) => {
         // A refused sync ends the attempt there, so the sync's is the only ask the board sees.
         const r = await attempt(claimed, { sync: { ok: false, reason: 'boom' } });

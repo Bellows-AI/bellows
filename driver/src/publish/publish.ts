@@ -201,14 +201,6 @@ export const withConflictContext = (turnContext: string | undefined, paths: read
         `Conflicting paths:\n${paths.map((p) => `- ${p}`).join('\n')}`,
     ].join('\n\n');
 
-/**
- * The note a checkout rebuilt from the pushed branch leaves in its tree (`.factory/rebuilt-from-remote`, written by
- * scripts/checkpoint-restore.cjs from this template, read by the claude image's turn-context hook): the agent's env
- * is built before the restore runs, so the tree is the channel read after it. `{branch}` is the script's to fill.
- */
-export const remoteRebuildNote = (branch: string): string =>
-    `The task volume and its checkpoint were lost; the checkout was rebuilt from the pushed branch ${branch} — edits not pushed before the loss are gone.`;
-
 /** What the startup sync answers: ok, or the reason the run should not start from a stale tree. */
 export interface SyncResult {
     ok: boolean;

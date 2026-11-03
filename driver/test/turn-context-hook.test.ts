@@ -1,6 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
@@ -14,12 +12,8 @@ import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.j
  */
 const HOOK = join(ROOT, 'docker/claude-executor/turn-context-hook.cjs');
 
-const runHook = (env: Record<string, string>, cwd?: string): string =>
-    execFileSync('node', [HOOK], {
-        env: { PATH: process.env.PATH ?? '', ...env },
-        input: '{}',
-        ...(cwd ? { cwd } : {}),
-    }).toString();
+const runHook = (env: Record<string, string>): string =>
+    execFileSync('node', [HOOK], { env: { PATH: process.env.PATH ?? '', ...env }, input: '{}' }).toString();
 
 describe('the turn-context hook', () => {
     it('adds the turn context as UserPromptSubmit additional context', () => {
@@ -32,23 +26,6 @@ describe('the turn-context hook', () => {
     it('says nothing when the claim carried no turn context', () => {
         expect(runHook({})).toBe('');
         expect(runHook({ FACTORY_TURN_CONTEXT: '' })).toBe('');
-    });
-
-    // The kubernetes pod's env is frozen before the restore runs, so the restore step leaves its provenance in the
-    // tree; the hook reads it at each prompt, after the restoration.
-    it('adds the note a remote rebuild left in the tree, beside the claim turn context', () => {
-        const tree = mkdtempSync(join(tmpdir(), 'hook-tree-'));
-        mkdirSync(join(tree, '.factory'));
-        writeFileSync(join(tree, '.factory', 'rebuilt-from-remote'), 'rebuilt from the pushed branch b\n');
-        const out = JSON.parse(runHook({ FACTORY_TURN_CONTEXT: 'ctx' }, tree)) as {
-            hookSpecificOutput: { additionalContext: string };
-        };
-        expect(out.hookSpecificOutput.additionalContext).toBe('ctx\n\nrebuilt from the pushed branch b');
-        // Delivered once: the second prompt carries only the claim's own context.
-        expect(runHook({}, tree)).toBe('');
-        expect(JSON.parse(runHook({ FACTORY_TURN_CONTEXT: 'ctx' }, tree)).hookSpecificOutput.additionalContext).toBe(
-            'ctx'
-        );
     });
 
     it('is registered as the only UserPromptSubmit hook in the baked settings.json', () => {

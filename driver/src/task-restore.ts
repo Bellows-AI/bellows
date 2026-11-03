@@ -4,14 +4,7 @@ import { claimContinuesSession, opencodeDbPath, runWorkingDir, transcriptDir } f
 import { checkpointRestoreScript } from './container-scripts.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
-import {
-    checkoutDir,
-    CREDENTIAL_HELPER,
-    remoteUrl,
-    type SyncResult,
-    remoteRebuildNote,
-    worktreeBranch,
-} from './publish/publish.js';
+import { checkoutDir, CREDENTIAL_HELPER, remoteUrl, type SyncResult, worktreeBranch } from './publish/publish.js';
 import { claimStepEnv, detailOf, type StepHost, stepRequest, submitStep } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
 import { FIRST_GENERATION } from './task-volume.js';
@@ -42,11 +35,6 @@ export interface TaskRestore {
      * on the volume is kept, else installed from `checkpoint` when it carries one.
      */
     sessionsOnly?: boolean;
-    /**
-     * No complete checkpoint: the step rebuilds a missing tree from the pushed branch; a truncated pointer still
-     * rides `checkpoint` for its header's branch.
-     */
-    fromRemote?: true;
 }
 
 /** The thread's volumes as the executor listed them: a CONFIRMED listing, never a guess. */
@@ -66,14 +54,7 @@ export interface VolumeListing {
 export class CheckpointUnrestorable extends Error {}
 
 /** The failure for a thread with no complete checkpoint to restore from. */
-function unrestorable(read: CheckpointRead, job: BoardJob): CheckpointUnrestorable {
-    // Only a Claude session can be rebuilt without a checkpoint (`remoteRebuildable`); opencode keeps the refusal:
-    // its session cannot be rebuilt.
-    if (checkoutDir(job) && job.executorType === OPENCODE) {
-        return new CheckpointUnrestorable(
-            'the thread has no task volume and no complete checkpoint, and an OpenCode session is carried only by a complete checkpoint'
-        );
-    }
+function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
     if (read.state === 'none') {
         return new CheckpointUnrestorable('the thread has no task volume and no checkpoint to restore it from');
     }
@@ -82,9 +63,6 @@ function unrestorable(read: CheckpointRead, job: BoardJob): CheckpointUnrestorab
     }
     return new CheckpointUnrestorable("the thread's checkpoint was cut at its size cap and carries no tree");
 }
-
-/** A continuing repository claim with no complete checkpoint can rebuild its tree from the pushed branch: Claude only. */
-const remoteRebuildable = (job: BoardJob): boolean => Boolean(checkoutDir(job)) && job.executorType === CLAUDE_CODE;
 
 /** The restore a repository-free adopted generation owes: its sessions checked, never a tree. */
 async function owedSessions(
@@ -138,14 +116,11 @@ async function owedRestore(
         return;
     }
     const [held] = [...unschedulable].sort((x, y) => y - x);
-    // A held volume keeps priority over the remote: its confirmed `absent` answer lets the next claim adopt it.
-    const fromRemote = held === undefined && remoteRebuildable(job);
     job.taskRestore = {
-        checkpoint: fromRemote && read.state === 'found' ? read.checkpoint : null,
+        checkpoint: null,
         older: [...older, ...unschedulable],
         ...(held === undefined ? {} : { held }),
         restored: false,
-        ...(fromRemote ? { fromRemote: true as const } : {}),
     };
 }
 
@@ -157,32 +132,6 @@ async function owedRestore(
 const repoFreeSessions = (job: BoardJob, read: CheckpointRead): boolean =>
     !checkoutDir(job) && job.executorType === CLAUDE_CODE && read.state === 'none';
 
-/** The plan for a continuing claim with no volume and no complete checkpoint (`none`, `gone` or `truncated`). */
-function planWithoutCheckpoint(
-    job: BoardJob,
-    read: CheckpointRead,
-    listing: VolumeListing
-): { create: boolean; unlabel?: number } {
-    // A volume no pod could be scheduled onto still holds the tree: label cleared, it is adopted again.
-    const [held] = [...listing.unschedulable].sort((x, y) => y - x);
-    if (held !== undefined) {
-        job.taskGeneration = held;
-        return { create: false, unlabel: held };
-    }
-    const sessionsOnly = repoFreeSessions(job, read);
-    if (!sessionsOnly && !remoteRebuildable(job)) throw unrestorable(read, job);
-    job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
-    job.taskRestore = sessionsOnly
-        ? { checkpoint: null, older: [], restored: false, sessionsOnly: true }
-        : {
-              checkpoint: read.state === 'found' ? read.checkpoint : null,
-              older: [],
-              restored: false,
-              fromRemote: true,
-          };
-    return { create: true };
-}
-
 /**
  * Decides which volume the attempt runs on and what it owes it, setting `job.taskGeneration` and
  * `job.taskRestore`. Answers whether the volume must be created.
@@ -191,8 +140,7 @@ function planWithoutCheckpoint(
  * follow-up, or a takeover that resumes its own attempt's session): that claim is owed the tree the
  * session left. Any other claim starts the task and syncs fresh, so a retry from the pushed branch
  * stays available when the volume is gone. A continuing claim with no volume needs a complete
- * checkpoint: `none`, `gone` and `truncated` rebuild a Claude repository thread from the pushed branch
- * (`fromRemote`) and fail `checkpoint_unrestorable` for OpenCode.
+ * checkpoint, and `none`, `gone` and `truncated` all fail `checkpoint_unrestorable`.
  */
 export async function planTaskVolume(
     source: Pick<Board, 'checkpoint'> | undefined,
@@ -214,7 +162,18 @@ export async function planTaskVolume(
     }
     if (!source) throw new Error(`job ${job.id}: no checkpoint source to restore the thread's task volume from`);
     const read = await source.checkpoint(job);
-    if (read.state !== 'found' || read.checkpoint.truncated) return planWithoutCheckpoint(job, read, listing);
+    if (read.state !== 'found' || read.checkpoint.truncated) {
+        // A volume no pod could be scheduled onto still holds the tree: label cleared, it is adopted again.
+        const [held] = [...listing.unschedulable].sort((x, y) => y - x);
+        if (held !== undefined) {
+            job.taskGeneration = held;
+            return { create: false, unlabel: held };
+        }
+        if (!repoFreeSessions(job, read)) throw unrestorable(read);
+        job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
+        job.taskRestore = { checkpoint: null, older: [], restored: false, sessionsOnly: true };
+        return { create: true };
+    }
     job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
     job.taskRestore = {
         checkpoint: read.checkpoint,
@@ -305,7 +264,6 @@ export async function restoreTaskTree(
                 ...(pending.sessionsOnly || !checkout || !remote
                     ? {}
                     : { CHECKOUT: checkout, REMOTE: remote, BRANCH: worktreeBranch(job) }),
-                ...(pending.fromRemote ? { FROM_REMOTE: '1', REBUILD_NOTE: remoteRebuildNote('{branch}') } : {}),
                 CHUNKS: JSON.stringify(pending.checkpoint?.chunks ?? []),
                 ...sessionEnv(job),
                 // The supervisor lays its control endpoint and token over this one step only.
