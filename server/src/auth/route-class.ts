@@ -9,21 +9,30 @@
  */
 export const SCOPES = ['factory:read', 'factory:write'] as const;
 export type Scope = (typeof SCOPES)[number];
-export type RouteClass = 'read' | 'write';
+/**
+ * `none` is never available to a scoped caller, whatever it holds: the routes that mint, rotate, list or revoke a
+ * credential, write a secret or a connection grant, authorize a provider, or administer membership and outbound
+ * destinations. An MCP grant must not be exchangeable for a longer-lived credential or a wider reach.
+ */
+export type RouteClass = 'read' | 'write' | 'none';
 
 /** The scope a class needs. */
-export const SCOPE_OF_CLASS: Readonly<Record<RouteClass, Scope>> = { read: 'factory:read', write: 'factory:write' };
+export const SCOPE_OF_CLASS: Readonly<Record<Exclude<RouteClass, 'none'>, Scope>> = {
+    read: 'factory:read',
+    write: 'factory:write',
+};
 
 export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string, routeClass: RouteClass])[] = [
-    // A GET is a read, except the OAuth callback, which completes an authorization. The two dry-run POSTs (a batch
-    // validation and a task preflight) change nothing and are reads.
+    // A GET is a read; the two dry-run POSTs (a batch validation and a task preflight) change nothing and are reads.
+    // Everything that touches a credential, secret, connection, provider authorization, membership or outbound
+    // destination is `none`.
     ['DELETE', '/api/attachments/:id', 'write'],
-    ['DELETE', '/api/connections/:id', 'write'],
+    ['DELETE', '/api/connections/:id', 'none'],
     ['DELETE', '/api/org/executors/:id', 'write'],
-    ['DELETE', '/api/org/notification-subscriptions/:id', 'write'],
+    ['DELETE', '/api/org/notification-subscriptions/:id', 'none'],
     ['DELETE', '/api/workflows/:id', 'write'],
     ['DELETE', '/api/workspace/executors/:id', 'write'],
-    ['DELETE', '/api/workspace/notification-subscriptions/:id', 'write'],
+    ['DELETE', '/api/workspace/notification-subscriptions/:id', 'none'],
     ['GET', '/api/attachments/:id', 'read'],
     ['GET', '/api/attachments/:id/content', 'read'],
     ['GET', '/api/attachments/limits', 'read'],
@@ -31,10 +40,10 @@ export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string,
     ['GET', '/api/batches/:id', 'read'],
     ['GET', '/api/batches/:id/report', 'read'],
     ['GET', '/api/commerce', 'read'],
-    ['GET', '/api/connections', 'read'],
+    ['GET', '/api/connections', 'none'],
     ['GET', '/api/env', 'read'],
     ['GET', '/api/integrations', 'read'],
-    ['GET', '/api/integrations/:provider/callback', 'write'],
+    ['GET', '/api/integrations/:provider/callback', 'none'],
     ['GET', '/api/jobs', 'read'],
     ['GET', '/api/jobs/:id', 'read'],
     ['GET', '/api/jobs/:id/activity', 'read'],
@@ -50,8 +59,8 @@ export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string,
     ['GET', '/api/skills', 'read'],
     ['GET', '/api/stats', 'read'],
     ['GET', '/api/tasks', 'read'],
-    ['GET', '/api/tokens', 'read'],
-    ['GET', '/api/tokens/org', 'read'],
+    ['GET', '/api/tokens', 'none'],
+    ['GET', '/api/tokens/org', 'none'],
     ['GET', '/api/workflow-blocks', 'read'],
     ['GET', '/api/workflows', 'read'],
     ['GET', '/api/workflows/:id', 'read'],
@@ -66,9 +75,9 @@ export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string,
     ['POST', '/api/batches/:id/tasks/:key/accept', 'write'],
     ['POST', '/api/batches/:id/tasks/:key/retry', 'write'],
     ['POST', '/api/batches/:id/validate', 'read'],
-    ['POST', '/api/integrations/:provider/authorizations', 'write'],
+    ['POST', '/api/integrations/:provider/authorizations', 'none'],
     ['POST', '/api/jobs', 'write'],
-    ['POST', '/api/jobs/:id/connections', 'write'],
+    ['POST', '/api/jobs/:id/connections', 'none'],
     ['POST', '/api/jobs/:id/done', 'write'],
     ['POST', '/api/jobs/:id/follow-up', 'write'],
     ['POST', '/api/jobs/:id/questions/:questionId/answer', 'write'],
@@ -83,27 +92,27 @@ export const ROUTE_CLASSES: readonly (readonly [method: string, pattern: string,
     ['POST', '/api/org/executors', 'write'],
     ['POST', '/api/org/executors/:id/scope', 'write'],
     ['POST', '/api/org/executors/:id/suspension', 'write'],
-    ['POST', '/api/org/notification-subscriptions', 'write'],
-    ['POST', '/api/org/notification-subscriptions/:id/test', 'write'],
-    ['POST', '/api/tokens', 'write'],
-    ['POST', '/api/tokens/:id/revoke', 'write'],
-    ['POST', '/api/tokens/org', 'write'],
-    ['POST', '/api/tokens/org/:id/revoke', 'write'],
+    ['POST', '/api/org/notification-subscriptions', 'none'],
+    ['POST', '/api/org/notification-subscriptions/:id/test', 'none'],
+    ['POST', '/api/tokens', 'none'],
+    ['POST', '/api/tokens/:id/revoke', 'none'],
+    ['POST', '/api/tokens/org', 'none'],
+    ['POST', '/api/tokens/org/:id/revoke', 'none'],
     ['POST', '/api/workflows', 'write'],
     ['POST', '/api/workspace/executors/:id/suspension', 'write'],
-    ['POST', '/api/workspace/notification-subscriptions', 'write'],
-    ['POST', '/api/workspace/notification-subscriptions/:id/test', 'write'],
+    ['POST', '/api/workspace/notification-subscriptions', 'none'],
+    ['POST', '/api/workspace/notification-subscriptions/:id/test', 'none'],
     ['PUT', '/api/batches/:id', 'write'],
-    ['PUT', '/api/env/org', 'write'],
-    ['PUT', '/api/env/repo', 'write'],
-    ['PUT', '/api/env/workspace', 'write'],
+    ['PUT', '/api/env/org', 'none'],
+    ['PUT', '/api/env/repo', 'none'],
+    ['PUT', '/api/env/workspace', 'none'],
     ['PUT', '/api/org/executors/:id', 'write'],
-    ['PUT', '/api/org/members/:userId/role', 'write'],
-    ['PUT', '/api/org/notification-subscriptions/:id', 'write'],
+    ['PUT', '/api/org/members/:userId/role', 'none'],
+    ['PUT', '/api/org/notification-subscriptions/:id', 'none'],
     ['PUT', '/api/workflows/:id', 'write'],
     ['PUT', '/api/workspace/executors', 'write'],
     ['PUT', '/api/workspace/executors/default', 'write'],
-    ['PUT', '/api/workspace/notification-subscriptions/:id', 'write'],
+    ['PUT', '/api/workspace/notification-subscriptions/:id', 'none'],
 ];
 
 const TABLE = new Map(ROUTE_CLASSES.map(([method, pattern, routeClass]) => [`${method} ${pattern}`, routeClass]));

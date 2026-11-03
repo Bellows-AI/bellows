@@ -1,5 +1,9 @@
 import { IncomingMessage } from 'node:http';
+import type { Scope } from './route-class.js';
 import type { Caller } from './store.js';
+
+/** A bridged caller always carries its granted scopes: `'all'` is for the credentials that are not scoped. */
+export type BridgedCaller = Caller & { scopes: readonly Scope[] };
 
 /**
  * The seam the MCP bridge (`POST /api/mcp`) calls the board's own routes through. A request is "bridged" when its
@@ -11,7 +15,7 @@ import type { Caller } from './store.js';
 const BOUND = Symbol('factory.bridge.caller');
 
 /** A request class that binds `caller` to every request injected through it. */
-export const bridgedRequestClass = (caller: Caller): typeof IncomingMessage => {
+export const bridgedRequestClass = (caller: BridgedCaller): typeof IncomingMessage => {
     class Bridged extends IncomingMessage {}
     Object.defineProperty(Bridged.prototype, BOUND, { value: caller, enumerable: false });
     return Bridged;

@@ -16,7 +16,8 @@ describe('the route classes (what a scoped caller may do)', () => {
         expect(classOf('POST', '/api/jobs/preflight')).toBe('read');
         expect(classOf('POST', '/api/batches/:id/validate')).toBe('read');
         expect(classOf('POST', '/api/batches/:id/start')).toBe('write');
-        expect(classOf('GET', '/api/integrations/:provider/callback')).toBe('write');
+        expect(classOf('GET', '/api/integrations/:provider/callback')).toBe('none');
+        expect(classOf('POST', '/api/tokens')).toBe('none');
         expect(classOf('GET', '/api/no-such-route')).toBeUndefined();
         expect(classOf('PATCH', '/api/jobs')).toBeUndefined();
     });

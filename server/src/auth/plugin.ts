@@ -460,6 +460,12 @@ async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, repl
     request.auth = { kind: 'worker', orgId };
 }
 
+async function refuseBridged(reply: FastifyReply): Promise<void> {
+    await reply
+        .code(HTTP_FORBIDDEN)
+        .send({ error: 'forbidden', error_description: 'Not available to an MCP grant', code: ERROR_CODES.FORBIDDEN });
+}
+
 /**
  * A scoped caller's route-class check: the route must be classified and the caller must hold the class's scope.
  * Unclassified is refused, never assumed read. Answers true when the request may continue.
@@ -473,8 +479,17 @@ async function scopeAllows(
     if (caller.scopes === 'all') return true;
     const pattern = patternOf(request);
     const routeClass = pattern === undefined ? undefined : classOf(request.method, pattern);
-    const needed = routeClass === undefined ? SCOPE_OF_CLASS.write : SCOPE_OF_CLASS[routeClass];
-    if (routeClass !== undefined && caller.scopes.includes(needed)) return true;
+    // Unclassified and `none` routes are refused whatever the grant holds: no scope fixes them, so no challenge.
+    if (routeClass === undefined || routeClass === 'none') {
+        await reply.code(HTTP_FORBIDDEN).send({
+            error: 'forbidden',
+            error_description: 'This route is not available to an MCP grant',
+            code: ERROR_CODES.FORBIDDEN,
+        });
+        return false;
+    }
+    const needed = SCOPE_OF_CLASS[routeClass];
+    if (caller.scopes.includes(needed)) return true;
     await reply
         .code(HTTP_FORBIDDEN)
         .header(
@@ -485,12 +500,7 @@ async function scopeAllows(
                 scopes: [needed],
             })
         )
-        .send({
-            error: 'insufficient_scope',
-            error_description:
-                routeClass === undefined ? 'This route is not available to an MCP grant' : `Needs ${needed}`,
-            code: ERROR_CODES.FORBIDDEN,
-        });
+        .send({ error: 'insufficient_scope', error_description: `Needs ${needed}`, code: ERROR_CODES.FORBIDDEN });
     return false;
 }
 
@@ -554,6 +564,9 @@ export async function registerAuth(
 
     const enforce = (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
         const requirement = requirementOf(request);
+        // A bridged request reaches human routes only: worker, connector, ingest, branch, commerce and open routes
+        // have their own credentials, and the bridge holds none of them.
+        if (requirement !== 'user' && boundCallerOf(request.raw)) return refuseBridged(reply);
         if (requirement === 'open') return Promise.resolve();
         if (requirement === 'ingest') return enforceIngest(auth, request, reply);
         if (requirement === 'connector') return enforceConnector(request, reply);

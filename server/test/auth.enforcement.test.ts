@@ -1130,6 +1130,18 @@ describe('the MCP access token is honoured on the MCP route only', () => {
         });
         expect(forged.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
+
+    it('forged scope headers cannot upgrade a read-only credential', async () => {
+        const store = memoryAuthStore();
+        const caller = { ...store.seedMember(ORG, 'octocat', 'admin'), scopes: ['factory:read' as const] };
+        const server = await build(githubAuth(), store);
+        const response = await inject(server, 'POST', '/api/jobs?scopes=factory:write', {
+            Request: bridgedRequestClass(caller),
+            headers: { 'x-factory-scopes': 'factory:write factory:read', 'x-factory-bridge': '1' },
+        });
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(response.json().error).toBe('insufficient_scope');
+    });
 });
 
 describe('an MCP token never reaches a log line', () => {
@@ -1180,6 +1192,64 @@ describe('a bridged caller carries scopes the route class is checked against', (
             expect(response.headers['www-authenticate']).toContain('scope="factory:write"');
         }
     );
+
+    it.each(USER_ROUTES.filter((r) => r.cls === 'none'))(
+        '$method $pattern is never reachable by an MCP grant, whatever its scopes',
+        async (r) => {
+            const { server, Request } = await scopedServer(['factory:read', 'factory:write']);
+            const response = await inject(server, r.method, r.url, { Request });
+            expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+            expect(response.json().error).toBe('forbidden');
+            expect(response.headers['www-authenticate']).toBeUndefined();
+        }
+    );
+
+    it('the none class holds exactly the credential, secret, connection and org-admin routes', () => {
+        const none = USER_ROUTES.filter((r) => r.cls === 'none').map((r) => `${r.method} ${r.pattern}`);
+        expect(
+            none.filter((k) => /\/api\/(tokens|integrations\/:provider|connections)|\/connections$/.test(k))
+        ).not.toEqual([]);
+        for (const mustBeNone of [
+            'POST /api/tokens',
+            'POST /api/tokens/org',
+            'POST /api/integrations/:provider/authorizations',
+            'GET /api/integrations/:provider/callback',
+            'PUT /api/env/org',
+            'PUT /api/org/members/:userId/role',
+        ]) {
+            expect(none).toContain(mustBeNone);
+        }
+    });
+
+    it.each([
+        ['GET', '/api/health'],
+        ['POST', `/api/jobs/${JOB_ID}/heartbeat`],
+        ['POST', '/api/otlp/v1/traces'],
+        ['GET', '/api/sessions/branch'],
+    ])('a bound caller is refused on the non-human route %s %s', async (method, url) => {
+        const { server, Request } = await scopedServer(['factory:read', 'factory:write']);
+        const response = await inject(server, method, url, { Request });
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+    });
+
+    it('two concurrent bridged callers in different orgs never see each other', async () => {
+        const store = memoryAuthStore();
+        const a = { ...store.seedMember('org-a', 'alice', 'admin'), scopes: ['factory:read' as const] };
+        const b = { ...store.seedMember('org-b', 'bob', 'admin'), scopes: ['factory:read' as const] };
+        const server = await build(githubAuth(), store, undefined, ['org-a', 'org-b']);
+        const calls = Array.from({ length: 10 }, () => [
+            inject(server, 'GET', '/api/org/members', { Request: bridgedRequestClass(a) }),
+            inject(server, 'GET', '/api/org/members', { Request: bridgedRequestClass(b) }),
+        ]).flat();
+        const all = await Promise.all(calls);
+        const ra = all.filter((_r, i) => i % 2 === 0);
+        const rb = all.filter((_r, i) => i % 2 === 1);
+        const texts = (rs: { body: string }[]) => rs.map((r) => r.body);
+        for (const body of texts(ra)) expect(body).toContain('alice');
+        for (const body of texts(ra)) expect(body).not.toContain('bob');
+        for (const body of texts(rb)) expect(body).toContain('bob');
+        for (const body of texts(rb)) expect(body).not.toContain('alice');
+    });
 
     it('a read scope is let through to the read routes, including the two dry-run POSTs', async () => {
         const { server, Request } = await scopedServer(['factory:read']);
