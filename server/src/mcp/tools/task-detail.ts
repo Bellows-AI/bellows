@@ -93,7 +93,9 @@ export const getTask = defineTool({
         headRunId: z.string(),
         status: BoardStatusSchema,
         state: RunStateSchema,
-        done: z.boolean(),
+        markedDone: z
+            .boolean()
+            .describe('True once a person declared the task done; a finished run is not marked done.'),
         command: z.string(),
         commandTruncated: z.boolean(),
         repo: z.string().nullable(),
@@ -145,7 +147,7 @@ export const getTask = defineTool({
             headRunId: head.id,
             status: head.status,
             state: stateOf(own),
-            done: head.doneAt !== null,
+            markedDone: head.doneAt !== null,
             command: command.text ?? '',
             commandTruncated: command.cut,
             repo: head.repo,
@@ -173,6 +175,17 @@ export const getTask = defineTool({
         return { outcome: 'ok', result: success(data, `${data.taskId}: ${data.state}, ${jobs.length} runs`) };
     },
 });
+
+/** The newest time the board recorded on the head run: its own stamps and the questions asked or answered on it. */
+const latestOf = (run: LenientRun): string => {
+    const stamps = [
+        run.finishedAt,
+        run.startedAt,
+        run.createdAt,
+        ...(run.questions ?? []).flatMap((q) => [q.askedAt, q.answeredAt]),
+    ].filter((t): t is string => t !== null && !Number.isNaN(Date.parse(t)));
+    return stamps.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a), run.createdAt);
+};
 
 const CheckVerdict = z.enum(['passed', 'failed', 'incomplete']);
 
@@ -210,7 +223,7 @@ export const getTaskResult = defineTool({
         error: z
             .object({ kind: z.string().nullable(), cause: z.string().nullable(), exitCode: z.number().nullable() })
             .optional(),
-        updatedAt: z.string(),
+        updatedAt: z.string().describe('The newest time the board recorded on the head run, questions included.'),
     }),
     async run({ taskId }, ctx) {
         const judged = judge(await ctx.fetch({ method: 'GET', url: `${jobPath(taskId)}/thread` }), Thread);
@@ -250,7 +263,7 @@ export const getTaskResult = defineTool({
             ...(gates.length === 0 ? {} : { checks: { verdict: verdictOf(gates), gates } }),
             ...(state === 'needs_attention' ? { attention: { openQuestions, integrationRequirements } } : {}),
             ...(failed ? { error: { kind: head.failureKind, cause: head.failureCause, exitCode: head.exitCode } } : {}),
-            updatedAt: head.finishedAt ?? head.startedAt ?? head.createdAt,
+            updatedAt: latestOf(head),
         };
         return { outcome: 'ok', result: success(data, `${data.taskId}: ${state} (${head.status})`) };
     },

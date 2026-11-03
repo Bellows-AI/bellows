@@ -774,6 +774,7 @@ describe('get_task', () => {
                 baseBranch: 'main',
                 author: 'alice',
                 pullRequest: { url: 'https://git.example/acme/web/pull/7', number: 7, headBranch: 'agent/x' },
+                markedDone: false,
                 openQuestions: 1,
                 integrationRequirements: [{ provider: 'jira', label: 'Jira', reason: 'reconnect', source: 'runtime' }],
             });
@@ -940,6 +941,30 @@ describe('get_task_result', () => {
         ]);
         expect(data).toMatchObject({ taskId: JOB_A, runId: FOLLOW_A, state: 'running' });
         expect(data).not.toHaveProperty('error');
+    });
+
+    it('judges a queued retry after a dead run as pending, with no error carried over', async () => {
+        const { data } = await result({ id: FOLLOW_A, status: 'queued', followUpTo: JOB_A, summary: null }, [
+            run(JOB_A, { status: 'dead', failureKind: 'timeout', exitCode: 137 }),
+        ]);
+        expect(data).toMatchObject({ runId: FOLLOW_A, state: 'pending', outcome: 'in_progress' });
+        expect(data).not.toHaveProperty('error');
+    });
+
+    it('judges a workflow successor as the head of the thread', async () => {
+        const { data } = await result({ id: FOLLOW_A, status: 'running', mode: 'workflow', followUpTo: JOB_A }, [
+            run(JOB_A, { status: 'succeeded' }),
+        ]);
+        expect(data).toMatchObject({ runId: FOLLOW_A, state: 'running' });
+    });
+
+    it('dates a task waiting on a question by the question, not the older run start', async () => {
+        const { data } = await result({
+            status: 'running',
+            finishedAt: null,
+            questions: [question('q1', { askedAt: '2026-01-01T00:09:00.000Z' })],
+        });
+        expect(data.updatedAt).toBe('2026-01-01T00:09:00.000Z');
     });
 
     it("does not reveal another org's task", async () => {

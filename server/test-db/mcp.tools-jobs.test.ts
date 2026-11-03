@@ -14,7 +14,7 @@ import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { BACKENDS } from '../test/artifacts-backends.js';
 import { githubAuth, staticRegistry, stubTelemetryClient, telemetryStoreStub, testConfig } from '../test/helpers.js';
-import { testOrg } from './fixtures.js';
+import { oauthConnection, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import { buildWorld } from './oauth-rig.js';
 
@@ -75,6 +75,7 @@ async function boot() {
     const resource = `${publicUrl}/api/mcp`;
     const people = {
         alice: (await buildWorld(sql, ORG)).caller,
+        carol: (await buildWorld(sql, ORG)).caller,
         bob: (await buildWorld(sql, OTHER_ORG)).caller,
     };
     const tokens = new Map<string, McpCaller>(
@@ -114,7 +115,7 @@ async function boot() {
     return new URL(resource);
 }
 
-const call = async (url: URL, who: 'alice' | 'bob', name: string, args: Record<string, unknown> = {}) => {
+const call = async (url: URL, who: 'alice' | 'bob' | 'carol', name: string, args: Record<string, unknown> = {}) => {
     const client = new Client({ name: 'dbjobs', version: '1' }, { versionNegotiation: { mode: { pin: MODERN } } });
     await client.connect(
         new StreamableHTTPClientTransport(url, {
@@ -184,7 +185,13 @@ describe.skipIf(!enabled)('the task, job, log and question tools — database', 
         expect(waiting.data).toMatchObject({ state: 'needs_attention', attention: { openQuestions: 1 } });
 
         const detail = await call(url, 'alice', 'get_task', { taskId: id });
-        expect(detail.data).toMatchObject({ taskId: id, headRunId: id, repo, state: 'needs_attention', done: false });
+        expect(detail.data).toMatchObject({
+            taskId: id,
+            headRunId: id,
+            repo,
+            state: 'needs_attention',
+            markedDone: false,
+        });
         expect(detail.data.attachments).toEqual([]);
 
         for (const tool of ['get_task', 'get_task_result']) {
@@ -192,6 +199,53 @@ describe.skipIf(!enabled)('the task, job, log and question tools — database', 
             expect(refused.isError, tool).toBe(true);
             expect(refused.data, tool).toMatchObject({ outcome: 'refused', status: 404 });
         }
+    });
+
+    it('reads a task carrying a real attachment and a personal connection, to a second member of the org without either member-bound field', async () => {
+        const url = await boot();
+        const owner = (
+            await sql<{ id: string }[]>`select user_id as id from org_membership where org_id = ${ORG} limit 1`
+        )[0]!.id;
+        const connection = await oauthConnection(sql, ORG, owner);
+        const attachmentId = randomUUID();
+        await sql`
+            insert into input_attachment (org_id, id, uploader_id, name, media_type, size_bytes, sha256, object_key, state)
+            values (${ORG}, ${attachmentId}, ${owner}, 'spec.md', 'text/markdown', 12, ${'ab'.repeat(32)},
+                    ${`k/${attachmentId}`}, 'ready')
+        `;
+        const repo = `acme/r${randomUUID().slice(0, 8)}`;
+        const ref = await jobs.create('use my jira', owner, {
+            repo,
+            executor: null,
+            connectionIds: [connection.id],
+            attachmentIds: [attachmentId],
+        });
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+
+        for (const who of ['alice', 'carol'] as const) {
+            for (const tool of ['get_task', 'get_task_result']) {
+                const { isError, data } = await call(url, who, tool, { taskId: ref.id });
+                expect(isError, `${who} ${tool}`).toBeFalsy();
+                expect(data.taskId).toBe(ref.id);
+                const text = JSON.stringify(data);
+                for (const field of ['connections', 'executionUser', 'actingFor', 'connectionId', 'bindingRevision']) {
+                    expect(text, `${who} ${tool} ${field}`).not.toContain(field);
+                }
+                expect(text, `${who} ${tool}`).not.toContain(connection.id);
+            }
+        }
+        const detail = await call(url, 'carol', 'get_task', { taskId: ref.id });
+        expect(detail.data.attachments).toEqual([
+            {
+                id: attachmentId,
+                runId: ref.id,
+                name: 'spec.md',
+                mediaType: 'text/markdown',
+                size: 12,
+                sha256: 'ab'.repeat(32),
+                state: 'bound',
+            },
+        ]);
     });
 
     it('reports a finished task as succeeded with the summary the board recorded', async () => {
