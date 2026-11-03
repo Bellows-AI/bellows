@@ -9,6 +9,7 @@ import {
 } from '../bounded-wait.js';
 import { inconclusive, judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
+import { BOARD_STATUSES } from './run-state.js';
 import { jobPath } from './runs.js';
 import { headOf, TaskIdInput, TaskResultSchema, Thread, taskResultOf } from './task-detail.js';
 
@@ -33,7 +34,7 @@ type WaitResult = (typeof WAIT_RESULTS)[number];
  * requirement does not change it (the answer carries `attention` beside it), and only a board `parked` answer is
  * `needs_attention`. A head still `queued` or `running` is not settled, so the wait goes on with it.
  */
-export const WAIT_RESULT_OF_STATUS: Record<string, WaitResult | null> = {
+export const WAIT_RESULT_OF_STATUS: Record<(typeof BOARD_STATUSES)[number], WaitResult | null> = {
     queued: null,
     running: null,
     succeeded: 'succeeded',
@@ -44,7 +45,6 @@ export const WAIT_RESULT_OF_STATUS: Record<string, WaitResult | null> = {
 
 /** A poll that settled, and the head as the thread read it right after. */
 interface Settled {
-    readonly parked: boolean;
     readonly waitReason: string | null;
     readonly data: ReturnType<typeof taskResultOf>;
     readonly result: WaitResult;
@@ -52,7 +52,7 @@ interface Settled {
 
 export const waitTask = defineTool({
     name: 'wait_task',
-    description: `Wait, for at most budgetSeconds (default ${WAIT_BUDGET_DEFAULT_S}, never more than ${WAIT_BUDGET_MAX_S}), until a task's head run settles, then answer with its verified result: \`result\` is succeeded, failed (failed or dead), cancelled (stopped), needs_attention (an open question or integration requirement, or parked on a workflow wait) or timeout. A timeout is not a failure: the task is still going, or was never claimed; call wait_task again. A read that cannot be confirmed (including a replica lost mid-wait) is an inconclusive call, never a failed task; call again. About ${WAIT_HEADROOM_S} seconds of the budget are kept for the answer. Progress is reported between holds when the client sent a progress token.`,
+    description: `Wait, for at most budgetSeconds (default ${WAIT_BUDGET_DEFAULT_S}, never more than ${WAIT_BUDGET_MAX_S}), until a task's head run settles, then answer with its verified result: \`result\` is succeeded, failed (failed or dead), cancelled (stopped), needs_attention (parked on a workflow wait; an open question or integration requirement does not change the result, it is reported beside it as \`attention\`) or timeout. A timeout is not a failure: the task is still going, or was never claimed; call wait_task again. A read that cannot be confirmed (including a replica lost mid-wait) is an inconclusive call, never a failed task; call again. About ${WAIT_HEADROOM_S} seconds of the budget are kept for the answer. Progress is reported between holds when the client sent a progress token.`,
     scope: 'factory:read',
     routes: [
         ['GET', '/api/jobs/:id'],
@@ -100,7 +100,7 @@ export const waitTask = defineTool({
                 if (!reread.ok) return { kind: 'stop', tagged: reread.tagged };
                 const head = headOf(reread.data.jobs);
                 last.seen = { taskId: head.rootJobId, runId: head.id, status: head.status };
-                if (!(head.status in WAIT_RESULT_OF_STATUS)) {
+                if (!Object.hasOwn(WAIT_RESULT_OF_STATUS, head.status)) {
                     return {
                         kind: 'stop',
                         tagged: {
@@ -109,16 +109,17 @@ export const waitTask = defineTool({
                         },
                     };
                 }
-                const fromStatus = WAIT_RESULT_OF_STATUS[head.status];
-                if (fromStatus === null || fromStatus === undefined) return { kind: 'open' };
+                // A parked poll is settled whatever the head reads: the board answers it for an open workflow wait even
+                // while the head is queued or running, and answering `open` there would re-poll into the same answer
+                // without holding. Only a terminal poll whose head has since moved on is waited on again.
+                const fromStatus =
+                    poll.result === 'parked'
+                        ? 'needs_attention'
+                        : WAIT_RESULT_OF_STATUS[head.status as keyof typeof WAIT_RESULT_OF_STATUS];
+                if (fromStatus === null) return { kind: 'open' };
                 return {
                     kind: 'settled',
-                    value: {
-                        parked: poll.result === 'parked',
-                        waitReason: poll.waitReason,
-                        data: taskResultOf(head),
-                        result: fromStatus,
-                    },
+                    value: { waitReason: poll.waitReason, data: taskResultOf(head), result: fromStatus },
                 };
             },
             progress: (elapsed, total) =>
@@ -144,8 +145,7 @@ export const waitTask = defineTool({
                 ),
             };
         }
-        const { data, parked, waitReason, result } = end.value;
-        const answer = parked ? 'needs_attention' : result;
+        const { data, waitReason, result: answer } = end.value;
         return {
             outcome: 'ok',
             result: success(

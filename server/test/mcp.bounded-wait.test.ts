@@ -320,6 +320,30 @@ describe('wait_task', () => {
         expect((await spent.call()).structuredContent?.result).toBe(CLI_TIMEOUT_OUTCOME);
     });
 
+    it.each(['queued', 'running'])(
+        'answers needs_attention on a parked poll whatever the head status (%s), after exactly one hold',
+        async (status) => {
+            const { call, holdsAt } = rig({
+                holds: [{ spend: 1, outcome: settle('parked', status, { waitReason: 'pr_review' }) }],
+                thread: threadOf(run({ status })),
+            });
+            const out = await call();
+            expect(out.structuredContent).toMatchObject({ result: 'needs_attention', waitReason: 'pr_review', status });
+            expect(holdsAt).toHaveLength(1);
+        }
+    );
+
+    it('treats a status that is only on the object prototype as unknown, never as settled', async () => {
+        const { call } = rig({
+            holds: [{ spend: 1, outcome: settle('terminal', 'running') }],
+            thread: threadOf(run({ status: 'toString' })),
+        });
+        const out = await call();
+        expect(out.isError).toBe(true);
+        expect(out.structuredContent).toMatchObject({ outcome: 'inconclusive' });
+        expect(JSON.stringify(out.structuredContent)).toContain('the settled head reads toString');
+    });
+
     it('keeps the CLI mapping on a head with an open question or requirement, and reports it beside', async () => {
         const REQUIREMENT = { provider: 'jira', label: 'Jira', reason: 'missing', source: 'runtime' };
         for (const [status, expected] of Object.entries(CLI_TERMINAL_OUTCOME)) {
