@@ -621,8 +621,13 @@ test.describe('the follow-up composer attachments', () => {
         const chips = page.getByRole('list', { name: 'Attached files' });
         await expect(chips.getByText('Ready')).toBeVisible();
 
+        // Settings must finish its first reads before the trip back, or leaving it cancels them mid-flight.
+        const settingsLoaded = ['/api/workspace', '/api/repos', '/api/env'].map((path) =>
+            page.waitForResponse((r) => new URL(r.url()).pathname === path)
+        );
         await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
         await expect(page).toHaveURL(/\/settings$/);
+        await Promise.all(settingsLoaded);
         await page.goBack();
         await expect(box).toHaveValue('also check the export');
         await expect(chips.getByText('notes.txt')).toBeVisible();
