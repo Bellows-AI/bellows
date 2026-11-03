@@ -56,6 +56,7 @@ describe('/api/auth/me', () => {
                 { id: '888888', name: 'other-org' },
             ],
             mode: 'github',
+            mcp: false,
         });
         expect(body).not.toHaveProperty('workspacePath');
     });

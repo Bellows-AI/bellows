@@ -23,4 +23,9 @@ describe('the page Content-Security-Policy', () => {
             expect(directive(header, 'default-src')).toEqual(["'none'"]);
         }
     });
+
+    // The SPA is embedded nowhere; the consent screen in particular must not be framed (clickjacked approval).
+    it('lets no page frame the app', () => {
+        for (const dev of [false, true]) expect(directive(csp(dev), 'frame-ancestors')).toEqual(["'none'"]);
+    });
 });

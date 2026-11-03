@@ -1,8 +1,11 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { createUserResolver } from '../auth/plugin.js';
 import { SESSION_COOKIE, hashToken, unsign } from '../auth/session.js';
 import type { OAuthClient, OAuthStore } from '../auth/oauth-store.js';
-import type { AuthStore } from '../auth/store.js';
+import type { AuthStore, Caller } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
+import { bad } from './helpers.js';
 import type { RegistrationLimits } from './oauth-register.js';
 
 /** The authorization server's endpoints, under the public origin. One place, so metadata and routes cannot drift. */
@@ -15,6 +18,8 @@ export const OAUTH_PATHS = {
     consent: '/api/oauth/consent/:id',
     approve: '/api/oauth/consent/approve',
     deny: '/api/oauth/consent/deny',
+    grants: '/api/oauth/grants',
+    revokeGrant: '/api/oauth/grants/:id/revoke',
 } as const;
 
 /** The SPA page that renders the consent screen (BEL-103); the transaction travels in its fragment, never to a server. */
@@ -91,6 +96,27 @@ export const closeSignal = (reply: FastifyReply): AbortSignal => {
 export const sessionHashOf = (request: FastifyRequest, secret: string): Buffer | null => {
     const token = unsign(request.cookies[SESSION_COOKIE], secret);
     return token ? hashToken(token) : null;
+};
+
+/**
+ * The signed-in COOKIE session's member and its binding hash, or the 401 already sent. A bearer credential (an MCP
+ * token, a personal token) is never a session: what it may not do through the consent and grants routes it cannot do.
+ */
+export const cookieSessionOf = ({ config, auth }: Pick<OAuthRouteDeps, 'config' | 'auth'>) => {
+    const { sessionSecret } = identityOf(config);
+    const resolveUser = createUserResolver({ config, store: auth });
+    return async (
+        request: FastifyRequest,
+        reply: FastifyReply
+    ): Promise<{ caller: Caller; sessionHash: Buffer } | null> => {
+        const sessionHash = sessionHashOf(request, sessionSecret);
+        const caller = sessionHash ? await resolveUser(request) : null;
+        if (!caller || !sessionHash) {
+            await bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+            return null;
+        }
+        return { caller, sessionHash };
+    };
 };
 
 /** `redirectUri` with the response parameters set and `iss` (RFC 9207) always present. */

@@ -11,6 +11,7 @@ import {
     STATE,
     codeForm,
     decide,
+    memberOf,
     otherMember,
     startBoard,
     startConsent,
@@ -21,7 +22,8 @@ import {
 
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
-const db = useTestDb({ orgs: [ORG] });
+const OTHER_ORG = testOrg();
+const db = useTestDb({ orgs: [ORG, OTHER_ORG] });
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
@@ -56,12 +58,15 @@ describe.skipIf(!enabled)('the consent transaction API', () => {
         });
         expect(own.statusCode).toBe(HTTP_OK);
         expect(own.json()).toMatchObject({
-            client: { id: board.world.clientId, name: 'Test client' },
+            client: { id: board.world.clientId, name: 'Test client', kind: 'dcr', uri: null },
             scopes: ['factory:read'],
             redirectUri: REDIRECT,
             organization: { id: ORG },
         });
         expect(own.body).not.toContain(tx.csrf);
+        // The page that asks must not be framed (clickjacking), whichever header a browser honours.
+        expect(own.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+        expect(own.headers['x-frame-options']).toBe('DENY');
 
         const other = await otherMember(board);
         for (const cookie of [other.cookie, undefined]) {
@@ -203,5 +208,32 @@ describe.skipIf(!enabled)('the consent transaction API', () => {
         const redirect = redirectOf(await decide(board, APPROVE, tx));
         expect(redirect.searchParams.get('tenant')).toBe('a');
         expect(redirect.searchParams.get('code')).not.toBeNull();
+    });
+
+    it("offers the caller's orgs, binds the grant to the chosen one and refuses an org they are not in", async () => {
+        const board = await start();
+        const member = await memberOf(board, [ORG, OTHER_ORG]);
+        const tx = await startConsent(board, {}, member.cookie);
+        const view = await board.app.inject({
+            method: 'GET',
+            url: `/api/oauth/consent/${tx.id}`,
+            headers: { cookie: member.cookie },
+        });
+        const body = view.json() as { organization: { id: string }; organizations: { id: string }[] };
+        expect(body.organization.id).toBe(ORG);
+        expect(body.organizations.map((o) => o.id).sort()).toEqual([ORG, OTHER_ORG].sort());
+
+        const foreign = await decide(board, APPROVE, { ...tx, orgId: testOrg() }, member.cookie);
+        expect(foreign.statusCode).toBe(HTTP_BAD_REQUEST);
+        // The refusal does not spend the transaction: the same screen can still approve a valid choice.
+        const chosen = await decide(board, APPROVE, { ...tx, orgId: OTHER_ORG }, member.cookie);
+        expect(chosen.statusCode).toBe(HTTP_OK);
+        const code = redirectOf(chosen).searchParams.get('code');
+        const token = (await (await tokenRequest(board, codeForm(board, String(code)))).json()) as TokenBody;
+        const rows = await sql<{ org_id: string }[]>`
+            select org_id from oauth_grant_family where client_id = ${board.world.clientId} order by created_at desc limit 1
+        `;
+        expect(token.access_token).toBeTruthy();
+        expect(rows[0]?.org_id).toBe(OTHER_ORG);
     });
 });
