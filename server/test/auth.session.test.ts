@@ -140,6 +140,10 @@ describe('return paths', () => {
         expect(safeReturnPath('/reports?range=week', PUBLIC)).toBe('/reports?range=week');
     });
 
+    it('returns the normalized path, so re-serializing it cannot change its meaning', () => {
+        expect(safeReturnPath('/a/../reports?x=1#h', PUBLIC)).toBe('/reports?x=1#h');
+    });
+
     it('refuses anything that leaves this origin', () => {
         // The whole open-redirect surface. `//evil.test` is the subtle one: it is a URL to another
         // origin that merely looks like a path.
@@ -159,6 +163,11 @@ describe('return paths', () => {
         ['a NUL', '/a\u0000b'],
         ['a DEL', '/a\u007fb'],
         ['an encoded control character', '/%09/attacker.example'],
+        ['a dot segment hiding //', '/.//attacker.example/x'],
+        ['an encoded dot segment', '/%2e//attacker.example/x'],
+        ['encoded dot-dot segments', '/%2E%2E//attacker.example/x'],
+        ['a parent segment', '/a/..//attacker.example/x'],
+        ['mixed dot segments', '/./%2e//attacker.example/x'],
         ['an over-long path', `/${'a'.repeat(600)}`],
     ])('refuses %s', (_name, raw) => {
         expect(safeReturnPath(raw, PUBLIC)).toBe('/');

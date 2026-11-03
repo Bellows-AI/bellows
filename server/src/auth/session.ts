@@ -83,7 +83,11 @@ export function safeReturnPath(raw: string | undefined | null, publicUrl: string
     if (UNSAFE_PATH_CHARS.test(raw)) return '/';
     try {
         const origin = new URL(publicUrl).origin;
-        return new URL(raw, origin).origin === origin ? raw : '/';
+        const url = new URL(raw, origin);
+        // The normalized form is what is returned: dot segments collapse (`/.//x` is `//x`), and a
+        // caller that re-serializes the raw string would hand the browser a protocol-relative URL.
+        if (url.origin !== origin || url.pathname.startsWith('//') || url.pathname.startsWith('/\\')) return '/';
+        return `${url.pathname}${url.search}${url.hash}`;
     } catch {
         return '/';
     }

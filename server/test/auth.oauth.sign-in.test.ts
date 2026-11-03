@@ -79,6 +79,18 @@ describe('github sign-in', () => {
         expect(location.searchParams.get('auth_error')).toBe('denied');
     });
 
+    it.each(['/.//attacker.example/x', '/%2e//attacker.example/x', '/a/..//attacker.example/x'])(
+        'never redirects a failure off-origin, whatever the destination (%s)',
+        async (returnTo) => {
+            const { app } = await setup();
+            const state = await begin(app, returnTo);
+            const response = await callback(app, 'error=access_denied', state);
+            const location = response.headers.location as string;
+            expect(location.startsWith('//')).toBe(false);
+            expect(new URL(location, 'http://x').origin).toBe('http://x');
+        }
+    );
+
     it('reports a cancelled consent screen as its own outcome, not as a failure', async () => {
         const { app, auth } = await setup();
         const state = await begin(app);
@@ -227,6 +239,16 @@ describe('the setup callback', () => {
             url: `/api/auth/github/setup?installation_id=999999&state=${encodeURIComponent(forged)}`,
         });
         expect(response.headers.location).toBe('/api/auth/github?org=999999&reselect=1');
+    });
+
+    it('sends a forged state with no installation to install_cancelled at the root', async () => {
+        const { app } = await setup();
+        const forged = encodeState('/reports', 'another-secret-at-least-32-characters');
+        const response = await app.inject({
+            method: 'GET',
+            url: `/api/auth/github/setup?state=${encodeURIComponent(forged)}`,
+        });
+        expect(response.headers.location).toBe('/?auth_error=install_cancelled');
     });
 
     it('reports install_cancelled when the person came back without installing', async () => {
