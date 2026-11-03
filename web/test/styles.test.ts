@@ -739,6 +739,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.mono',
             '.sidenav-task-summary',
             '.composer-param-details code',
+            '.composer-skill-name',
             '.tick',
             '.chart-tooltip',
             '.json-editor',
