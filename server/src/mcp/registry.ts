@@ -14,6 +14,7 @@ import { investigateJob, jobActivity, listQuestions } from './tools/runs.js';
 import { listSkills } from './tools/skills.js';
 import { listJobs, listTasks } from './tools/tasks.js';
 import { getTask, getTaskResult } from './tools/task-detail.js';
+import { TASK_WRITE_TOOLS } from './tools/task-writes.js';
 import { whoami } from './tools/whoami.js';
 
 /** Alphabetical by name: `tools/list` is the same on every replica and every call. */
@@ -34,6 +35,7 @@ export const TOOLS: readonly Tool[] = [
     listJobStreams,
     readJobLog,
     listQuestions,
+    ...TASK_WRITE_TOOLS,
 ].sort((a, b) => a.name.localeCompare(b.name));
 
 /** In-process cap on one caller's simultaneous tool calls (per replica). */
