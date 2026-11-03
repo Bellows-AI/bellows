@@ -1,3 +1,9 @@
+import {
+    INTEGRATION_CATEGORIES,
+    LISTED_PROVIDERS,
+    type IntegrationCategory,
+    type IntegrationProvider,
+} from '@factory-ai/core';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthorizationStart } from '../api/useAuthorizationStart.js';
@@ -6,13 +12,7 @@ import { useIntegrationConfig, type UseIntegrationConfig } from '../api/useInteg
 import { JiraConnectionDialog } from '../components/JiraConnectionDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { ProviderMark } from '../components/ProviderMark.js';
-import {
-    connectionState,
-    INTEGRATION_CATEGORIES,
-    LISTED_PROVIDERS,
-    type IntegrationCategory,
-    type IntegrationProvider,
-} from '../settings/integration-providers.js';
+import { connectionState } from '../settings/integration-providers.js';
 import { STATE_PILL } from './SettingsIntegrationsPage.js';
 
 const ALL = 'All';

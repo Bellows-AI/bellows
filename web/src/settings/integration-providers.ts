@@ -1,84 +1,9 @@
 import type { ConnectionView } from '../api/connections.js';
 
 /**
- * The integration providers the Integrations pages know by name, and the sentences they say about a connection.
- * Static: whether a provider can be connected is `availability`, never a guess from what is installed, and a
- * provider appears as Connected only when `GET /api/connections` returned a row for it.
+ * The sentences the Integrations pages say about a connection. The provider list is `@factory-ai/core`'s
+ * `INTEGRATION_CATALOG`; a provider appears as Connected only when `GET /api/connections` returned a row for it.
  */
-
-/** The closed list a provider is filed under. */
-export const INTEGRATION_CATEGORIES = ['Issue tracking', 'Communication', 'Agent tools', 'CI / DevOps'] as const;
-export type IntegrationCategory = (typeof INTEGRATION_CATEGORIES)[number];
-
-/**
- * `oauth`: the member connects it here; `organization`: managed elsewhere (GitHub is the organization's App
- * installation); `planned`: nothing behind it yet.
- */
-export type IntegrationAvailability = 'oauth' | 'organization' | 'planned';
-
-export interface IntegrationProvider {
-    id: string;
-    label: string;
-    category: IntegrationCategory;
-    availability: IntegrationAvailability;
-    description: string;
-}
-
-export const INTEGRATION_PROVIDERS: readonly IntegrationProvider[] = [
-    {
-        id: 'jira',
-        label: 'Jira',
-        category: 'Issue tracking',
-        availability: 'oauth',
-        description: 'Let tasks look up and comment on your Jira issues.',
-    },
-    {
-        id: 'slack',
-        label: 'Slack',
-        category: 'Communication',
-        availability: 'planned',
-        description: 'Follow tasks from Slack.',
-    },
-    {
-        id: 'discord',
-        label: 'Discord',
-        category: 'Communication',
-        availability: 'planned',
-        description: 'Follow tasks from Discord.',
-    },
-    {
-        id: 'github',
-        label: 'GitHub',
-        category: 'CI / DevOps',
-        availability: 'organization',
-        description: "The organization's GitHub App installation.",
-    },
-    {
-        id: 'gitlab',
-        label: 'GitLab',
-        category: 'CI / DevOps',
-        availability: 'planned',
-        description: 'Work on GitLab repositories.',
-    },
-    {
-        id: 'mcp',
-        label: 'MCP servers',
-        category: 'Agent tools',
-        availability: 'planned',
-        description: 'Remote MCP tool servers your agents call.',
-    },
-];
-
-/** The providers the Integrations pages show: a `planned` one stays hidden until something is behind it. */
-export const LISTED_PROVIDERS: readonly IntegrationProvider[] = INTEGRATION_PROVIDERS.filter(
-    (provider) => provider.availability !== 'planned'
-);
-
-export const integrationProvider = (id: string): IntegrationProvider | undefined =>
-    INTEGRATION_PROVIDERS.find((provider) => provider.id === id);
-
-/** Only an `oauth` provider has a Connect. */
-export const canConnect = (provider: IntegrationProvider): boolean => provider.availability === 'oauth';
 
 export type ConnectionState = 'connected' | 'needs-reconnect' | 'disconnected';
 

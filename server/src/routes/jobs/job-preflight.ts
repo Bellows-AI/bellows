@@ -40,6 +40,8 @@ interface Check {
     name: string | null;
     status: Status;
     detail: string;
+    /** Set on a blocked check that only a connection of the caller's own can clear: which provider and why. */
+    integration?: { provider: string; reason: 'missing' | 'ambiguous' | 'reconnect' };
 }
 
 type Read<T> = { ok: true; value: T } | { ok: false };
@@ -197,10 +199,16 @@ function explicitCheck(
         return { subject: 'connection', name: id, status: 'ok', detail };
     }
     // Another member's, another org's and absent are one answer: nothing more is said about it.
-    const detail = found?.needsReconnect
-        ? 'its grant is no longer active: reconnect it'
-        : 'no such connection available to you';
-    return { subject: 'connection', name: id, status: 'blocked', detail };
+    if (found?.needsReconnect) {
+        return {
+            subject: 'connection',
+            name: id,
+            status: 'blocked',
+            detail: 'its grant is no longer active: reconnect it',
+            integration: { provider: found.provider, reason: 'reconnect' },
+        };
+    }
+    return { subject: 'connection', name: id, status: 'blocked', detail: 'no such connection available to you' };
 }
 
 /** Each named connection, then the resolver's verdict on what the selected skills still need. */
@@ -263,13 +271,16 @@ function skillChecks(selection: Selection, standing: Standing): Check[] {
                 };
             }
             const open = standing.resolution.requirements.find((requirement) => requirement.provider === provider);
-            if (open)
+            if (open) {
+                const reason = openReason(provider, open.reason, standing);
                 return {
                     subject: 'skill',
                     name,
                     status: 'blocked',
-                    detail: openDetail(provider, open.reason, standing),
+                    detail: openDetail(provider, reason),
+                    integration: { provider, reason },
                 };
+            }
             const bound = standing.resolution.bindings.find((binding) => binding.provider === provider);
             return {
                 subject: 'skill',
@@ -282,14 +293,17 @@ function skillChecks(selection: Selection, standing: Standing): Check[] {
     });
 }
 
-function openDetail(provider: string, reason: 'missing' | 'ambiguous', standing: Standing): string {
-    if (reason === 'ambiguous') {
+/** A lapsed grant of the provider outranks `missing`: the member has a connection, it needs reconnecting. */
+function openReason(provider: string, reason: 'missing' | 'ambiguous', standing: Standing) {
+    if (reason === 'ambiguous') return reason;
+    return standing.listed?.some((c) => c.provider === provider && c.needsReconnect) ? 'reconnect' : reason;
+}
+
+function openDetail(provider: string, reason: 'missing' | 'ambiguous' | 'reconnect'): string {
+    if (reason === 'ambiguous')
         return `several ${provider} connections could serve: pass connections with the one to use`;
-    }
-    const lapsed = standing.listed?.some((c) => c.provider === provider && c.needsReconnect) ?? false;
-    return lapsed
-        ? `your ${provider} connection's grant is no longer active: reconnect it`
-        : `no ${provider} connection of yours: connect one, then pass connections`;
+    if (reason === 'reconnect') return `your ${provider} connection's grant is no longer active: reconnect it`;
+    return `no ${provider} connection of yours: connect one, then pass connections`;
 }
 
 async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {

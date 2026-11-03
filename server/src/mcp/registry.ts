@@ -6,10 +6,22 @@ import type { Bridge, BridgeRequest } from './bridge.js';
 import { mapResult, refusal, inconclusive, type Tagged, type ToolOutcome } from './result.js';
 import { secondsSince } from '../prometheus.js';
 import type { Tool, ToolContext } from './tool.js';
+import { listAvailableIntegrations, listConnections } from './tools/connections.js';
+import { listExecutors, listRepos } from './tools/discovery.js';
+import { preflightTask } from './tools/preflight.js';
+import { listSkills } from './tools/skills.js';
 import { whoami } from './tools/whoami.js';
 
 /** Alphabetical by name: `tools/list` is the same on every replica and every call. */
-export const TOOLS: readonly Tool[] = [whoami].sort((a, b) => a.name.localeCompare(b.name));
+export const TOOLS: readonly Tool[] = [
+    whoami,
+    listRepos,
+    listExecutors,
+    listSkills,
+    listConnections,
+    listAvailableIntegrations,
+    preflightTask,
+].sort((a, b) => a.name.localeCompare(b.name));
 
 /** In-process cap on one caller's simultaneous tool calls (per replica). */
 export const MAX_CONCURRENT_CALLS_PER_CALLER = 8;

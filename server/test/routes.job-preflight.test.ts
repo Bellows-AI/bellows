@@ -438,3 +438,49 @@ describe('POST /api/jobs/preflight body', () => {
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });
+
+describe('POST /api/jobs/preflight typed integration requirements', () => {
+    const base = { repo: 'acme/web', executor: 'main', skills: ['jira'] };
+    const open = (reason: 'missing' | 'ambiguous'): Resolution => ({
+        ok: true,
+        bindings: [],
+        requirements: [{ provider: 'jira', reason }],
+    });
+    const integrationOf = async (booted: Booted, payload: unknown, subject: string, name?: string) => {
+        const { check } = await verdict(booted, payload, subject, name);
+        return (check as { status: string; integration?: unknown } | undefined) ?? null;
+    };
+
+    it.each([
+        ['missing', 'missing'],
+        ['ambiguous', 'ambiguous'],
+    ] as const)('types a %s requirement on the blocked skill check', async (reason, expected) => {
+        const check = await integrationOf(await boot({ resolution: open(reason) }), base, 'skill', 'jira');
+        expect(check).toMatchObject({ status: 'blocked', integration: { provider: 'jira', reason: expected } });
+    });
+
+    it('types a lapsed grant as reconnect, on the skill check and on a named connection', async () => {
+        const listed = [view(CONN_A, { needsReconnect: true })];
+        const skill = await integrationOf(await boot({ resolution: open('missing'), listed }), base, 'skill', 'jira');
+        expect(skill).toMatchObject({ integration: { provider: 'jira', reason: 'reconnect' } });
+        const named = await integrationOf(
+            await boot({ allowed: [], listed }),
+            { repo: 'acme/web', executor: 'main', connections: [CONN_A] },
+            'connection'
+        );
+        expect(named).toMatchObject({ status: 'blocked', integration: { provider: 'jira', reason: 'reconnect' } });
+    });
+
+    it('types nothing on an ok, unverified or plainly blocked check', async () => {
+        const unreadable = await integrationOf(await boot({ resolution: new Error('db down') }), base, 'skill', 'jira');
+        expect(unreadable).toMatchObject({ status: 'unverified' });
+        expect(unreadable).not.toHaveProperty('integration');
+        const absent = await integrationOf(
+            await boot({ allowed: [], listed: [] }),
+            { repo: 'acme/web', executor: 'main', connections: [CONN_A] },
+            'connection'
+        );
+        expect(absent).toMatchObject({ status: 'blocked' });
+        expect(absent).not.toHaveProperty('integration');
+    });
+});

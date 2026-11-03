@@ -87,17 +87,14 @@ const connect = async (url: URL, token: string | null) => {
 };
 
 describe('whoami through POST /api/mcp', () => {
-    it('lists whoami with its annotations', async () => {
+    it('lists whoami with its annotations beside the other tools', async () => {
         const url = await boot('github');
         const client = await connect(url, TOKEN_A);
         const { tools } = await client.listTools();
         expect(tools.every((tool) => tool.outputSchema?.type === 'object')).toBe(true);
-        expect(tools.map((tool) => ({ name: tool.name, annotations: tool.annotations }))).toEqual([
-            {
-                name: 'whoami',
-                annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-            },
-        ]);
+        expect(tools.find((tool) => tool.name === 'whoami')).toMatchObject({
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+        });
         await client.close();
     });
 
