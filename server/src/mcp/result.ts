@@ -21,9 +21,31 @@ const failure = (structured: Record<string, unknown>, text: string): CallToolRes
     structuredContent: structured,
 });
 
+/** One path-addressed problem a board refusal listed (a refused batch plan names each). */
+export interface RefusalIssue {
+    readonly path: string;
+    readonly message: string;
+}
+
+const issueText = (issue: RefusalIssue): string => `${issue.path || '(plan)'}: ${issue.message}`;
+
 /** A refusal the board (or the tool layer) gave: the caller was heard and the answer is no. `code` is the board's. */
-export const refusal = (code: string, message: string, status?: number): CallToolResult =>
-    failure({ outcome: 'refused', code, message, ...(status === undefined ? {} : { status }) }, `${code}: ${message}`);
+export const refusal = (
+    code: string,
+    message: string,
+    status?: number,
+    issues: readonly RefusalIssue[] = []
+): CallToolResult =>
+    failure(
+        {
+            outcome: 'refused',
+            code,
+            message,
+            ...(status === undefined ? {} : { status }),
+            ...(issues.length === 0 ? {} : { issues }),
+        },
+        issues.length === 0 ? `${code}: ${message}` : `${code}: ${message} (${issues.map(issueText).join('; ')})`
+    );
 
 /** No verdict: the board did not answer, or answered something that cannot be trusted. Never success, never failure. */
 export const inconclusive = (reason: string): CallToolResult =>
@@ -42,6 +64,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const MAX_MESSAGE_CHARS = 500;
+const MAX_ISSUES = 20;
 const CODE_LIKE = /^[a-z0-9_]{1,64}$/i;
 const FALLBACK_CODE = 'board_refused';
 const SPACE = 0x20;
@@ -61,6 +84,16 @@ const textOf = (value: unknown, fallback: string): string => {
     return printable ? printable.slice(0, MAX_MESSAGE_CHARS) : fallback;
 };
 
+/** The `issues` a board 4xx lists, each cleaned like the message; anything not a `{ path, message }` pair is dropped. */
+const issuesOf = (body: Record<string, unknown>): RefusalIssue[] => {
+    if (!Array.isArray(body.issues)) return [];
+    return (body.issues as unknown[])
+        .filter(isRecord)
+        .filter((issue) => typeof issue.path === 'string' && typeof issue.message === 'string')
+        .slice(0, MAX_ISSUES)
+        .map((issue) => ({ path: textOf(issue.path, ''), message: textOf(issue.message, '') }));
+};
+
 /**
  * A board 4xx carries `{ error, code? }`. The code is the board's own, verbatim (`insufficient_scope` has only
  * `error`); a 4xx that names neither is not a board answer and is inconclusive.
@@ -71,7 +104,8 @@ function refusalOf(status: number, body: unknown): Tagged {
         // Without a `code`, the error text is the code only when it is a plain identifier (`insufficient_scope`).
         const fromError = typeof body.error === 'string' && CODE_LIKE.test(body.error) ? body.error : undefined;
         const code = named ?? fromError ?? (typeof body.error === 'string' && body.error ? FALLBACK_CODE : undefined);
-        if (code !== undefined) return { outcome: 'refused', result: refusal(code, textOf(body.error, code), status) };
+        if (code !== undefined)
+            return { outcome: 'refused', result: refusal(code, textOf(body.error, code), status, issuesOf(body)) };
     }
     return { outcome: 'inconclusive', result: inconclusive(`malformed ${status} response`) };
 }

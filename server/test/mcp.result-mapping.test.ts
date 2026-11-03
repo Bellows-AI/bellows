@@ -62,6 +62,28 @@ describe('mapping a bridge outcome to a tool result', () => {
         expect(mapped.result.structuredContent).toMatchObject({ outcome: 'refused', code: 'insufficient_scope' });
     });
 
+    it('a 4xx that lists path-addressed issues keeps them, bounded and cleaned, in the data and the text', () => {
+        const issues = [
+            { path: 'stages[0].key', message: 'must be a key' },
+            { path: '', message: 'a plan must be a JSON object' },
+            { path: 'x', message: `<b>bad</b>\u0000${'y'.repeat(1000)}` },
+            { path: 7, message: 'dropped: not a path' },
+            ...Array.from({ length: 40 }, (_, n) => ({ path: `p${n}`, message: 'm' })),
+        ];
+        const mapped = map(respond(400, { error: 'The batch plan is not valid', code: 'BAD_BATCH', issues }));
+        const structured = mapped.result.structuredContent as { issues: { path: string; message: string }[] };
+        expect(structured).toMatchObject({ outcome: 'refused', code: 'BAD_BATCH', status: 400 });
+        expect(structured.issues).toHaveLength(20);
+        expect(structured.issues.slice(0, 2)).toEqual([
+            { path: 'stages[0].key', message: 'must be a key' },
+            { path: '', message: 'a plan must be a JSON object' },
+        ]);
+        expect(structured.issues[2]!.message.length).toBeLessThanOrEqual(500);
+        expect(unsafe(structured.issues[2]!.message)).toBe(false);
+        const text = (mapped.result.content[0] as { text: string }).text;
+        expect(text).toContain('BAD_BATCH: The batch plan is not valid (stages[0].key: must be a key; (plan): a plan');
+    });
+
     it('keeps the code verbatim but bounds the message and strips control characters and HTML tags', () => {
         const hostile = `<script>alert(1)</script>bad\u0000\u001b[31m input ${'x'.repeat(2000)}`;
         const mapped = map(respond(400, { error: hostile, code: 'VALIDATION_FAILED' }));
