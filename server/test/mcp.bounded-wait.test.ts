@@ -65,6 +65,38 @@ describe('boundedWait', () => {
         expect(asked).toEqual([27, 17]);
     });
 
+    it('never sends a progress value that does not exceed the last one', async () => {
+        let t = 0;
+        const sent: number[] = [];
+        const spends = [0, 400, 0, 600, 0];
+        await boundedWait<string>({
+            budgetSeconds: 45,
+            now: () => t,
+            signal: idle,
+            hold: async () => {
+                t += spends.shift() ?? 0;
+                return spends.length > 0 ? { kind: 'open' } : { kind: 'settled', value: 'x' };
+            },
+            progress: async (elapsed) => void sent.push(elapsed),
+        });
+        expect(sent.length).toBeGreaterThan(0);
+        for (let i = 1; i < sent.length; i++) expect(sent[i]!).toBeGreaterThan(sent[i - 1]!);
+        expect(sent).toEqual([0.4, 1]);
+    });
+
+    it('is ended by the client leaving while a hold is in flight', async () => {
+        const stop = new AbortController();
+        const pending = boundedWait<string>({
+            budgetSeconds: 45,
+            now: () => 0,
+            signal: stop.signal,
+            hold: (_seconds) =>
+                new Promise((resolve) => stop.signal.addEventListener('abort', () => resolve({ kind: 'open' }))),
+        });
+        stop.abort();
+        expect(await pending).toEqual({ kind: 'aborted' });
+    });
+
     it('ends on a stopped hold and on an abort, starting no further hold', async () => {
         const stop = new AbortController();
         const hold = vi.fn(async (): Promise<Hold<string>> => {
@@ -85,7 +117,7 @@ type Handler = (
     args: Record<string, unknown>,
     ctx: ServerContext
     // biome-ignore lint/suspicious/noExplicitAny: structured content is asserted field by field
-) => Promise<{ isError?: boolean; structuredContent?: Record<string, any> }>;
+) => Promise<{ isError?: boolean; content?: unknown; structuredContent?: Record<string, any> }>;
 
 const capture = () => {
     const handlers = new Map<string, Handler>();
@@ -134,9 +166,13 @@ const QUESTION = {
 
 interface Rig {
     /** What a hold answers, in order; the clock moves by `spend` seconds first, as a long-poll would. */
-    holds: { spend: number | 'hold'; outcome: BridgeOutcome | ((url: string) => BridgeOutcome) }[];
+    holds: {
+        spend: number | 'hold';
+        outcome: BridgeOutcome | ((url: string, signal?: AbortSignal) => BridgeOutcome | Promise<BridgeOutcome>);
+    }[];
     /** What the thread re-read answers. */
-    thread: BridgeOutcome;
+    /** What the thread re-read answers; a list answers one per read, the last one repeating. */
+    thread: BridgeOutcome | BridgeOutcome[];
 }
 
 const json = (body: unknown, status = 200): BridgeOutcome => ({ kind: 'response', status, body });
@@ -168,9 +204,10 @@ function rig(spec: Rig) {
                 const step = spec.holds.shift();
                 if (!step) throw new Error('an unscripted hold was started');
                 t += (step.spend === 'hold' ? seconds : step.spend) * SECOND;
-                return typeof step.outcome === 'function' ? step.outcome(request.url) : step.outcome;
+                return typeof step.outcome === 'function' ? step.outcome(request.url, signal) : step.outcome;
             }
-            return spec.thread;
+            if (!Array.isArray(spec.thread)) return spec.thread;
+            return (spec.thread.length > 1 ? spec.thread.shift() : spec.thread[0]) as BridgeOutcome;
         },
     };
     const runtime: ToolRuntime = { bridge, deadlineMs: 55 * SECOND, active: new Map(), now: () => t };
@@ -258,6 +295,8 @@ describe('wait_task', () => {
         const out = await call({ budgetSeconds: 2 });
         expect(out.structuredContent).toMatchObject({ result: 'timeout', taskId: TASK });
         expect(urls).toEqual([]);
+        // It returned at once: the text must not claim a wait of the whole budget.
+        expect(JSON.stringify(out.content)).not.toMatch(/after \d+s/);
     });
 
     it('maps the head status exactly as bellows job wait does', async () => {
@@ -281,23 +320,35 @@ describe('wait_task', () => {
         expect((await spent.call()).structuredContent?.result).toBe(CLI_TIMEOUT_OUTCOME);
     });
 
-    it('reports an open question or integration requirement on a settled head as needs_attention', async () => {
-        const { call } = rig({
-            holds: [{ spend: 1, outcome: settle('terminal', 'failed') }],
-            thread: threadOf(run({ status: 'failed', questions: [QUESTION] })),
-        });
-        const out = await call();
-        expect(out.structuredContent).toMatchObject({ result: 'needs_attention', attention: { openQuestions: 1 } });
+    it('keeps the CLI mapping on a head with an open question or requirement, and reports it beside', async () => {
+        const REQUIREMENT = { provider: 'jira', label: 'Jira', reason: 'missing', source: 'runtime' };
+        for (const [status, expected] of Object.entries(CLI_TERMINAL_OUTCOME)) {
+            for (const open of [{ questions: [QUESTION] }, { integrationRequirements: [REQUIREMENT] }]) {
+                const { call } = rig({
+                    holds: [{ spend: 1, outcome: settle('terminal', status) }],
+                    thread: threadOf(run({ status, ...open })),
+                });
+                const out = (await call()).structuredContent;
+                expect(out?.result, `${status} ${Object.keys(open)}`).toBe(expected);
+                expect(out?.state, status).toBe(status === 'stopped' ? 'cancelled' : 'needs_attention');
+                if (status !== 'stopped') {
+                    expect(out?.attention, status).toMatchObject({
+                        openQuestions: 'questions' in open ? 1 : 0,
+                        integrationRequirements:
+                            'questions' in open ? [] : [expect.objectContaining({ provider: 'jira' })],
+                    });
+                }
+            }
+        }
     });
 
-    it('takes the verdict from the head re-read, never from the poll that settled', async () => {
+    it('takes every field of the answer from the head re-read, never from the poll that settled', async () => {
         const raced = rig({
-            holds: [{ spend: 1, outcome: settle('terminal', 'failed') }],
+            holds: [{ spend: 42, outcome: settle('terminal', 'failed') }],
             thread: threadOf(run({ status: 'failed' }), run({ id: 'run-2', status: 'queued' })),
         });
         const retried = (await raced.call()).structuredContent;
-        expect(retried).toMatchObject({ result: 'timeout', taskId: TASK });
-        expect(retried?.result).not.toBe('failed');
+        expect(retried).toMatchObject({ result: 'timeout', taskId: TASK, runId: 'run-2', status: 'queued' });
 
         const flipped = rig({
             holds: [{ spend: 1, outcome: settle('terminal', 'succeeded') }],
@@ -306,8 +357,27 @@ describe('wait_task', () => {
         expect((await flipped.call()).structuredContent).toMatchObject({
             result: 'failed',
             runId: 'run-2',
+            status: 'failed',
             error: { kind: 'gate' },
         });
+    });
+
+    it('keeps waiting on the new head while budget remains when the head moved after the poll settled', async () => {
+        const queued = threadOf(run({ status: 'failed' }), run({ id: 'run-2', status: 'queued' }));
+        const done = threadOf(
+            run({ status: 'failed' }),
+            run({ id: 'run-2', status: 'succeeded', summary: 'second try' })
+        );
+        const { call, holdsAt } = rig({
+            holds: [
+                { spend: 1, outcome: settle('terminal', 'failed') },
+                { spend: 1, outcome: settle('terminal', 'succeeded', { headJobId: 'run-2' }) },
+            ],
+            thread: [queued, done],
+        });
+        const out = (await call()).structuredContent;
+        expect(out).toMatchObject({ result: 'succeeded', runId: 'run-2', status: 'succeeded', summary: 'second try' });
+        expect(holdsAt).toHaveLength(2);
     });
 
     it('keeps a task nobody claimed as timeout, never failed', async () => {
@@ -376,6 +446,31 @@ describe('wait_task', () => {
         const without = rig(script());
         await without.call();
         expect(without.notify).not.toHaveBeenCalled();
+    });
+
+    it('resolves a hold that is in flight when the client leaves', async () => {
+        const stop = new AbortController();
+        const { call, urls } = rig({
+            holds: [
+                {
+                    spend: 1,
+                    outcome: (_url, signal) =>
+                        new Promise((resolve) =>
+                            signal?.addEventListener('abort', () =>
+                                resolve({ kind: 'inconclusive', reason: 'aborted' })
+                            )
+                        ),
+                },
+            ],
+            thread: threadOf(run()),
+        });
+        const pending = call({}, { signal: stop.signal });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(holdUrls(urls)).toHaveLength(1);
+        stop.abort();
+        const out = await pending;
+        expect(out.structuredContent).toMatchObject({ outcome: 'inconclusive' });
+        expect(holdUrls(urls)).toHaveLength(1);
     });
 
     it('stops the loop when the client leaves: no further hold, no verdict', async () => {

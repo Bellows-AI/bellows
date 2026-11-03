@@ -33,7 +33,7 @@ export interface BoundedWait<T> {
     readonly signal: AbortSignal;
     /** One long-poll of a whole number of seconds, `1..WAIT_HOLD_MAX_S`, never longer than what is left of the budget. */
     hold(seconds: number): Promise<Hold<T>>;
-    /** Called after each hold that left the thing open, with the seconds spent of the budget. */
+    /** Called after a hold that left the thing open, with the (strictly increasing) seconds spent of the budget. */
     progress?(elapsedSeconds: number, budgetSeconds: number): Promise<void>;
 }
 
@@ -57,6 +57,7 @@ export async function boundedWait<T>(wait: BoundedWait<T>): Promise<WaitEnd<T>> 
     const start = wait.now();
     const budgetMs = effectiveBudgetSeconds(wait.budgetSeconds) * MS_PER_SECOND;
     const deadlineAt = start + budgetMs;
+    let lastProgress = 0;
     for (;;) {
         if (wait.signal.aborted) return { kind: 'aborted' };
         const seconds = holdSecondsLeft(deadlineAt, wait.now());
@@ -64,6 +65,11 @@ export async function boundedWait<T>(wait: BoundedWait<T>): Promise<WaitEnd<T>> 
         const held = await wait.hold(seconds);
         if (held.kind === 'settled') return held;
         if (held.kind === 'stop') return { kind: 'stopped', tagged: held.tagged };
-        await wait.progress?.(Math.round((wait.now() - start) / MS_PER_SECOND), budgetMs / MS_PER_SECOND);
+        // MCP requires progress to increase with every notification: a repeat is skipped, never sent.
+        const elapsed = (wait.now() - start) / MS_PER_SECOND;
+        if (elapsed > lastProgress) {
+            lastProgress = elapsed;
+            await wait.progress?.(elapsed, budgetMs / MS_PER_SECOND);
+        }
     }
 }

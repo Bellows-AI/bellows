@@ -9,7 +9,6 @@ import {
 } from '../bounded-wait.js';
 import { inconclusive, judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
-import type { RunState } from './run-state.js';
 import { jobPath } from './runs.js';
 import { headOf, TaskIdInput, TaskResultSchema, Thread, taskResultOf } from './task-detail.js';
 
@@ -24,27 +23,32 @@ const Settle = z.object({
         .nullish()
         .transform((v) => v ?? null),
 });
-type Settle = z.infer<typeof Settle>;
 
 export const WAIT_RESULTS = ['succeeded', 'failed', 'cancelled', 'needs_attention', 'timeout'] as const;
 type WaitResult = (typeof WAIT_RESULTS)[number];
 
 /**
- * What a settled head's state is called to the caller; the same table as `bellows job wait` (`cli/src/run.ts`,
- * `terminalOutcome`), pinned by `mcp.bounded-wait.test.ts`. A head that is still `pending` or `running` was not
- * settled when it was re-read, so the answer is `timeout` (call again), never `failed`. `unreachable` and
- * `inconclusive` are not results: they are an inconclusive call.
+ * What a settled head's board status is called to the caller: the same table as `bellows job wait` (`cli/src/run.ts`,
+ * `terminalOutcome`), pinned by `mcp.bounded-wait.test.ts`. It reads the status alone: an open question or integration
+ * requirement does not change it (the answer carries `attention` beside it), and only a board `parked` answer is
+ * `needs_attention`. A head still `queued` or `running` is not settled, so the wait goes on with it.
  */
-export const WAIT_RESULT_OF_STATE: Record<RunState, WaitResult | null> = {
-    pending: 'timeout',
-    running: 'timeout',
+export const WAIT_RESULT_OF_STATUS: Record<string, WaitResult | null> = {
+    queued: null,
+    running: null,
     succeeded: 'succeeded',
     failed: 'failed',
-    cancelled: 'cancelled',
-    needs_attention: 'needs_attention',
-    unreachable: null,
-    inconclusive: null,
+    dead: 'failed',
+    stopped: 'cancelled',
 };
+
+/** A poll that settled, and the head as the thread read it right after. */
+interface Settled {
+    readonly parked: boolean;
+    readonly waitReason: string | null;
+    readonly data: ReturnType<typeof taskResultOf>;
+    readonly result: WaitResult;
+}
 
 export const waitTask = defineTool({
     name: 'wait_task',
@@ -72,61 +76,81 @@ export const waitTask = defineTool({
     }),
     async run({ taskId, budgetSeconds: requested }, ctx) {
         const budgetSeconds = effectiveBudgetSeconds(requested ?? WAIT_BUDGET_DEFAULT_S);
-        let last: Settle | null = null;
-        const end = await boundedWait<Settle>({
+        // Where the task was last seen: the poll that is still waiting, or the head the last re-read found. Every field
+        // of a `timeout` answer comes from here, never from a poll that settled on a head that has since moved on.
+        const last: { seen: { taskId: string; runId: string; status: string } | null } = { seen: null };
+        const end = await boundedWait<Settled>({
             budgetSeconds,
             now: ctx.now,
             signal: ctx.signal,
-            hold: async (seconds): Promise<Hold<Settle>> => {
-                const judged = judge(
+            hold: async (seconds): Promise<Hold<Settled>> => {
+                const polled = judge(
                     await ctx.fetch({ method: 'GET', url: `${jobPath(taskId)}?waitFor=terminal&timeout=${seconds}` }),
                     Settle
                 );
-                if (!judged.ok) return { kind: 'stop', tagged: judged.tagged };
-                last = judged.data;
-                return judged.data.result === 'timeout' ? { kind: 'open' } : { kind: 'settled', value: judged.data };
+                if (!polled.ok) return { kind: 'stop', tagged: polled.tagged };
+                const poll = polled.data;
+                if (poll.result === 'timeout') {
+                    last.seen = { taskId: poll.rootJobId, runId: poll.headJobId, status: poll.headStatus };
+                    return { kind: 'open' };
+                }
+                // The verdict is the head as the board has it now, not the poll's snapshot: a retry or a follow-up
+                // between the two reads changes the head, and a head that is not settled is waited on again.
+                const reread = judge(await ctx.fetch({ method: 'GET', url: `${jobPath(taskId)}/thread` }), Thread);
+                if (!reread.ok) return { kind: 'stop', tagged: reread.tagged };
+                const head = headOf(reread.data.jobs);
+                last.seen = { taskId: head.rootJobId, runId: head.id, status: head.status };
+                if (!(head.status in WAIT_RESULT_OF_STATUS)) {
+                    return {
+                        kind: 'stop',
+                        tagged: {
+                            outcome: 'inconclusive',
+                            result: inconclusive(`the settled head reads ${head.status}`),
+                        },
+                    };
+                }
+                const fromStatus = WAIT_RESULT_OF_STATUS[head.status];
+                if (fromStatus === null || fromStatus === undefined) return { kind: 'open' };
+                return {
+                    kind: 'settled',
+                    value: {
+                        parked: poll.result === 'parked',
+                        waitReason: poll.waitReason,
+                        data: taskResultOf(head),
+                        result: fromStatus,
+                    },
+                };
             },
             progress: (elapsed, total) =>
                 ctx.progress(
                     elapsed,
                     total,
-                    `waiting on ${last?.headJobId ?? taskId}: ${last?.headStatus ?? 'unsettled'}`
+                    `waiting on ${last.seen?.runId ?? taskId}: ${last.seen?.status ?? 'unsettled'}`
                 ),
         });
-        const timeout = (seen: Settle | null) => ({
-            outcome: 'ok' as const,
-            result: success(
-                {
-                    result: 'timeout',
-                    taskId: seen?.rootJobId ?? taskId,
-                    budgetSeconds,
-                    ...(seen ? { runId: seen.headJobId, status: seen.headStatus } : {}),
-                },
-                `${taskId}: still going after ${budgetSeconds}s; call wait_task again`
-            ),
-        });
         if (end.kind === 'stopped') return end.tagged;
-        if (end.kind === 'aborted') {
-            return { outcome: 'inconclusive', result: inconclusive('aborted') };
+        if (end.kind === 'aborted') return { outcome: 'inconclusive', result: inconclusive('aborted') };
+        if (end.kind === 'timeout') {
+            return {
+                outcome: 'ok',
+                result: success(
+                    {
+                        result: 'timeout',
+                        taskId: last.seen?.taskId ?? taskId,
+                        budgetSeconds,
+                        ...(last.seen ? { runId: last.seen.runId, status: last.seen.status } : {}),
+                    },
+                    `${taskId}: not settled when the wait ended; call wait_task again`
+                ),
+            };
         }
-        if (end.kind === 'timeout') return timeout(last);
-
-        // The verdict is the settled head as the board has it now, not the poll's snapshot: a retry or a follow-up
-        // between the two reads changes the head.
-        const reread = judge(await ctx.fetch({ method: 'GET', url: `${jobPath(taskId)}/thread` }), Thread);
-        if (!reread.ok) return reread.tagged;
-        const data = taskResultOf(headOf(reread.data.jobs));
-        const fromState = WAIT_RESULT_OF_STATE[data.state];
-        if (fromState === null) {
-            return { outcome: 'inconclusive', result: inconclusive(`the settled head reads ${data.state}`) };
-        }
-        if (fromState === 'timeout') return timeout(end.value);
-        const result: WaitResult = end.value.result === 'parked' ? 'needs_attention' : fromState;
+        const { data, parked, waitReason, result } = end.value;
+        const answer = parked ? 'needs_attention' : result;
         return {
             outcome: 'ok',
             result: success(
-                { ...data, result, budgetSeconds, waitReason: end.value.waitReason },
-                `${data.taskId}: ${result} (${data.status})`
+                { ...data, result: answer, budgetSeconds, waitReason },
+                `${data.taskId}: ${answer} (${data.status})`
             ),
         };
     },

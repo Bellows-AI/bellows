@@ -172,6 +172,27 @@ describe.skipIf(!enabled)('the task, job, log and question tools — database', 
         }
     });
 
+    it('waits on the real settle long-poll: a live task times out, a stopped one is cancelled, another org gets not-found', async () => {
+        const url = await boot();
+        const { id } = await running();
+        const live = await call(url, 'alice', 'wait_task', { taskId: id, budgetSeconds: 5 });
+        expect(live.isError).toBeFalsy();
+        expect(live.data).toMatchObject({ result: 'timeout', taskId: id, runId: id, status: 'running' });
+
+        const ref = await jobs.create('never claimed', null, {
+            repo: `acme/r${randomUUID().slice(0, 8)}`,
+            executor: null,
+        });
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+        await jobs.stop(ref.id, null);
+        const stopped = await call(url, 'alice', 'wait_task', { taskId: ref.id, budgetSeconds: 5 });
+        expect(stopped.data).toMatchObject({ result: 'cancelled', state: 'cancelled', runId: ref.id });
+
+        const foreign = await call(url, 'bob', 'wait_task', { taskId: id, budgetSeconds: 5 });
+        expect(foreign.isError).toBe(true);
+        expect(foreign.data).toMatchObject({ outcome: 'refused', status: 404 });
+    });
+
     it('reports a task and its verified outcome from the real stores, to its own org only', async () => {
         const url = await boot();
         const { id, claim, repo } = await running();
