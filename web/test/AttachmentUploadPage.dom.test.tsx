@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { returnToOf } from '../src/return-to.js';
@@ -163,6 +164,31 @@ describe('the attachment upload page', () => {
         expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }));
     });
 
+    it('does not grab focus on load under StrictMode, only on a phase change', async () => {
+        vi.stubGlobal('XMLHttpRequest', FakeXhr);
+        window.history.replaceState(null, '', `/attachments/upload#${CAP}`);
+        stubFetch(() => undefined);
+        const router = createMemoryRouter(
+            [
+                {
+                    path: '*',
+                    element: (
+                        <ThemeProvider>
+                            <AttachmentUploadPage />
+                        </ThemeProvider>
+                    ),
+                },
+            ],
+            { initialEntries: [`/attachments/upload#${CAP}`] }
+        );
+        render(<RouterProvider router={router} />, { reactStrictMode: true });
+        await screen.findByRole('heading', { level: 1 });
+        await act(async () => undefined);
+        expect(document.activeElement).toBe(document.body);
+        await userEvent.setup().upload(screen.getByTestId('upload-input'), file());
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 })));
+    });
+
     it('a link-less visit says the link is incomplete', async () => {
         setup('');
         expect((await screen.findByRole('alert')).textContent).toMatch(/incomplete/);
@@ -189,6 +215,20 @@ describe('the login gate', () => {
             for (const a of document.querySelectorAll('[href]')) expect(a.getAttribute('href')).not.toContain('fcu_');
         }
     );
+
+    it('agrees with the router on a percent-encoded path: the page renders, no session call', async () => {
+        const calls = stubFetch(() => undefined);
+        renderAt(
+            <ThemeProvider>
+                <LoginGate>
+                    <p>the page</p>
+                </LoginGate>
+            </ThemeProvider>,
+            `/attachments/%75pload#${CAP}`
+        );
+        expect(screen.getByText('the page')).toBeTruthy();
+        expect(calls.filter((c) => c.url === '/api/auth/me')).toHaveLength(0);
+    });
 
     it('never forwards a link fragment into the sign-in returnTo of any other page', async () => {
         stubFetch(({ url }) => (url === '/api/auth/me' ? { authenticated: false } : undefined));

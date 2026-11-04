@@ -64,15 +64,13 @@ export function AttachmentUploadPage() {
     const [phase, setPhase] = useState<Phase>({ kind: 'choose', notice: null });
     const input = useRef<HTMLInputElement>(null);
     const heading = useRef<HTMLHeadingElement>(null);
-    const firstRender = useRef(true);
+    const shownPhase = useRef(phase.kind);
     useFileDropGuard();
 
-    // Not on mount: only a phase change leaves focus on a control that is gone.
+    // Only when the phase actually changed: a StrictMode remount re-runs this effect with the phase unchanged.
     useEffect(() => {
-        if (firstRender.current) {
-            firstRender.current = false;
-            return;
-        }
+        if (shownPhase.current === phase.kind) return;
+        shownPhase.current = phase.kind;
         heading.current?.focus();
     }, [phase.kind]);
 

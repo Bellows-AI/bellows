@@ -23,6 +23,15 @@ function LoginProblem({ message }: { message: string }) {
     return <StateNote state="error">{message}</StateNote>;
 }
 
+/** The router matches the decoded path, so the gate must too (`/attachments/%75pload` is the upload page). */
+function decodedPath(pathname: string): string {
+    try {
+        return decodeURIComponent(pathname);
+    } catch {
+        return pathname;
+    }
+}
+
 /**
  * Stands between the dashboard and anyone who has not signed in.
  *
@@ -35,7 +44,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
     // The attachment upload page (BEL-248) is signed-out by design: the single-use link in its fragment is the
     // credential. Matched the way the router matches (a trailing slash included), and before any session call, so
     // the page neither waits for nor sends the cookie.
-    if (matchPath({ path: UPLOAD_PAGE_ROUTE, end: true }, pathname)) return <>{children}</>;
+    if (matchPath({ path: UPLOAD_PAGE_ROUTE, end: true }, decodedPath(pathname))) return <>{children}</>;
     return <SessionGate>{children}</SessionGate>;
 }
 
