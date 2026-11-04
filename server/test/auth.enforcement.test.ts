@@ -300,6 +300,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/credentials/connections', 'connector'],
     ['/api/jobs/:id/operations', 'connector'],
     ['/api/jobs/:id/operations/:receiptId', 'connector'],
+    // The agent's own title write (BEL-252): the attempt pair alone, the same class.
+    ['/api/jobs/:id/agent-title', 'connector'],
     // A member's own uploads: a person's act, so 'user' (an organization token is refused).
     ['/api/attachments', 'user'],
     ['/api/attachments/limits', 'user'],

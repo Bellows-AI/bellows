@@ -7,6 +7,8 @@ import type { AppConfig } from './config.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
+import type { AgentTitle } from './db/agent-title.js';
+import { agentTitleRoutes } from './routes/agent-title.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import { batchRoutes } from './routes/batches/batches.js';
@@ -94,6 +96,8 @@ export interface AppDeps {
     pairMatches?: PairMatches | undefined;
     /** The runner's durable operation receipts (099); with `attemptOfLease` and `pairMatches` the receipt routes exist. */
     operationReceipts?: OperationReceipts | undefined;
+    /** The running agent's own title write (BEL-252); with `attemptOfLease` the route exists. */
+    agentTitle?: AgentTitle | undefined;
     /** The runner helper's connection list (`GET .../credentials/connections`); with `integrations` the route exists. */
     connectionListing?: ConnectionListing | undefined;
     /** The outbound OAuth runtime whose per-org resolver the broker spends through. */
@@ -188,6 +192,7 @@ async function registerRunnerCredentialRoutes(
         | 'attemptOfLease'
         | 'pairMatches'
         | 'operationReceipts'
+        | 'agentTitle'
         | 'connectionListing'
         | 'integrations'
         | 'githubMint'
@@ -199,6 +204,7 @@ async function registerRunnerCredentialRoutes(
         attemptOfLease,
         pairMatches,
         operationReceipts,
+        agentTitle,
         connectionListing,
         integrations,
         githubMint,
@@ -221,6 +227,7 @@ async function registerRunnerCredentialRoutes(
         if (pairMatches && operationReceipts) {
             await app.register(operationReceiptRoutes({ attemptOfLease, pairMatches, receipts: operationReceipts }));
         }
+        if (agentTitle) await app.register(agentTitleRoutes({ attemptOfLease, agentTitle }));
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
     if (integrations?.flowOf)
@@ -251,6 +258,7 @@ export async function buildApp({
     githubRevoke,
     pairMatches,
     operationReceipts,
+    agentTitle,
     connectionListing,
     destroyRevokedSecret,
     attachmentMaxInFlight,
@@ -338,6 +346,7 @@ export async function buildApp({
         attemptOfLease,
         pairMatches,
         operationReceipts,
+        agentTitle,
         connectionListing,
         integrations,
         githubMint,

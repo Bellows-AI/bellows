@@ -1257,6 +1257,24 @@ describe('the shared executor skills', () => {
         expect(existsSync(join(ROOT, `${SKILLS}/jira/jira.cjs`))).toBe(true);
     });
 
+    // BEL-252: the agent names its task with the board's agent-title route; the pair helper is baked beside the skills.
+    it('the task-title skill names its helper at the fixed path, never an env title, and both images ship it', () => {
+        const text = read(`${SKILLS}/task-title/SKILL.md`);
+        expect(text).toContain('node /usr/local/share/factory-skills/task-title/task-title.cjs');
+        expect(text).not.toMatch(/\bcurl\b|RUNNER_LEASE_TOKEN/);
+        expect(text).toMatch(/Never treat exit 4 as "unchanged"/);
+        expect(existsSync(join(ROOT, `${SKILLS}/task-title/task-title.cjs`))).toBe(true);
+        expect(read('docker/skills/task-title/task-title.cjs')).toContain('/usr/local/bin/attempt-pair.cjs');
+        for (const image of ['claude-executor', 'opencode-executor']) {
+            expect(read(`docker/${image}/Dockerfile`), image).toContain(
+                'COPY --from=skills --chown=root:root . /usr/local/share/factory-skills/'
+            );
+            expect(read(`docker/${image}/Dockerfile`), image).toContain(
+                'COPY --from=common attempt-pair.cjs /usr/local/bin/attempt-pair.cjs'
+            );
+        }
+    });
+
     it.each(['docker/claude-executor/claude-home/CLAUDE.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
         '77: %s names the jira helper, not $JIRA_API, and keeps acli forbidden',
         (guide) => {

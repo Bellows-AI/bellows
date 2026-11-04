@@ -7,6 +7,7 @@ import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig 
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
 import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
+import { createAgentTitle } from './db/agent-title.js';
 import { createOperationReceipts } from './db/operation-receipts.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
@@ -93,6 +94,7 @@ const runnerCredentialDeps = (
     attemptOfLease: createAttemptOfLease(db),
     pairMatches: createPairMatches(db),
     operationReceipts: createOperationReceipts(db),
+    agentTitle: createAgentTitle(db),
     // The runner helper's connection list: Jira only, and only while the provider is configured.
     connectionListing: {
         connectionsOf: async (orgId: string, rootJobId: string) => {

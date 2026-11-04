@@ -1630,9 +1630,9 @@ begin_phase images
 # entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
     docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"
+cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs docker/skills/task-title/task-title.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
-printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
+printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >"$work/dashboard-build.log" 2>&1 &
 dash_build=$!
@@ -2253,6 +2253,36 @@ expect_contains 'the helper reaches the credential route and is refused' "$gh_re
 expect_contains 'the refusal is the App-less board, said on stderr'  "$gh_result" 'no GitHub App installation'
 expect_contains "the helper's cache is a Memory emptyDir"           "$gh_result" 'github cache tmpfs'
 expect_contains 'the runner pod carries no GitHub token in its env'  "$gh_result" 'github no env token'
+
+# --- The agent's task title (BEL-252) --------------------------------------------------
+#
+# The task-title helper in the runner pod names its task on the board's attempt-pair route: the same image,
+# pair env and control socket as the docker executor. The board's task carries the title with origin `agent`.
+
+echo
+echo '# task title'
+
+title_id="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-title", executor: "claude", repo: process.argv[2] }) })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
+    .catch(() => {});
+' "$BASE/api/jobs" "$SMOKE_REPO")"
+title_result=""
+for _ in $(seq 1 120); do
+    title_result="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write(j.status + "\t" + String(j.output ?? "") + "\ttitle=" + String(j.title) + "\torigin=" + String(j.titleOrigin)); })
+    .catch(() => process.stdout.write("queued\t"));
+' "$BASE/api/jobs/$title_id")"
+    case "$title_result" in
+    queued* | running*) sleep 1 ;;
+    *) break ;;
+    esac
+done
+expect_contains 'the title helper job ran to completion'        "$title_result" 'succeeded'
+expect_contains 'the helper reaches the title route and succeeds' "$title_result" 'title exit 0'
+expect_contains "the board's task carries the agent's title"      "$title_result" 'title=Lane agent title'
+expect_contains 'the title is marked as set by the agent'         "$title_result" 'origin=agent'
 
 # --- The runtime connection requirement -----------------------------------------------
 #

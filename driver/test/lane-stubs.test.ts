@@ -89,10 +89,14 @@ describe('the lane stub executor images', () => {
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
         expect(line).toContain(`${ENTRY}"sh","/stub.sh"]`);
         expect(script).toContain(
-            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"'
+            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs docker/skills/task-title/task-title.cjs "$work/"'
         );
         expect(line).toContain(
-            'COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs /usr/local/bin/\\n'
+            'COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs task-title.cjs /usr/local/bin/\\n'
+        );
+        // BEL-252: the stub's title branch calls the baked helper.
+        expect(read('scripts/k8s-stub.sh')).toMatch(
+            /\*factory-stub-title\*\)[\s\S]*node \/usr\/local\/bin\/task-title\.cjs/
         );
         expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub-runner.Dockerfile"'));
         expect(script.indexOf('-f "$work/stub-runner.Dockerfile"')).toBeLessThan(

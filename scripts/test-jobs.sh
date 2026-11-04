@@ -180,7 +180,9 @@ docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable';
 images=''
 if selected_phase cooperative-stop || selected_phase tool-isolation || selected_phase image-checks; then
     images='claude-executor opencode-executor'
-elif selected_phase ask-user-question || selected_phase question-round-trip; then
+elif selected_phase question-round-trip; then
+    images='claude-executor opencode-executor'
+elif selected_phase ask-user-question; then
     images='claude-executor'
 fi
 for image in $images; do
@@ -3901,6 +3903,47 @@ process.stdout.write(made.ok ? made.connectionId : "");
 }
 
 connection_roundtrip_lane
+
+# The agent names its task (BEL-252), end to end for both CLIs. The real executor image runs the task-title
+# helper (a scripted shell step) on the attempt pair its pod/container holds: the helper reaches the board's
+# agent-title route and the task carries the title with origin `agent`. The refusals (a user's title, the
+# change cap, a lapsed lease) are server/test-db/agent-title.test.ts's.
+task_title_lane() { # task_title_lane <claude|opencode>
+    local cli="$1" image="$1-executor" tool=Bash fake_pid fake_port id body_json
+    [ "$cli" = opencode ] && tool=bash
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad "$cli: the agent names its task" "the $image image is missing — run make runners"
+        return
+    fi
+    stop_driver
+    RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
+
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"'"$tool"'","input":{"command":"node /usr/local/share/factory-skills/task-title/task-title.cjs \"Lane agent title\"; echo helper-exit=$?"}}]' >"$work/fake-title-$cli.port" &
+    fake_pid=$!
+    lane_endpoint_started "$fake_pid"
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-title-$cli.port" ] && break
+        sleep 0.25
+    done
+    fake_port="$(cat "$work/fake-title-$cli.port")"
+    if [ "$cli" = opencode ]; then
+        api PUT /api/env/org "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
+            process.stdout.write(JSON.stringify({ vars: [{ name: "ANTHROPIC_API_KEY", value: "fake-key", isSecret: true }, { name: "OPENCODE_CONFIG_CONTENT", value: JSON.stringify(config), isSecret: false }] }));' "$fake_port")" >/dev/null
+    else
+        point_runners_at "$fake_port"
+    fi
+    id="$(create_job 'name this task' "$cli")"
+    expect_contains "$cli: the task with a scripted title step succeeds" "$(await_settled "$id" 180)" succeeded
+    body_json="$(body "$(api GET "/api/jobs/$id")")"
+    expect_field "$cli: the agent's title is the task's title" "$body_json" title 'Lane agent title'
+    expect_field "$cli: the title is marked as set by the agent" "$body_json" titleOrigin agent
+    lane_endpoint_stop "$fake_pid"
+    stop_driver
+}
+
+task_title_lane claude
+
+task_title_lane opencode
 
 ask_roundtrip_lane
 

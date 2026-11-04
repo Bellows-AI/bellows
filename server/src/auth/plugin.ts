@@ -87,6 +87,8 @@ const CONNECTOR_ROUTES: readonly RegExp[] = [
     // The runner seam (BEL-61): the helper's connection list and its operation receipts.
     /^\/api\/jobs\/[^/]+\/credentials\/connections$/,
     /^\/api\/jobs\/[^/]+\/operations(\/[^/]+)?$/,
+    // The agent's own title write (BEL-252).
+    /^\/api\/jobs\/[^/]+\/agent-title$/,
 ];
 
 export const JOB_ID_HEADER = 'x-factory-job-id';
