@@ -40,6 +40,8 @@ export function LoginGate({ children }: { children: ReactNode }) {
     // reselect arrives with a live session that must not be required to pass a gate it is about
     // to re-answer. Either way the page answers for itself.
     if (pathname === '/onboarding') return <>{children}</>;
+    // The attachment upload page (BEL-248) is signed-out by design: the single-use link in its fragment is the credential.
+    if (pathname === '/attachments/upload') return <>{children}</>;
     if (session) return <>{children}</>;
 
     const params = new URLSearchParams(window.location.search);
