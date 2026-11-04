@@ -57,8 +57,8 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   past its fetch. A fetch that could not be confirmed (timeout, network, busy, rate limited, or any failure past that
   cap) is a 503, never an unknown client; only a definite refusal of an uncached id is. `POST /api/oauth/register`
   (RFC 7591) mints a server-side `dcr_` id; unused `dcr` and `cimd` clients with no live grant expire after 30 days. Registration is unauthenticated, so it is never bridgeable and is rate limited per caller address and per
-  replica **in this process only**, behind a proxy the address is the proxy's. A secret, another auth method or a
-  grant this server does not issue is refused. `server/src/oauth/client-metadata.ts`, `server/src/oauth/client-resolver.ts`,
+  replica **in this process only**, behind a proxy the address is the proxy's. A secret or another auth method is
+  refused; a grant this server does not issue is dropped, `authorization_code` is required. `server/src/oauth/client-metadata.ts`, `server/src/oauth/client-resolver.ts`,
   `server/src/routes/oauth-register.ts`, `server/test/oauth.client-resolver.test.ts`, `server/test-db/oauth.client-registration.test.ts`.
 - **Consent is the cookie session and nothing else.** Approve and deny need the signed-in session, the transaction id
   and its CSRF value (carried once, in the fragment of the redirect to `/oauth/consent`), a JSON body, and read nothing

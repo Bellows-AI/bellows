@@ -3,8 +3,9 @@ import { isValidRedirectUri } from './redirect-match.js';
 /**
  * What a public client may say about itself, whether in a Client ID Metadata Document (CIMD) or an RFC 7591
  * registration request: redirect URIs (checked by the one rule in `redirect-match.ts`), a display name, and the
- * only authentication it can have, `none`. A secret, any other method or any grant this server does not issue is
- * refused, not ignored, so a client never believes it holds something the server does not enforce.
+ * only authentication it can have, `none`. A secret or any other method is refused, not ignored, so a client never
+ * believes it holds something the server does not enforce. A grant this server does not issue is dropped (claude.ai's
+ * document lists jwt-bearer): the token endpoint refuses it anyway, and only `authorization_code` is required.
  */
 export const MAX_REDIRECT_URIS = 10;
 const MAX_URI_LENGTH = 2048;
@@ -53,10 +54,10 @@ const nameOf = (value: unknown): string | null | Refusal => {
 
 const grantsOf = (document: Record<string, unknown>): string[] | Refusal => {
     const grants = document.grant_types === undefined ? [...GRANTS] : stringList(document.grant_types);
-    if (!grants?.includes('authorization_code') || grants.some((grant) => !GRANTS.includes(grant))) {
-        return bad('invalid_client_metadata', 'grant_types must be authorization_code and optionally refresh_token.');
+    if (!grants?.includes('authorization_code')) {
+        return bad('invalid_client_metadata', 'grant_types must include authorization_code.');
     }
-    return [...new Set(grants)];
+    return [...new Set(grants.filter((grant) => GRANTS.includes(grant)))];
 };
 
 const publicOnly = (document: Record<string, unknown>): Refusal | null => {

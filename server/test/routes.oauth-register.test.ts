@@ -65,6 +65,18 @@ describe('POST /api/oauth/register (RFC 7591)', () => {
         expect(second.client_id).not.toBe(body.client_id);
     });
 
+    it('drops a grant this server does not issue instead of refusing the registration', async () => {
+        const stored: Upsert[] = [];
+        const app = await board(async (input) => void stored.push(input));
+        const response = await register(app, {
+            ...GOOD,
+            grant_types: ['authorization_code', 'urn:ietf:params:oauth:grant-type:jwt-bearer'],
+        });
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(response.json().grant_types).toEqual(['authorization_code']);
+        expect(stored[0]?.metadata).toMatchObject({ grant_types: ['authorization_code'] });
+    });
+
     it.each([
         ['no redirect_uris', { client_name: 'x' }, 'invalid_redirect_uri'],
         ['an empty list', { redirect_uris: [] }, 'invalid_redirect_uri'],
@@ -83,6 +95,7 @@ describe('POST /api/oauth/register (RFC 7591)', () => {
         ],
         ['a supplied secret', { ...GOOD, client_secret: 's' }, 'invalid_client_metadata'],
         ['an implicit grant', { ...GOOD, grant_types: ['implicit'] }, 'invalid_client_metadata'],
+        ['no authorization_code grant', { ...GOOD, grant_types: ['refresh_token'] }, 'invalid_client_metadata'],
         ['a token response type', { ...GOOD, response_types: ['token'] }, 'invalid_client_metadata'],
         ['a control character in the name', { ...GOOD, client_name: 'a\nb' }, 'invalid_client_metadata'],
         ['an array body', [GOOD], 'invalid_client_metadata'],
