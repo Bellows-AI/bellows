@@ -113,6 +113,12 @@ describe('test-jobs --changed path-to-phase map', () => {
         ]);
     });
 
+    it('maps an MCP server or OAuth change to the mcp phase alone, ahead of the broad auth rule', () => {
+        expect(classify(['server/src/mcp/tools/task-wait.ts']).selected).toEqual(['mcp']);
+        expect(classify(['server/src/auth/oauth-store.ts']).selected).toEqual(['mcp']);
+        expect(classify(['server/src/auth/session.ts']).selected).toEqual(['board', 'auth']);
+    });
+
     it('runs the image-checks phase for an executor image file and for either image check script', () => {
         for (const file of [
             'docker/claude-executor/test.sh',

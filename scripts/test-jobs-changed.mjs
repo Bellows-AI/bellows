@@ -35,6 +35,7 @@ export const PHASES = [
     'image-checks',
     'ask-user-question',
     'question-round-trip',
+    'mcp',
 ];
 
 export const FULL = 'full';
@@ -55,6 +56,8 @@ export const RULES = [
     [/^docker\/executor-common\/(ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|tool-bash\.sh)$/, FULL, 'copied into the stub runner image'],
     [/^docker\/init-databases\.sh$/, FULL, 'postgres bootstrap'],
     [/^driver\/src\/(claim|config|index|strip-secret-store-env|runner|runner-plan|executors|docker\/docker|docker\/docker-runner|docker\/docker-runner-support|docker\/docker-create-runner|loop\/loop|loop\/loop-run|loop\/loop-types|loop\/loop-helpers|helpers|http|container-scripts|exec-codes|labels|json-parse|timestamps)\.ts$/, FULL, 'driver core every phase runs through'],
+    [/^server\/src\/(mcp\/|auth\/oauth|routes\/oauth)/, ['mcp'], 'MCP server and its OAuth authorization server'],
+    [/^scripts\/mcp-phase-client\.mjs$/, ['mcp'], 'the mcp phase client'],
     [/^server\/src\/auth\//, ['auth', 'board'], 'authentication'],
     [/^(server|core)\/(src|migrations)\//, FULL, 'the board every phase boots'],
 
