@@ -11,11 +11,13 @@ function GrantRow({ grant, busy, onRevoke }: { grant: OAuthGrantView; busy: bool
     const identity = identityOf(grant);
     return (
         <tr>
-            <td data-label="App">
+            <td className="cell-wrap" data-label="App">
                 {identity.label}
                 {grant.client.kind === 'dcr' ? <span className="muted"> (unverified name)</span> : null}
             </td>
-            <td data-label="Org">{grant.org.name}</td>
+            <td className="cell-wrap" data-label="Org">
+                {grant.org.name}
+            </td>
             <td className="cell-wrap" data-label="Access">
                 {grant.scopes.map(scopeLabel).join('; ')}
             </td>

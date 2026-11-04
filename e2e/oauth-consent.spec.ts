@@ -3,6 +3,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { AUTH_PORT } from '../playwright.config.js';
+import { expectRowFits } from './connected-apps.js';
 import { throughSignIn } from './signin.js';
 
 /**
@@ -83,7 +84,8 @@ test('Allow returns a code, the connected app lists, and Disconnect makes the ne
     page,
     request,
 }) => {
-    const name = `E2E Planner ${Date.now()}`;
+    // One unbroken token as well: a registered name need not have spaces to wrap at.
+    const name = `E2E Planner ${Date.now()} planner-for-a-registered-client-with-no-spaces-anywhere-x`;
     const { verifier, challenge } = pkce();
     const clientId = await register(page, name);
     await authorize(page, clientId, challenge);
@@ -122,10 +124,17 @@ test('Allow returns a code, the connected app lists, and Disconnect makes the ne
     expect((await mcp.callTool({ name: 'whoami', arguments: {} })).isError).toBeFalsy();
     await mcp.close();
 
+    await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto('/account');
     const row = page.getByRole('row', { name: new RegExp(name) });
     await expect(row).toBeVisible();
     await page.screenshot({ path: `${SHOTS}/account-connected-apps.png`, fullPage: true });
+    await expectRowFits(page, row);
+    await page.setViewportSize({ width: 390, height: 800 });
+    await expect(row).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/account-connected-apps-narrow.png`, fullPage: true });
+    await expectRowFits(page, row);
+    await page.setViewportSize({ width: 1280, height: 720 });
     await row.getByRole('button', { name: `Disconnect ${name}` }).click();
     const revoked = page.waitForResponse((r) => r.url().includes('/revoke') && r.request().method() === 'POST');
     await page.getByRole('dialog').getByRole('button', { name: 'Disconnect' }).click();
