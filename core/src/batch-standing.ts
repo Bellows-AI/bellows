@@ -91,7 +91,7 @@ function wellFormed(reportTasks: unknown): StandingReportTask[] | null {
 }
 
 /**
- * The standing of a batch. A fence outranks every verdict (the attention list still stands) and a draft has no report to read. For a
+ * The standing of a batch. A fence outranks every verdict (attention keeps only the tasks that left a PR) and a draft has no report to read. For a
  * started batch, a task whose wait reason names a person needs one unless the report's `next` says
  * the board is on it, as does a failed stage verification, and those outrank everything else:
  * nothing a wait does moves them. Otherwise the batch is settled only when every task is, and then
@@ -125,8 +125,14 @@ export function batchStanding(record: StandingRecord, reportTasks: readonly unkn
                   waitReason: task.waitReason as string,
                   pr: task.pr === TASK_NO_PR ? null : task.pr,
               }));
-    // A fence ends the batch whatever the report says, but a PR it left open still needs its person.
-    if (fence !== null) return standing('cancelled', attention);
+    // A fence ends the batch whatever the report says, but a PR it left open still needs its person; a task with no
+    // PR waited on the batch the fence ended, so nothing is left for a person there.
+    if (fence !== null) {
+        return standing(
+            'cancelled',
+            attention.filter((entry) => entry.pr !== null)
+        );
+    }
     if (!whole) return standing('inconclusive');
     if (attention.length > 0 || verificationFailures.length > 0) return standing('needs_attention', attention);
     // A succeeded run whose PR the board is still merging is not settled: its gate is open.

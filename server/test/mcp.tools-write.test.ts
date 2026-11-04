@@ -227,6 +227,11 @@ describe('the task write tools', () => {
             expect(JSON.stringify(byName.get(name)?.inputSchema), name).toContain('confirm');
         }
         expect(byName.get('reopen_task')?.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: true });
+        // A repeat changes nothing, and says what it answers: the board refuses a task that is no longer done.
+        expect(byName.get('reopen_task')?.description).not.toMatch(/safe to repeat/i);
+        expect(byName.get('reopen_task')?.description).toMatch(/TASK_NOT_DONE/);
+        // `status` is the named run's, which need not be the task's head run.
+        expect(byName.get('mark_task_done')?.description).toMatch(/status.*run.*jobId names/i);
         for (const name of ['create_task', 'follow_up_task', 'retry_task']) {
             expect(byName.get(name)?.description, name).toMatch(/idempotencyKey/);
             expect(byName.get(name)?.description, name).toMatch(/same key/i);
@@ -370,6 +375,8 @@ describe('the task write tools', () => {
         expect(plain.isError).toBe(true);
         expect(plain.data).toMatchObject({ outcome: 'refused', code: 'BATCH_TASK_THREAD', status: 409 });
         expect(plain.data.message).toMatch(/live batch/);
+        // The refusal names the way past it on this surface, not only the CLI flag.
+        expect(plain.data.message).toMatch(/force_close_task/);
         expect(board.calls.map((c) => c.op)).toEqual(['markDone']);
         const forced = await call(url, 'writer', 'force_close_task', { jobId: JOB, confirm: true });
         expect(forced.isError).toBeFalsy();
