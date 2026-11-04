@@ -49,7 +49,7 @@ const row = { ...write, outcome: 'passed', exitCode: 0, treeAfter: 'h:1', mutate
 describe('the gate runs (issue #983)', () => {
     const job = boardJob();
 
-    it('writes a row under the lease token and reads the run’s rows back', async () => {
+    it('writes a row under the lease token and reads the thread’s rows back', async () => {
         const written = recorder(() => Response.json({ id: 'job-1', executionId: write.executionId }));
         expect(await boardOn(written.fetch, 'fwt_abc').gateRun(job, write)).toBe('ok');
         expect(written.calls[0]!.url).toBe('http://board/api/jobs/job-1/gate-run');
@@ -57,14 +57,19 @@ describe('the gate runs (issue #983)', () => {
         expect(written.calls[0]!.body).toEqual({ leaseToken: job.leaseToken, ...write });
 
         const read = recorder(() => Response.json({ runs: [row] }));
-        expect(await boardOn(read.fetch).gateRuns(job, 2)).toEqual([row]);
+        expect(await boardOn(read.fetch).gateRuns(job)).toEqual([row]);
         expect(read.calls[0]!.url).toBe('http://board/api/jobs/job-1/gate-runs');
-        expect(read.calls[0]!.body).toEqual({ leaseToken: job.leaseToken, runClaimSeq: 2 });
+    });
+
+    it('reads the thread’s record under the lease alone', async () => {
+        const read = recorder(() => Response.json({ runs: [row] }));
+        await boardOn(read.fetch).gateRuns(job);
+        expect(read.calls[0]!.body).toEqual({ leaseToken: job.leaseToken });
     });
 
     it('reads an empty answer as no rows, not as an unreadable one', async () => {
         const { fetch } = recorder(() => Response.json({ runs: [] }));
-        expect(await boardOn(fetch).gateRuns(job, 2)).toEqual([]);
+        expect(await boardOn(fetch).gateRuns(job)).toEqual([]);
     });
 
     it.each<[string, () => Response]>([
@@ -85,18 +90,18 @@ describe('the gate runs (issue #983)', () => {
         ['one good row and one bad', () => Response.json({ runs: [row, { ...row, gate: 3 }] })],
     ])('reads %s as unreadable, never as empty', async (_what, respond) => {
         const { fetch } = recorder(respond);
-        expect(await boardOn(fetch).gateRuns(job, 2)).toBeNull();
+        expect(await boardOn(fetch).gateRuns(job)).toBeNull();
     });
 
     it('reads a rejected fetch and an aborted signal as unreadable', async () => {
         const failing = (async () => {
             throw new Error('connection reset');
         }) as unknown as typeof globalThis.fetch;
-        expect(await boardOn(failing).gateRuns(job, 2)).toBeNull();
+        expect(await boardOn(failing).gateRuns(job)).toBeNull();
         const { fetch } = recorder(() => Response.json({ runs: [row] }));
         const slow = ((url: string, init: RequestInit) =>
             init.signal?.aborted ? Promise.reject(init.signal.reason) : fetch(url, init)) as unknown as typeof fetch;
-        expect(await boardOn(slow).gateRuns(job, 2, AbortSignal.abort())).toBeNull();
+        expect(await boardOn(slow).gateRuns(job, AbortSignal.abort())).toBeNull();
     });
 
     it.each<[string, () => Response, string]>([

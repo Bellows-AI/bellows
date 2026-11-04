@@ -1,7 +1,8 @@
 /**
  * Gate runs (issue #983; `087_job_gate_run.sql`): one row per gate execution of an attempt, written
  * under its lease — `running` before the gate starts, the terminal outcome after — and read back by the
- * driver's completion pass, which reuses a verified pass instead of running the gate again.
+ * driver's completion pass, which reuses a verified pass instead of running the gate again. The read is
+ * the task thread's: a follow-up is a new job row, and it reuses its parent's pass (BEL-254).
  */
 
 import { lockRunningAttempt, leaseRefusal } from './job-store-rows.js';
@@ -50,13 +51,12 @@ export interface GateRunStore {
         run: GateRunWrite
     ): Promise<{ result: 'ok' | 'lost' | 'missing' | 'conflict' }>;
     /**
-     * The latest row per gate of the run `runClaimSeq` started, of any scope, oldest first, under the
-     * attempt's lease.
+     * The latest row per gate of the task's thread (every run of every job of it), of any scope, oldest
+     * first, under the attempt's lease.
      */
     readGateRuns(
         id: string,
-        leaseToken: string,
-        runClaimSeq: number
+        leaseToken: string
     ): Promise<{ result: 'lost' | 'missing' } | { result: 'ok'; runs: GateRunRow[] }>;
 }
 
@@ -114,8 +114,7 @@ export async function writeGateRun(
 
 export async function readGateRuns(
     ctx: JobStoreContext,
-    attempt: { id: string; leaseToken: string },
-    runClaimSeq: number
+    attempt: { id: string; leaseToken: string }
 ): ReturnType<GateRunStore['readGateRuns']> {
     const { sql, orgId } = ctx;
     const { id, leaseToken } = attempt;
@@ -123,10 +122,12 @@ export async function readGateRuns(
     if (refused) return refused;
     const rows = await sql<(StoredRow & { seq: string })[]>`
         select * from (
-            select distinct on (gate) *
-            from job_gate_run
-            where org_id = ${orgId} and job_id = ${id} and run_claim_seq = ${runClaimSeq}
-            order by gate, seq desc
+            select distinct on (g.gate) g.*
+            from job_gate_run g
+            join job j on j.org_id = g.org_id and j.id = g.job_id
+            where g.org_id = ${orgId}
+              and j.root_job_id = (select root_job_id from job where org_id = ${orgId} and id = ${id})
+            order by g.gate, g.seq desc
         ) latest
         order by seq
         limit ${READ_LIMIT}

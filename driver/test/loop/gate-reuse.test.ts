@@ -75,9 +75,7 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         const r = await run({ rows, job: { ...CLAIMED, policy: { gates: true } } as BoardJob });
 
         expect(r.stack.ran.names).toEqual([]);
-        expect(r.board.gateRunReads).toEqual([
-            { id: CLAIMED.id, leaseToken: CLAIMED.leaseToken, runClaimSeq: CLAIMED.claimSeq },
-        ]);
+        expect(r.board.gateRunReads).toEqual([{ id: CLAIMED.id, leaseToken: CLAIMED.leaseToken }]);
         expect(lastReports(r)).toEqual([
             {
                 name: 'test',
@@ -169,6 +167,50 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
     });
 
+    // ---- the record is the task thread's: an earlier run's pass is reusable (BEL-254) ---------------
+    it.each<[string, Partial<GateRunRecord>]>([
+        ['a completion pass an earlier run of the task recorded', { source: 'completion', runClaimSeq: 2 }],
+        ['an ad-hoc pass from an earlier run of the task', { source: 'adhoc', runClaimSeq: 2 }],
+    ])('reuses %s on the same content: the follow-up runs no gate', async (_what, over) => {
+        const rows = passes(CLAIMED, over);
+        const r = await run({ rows, job: { ...CLAIMED, policy: { gates: true } } as BoardJob });
+
+        expect(r.stack.ran.names).toEqual([]);
+        expect(lastReports(r)).toEqual([
+            expect.objectContaining({
+                name: 'test',
+                status: 'passed',
+                output: expect.stringContaining('reused'),
+                reused: expect.objectContaining({ executionId: rows[0]!.executionId }),
+            }),
+            expect.objectContaining({
+                name: 'lint',
+                status: 'passed',
+                output: expect.stringContaining('reused'),
+                reused: expect.objectContaining({ executionId: rows[1]!.executionId }),
+            }),
+        ]);
+        expect(r.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it.each<[string, () => GateRunRecord[]]>([
+        ['other content', () => passes(CLAIMED, { runClaimSeq: 2, treeBefore: 'h:other', treeAfter: 'h:other' })],
+        ['another identity', () => passes(CLAIMED, { runClaimSeq: 2, identity: 'b'.repeat(64) })],
+        ['an unmeasured mutation', () => passes(CLAIMED, { runClaimSeq: 2, mutatedSince: null })],
+        [
+            'a later failed row of this run',
+            () => [
+                ...passes(CLAIMED, { runClaimSeq: 2 }),
+                gateRunRow(CLAIMED, 'test', { outcome: 'failed', exitCode: 1 }),
+            ],
+        ],
+    ])('GUARD: an earlier run pass behind %s still runs the gate', async (_what, rows) => {
+        const r = await run({ rows: rows() });
+
+        expect(r.stack.ran.names).toContain('test');
+        expect(lastReports(r).find((g) => g.name === 'test')).not.toHaveProperty('reused');
+    });
+
     // ---- GUARD: nothing eligible, every gate runs -------------------------------------------------
     it.each<[string, () => Scene]>([
         ['a later edit: the completion tree differs', () => ({ rows: passes(), tree: 'h:edited' })],
@@ -181,8 +223,6 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         ['a tree that moved during the run', () => ({ rows: passes(CLAIMED, { treeBefore: 'h:other' }) })],
         ['a mutation the guard saw', () => ({ rows: passes(CLAIMED, { mutatedSince: true }) })],
         ['a mutation the guard could not measure', () => ({ rows: passes(CLAIMED, { mutatedSince: null }) })],
-        ['another run claim sequence', () => ({ rows: passes(CLAIMED, { runClaimSeq: 2 }) })],
-        ['a completion-pass row', () => ({ rows: passes(CLAIMED, { source: 'completion' }) })],
         ['a failed row', () => ({ rows: passes(CLAIMED, { outcome: 'failed', exitCode: 1 }) })],
         ['an incomplete row', () => ({ rows: passes(CLAIMED, { outcome: 'incomplete', exitCode: null }) })],
         ['a running row', () => ({ rows: passes(CLAIMED, { outcome: 'running', exitCode: null }) })],

@@ -415,7 +415,11 @@ describe('follow-up composer', () => {
 
 describe('TaskRun close-phase strip', () => {
     const STARTED = '2026-09-01T12:00:00.000Z';
-    const gate = (name: string, status: 'pending' | 'running' | 'passed' | 'failed', startedAt?: string) => ({
+    const gate = (
+        name: string,
+        status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped',
+        startedAt?: string
+    ) => ({
         name,
         status,
         exitCode: null,
@@ -456,6 +460,15 @@ describe('TaskRun close-phase strip', () => {
         for (const startedAt of ['garbage', null]) {
             expect(strip(renderDetail({ jobs: [liveJob(closing(startedAt))] }))).not.toMatch(/\d+s</);
         }
+    });
+
+    it('a skipped gate renders a skipped pill and its "no changes" output', () => {
+        const skipped = { name: 'test', status: 'skipped' as const, exitCode: null, output: 'no changes' };
+        const html = renderDetail({ jobs: [job({ status: 'succeeded', gates: [skipped] })] });
+        const panel = html.slice(html.indexOf('id="task-verification"'));
+        expect(panel).toContain('1 skipped');
+        expect(panel).toContain('>skipped<');
+        expect(panel).toContain('no changes');
     });
 
     it('a running run with no gates, and a finished run with gates, show no strip', () => {

@@ -431,7 +431,7 @@ describe('task outcome derivations — gates, issues and closure', () => {
                 { name: 'lint', status: 'failed' as const, exitCode: 1, output: null },
                 { name: 'build', status: 'running' as const, exitCode: null, output: null },
             ];
-            expect(gateCounts(gates)).toEqual({ passed: 1, failed: 1, running: 1, pending: 0 });
+            expect(gateCounts(gates)).toEqual({ passed: 1, failed: 1, running: 1, pending: 0, skipped: 0 });
         });
 
         it('counts pending', () => {
@@ -442,8 +442,16 @@ describe('task outcome derivations — gates, issues and closure', () => {
             expect(gateCounts(gates).pending).toBe(2);
         });
 
+        it('counts skipped', () => {
+            const gates = [
+                { name: 'test', status: 'skipped' as const, exitCode: null, output: 'no changes' },
+                { name: 'lint', status: 'skipped' as const, exitCode: null, output: 'no changes' },
+            ];
+            expect(gateCounts(gates).skipped).toBe(2);
+        });
+
         it('answers all-zero for nothing declared', () => {
-            expect(gateCounts(null)).toEqual({ passed: 0, failed: 0, running: 0, pending: 0 });
+            expect(gateCounts(null)).toEqual({ passed: 0, failed: 0, running: 0, pending: 0, skipped: 0 });
         });
     });
 
@@ -462,7 +470,7 @@ describe('task outcome derivations — gates, issues and closure', () => {
     });
 
     describe('closePhase', () => {
-        const gate = (name: string, status: 'pending' | 'running' | 'passed' | 'failed') => ({
+        const gate = (name: string, status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped') => ({
             name,
             status,
             exitCode: null,
@@ -489,6 +497,13 @@ describe('task outcome derivations — gates, issues and closure', () => {
             ])!;
             expect(phase).toMatchObject({ passed: 3, total: 5, label: 'Agent finished — running checks' });
             expect(phase.running?.name).toBe('lint');
+        });
+
+        it('all skipped while running reads "no changes, checks skipped", never "checks passed"', () => {
+            const phase = running([gate('test', 'skipped'), gate('lint', 'skipped')])!;
+            expect(phase.label).toBe('Agent finished — no changes, checks skipped');
+            expect(phase.passed).toBe(0);
+            expect(phase.running).toBeNull();
         });
 
         it('all passed while running reads "checks passed, finishing up"', () => {

@@ -1,3 +1,4 @@
+import { noChangeSkip } from './loop-no-change.js';
 import type { BoardJob, VerdictEvidence } from '../board/board.js';
 import { uploadRunArtifacts } from '../artifact-upload.js';
 import { claimContinuesSession, repoCacheProblem } from '../claim.js';
@@ -12,7 +13,6 @@ import {
     type GateReport,
     beginGates,
     mintGateCredentials,
-    noChangeSkip,
     openRunControl,
     probeDeadServices,
     runDeclaredGates,
@@ -587,7 +587,7 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         };
     }
     // A task that changed nothing has nothing for the gates to judge (issue #1020).
-    const unchanged = await noChangeSkip(ctx);
+    const unchanged = await noChangeSkip({ ...ctx, gateSession });
     if (unchanged) return unchanged;
     // A gate against a dead service fails on an environment the agent cannot fix, and a
     // failed gate is what the workflow's gate-fix edge spends a round on (issue #423). The

@@ -67,7 +67,7 @@ const passed = (c: Claim, running: GateRunWrite, over: Partial<GateRunWrite> = {
 });
 
 const read = async (c: Claim, on: JobStore = store) => {
-    const answer = await on.readGateRuns(c.id, c.leaseToken, c.claimSeq);
+    const answer = await on.readGateRuns(c.id, c.leaseToken);
     if (answer.result !== 'ok') throw new Error(`read answered ${answer.result}`);
     return answer.runs;
 };
@@ -131,11 +131,58 @@ describe.skipIf(!enabled)('gate runs', () => {
         ]);
     });
 
-    it('keeps the rows of another run of the same job apart', async () => {
+    it('rows of an earlier claim of the same job are part of the thread', async () => {
         const c = await claimed();
         const mine = row(c);
         await store.writeGateRun(c.id, c.leaseToken, mine);
-        expect(await store.readGateRuns(c.id, c.leaseToken, c.claimSeq + 1)).toEqual({ result: 'ok', runs: [] });
+        await expireLease(sql, c.id);
+        const next = await store.claim(WORKER, LEASE_SECONDS);
+        expect(next?.id).toBe(c.id);
+        expect(next!.claimSeq).toBeGreaterThan(c.claimSeq);
+        expect(await read(next!)).toEqual([{ ...mine, claimSeq: c.claimSeq }]);
+    });
+
+    /** Finishes `c` and chains a follow-up on its thread, claimed. */
+    const followUpOf = async (c: Claim, on: JobStore = store): Promise<Claim> => {
+        await on.complete(c.id, c.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const ref = await on.createFollowUp(c.id, 'and now the next step', null);
+        if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
+        const next = await on.claim(WORKER, LEASE_SECONDS);
+        if (next?.id !== ref.id) throw new Error('the follow-up was not the claim');
+        return next;
+    };
+
+    it('a follow-up reads its parent’s latest pass of each gate', async () => {
+        const c = await claimed();
+        const done = passed(c, row(c), { source: 'completion' });
+        await store.writeGateRun(c.id, c.leaseToken, done);
+        const follow = await followUpOf(c);
+
+        expect(await read(follow)).toEqual([{ ...done, claimSeq: c.claimSeq }]);
+    });
+
+    it('the follow-up’s own later row of a gate beats its parent’s, and the read is oldest first', async () => {
+        const c = await claimed();
+        const parentTest = passed(c, row(c, { gate: 'test' }));
+        const parentLint = passed(c, row(c, { gate: 'lint' }));
+        await store.writeGateRun(c.id, c.leaseToken, parentTest);
+        await store.writeGateRun(c.id, c.leaseToken, parentLint);
+        const follow = await followUpOf(c);
+        const ownTest = row(follow, { gate: 'test', outcome: 'failed', exitCode: 1 });
+        await store.writeGateRun(follow.id, follow.leaseToken, ownTest);
+
+        expect((await read(follow)).map((r) => [r.gate, r.executionId])).toEqual([
+            ['lint', parentLint.executionId],
+            ['test', ownTest.executionId],
+        ]);
+    });
+
+    it('never reads another thread’s rows', async () => {
+        const first = await claimed();
+        await store.writeGateRun(first.id, first.leaseToken, passed(first, row(first)));
+        const second = await claimed();
+
+        expect(await store.readGateRuns(second.id, second.leaseToken)).toEqual({ result: 'ok', runs: [] });
     });
 
     it('refuses a write under a lease that was lost, and stores nothing', async () => {
@@ -151,19 +198,19 @@ describe.skipIf(!enabled)('gate runs', () => {
     it('fences the read by the lease too', async () => {
         const c = await claimed();
         await store.writeGateRun(c.id, c.leaseToken, row(c));
-        expect(await store.readGateRuns(c.id, randomUUID(), c.claimSeq)).toEqual({ result: 'lost' });
+        expect(await store.readGateRuns(c.id, randomUUID())).toEqual({ result: 'lost' });
         // The next holder reads the former holder's rows under its own lease, for the run they belong to.
         await expireLease(sql, c.id);
         const next = await store.claim(WORKER, LEASE_SECONDS);
         expect(next?.id).toBe(c.id);
-        const seen = await store.readGateRuns(c.id, next!.leaseToken, c.claimSeq);
+        const seen = await store.readGateRuns(c.id, next!.leaseToken);
         expect(seen.result === 'ok' && seen.runs).toHaveLength(1);
     });
 
     it('answers missing for an unknown job and conflict for a run claim the job never reached', async () => {
         const c = await claimed();
         expect(await store.writeGateRun(randomUUID(), randomUUID(), row(c))).toEqual({ result: 'missing' });
-        expect(await store.readGateRuns(randomUUID(), randomUUID(), 1)).toEqual({ result: 'missing' });
+        expect(await store.readGateRuns(randomUUID(), randomUUID())).toEqual({ result: 'missing' });
         for (const runClaimSeq of [c.claimSeq + 1, 0]) {
             expect(await store.writeGateRun(c.id, c.leaseToken, row(c, { runClaimSeq }))).toEqual({
                 result: 'conflict',
@@ -175,7 +222,7 @@ describe.skipIf(!enabled)('gate runs', () => {
     it('reads and writes nothing across organizations', async () => {
         const c = await claimed();
         await store.writeGateRun(c.id, c.leaseToken, row(c));
-        expect(await other.readGateRuns(c.id, c.leaseToken, c.claimSeq)).toEqual({ result: 'missing' });
+        expect(await other.readGateRuns(c.id, c.leaseToken)).toEqual({ result: 'missing' });
         expect(await other.writeGateRun(c.id, c.leaseToken, row(c))).toEqual({ result: 'missing' });
         expect(await countOf(c.id)).toBe(1);
     });

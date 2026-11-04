@@ -62,7 +62,7 @@ export interface GateFailure {
 /** What one gate looks like on the board, at one moment. */
 export type GateReport = {
     name: string;
-    status: 'pending' | 'running' | 'passed' | 'failed';
+    status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
     exitCode: number | null;
     output: string | null;
     /** When a `running` entry started (ISO); the settled entry carries none. */
@@ -637,7 +637,6 @@ async function reusableAfterWalk(
     const reused = reusableRun(pool, gate, {
         identity: gateSession.ledger.identity(gate),
         tree: content,
-        runClaimSeq: gateSession.runClaimSeq,
     });
     if (!reused || !executed) return { reused, pool };
     const unchanged = await treeUnchanged(w);
@@ -690,17 +689,17 @@ async function passOver(
 }
 
 /**
- * The run's gate record, read once before the declared gates (issue #983): null — reuse nothing, run
+ * The task thread's gate record, read once before the declared gates (issue #983): null — reuse nothing, run
  * every gate — for a tree that could not be read (nothing can match it), a read the board did not
  * answer in full, one that timed out, or a stand-down that cut it short. Never an empty record by
  * default: an unconfirmed read is not an answer.
  */
 async function readGateRuns(ctx: GatesRunCtx): Promise<GateRunRecord[] | null> {
-    const { rt, job, gateSession, state } = ctx;
+    const { rt, job, state } = ctx;
     const signal = AbortSignal.any([state.signal, AbortSignal.timeout(GATE_RUNS_READ_MS)]);
     const raced = await raceStep(
         state.signal,
-        rt.board.gateRuns(job, gateSession.runClaimSeq, signal).catch(() => null)
+        rt.board.gateRuns(job, signal).catch(() => null)
     );
     return raced?.value ?? null;
 }
@@ -745,20 +744,4 @@ export async function probeDeadServices(rt: LoopRuntime, job: BoardJob): Promise
 export function releaseGateSession(rt: LoopRuntime, session: GateSession, job: BoardJob): void {
     rt.gates?.server.unregister(session.token);
     rt.gates?.manager.release(session.key, job);
-}
-
-/**
- * The gates phase of a task confirmed to have produced no change (issue #1020), logged; null when it
- * did, or when the read failed, timed out or was aborted — inconclusive, so the gates run.
- */
-export async function noChangeSkip(ctx: { rt: LoopRuntime; job: BoardJob; state: { signal: AbortSignal } }) {
-    const { rt, job, state } = ctx;
-    const raced = await raceStep(
-        state.signal,
-        rt.runner.probeNoChange(job, state.signal).catch(() => false)
-    );
-    if (raced?.value !== true) return null;
-    const why = 'the task produced no change (no diff against its base)';
-    rt.log(`job ${job.id}: gates skipped — ${why}`);
-    return { failure: null, deadServices: [], gatesSkipped: why, noChange: true, recoveredServices: [], reports: [] };
 }

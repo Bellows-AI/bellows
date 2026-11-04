@@ -133,18 +133,16 @@ export async function handleGateRun(orgs: OrgRegistry, request: FastifyRequest, 
     return reply.code(HTTP_OK).send({ id, executionId: checked.value.executionId });
 }
 
-/** The latest row per gate of the run claim `runClaimSeq` started, under the caller's lease. */
+/** The latest row per gate of the task's thread, under the caller's lease. */
 export async function handleGateRuns(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveLeasedRoute<keyof GateRunStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id, fields, leaseToken } = route;
-    const runClaimSeq = runClaimSeqOf(fields.runClaimSeq);
-    if (runClaimSeq === null) return bad(reply, ERROR_CODES.BAD_BODY, 'runClaimSeq must be a positive integer');
+    const { store, id, leaseToken } = route;
 
     const read = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'gate run read failed'),
-        () => store.readGateRuns(id, leaseToken, runClaimSeq)
+        () => store.readGateRuns(id, leaseToken)
     );
     if (!read.ok) return reply;
     if (read.value.result !== 'ok') return read.value.result === 'missing' ? notFoundJob(reply) : leaseLost(reply);

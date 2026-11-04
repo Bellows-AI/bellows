@@ -93,7 +93,7 @@ export interface BoardStub extends Board {
     /** Every gate-run row the loop wrote (issue #983), in write order. */
     gateRunsWritten: GateRunWrite[];
     /** The run claim sequence of every gate-run read the loop made. */
-    gateRunReads: { id: string; leaseToken: string; runClaimSeq: number }[];
+    gateRunReads: { id: string; leaseToken: string }[];
     /** Every PR operation the loop recorded (issue #983), with the lease token it wrote under. */
     prOperationsWritten: { id: string; leaseToken: string; write: PrOperationWrite }[];
     /** The final envelopes the loop staged before each verdict (issue #821). */
@@ -344,8 +344,8 @@ export function stubBoard(
             if (options.prOperation === 'throw') throw new Error('the board is down');
             return options.prOperation ?? 'ok';
         },
-        async gateRuns(claimed, runClaimSeq, signal) {
-            board.gateRunReads.push({ id: claimed.id, leaseToken: claimed.leaseToken, runClaimSeq });
+        async gateRuns(claimed, signal) {
+            board.gateRunReads.push({ id: claimed.id, leaseToken: claimed.leaseToken });
             const answer = options.gateRuns ?? null;
             return typeof answer === 'function' ? answer(signal) : answer;
         },

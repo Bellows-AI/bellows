@@ -168,6 +168,21 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         expect(r.logs).toContain(`job ${r.claimed.id}: resumed gates from claim 1's checkpoint`);
     });
 
+    it('a7: an adopted run replays a no-change gates checkpoint with its skipped list', async () => {
+        const reports = [
+            { name: 'test', status: 'skipped', exitCode: null, output: 'no changes' },
+            { name: 'lint', status: 'skipped', exitCode: null, output: 'no changes' },
+        ];
+        const r = await run({
+            adopted,
+            checkpoints: [gatesCp({ result: { ...gatesResult, reports } })],
+        });
+
+        expect(gatesRan(r)).toBe(false);
+        expect(r.board.gatesReported.map((g) => g.results)).toEqual([reports]);
+        expect(r.logs).toContain(`job ${r.claimed.id}: resumed gates from claim 1's checkpoint`);
+    });
+
     it('a6: a checkpoint holding a failed gate followed by pending gates still resumes', async () => {
         const failure = { name: 'test', exitCode: 1, output: 'FAIL src/a.test.ts' };
         const reports = [
@@ -311,7 +326,7 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         );
         const r = await run({ adopted: live, checkpoints: [], gateRuns: rows });
 
-        expect(r.board.gateRunReads.map((x) => x.runClaimSeq)).toEqual([4]);
+        expect(r.board.gateRunReads).toHaveLength(1);
         expect(gatesRan(r)).toBe(false);
         expect(r.board.completed[0]).toMatchObject({ status: 'succeeded' });
     });

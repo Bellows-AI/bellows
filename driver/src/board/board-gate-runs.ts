@@ -79,11 +79,11 @@ export interface GateRunBoard {
      */
     gateRun(job: BoardJob, write: GateRunWrite, signal?: AbortSignal): Promise<'ok' | 'lost' | 'rejected'>;
     /**
-     * The latest row per gate of the run `runClaimSeq` started, oldest gate first. Null for any answer
+     * The latest row per gate of the task's thread (every run of it), oldest gate first. Null for any answer
      * the driver cannot fully read (non-2xx, a lost lease, a malformed row, an aborted request): an
      * unconfirmed read is never an empty one, so the caller reuses nothing.
      */
-    gateRuns(job: BoardJob, runClaimSeq: number, signal?: AbortSignal): Promise<GateRunRecord[] | null>;
+    gateRuns(job: BoardJob, signal?: AbortSignal): Promise<GateRunRecord[] | null>;
 }
 
 export function gateRunCalls(post: Post): GateRunBoard {
@@ -93,14 +93,11 @@ export function gateRunCalls(post: Post): GateRunBoard {
             return leased(`/api/jobs/${job.id}/gate-run`, job, write, signal);
         },
 
-        async gateRuns(job, runClaimSeq, signal) {
+        async gateRuns(job, signal) {
             try {
-                const response = await post(
-                    `/api/jobs/${job.id}/gate-runs`,
-                    { leaseToken: job.leaseToken, runClaimSeq },
-                    false,
-                    { signal }
-                );
+                const response = await post(`/api/jobs/${job.id}/gate-runs`, { leaseToken: job.leaseToken }, false, {
+                    signal,
+                });
                 if (!response.ok) return null;
                 const raw = ((await response.json()) as { runs?: unknown }).runs;
                 if (!Array.isArray(raw)) return null;

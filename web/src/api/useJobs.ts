@@ -41,7 +41,7 @@ export type FailureKind =
 /** Where one declared verification gate stands. The board stores current/last only — no history. */
 export interface GateCheck {
     name: string;
-    status: 'pending' | 'running' | 'passed' | 'failed';
+    status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
     exitCode: number | null;
     output: string | null;
     /** When a `running` gate started (ISO), so the strip can count its seconds. */
