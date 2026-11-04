@@ -108,13 +108,27 @@ describe('batchStanding', () => {
         ['expired', { status: 'running', expiredAt: 'x' }],
     ] as const)('a %s fence outranks the tasks, whatever they are doing', (fence, over) => {
         for (const execution of ['succeeded', 'running', 'failed']) {
-            const fenced = record(over.status, [task('a', execution, { waitReason: 'x' })], over);
+            const fenced = record(over.status, [task('a', execution, { waitReason: 'x', pr: PR })], over);
             const standing = batchStanding(fenced, report(['a']));
             expect(standing.verdict).toBe('cancelled');
             expect(standing.fence).toBe(fence);
             // A fenced batch's unmerged PR still needs its person: the list survives the fence.
             expect(standing.attention.map((entry) => entry.key)).toEqual(['a']);
         }
+    });
+
+    it('drops a fenced task that left no PR from the attention list: the fence already ended what it waited on', () => {
+        const fenced = record(
+            'cancelled',
+            [
+                task('a', 'cancelled', { waitReason: 'closed by a person while the batch ran' }),
+                task('b', 'succeeded', { waitReason: 'waiting for review', pr: PR }),
+            ],
+            { cancelledAt: 'x' }
+        );
+        const standing = batchStanding(fenced, report(['a', 'b'], 'none'));
+        expect(standing.verdict).toBe('cancelled');
+        expect(standing.attention).toEqual([{ key: 'b', stage: 'build', waitReason: 'waiting for review', pr: PR }]);
     });
 
     it('keeps a fenced batch cancelled, with no attention claimed, when the report is unread', () => {

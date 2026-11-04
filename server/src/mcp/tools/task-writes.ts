@@ -241,7 +241,7 @@ const doneSummary = (data: z.infer<typeof DoneSchema>) =>
 export const markTaskDone = defineTool({
     name: 'mark_task_done',
     description:
-        "Mark a finished task done: your verdict that it needs nothing more (the run's own outcome is unchanged). The board refuses a task that is still running, and a task that backs a live batch (the batch closes it when it ends; force_close_task is the explicit override).",
+        "Mark a finished task done: your verdict that it needs nothing more (the run's own outcome is unchanged). The answer's `status` is that of the run jobId names, which need not be the task's head run (get_task shows the head). The board refuses a task that is still running, and a task that backs a live batch (the batch closes it when it ends; force_close_task is the explicit override).",
     scope: 'factory:write',
     routes: [['POST', '/api/jobs/:id/done']],
     annotations: WRITES,
@@ -269,7 +269,7 @@ const ReopenedSchema = z.object({ id: z.string(), reopened: z.boolean() });
 export const reopenTask = defineTool({
     name: 'reopen_task',
     description:
-        'Clear the done mark of a task so it takes a follow-up again. Safe to repeat. The board refuses a task that is not done, one whose worktree was already reclaimed, and a batch task.',
+        'Clear the done mark of a task so it takes a follow-up again. A repeat changes nothing: the board refuses a task that is not done (TASK_NOT_DONE, so a second call answers that), one whose worktree was already reclaimed, and a batch task.',
     scope: 'factory:write',
     routes: [['POST', '/api/jobs/:id/reopen']],
     annotations: { ...WRITES, idempotentHint: true },
