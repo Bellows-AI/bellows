@@ -12,6 +12,7 @@ import type { JobQuestionStore } from '../src/db/jobs/job-store-questions.js';
 import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
 import type { JobReclaimStore } from '../src/db/jobs/job-store-reclaims.js';
 import type { JobReviewStore } from '../src/db/jobs/job-store-reviews.js';
+import type { JobTitleStore } from '../src/db/jobs/job-store-title.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import type { JobWorkerStore } from '../src/db/jobs/job-store-worker.js';
 
@@ -31,6 +32,7 @@ type Slices =
     | JobReadStore
     | JobReclaimStore
     | JobReviewStore
+    | JobTitleStore
     | JobWorkerStore
     | PhaseCheckpointStore
     | GateRunStore
@@ -57,6 +59,7 @@ type Disjoint = [
     Expect<Alone<JobReadStore>>,
     Expect<Alone<JobReclaimStore>>,
     Expect<Alone<JobReviewStore>>,
+    Expect<Alone<JobTitleStore>>,
     Expect<Alone<JobWorkerStore>>,
     Expect<Alone<PhaseCheckpointStore>>,
 ];

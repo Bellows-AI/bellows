@@ -9,7 +9,9 @@ import type { SubmittedFiles, UseTasks } from '../api/useTasks.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { BatchBacklink } from '../components/BatchBacklink.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
+import { TaskRenameDialog } from '../components/TaskRenameDialog.js';
 import { TaskHeader } from '../panels/TaskHeader.js';
+import { taskTitleText } from '../task-title.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
 import type { OnAnswer } from '../panels/TaskRun.js';
 import { useTasksPage } from './TasksLayout.js';
@@ -181,6 +183,68 @@ function useTaskRemoval(id: string | null, tasks: UseTasks, latest: Job | null, 
 }
 
 /**
+ * The rename dialog's own state (BEL-252). Saving sends the revision the page rendered; a stale answer keeps
+ * the dialog open on the board's current title and retries on ITS revision. A saved rename re-arms the thread
+ * poll — a terminal task's poll has stopped, so without that refetch its header would keep the old name.
+ * Reset per task by the same generation rule as `useTaskRemoval`.
+ */
+function useTaskRename(id: string | null, tasks: UseTasks, root: Job | null, refreshThread: () => void) {
+    const [open, setOpen] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [staleRevision, setStaleRevision] = useState<number | null>(null);
+    const generation = useRef(0);
+    useEffect(() => {
+        generation.current += 1;
+        setOpen(false);
+        setSaving(false);
+        setError(null);
+        setStaleRevision(null);
+        return () => {
+            generation.current += 1;
+        };
+    }, [id]);
+
+    const openRename = () => {
+        setError(null);
+        setStaleRevision(null);
+        setOpen(true);
+    };
+    const save = async (title: string) => {
+        if (root === null || saving) return;
+        const atStart = generation.current;
+        setSaving(true);
+        try {
+            const outcome = await tasks.actions.rename(root.id, title, staleRevision ?? root.titleRevision);
+            if (generation.current !== atStart) return;
+            if (outcome.state === 'saved') {
+                setOpen(false);
+                refreshThread();
+            } else if (outcome.state === 'stale') {
+                setStaleRevision(outcome.revision);
+                setError(
+                    `The title was changed to \u201C${outcome.title}\u201D while you edited. Save again to replace it.`
+                );
+                refreshThread();
+            } else {
+                setError(outcome.error);
+            }
+        } finally {
+            if (generation.current === atStart) setSaving(false);
+        }
+    };
+
+    return {
+        renameOpen: open,
+        renaming: saving,
+        renameError: error,
+        openRename,
+        closeRename: () => setOpen(false),
+        save,
+    };
+}
+
+/**
  * `/tasks/:id`, one task — the WHOLE follow-up chain, from the root command to the newest
  * adjustment, as one conversation. Any member's id resolves to the same view, and a follow-up
  * does NOT navigate away: the board records it as a new row (an audit record of what ran), the
@@ -219,6 +283,7 @@ export function TaskDetailPage() {
         latest,
         navigate
     );
+    const rename = useTaskRename(id, tasks, detail.jobs?.[0] ?? null, detail.refresh);
     // A settled answer — ours, or the 409 that says what the board already holds — re-arms the
     // thread poll, so the stored answer, its author and its time replace the local overlay.
     const answerQuestion: OnAnswer = async (jobId, questionId, answers) => {
@@ -238,6 +303,7 @@ export function TaskDetailPage() {
                 onStop={stopTask}
                 onDone={doneTask}
                 onRemoveRequest={openRemove}
+                onRenameRequest={rename.openRename}
             />
             <BatchBacklink rootId={detail.jobs?.[0]?.id ?? null} />
             <TaskDetail
@@ -257,12 +323,22 @@ export function TaskDetailPage() {
             {detail.jobs !== null && detail.jobs.length > 0 ? (
                 <TaskRemoveDialog
                     open={removeOpen}
-                    command={detail.jobs[0]!.command}
+                    name={taskTitleText(detail.jobs[0]!)}
                     runCount={detail.jobs.length}
                     removing={removingId !== null}
                     error={removeError}
                     onClose={closeRemove}
                     onConfirm={() => void removeTask()}
+                />
+            ) : null}
+            {detail.jobs !== null && detail.jobs.length > 0 ? (
+                <TaskRenameDialog
+                    open={rename.renameOpen}
+                    initial={taskTitleText(detail.jobs[0]!)}
+                    saving={rename.renaming}
+                    error={rename.renameError}
+                    onClose={rename.closeRename}
+                    onSave={(title) => void rename.save(title)}
                 />
             ) : null}
         </>

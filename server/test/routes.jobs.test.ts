@@ -339,6 +339,9 @@ function stubStore(
             stub.edited.push({ id, command, caller: caller ?? null });
             return options.edit ?? { result: 'ok', command };
         },
+        async renameTask() {
+            throw new Error('renameTask is not stubbed here: routes.job-title.test.ts owns it');
+        },
         async markDone(id, doneBy) {
             boom();
             stub.markedDone.push({ id, doneBy: doneBy ?? null });
@@ -3073,6 +3076,9 @@ describe('GET /api/jobs', () => {
     const job: Job = {
         id: ID,
         baseBranch: null,
+        title: null,
+        titleOrigin: null,
+        titleRevision: 0,
         command: 'echo hi',
         status: 'succeeded',
         attempts: 1,
@@ -3253,6 +3259,9 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
     const job: Job = {
         id: ID,
         baseBranch: null,
+        title: null,
+        titleOrigin: null,
+        titleRevision: 0,
         command: 'echo hi',
         status: 'running',
         attempts: 1,
@@ -3479,6 +3488,9 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
     const runJob: Job = {
         id: ID,
         baseBranch: null,
+        title: null,
+        titleOrigin: null,
+        titleRevision: 0,
         command: 'echo hi',
         status: 'failed',
         attempts: 1,

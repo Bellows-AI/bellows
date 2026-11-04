@@ -1,4 +1,3 @@
-import { taskTitleFromCommand } from '@factory-ai/core';
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import { useId } from 'react';
 import { useDownwardAnchor } from '../anchor.js';
@@ -9,6 +8,7 @@ import { Icon, type IconName } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { wallClock } from '../format.js';
+import { taskTitleText } from '../task-title.js';
 import {
     type FollowUpEligibility,
     type FollowUpViewer,
@@ -252,6 +252,7 @@ function TaskHeaderActions({
     onStop,
     onDone,
     onRemoveRequest,
+    onRenameRequest,
 }: {
     latest: Job;
     primary: PrimaryAction;
@@ -260,6 +261,8 @@ function TaskHeaderActions({
     onStop: (id: string) => Promise<void>;
     onDone: (id: string) => Promise<void>;
     onRemoveRequest: () => void;
+    /** Null when the viewer may not rename: only the author or an admin gets the control. */
+    onRenameRequest: (() => void) | null;
 }) {
     const doneHelpId = useId();
     const marking = doneId === latest.id;
@@ -273,6 +276,11 @@ function TaskHeaderActions({
                 onStop={onStop}
                 onDone={onDone}
             />
+            {onRenameRequest === null ? null : (
+                <button type="button" className="chat-resume" onClick={onRenameRequest}>
+                    Rename task
+                </button>
+            )}
             <MoreMenu
                 markDone={primary === 'ask'}
                 marking={marking}
@@ -300,8 +308,8 @@ function OpenedBy({ author }: { author: AuthorRef | null }) {
 }
 
 /**
- * The page-level head of `/tasks/:id`, derived from the loaded thread: the task's name — the
- * root command's first line — as the page's one `h1`; `#id · Opened … by login · repo` beneath
+ * The page-level head of `/tasks/:id`, derived from the loaded thread: the task's name — its stored
+ * title, else the root command's first line (`taskTitleText`) — as the page's one `h1`; `#id · Opened … by login · repo` beneath
  * it; the state pill, wall clock and live activity in the meta slot; and one primary action plus
  * the overflow in the actions slot. Prop-driven, like every panel: the poll, the mutations and
  * the removal dialog live in the page, so a static render of a loaded thread is a complete render.
@@ -319,6 +327,7 @@ export function TaskHeader({
     onStop,
     onDone,
     onRemoveRequest,
+    onRenameRequest,
 }: {
     /** The task's whole chain, oldest first — null until the thread poll lands. */
     jobs: Job[] | null;
@@ -331,6 +340,8 @@ export function TaskHeader({
     onDone: (id: string) => Promise<void>;
     /** Opens the page's remove confirmation — the menu item never mutates by itself. */
     onRemoveRequest: () => void;
+    /** Opens the page's rename dialog; offered only to the task's author or an admin. */
+    onRenameRequest: () => void;
 }) {
     if (jobs === null || jobs.length === 0) {
         // No task yet, so there is nothing to name — the detail poll has not landed. No eyebrow:
@@ -349,11 +360,16 @@ export function TaskHeader({
     // The task's live summary — the newest run's activity line, while there is one.
     const summary = taskSummary(latestTask.id, jobs);
     const verificationFailed = gateCounts(latestTask.gates).failed > 0;
+    const displayName = taskTitleText(rootTask);
+    // The board checks the same: the task's author or an org admin renames (the viewer's role comes from the session).
+    const canRename = !viewer.loading && (viewer.admin || (viewer.id !== null && rootTask.author?.id === viewer.id));
 
     return (
         <PageHeader
             eyebrow="Tasks"
-            title={taskTitleFromCommand(rootTask.command)}
+            title={displayName}
+            titleClassName="task-heading"
+            titleTooltip={displayName}
             description={
                 <span className="task-meta-line">
                     <span title={rootTask.id}>#{rootTask.id.slice(0, SHORT_ID_LENGTH)}</span>
@@ -398,6 +414,7 @@ export function TaskHeader({
                     onStop={onStop}
                     onDone={onDone}
                     onRemoveRequest={onRemoveRequest}
+                    onRenameRequest={canRename ? onRenameRequest : null}
                 />
             }
         />

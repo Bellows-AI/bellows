@@ -610,6 +610,32 @@ describe('the composer base branch and skill menu', () => {
         });
     });
 
+    it('sends a filled Title field as title, trimmed (BEL-252)', async () => {
+        const user = userEvent.setup();
+        const { launches } = openComposer(reposReply(['web']), undefined, board);
+        const prompt = await screen.findByLabelText('What should the agent do?');
+        await user.type(await screen.findByLabelText('Title (optional)'), '  Fix the login crash ');
+        await user.type(prompt, 'a long and rambling prompt');
+        const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
+        await waitFor(() => expect(start.disabled).toBe(false));
+        await user.click(start);
+        await waitFor(() => expect(launches()).toHaveLength(1));
+        expect((launches()[0]!.body as Record<string, unknown>).title).toBe('Fix the login crash');
+    });
+
+    it('sends no title when the Title field is blank (BEL-252)', async () => {
+        const user = userEvent.setup();
+        const { launches } = openComposer(reposReply(['web']), undefined, board);
+        const prompt = await screen.findByLabelText('What should the agent do?');
+        await user.type(await screen.findByLabelText('Title (optional)'), '   ');
+        await user.type(prompt, 'fix the login crash');
+        const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
+        await waitFor(() => expect(start.disabled).toBe(false));
+        await user.click(start);
+        await waitFor(() => expect(launches()).toHaveLength(1));
+        expect('title' in (launches()[0]!.body as Record<string, unknown>)).toBe(false);
+    });
+
     it('sends a null baseBranch and no skills when none was chosen', async () => {
         const user = userEvent.setup();
         const { launches } = openComposer(reposReply(['web']), undefined, board);

@@ -1,4 +1,3 @@
-import { taskTitleFromCommand } from '@factory-ai/core';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -13,6 +12,7 @@ import { trackedRepos } from '../api/useRepos.js';
 import { DEFAULT_FILTERS, inboxQueryString, QUERY_MAX } from '../api/useTasks.js';
 import type { InboxFilters, TaskNavigation, TaskSummary, UseTasks } from '../api/useTasks.js';
 import { countLabel } from '../nav-model.js';
+import { taskTitleText } from '../task-title.js';
 import { taskDotClass, taskStatusLabel, taskTone } from '../task-tree.js';
 import type { TaskStatus, TaskTone } from '../task-tree.js';
 
@@ -307,11 +307,14 @@ function Row({ task }: { task: TaskSummary }) {
     };
     const dot = taskDotClass(status);
     const summary = rowSummary(task);
+    const name = taskTitleText(task);
     return (
         <li className="inbox-row">
             <span className="inbox-title">
                 {dot !== '' ? <span className={`sidenav-dot ${dot}`} aria-hidden="true" /> : null}
-                <Link to={`/tasks/${task.id}`}>{taskTitleFromCommand(task.command)}</Link>
+                <Link to={`/tasks/${task.id}`} title={name}>
+                    {name}
+                </Link>
                 {summary !== null ? (
                     <span className="inbox-summary" title={summary}>
                         {summary}

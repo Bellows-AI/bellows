@@ -270,7 +270,14 @@ export {
 export type { DateRange, RangePreset } from './range.js';
 export { inputTokens, seriesGranularity, telemetryStats, usageRangeOf } from './telemetry.js';
 export { taskUsageStats } from './task-usage.js';
-export { taskTitleFromCommand } from './task-title.js';
+export {
+    displayTitle,
+    FALLBACK_TITLE_MAX,
+    normalizeTaskTitle,
+    TASK_TITLE_MAX,
+    taskTitleFromCommand,
+} from './task-title.js';
+export type { DisplayTitleOrigin, TaskTitleOrigin } from './task-title.js';
 export * from './notifications.js';
 export * from './batch-plan-schema.js';
 export * from './branch-name.js';

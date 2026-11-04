@@ -35,6 +35,9 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => {
     return {
         id,
         command: over.command ?? 'newer task',
+        title: over.title ?? null,
+        titleOrigin: over.titleOrigin ?? null,
+        titleRevision: over.titleRevision ?? 0,
         status: over.status ?? 'succeeded',
         cancelRequestedAt: over.cancelRequestedAt ?? null,
         doneAt: over.doneAt ?? null,
@@ -73,6 +76,22 @@ const navigation = (
 });
 
 describe('SideNav', () => {
+    it('shows the stored title on the task row, the full text as title=, and the id fallback for a blank prompt (BEL-252)', () => {
+        const stored = summary({
+            title: 'Fix the login crash',
+            titleOrigin: 'user',
+            titleRevision: 1,
+            command: 'x'.repeat(300),
+        });
+        const blank = summary({ command: ' ', id: '22222222-2222-4222-8222-222222222222' });
+        const html = render('/tasks', navigation([], [stored, blank]));
+        const row = anchorWith(html, 'Fix the login crash');
+        expect(row).toContain('title="Fix the login crash"');
+        expect(row).toContain('<span class="sidenav-task-title">Fix the login crash</span>');
+        expect(html).not.toContain('xxxxxxxx');
+        expect(html).toContain('<span class="sidenav-task-title">Task #22222222</span>');
+    });
+
     it('carries the Bellows brand in the sidenav-brand slot, ahead of the items', () => {
         const html = render('/');
         expect(html).toContain('<div class="sidenav-brand">Bellows</div>');

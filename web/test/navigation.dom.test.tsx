@@ -72,6 +72,9 @@ function summary(n: number): TaskSummary {
     return {
         id: `aaaaaaaa-0000-4000-8000-${String(n).padStart(12, '0')}`,
         command: `inbox task ${n}`,
+        title: null,
+        titleOrigin: null,
+        titleRevision: 0,
         status: 'succeeded',
         cancelRequestedAt: null,
         doneAt: null,

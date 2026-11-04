@@ -104,6 +104,15 @@
         width: 1px;
     }
 
+    /* The optional title: one quiet line above the request, inside the same frameless surface. */
+    .task-compose .composer-title {
+        background: transparent;
+        border: 0;
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 24px;
+    }
+
     /* The request grows with its content down from about five lines and scrolls past half the
        viewport; it wears no frame of its own, the surface is the frame. */
     .task-compose .composer-input {
@@ -574,6 +583,10 @@
         /* The base-branch chip's two controls fill the chip, so each one is a full-height target. */
         .composer-branch-toggle,
         .composer-branch-input {
+            min-height: 44px;
+        }
+
+        .task-compose .composer-title {
             min-height: 44px;
         }
     }

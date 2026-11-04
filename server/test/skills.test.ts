@@ -28,7 +28,16 @@ function skillsDir(files: Record<string, string>): string {
 describe('readSkillCatalog', () => {
     it('loads the shipped skills with their declared requirements', () => {
         const byName = Object.fromEntries(readSkillCatalog().map((skill) => [skill.name, skill]));
-        expect(Object.keys(byName).sort()).toEqual(['backend-fix', 'gates', 'github', 'jira', 'pr-land', 'review']);
+        expect(Object.keys(byName).sort()).toEqual([
+            'backend-fix',
+            'gates',
+            'github',
+            'jira',
+            'pr-land',
+            'review',
+            'task-title',
+        ]);
+        expect(byName['task-title']?.requires).toEqual({ tools: [], connections: [] });
         expect(byName['pr-land']?.requires).toEqual({ tools: ['gh'], connections: ['github'] });
         expect(byName.jira?.requires).toEqual({ tools: [], connections: ['jira'] });
         // The gates skill calls the image's factory-gate wrapper, not curl.

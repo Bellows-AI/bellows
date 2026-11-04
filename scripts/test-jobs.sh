@@ -180,7 +180,9 @@ docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable';
 images=''
 if selected_phase cooperative-stop || selected_phase tool-isolation || selected_phase image-checks; then
     images='claude-executor opencode-executor'
-elif selected_phase ask-user-question || selected_phase question-round-trip; then
+elif selected_phase question-round-trip; then
+    images='claude-executor opencode-executor'
+elif selected_phase ask-user-question; then
     images='claude-executor'
 fi
 for image in $images; do
@@ -3840,7 +3842,11 @@ connection_roundtrip_lane() {
     # The helper reaches the board from inside the container, where the driver's loopback URL is not the host's.
     RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
 
-    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/jira/jira.cjs issue ABC-1; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/jira/jira.cjs issue ABC-1 && node /usr/local/share/factory-skills/task-title/task-title.cjs \"Lane Jira subject\"; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
+    # BEL-252: the image's Jira skill carries the title hook (the scripted model cannot read prose, so the
+    # chained command below stands for an agent that follows it: the title call runs only after a read exit 0).
+    docker run --rm --entrypoint cat "$image" /usr/local/share/factory-skills/jira/SKILL.md 2>/dev/null | grep 'Naming the task after a ticket' >/dev/null &&
+        ok 'the image ships the Jira skill title hook' || bad 'the image ships the Jira skill title hook' 'SKILL.md in the image lacks the section; make runners'
     ask_pid=$!
     lane_endpoint_started "$ask_pid"
     for _ in $(seq 1 20); do
@@ -3867,6 +3873,8 @@ connection_roundtrip_lane() {
         bad 'the asking task is queued behind one open requirement, not failed' \
             "$(field "$body_json" status); the helper's result: $(curl -s --max-time 5 "http://127.0.0.1:$ask_port/steps" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).results[0].text).replace(/\n/g,"|").slice(-330))}catch{}})'); driver: $(grep -F "job $id" "$work/driver.log" | grep -i 'connect\|requirement' | tail -4 | cut -c1-300); board: $(grep -E 'requirements|credentials/connections|/attempt' "$work/server.log" | tail -6 | cut -c1-300)"
     expect_field 'the hand-back refunds the attempt' "$body_json" attempts 0
+    # The failed read ended the chain before the title helper: no fabricated subject reached the board.
+    expect_field 'a failed issue read leaves the title off the agent subject' "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === "Lane Jira subject" || j.titleOrigin === "agent" }))' "$body_json")" named false
     local session
     session="$(field "$body_json" sessionId)"
     [ -n "$session" ] && ok 'the waiting task kept its session' || bad 'the waiting task kept its session' "$body_json"
@@ -3896,11 +3904,60 @@ process.stdout.write(made.ok ? made.connectionId : "");
     body_json="$(body "$(api GET "/api/jobs/$id")")"
     expect_field 'the resumed run is the same session' "$body_json" sessionId "$session"
     expect_field 'the requirement is closed' "$(node -e 'process.stdout.write(JSON.stringify({ open: JSON.parse(process.argv[1]).integrationRequirements.length }))' "$body_json")" open 0
+    # The stub site has no issue to return, so the resumed read fails too and the chain stops again.
+    expect_field 'a read the stub site cannot answer still leaves the title unset by the agent' "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === "Lane Jira subject" || j.titleOrigin === "agent" }))' "$body_json")" named false
     lane_endpoint_stop "$ask_pid"
     stop_driver
 }
 
 connection_roundtrip_lane
+
+# The agent names its task (BEL-252), end to end for both CLIs. The real executor image runs the task-title
+# helper (a scripted shell step) on the attempt pair its pod/container holds: the helper reaches the board's
+# agent-title route and the task carries the title with origin `agent`. The refusals (a user's title, the
+# change cap, a lapsed lease) are server/test-db/agent-title.test.ts's.
+task_title_lane() { # task_title_lane <claude|opencode>
+    local cli="$1" image="$1-executor" tool=Bash fake_pid fake_port id body_json
+    [ "$cli" = opencode ] && tool=bash
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad "$cli: the agent names its task" "the $image image is missing — run make runners"
+        return
+    fi
+    stop_driver
+    RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
+
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"'"$tool"'","input":{"command":"node /usr/local/share/factory-skills/task-title/task-title.cjs \"Lane agent title\"; echo helper-exit=$?"}}]' >"$work/fake-title-$cli.port" &
+    fake_pid=$!
+    lane_endpoint_started "$fake_pid"
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-title-$cli.port" ] && break
+        sleep 0.25
+    done
+    fake_port="$(cat "$work/fake-title-$cli.port")"
+    if [ "$cli" = opencode ]; then
+        # OPENCODE_CONFIG_CONTENT is reserved at /api/env; the claim synthesizes it from the executor row's
+        # config (job-store-claim-executor.ts), so the scripted endpoint rides the row. The key is a plain env name.
+        api PUT /api/env/org '{"vars":[{"name":"ANTHROPIC_API_KEY","value":"fake-key","isSecret":true}]}' >/dev/null
+        api PUT /api/workspace/executors "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
+            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$fake_port")" >/dev/null
+    else
+        point_runners_at "$fake_port"
+    fi
+    id="$(create_job 'name this task' "$cli")"
+    expect_contains "$cli: the task with a scripted title step succeeds" "$(await_settled "$id" 180)" succeeded
+    body_json="$(body "$(api GET "/api/jobs/$id")")"
+    expect_field "$cli: the agent's title is the task's title" "$body_json" title 'Lane agent title'
+    expect_field "$cli: the title is marked as set by the agent" "$body_json" titleOrigin agent
+    lane_endpoint_stop "$fake_pid"
+    if [ "$cli" = opencode ]; then
+        api PUT /api/workspace/executors '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}' >/dev/null
+    fi
+    stop_driver
+}
+
+task_title_lane claude
+
+task_title_lane opencode
 
 ask_roundtrip_lane
 

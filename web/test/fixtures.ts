@@ -60,6 +60,7 @@ export function idleTasks(): UseTasks {
             markDone: async () => null,
             stop: async () => null,
             remove: async () => null,
+            rename: async () => ({ state: 'saved' }),
             answerQuestion: async () => ({ state: 'closed' }),
         },
     };

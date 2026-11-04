@@ -18,6 +18,9 @@ const NOW = new Date('2026-08-21T14:00:00.000Z');
 const job = (over: Partial<Job> = {}): Job => ({
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing gates',
+    title: null,
+    titleOrigin: null,
+    titleRevision: 0,
     status: 'succeeded',
     attempts: 1,
     author: { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: 'https://example.com/alice.png' },
@@ -111,6 +114,12 @@ describe('the task board section', () => {
         expect(html).toContain('fix the failing gates');
         // The agent's summary is outcome text, never the task's identity.
         expect(html).not.toContain('Fixed the failing gates and pushed');
+    });
+
+    it('titles the row from the stored title when one is set (BEL-252)', () => {
+        const html = render([job({ title: 'Gate repair', titleOrigin: 'user', titleRevision: 1 })], null);
+        expect(html).toContain('>Gate repair<');
+        expect(html).not.toContain('fix the failing gates');
     });
 
     it('uses the first NON-empty command line and stops there', () => {

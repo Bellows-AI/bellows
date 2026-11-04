@@ -51,6 +51,9 @@ export function job(overrides: Partial<Job> = {}): Job {
     return {
         id: '11111111-1111-4111-8111-111111111111',
         command: 'fix the flaky login test',
+        title: null,
+        titleOrigin: null,
+        titleRevision: 0,
         status: 'succeeded',
         attempts: 1,
         author: null,
@@ -250,6 +253,7 @@ export const renderHeader = ({
             onStop={async () => {}}
             onDone={async () => {}}
             onRemoveRequest={() => {}}
+            onRenameRequest={() => {}}
         />
     );
 

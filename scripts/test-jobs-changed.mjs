@@ -97,6 +97,7 @@ export const RULES = [
     [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|rate-limit-watch\.cjs|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks'], 'opencode-executor image'],
     [/^docker\/executor-common\//, [...REAL, 'image-checks'], 'files both executor images copy in'],
     [/^docker\/tool-isolation-checks\.sh$/, ['tool-isolation'], 'tool isolation'],
+    [/^docker\/skills\/task-title\//, ['tool-isolation', 'question-round-trip'], 'task title helper and skill'],
     [/^docker\/skills\//, ['tool-isolation'], 'skill helper scripts'],
     [/^docker\/(Dockerfile|driver\.Dockerfile)$/, ['compose-driver'], 'the deployed and compose images'],
     [/^docker\/skills\/review\//, ['review'], 'reviewer prompt'],

@@ -20,6 +20,9 @@ import {
 const summary = (over: Partial<TaskSummary> = {}): TaskSummary => ({
     id: over.id ?? '11111111-1111-4111-8111-111111111111',
     command: over.command ?? 'fix the flaky login test',
+    title: null,
+    titleOrigin: null,
+    titleRevision: 0,
     status: over.status ?? 'succeeded',
     cancelRequestedAt: over.cancelRequestedAt ?? null,
     doneAt: over.doneAt ?? null,
@@ -179,6 +182,9 @@ describe('taskSummary', () => {
     const threadJob = (id: string, overrides: Partial<Job> = {}): Job => ({
         id,
         command: `command ${id}`,
+        title: null,
+        titleOrigin: null,
+        titleRevision: 0,
         status: 'succeeded',
         attempts: 1,
         author: null,

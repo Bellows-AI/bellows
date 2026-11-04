@@ -313,6 +313,8 @@ export interface BoardClient extends BatchRoutes {
         executorScope?: 'user' | 'org' | undefined;
         /** The branch the task is based on; absent lets the board use the repo's default branch. */
         baseBranch?: string | undefined;
+        /** The task's own title (BEL-252), sent verbatim: the board normalizes it. Absent leaves the derived title. */
+        title?: string | undefined;
         /** The skills the task selects (issue #545); absent selects none. */
         skills?: string[] | undefined;
         /** Names this logical attempt; a repeat under the same key never makes a second task. */

@@ -88,6 +88,8 @@ export interface JobActionStore {
              * Stored on the ROOT row only: every later row of the thread reads it from there at claim.
              */
             baseBranch?: string | null;
+            /** An explicit title, normalized by the route: stored on the root (origin `user`, revision 1) in the create transaction. */
+            title?: string | null;
             /**
              * The connections (054, 094) the task names, bound on the ROOT in the create
              * transaction: each must be bindable by the author or the create is refused with
@@ -341,17 +343,8 @@ export type CreatedRef = { id: string; replayed?: boolean };
 /** A workflow column's value: the JSON when a workflow was named, SQL null otherwise. */
 const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(value as never) : null);
 
-export async function createJobRow(
-    ctx: JobStoreContext,
-    command: string,
-    createdBy: string | null,
-    target: CreateTarget
-): Promise<CreatedRef> {
-    return ctx.sql.begin((tx) => insertJobInTx(tx, ctx, { command, createdBy, target }));
-}
-
 /**
- * createJobRow's body, for a caller that already holds a transaction: the batch scheduler creates
+ * The create's body (`createTitledJob`'s), for a caller that already holds a transaction: the batch scheduler creates
  * a task's root in the same transaction that records the decision to.
  */
 export async function insertJobInTx(

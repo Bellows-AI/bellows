@@ -12,6 +12,8 @@ import { oauthRoutes } from './routes/oauth.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
+import type { AgentTitle } from './db/agent-title.js';
+import { agentTitleRoutes } from './routes/agent-title.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import { batchRoutes } from './routes/batches/batches.js';
@@ -33,6 +35,7 @@ import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
+import { registerTitleRoute } from './routes/jobs/job-handlers-title.js';
 import { preflightRoutes } from './routes/jobs/job-preflight.js';
 import { jobRoutes } from './routes/jobs/jobs.js';
 import { prometheusRoutes } from './routes/prometheus.js';
@@ -101,6 +104,8 @@ export interface AppDeps {
     pairMatches?: PairMatches | undefined;
     /** The runner's durable operation receipts (099); with `attemptOfLease` and `pairMatches` the receipt routes exist. */
     operationReceipts?: OperationReceipts | undefined;
+    /** The running agent's own title write (BEL-252); with `attemptOfLease` the route exists. */
+    agentTitle?: AgentTitle | undefined;
     /** The runner helper's connection list (`GET .../credentials/connections`); with `integrations` the route exists. */
     connectionListing?: ConnectionListing | undefined;
     /** The outbound OAuth runtime whose per-org resolver the broker spends through. */
@@ -227,6 +232,7 @@ async function registerRunnerCredentialRoutes(
         | 'attemptOfLease'
         | 'pairMatches'
         | 'operationReceipts'
+        | 'agentTitle'
         | 'connectionListing'
         | 'integrations'
         | 'githubMint'
@@ -238,6 +244,7 @@ async function registerRunnerCredentialRoutes(
         attemptOfLease,
         pairMatches,
         operationReceipts,
+        agentTitle,
         connectionListing,
         integrations,
         githubMint,
@@ -260,6 +267,7 @@ async function registerRunnerCredentialRoutes(
         if (pairMatches && operationReceipts) {
             await app.register(operationReceiptRoutes({ attemptOfLease, pairMatches, receipts: operationReceipts }));
         }
+        if (agentTitle) await app.register(agentTitleRoutes({ attemptOfLease, agentTitle }));
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
     if (integrations?.flowOf)
@@ -290,6 +298,7 @@ export async function buildApp({
     githubRevoke,
     pairMatches,
     operationReceipts,
+    agentTitle,
     connectionListing,
     destroyRevokedSecret,
     attachmentMaxInFlight,
@@ -361,6 +370,7 @@ export async function buildApp({
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
     await app.register(jobRoutes({ orgs, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
+    registerTitleRoute(app, orgs);
     await app.register(preflightRoutes(orgs));
     if (metrics) await app.register(prometheusRoutes(metrics));
     await app.register(
@@ -391,6 +401,7 @@ export async function buildApp({
         attemptOfLease,
         pairMatches,
         operationReceipts,
+        agentTitle,
         connectionListing,
         integrations,
         githubMint,
