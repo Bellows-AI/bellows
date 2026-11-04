@@ -53,7 +53,7 @@ const EXPECTED: string[] = [
     'force_close_task | factory:write | FTFF | 8d0cb9539b48 | b6edbc0315b3',
     'get_batch_tasks | factory:read | TFTF | aa773353f2f9 | 69514bed733a',
     'get_task | factory:read | TFTF | 2fdf7e6a8ae9 | 276323609f34',
-    'get_task_result | factory:read | TFTF | 2fdf7e6a8ae9 | ace67482ed48',
+    'get_task_result | factory:read | TFTF | 2fdf7e6a8ae9 | 9791ab58294f',
     'import_batch | factory:write | FFFF | e80dc00c76d5 | c381928a59e9',
     'inspect_batch | factory:read | TFTF | f80d1925ae9f | 54ee742efec5',
     'investigate_job | factory:read | TFTF | 8d0cb9539b48 | ea5b20c17b20',
@@ -80,7 +80,7 @@ const EXPECTED: string[] = [
     'update_batch | factory:write | FFFF | 1100dcfb34b2 | c381928a59e9',
     'validate_batch | factory:read | TFTF | f80d1925ae9f | 9f2681a7829e',
     'wait_batch | factory:read | TFTF | 4c125c6cbe9f | f523ff45ed50',
-    'wait_task | factory:read | TFTF | bafb22317ae6 | 417eac40af38',
+    'wait_task | factory:read | TFTF | bafb22317ae6 | 6f6be05b6a31',
     'whoami | factory:read | TFTF | 71fc596a20f2 | ca0dcfcb18f0',
 ];
 

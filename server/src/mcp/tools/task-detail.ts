@@ -211,10 +211,33 @@ export const TaskResultSchema = z.object({
         .optional(),
     attention: z.object({ openQuestions: z.number(), integrationRequirements: z.array(RequirementView) }).optional(),
     error: z
-        .object({ kind: z.string().nullable(), cause: z.string().nullable(), exitCode: z.number().nullable() })
+        .object({
+            kind: z.string().nullable(),
+            cause: z.string().nullable(),
+            exitCode: z.number().nullable(),
+            message: z
+                .string()
+                .optional()
+                .describe("The end of the run's output, where the driver writes why it failed (cut to its last part)."),
+        })
         .optional(),
     updatedAt: z.string().describe('The newest time the board recorded on the head run, questions included.'),
 });
+
+/** The characters of a failed run's output `error.message` carries: its end, where the failure sentence is. */
+const MAX_ERROR_MESSAGE_CHARS = 1000;
+
+/** The kind, cause and exit code the board recorded, and the end of the output that says why in words. */
+const errorOf = (head: LenientRun) => {
+    const output = head.output?.trim() ?? '';
+    const message = output.length > MAX_ERROR_MESSAGE_CHARS ? `…${output.slice(-MAX_ERROR_MESSAGE_CHARS)}` : output;
+    return {
+        kind: head.failureKind,
+        cause: head.failureCause,
+        exitCode: head.exitCode,
+        ...(message === '' ? {} : { message }),
+    };
+};
 
 /** The verified result of a task from its head run alone: what `get_task_result` and a settled `wait_task` both say. */
 export const taskResultOf = (head: LenientRun) => {
@@ -251,7 +274,7 @@ export const taskResultOf = (head: LenientRun) => {
         ...(pullRequest === null ? {} : { pullRequest }),
         ...(gates.length === 0 ? {} : { checks: { verdict: verdictOf(gates), gates } }),
         ...(state === 'needs_attention' ? { attention: { openQuestions, integrationRequirements } } : {}),
-        ...(failed ? { error: { kind: head.failureKind, cause: head.failureCause, exitCode: head.exitCode } } : {}),
+        ...(failed ? { error: errorOf(head) } : {}),
         updatedAt: latestOf(head),
     };
     return data;
@@ -260,7 +283,7 @@ export const taskResultOf = (head: LenientRun) => {
 export const getTaskResult = defineTool({
     name: 'get_task_result',
     description:
-        "The verified outcome of one task, judged on its head run from the board's own records, never from logs: `state` in the shared vocabulary (pending, running, succeeded, failed, cancelled, needs_attention; a status the board does not define is inconclusive), the run's summary, the pull request and branches, the gates as `checks` (a gate that is not known to have passed is never a pass), what a person must answer or connect, and the failure kind and cause. A field the board has no record of is absent. A read that cannot be confirmed is an inconclusive call, never a failed task. For detail use investigate_job.",
+        "The verified outcome of one task, judged on its head run from the board's own records, never from logs: `state` in the shared vocabulary (pending, running, succeeded, failed, cancelled, needs_attention; a status the board does not define is inconclusive), the run's summary, the pull request and branches, the gates as `checks` (a gate that is not known to have passed is never a pass), what a person must answer or connect, and for a failed run its kind, cause, exit code and `message`: the end of its output, where the reason is written. A field the board has no record of is absent. A read that cannot be confirmed is an inconclusive call, never a failed task. For detail use investigate_job.",
     scope: 'factory:read',
     routes: [['GET', '/api/jobs/:id/thread']],
     annotations: READ_ONLY,

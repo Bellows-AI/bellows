@@ -935,6 +935,21 @@ describe('get_task_result', () => {
         expect(data).not.toHaveProperty('summary');
     });
 
+    it('says why a failed run failed when the board recorded no cause: the tail of its output', async () => {
+        const sentence = 'The selected executor no longer exists. Choose a configured executor and start a new task.';
+        const { data } = await result({
+            status: 'failed',
+            failureKind: 'config',
+            failureCause: null,
+            output: `${'x'.repeat(5000)}\n${sentence}`,
+        });
+        expect(data.error).toMatchObject({ kind: 'config', cause: null });
+        expect(data.error.message).toMatch(/selected executor no longer exists/);
+        expect(data.error.message.length).toBeLessThanOrEqual(1001);
+        const quiet = await result({ status: 'failed', failureKind: 'config', output: null });
+        expect(quiet.data.error).not.toHaveProperty('message');
+    });
+
     it('judges the head run of the thread, not an earlier one', async () => {
         const { data } = await result({ id: FOLLOW_A, status: 'running', followUpTo: JOB_A }, [
             run(JOB_A, { status: 'failed', failureKind: 'gate' }),
