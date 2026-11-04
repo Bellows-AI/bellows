@@ -1,4 +1,4 @@
-import { executorMissingMessage } from '@factory-ai/core';
+import { executorMissingMessage, noExecutorMessage } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -345,6 +345,42 @@ describe('POST /api/jobs against a suspended profile', () => {
         await suspend(b, url, b.memberCookie, false);
 
         expect((await queue(b, b.memberCookie, 'mine', 'user')).statusCode).toBe(HTTP_CREATED);
+    });
+});
+
+describe('POST /api/jobs naming no executor', () => {
+    const queueBare = (b: Booted, cookie: string) =>
+        b.instance.inject({
+            method: 'POST',
+            url: '/api/jobs',
+            headers: { cookie },
+            payload: { command: 'echo hi', repo: `${READY_REPO.owner}/${READY_REPO.name}` },
+        });
+
+    it("stamps the caller's resolved default, so the claim has a profile to run", async () => {
+        const b = await boot();
+        await createOrg(b, 'Main');
+        const response = await queueBare(b, b.memberCookie);
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([{ command: 'echo hi', executor: 'Main', scope: 'org' }]);
+    });
+
+    it('prefers a personal profile over the org one, as the fallback chain does', async () => {
+        const b = await boot();
+        await createOrg(b, 'Main');
+        await putPersonal(b, b.memberCookie, [entry('mine')]);
+        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([{ command: 'echo hi', executor: 'mine', scope: 'user' }]);
+    });
+
+    it('refuses with 409 NO_EXECUTOR, naming where to configure one, when the caller has no usable profile', async () => {
+        const b = await boot();
+        const response = await queueBare(b, b.memberCookie);
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('NO_EXECUTOR');
+        expect(response.json().error).toBe(noExecutorMessage);
+        expect(response.json().error).toMatch(/Settings/);
+        expect(b.queued).toEqual([]);
     });
 });
 

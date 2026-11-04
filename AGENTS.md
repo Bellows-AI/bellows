@@ -72,6 +72,7 @@ commit message needs a force-push to fix.
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | `server/src/secrets/*`, secret storage, `AppDeps.secrets` | [docs/secrets.md](docs/secrets.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
+| `server/src/mcp/*`, `POST /api/mcp`, MCP tools, `route-class.ts` | [docs/mcp.md](docs/mcp.md) |
 | `.github/workflows/*`, CI triggers, the release image build | [docs/ci.md](docs/ci.md) |
 | `server/src/commerce/*`, `server/src/db/commerce-*.ts`, `095_commerce.sql`, `routes/commerce.ts`, `COMMERCE_*` | [docs/commerce.md](docs/commerce.md) |
 | `core/src/notifications.ts`, `102_notification_event.sql`, `notification_event` | [docs/notifications.md](docs/notifications.md) |

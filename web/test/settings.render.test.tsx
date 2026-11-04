@@ -33,6 +33,7 @@ const local: Session = {
     membership: { invitedAt: null, claimedAt: null },
     account: { createdAt: null, lastLoginAt: null },
     mode: 'none',
+    mcp: false,
 };
 
 describe('IdentityPanel', () => {

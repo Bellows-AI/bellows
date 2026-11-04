@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { ERROR_CODES, type ExecutorScope, ORG_SCOPE, USER_SCOPE } from '@factory-ai/core';
+import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import { executorFieldRefusal, MAX_EXECUTORS_PER_USER, parseExecutorFields } from './executor-fields.js';
@@ -185,6 +186,9 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
         // The member's resolved default: their stored preference while it still resolves, else the
         // deterministic fallback the store computes — what a new task draft autoselects.
         defaultExecutor,
+        // False where this board has no executor store: the empty lists above are then "nothing was read",
+        // which a client that must not report a confirmed "none" (the MCP list_executors tool) can tell apart.
+        executorsAvailable: executors !== undefined,
     });
 }
 
@@ -205,7 +209,10 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     if (!loaded.ok) return reply;
 
     return reply.code(HTTP_OK).send({
-        executors: loaded.value.map((row) => ({ ...personalRow(row), config: row.config })),
+        // A bridged (MCP) caller never reads the configuration, which may hold provider credentials.
+        executors: loaded.value.map((row) =>
+            isBridged(request.raw) ? personalRow(row) : { ...personalRow(row), config: row.config }
+        ),
     });
 }
 

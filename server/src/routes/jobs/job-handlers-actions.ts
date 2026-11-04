@@ -250,9 +250,9 @@ async function forceCloseBatchThread(
 const liveBatchThreadRefusal = (reply: FastifyReply) =>
     reply.code(HTTP_CONFLICT).send({
         error:
-            'This task is part of a live batch — the batch closes it when it ends. Pass --force (force: true) ' +
-            'to stop it and cancel its batch task now: never retried, and a required task holds its stage ' +
-            'until the batch is cancelled',
+            'This task is part of a live batch — the batch closes it when it ends. Force-close it (force: true; ' +
+            'the CLI --force; the MCP force_close_task) to stop it and cancel its batch task now: never retried, ' +
+            'and a required task holds its stage until the batch is cancelled',
         code: ERROR_CODES.BATCH_TASK_THREAD,
     });
 

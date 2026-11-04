@@ -53,6 +53,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         admission: {},
         integrations: { callbackOrigin: null, jira: null },
         commerce: { enabled: false },
+        mcp: { enabled: false },
         ...overrides,
     };
 }

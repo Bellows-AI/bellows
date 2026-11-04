@@ -67,7 +67,7 @@ exec ${JSON.stringify(realDirname)} "$@"
     it('offers the supervisor control phase (issue #770)', async () => {
         const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|capacity|drain|bench]');
+        expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|capacity|mcp|drain|bench]');
     });
 
     it('runs the failure-matrix acceptance phase in the full cluster run, one named check per case (issue #779)', () => {
@@ -468,8 +468,22 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(
-            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|drain\|bench\)/
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|mcp\|drain\|bench\)/
         );
+    });
+
+    // BEL-108: the chart's MCP server is exercised in the cluster, and the board is put back for the phases after it.
+    it('runs the mcp phase after capacity: one client pass through the port-forward, then MCP off again', () => {
+        expect(script.indexOf('if selected_phase mcp; then')).toBeGreaterThan(
+            script.indexOf('if selected_phase capacity; then')
+        );
+        const phase = script.slice(
+            script.indexOf('if selected_phase mcp; then'),
+            script.indexOf('if [ "$PHASE" = bench ]')
+        );
+        expect(phase).toContain('scripts/mcp-kind-client.mjs');
+        expect(phase).toContain('MCP_ENABLED=true');
+        expect(phase).toContain('MCP_ENABLED=false');
     });
 
     it('kills the driver pod at setup, agent, gates and publish, counting from outside the pods', () => {

@@ -1,10 +1,12 @@
-import type { ConnectionView, SkillView, VisibleRepos, WorkspaceView } from './board.js';
+import type { BoardClient } from './board.js';
 import type { CliConfig } from './config.js';
+import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
+import type { Transport } from './transport.js';
 
 /**
- * What `auth status` and `job preflight` report, joined from the board's own reads. Pure: nothing
- * here calls the board, and those commands only issue GETs. Preflight is advisory — the board
- * rechecks every rule at create and at claim, and its refusal is the answer.
+ * What `auth status` reports, and the shapes of `job preflight`'s question and the board's answer
+ * (`POST /api/jobs/preflight`, which makes every check). Preflight is advisory — the board rechecks
+ * every rule at create and at claim, and its refusal is the answer.
  */
 
 /** The effective configuration with the credential reduced to whether it is set, and of which kind. */
@@ -53,6 +55,8 @@ export interface PreflightCheck {
     /** `unverified`: only the board can say, and it does at claim. */
     status: 'ok' | 'blocked' | 'unverified';
     detail: string;
+    /** On a blocked check only a connection of the caller's own clears: which provider, and why. */
+    integration?: { provider: string; reason: 'missing' | 'ambiguous' | 'reconnect' | 'unknown' };
 }
 
 export interface Preflight {
@@ -60,111 +64,16 @@ export interface Preflight {
     checks: PreflightCheck[];
 }
 
-/** The board's selector for a managed connection on a skill requirement (`GET /api/skills`). */
-const CONNECTIONS_SELECTOR = 'connections';
-
-/** `visible` is null when the board's tracked list could not be read: the repo is then unverified, never blocked. */
-function repoCheck(repo: string | undefined, visible: VisibleRepos | null): PreflightCheck {
-    const name = repo ?? null;
-    if (repo === undefined) {
-        return {
-            subject: 'repo',
-            name,
-            status: 'blocked',
-            detail: 'pass --repo: a task runs against a tracked repository',
-        };
-    }
-    if (visible === null) {
-        return { subject: 'repo', name, status: 'unverified', detail: 'the tracked repositories could not be read' };
-    }
-    if (visible.repos.some((candidate) => `${candidate.owner}/${candidate.name}` === repo)) {
-        return { subject: 'repo', name, status: 'ok', detail: 'tracked by this board' };
-    }
-    if (visible.meta.error !== null) {
-        return {
-            subject: 'repo',
-            name,
-            status: 'unverified',
-            detail: `${repo} is not in the tracked list, which may be stale: ${visible.meta.error}`,
-        };
-    }
-    return { subject: 'repo', name, status: 'blocked', detail: `${repo} is not tracked by this board` };
-}
-
-function executorCheck(selection: PreflightSelection, workspace: WorkspaceView): PreflightCheck {
-    const { executor } = selection;
-    if (executor === undefined) {
-        // The board applies no default at create; `defaultExecutor` is only the web composer's preselection.
-        const fallback = workspace.defaultExecutor;
-        const hint = fallback ? ` (your default is ${fallback.scope} ${fallback.name})` : '';
-        return {
-            subject: 'executor',
-            name: null,
-            status: 'blocked',
-            detail: `no executor selected: pass --executor${hint}`,
-        };
-    }
-    const scope = selection.executorScope ?? 'user';
-    const profiles = scope === 'org' ? workspace.orgExecutors : workspace.executors;
-    const profile = profiles.find((candidate) => candidate.name === executor);
-    if (!profile) {
-        return { subject: 'executor', name: executor, status: 'blocked', detail: `no ${scope} executor ${executor}` };
-    }
-    if (profile.suspended === true) {
-        return { subject: 'executor', name: executor, status: 'blocked', detail: `${scope} executor is suspended` };
-    }
-    return { subject: 'executor', name: executor, status: 'ok', detail: `${scope} ${profile.type}` };
-}
-
-function skillChecks(selection: PreflightSelection, skills: readonly SkillView[]): PreflightCheck[] {
-    return (selection.skills ?? []).flatMap((name): PreflightCheck[] => {
-        const skill = skills.find((candidate) => candidate.name === name);
-        if (!skill) return [{ subject: 'skill', name, status: 'blocked', detail: 'not installed on this board' }];
-        const needs = skill.requires.connections.map((connection): PreflightCheck => {
-            if (connection.selectedBy === CONNECTIONS_SELECTOR && selection.connections === undefined) {
-                return {
-                    subject: 'skill',
-                    name,
-                    status: 'blocked',
-                    detail: `needs a ${connection.name} connection: pass --connection <id>`,
-                };
-            }
-            if (connection.selectedBy === null) {
-                return {
-                    subject: 'skill',
-                    name,
-                    status: 'unverified',
-                    detail: `needs the ${connection.name} connection; the board checks it at claim`,
-                };
-            }
-            return { subject: 'skill', name, status: 'ok', detail: `${connection.name} connection selected` };
-        });
-        return needs.length > 0 ? needs : [{ subject: 'skill', name, status: 'ok', detail: 'installed' }];
-    });
-}
-
-function connectionCheck(id: string, connections: readonly ConnectionView[]): PreflightCheck {
-    const found = connections.find((connection) => connection.id === id);
-    return found
-        ? { subject: 'connection', name: id, status: 'ok', detail: `${found.ownership} ${found.site}` }
-        : { subject: 'connection', name: id, status: 'blocked', detail: 'no such connection available to you' };
-}
-
-export function preflightChecks(
-    selection: PreflightSelection,
-    reads: {
-        workspace: WorkspaceView;
-        /** Null when the list was not read or could not be. */
-        repos: VisibleRepos | null;
-        skills: readonly SkillView[];
-        connections: readonly ConnectionView[];
-    }
-): Preflight {
-    const checks = [
-        repoCheck(selection.repo, reads.repos),
-        executorCheck(selection, reads.workspace),
-        ...skillChecks(selection, reads.skills),
-        ...(selection.connections ?? []).map((id) => connectionCheck(id, reads.connections)),
-    ];
-    return { ready: checks.every((check) => check.status !== 'blocked'), checks };
+/** The board's preflight over the client's transport: a read-only question asked with a POST, so never retried. */
+export function preflightRoutes(
+    request: Transport['request'],
+    authHeaders: () => Record<string, string>
+): Pick<BoardClient, 'preflight'> {
+    return {
+        async preflight(selection) {
+            const headers = { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE };
+            const init = { method: 'POST', headers, body: JSON.stringify(selection) };
+            return (await request(() => ({ path: '/api/jobs/preflight', holdMs: 0 }), init)) as Preflight;
+        },
+    };
 }

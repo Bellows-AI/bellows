@@ -1,4 +1,4 @@
-import { integrationProvider } from '../settings/integration-providers.js';
+import { integrationProvider } from '@factory-ai/core';
 
 /**
  * A provider's mark: the provider's official logo shape, filled in one color with the provider's `--brand-<id>` token

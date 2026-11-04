@@ -5,7 +5,7 @@ import type { RunOutcome, Runner } from '../../src/runner.js';
 import { readQuestion, recordQuestion } from '../../src/question-control.js';
 import type { ControlEntry } from '../../src/question-control.js';
 import type { HelperPlan } from '../../src/helpers.js';
-import type { PublishResult } from '../../src/publish/publish.js';
+import { type PublishResult, publishFailed } from '../../src/publish/publish.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import type { GateStack } from '../../src/loop/loop-types.js';
 import { RUN_CONTROL_POLL_MS } from '../../src/loop/loop-attempt.js';
@@ -182,6 +182,50 @@ describe('a stand-down after the gates (issue #427)', () => {
         expect(runner.published).toHaveLength(1);
         expect(lines.join('\n')).toContain('the lease was lost during its publish');
         expect(board.board.completed).toEqual([]);
+    });
+
+    const retryable = publishFailed('gh pr create: HTTP 502: Bad Gateway', 'transport');
+
+    // Guard, not RED: there is no second try before BEL-253; it keeps the retry from pushing past a stand-down.
+    it('BEL-253 a lease lost after a failed try pushes no second time', async () => {
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const fire = armHeartbeat(board.board, 'lost');
+        const runner = stubRunner(async () => ok(), { publishSequence: [retryable, landed] });
+        const rawPublish = runner.publishGit.bind(runner);
+        runner.publishGit = async (publishedJob, token) => {
+            const answer = await rawPublish(publishedJob, token);
+            fire();
+            await ticks();
+            return answer;
+        };
+        const lines: string[] = [];
+
+        await drive({ ...board, runner, log: (line) => lines.push(line) });
+
+        expect(runner.published).toHaveLength(1);
+        expect(lines.join('\n')).toContain('lost during its publish');
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('BEL-253 a stop landing during the retry token ask pushes nothing more', async () => {
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const fire = armHeartbeat(board.board, 'stop');
+        let asks = 0;
+        board.board.githubCredential = async () => {
+            // Ask 1 is the sync's, 2 the first publish's, 3 the retry's: the stop lands during it.
+            asks += 1;
+            if (asks === 3) {
+                fire();
+                await ticks();
+            }
+            return null;
+        };
+        const runner = stubRunner(async () => ok(), { publishSequence: [retryable, landed] });
+
+        await drive({ ...board, runner });
+
+        expect(runner.published).toHaveLength(1);
+        expect(board.board.suspended).toEqual([job(1).id]);
     });
 
     it('#488 names the post-helpers, not the publish, when no publish was due', async () => {

@@ -35,6 +35,7 @@ export const PHASES = [
     'image-checks',
     'ask-user-question',
     'question-round-trip',
+    'mcp',
 ];
 
 export const FULL = 'full';
@@ -55,6 +56,8 @@ export const RULES = [
     [/^docker\/executor-common\/(ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|tool-bash\.sh)$/, FULL, 'copied into the stub runner image'],
     [/^docker\/init-databases\.sh$/, FULL, 'postgres bootstrap'],
     [/^driver\/src\/(claim|config|index|strip-secret-store-env|runner|runner-plan|executors|docker\/docker|docker\/docker-runner|docker\/docker-runner-support|docker\/docker-create-runner|loop\/loop|loop\/loop-run|loop\/loop-types|loop\/loop-helpers|helpers|http|container-scripts|exec-codes|labels|json-parse|timestamps)\.ts$/, FULL, 'driver core every phase runs through'],
+    [/^server\/src\/(mcp\/|auth\/oauth|routes\/oauth)/, ['mcp'], 'MCP server and its OAuth authorization server'],
+    [/^scripts\/mcp-phase-client\.mjs$/, ['mcp'], 'the mcp phase client'],
     [/^server\/src\/auth\//, ['auth', 'board'], 'authentication'],
     [/^(server|core)\/(src|migrations)\//, FULL, 'the board every phase boots'],
 
@@ -73,7 +76,7 @@ export const RULES = [
     [/^driver\/src\/(connection-control|loop\/loop-connection)\.ts$/, ['driver', 'cooperative-stop'], 'runtime connection requirement'],
     [/^driver\/src\/(question-control|question-validation|loop\/loop-questions)\.ts$/, ['ask-user-question', 'question-round-trip'], 'questions'],
     [/^driver\/src\/(input-control\.ts|task-inputs\.ts|loop\/loop-inputs\.ts|scripts\/attachment-(?:fetch|extract)\.cjs)$/, ['driver'], 'task input delivery'],
-    [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
+    [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop\/loop-gates|gates|gate-cause|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
     [/^driver\/src\/scripts\/gate-(loop|shell)\.sh$/, ['driver', 'workflows'], 'gates'],
@@ -108,11 +111,12 @@ export const RULES = [
     [/^scripts\/lane-capacity-samples\.mjs$/, ['capacity'], 'capacity verdict'],
     [/^scripts\/acceptance-[a-z-]+\.(mjs|sh)$/, ['acceptance'], 'failure-matrix acceptance helpers'],
     [/^scripts\/k8s-stub\.sh$/, ['acceptance'], 'the stub agent the docker acceptance phase builds and runs'],
-    [/^scripts\/(test-k8s\.sh|kind-cluster[a-z-]*\.(sh|yaml)|k8s-[a-z-]+\.(mjs|sh)|bench-summary\.mjs|release\.sh|lint-changed\.sh|test-changed\.mjs|gate-jq\.sh)$/, NONE, 'not part of the docker lane'],
+    [/^scripts\/(test-k8s\.sh|kind-cluster[a-z-]*\.(sh|yaml)|k8s-[a-z-]+\.(mjs|sh)|bench-summary\.mjs|mcp-kind-client\.mjs|release\.sh|lint-changed\.sh|test-changed\.mjs|gate-jq\.sh)$/, NONE, 'not part of the docker lane'],
 
     [/^(docker-compose\.yml|package\.json|package-lock\.json|tsconfig(\.base)?\.json|VERSION|Makefile|\.dockerignore)$/, FULL, 'what the lane builds and boots'],
 
     // --- outside the lane's inputs ----------------------------------------------------------------
+    [/^e2e\/stub-idp\.mjs$/, ['mcp'], 'the mcp phase signs its member in through it'],
     [/^(web|e2e|docs|openspec|charts|lint|cli|plugins|\.github|\.claude|\.claude-plugin|\.opencode|\.factory)\//, NONE, 'not executed by the docker lane'],
     [/(^|\/)(test|test-db)\//, NONE, 'unit and integration tests'],
     [/^[^/]+\.(md|json|yaml|yml|ts|config\.ts)$|^(LICENSE|VERSION|Makefile|\.[a-z]+)$/, NONE, 'repo-level config and documents'],

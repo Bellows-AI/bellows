@@ -21,6 +21,8 @@ export interface Session {
     organizations: { id: string; name: string }[];
     /** 'none' means the server is running open, so there is no session to end and no button. */
     mode: 'github' | 'none';
+    /** Whether this board serves MCP, and so has connected apps to show. */
+    mcp: boolean;
 }
 
 /** The role as the settings pages print it. */

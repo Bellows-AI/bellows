@@ -10,9 +10,6 @@ import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADE
 
 /** The board's `status`: `draft`, `running`, or an end state, named as the report's `state` names it. */
 export const BATCH_DRAFT = 'draft';
-export const BATCH_COMPLETED = 'completed';
-export const BATCH_CANCELLED = 'cancelled';
-export const BATCH_EXPIRED = 'expired';
 /** The board's code for a plan or operation start cannot run yet (`ERROR_CODES.BATCH_UNSUPPORTED`). */
 export const BATCH_UNSUPPORTED_CODE = 'BATCH_UNSUPPORTED';
 
@@ -60,8 +57,25 @@ export interface BatchStageVerification {
     checkedAt: string;
 }
 
-export const VERIFY_PASSED = 'passed';
-export const VERIFY_FAILED = 'failed';
+/** Where the board says the batch stands (core's `BatchVerdict`), copied: the CLI decides nothing from the raw record. */
+export type BatchVerdict =
+    | 'draft'
+    | 'running'
+    | 'succeeded'
+    | 'failed'
+    | 'cancelled'
+    | 'needs_attention'
+    | 'inconclusive';
+
+/** The board's verdict on a batch (core's `BatchStanding`), copied. */
+export interface BatchStanding {
+    verdict: BatchVerdict;
+    /** Which fence ended the batch, so the wait names it: `cancelled` or `expired`; null when none did. */
+    fence: 'cancelled' | 'expired' | null;
+    /** Tasks that wait on a person: the board is not acting on them. `pr` is null when the task has none. */
+    attention: { key: string; stage: string; waitReason: string; pr: string | null }[];
+    verificationFailures: { stage: string; state: string; detail: string | null; headSha: string | null }[];
+}
 
 export interface BatchRecord {
     id: string;
@@ -79,6 +93,9 @@ export interface BatchRecord {
     plan: BatchPlanView;
     tasks: BatchTaskState[];
     verification: BatchStageVerification[];
+    standing: BatchStanding;
+    /** The report the standing was computed from, in the same response; null for a draft or an unread report. */
+    report: BatchReport | null;
     /** Not in the body: read off the board's `Idempotency-Replayed` header. */
     replayed?: boolean;
 }
@@ -183,55 +200,8 @@ export interface BatchValidated {
     plan: BatchPlanView;
 }
 
-/**
- * The execution states the board's dispatch (#579) settles a task in; a task not in one is still
- * moving. The wait's verdict is read from these, from `waitReason` and from the stages'
- * `verification`, nothing else.
- */
-export const TASK_SUCCEEDED = 'succeeded';
-export const TASK_FAILED = 'failed';
+/** A task the report shows as cancelled. */
 export const TASK_CANCELLED = 'cancelled';
-const TASK_TERMINAL: readonly string[] = [TASK_SUCCEEDED, TASK_FAILED, TASK_CANCELLED];
-
-export type BatchVerdict = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'needs_attention';
-
-/** The report's subset the verdict reads: each task's `next`, the board's own word on who acts. */
-export type BatchNextOf = Pick<BatchReport, 'tasks'> | null | undefined;
-
-const NEXT_WAIT = 'wait';
-
-/** The board still acting on a task — moving work, or an automerge PR it is merging or repairing (#688). */
-const boardActing = (task: BatchTaskState, report: BatchNextOf): boolean =>
-    report?.tasks.find((entry) => entry.key === task.key)?.next.action === NEXT_WAIT;
-
-/** A task whose wait reason names a person to act: any, unless the report's `next` says the board is on it. */
-export const needsPerson = (task: BatchTaskState, report?: BatchNextOf): boolean =>
-    task.waitReason !== null && !boardActing(task, report);
-
-/**
- * Where a started batch stands. A task with a `waitReason` needs a person (a human review gate, a
- * question) unless the report's `next` says the board is on it (`needsPerson`), as does a stage
- * whose combined verification failed, and those outrank everything:
- * nothing a wait does moves it. Otherwise the batch is settled only when every task is, and then a
- * failed task beats a cancelled one beats success — which also needs every stage verified.
- */
-export function batchVerdict(batch: BatchRecord, report?: BatchNextOf): BatchVerdict {
-    if (batch.tasks.some((task) => needsPerson(task, report))) return 'needs_attention';
-    if (batch.verification.some((stage) => stage.state === VERIFY_FAILED)) return 'needs_attention';
-    // A succeeded run whose PR the board is still merging is not settled: its gate is open.
-    if (batch.tasks.some((task) => boardActing(task, report))) return 'running';
-    if (!batch.tasks.every((task) => TASK_TERMINAL.includes(task.execution))) return 'running';
-    if (batch.tasks.some((task) => task.execution === TASK_FAILED)) return 'failed';
-    // A task a person force-closed in a batch that still completed was settled by that person.
-    const settledByPerson = (task: BatchTaskState) => task.closedAt != null && batch.status === BATCH_COMPLETED;
-    if (batch.tasks.some((task) => task.execution === TASK_CANCELLED && !settledByPerson(task))) return 'cancelled';
-    // The last automerge stage's tasks are all done while its verification is still being read.
-    if (batch.verification.some((stage) => stage.state !== VERIFY_PASSED)) return 'running';
-    // Before the board writes that verification the list is empty: only the board's own
-    // `completed` says every stage was verified.
-    if (batch.status !== BATCH_COMPLETED) return 'running';
-    return 'succeeded';
-}
 
 export interface BatchRoutes {
     createBatch(plan: unknown, idempotencyKey?: string): Promise<BatchDraftWritten>;

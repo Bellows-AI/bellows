@@ -39,6 +39,7 @@ function session(role: Role) {
         organization: { id: 'org-e2e', name: LONG_ORG },
         organizations: [{ id: 'org-e2e', name: LONG_ORG }],
         mode: 'github',
+        mcp: false,
     };
 }
 

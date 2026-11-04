@@ -1,10 +1,9 @@
-import { prOperationRecorder } from './loop-pr-operation.js';
 import type { BoardJob } from '../board/board.js';
 import { evidenceDecision } from '../evidence-policy.js';
-import { askGithubToken } from './loop-github.js';
 import { down, type JobState, settling } from './loop-attempt.js';
-import type { LoopRuntime } from './loop-types.js';
-import { publishFailed } from '../publish/publish.js';
+import { type LoopRuntime, STOOD_DOWN } from './loop-types.js';
+import { publishWithRetry } from './loop-publish-retry.js';
+import type { PublishResult } from '../publish/publish.js';
 import { stepLost } from '../step-control.js';
 import type { PublishRelay, PublishVerdict } from '../publish/publish-control.js';
 
@@ -45,17 +44,16 @@ async function pushDraft(
     state: JobState,
     { revision, gone }: { revision: string | null; gone: () => boolean }
 ): Promise<PublishVerdict> {
-    const token = await askGithubToken(rt, job, 'the draft publish');
-    if (gone()) return 'gone';
-    const result = await rt.runner
-        .publishGit(job, token ?? undefined, {
-            draft: true,
-            ...(revision === null ? {} : { revision }),
-            recordPrOperation: prOperationRecorder(rt, job),
-        })
-        .catch((e: Error) => (stepLost(e) ? 'gone' : publishFailed(`the publish threw: ${e.message}`, 'unknown')));
-    // A supervisor lost under the push is the attempt's end, not a verdict on the draft (#925).
-    if (result === 'gone') return 'gone';
+    const options = revision === null ? { draft: true } : { draft: true, revision };
+    let result: PublishResult | typeof STOOD_DOWN;
+    try {
+        result = await publishWithRetry({ rt, job, state }, { what: 'the draft publish', options }, gone);
+    } catch (e) {
+        // A supervisor lost under the push is the attempt's end, not a verdict on the draft (#925).
+        if (stepLost(e)) return 'gone';
+        throw e;
+    }
+    if (result === STOOD_DOWN) return 'gone';
     if (result.ok && result.published) state.draftPublication = result;
     return result;
 }

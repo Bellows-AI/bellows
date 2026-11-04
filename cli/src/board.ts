@@ -2,6 +2,8 @@ import type { GateActivity, PrActivity } from './activity-types.js';
 import { batchRoutes } from './batch.js';
 import type { BatchRoutes } from './batch.js';
 import { attachRoutes } from './attach.js';
+import { preflightRoutes } from './diagnostics.js';
+import type { Preflight, PreflightSelection } from './diagnostics.js';
 import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
 import {
     BoardError,
@@ -370,6 +372,8 @@ export interface BoardClient extends BatchRoutes {
      * id), keyed by question text. Never replayed: a repeat is the board's 409 `QUESTION_ANSWERED`.
      */
     answerQuestion(id: string, questionId: string, answers: Record<string, string>): Promise<QuestionRecord>;
+    /** The board's advisory checks of a create's selection (`POST /api/jobs/preflight`) — writes nothing. */
+    preflight(selection: PreflightSelection): Promise<Preflight>;
     /** The repositories the board tracks (`GET /api/repos`) — read-only. */
     listRepos(): Promise<VisibleRepos>;
     /** The caller's workspace read (`GET /api/workspace`): executor profiles. */
@@ -639,6 +643,8 @@ export function createBoardClient({
         ...batchRoutes((path, init, onResponse) => request(at(path), init, onResponse), authHeaders),
 
         ...attachRoutes(request, authHeaders),
+
+        ...preflightRoutes(request, authHeaders),
 
         async followUp(id, command, idempotencyKey, attachments) {
             // The command is the whole body: the repo, the executor and the session are copied

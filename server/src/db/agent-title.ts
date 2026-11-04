@@ -1,7 +1,7 @@
 import type { Sql } from 'postgres';
 
 /**
- * The agent's own title write (BEL-252; `122_job_title.sql`, docs/connections.md). The title lives on the thread
+ * The agent's own title write (BEL-252; `125_job_title.sql`, docs/connections.md). The title lives on the thread
  * ROOT; the caller is a running attempt of any row of the thread. ONE transaction takes the caller's own running
  * row (`for update`) and then the root (`for no key update`) — the lock order of a settle of the caller's own row
  * and of the runtime ask (`connection-bindings.ts` `lockRootRowsInTx`) — and re-checks the lease and the root

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { safeReturnPath } from '../auth/session.js';
+import { PATH_CHECK_ORIGIN, safeReturnPath } from '../auth/session.js';
 import { hashState, recoverAuthorization as recover, requireTrusted } from './authorization-complete.js';
 import { completeAndBind } from './authorization-bind.js';
 import { connectionTarget, insertAuthorization } from './authorization-store.js';
@@ -113,7 +113,7 @@ async function start(
         provider: input.provider,
         stateHash: hashState(state),
         verifier,
-        returnTo: safeReturnPath(input.returnTo),
+        returnTo: safeReturnPath(input.returnTo, fc.callbackOrigin ?? PATH_CHECK_ORIGIN),
         interactionId: input.interactionId ?? null,
         bindJobId: input.jobId ?? null,
         requestedAccess: access,

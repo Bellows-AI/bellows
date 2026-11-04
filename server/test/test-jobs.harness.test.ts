@@ -23,7 +23,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT.slice(origin, origin + 120)).toContain('-p 127.0.0.1::9418');
         expect(SCRIPT).toContain('docker port "$ORIGIN_NAME" 9418/tcp');
         expect(origin).toBeLessThan(SCRIPT.indexOf('\nstart_open_board\n'));
-        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(4);
+        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(5);
         expect(SCRIPT).not.toContain('ORG_WORKSPACE_ROOT');
         expect(SCRIPT).not.toContain('.origins');
     });
@@ -300,6 +300,23 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('docker ps -aq --filter "label=factory.job=$lost" |');
         expect(phase).toContain('"job $lost: attempt 1 resuming session $lost_session"');
         expect(phase).toContain('upstream:0');
+    });
+
+    it('the mcp phase signs a member in through the stub identity provider and settles a task through the MCP tools', () => {
+        const start = SCRIPT.indexOf("echo '# mcp (board + driver + MCP client, stub runner)'");
+        expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# question round trip"));
+        const phase = SCRIPT.slice(start, SCRIPT.lastIndexOf("printf '\\n%d passed"));
+        expect(phase).toContain('MCP_ENABLED=true');
+        expect(phase).toContain('AUTH_MODE=github');
+        expect(phase).toContain('node e2e/stub-idp.mjs');
+        expect(phase).toContain('GITHUB_OAUTH_AUTHORIZE_URL=');
+        expect(phase).toContain('scripts/mcp-phase-client.mjs');
+        expect(phase).toContain('disruption_driver JOB_BOARD_URL="$MCP_BASE"');
+        const client = readFileSync(join(ROOT, 'scripts/mcp-phase-client.mjs'), 'utf8');
+        for (const tool of ['create_task', 'wait_task', 'get_task_result', 'read_job_log']) {
+            expect(client).toContain(`'${tool}'`);
+        }
+        expect(client).toContain('/api/oauth/consent/approve');
     });
 
     // Issue #831: two drivers on two boards under one shared admission budget, one of them killed.

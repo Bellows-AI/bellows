@@ -186,6 +186,7 @@ function callerFor(state: AuthState, user: User, member: Member): Caller {
         org: { id: member.orgId, name: orgNameOf(state, member.orgId) },
         membership: { invitedAt: member.invitedAt, claimedAt: member.claimedAt },
         role: member.role,
+        scopes: 'all',
     };
 }
 
@@ -387,7 +388,8 @@ export function sessionMethods(
         async findSession(tokenHash) {
             const session = state.sessions.get(keyOf(tokenHash));
             if (!session || session.expiresAt <= Date.now()) return null;
-            return memberOf(state, session.userId, session.orgId);
+            const caller = memberOf(state, session.userId, session.orgId);
+            return caller && { ...caller, sessionHash: tokenHash };
         },
 
         async updateSessionOrg(tokenHash, orgId) {

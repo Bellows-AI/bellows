@@ -6,6 +6,9 @@ import { BatchDetailPage } from './pages/BatchDetailPage.js';
 import { BatchesPage } from './pages/BatchesPage.js';
 import { BatchNewPage } from './pages/BatchNewPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
+import { UPLOAD_PAGE_ROUTE } from './upload-route.js';
+import { AttachmentUploadPage } from './pages/AttachmentUploadPage.js';
+import { OAuthConsentPage } from './pages/OAuthConsentPage.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SettingsExecutorsPage } from './pages/SettingsExecutorsPage.js';
 import { SettingsIntegrationsCatalogPage } from './pages/SettingsIntegrationsCatalogPage.js';
@@ -48,6 +51,12 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
             yet — the pending cookie, not a session cookie, is what the page stands on — so the
             sidenav and the stats poll have nothing to stand on either. */}
         <Route path="onboarding" element={<OnboardingPage />} />
+        {/* The MCP consent screen (BEL-103): signed-in only (the gate holds it), and outside the shell,
+            which would start polls for a page that exists to answer one question. */}
+        <Route path="oauth/consent" element={<OAuthConsentPage />} />
+        {/* The MCP attachment handoff (BEL-248): signed out is fine, the single-use link in the fragment is
+            the credential (LoginGate steps past it), and like the consent screen it sits outside the shell. */}
+        <Route path={UPLOAD_PAGE_ROUTE.slice(1)} element={<AttachmentUploadPage />} />
         <Route element={<AppShell />}>
             <Route index element={<DashboardPage />} />
             {/* The organization's settings tree (issues 150 and 180): one sidenav item — an

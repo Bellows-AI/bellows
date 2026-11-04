@@ -1,9 +1,8 @@
 import { renderUsageBlock } from './render.js';
-import { BATCH_DRAFT, batchVerdict, needsPerson, TASK_CANCELLED, VERIFY_FAILED } from './batch.js';
+import { BATCH_DRAFT, TASK_CANCELLED } from './batch.js';
 import type {
     BatchNextAction,
     BatchPlanView,
-    BatchNextOf,
     BatchRecord,
     BatchReport,
     BatchReportTask,
@@ -25,12 +24,12 @@ const USER_SCOPE = 'user';
 const HUMAN_POLICY = 'human';
 const NO_PR = 'none';
 
-/** The tasks whose state names a person to act: the wait reason is the board's own words for it. */
-export const needsAction = (batch: BatchRecord, report?: BatchNextOf): BatchTaskState[] =>
-    batch.tasks.filter((task) => needsPerson(task, report));
+/** The tasks the board's standing says wait on a person: the wait reason is the board's own words for it. */
+export const needsAction = (batch: BatchRecord): BatchTaskState[] =>
+    batch.standing.attention.flatMap(({ key }) => batch.tasks.filter((task) => task.key === key));
 
 /** A stage's combined verification in a few words: its state, then why, if the board said. */
-const verificationOf = (row: BatchStageVerification): string =>
+const verificationOf = (row: Pick<BatchStageVerification, 'state' | 'detail'>): string =>
     `verification ${row.state}${row.detail === null ? '' : `: ${row.detail}`}`;
 
 /** An executor and, beside a name, whose profile it is: `Main ORG (org)`. */
@@ -54,7 +53,7 @@ function taskExecutorOf(plan: BatchPlanView, task: BatchTaskPlan | undefined): s
     return own === batch ? '' : ` · executor ${own}`;
 }
 
-function renderStage(batch: BatchRecord, stageKey: string, report: BatchNextOf): string[] {
+function renderStage(batch: BatchRecord, stageKey: string): string[] {
     const { plan } = batch;
     const tasks = batch.tasks.filter((task) => task.stage === stageKey);
     const verification = batch.verification.find((row) => row.stage === stageKey);
@@ -73,20 +72,22 @@ function renderStage(batch: BatchRecord, stageKey: string, report: BatchNextOf):
         lines.push(
             `  ${state.key} ${state.execution} · gate ${state.gate} · target ${target}${executor}${pr}${thread}${accepted}`
         );
-        if (needsPerson(state, report)) lines.push(`    needs action: ${state.waitReason}`);
+        if (batch.standing.attention.some((entry) => entry.key === state.key)) {
+            lines.push(`    needs action: ${state.waitReason}`);
+        }
     }
     if (verification) lines.push(`  ${verificationOf(verification)} (at ${verification.headSha ?? 'unknown head'})`);
     return lines;
 }
 
 /** One batch, whole: header, settings, then every stage with its tasks and what waits on a person. */
-export function renderBatch(batch: BatchRecord, report?: BatchNextOf): string {
+export function renderBatch(batch: BatchRecord): string {
     const lines = [`${batch.id} ${batch.status} v${batch.version} "${batch.plan.title}"`];
-    if (batch.status !== BATCH_DRAFT) lines.push(`verdict ${batchVerdict(batch, report)}`);
+    if (batch.status !== BATCH_DRAFT) lines.push(`verdict ${batch.standing.verdict}`);
     lines.push(...renderPlanSettings(batch.plan));
     const stages = [...new Set(batch.tasks.map((task) => task.stage))];
     for (const stage of stages) {
-        lines.push(...renderStage(batch, stage, report));
+        lines.push(...renderStage(batch, stage));
     }
     return lines.join('\n');
 }
@@ -112,17 +113,11 @@ export function renderValidated(id: string, validated: { version: number; plan: 
 }
 
 /** The wait's final line, naming the tasks that need a person; `ending` replaces the verdict for a fenced batch. */
-export function renderWaitEnd(
-    batch: BatchRecord,
-    report: BatchNextOf,
-    ending: string = batchVerdict(batch, report)
-): string {
-    const waiting = needsAction(batch, report);
+export function renderWaitEnd(batch: BatchRecord, ending: string = batch.standing.verdict): string {
     const lines = [`${batch.id} ${ending}`];
-    for (const task of waiting)
-        lines.push(`  ${task.key}: ${task.waitReason}${task.pr === NO_PR ? '' : ` (pr ${task.pr})`}`);
-    for (const row of batch.verification.filter((stage) => stage.state === VERIFY_FAILED))
-        lines.push(`  stage ${row.stage} ${verificationOf(row)}`);
+    for (const { key, waitReason, pr } of batch.standing.attention)
+        lines.push(`  ${key}: ${waitReason}${pr === null ? '' : ` (pr ${pr})`}`);
+    for (const row of batch.standing.verificationFailures) lines.push(`  stage ${row.stage} ${verificationOf(row)}`);
     return lines.join('\n');
 }
 

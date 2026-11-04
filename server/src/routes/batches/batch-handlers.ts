@@ -22,6 +22,7 @@ import {
     startedConflict,
     VERSION_FIELD,
     versionOf,
+    withStanding,
     type Context,
 } from './batch-http.js';
 import { bad, guard } from '../helpers.js';
@@ -84,7 +85,7 @@ export async function handleGet(orgs: OrgRegistry, request: FastifyRequest, repl
     // (nothing moves without an operator: a failed task, a gate not yet passed) or `timeout`.
     const wait = validateWaitQuery(request.query as { waitFor?: unknown; timeout?: unknown });
     if (!wait.ok) return bad(reply, wait.code, wait.message);
-    if (!wait.value) return reply.code(HTTP_OK).send(record);
+    if (!wait.value) return reply.code(HTTP_OK).send(await withStanding(ctx, request, record));
     if (record.status === BATCH_DRAFT) return notStartedConflict(reply);
 
     const held = await guard(
@@ -95,7 +96,7 @@ export async function handleGet(orgs: OrgRegistry, request: FastifyRequest, repl
     if (!held.ok) return reply;
     const settled = await loadBatch(ctx, request, reply);
     if (!settled) return reply;
-    return reply.code(HTTP_OK).send({ result: held.value, batch: settled });
+    return reply.code(HTTP_OK).send({ result: held.value, batch: await withStanding(ctx, request, settled) });
 }
 
 /** The morning report: what merged, what is open, what recovery spent and what needs a person, with the next supported step. */
@@ -206,7 +207,7 @@ export async function handleCancel(orgs: OrgRegistry, request: FastifyRequest, r
 async function answerWithBatch(ctx: Context, request: FastifyRequest, reply: FastifyReply) {
     const record = await loadBatch(ctx, request, reply);
     if (!record) return reply;
-    return reply.code(HTTP_OK).send(record);
+    return reply.code(HTTP_OK).send(await withStanding(ctx, request, record));
 }
 
 const notFoundTask = (reply: FastifyReply) =>
@@ -272,7 +273,7 @@ async function answeredAsReplay(
     const record = await loadBatch(ctx, request, reply);
     if (record) {
         reply.header(IDEMPOTENCY_REPLAYED_HEADER, 'true');
-        reply.code(HTTP_OK).send(record);
+        reply.code(HTTP_OK).send(await withStanding(ctx, request, record));
     }
     return true;
 }
@@ -313,7 +314,7 @@ export async function handleStart(orgs: OrgRegistry, request: FastifyRequest, re
     const frozen = await loadBatch(ctx, request, reply);
     if (!frozen) return reply;
     if (started.value.replayed) reply.header(IDEMPOTENCY_REPLAYED_HEADER, 'true');
-    return reply.code(HTTP_OK).send(frozen);
+    return reply.code(HTTP_OK).send(await withStanding(ctx, request, frozen));
 }
 
 const ACCEPT_REFUSALS = {

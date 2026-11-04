@@ -96,7 +96,7 @@ Surfaces and feedback: `panel-flat`, `panel-head`, `panel-actions`, `status`, `a
 `pill-bad`, `pill-done`, `pill-accent`, `pill-question`, `pill-list`, `count`, `switch`, `inbox-chip`.
 
 Data display: `table-wrap`, `data`, `sortable`, `align-end`, `asc`, `kv`, `by-user-user`,
-`table-cards`, `data-compact`, `search-field`, `updated-at`, `icon`.
+`table-cards`, `cell-wrap`, `data-compact`, `search-field`, `updated-at`, `icon`.
 
 Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-precision`,
 `usage-precision-words`, `usage-coverage`, `usage-breakdown`, `usage-breakdown-toggle`,

@@ -205,6 +205,11 @@ spec:
                       # can redirect back to.
                       - name: PUBLIC_URL
                         value: {{ .Values.auth.publicUrl | quote }}
+                      # The board-hosted MCP server (docs/configuration.md); off, the origins list is ignored.
+                      - name: MCP_ENABLED
+                        value: {{ .Values.mcp.enabled | quote }}
+                      - name: MCP_TRUSTED_ORIGINS
+                        value: {{ join "," .Values.mcp.trustedOrigins | quote }}
                       - name: COOKIE_SECURE
                         value: {{ .Values.auth.cookieSecure | quote }}
                       - name: INGEST_TOKEN

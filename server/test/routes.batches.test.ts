@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyBlock } from '@factory-ai/core';
+import { emptyBlock, noExecutorMessage } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
@@ -524,19 +524,45 @@ describe('launch checks: validate and start', () => {
         expect(asked).toEqual([['Main ORG', 'org']]);
     });
 
-    it('asks nothing of a plan that names no executor: the claim’s default needs no profile', async () => {
-        let asked = 0;
+    it("stamps the starter's default on every task that names no executor, on validate and on start", async () => {
         const userExecutors = {
-            async configFor() {
-                asked += 1;
-                return null;
+            async configFor(_user: string, name: string, scope: string) {
+                return name === 'Main' && scope === 'org'
+                    ? { type: 'claude-code', config: {}, suspended: false }
+                    : null;
+            },
+            async resolvedDefault() {
+                return { scope: 'org', name: 'Main' };
             },
         } as unknown as UserExecutorStore;
         const { call, create } = await setup({ userExecutors });
         const { id } = await create(plan());
-        expect((await call('POST', `/api/batches/${id}/validate`, {})).statusCode).toBe(HTTP_OK);
+        const validated = await call('POST', `/api/batches/${id}/validate`, {});
+        expect(validated.statusCode).toBe(HTTP_OK);
+        const tasksOf = (body: { plan: { stages: { tasks: { executor: string; executorScope: string }[] }[] } }) =>
+            body.plan.stages.flatMap((stage) => stage.tasks).map((t) => `${t.executorScope}:${t.executor}`);
+        expect(tasksOf(validated.json())).toEqual(['org:Main', 'org:Main', 'org:Main']);
         expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
-        expect(asked).toBe(0);
+        expect(tasksOf((await call('GET', `/api/batches/${id}`)).json())).toEqual(['org:Main', 'org:Main', 'org:Main']);
+    });
+
+    it('refuses a plan that names no executor with 409 NO_EXECUTOR when the starter has no usable profile', async () => {
+        const userExecutors = {
+            async configFor() {
+                return null;
+            },
+            async resolvedDefault() {
+                return null;
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create, batches } = await setup({ userExecutors });
+        const { id } = await create(plan());
+        for (const route of ['validate', 'start']) {
+            const response = await call('POST', `/api/batches/${id}/${route}`, route === 'start' ? { version: 1 } : {});
+            expect(response.statusCode, route).toBe(HTTP_CONFLICT);
+            expect(response.json(), route).toMatchObject({ code: 'NO_EXECUTOR', error: noExecutorMessage });
+        }
+        expect(batches.writes).toEqual(['create']);
     });
 
     it('refuses an executor the named scope does not hold, on validate and on start, before anything dispatches', async () => {

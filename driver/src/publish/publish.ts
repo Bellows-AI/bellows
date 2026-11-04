@@ -298,6 +298,25 @@ const PUBLISH_CAUSES: readonly [FailureCause, RegExp][] = [
 export const publishCauseOf = (message: string): FailureCause =>
     PUBLISH_CAUSES.find(([, pattern]) => pattern.test(message))?.[0] ?? 'unknown';
 
+/** GitHub (or the App's installation) refused this credential for good: no new token changes it. */
+const PUBLISH_REFUSAL = /Permission to .* denied|Resource not accessible by integration|protected branch hook declined/;
+/** GitHub rejected the token it was handed, or git found none: a fresh one may be accepted. */
+const CREDENTIAL_REJECTED = /Invalid username or token|Authentication failed|could not read Username/;
+/** GitHub failed on its side; the same publish a few seconds later may land. */
+const GITHUB_SERVER_ERROR = /returned error: 5\d\d|HTTP 5\d\d|GraphQL: Something went wrong/;
+
+/**
+ * Whether asking for a NEW GitHub token and publishing again can turn this failure into a landing
+ * (BEL-253): a missing token (`tokenMissing`, the board's reclaim lease still pending), a token
+ * GitHub rejected, or a GitHub 5xx. A refusal, a conflict and a stale revision are never retried.
+ */
+export function publishRetryable(result: PublishResult, tokenMissing: boolean): boolean {
+    if (result.ok || result.stale || result.cause === 'conflict') return false;
+    const reason = result.reason ?? '';
+    if (PUBLISH_REFUSAL.test(reason)) return false;
+    return tokenMissing || CREDENTIAL_REJECTED.test(reason) || GITHUB_SERVER_ERROR.test(reason);
+}
+
 export { UUID };
 
 /**

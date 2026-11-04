@@ -2,8 +2,13 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
+import type { OAuthStore } from './auth/oauth-store.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
+import { mcpRoutes } from './mcp/routes.js';
+import { createCimdFetcher } from './oauth/cimd-fetch.js';
+import { createClientResolver } from './oauth/client-resolver.js';
+import { oauthRoutes } from './routes/oauth.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
@@ -12,11 +17,13 @@ import { agentTitleRoutes } from './routes/agent-title.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import { batchRoutes } from './routes/batches/batches.js';
+import type { UploadCapabilityStore } from './attachments/upload-capability-store.js';
 import { attachmentRoutes } from './routes/attachments.js';
 import { connectionRoutes, type DestroyRevokedSecret } from './routes/connections.js';
 import { type ConnectionListing, connectionCredentialRoutes } from './routes/connection-credential.js';
 import type { OperationReceipts } from './db/operation-receipts.js';
 import { operationReceiptRoutes } from './routes/operation-receipts.js';
+import { integrationCatalogRoutes } from './routes/integration-catalog.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
@@ -29,6 +36,7 @@ import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
 import { registerTitleRoute } from './routes/jobs/job-handlers-title.js';
+import { preflightRoutes } from './routes/jobs/job-preflight.js';
 import { jobRoutes } from './routes/jobs/jobs.js';
 import { prometheusRoutes } from './routes/prometheus.js';
 import { repoRoutes } from './routes/repos.js';
@@ -115,6 +123,8 @@ export interface AppDeps {
     commercePlanWriter?: CommercePlanWriter | undefined;
     /** The delivery channels a subscription may name; absent means none, so every create is UNKNOWN_CONNECTOR. */
     notificationConnectors?: ConnectorRegistry | undefined;
+    /** The inbound OAuth store: resolves an MCP access token and backs the authorization server; github mode with MCP on needs it. */
+    oauth?: OAuthStore | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -143,6 +153,8 @@ export interface AppDeps {
     destroyRevokedSecret?: DestroyRevokedSecret | undefined;
     /** Uploads one process buffers at once; absent takes the route's default. */
     attachmentMaxInFlight?: number | undefined;
+    /** The single-use upload capabilities (BEL-248); with it the upload-request routes and the capability PUT exist. */
+    uploadCapabilities?: UploadCapabilityStore | undefined;
 }
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR
@@ -161,7 +173,35 @@ export function csp(dev: boolean): string {
         "font-src 'self'",
         "base-uri 'none'",
         "form-action 'none'",
+        // Nothing embeds the SPA; the consent screen (BEL-103) must never be framed.
+        "frame-ancestors 'none'",
     ].join('; ');
+}
+
+/**
+ * The MCP endpoint exists exactly when MCP_ENABLED, and only behind the auth hook: github mode resolves its bearer
+ * through the OAuth store, so enabling it without one is a wiring fault, not a quiet 404.
+ */
+async function registerMcp(
+    app: FastifyInstance,
+    {
+        config,
+        auth,
+        oauth,
+        version,
+        metrics,
+    }: Pick<AppDeps, 'config' | 'oauth' | 'metrics'> & { auth: AuthStore; version: string }
+): Promise<void> {
+    if (!config.mcp.enabled) return;
+    if (config.auth.mode === 'github' && !oauth) throw new Error('MCP_ENABLED needs the OAuth store');
+    // Discovery, authorize, consent, token and revoke exist only where there are accounts to authorize.
+    if (config.auth.mode === 'github' && oauth) {
+        // A board on http loopback is a dev board: its clients may be too (the config refuses http anywhere else).
+        const fetcher = createCimdFetcher({ allowLoopback: new URL(config.mcp.resource).protocol === 'http:' });
+        const resolveClient = createClientResolver({ oauth, fetcher, log: app.log });
+        await app.register(oauthRoutes({ config, auth, oauth, resolveClient }));
+    }
+    await app.register(mcpRoutes, { version, origin: new URL(config.mcp.resource).origin, metrics });
 }
 
 /** Each org's own installation mints its runners' tokens; an org without one has none to give. */
@@ -262,10 +302,12 @@ export async function buildApp({
     connectionListing,
     destroyRevokedSecret,
     attachmentMaxInFlight,
+    uploadCapabilities,
     identity,
     appSlug,
     installationListing,
     commercePlanWriter,
+    oauth,
     notificationConnectors = createConnectorRegistry([]),
     ready,
     version = readVersion(),
@@ -278,6 +320,7 @@ export async function buildApp({
     const header = csp(config.webRoot === null);
     app.addHook('onSend', async (_request, reply) => {
         reply.header('Content-Security-Policy', header);
+        reply.header('X-Frame-Options', 'DENY');
         reply.header('X-Content-Type-Options', 'nosniff');
         reply.header('Referrer-Policy', 'no-referrer');
     });
@@ -299,7 +342,7 @@ export async function buildApp({
     // Before every route, so nothing can be registered ahead of the wall by accident. Without a
     // store the property is still decorated, so `request.auth` reads the same everywhere rather than
     // being absent in one configuration and null in another.
-    if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfJob, orgOfReclaim });
+    if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfJob, orgOfReclaim, oauth });
     else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes(ready));
@@ -318,6 +361,7 @@ export async function buildApp({
         if (config.webhookSecret) {
             await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
+        await registerMcp(app, { config, auth, oauth, version, metrics });
     }
     await app.register(skillRoutes(skillCatalog, orgs));
     await app.register(statsRoutes(config, orgs, auth, now));
@@ -327,13 +371,24 @@ export async function buildApp({
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
     await app.register(jobRoutes({ orgs, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
     registerTitleRoute(app, orgs);
+    await app.register(preflightRoutes(orgs));
     if (metrics) await app.register(prometheusRoutes(metrics));
-    await app.register(attachmentRoutes({ orgs, maxInFlight: attachmentMaxInFlight }));
+    await app.register(
+        attachmentRoutes({
+            orgs,
+            maxInFlight: attachmentMaxInFlight,
+            uploads: uploadCapabilities,
+            requireBinding: config.auth.mode !== 'none',
+            origin: config.mcp.enabled ? new URL(config.mcp.resource).origin : null,
+        })
+    );
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
     await app.register(batchRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
+    // The provider catalog exists on every board; where no OAuth client is wired every OAuth provider reads `unavailable`.
+    await app.register(integrationCatalogRoutes({ orgs, configured: integrations?.configured }));
     // Managed connector connections (list, disconnect) and the runner-facing routes that spend them.
     await app.register(
         connectionRoutes({
@@ -374,7 +429,8 @@ export async function buildApp({
         const { default: fastifyStatic } = await import('@fastify/static');
         await app.register(fastifyStatic, { root: config.webRoot });
         app.setNotFoundHandler(async (request, reply) => {
-            if (request.url.startsWith('/api/')) return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
+            if (request.url.startsWith('/api/') || request.url.startsWith('/.well-known/'))
+                return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
             return reply.sendFile('index.html');
         });
     }

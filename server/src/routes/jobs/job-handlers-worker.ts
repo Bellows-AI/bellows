@@ -2,7 +2,7 @@ import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { refusedAsUnusable } from './executor-usable.js';
+import { usableSelection } from './executor-usable.js';
 import {
     type FairBoardScanner,
     boardsFor,
@@ -218,7 +218,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
 
     const simple = checkedFields(reply, fields);
     if (!simple) return reply;
-    const { title, repo, executor, executorScope } = simple;
+    const { title, repo } = simple;
     const selectedSkills = selectedSkillsOf(reply, fields.skills);
     if (selectedSkills === null) return reply;
     const skills = selectedSkills;
@@ -239,16 +239,14 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
      */
     const workflowsStore = await workflowsFor(orgs, request);
     const executorsStore = await executorsFor(orgs, request);
-    if (
-        await refusedAsUnusable(request, reply, {
-            executors: executorsStore,
-            createdBy,
-            executor,
-            scope: executorScope,
-        })
-    ) {
-        return reply;
-    }
+    const selection = await usableSelection(request, reply, {
+        executors: executorsStore,
+        createdBy,
+        executor: simple.executor,
+        scope: simple.executorScope,
+    });
+    if (!selection) return reply;
+    const { executor, scope: executorScope } = selection;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;
     const resolved = await resolveLaunchWorkflow(request, reply, {

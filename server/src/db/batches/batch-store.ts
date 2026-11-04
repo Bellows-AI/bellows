@@ -10,7 +10,7 @@ import {
     writeResolved,
 } from './batch-store-rows.js';
 import { closeBatchTask } from './batch-store-close.js';
-import { readReport } from './batch-store-report.js';
+import { readReport, readSnapshot } from './batch-store-report.js';
 import {
     acceptBatchTask,
     cancelBatch,
@@ -166,6 +166,11 @@ export function createBatchStore({
         async retry(id, taskKey) {
             await gate();
             return retryBatchTask(deps, id, taskKey);
+        },
+
+        async snapshot(id) {
+            await gate();
+            return readSnapshot(sql, { orgId, id }, { ...(telemetrySource ? { telemetrySource } : {}) });
         },
 
         async report(id) {

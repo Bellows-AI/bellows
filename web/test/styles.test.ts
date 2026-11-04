@@ -3,7 +3,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { INTEGRATION_PROVIDERS } from '../src/settings/integration-providers.js';
+import { INTEGRATION_CATALOG } from '@factory-ai/core';
 
 const webSrc = fileURLToPath(new URL('../src', import.meta.url));
 const docPath = fileURLToPath(new URL('../../docs/design-system.md', import.meta.url));
@@ -351,7 +351,7 @@ describe('the stylesheet', () => {
         const css = stripComments(shippedCss());
         const blocks = tokenSpans(css).map(([start, end]) => css.slice(start, end));
         expect(blocks.length, 'expected exactly two theme blocks').toBe(2);
-        for (const provider of INTEGRATION_PROVIDERS) {
+        for (const provider of INTEGRATION_CATALOG) {
             for (const block of blocks) expect(block, provider.id).toMatch(new RegExp(`--brand-${provider.id}\\s*:`));
         }
     });
