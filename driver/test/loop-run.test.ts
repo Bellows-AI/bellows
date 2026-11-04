@@ -7,7 +7,8 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { runJob } from '../src/loop/loop-run.js';
-import type { SyncResult } from '../src/publish/publish.js';
+import { PUBLISH_BACKOFF_MS } from '../src/loop/loop-publish-retry.js';
+import { publishFailed, STALE_REVISION_REASON, type PublishResult, type SyncResult } from '../src/publish/publish.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
@@ -441,5 +442,106 @@ describe('a normal run reaches observed before its verdict (issue #845, plan F6)
 
         expect(board.completed).toHaveLength(1);
         expect(board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+});
+
+describe('the end-of-run publish retries a rejected or missing token (BEL-253)', () => {
+    const landed: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'fix/1',
+        prUrl: 'https://github.com/o/r/pull/1',
+        reason: null,
+        cause: null,
+        repository: 'o/r',
+        baseBranch: 'main',
+        prNumber: 1,
+    };
+    const rejected = publishFailed(
+        "git push: remote: Invalid username or token.\nfatal: Authentication failed for 'https://github.com/o/r.git/'",
+        'denied'
+    );
+
+    /** One attempt with the publish answers and token asks scripted; `sleeps` records the backoff. */
+    async function publishing(publishSequence: PublishResult[], githubTokens: (string | null)[]) {
+        const board = stubBoard([], { githubTokens }).board;
+        const runner = stubRunner(async () => ok(), { publishSequence });
+        // The backoff between tries, read off the retry's own log line: the heartbeat sleeps too.
+        const sleeps: number[] = [];
+        const rt = stubRuntime(board, runner, {
+            log: (line) => {
+                const wait = /retrying in (\d+) ms/.exec(line)?.[1];
+                if (wait) sleeps.push(Number(wait));
+            },
+        });
+        await runJob(rt, job(1));
+        return { board, runner, sleeps, verdict: board.completed[0] };
+    }
+
+    it('retries a rejected token with a new one and publishes', async () => {
+        const r = await publishing([rejected, landed], ['ghs_a', 'ghs_b']);
+
+        expect(r.board.githubAsks).toHaveLength(2);
+        expect(r.runner.githubTokens).toEqual(['ghs_a', 'ghs_b']);
+        expect(r.verdict).toMatchObject({ status: 'succeeded', publication: { prNumber: 1 } });
+        expect(r.sleeps).toEqual([PUBLISH_BACKOFF_MS[0]]);
+    });
+
+    it('retries when the board issued no token, then publishes with the one it issues', async () => {
+        const noToken = publishFailed("git push: fatal: could not read Username for 'https://github.com'", 'denied');
+        const r = await publishing([noToken, landed], [null, 'ghs_b']);
+
+        expect(r.runner.githubTokens).toEqual([undefined, 'ghs_b']);
+        expect(r.verdict).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('retries a GitHub server error after the push landed', async () => {
+        const server = publishFailed(
+            'gh pr create: GraphQL: Something went wrong while executing your query',
+            'unknown'
+        );
+        const r = await publishing([server, landed], ['ghs_a', 'ghs_b']);
+
+        expect(r.runner.published).toHaveLength(2);
+        expect(r.verdict).toMatchObject({ status: 'succeeded' });
+    });
+
+    // Guard, not RED: a real refusal already failed at once before the retry existed.
+    it('fails at once on a real refusal', async () => {
+        const refusal = publishFailed(
+            'git push: remote: Permission to acme/app.git denied to bot.\nfatal: Authentication failed',
+            'denied'
+        );
+        const r = await publishing([refusal], ['ghs_a', 'ghs_b']);
+
+        expect(r.runner.published).toHaveLength(1);
+        expect(r.board.githubAsks).toHaveLength(1);
+        expect(r.verdict).toMatchObject({ status: 'failed', failureKind: 'publish', failureCause: 'denied' });
+        expect(r.sleeps).toEqual([]);
+    });
+
+    // Guard, not RED: a conflict and a stale revision were never retried.
+    it.each([
+        ['a conflict', publishFailed('git push: ! [rejected] HEAD (non-fast-forward)', 'conflict'), 'publish'],
+        ['a stale revision', { ...publishFailed(STALE_REVISION_REASON, null), stale: true as const }, 'policy'],
+    ])('fails at once on %s', async (_name, result, failureKind) => {
+        const r = await publishing([result], ['ghs_a', 'ghs_b']);
+
+        expect(r.runner.published).toHaveLength(1);
+        expect(r.verdict).toMatchObject({ status: 'failed', failureKind });
+    });
+
+    it('gives up after three tries with the last reason', async () => {
+        const first = publishFailed('git push: fatal: unable to access: returned error: 502', 'transport');
+        const second = publishFailed('git push: fatal: unable to access: returned error: 503', 'transport');
+        const third = publishFailed('gh pr create: HTTP 500: Internal Server Error', 'transport');
+        const r = await publishing([first, second, third], ['ghs_a', 'ghs_b', 'ghs_c']);
+
+        expect(r.runner.published).toHaveLength(3);
+        expect(r.board.githubAsks).toHaveLength(3);
+        expect(r.sleeps).toEqual([...PUBLISH_BACKOFF_MS]);
+        expect(r.verdict).toMatchObject({ status: 'failed', failureKind: 'publish' });
+        expect(r.verdict?.output).toContain('HTTP 500');
+        expect(r.verdict?.output).not.toContain('returned error: 502');
     });
 });
