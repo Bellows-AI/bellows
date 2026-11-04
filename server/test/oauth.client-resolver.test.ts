@@ -65,6 +65,23 @@ describe('the client resolver', () => {
         expect(fetches).toBe(1);
     });
 
+    it('accepts a document that also lists a grant this server does not issue, keeping only the issued ones', async () => {
+        // Shape of the claude.ai connector's client metadata document.
+        const claude = 'https://claude.ai/oauth/mcp-oauth-client-metadata';
+        const { resolve } = rig(null, async () => ({
+            client_id: claude,
+            client_name: 'Claude',
+            client_uri: 'https://claude.ai',
+            redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+            grant_types: ['authorization_code', 'refresh_token', 'urn:ietf:params:oauth:grant-type:jwt-bearer'],
+            response_types: ['code'],
+            token_endpoint_auth_method: 'none',
+        }));
+        const client = await resolve(claude);
+        expect(client).toMatchObject({ clientId: claude, redirectUris: ['https://claude.ai/api/mcp/auth_callback'] });
+        expect(client?.metadata).toMatchObject({ grant_types: ['authorization_code', 'refresh_token'] });
+    });
+
     it('refetches after the TTL and takes the new document', async () => {
         const { resolve } = rig(cached(CIMD_TTL_MS + 1), async () => DOC);
         expect((await resolve(ID))?.redirectUris).toEqual(DOC.redirect_uris);
