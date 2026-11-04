@@ -1,7 +1,7 @@
 import { Client, StreamableHTTPClientTransport, UnauthorizedError } from '@modelcontextprotocol/client';
 import type { OAuthClientProvider } from '@modelcontextprotocol/client';
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { AUTH_PORT } from '../playwright.config.js';
 import { throughSignIn } from './signin.js';
 
@@ -26,6 +26,7 @@ const REDIRECT_PORT = 59174;
 const REDIRECT = `http://127.0.0.1:${REDIRECT_PORT}/callback`;
 const CLIENT_NAME = 'E2E MCP Connect';
 const WAIT_SECONDS = 1;
+const NARROW_WIDTH = 390;
 
 /** An in-memory OAuth client: what the SDK needs to run discovery, registration, PKCE and the token exchange. */
 function memoryProvider(): OAuthClientProvider & { authorizationUrl: URL | undefined } {
@@ -91,6 +92,24 @@ async function approve(page: Page, authorizationUrl: URL): Promise<URLSearchPara
     return new URL(page.url()).searchParams;
 }
 
+/** The grant's Access text wraps instead of overflowing, and Disconnect is on screen with no page scroll. */
+async function expectRowFits(page: Page, row: Locator): Promise<void> {
+    const access = row.locator('td[data-label="Access"]');
+    const overflow = await access.evaluate((cell) => cell.scrollWidth - cell.clientWidth);
+    expect(overflow, 'the Access cell does not clip its text').toBeLessThanOrEqual(0);
+    const box = await row.getByRole('button', { name: /^Disconnect / }).boundingBox();
+    const viewport = page.viewportSize();
+    expect(box, 'the Disconnect button is rendered').not.toBeNull();
+    expect((box?.x ?? 0) + (box?.width ?? 0), 'Disconnect is inside the viewport').toBeLessThanOrEqual(
+        viewport?.width ?? 0
+    );
+    expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+    const pageOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(pageOverflow, 'the page does not scroll sideways').toBeLessThanOrEqual(0);
+    const wrap = await page.getByLabel('Connected apps list').evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(wrap, 'the table fits its card without its own scroll').toBeLessThanOrEqual(0);
+}
+
 test.beforeEach(async ({ page }) => {
     await throughSignIn(page);
 });
@@ -151,6 +170,12 @@ test('an SDK client is challenged, connects through the consent page, runs the t
     const row = page.getByRole('row', { name: new RegExp(CLIENT_NAME) });
     await expect(row).toBeVisible();
     await page.screenshot({ path: `${SHOTS}/mcp-connect-connected-apps.png`, fullPage: true });
+    await expectRowFits(page, row);
+    await page.setViewportSize({ width: NARROW_WIDTH, height: 800 });
+    await expect(row).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/mcp-connect-connected-apps-narrow.png`, fullPage: true });
+    await expectRowFits(page, row);
+    await page.setViewportSize({ width: 1280, height: 720 });
     await row.getByRole('button', { name: `Disconnect ${CLIENT_NAME}` }).click();
     const revoked = page.waitForResponse((r) => r.url().includes('/revoke') && r.request().method() === 'POST');
     await page.getByRole('dialog').getByRole('button', { name: 'Disconnect' }).click();

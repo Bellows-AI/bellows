@@ -16,7 +16,9 @@ function GrantRow({ grant, busy, onRevoke }: { grant: OAuthGrantView; busy: bool
                 {grant.client.kind === 'dcr' ? <span className="muted"> (unverified name)</span> : null}
             </td>
             <td data-label="Org">{grant.org.name}</td>
-            <td data-label="Access">{grant.scopes.map(scopeLabel).join('; ')}</td>
+            <td className="cell-wrap" data-label="Access">
+                {grant.scopes.map(scopeLabel).join('; ')}
+            </td>
             <td data-label="Connected">{taskTime(grant.createdAt)}</td>
             <td data-label="Last token issued">{taskTime(grant.lastIssuedAt)}</td>
             <td data-label="Disconnect">
