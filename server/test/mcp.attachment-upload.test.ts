@@ -12,6 +12,7 @@ import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import { createAttachmentStore } from '../src/attachments/attachment-store.js';
 import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { SESSION_COOKIE, hashToken, sign } from '../src/auth/session.js';
+import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { TEST_SESSION_SECRET } from './helpers-config.js';
 import { memoryAttachmentRows, pdfBytes, pngBytes, textBytes } from './helpers-attachments.js';
@@ -45,6 +46,7 @@ const TOKENS = {
     alice: 'mat_upload-alice-token-0123456789',
     writeOnly: 'mat_upload-writer-token-0123456789',
     readOnly: 'mat_upload-reader-token-0123456789',
+    unbound: 'mat_upload-unbound-token-0123456789',
     bob: 'mat_upload-bob-token-0123456789',
 } as const;
 type Who = keyof typeof TOKENS;
@@ -64,35 +66,44 @@ const freePort = (): Promise<number> =>
         });
     });
 
-async function boot({ now = Date.now }: { now?: () => number } = {}) {
+async function boot({ now = Date.now, mode = 'github' }: { now?: () => number; mode?: 'github' | 'none' } = {}) {
     const port = await freePort();
     const publicUrl = `http://${LOCALHOST}:${port}`;
     const resource = `${publicUrl}/api/mcp`;
     const auth = memoryAuthStore();
     auth.seedOrg(OTHER_ORG);
+    if (mode === 'none') auth.seedLocalUser(LOCAL_ORG_ID);
     const people = {
         alice: auth.seedMember(ORG, 'alice', 'member'),
         writeOnly: auth.seedMember(ORG, 'writer', 'member'),
         readOnly: auth.seedMember(ORG, 'reader', 'member'),
         bob: auth.seedMember(OTHER_ORG, 'bob', 'member'),
+        unbound: auth.seedMember(ORG, 'unbound', 'member'),
     };
     const scopes: Record<Who, McpCaller['scopes']> = {
         alice: ['factory:read', 'factory:write'],
         writeOnly: ['factory:write'],
         readOnly: ['factory:read'],
         bob: ['factory:read', 'factory:write'],
+        unbound: ['factory:read', 'factory:write'],
     };
     const tokens = new Map<string, McpCaller>(
         (Object.keys(TOKENS) as Who[]).map((who) => [
             hashToken(TOKENS[who]).toString('hex'),
-            { ...people[who], scopes: scopes[who], clientId: 'c', resource, familyId: `family-${who}` },
+            {
+                ...people[who],
+                scopes: scopes[who],
+                clientId: 'c',
+                resource,
+                familyId: who === 'unbound' ? '' : `family-${who}`,
+            },
         ])
     );
     const oauth: Pick<OAuthStore, 'findAccessToken'> = {
         findAccessToken: async (hash) => tokens.get(hash.toString('hex')) ?? null,
     };
     const config = testConfig({
-        auth: githubAuth({ publicUrl }),
+        ...(mode === 'github' ? { auth: githubAuth({ publicUrl }) } : {}),
         port,
         mcp: { enabled: true, resource, trustedOrigins: [] },
     });
@@ -544,6 +555,66 @@ describe('PUT /api/attachments/uploads/:capability', () => {
             expect(response.json().code).toBe(ERROR_CODES.UPLOAD_CAPABILITY_INVALID);
             expect(world.attachments()).toHaveLength(0);
         });
+    });
+
+    it('refuses to mint a link it cannot bind: a credential with no grant, session or token behind it', async () => {
+        const world = await boot();
+
+        const made = await call(world.url, 'unbound', 'create_attachment_upload', {});
+
+        expect(made.isError).toBe(true);
+        expect(world.caps.rows.size).toBe(0);
+    });
+
+    it('on an AUTH_MODE=none board, mints for the local caller with nothing to bind, and the PUT works', async () => {
+        const world = await boot({ mode: 'none' });
+        const minted = await world.app.inject({
+            method: 'POST',
+            url: '/api/attachments/upload-requests',
+            payload: {},
+        });
+        expect(minted.statusCode).toBe(HTTP_CREATED);
+        const [row] = [...world.caps.rows.values()];
+        expect([row?.familyId ?? null, row?.sessionHash ?? null, row?.accessTokenId ?? null]).toEqual([
+            null,
+            null,
+            null,
+        ]);
+
+        const response = await put(world, pathOf(minted.json().uploadUrl), pngBytes());
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+    });
+
+    it('holds a chunked body to exactly maxBytes: that many is accepted, one more is refused', async () => {
+        const world = await boot();
+        const png = Buffer.from(pngBytes());
+        const chunked = (path: string) =>
+            new Promise<number>((resolve) => {
+                const req = httpRequest({
+                    host: LOCALHOST,
+                    port: world.port,
+                    path,
+                    method: 'PUT',
+                    headers: {
+                        'content-type': OCTET_STREAM_CONTENT_TYPE,
+                        'transfer-encoding': 'chunked',
+                        [ATTACHMENT_NAME_HEADER]: 'edge.png',
+                    },
+                });
+                req.on('response', (res) => {
+                    res.resume();
+                    res.on('end', () => resolve(res.statusCode ?? 0));
+                });
+                req.on('error', () => undefined);
+                req.write(png.subarray(0, 10));
+                req.end(png.subarray(10));
+            });
+        const exact = await mint(world, 'alice', { maxBytes: png.length });
+        const under = await mint(world, 'alice', { maxBytes: png.length - 1 });
+
+        expect(await chunked(pathOf(exact.uploadUrl))).toBe(HTTP_CREATED);
+        expect(await chunked(pathOf(under.uploadUrl))).toBe(HTTP_PAYLOAD_TOO_LARGE);
     });
 
     it('requires the file name', async () => {

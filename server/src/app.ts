@@ -368,6 +368,7 @@ export async function buildApp({
             orgs,
             maxInFlight: attachmentMaxInFlight,
             uploads: uploadCapabilities,
+            requireBinding: config.auth.mode !== 'none',
             origin: config.mcp.enabled ? new URL(config.mcp.resource).origin : null,
         })
     );

@@ -125,6 +125,7 @@ export const attachmentRoutes =
         maxInFlight = DEFAULT_MAX_IN_FLIGHT_UPLOADS,
         uploads,
         origin = null,
+        requireBinding = true,
     }: {
         orgs: OrgRegistry;
         maxInFlight?: number | undefined;
@@ -132,6 +133,8 @@ export const attachmentRoutes =
         uploads?: UploadCapabilityStore | undefined;
         /** The board's public origin, which an upload URL handed to a client is rooted at; null where it has none. */
         origin?: string | null | undefined;
+        /** Refuse a mint whose caller carries no credential to bind; false only for AUTH_MODE=none. */
+        requireBinding?: boolean | undefined;
     }): FastifyPluginAsync =>
     async (app) => {
         // A child scope, so the raw-bytes parser reaches only these routes.
@@ -167,6 +170,6 @@ export const attachmentRoutes =
                 handleContent(orgs, request, reply)
             );
             scope.delete('/api/attachments/:id', (request, reply) => handleDelete(orgs, request, reply));
-            if (uploads) registerUploadRoutes(scope, { orgs, uploads, origin, admit, log: app.log });
+            if (uploads) registerUploadRoutes(scope, { orgs, uploads, origin, requireBinding, admit, log: app.log });
         });
     };

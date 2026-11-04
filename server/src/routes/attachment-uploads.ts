@@ -19,6 +19,7 @@ import { IDEMPOTENCY_REPLAYED_HEADER } from './jobs/job-idempotency.js';
 const HTTP_CREATED = 201;
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
+const HTTP_FORBIDDEN = 403;
 const CONTROL_BODY_LIMIT = 4096;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACCEPTED_TYPES: readonly string[] = ATTACHMENT_FORMATS.map((format) => format.mediaType);
@@ -45,6 +46,8 @@ export interface UploadRouteDeps {
     origin: string | null;
     /** The in-flight cap the buffered PUT shares with `POST /api/attachments`. */
     admit: (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
+    /** True on every board that has credentials (all but AUTH_MODE=none): a mint with no credential to bind is refused. */
+    requireBinding: boolean;
     /** The app's own logger: the PUT route is silenced, because its URL is the credential. */
     log: FastifyBaseLogger;
 }
@@ -102,6 +105,11 @@ async function handleMint(deps: UploadRouteDeps, request: FastifyRequest, reply:
     const body = MintBody.safeParse(request.body ?? {});
     if (!body.success) {
         return bad(reply, ERROR_CODES.BAD_ATTACHMENT, `Invalid upload request: ${body.error.issues[0]?.message ?? ''}`);
+    }
+    const { grantFamilyId, sessionHash, accessTokenId } = ctx.caller;
+    // A credential path that forgets its binding must not mint a link that outlives logout or revocation.
+    if (deps.requireBinding && !grantFamilyId && !sessionHash && !accessTokenId) {
+        return bad(reply, ERROR_CODES.FORBIDDEN, 'This credential cannot mint an upload link', HTTP_FORBIDDEN);
     }
     const maxBytes = body.data.maxBytes ?? MAX_FILE_BYTES;
     const mediaTypes = body.data.mediaTypes ?? ACCEPTED_TYPES;
