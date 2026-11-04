@@ -88,6 +88,37 @@ export const requiredScopes = (tool: Tool): readonly Scope[] => {
 
 const callerKey = (caller: Caller): string => `${caller.org.id}:${caller.user.id}`;
 
+/** A JSON Schema with every `additionalProperties: false` dropped, at any depth. */
+const opened = (schema: unknown): unknown => {
+    if (Array.isArray(schema)) return schema.map(opened);
+    if (typeof schema !== 'object' || schema === null) return schema;
+    return Object.fromEntries(
+        Object.entries(schema)
+            .filter(([key, value]) => !(key === 'additionalProperties' && value === false))
+            .map(([key, value]) => [key, opened(value)])
+    );
+};
+
+/**
+ * The output schema as `tools/list` advertises it: zod still validates, but the JSON Schema admits fields it does not
+ * name. A client validates `structuredContent` against the schema it listed, so a closed one would reject every field
+ * a later board adds until the client lists the tools again.
+ */
+const openOutput = <S extends z.ZodType>(schema: S): S => {
+    const standard = schema['~standard'];
+    const converter = standard.jsonSchema;
+    return {
+        '~standard': {
+            ...standard,
+            jsonSchema: {
+                input: converter.input,
+                output: (options: Parameters<typeof converter.output>[0]) =>
+                    opened(converter.output(options)) as Record<string, unknown>,
+            },
+        },
+    } as unknown as S;
+};
+
 /** Registers every tool on a per-request server. */
 export function registerTools(
     server: McpServer,
@@ -100,7 +131,12 @@ export function registerTools(
         const inputSchema = tool.confirm ? tool.input.extend({ confirm: CONFIRM_FIELD }) : tool.input;
         server.registerTool(
             tool.name,
-            { description: tool.description, inputSchema, outputSchema: tool.output, annotations: tool.annotations },
+            {
+                description: tool.description,
+                inputSchema,
+                outputSchema: openOutput(tool.output),
+                annotations: tool.annotations,
+            },
             async (args: Record<string, unknown>, ctx: ServerContext): Promise<CallToolResult> => {
                 const started = performance.now();
                 const tagged = await execute({ tool, args, ctx, caller, runtime, now });

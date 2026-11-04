@@ -217,6 +217,22 @@ const WRITE_CALLS: readonly (readonly [string, Record<string, unknown>])[] = [
 ];
 
 describe('the task write tools', () => {
+    it('advertises every output schema open to fields added later, so a client that cached it keeps working', async () => {
+        const { url } = await boot({ calls: [] });
+        const closed = (schema: unknown): boolean =>
+            typeof schema === 'object' &&
+            schema !== null &&
+            (('additionalProperties' in schema &&
+                (schema as { additionalProperties: unknown }).additionalProperties === false) ||
+                Object.values(schema).some(closed));
+        const tools = await listed(url);
+        expect(tools.length).toBeGreaterThan(30);
+        for (const tool of tools) {
+            expect(tool.outputSchema, tool.name).toBeDefined();
+            expect(closed(tool.outputSchema), tool.name).toBe(false);
+        }
+    });
+
     it('lists exactly the write tools with the annotations the issue names', async () => {
         const { url } = await boot({ calls: [] });
         const tools = await listed(url);
