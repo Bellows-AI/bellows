@@ -9,7 +9,7 @@ import {
 } from '../bounded-wait.js';
 import { inconclusive, judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
-import { BOARD_STATUSES } from './run-state.js';
+import type { BOARD_STATUSES } from './run-state.js';
 import { jobPath } from './runs.js';
 import { headOf, TaskIdInput, TaskResultSchema, Thread, taskResultOf } from './task-detail.js';
 

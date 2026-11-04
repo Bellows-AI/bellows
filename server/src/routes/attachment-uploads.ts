@@ -1,3 +1,4 @@
+import { Transform } from 'node:stream';
 import { ATTACHMENT_FORMATS, ERROR_CODES, MAX_FILE_BYTES } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -50,6 +51,29 @@ export interface UploadRouteDeps {
 
 const capabilityOf = (request: FastifyRequest): string => (request.params as { capability: string }).capability;
 
+/** Raised by the byte counter below the moment a streamed body outgrows its capability. */
+class UploadTooLargeError extends Error {}
+
+const tooLarge = (reply: FastifyReply, maxBytes: number) =>
+    bad(
+        reply,
+        ERROR_CODES.ATTACHMENT_TOO_LARGE,
+        `The file is larger than the ${maxBytes} bytes this upload allows`,
+        HTTP_PAYLOAD_TOO_LARGE
+    );
+
+/** Counts the body as it arrives and fails it past `maxBytes`, so a chunked body is never buffered beyond its link. */
+const capped = (maxBytes: number) => {
+    let seen = 0;
+    return new Transform({
+        transform(chunk: Buffer, _encoding, done) {
+            seen += chunk.length;
+            if (seen > maxBytes) return done(new UploadTooLargeError());
+            done(null, chunk);
+        },
+    });
+};
+
 /** The grant for a presented capability, or null once the refusal has been sent. */
 async function liveGrant(deps: UploadRouteDeps, request: FastifyRequest, reply: FastifyReply) {
     let resolution: Awaited<ReturnType<UploadCapabilityStore['resolve']>>;
@@ -86,6 +110,8 @@ async function handleMint(deps: UploadRouteDeps, request: FastifyRequest, reply:
             orgId: ctx.caller.org.id,
             userId: ctx.uploaderId,
             familyId: ctx.caller.grantFamilyId ?? null,
+            sessionHash: ctx.caller.sessionHash ?? null,
+            accessTokenId: ctx.caller.accessTokenId ?? null,
             maxBytes,
             mediaTypes,
         })
@@ -173,24 +199,33 @@ export function registerUploadRoutes(scope: FastifyInstance, deps: UploadRouteDe
             bodyLimit: MAX_FILE_BYTES,
             // The URL is the credential, so no request line, error or completion for this route reaches the log.
             logLevel: 'silent',
+            // Before the body is read: an unknown, expired or revoked link and an over-long declared body cost
+            // nothing, and only a link that passes holds one of the shared upload slots.
             onRequest: [
-                deps.admit,
-                // Before the body is read: an unknown, expired or revoked link and an over-long declared body cost nothing.
                 async (request, reply) => {
                     const grant = await liveGrant(deps, request, reply);
                     if (!grant) return reply;
                     const declared = Number(request.headers['content-length']);
-                    if (Number.isFinite(declared) && declared > grant.maxBytes) {
-                        return bad(
-                            reply,
-                            ERROR_CODES.ATTACHMENT_TOO_LARGE,
-                            `The file is larger than the ${grant.maxBytes} bytes this upload allows`,
-                            HTTP_PAYLOAD_TOO_LARGE
-                        );
-                    }
+                    if (Number.isFinite(declared) && declared > grant.maxBytes) return tooLarge(reply, grant.maxBytes);
                     hold.set(request, grant);
                 },
+                deps.admit,
             ],
+            // A body with no length is held to the link's limit as it streams, not after it was buffered.
+            preParsing: async (request, _reply, payload) => {
+                const grant = hold.get(request);
+                if (!grant) return payload;
+                const guard = capped(grant.maxBytes);
+                payload.once('error', (error) => guard.destroy(error));
+                return payload.pipe(guard);
+            },
+            errorHandler: (error, request, reply) => {
+                const grant = hold.get(request);
+                // The rest of the body is never read, so the connection ends with the answer.
+                if (error instanceof UploadTooLargeError && grant)
+                    return tooLarge(reply.header('connection', 'close'), grant.maxBytes);
+                return reply.send(error);
+            },
         },
         (request, reply) => handlePut(deps, request, reply, hold)
     );

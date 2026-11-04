@@ -74,6 +74,10 @@ export interface Caller {
     scopes: readonly Scope[] | 'all';
     /** The OAuth grant family an MCP access token belongs to; absent for every other credential. */
     grantFamilyId?: string | undefined;
+    /** The hash of the web session behind this request; absent for every other credential. */
+    sessionHash?: Buffer | undefined;
+    /** The id of the personal access token behind this request; absent for every other credential. */
+    accessTokenId?: string | undefined;
 }
 
 export type AccessTokenKind = 'personal' | 'org';
@@ -497,7 +501,7 @@ function buildSessionMethods(
                 where s.token_hash = ${tokenHash} and s.expires_at > now()
             `;
             const row = rows[0];
-            return row ? toCaller(row) : null;
+            return row ? { ...toCaller(row), sessionHash: tokenHash } : null;
         },
 
         async updateSessionOrg(tokenHash, orgId) {
@@ -685,11 +689,11 @@ function buildTokenMethods(
                   and revoked_at is null
                   and (last_used_at is null or last_used_at < now() - interval '60 seconds')
             `;
-            const rows = await sql<CallerRow[]>`
+            const rows = await sql<(CallerRow & { token_id: string })[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
                        m.invited_at, m.claimed_at, m.role,
-                       o.id as org_id, o.name as org_name
+                       o.id as org_id, o.name as org_name, t.id as token_id
                 from access_token t
                 join app_user u on u.id = t.user_id
                 -- The token's OWN org: it acts as its user there and nowhere else, whatever other
@@ -702,7 +706,7 @@ function buildTokenMethods(
                   and t.revoked_at is null
             `;
             const row = rows[0];
-            return row ? toCaller(row) : null;
+            return row ? { ...toCaller(row), accessTokenId: row.token_id } : null;
         },
 
         async findOrgToken(tokenHash) {

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -12,10 +12,12 @@ import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import { createAttachmentRows } from '../src/attachments/attachment-rows.js';
 import { createAttachmentStore } from '../src/attachments/attachment-store.js';
 import { createUploadCapabilityStore } from '../src/attachments/upload-capability-store.js';
+import { SESSION_COOKIE, hashToken, sign } from '../src/auth/session.js';
 import { createAuthStore } from '../src/auth/store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
+import { TEST_SESSION_SECRET } from '../test/helpers-config.js';
 import { pdfBytes, pngBytes, textBytes } from '../test/helpers-attachments.js';
 import { githubAuth, staticRegistry, stubTelemetryClient, telemetryStoreStub, testConfig } from '../test/helpers.js';
 import { testOrg } from './fixtures.js';
@@ -97,11 +99,12 @@ async function boot() {
             return runtime && { ...runtime, orgId, attachments: storeOf(orgId) };
         },
     };
+    const auth = createAuthStore({ sql });
     const app = await buildApp({
         config,
         orgs,
         store: telemetryStoreStub(),
-        auth: createAuthStore({ sql }),
+        auth,
         oauth: worlds.alice.store,
         uploadCapabilities: createUploadCapabilityStore({ sql }),
         // The in-flight cap sheds with 503; the races below are about the file, not about admission.
@@ -109,7 +112,7 @@ async function boot() {
     });
     closers.push(() => app.close());
     await app.listen({ port, host: LOCALHOST });
-    return { url: new URL(resource), origin: publicUrl, worlds, tokens };
+    return { url: new URL(resource), origin: publicUrl, worlds, tokens, auth };
 }
 type Board = Awaited<ReturnType<typeof boot>>;
 
@@ -199,7 +202,7 @@ describe.skipIf(!enabled)('the attachment handoff over real stores', () => {
             completed_at: null,
         });
         expect([...(row?.media_types ?? [])].sort()).toEqual(['application/pdf', 'image/png']);
-        expect(row?.hash).not.toContain(capability);
+        expect(row?.hash).toBe(createHash('sha256').update(capability).digest('hex'));
         expect(capability).toMatch(/^fcu_/);
     });
 
@@ -299,6 +302,82 @@ describe.skipIf(!enabled)('the attachment handoff over real stores', () => {
             select count(*)::text as n from input_attachment where uploader_id = ${board.worlds.mallory.caller.user.id}
         `;
         expect(written?.n).toBe('0');
+    });
+
+    it('stops working the moment the web session that minted it signs out', async () => {
+        const board = await boot();
+        const userId = board.worlds.mallory.caller.user.id;
+        const token = `session-${randomUUID()}`;
+        await board.auth.createSession(hashToken(token), userId, new Date(Date.now() + 60_000), ORG);
+        const minted = await fetch(`${board.origin}/api/attachments/upload-requests`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                cookie: `${SESSION_COOKIE}=${sign(token, TEST_SESSION_SECRET)}`,
+            },
+            body: '{}',
+        });
+        expect(minted.status).toBe(201);
+        const data = (await minted.json()) as { id: string; uploadUrl: string };
+        const [row] = await sql<{ session_hash: Buffer | null; family_id: string | null }[]>`
+            select session_hash, family_id from attachment_upload where id = ${data.id}
+        `;
+        expect(row?.session_hash?.equals(hashToken(token))).toBe(true);
+        expect(row?.family_id).toBeNull();
+
+        await board.auth.deleteSession(hashToken(token));
+        const response = await putTo(data.uploadUrl);
+
+        expect(response.status).toBe(404);
+        expect(((await response.json()) as { code: string }).code).toBe(ERROR_CODES.UPLOAD_CAPABILITY_INVALID);
+        const [written] = await sql<{ n: string }[]>`
+            select count(*)::text as n from input_attachment where uploader_id = ${userId}
+        `;
+        expect(written?.n).toBe('0');
+    });
+
+    it('stops working the moment the personal token that minted it is revoked', async () => {
+        const board = await boot();
+        const userId = board.worlds.mallory.caller.user.id;
+        const token = `fat_${randomUUID().replaceAll('-', '')}`;
+        const { id: tokenId } = await board.auth.createAccessToken({
+            kind: 'personal',
+            orgId: ORG,
+            userId,
+            createdBy: userId,
+            label: 'handoff',
+            tokenHash: hashToken(token),
+        });
+        const minted = await fetch(`${board.origin}/api/attachments/upload-requests`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+            body: '{}',
+        });
+        expect(minted.status).toBe(201);
+        const data = (await minted.json()) as { id: string; uploadUrl: string };
+        const [row] = await sql<{ access_token_id: string | null }[]>`
+            select access_token_id from attachment_upload where id = ${data.id}
+        `;
+        expect(row?.access_token_id).toBe(tokenId);
+
+        expect(await board.auth.revokePersonalToken(ORG, userId, tokenId)).toBe('revoked');
+        const response = await putTo(data.uploadUrl);
+
+        expect(response.status).toBe(404);
+        expect(((await response.json()) as { code: string }).code).toBe(ERROR_CODES.UPLOAD_CAPABILITY_INVALID);
+    });
+
+    it('indexes every foreign key of a capability row, so a cascade is not a table scan', async () => {
+        await boot();
+        const indexed = await sql<{ def: string }[]>`
+            select indexdef as def from pg_indexes where tablename = 'attachment_upload'
+        `;
+        for (const column of ['user_id', 'family_id', 'session_hash', 'access_token_id']) {
+            expect(
+                indexed.some(({ def }) => def.includes(`(${column})`)),
+                column
+            ).toBe(true);
+        }
     });
 
     it('stops working the moment the membership is removed', async () => {

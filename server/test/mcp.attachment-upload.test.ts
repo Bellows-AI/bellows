@@ -11,8 +11,9 @@ import { buildApp } from '../src/app.js';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import { createAttachmentStore } from '../src/attachments/attachment-store.js';
 import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
-import { hashToken } from '../src/auth/session.js';
+import { SESSION_COOKIE, hashToken, sign } from '../src/auth/session.js';
 import type { OrgRegistry } from '../src/orgs.js';
+import { TEST_SESSION_SECRET } from './helpers-config.js';
 import { memoryAttachmentRows, pdfBytes, pngBytes, textBytes } from './helpers-attachments.js';
 import {
     githubAuth,
@@ -49,6 +50,7 @@ const TOKENS = {
 type Who = keyof typeof TOKENS;
 const ORG = 'org-a';
 const OTHER_ORG = 'org-b';
+const UPLOAD_PATH = '/api/attachments/uploads';
 const NOT_A_CAPABILITY = 'fcu_' + 'A'.repeat(43);
 
 const freePort = (): Promise<number> =>
@@ -94,7 +96,12 @@ async function boot({ now = Date.now }: { now?: () => number } = {}) {
         port,
         mcp: { enabled: true, resource, trustedOrigins: [] },
     });
-    const caps = memoryUploadCapabilities(now);
+    // A session or a personal token's capability lives only while that credential does, as the store's SQL joins ask.
+    const caps = memoryUploadCapabilities(now, async ({ sessionHash, accessTokenId }) => {
+        if (sessionHash) return (await auth.findSession(sessionHash)) !== null;
+        if (accessTokenId) return auth.accessTokens().some((token) => token.id === accessTokenId && !token.revoked);
+        return true;
+    });
     const objects = createFilesystemStore(await mkdtemp(join(tmpdir(), 'attachment-handoff-')));
     const rowsByOrg = new Map<string, ReturnType<typeof memoryAttachmentRows>>();
     const storeOf = (org: string) => {
@@ -128,6 +135,7 @@ async function boot({ now = Date.now }: { now?: () => number } = {}) {
     await app.listen({ port, host: LOCALHOST });
     return {
         app,
+        auth,
         port,
         url: new URL(resource),
         origin: publicUrl,
@@ -412,6 +420,130 @@ describe('PUT /api/attachments/uploads/:capability', () => {
         expect(pngBytes().length).toBeLessThanOrEqual(64);
         expect(small.statusCode).toBe(HTTP_CREATED);
         expect(world.attachments()).toHaveLength(1);
+    });
+
+    it('holds no upload slot while its capability is being resolved: bogus links cannot starve members', async () => {
+        const world = await boot();
+        const token = world.auth.seedAccessToken(ORG, 'personal', { userId: world.people.alice.user.id });
+        let release: () => void = () => undefined;
+        world.caps.state.hold = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const bogus = Array.from({ length: 8 }, () => put(world, `${UPLOAD_PATH}/${NOT_A_CAPABILITY}`, pngBytes()));
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        const member = await world.app.inject({
+            method: 'POST',
+            url: '/api/attachments',
+            headers: {
+                authorization: `Bearer ${token}`,
+                'content-type': OCTET_STREAM_CONTENT_TYPE,
+                [ATTACHMENT_NAME_HEADER]: 'mine.png',
+            },
+            payload: Buffer.from(pngBytes()),
+        });
+        release();
+        const answers = await Promise.all(bogus);
+
+        expect(member.statusCode).toBe(HTTP_CREATED);
+        expect(answers.map((answer) => answer.statusCode)).toEqual(new Array(8).fill(HTTP_NOT_FOUND));
+    });
+
+    it('stops a chunked body at the capability limit while it streams, before the request ends', async () => {
+        const world = await boot();
+        const { uploadUrl } = await mint(world, 'alice', { maxBytes: 64 });
+        const chunk = Buffer.alloc(1024, 1);
+        const sent = { chunks: 0 };
+
+        const answer = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+            const req = httpRequest({
+                host: LOCALHOST,
+                port: world.port,
+                path: pathOf(uploadUrl),
+                method: 'PUT',
+                headers: {
+                    'content-type': OCTET_STREAM_CONTENT_TYPE,
+                    'transfer-encoding': 'chunked',
+                    [ATTACHMENT_NAME_HEADER]: 'big.png',
+                },
+            });
+            let body = '';
+            req.on('response', (res) => {
+                res.on('data', (part) => {
+                    body += part;
+                });
+                res.on('end', () => {
+                    req.destroy();
+                    resolve({ status: res.statusCode ?? 0, body });
+                });
+            });
+            req.on('error', () => undefined);
+            // The request is never ended: only an answer given mid-stream resolves this.
+            const writeMore = () => {
+                if (sent.chunks >= 400) {
+                    req.destroy();
+                    return reject(new Error('no answer while the body was still arriving'));
+                }
+                sent.chunks += 1;
+                req.write(chunk, () => setTimeout(writeMore, 2));
+            };
+            writeMore();
+        });
+
+        expect(answer.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
+        expect(JSON.parse(answer.body).code).toBe(ERROR_CODES.ATTACHMENT_TOO_LARGE);
+        expect(world.attachments()).toHaveLength(0);
+        const retry = await put(world, pathOf(uploadUrl), pngBytes());
+        expect(retry.statusCode).toBe(HTTP_CREATED);
+    });
+
+    describe('a capability dies with the credential that minted it', () => {
+        const SESSION_TOKEN = 'session-token-for-the-upload-capability-test';
+        const mintOver = (world: World, headers: Record<string, string>) =>
+            world.app.inject({ method: 'POST', url: '/api/attachments/upload-requests', headers, payload: {} });
+
+        it('refuses after the web session that minted it logs out, and binds the session, not the account', async () => {
+            const world = await boot();
+            const alice = world.people.alice;
+            await world.auth.createSession(hashToken(SESSION_TOKEN), alice.user.id, new Date(Date.now() + 60_000), ORG);
+            const cookies = { [SESSION_COOKIE]: sign(SESSION_TOKEN, TEST_SESSION_SECRET) };
+            const minted = await world.app.inject({
+                method: 'POST',
+                url: '/api/attachments/upload-requests',
+                cookies,
+                payload: {},
+            });
+            expect(minted.statusCode).toBe(HTTP_CREATED);
+            const path = pathOf(minted.json().uploadUrl);
+            const other = await mint(world); // the same account under a different credential keeps its own link
+
+            // What POST /api/auth/logout does with the cookie (routes/auth.ts): delete the session row.
+            await world.auth.deleteSession(hashToken(SESSION_TOKEN));
+            const response = await put(world, path, pngBytes());
+
+            expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+            expect(response.json().code).toBe(ERROR_CODES.UPLOAD_CAPABILITY_INVALID);
+            expect(world.attachments()).toHaveLength(0);
+            expect((await put(world, pathOf(other.uploadUrl), pngBytes())).statusCode).toBe(HTTP_CREATED);
+        });
+
+        it('refuses after the personal token that minted it is revoked', async () => {
+            const world = await boot();
+            const alice = world.people.alice;
+            const token = world.auth.seedAccessToken(ORG, 'personal', { userId: alice.user.id });
+            const minted = await mintOver(world, { authorization: `Bearer ${token}` });
+            expect(minted.statusCode).toBe(HTTP_CREATED);
+            const path = pathOf(minted.json().uploadUrl);
+            const row = world.auth.accessTokens().find((t) => t.userId === alice.user.id);
+            expect(await world.auth.revokePersonalToken(ORG, alice.user.id, row?.id ?? '')).toBe('revoked');
+
+            const response = await put(world, path, pngBytes());
+
+            expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+            expect(response.json().code).toBe(ERROR_CODES.UPLOAD_CAPABILITY_INVALID);
+            expect(world.attachments()).toHaveLength(0);
+        });
     });
 
     it('requires the file name', async () => {

@@ -7,6 +7,12 @@ import {
     type UploadGrantInput,
 } from '../src/attachments/upload-capability-store.js';
 
+/** Whether the session or personal token a capability was minted under is still live, as the store's SQL joins ask. */
+export type CredentialLiveness = (credential: {
+    sessionHash: Buffer | null;
+    accessTokenId: string | null;
+}) => Promise<boolean>;
+
 export interface MemoryUploadRow extends UploadGrantInput {
     id: string;
     /** sha256 of the capability: the only form of it the store holds. */
@@ -20,10 +26,10 @@ export interface MemoryUploadRow extends UploadGrantInput {
  * family and membership joins, and a switch that makes every read fail. The SQL is pinned by
  * server/test-db/mcp.attachment-handoff.test.ts.
  */
-export function memoryUploadCapabilities(now: () => number = Date.now) {
+export function memoryUploadCapabilities(now: () => number = Date.now, credentialLive?: CredentialLiveness) {
     const rows = new Map<string, MemoryUploadRow>();
     const dead = new Set<string>();
-    const state = { failReads: false };
+    const state: { failReads: boolean; hold: Promise<void> | null } = { failReads: false, hold: null };
     const hashOf = (capability: string) => createHash('sha256').update(capability).digest('hex');
     const store: UploadCapabilityStore = {
         async mint(input) {
@@ -34,12 +40,19 @@ export function memoryUploadCapabilities(now: () => number = Date.now) {
             return { id, capability, expiresAt: new Date(expiresAt) };
         },
         async resolve(capability) {
+            // A test parks lookups here to hold requests in the route's pre-body checks.
+            if (state.hold) await state.hold;
             if (state.failReads) throw new Error('database unreachable');
             if (!CAPABILITY_PATTERN.test(capability)) return { kind: 'unknown' };
             const row = [...rows.values()].find((r) => r.hash === hashOf(capability));
             if (!row || dead.has(row.userId) || (row.familyId !== null && dead.has(row.familyId))) {
                 return { kind: 'unknown' };
             }
+            const liveCredential = await credentialLive?.({
+                sessionHash: row.sessionHash ?? null,
+                accessTokenId: row.accessTokenId ?? null,
+            });
+            if (liveCredential === false) return { kind: 'unknown' };
             if (row.expiresAt <= now()) return { kind: 'expired' };
             return {
                 kind: 'live',

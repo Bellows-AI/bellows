@@ -15,8 +15,14 @@ const PURGE_GRACE = '1 day';
 export interface UploadGrantInput {
     orgId: string;
     userId: string;
-    /** The OAuth grant family the mint arrived under; null for a session or a local caller. */
+    /**
+     * The ONE credential the mint arrived under, so ending it ends the capability: an OAuth grant family, a web
+     * session (its hash) or a personal access token. All null only for the AUTH_MODE=none local caller, which has no
+     * credential to revoke.
+     */
     familyId: string | null;
+    sessionHash?: Buffer | null | undefined;
+    accessTokenId?: string | null | undefined;
     maxBytes: number;
     mediaTypes: readonly string[];
     ttlSeconds?: number;
@@ -33,7 +39,7 @@ export interface UploadGrant {
 
 /**
  * What a presented capability resolves to. `unknown` covers a capability that never existed AND one whose grant was
- * revoked or whose account left the org: the holder learns nothing about which.
+ * revoked, whose session or token ended, or whose account left the org: the holder learns nothing about which.
  */
 export type CapabilityResolution = { kind: 'live'; grant: UploadGrant } | { kind: 'expired' } | { kind: 'unknown' };
 
@@ -48,7 +54,7 @@ export interface UploadRequestView {
 
 export interface UploadCapabilityStore {
     mint(input: UploadGrantInput): Promise<{ id: string; capability: string; expiresAt: Date }>;
-    /** Resolves through the LIVE membership and grant family; a store failure throws and is never `unknown`. */
+    /** Resolves through the LIVE membership and minting credential; a store failure throws and is never `unknown`. */
     resolve(capability: string): Promise<CapabilityResolution>;
     /** Records the ready file. Idempotent for the same attachment. */
     complete(id: string, attachmentId: string): Promise<void>;
@@ -66,7 +72,7 @@ interface ResolveRow {
     expires_at: Date;
     expired: boolean;
     member: boolean;
-    family_live: boolean;
+    credential_live: boolean;
 }
 
 interface ViewRow {
@@ -94,8 +100,10 @@ export function createUploadCapabilityStore({
             const capability = `${CAPABILITY_PREFIX}${randomBytes(CAPABILITY_BYTES).toString('base64url')}`;
             const ttl = input.ttlSeconds ?? UPLOAD_TTL_SECONDS;
             const [row] = await sql<{ id: string; expires_at: Date }[]>`
-                insert into attachment_upload (org_id, user_id, family_id, capability_hash, max_bytes, media_types, expires_at)
-                values (${input.orgId}, ${input.userId}, ${input.familyId}, ${hashToken(capability)}, ${input.maxBytes},
+                insert into attachment_upload (org_id, user_id, family_id, session_hash, access_token_id, capability_hash,
+                                               max_bytes, media_types, expires_at)
+                values (${input.orgId}, ${input.userId}, ${input.familyId}, ${input.sessionHash ?? null},
+                        ${input.accessTokenId ?? null}, ${hashToken(capability)}, ${input.maxBytes},
                         ${sql.array([...input.mediaTypes])}, now() + make_interval(secs => ${ttl}))
                 returning id, expires_at
             `;
@@ -106,19 +114,24 @@ export function createUploadCapabilityStore({
         async resolve(capability) {
             if (!CAPABILITY_PATTERN.test(capability)) return { kind: 'unknown' };
             await gate();
-            // The membership and the grant family are joined LIVE, as findAccessToken does: nothing cascades from them.
+            // The membership and the minting credential (grant family, session, personal token) are joined LIVE, as
+            // findAccessToken, findSession and findPersonalToken do: revoking or expiring any of them ends the link.
             const [row] = await sql<ResolveRow[]>`
                 select u.id, u.org_id, u.user_id, u.max_bytes::int as max_bytes, u.media_types, u.expires_at,
                        u.expires_at <= now() as expired,
                        m.user_id is not null as member,
                        (u.family_id is null or (f.id is not null and f.revoked_at is null and f.expires_at > now()))
-                           as family_live
+                       and (u.session_hash is null or (s.token_hash is not null and s.expires_at > now()))
+                       and (u.access_token_id is null or (t.id is not null and t.revoked_at is null))
+                           as credential_live
                 from attachment_upload u
                 left join org_membership m on m.user_id = u.user_id and m.org_id = u.org_id
                 left join oauth_grant_family f on f.id = u.family_id
+                left join session s on s.token_hash = u.session_hash
+                left join access_token t on t.org_id = u.org_id and t.id = u.access_token_id
                 where u.capability_hash = ${hashToken(capability)}
             `;
-            if (!row || !row.member || !row.family_live) return { kind: 'unknown' };
+            if (!row || !row.member || !row.credential_live) return { kind: 'unknown' };
             if (row.expired) return { kind: 'expired' };
             return {
                 kind: 'live',
