@@ -125,6 +125,23 @@ describe('bellows job create', () => {
         expect(calls[0]!.body).toEqual({ command: 'npm test', baseBranch: 'release/1.2' });
     });
 
+    it('job create --title sends title verbatim, and the board normalizes it', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        const code = await run(['job', 'create', '--title', '  Fix   the login  ', '--', 'npm test'], io);
+
+        expect(code).toBe(0);
+        expect(calls[0]!.body).toEqual({ command: 'npm test', title: '  Fix   the login  ' });
+    });
+
+    it('omitted --title sends no title', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        expect(await run(['job', 'create', '--', 'npm test'], io)).toBe(0);
+
+        expect(calls[0]!.body).not.toHaveProperty('title');
+    });
+
     it('omitted --base-branch sends no baseBranch', async () => {
         const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
 

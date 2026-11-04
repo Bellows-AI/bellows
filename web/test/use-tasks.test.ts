@@ -15,6 +15,9 @@ import {
 const summary = (id: string): TaskSummary => ({
     id,
     command: `task ${id}`,
+    title: null,
+    titleOrigin: null,
+    titleRevision: 0,
     status: 'running',
     cancelRequestedAt: null,
     doneAt: null,

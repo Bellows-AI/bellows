@@ -13,7 +13,7 @@ import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT } from '../jobs/job-limits.js';
-import { refusedAsUnusable } from '../jobs/executor-usable.js';
+import { defaultExecutorOf, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
 
 /**
@@ -108,7 +108,7 @@ async function targetBranchesExist(
     return true;
 }
 
-/** Each (executor, scope) the plan names, once; a task left to the claim's default names none. */
+/** Each (executor, scope) the plan names, once. */
 const selectionsOf = (plan: ResolvedBatchPlan): { name: string; scope: ExecutorScope }[] => {
     const seen = new Map<string, { name: string; scope: ExecutorScope }>();
     for (const { executor, executorScope } of plan.stages.flatMap((stage) => stage.tasks)) {
@@ -162,5 +162,36 @@ export async function launchChecks(
         });
         return null;
     }
-    return (await executorsUsable(ctx, request, reply, resolved)) ? resolved : null;
+    const stamped = await withDefaultExecutor(ctx, request, reply, resolved);
+    if (!stamped) return null;
+    return (await executorsUsable(ctx, request, reply, stamped)) ? stamped : null;
+}
+
+/**
+ * A task naming no executor runs on the starter's default, stamped into the plan the start freezes: the claim resolves
+ * only the stamped label. Null once a refusal is on `reply` (409 `NO_EXECUTOR` when the starter has no usable profile).
+ */
+async function withDefaultExecutor(
+    ctx: Context,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    plan: ResolvedBatchPlan
+): Promise<ResolvedBatchPlan | null> {
+    const tasks = plan.stages.flatMap((stage) => stage.tasks);
+    if (tasks.every((task) => task.executor !== null)) return plan;
+    const fallback = await defaultExecutorOf(request, reply, {
+        executors: ctx.runtime.userExecutors,
+        createdBy: ctx.createdBy,
+    });
+    if (fallback === 'refused') return null;
+    if (fallback === null) return plan;
+    return {
+        ...plan,
+        stages: plan.stages.map((stage) => ({
+            ...stage,
+            tasks: stage.tasks.map((task) =>
+                task.executor === null ? { ...task, executor: fallback.name, executorScope: fallback.scope } : task
+            ),
+        })),
+    };
 }

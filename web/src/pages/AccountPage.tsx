@@ -1,6 +1,7 @@
 import type { Session } from '../api/useSession.js';
 import { useSession } from '../api/useSession.js';
 import { AccessTokensSection } from '../panels/AccessTokensPanel.js';
+import { ConnectedAppsSection } from '../panels/ConnectedAppsPanel.js';
 import { IdentityPanel } from '../panels/IdentityPanel.js';
 import { TrackedOrgsPanel } from '../panels/TrackedOrgsPanel.js';
 import { Icon } from '../components/Icon.js';
@@ -54,6 +55,7 @@ export function AccountSections({ session }: { session: Session }) {
                             <p className="muted">Organization tokens are minted by an administrator.</p>
                         </section>
                     )}
+                    {session.mcp ? <ConnectedAppsSection /> : null}
                 </>
             ) : null}
         </>

@@ -201,6 +201,16 @@ export {
     TASK_STOPPED,
     TASK_SUCCEEDED,
 } from './batch-schedule.js';
+export { batchStanding } from './batch-standing.js';
+export type {
+    BatchAttention,
+    BatchFence,
+    BatchStanding,
+    BatchVerdict,
+    BatchVerificationFailure,
+    StandingRecord,
+    StandingReportTask,
+} from './batch-standing.js';
 export { HOUR } from './config.js';
 export {
     ENV_NAME,
@@ -222,6 +232,7 @@ export {
     EXECUTOR_SCOPES,
     EXECUTOR_TYPES,
     executorMissingMessage,
+    noExecutorMessage,
     executorSuspendedMessage,
     MAX_GATE_FIX_ROUNDS,
     OPENCODE,
@@ -259,8 +270,16 @@ export {
 export type { DateRange, RangePreset } from './range.js';
 export { inputTokens, seriesGranularity, telemetryStats, usageRangeOf } from './telemetry.js';
 export { taskUsageStats } from './task-usage.js';
-export { taskTitleFromCommand } from './task-title.js';
+export {
+    displayTitle,
+    FALLBACK_TITLE_MAX,
+    normalizeTaskTitle,
+    TASK_TITLE_MAX,
+    taskTitleFromCommand,
+} from './task-title.js';
+export type { DisplayTitleOrigin, TaskTitleOrigin } from './task-title.js';
 export * from './notifications.js';
+export * from './batch-plan-schema.js';
 export * from './branch-name.js';
 export {
     UNKNOWN_BUCKET,
@@ -328,3 +347,4 @@ export * from './integrations/operation.js';
 export * from './integrations/outcomes.js';
 export * from './integrations/redact.js';
 export * from './attachments.js';
+export * from './integration-catalog.js';

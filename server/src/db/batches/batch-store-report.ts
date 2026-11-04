@@ -14,11 +14,18 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { TelemetrySource } from '../../telemetry/client.js';
 import { readUsageFacts } from '../../telemetry/usage-facts.js';
 import { type BatchPrObservation, readObservations } from './batch-store-observation.js';
-import { type BoardMergeRow, boardMergeColumns, boardMerging, readVerification } from './batch-store-rows.js';
+import {
+    type BoardMergeRow,
+    boardMergeColumns,
+    boardMerging,
+    readRecord,
+    readVerification,
+} from './batch-store-rows.js';
 import {
     ACCEPTANCE_PR_MERGED,
     BATCH_DRAFT,
     type BatchReport,
+    type BatchSnapshot,
     type BatchReportObservation,
     type BatchReportState,
     type BatchReportTask,
@@ -111,6 +118,19 @@ export function readReport(
     deps: ReportDeps = {}
 ): Promise<BatchReport | null> {
     return sql.begin('isolation level repeatable read, read only', (tx) => assembleReport(tx, { orgId, id }, deps));
+}
+
+/** The record and the report in ONE repeatable-read snapshot: the same instant of the same batch. */
+export function readSnapshot(
+    sql: Sql,
+    { orgId, id }: { orgId: string; id: string },
+    deps: ReportDeps = {}
+): Promise<BatchSnapshot | null> {
+    return sql.begin('isolation level repeatable read, read only', async (tx) => {
+        const record = await readRecord(tx, { orgId, id });
+        if (!record) return null;
+        return { record, report: await assembleReport(tx, { orgId, id }, deps) };
+    });
 }
 
 async function assembleReport(
@@ -223,6 +243,7 @@ async function assembleReport(
         };
     });
     const mergedTasks = new Set(merged.map((row) => row.task_key));
+    const fenced = batch.cancelled_at !== null || batch.expired_at !== null;
     return {
         id: batch.id,
         title: batch.title,
@@ -259,9 +280,11 @@ async function assembleReport(
         totals: {
             accepted: rows.filter((task) => task.gate === GATE_PASSED).length,
             failed: rows.filter((task) => task.execution === 'failed').length,
+            // Under a fence only a task that left a PR still needs its person, as in the standing (core/src/batch-standing.ts).
             needsAttention:
-                rows.filter((task) => task.attention !== null || task.waitReason !== null).length +
-                verification.filter((row) => row.state === VERIFY_FAILED).length,
+                rows.filter(
+                    (task) => (task.attention !== null || task.waitReason !== null) && (!fenced || task.pr !== null)
+                ).length + verification.filter((row) => row.state === VERIFY_FAILED).length,
             infraRetries: rows.reduce((sum, task) => sum + task.infraRetries, 0),
             repairs: rows.reduce((sum, task) => sum + task.repairs, 0),
             wallClockMs: rows.reduce((sum, task) => sum + task.usage.wallClockMs, 0),

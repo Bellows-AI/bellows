@@ -2,11 +2,15 @@ import { jiraApiBase } from '@factory-ai/core';
 import postgres, { type Sql } from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
+import { createUploadCapabilityStore, type UploadCapabilityStore } from './attachments/upload-capability-store.js';
+import { createOAuthStore, type OAuthStore } from './auth/oauth-store.js';
+import { startOAuthSweep } from './auth/oauth-sweep.js';
 import { createAuthStore } from './auth/store.js';
 import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
 import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
+import { createAgentTitle } from './db/agent-title.js';
 import { createOperationReceipts } from './db/operation-receipts.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
@@ -57,6 +61,12 @@ function startDeliveries({
     startNotificationDelivery({ connectors, publicUrl: config.integrations.callbackOrigin, orgs, metrics, ready });
 }
 
+/** The stores the MCP surface adds: the OAuth server's, and the single-use attachment upload capabilities'. */
+const mcpStores = (db: { sql: Sql; ready: Promise<unknown> }) => ({
+    oauth: createOAuthStore(db),
+    uploadCapabilities: createUploadCapabilityStore(db),
+});
+
 /**
  * The garbage collectors run on every replica: unreferenced secret versions and finished operations; abandoned
  * uploads and the files of a removed task. Each delete re-checks its own guard.
@@ -68,6 +78,8 @@ function startCollectors({
     artifacts,
     config,
     metrics,
+    oauth,
+    uploadCapabilities,
 }: {
     sql: Sql;
     ready: Promise<unknown>;
@@ -75,6 +87,8 @@ function startCollectors({
     artifacts: ArtifactBackend;
     config: AppConfig;
     metrics: ServerMetrics;
+    oauth: OAuthStore;
+    uploadCapabilities: UploadCapabilityStore;
 }): void {
     void ready.then(() =>
         startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
@@ -82,6 +96,11 @@ function startCollectors({
     const { sweepTemps } = artifacts;
     if (sweepTemps) startTempSweep(sweepTemps, { log: (m) => console.log(`[artifacts] ${m}`) });
     void ready.then(() => startAttachmentSweep({ sql, ready, artifacts, config: config.artifacts, metrics }));
+    // Expired codes, consent transactions and grant families; only a board that serves MCP ever writes them.
+    if (config.mcp.enabled)
+        void ready.then(() =>
+            startOAuthSweep(oauth, metrics.timedPass, undefined, () => uploadCapabilities.purgeExpired())
+        );
 }
 
 /** The attempt checks behind the runner credential routes, and the lanes' optional mint and revoke stand-ins. */
@@ -93,6 +112,7 @@ const runnerCredentialDeps = (
     attemptOfLease: createAttemptOfLease(db),
     pairMatches: createPairMatches(db),
     operationReceipts: createOperationReceipts(db),
+    agentTitle: createAgentTitle(db),
     // The runner helper's connection list: Jira only, and only while the provider is configured.
     connectionListing: {
         connectionsOf: async (orgId: string, rootJobId: string) => {
@@ -245,6 +265,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         log: (d) => console.log(`[integrations] ${JSON.stringify(d)}`),
     });
 
+    const mcp = mcpStores({ sql, ready });
     const app = await buildApp({
         config,
         orgs,
@@ -254,6 +275,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         secrets,
         integrations: { ...integrations, configured: jira.configured },
         auth: authStore,
+        ...mcp,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
         // org-less job query, because the pair's answer IS the org. The worker-route resolvers
@@ -287,7 +309,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         })
     );
 
-    startCollectors({ sql, ready, secrets, artifacts, config, metrics });
+    startCollectors({ sql, ready, secrets, artifacts, config, metrics, ...mcp });
 
     // What a lost board pod left mid-exchange or mid-persistence is adopted on every replica; each row is re-checked.
     void ready.then(() =>

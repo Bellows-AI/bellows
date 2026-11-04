@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { removeDialogBody, removeDialogTitle } from '../src/components/TaskRemoveDialog.js';
+import { taskTitleText } from '../src/task-title.js';
 import { job, question, renderHeader } from './tasks-fixtures.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
@@ -15,11 +16,11 @@ describe('the task page header', () => {
     it("names the task after its opening command, as the page's one h1", () => {
         const html = renderHeader({ jobs: [job()] });
         expect(html.match(/<h1/g)?.length).toBe(1);
-        expect(html).toContain('<h1>fix the flaky login test</h1>');
+        expect(html).toMatch(/<h1[^>]*>fix the flaky login test<\/h1>/);
 
         // A multi-line command is prose; the header carries its first line, the turn carries it all.
         const multiline = renderHeader({ jobs: [job({ command: 'first line\nsecond line' })] });
-        expect(multiline).toContain('<h1>first line</h1>');
+        expect(multiline).toMatch(/<h1[^>]*>first line<\/h1>/);
         expect(multiline).not.toContain('second line');
     });
 
@@ -410,6 +411,53 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
     });
 });
 
+describe('the task page header — the display title (BEL-252)', () => {
+    const LONG = 'word '.repeat(300).trim();
+    const h1Of = (html: string) => /<h1([^>]*)>([^<]*)<\/h1>/.exec(html)!;
+    const decode = (text: string) =>
+        text
+            .replace(/&quot;/g, '"')
+            .replace(/&#x27;/g, "'")
+            .replace(/&amp;/g, '&');
+
+    it('is the stored title when present, never the full command', () => {
+        const stored = { title: 'Fix the login crash', titleOrigin: 'agent' as const, titleRevision: 2 };
+        const html = renderHeader({ jobs: [job({ ...stored, command: LONG })] });
+        expect(h1Of(html)[2]).toBe('Fix the login crash');
+        expect(html).not.toContain(LONG);
+    });
+
+    it('is the capped fallback while no title is stored, never the full command', () => {
+        const html = renderHeader({ jobs: [job({ command: LONG })] });
+        const text = decode(h1Of(html)[2]!);
+        expect([...text].length).toBeLessThanOrEqual(81);
+        expect(text.endsWith('…')).toBe(true);
+        expect(html).not.toContain(LONG);
+    });
+
+    it('carries the full display title in title= and a one-line class for the clamp', () => {
+        const stored = { title: 'Fix the login crash', titleOrigin: 'user' as const, titleRevision: 1 };
+        const attrs = h1Of(renderHeader({ jobs: [job(stored)] }))[1]!;
+        expect(attrs).toContain('title="Fix the login crash"');
+        expect(attrs).toContain('class="task-heading"');
+    });
+
+    it('names an empty prompt Task #<short id>', () => {
+        const html = renderHeader({ jobs: [job({ command: '   \n ' })] });
+        expect(h1Of(html)[2]).toBe('Task #11111111');
+    });
+
+    it('offers Rename task to the author and an admin, and to nobody else', () => {
+        const author = { id: 'author-1', login: 'octocat', name: null, avatarUrl: null };
+        const jobs = [job({ author })];
+        const viewer = (id: string | null, admin: boolean) => ({ loading: false, id, admin });
+        expect(renderHeader({ jobs, viewer: viewer('author-1', false) })).toContain('Rename task');
+        expect(renderHeader({ jobs, viewer: viewer('someone-else', true) })).toContain('Rename task');
+        expect(renderHeader({ jobs, viewer: viewer('someone-else', false) })).not.toContain('Rename task');
+        expect(renderHeader({ jobs, viewer: { loading: true, id: null, admin: false } })).not.toContain('Rename task');
+    });
+});
+
 describe('TaskRemoveDialog', () => {
     /**
      * The remove confirmation is a Headless UI Dialog, so it portals, and a static render does not
@@ -419,8 +467,11 @@ describe('TaskRemoveDialog', () => {
      * renders: the helpers below are the component's source of truth, exported pure.
      */
     it('names the task in the title \u2014 the root command\u2019s first line, whatever the prose', () => {
-        expect(removeDialogTitle('fix the flaky login test')).toBe('Remove \u201Cfix the flaky login test\u201D?');
-        expect(removeDialogTitle('first line\nsecond line')).toBe('Remove \u201Cfirst line\u201D?');
+        // The dialog names the task as the page's h1 does: `taskTitleText` (first line, or a stored title).
+        const named = (command: string) =>
+            removeDialogTitle(taskTitleText({ id: 'x', command, title: null, titleOrigin: null }));
+        expect(named('fix the flaky login test')).toBe('Remove \u201Cfix the flaky login test\u201D?');
+        expect(named('first line\nsecond line')).toBe('Remove \u201Cfirst line\u201D?');
     });
 
     it('states every consequence in the body, with the thread\u2019s real run count', () => {

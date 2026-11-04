@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { FailureCause } from '../src/board/board.js';
-import { publishCauseOf, publishFailed, publishNothing } from '../src/publish/publish.js';
+import {
+    publishCauseOf,
+    publishFailed,
+    publishNothing,
+    publishRetryable,
+    STALE_REVISION_REASON,
+} from '../src/publish/publish.js';
 
 /**
  * Issue #581: `publish` is a coarse label. The board recovers a publish failure by its cause — a
@@ -67,5 +73,54 @@ describe('the publish failure cause (#581)', () => {
     it('carries the cause it is given on a failed publish, and none on a no-op', () => {
         expect(publishFailed('could not write the publish env file: EIO', 'transport').cause).toBe('transport');
         expect(publishNothing('nothing unpushed').cause).toBeNull();
+    });
+});
+
+describe('the publish retry predicate (BEL-253)', () => {
+    const failedOf = (reason: string) => publishFailed(reason, publishCauseOf(reason));
+
+    it.each([
+        "git push: remote: Invalid username or token. Password authentication is not supported for Git operations.\nfatal: Authentication failed for 'https://github.com/acme/app.git/'",
+        "git push: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+        'git push: fatal: unable to access https://github.com/acme/app.git/: The requested URL returned error: 502',
+        'gh pr create: HTTP 502: Bad Gateway',
+        'gh pr create: GraphQL: Something went wrong while executing your query. Please include the request id.',
+    ])('retries %s with a token', (reason) => {
+        expect(publishRetryable(failedOf(reason), false)).toBe(true);
+    });
+
+    it.each([
+        'git push: remote: Permission to acme/app.git denied to bot.\nfatal: Authentication failed for x',
+        'gh pr create: GraphQL: Resource not accessible by integration (createPullRequest)',
+        'remote rejected HEAD -> main (protected branch hook declined)',
+        'git push: ! [rejected] HEAD -> factory/task-1 (non-fast-forward)',
+        'gh pr create: HTTP 403: API rate limit exceeded',
+        'gh pr create: HTTP 429: too many requests',
+        'gh pr create: HTTP 403: Resource protected by organization SAML enforcement.',
+        'git commit: fatal: something nobody has seen before',
+    ])('does not retry %s with a token', (reason) => {
+        expect(publishRetryable(failedOf(reason), false)).toBe(false);
+    });
+
+    it('retries any unrecognised failure when the board issued no token', () => {
+        expect(publishRetryable(failedOf('the publish threw: x'), true)).toBe(true);
+        expect(
+            publishRetryable(failedOf("git fetch: fatal: could not read Username for 'https://github.com'"), true)
+        ).toBe(true);
+    });
+
+    it('never retries a refusal, a conflict or a stale revision, token or not', () => {
+        expect(publishRetryable(failedOf('git push: remote: Permission to acme/app.git denied to bot.'), true)).toBe(
+            false
+        );
+        expect(publishRetryable(failedOf('git push: ! [rejected] HEAD (non-fast-forward)'), true)).toBe(false);
+        const stale = { ...publishFailed(STALE_REVISION_REASON, null), stale: true as const };
+        expect(publishRetryable(stale, true)).toBe(false);
+        expect(publishRetryable(stale, false)).toBe(false);
+    });
+
+    it('never retries a publish that landed or had nothing to do', () => {
+        expect(publishRetryable(publishNothing('nothing unpushed'), true)).toBe(false);
+        expect(publishRetryable(publishNothing('nothing unpushed'), false)).toBe(false);
     });
 });

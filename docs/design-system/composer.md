@@ -5,7 +5,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| One chat-style surface: prompt, borderless chips with a note atop each listbox, round arrow Start, counter only near the limit, skeleton | `web/src/panels/TaskComposer.tsx`, `web/src/pages/TaskComposerPage.tsx` | `web/test/task-composer.render.test.tsx`, `web/test/styles.test.ts`, `e2e/composer.spec.ts` |
+| One chat-style surface: optional title, prompt, borderless chips with a note atop each listbox, round arrow Start, counter only near the limit, skeleton | `web/src/panels/TaskComposer.tsx`, `web/src/pages/TaskComposerPage.tsx` | `web/test/task-composer.render.test.tsx`, `web/test/styles.test.ts`, `e2e/composer.spec.ts` |
 | Validation, blockers, readiness derivation | `web/src/task-composer.ts` | `web/test/task-composer-logic.test.ts` |
 | Draft persistence and restore | `web/src/use-composer-draft.ts` | `web/test/composer-draft.test.tsx` |
 | The shell's draft store: new-task fields and files, follow-up drafts per thread root, object-URL revocation | `web/src/composer-draft.tsx` | `web/test/composer-draft.test.tsx`, `web/test/composer-draft.dom.test.tsx` |
@@ -28,7 +28,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
   (`400 UNKNOWN_REPO`) in `server/src/routes/jobs/job-handlers-worker.ts`,
   `server/test/routes.executor-lifecycle.test.ts`.
 
-Classes defined here: `composer-row`, `composer-input`, `composer-label`, `composer-fields`,
+Classes defined here: `composer-row`, `composer-input`, `composer-title`, `composer-label`, `composer-fields`,
 `composer-helper`, `composer-param-input`, `composer-param-error`, `composer-param-details`,
 `composer-heading`, `composer-surface`, `composer-visually-hidden`, `composer-bar`, `composer-toolbar`,
 `composer-start`, `composer-hint`, `composer-send`, `composer-blocker`, `composer-note`, `composer-counter`, `is-over`,

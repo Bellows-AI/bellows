@@ -644,6 +644,10 @@ describe.skipIf(!enabled)('force-closing a live batch’s thread', () => {
         });
         expect(report.tasks.find((t) => t.key === 'a')!.closedAt).not.toBeNull();
         expect(report.tasks.find((t) => t.key === 'o')).toMatchObject({ closedAt: null, closedBy: null });
+        // While the batch runs the held stage needs its person; once cancelled, a task with no PR needs nobody.
+        expect(report.totals.needsAttention).toBe(1);
+        await store.cancel(id, ALICE);
+        expect((await store.report(id))!.totals.needsAttention).toBe(0);
     });
 
     it('lets an optional task’s stage go on without it', async () => {

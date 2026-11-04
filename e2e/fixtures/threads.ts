@@ -112,6 +112,10 @@ export interface ThreadJob {
     workflowName: string | null;
     /** The branch the thread bases on; null means the repository default. */
     baseBranch: string | null;
+    /** The thread root's stored title (BEL-252), null while the command-derived fallback stands. */
+    title: string | null;
+    titleOrigin: 'user' | 'agent' | null;
+    titleRevision: number;
     /** The task's stored execution mode (issue 543): workflow on every row of a named workflow's thread. */
     mode: JobMode;
     doneAt: string | null;
@@ -249,6 +253,9 @@ function run(fields: RunFields): ThreadJob {
         workflowNode: null,
         workflowName: null,
         baseBranch: null,
+        title: null,
+        titleOrigin: null,
+        titleRevision: 0,
         mode: fields.workflowName != null ? WORKFLOW_MODE : OBJECTIVE_MODE,
         doneAt: null,
         cancelRequestedAt: null,

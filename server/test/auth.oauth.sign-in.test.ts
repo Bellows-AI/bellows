@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createGitHubIdentityClient } from '../src/auth/github.js';
-import { OAUTH_COOKIE, PENDING_COOKIE } from '../src/auth/session.js';
+import { OAUTH_COOKIE, PENDING_COOKIE, decodeState, encodeState } from '../src/auth/session.js';
 import { githubAuth, harness, memoryAuthStore, oneInstallation, stubIdentityClient } from './helpers.js';
 import { ORG, begin, callback, errorOf, pendingRoute, setup, signIn } from './auth.oauth-fixtures.js';
+import { TEST_SESSION_SECRET } from './helpers-config.js';
 import { HTTP_FOUND } from './helpers-http.js';
 
 describe('github sign-in', () => {
@@ -68,6 +69,28 @@ describe('github sign-in', () => {
         expect(response.headers['content-type'] ?? '').not.toContain('application/json');
     });
 
+    it('keeps the query already on the destination when it appends the failure reason', async () => {
+        const { app } = await setup();
+        const state = await begin(app, '/reports?a=1');
+        const response = await callback(app, 'error=access_denied', state);
+        const location = new URL(response.headers.location as string, 'http://x');
+        expect(location.pathname).toBe('/reports');
+        expect(location.searchParams.get('a')).toBe('1');
+        expect(location.searchParams.get('auth_error')).toBe('denied');
+    });
+
+    it.each(['/.//attacker.example/x', '/%2e//attacker.example/x', '/a/..//attacker.example/x'])(
+        'never redirects a failure off-origin, whatever the destination (%s)',
+        async (returnTo) => {
+            const { app } = await setup();
+            const state = await begin(app, returnTo);
+            const response = await callback(app, 'error=access_denied', state);
+            const location = response.headers.location as string;
+            expect(location.startsWith('//')).toBe(false);
+            expect(new URL(location, 'http://x').origin).toBe('http://x');
+        }
+    );
+
     it('reports a cancelled consent screen as its own outcome, not as a failure', async () => {
         const { app, auth } = await setup();
         const state = await begin(app);
@@ -84,7 +107,9 @@ describe('installations are the membership decision', () => {
         const state = await begin(app);
         const response = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
 
-        expect(response.headers.location).toBe('https://github.com/apps/stub-app/installations/new');
+        const install = new URL(response.headers.location as string);
+        expect(install.origin + install.pathname).toBe('https://github.com/apps/stub-app/installations/new');
+        expect(decodeState(install.searchParams.get('state') ?? undefined, TEST_SESSION_SECRET)?.returnTo).toBe('/');
         // No installations means no membership means no session: nothing was signed in.
         expect(auth.sessions()).toEqual([]);
         expect(identity.installationsCalls).toEqual(['installations']);
@@ -187,6 +212,43 @@ describe('the setup callback', () => {
             org: '888888',
             reselect: true,
         });
+    });
+
+    it('carries returnTo through the install page and the setup callback', async () => {
+        const { app } = await setup({ installations: [] });
+        const state = await begin(app, '/reports?a=1');
+        const install = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
+        const handedBack = new URL(install.headers.location as string).searchParams.get('state');
+        expect(handedBack).toBeTruthy();
+
+        const setupResponse = await app.inject({
+            method: 'GET',
+            url: `/api/auth/github/setup?setup_action=install&installation_id=999999&state=${encodeURIComponent(handedBack!)}`,
+        });
+        const restart = new URL(setupResponse.headers.location as string, 'http://x');
+        expect(restart.pathname).toBe('/api/auth/github');
+        expect(restart.searchParams.get('returnTo')).toBe('/reports?a=1');
+        expect(restart.searchParams.get('org')).toBe('999999');
+    });
+
+    it('ignores a forged setup state and still reports install_cancelled to the right place', async () => {
+        const { app } = await setup();
+        const forged = encodeState('/reports', 'another-secret-at-least-32-characters');
+        const response = await app.inject({
+            method: 'GET',
+            url: `/api/auth/github/setup?installation_id=999999&state=${encodeURIComponent(forged)}`,
+        });
+        expect(response.headers.location).toBe('/api/auth/github?org=999999&reselect=1');
+    });
+
+    it('sends a forged state with no installation to install_cancelled at the root', async () => {
+        const { app } = await setup();
+        const forged = encodeState('/reports', 'another-secret-at-least-32-characters');
+        const response = await app.inject({
+            method: 'GET',
+            url: `/api/auth/github/setup?state=${encodeURIComponent(forged)}`,
+        });
+        expect(response.headers.location).toBe('/?auth_error=install_cancelled');
     });
 
     it('reports install_cancelled when the person came back without installing', async () => {

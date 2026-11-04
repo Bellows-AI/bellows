@@ -16,6 +16,7 @@ export function ConfirmDialog({
     children,
     confirmClassName,
     confirmText,
+    confirmDisabled = false,
     onClose,
     onConfirm,
 }: {
@@ -27,6 +28,8 @@ export function ConfirmDialog({
     /** `chat-remove` for a destructive answer, `primary` otherwise. */
     confirmClassName: string;
     confirmText: ReactNode;
+    /** The answer is not yet askable (an empty field): the confirm button stays dark. */
+    confirmDisabled?: boolean;
     onClose: () => void;
     onConfirm: () => void;
 }) {
@@ -52,7 +55,12 @@ export function ConfirmDialog({
                         <button ref={cancelRef} type="button" className="chat-resume" onClick={onClose} disabled={busy}>
                             Cancel
                         </button>
-                        <button type="button" className={confirmClassName} onClick={onConfirm} disabled={busy}>
+                        <button
+                            type="button"
+                            className={confirmClassName}
+                            onClick={onConfirm}
+                            disabled={busy || confirmDisabled}
+                        >
                             {confirmText}
                         </button>
                     </div>

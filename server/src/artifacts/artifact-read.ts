@@ -109,9 +109,12 @@ interface Position {
     offset: number;
 }
 
-const refKey = (s: StreamRef) => [s.claimSeq, s.executor, s.session, s.stream].join('\n');
+/** The coordinates a cursor names a stream by. */
+type CursorRef = Pick<StreamRef, 'claimSeq' | 'executor' | 'session' | 'stream'>;
 
-export function encodeCursor(s: StreamRef, offset: number): string {
+const refKey = (s: CursorRef) => [s.claimSeq, s.executor, s.session, s.stream].join('\n');
+
+export function encodeCursor(s: CursorRef, offset: number): string {
     return Buffer.from(JSON.stringify({ s: refKey(s), o: offset })).toString('base64url');
 }
 

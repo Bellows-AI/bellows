@@ -1,14 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import type { ConnectionView } from '../src/api/connections.js';
 import {
     INTEGRATION_CATEGORIES,
-    INTEGRATION_PROVIDERS,
+    INTEGRATION_CATALOG,
     LISTED_PROVIDERS,
     canConnect,
-    connectionState,
-    integrationNotice,
     integrationProvider,
-} from '../src/settings/integration-providers.js';
+} from '@factory-ai/core';
+import { describe, expect, it } from 'vitest';
+import type { ConnectionView } from '../src/api/connections.js';
+import { connectionState, integrationNotice } from '../src/settings/integration-providers.js';
 
 const view = (over: Partial<ConnectionView> = {}): ConnectionView => ({
     id: 'c1',
@@ -39,14 +38,14 @@ describe('connectionState', () => {
 
 describe('the provider registry', () => {
     it('files every provider under a category from the closed list, with unique ids', () => {
-        for (const provider of INTEGRATION_PROVIDERS) expect(INTEGRATION_CATEGORIES).toContain(provider.category);
-        const ids = INTEGRATION_PROVIDERS.map((provider) => provider.id);
+        for (const provider of INTEGRATION_CATALOG) expect(INTEGRATION_CATEGORIES).toContain(provider.category);
+        const ids = INTEGRATION_CATALOG.map((provider) => provider.id);
         expect(new Set(ids).size).toBe(ids.length);
     });
 
     it('files the catalog the way it is browsed', () => {
         const byCategory = (category: string) =>
-            INTEGRATION_PROVIDERS.filter((provider) => provider.category === category).map((provider) => provider.id);
+            INTEGRATION_CATALOG.filter((provider) => provider.category === category).map((provider) => provider.id);
         expect(INTEGRATION_CATEGORIES).toEqual(['Issue tracking', 'Communication', 'Agent tools', 'CI / DevOps']);
         expect(byCategory('Issue tracking')).toEqual(['jira']);
         expect(byCategory('Communication')).toEqual(['slack', 'discord']);
@@ -58,7 +57,7 @@ describe('the provider registry', () => {
     });
 
     it('lets only an oauth provider connect', () => {
-        for (const provider of INTEGRATION_PROVIDERS) {
+        for (const provider of INTEGRATION_CATALOG) {
             expect(canConnect(provider)).toBe(provider.availability === 'oauth');
         }
         expect(canConnect(integrationProvider('jira')!)).toBe(true);

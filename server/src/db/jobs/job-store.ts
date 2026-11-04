@@ -22,7 +22,6 @@
 
 import { bindConnectionRow, dismissRequirementRow, requireConnectionRow } from './job-store-connections.js';
 import {
-    createJobRow,
     createFollowUpRow,
     createRetryRow,
     editJobCommand,
@@ -67,6 +66,7 @@ import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob }
 import { stageConclusion } from './job-store-conclusions.js';
 import { readGateRuns, writeGateRun } from './job-store-gate-runs.js';
 import { writePrOperation } from './job-store-pr-operations.js';
+import { createTitledJob, renameTaskRow } from './job-store-title.js';
 import { ingestTranscriptTools } from './job-store-transcript-tools.js';
 import { readPhaseCheckpoints, writePhaseCheckpoint } from './job-store-phase-checkpoints.js';
 
@@ -274,7 +274,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
 
         async create(command, createdBy, target) {
             await gate();
-            return createJobRow(ctx, command, createdBy, target);
+            return createTitledJob(ctx, command, createdBy, target);
         },
 
         // The rest tuple keeps the interface's five parameters (the params ceiling is for hand-written signatures).
@@ -314,6 +314,11 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async editCommand(id, command, caller) {
             await gate();
             return editJobCommand(ctx, id, command, caller);
+        },
+
+        async renameTask(id, rename) {
+            await gate();
+            return renameTaskRow(ctx, id, rename);
         },
 
         async markDone(id, doneBy) {

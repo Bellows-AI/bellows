@@ -465,6 +465,17 @@
         background: var(--bad-wash);
     }
 
+    /* The rename dialog's one field, under its label. */
+    .task-rename-label {
+        display: block;
+        font-weight: 600;
+        margin: 0 0 4px;
+    }
+
+    .task-rename-field {
+        width: 100%;
+    }
+
     /* The task head's row of controls and its overall wall clock — every button the task can take,
         at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
         title from squeezing the buttons; the title wraps instead. The row itself wraps too, so a

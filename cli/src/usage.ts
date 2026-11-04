@@ -1,6 +1,6 @@
 /** The CLI's whole help text: `bellows help` prints it, and every usage error ends with it. */
 export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--base-branch <branch>] [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
+                          [--base-branch <branch>] [--title <text>] [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
        bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
@@ -45,7 +45,7 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
 before the task is created, and submits nothing if any check or upload fails. Progress goes to stderr; under
 --idempotency-key K the uploads are keyed K.a1, K.a2, ... so repeating the command replays them.
 
-preflight checks a create's selection against the board's reads and only reads. It is advisory:
+preflight asks the board to check a create's selection and creates nothing. It is advisory:
 the board rechecks at create and at claim, and its refusal is the answer.
 
 unattended use (cron, CI): mint a personal token (fat_...) from the board's settings page and hand

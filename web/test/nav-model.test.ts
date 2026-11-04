@@ -13,6 +13,9 @@ import type { TaskNavigation, TaskSummary } from '../src/api/useTasks.js';
 const entry = (id: string): TaskSummary => ({
     id,
     command: `task ${id}`,
+    title: null,
+    titleOrigin: null,
+    titleRevision: 0,
     status: 'running',
     cancelRequestedAt: null,
     doneAt: null,

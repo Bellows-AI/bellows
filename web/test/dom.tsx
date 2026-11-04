@@ -115,6 +115,7 @@ export const OPEN_BOARD_SESSION: Session = {
     organization: { id: 'local', name: 'Local' },
     organizations: [],
     mode: 'none',
+    mcp: false,
 };
 
 /**

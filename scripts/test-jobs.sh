@@ -22,7 +22,7 @@ PARALLEL_SLOTS=2
 WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 valid_phase() {
     case "$1" in
-    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip) return 0 ;;
+    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|mcp) return 0 ;;
     esac
     return 1
 }
@@ -62,7 +62,7 @@ while [ "$#" -gt 0 ]; do
         echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls] [--parallel [--slots 2|3|4]]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, acceptance, compose-driver, auth, cooperative-stop,'
-        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, driver-kill, capacity'
+        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, driver-kill, capacity, mcp'
         echo 'A comma list (--phase driver,services) runs those phases, in lane order, on one board fixture.'
         echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only` since the merge base with BASE'
         echo '        (uncommitted and untracked files included), prints why, and falls back to the full lane for'
@@ -180,7 +180,9 @@ docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable';
 images=''
 if selected_phase cooperative-stop || selected_phase tool-isolation || selected_phase image-checks; then
     images='claude-executor opencode-executor'
-elif selected_phase ask-user-question || selected_phase question-round-trip; then
+elif selected_phase question-round-trip; then
+    images='claude-executor opencode-executor'
+elif selected_phase ask-user-question; then
     images='claude-executor'
 fi
 for image in $images; do
@@ -1455,7 +1457,7 @@ mint_pid=""
 fi
 
 if selected_phase services || selected_phase orphan-reaper || selected_phase node-disruption ||
-    selected_phase driver-kill || selected_phase run-deadline || selected_phase capacity; then
+    selected_phase driver-kill || selected_phase run-deadline || selected_phase capacity || selected_phase mcp; then
 begin_phase service-fixture
 mkdir -p "$work/svc"
 printf '%s\n' \
@@ -3840,7 +3842,11 @@ connection_roundtrip_lane() {
     # The helper reaches the board from inside the container, where the driver's loopback URL is not the host's.
     RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
 
-    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/jira/jira.cjs issue ABC-1; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/jira/jira.cjs issue ABC-1 && node /usr/local/share/factory-skills/task-title/task-title.cjs \"Lane Jira subject\"; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
+    # BEL-252: the image's Jira skill carries the title hook (the scripted model cannot read prose, so the
+    # chained command below stands for an agent that follows it: the title call runs only after a read exit 0).
+    docker run --rm --entrypoint cat "$image" /usr/local/share/factory-skills/jira/SKILL.md 2>/dev/null | grep 'Naming the task after a ticket' >/dev/null &&
+        ok 'the image ships the Jira skill title hook' || bad 'the image ships the Jira skill title hook' 'SKILL.md in the image lacks the section; make runners'
     ask_pid=$!
     lane_endpoint_started "$ask_pid"
     for _ in $(seq 1 20); do
@@ -3867,6 +3873,8 @@ connection_roundtrip_lane() {
         bad 'the asking task is queued behind one open requirement, not failed' \
             "$(field "$body_json" status); the helper's result: $(curl -s --max-time 5 "http://127.0.0.1:$ask_port/steps" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).results[0].text).replace(/\n/g,"|").slice(-330))}catch{}})'); driver: $(grep -F "job $id" "$work/driver.log" | grep -i 'connect\|requirement' | tail -4 | cut -c1-300); board: $(grep -E 'requirements|credentials/connections|/attempt' "$work/server.log" | tail -6 | cut -c1-300)"
     expect_field 'the hand-back refunds the attempt' "$body_json" attempts 0
+    # The failed read ended the chain before the title helper: no fabricated subject reached the board.
+    expect_field 'a failed issue read leaves the title off the agent subject' "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === "Lane Jira subject" || j.titleOrigin === "agent" }))' "$body_json")" named false
     local session
     session="$(field "$body_json" sessionId)"
     [ -n "$session" ] && ok 'the waiting task kept its session' || bad 'the waiting task kept its session' "$body_json"
@@ -3896,13 +3904,146 @@ process.stdout.write(made.ok ? made.connectionId : "");
     body_json="$(body "$(api GET "/api/jobs/$id")")"
     expect_field 'the resumed run is the same session' "$body_json" sessionId "$session"
     expect_field 'the requirement is closed' "$(node -e 'process.stdout.write(JSON.stringify({ open: JSON.parse(process.argv[1]).integrationRequirements.length }))' "$body_json")" open 0
+    # The stub site has no issue to return, so the resumed read fails too and the chain stops again.
+    expect_field 'a read the stub site cannot answer still leaves the title unset by the agent' "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === "Lane Jira subject" || j.titleOrigin === "agent" }))' "$body_json")" named false
     lane_endpoint_stop "$ask_pid"
     stop_driver
 }
 
 connection_roundtrip_lane
 
+# The agent names its task (BEL-252), end to end for both CLIs. The real executor image runs the task-title
+# helper (a scripted shell step) on the attempt pair its pod/container holds: the helper reaches the board's
+# agent-title route and the task carries the title with origin `agent`. The refusals (a user's title, the
+# change cap, a lapsed lease) are server/test-db/agent-title.test.ts's.
+task_title_lane() { # task_title_lane <claude|opencode>
+    local cli="$1" image="$1-executor" tool=Bash fake_pid fake_port id body_json
+    [ "$cli" = opencode ] && tool=bash
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad "$cli: the agent names its task" "the $image image is missing — run make runners"
+        return
+    fi
+    stop_driver
+    RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
+
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"'"$tool"'","input":{"command":"node /usr/local/share/factory-skills/task-title/task-title.cjs \"Lane agent title\"; echo helper-exit=$?"}}]' >"$work/fake-title-$cli.port" &
+    fake_pid=$!
+    lane_endpoint_started "$fake_pid"
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-title-$cli.port" ] && break
+        sleep 0.25
+    done
+    fake_port="$(cat "$work/fake-title-$cli.port")"
+    if [ "$cli" = opencode ]; then
+        # OPENCODE_CONFIG_CONTENT is reserved at /api/env; the claim synthesizes it from the executor row's
+        # config (job-store-claim-executor.ts), so the scripted endpoint rides the row. The key is a plain env name.
+        api PUT /api/env/org '{"vars":[{"name":"ANTHROPIC_API_KEY","value":"fake-key","isSecret":true}]}' >/dev/null
+        api PUT /api/workspace/executors "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
+            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$fake_port")" >/dev/null
+    else
+        point_runners_at "$fake_port"
+    fi
+    id="$(create_job 'name this task' "$cli")"
+    expect_contains "$cli: the task with a scripted title step succeeds" "$(await_settled "$id" 180)" succeeded
+    body_json="$(body "$(api GET "/api/jobs/$id")")"
+    expect_field "$cli: the agent's title is the task's title" "$body_json" title 'Lane agent title'
+    expect_field "$cli: the title is marked as set by the agent" "$body_json" titleOrigin agent
+    lane_endpoint_stop "$fake_pid"
+    if [ "$cli" = opencode ]; then
+        api PUT /api/workspace/executors '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}' >/dev/null
+    fi
+    stop_driver
+}
+
+task_title_lane claude
+
+task_title_lane opencode
+
 ask_roundtrip_lane
+
+fi
+
+if selected_phase mcp; then
+begin_phase mcp
+# --- A task settles through the MCP server (BEL-108) ------------------------------------------
+#
+# The board (AUTH_MODE=github, MCP_ENABLED) and the driver are the real ones, the runner is the prompt-executing
+# stub, and the member is signed in through e2e/stub-idp.mjs: the same stand-in the browser specs use, pointed at by
+# the board's GITHUB_OAUTH_*_URL overrides. scripts/mcp-phase-client.mjs is a real SDK client: it signs the member in
+# over plain HTTP, is sent through discovery, registration, PKCE and consent (approved with the member's session, the
+# two calls the consent page makes), and then create_task -> wait_task -> get_task_result -> read_job_log run a task
+# on the real driver to `succeeded`. No route exists for this phase: the board is configured, not patched.
+
+echo
+echo '# mcp (board + driver + MCP client, stub runner)'
+
+MCP_PORT=$((PORT + 1))
+MCP_IDP_PORT=$((PORT + 2)) # the mint board that used PORT + 2 is stopped by now
+MCP_BASE="http://127.0.0.1:$MCP_PORT"
+MCP_ORG=999999 # the installation e2e/stub-idp.mjs reports; the board names the member's organization after it
+
+kill "$server_pid" 2>/dev/null
+wait "$server_pid" 2>/dev/null
+server_pid=""
+
+STUB_IDP_PORT="$MCP_IDP_PORT" STUB_IDP_INSTALLATIONS="$MCP_ORG" node e2e/stub-idp.mjs >"$work/mcp-idp.log" 2>&1 &
+mcp_idp_pid=$!
+lane_extra_pids="$lane_extra_pids $mcp_idp_pid"
+lane_extra_pids="${lane_extra_pids# }"
+
+# The member's organization has the smoke repository tracked, as the board fixture does for the stand-in member.
+compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
+    "insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+     values ('$MCP_ORG', 'claude-code', 'test-jobs-mcp', '$SMOKE_REPO', 'main', now(), now())
+     on conflict do nothing" >/dev/null 2>&1 || {
+    echo "test-jobs: could not select $SMOKE_REPO for the mcp organization"
+    exit 1
+}
+
+MCP_TOKEN="mcp-$(openssl rand -hex 16)" # the board's and the driver's shared worker secret, 32+ characters
+MCP_IDP="http://127.0.0.1:$MCP_IDP_PORT"
+env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$MCP_PORT" HOST=127.0.0.1 \
+    REPO_CLONE_BASE="$PLAN_BASE" AUTH_MODE=github MCP_ENABLED=true PUBLIC_URL="$MCP_BASE" \
+    GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
+    GITHUB_OAUTH_AUTHORIZE_URL="$MCP_IDP/login/oauth/authorize" GITHUB_OAUTH_USER_URL="$MCP_IDP/user" \
+    GITHUB_OAUTH_TOKEN_URL="$MCP_IDP/login/oauth/access_token" \
+    SESSION_SECRET=a-job-harness-session-secret-32-chars JOB_BOARD_TOKEN="$MCP_TOKEN" \
+    node server/dist/offline.js >>"$work/mcp-server.log" 2>&1 &
+server_pid=$!
+
+mcp_up=""
+for _ in $(seq 1 40); do
+    [ "$(status "$(BASE="$MCP_BASE" api GET /api/ready)")" = '200' ] && {
+        mcp_up=1
+        break
+    }
+    sleep 1
+done
+
+if [ -z "$mcp_up" ]; then
+    bad 'mcp: the board with MCP_ENABLED came up' "$(tail -5 "$work/mcp-server.log")"
+else
+    ok 'mcp: the board with MCP_ENABLED came up'
+    disruption_driver JOB_BOARD_URL="$MCP_BASE" JOB_BOARD_TOKEN="$MCP_TOKEN"
+
+    mcp_out="$work/mcp-client.out"
+    MCP_BOARD="$MCP_BASE" MCP_RUN_ID="$RUN_ID" timeout 240 node scripts/mcp-phase-client.mjs >"$mcp_out" 2>"$work/mcp-client.err"
+    mcp_exit=$?
+    while IFS="$(printf '\t')" read -r kind name detail; do
+        case "$kind" in
+        ok) ok "$name" ;;
+        bad) bad "$name" "$detail" ;;
+        id) printf '%s\n' "$name" >>"$work/created-jobs" ;;
+        esac
+    done <"$mcp_out"
+    [ "$mcp_exit" -eq 0 ] || bad 'mcp: the client exited cleanly' "exit $mcp_exit: $(tail -3 "$work/mcp-client.err")"
+    stop_driver
+fi
+
+# The last phase: nothing after it needs the open board, so the board is just stopped.
+kill "$server_pid" 2>/dev/null
+wait "$server_pid" 2>/dev/null
+server_pid=""
 
 fi
 

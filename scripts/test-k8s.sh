@@ -37,10 +37,10 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|drain|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|drain|bench] | --netpol]'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|bench] | --netpol]'
         echo 'All cluster phases run smoke prerequisites. The default cluster phase is all, which leaves out drain (it needs a LAYOUT=drain cluster) and bench (an hour or more on an idle host; writes <timings>.bench.tsv).'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
@@ -740,6 +740,17 @@ refuses() { # refuses <name> <needle> <helm args...>
     fi
 }
 refuses 'a missing publicUrl is refused' 'auth.publicUrl is required' "${GH_SETS[@]}" --set auth.publicUrl=
+# The board-hosted MCP server (BEL-104): off by default, https-only when on, origins rendered as one comma list.
+mcp_off="$(gh_render)"
+expect_contains 'MCP is off by default' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_off")" 'value: "false"'
+expect_contains 'no MCP origins render by default' "$(grep -A1 'name: MCP_TRUSTED_ORIGINS$' <<<"$mcp_off")" 'value: ""'
+refuses 'MCP over a non-https publicUrl is refused' 'mcp.enabled requires an https auth.publicUrl' \
+    "${GH_SETS[@]}" --set-string auth.publicUrl=http://board.example --set mcp.enabled=true
+mcp_on="$(gh_render --set-string auth.publicUrl=https://board.example --set mcp.enabled=true \
+    --set 'mcp.trustedOrigins={https://a.example,https://b.example}')"
+expect_contains 'MCP renders on under an https publicUrl' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_on")" 'value: "true"'
+expect_contains 'the trusted origins render as a comma list' "$(grep -A1 'name: MCP_TRUSTED_ORIGINS$' <<<"$mcp_on")" \
+    'value: "https://a.example,https://b.example"'
 # The artifact store (#764): the dashboard runs as its own ServiceAccount, which carries the IRSA
 # annotation, and the s3 backend refuses to render without a bucket.
 expect_contains 'the dashboard has its own ServiceAccount' "$gh" "serviceAccountName: $RELEASE-factory-dashboard"
@@ -933,7 +944,8 @@ expect_contains 'the enabled ingress carries the ingress class' "$ingress_doc" '
 expect_contains 'the enabled ingress carries the host' "$ingress_doc" 'host: "factory.example"'
 expect_contains 'annotations pass through verbatim' "$ingress_doc" 'alb.ingress.kubernetes.io/target-type: ip'
 expect_contains 'tls passes through verbatim' "$ingress_doc" 'secretName: factory-tls'
-expect_contains 'the ingress backs the dashboard service by name' "$ingress_doc" "name: $RELEASE-factory"
+expect_contains 'the ingress backs the dashboard service by name' "$ingress_doc" "service:
+                            name: $RELEASE-factory"
 expect_contains 'the ingress backs the dashboard port' "$ingress_doc" 'number: 8080'
 expect_contains 'the ingress is the dashboard component' "$ingress_doc" 'app.kubernetes.io/component: dashboard'
 helm lint charts/factory "${GH_SETS[@]}" --set ingress.enabled=true --set 'ingress.hosts={factory.example}' \
@@ -948,6 +960,23 @@ expect_contains     'the ingress renders one rule per host' "$bare_ingress" 'hos
 expect_not_contains 'an empty className renders no ingressClassName' "$bare_ingress" 'ingressClassName'
 expect_not_contains 'empty annotations render no annotations key' "$bare_ingress" 'annotations:'
 expect_not_contains 'empty tls renders no tls key' "$bare_ingress" 'tls:'
+
+# MCP behind the ingress (BEL-108): the OAuth discovery documents (/.well-known/oauth-*) and the endpoint (/api/mcp)
+# live on the dashboard service, so the one `/` Prefix rule per host is the whole routing. A second, more specific
+# path rule would be a shadow that could send them elsewhere, and a host answering MCP must be the https origin.
+mcp_ingress_render="$(gh_render --set-string auth.publicUrl=https://factory.example --set mcp.enabled=true \
+    --set ingress.enabled=true --set 'ingress.hosts={factory.example}')"
+mcp_ingress="$(awk '/^# Source: factory\/templates\/ingress.yaml/,/^---/' <<<"$mcp_ingress_render")"
+expect_contains 'MCP and the ingress render together' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_ingress_render")" 'value: "true"'
+[ "$(grep -c -- '- path:' <<<"$mcp_ingress")" = 1 ] && ok 'the MCP ingress has one path rule per host: nothing shadows /.well-known/oauth-* or /api/mcp' ||
+    bad 'the MCP ingress has one path rule per host: nothing shadows /.well-known/oauth-* or /api/mcp' "$(grep -- '- path:' <<<"$mcp_ingress")"
+expect_contains 'the one rule is the / prefix, which carries /.well-known/oauth-* and /api/mcp' "$mcp_ingress" '- path: /
+                    pathType: Prefix'
+expect_contains 'the MCP paths reach the dashboard service' "$mcp_ingress" "service:
+                            name: $RELEASE-factory"
+refuses 'MCP behind an ingress over a non-https publicUrl is refused' 'mcp.enabled requires an https auth.publicUrl' \
+    "${GH_SETS[@]}" --set-string auth.publicUrl=http://factory.example --set mcp.enabled=true \
+    --set ingress.enabled=true --set 'ingress.hosts={factory.example}'
 
 # The refusals: the hosts list is the authority, and auth.publicUrl must be an origin it answers.
 refuses 'an enabled ingress with no hosts is refused' 'ingress.hosts is required when ingress.enabled' \
@@ -1630,9 +1659,9 @@ begin_phase images
 # entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
     docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"
+cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs docker/skills/task-title/task-title.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
-printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
+printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >"$work/dashboard-build.log" 2>&1 &
 dash_build=$!
@@ -2253,6 +2282,36 @@ expect_contains 'the helper reaches the credential route and is refused' "$gh_re
 expect_contains 'the refusal is the App-less board, said on stderr'  "$gh_result" 'no GitHub App installation'
 expect_contains "the helper's cache is a Memory emptyDir"           "$gh_result" 'github cache tmpfs'
 expect_contains 'the runner pod carries no GitHub token in its env'  "$gh_result" 'github no env token'
+
+# --- The agent's task title (BEL-252) --------------------------------------------------
+#
+# The task-title helper in the runner pod names its task on the board's attempt-pair route: the same image,
+# pair env and control socket as the docker executor. The board's task carries the title with origin `agent`.
+
+echo
+echo '# task title'
+
+title_id="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-title", executor: "claude", repo: process.argv[2] }) })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
+    .catch(() => {});
+' "$BASE/api/jobs" "$SMOKE_REPO")"
+title_result=""
+for _ in $(seq 1 120); do
+    title_result="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write(j.status + "\t" + String(j.output ?? "") + "\ttitle=" + String(j.title) + "\torigin=" + String(j.titleOrigin)); })
+    .catch(() => process.stdout.write("queued\t"));
+' "$BASE/api/jobs/$title_id")"
+    case "$title_result" in
+    queued* | running*) sleep 1 ;;
+    *) break ;;
+    esac
+done
+expect_contains 'the title helper job ran to completion'        "$title_result" 'succeeded'
+expect_contains 'the helper reaches the title route and succeeds' "$title_result" 'title exit 0'
+expect_contains "the board's task carries the agent's title"      "$title_result" 'title=Lane agent title'
+expect_contains 'the title is marked as set by the agent'         "$title_result" 'origin=agent'
 
 # --- The runtime connection requirement -----------------------------------------------
 #
@@ -4905,6 +4964,93 @@ for job in $cap_jobs; do
     cap_kubectl 40 "the runner Jobs of $job are deleted" delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false || true
 done
+fi
+
+if selected_phase mcp; then
+begin_phase mcp
+# --- The board-hosted MCP server behind the chart (BEL-108) ---------------------------------------
+#
+# The chart renders MCP off and https-only (phase one asserts that and the ingress routing); this phase turns it on
+# in the running dashboard and makes one client pass through the port-forward, as a client behind the ingress would
+# reach it: the discovery documents, the host and credential gates, then the SDK client (scripts/mcp-kind-client.mjs).
+# No identity provider runs on kind, so the OAuth access token is minted into the database where the code exchange
+# would have put it, as the member's personal access token is above; the OAuth flow itself runs on the docker lane
+# (`test:jobs --phase mcp`). The dashboard is returned to its MCP-off state at the end, so the phases after this one
+# (bench) see the board they always saw.
+
+echo
+echo '# mcp'
+
+MCP_PUBLIC_HOST=board.kind.example
+mcp_kubectl() { # mcp_kubectl <seconds> <what> <kubectl args...> -> the call, bounded; a failure is reported and returned
+    local secs="$1" what="$2" out
+    shift 2
+    out="$(bounded "$secs" kubectl --request-timeout=20s "$@" 2>&1)" || {
+        bad "mcp: $what" "${out:0:300}"
+        return 1
+    }
+}
+mcp_restart_board() { # mcp_restart_board <what> -> the dashboard rolled out and answering through a fresh port-forward
+    local until
+    bounded 210 kubectl rollout status "deployment/$RELEASE-factory" -n "$NAMESPACE" --timeout=180s >/dev/null 2>&1 || {
+        bad "mcp: $1: the dashboard rolls out" "$(bounded 20 kubectl get pods -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=10s 2>&1 | tail -4)"
+        return 1
+    }
+    kill "$pf_pid" 2>/dev/null
+    wait "$pf_pid" 2>/dev/null
+    kubectl port-forward "svc/$RELEASE-factory" "$PORT:8080" -n "$NAMESPACE" >>"$PF_LOG" 2>&1 &
+    pf_pid=$!
+    until=$(($(date +%s) + 120))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(http_status GET "$BASE/api/ready")" = '200' ] && return 0
+        sleep 1
+    done
+    bad "mcp: $1: the board answers through the port-forward" "$(tail -3 "$PF_LOG")"
+    return 1
+}
+
+mcp_ready=''
+if mcp_kubectl 40 'MCP is enabled under an https origin' set env "deployment/$RELEASE-factory" -n "$NAMESPACE" \
+    "PUBLIC_URL=https://$MCP_PUBLIC_HOST" MCP_ENABLED=true && mcp_restart_board 'enabled'; then
+    read -r MCP_TOKEN mcp_hash < <(node -e '
+const c = require("node:crypto");
+const t = "mat_" + c.randomBytes(32).toString("base64url");
+process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
+')
+    mcp_minted="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        psql -q -v ON_ERROR_STOP=1 -v "org=$member" -v "user=$member_user" -v "hash=$mcp_hash" \
+        -v "resource=https://$MCP_PUBLIC_HOST/api/mcp" \
+        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+insert into oauth_client (client_id, kind, client_name, redirect_uris)
+values ('test-k8s-mcp', 'dcr', 'test-k8s', array['http://127.0.0.1:59174/callback'])
+on conflict do nothing;
+with f as (
+    insert into oauth_grant_family (client_id, user_id, org_id, resource, scopes, expires_at)
+    values ('test-k8s-mcp', :'user'::uuid, :'org', :'resource', array['factory:read', 'factory:write'], now() + interval '1 hour')
+    returning id
+)
+insert into oauth_token (token_hash, kind, family_id, scopes, expires_at)
+select decode(:'hash', 'hex'), 'access', f.id, array['factory:read', 'factory:write'], now() + interval '1 hour' from f;
+SQL
+    )" && { ok 'mcp: an access token is minted for the member'; mcp_ready=1; } ||
+        bad 'mcp: an access token is minted for the member' "$mcp_minted"
+fi
+[ -n "$mcp_ready" ] || bad 'mcp: the client pass runs' 'MCP was not enabled or no token was minted, so the client was skipped'
+if [ -n "$mcp_ready" ]; then
+    mcp_out="$(MCP_BOARD="$BASE" MCP_PUBLIC_HOST="$MCP_PUBLIC_HOST" MCP_TOKEN="$MCP_TOKEN" bounded 120 node scripts/mcp-kind-client.mjs 2>&1)"
+    mcp_rc=$?
+    saw_check=''
+    while IFS=$'\t' read -r kind name detail; do
+        case "$kind" in
+        ok) ok "$name"; saw_check=1 ;;
+        bad) bad "$name" "$detail"; saw_check=1 ;;
+        esac
+    done <<<"$mcp_out"
+    { [ -n "$saw_check" ] && [ "$mcp_rc" -ne 143 ]; } || bad 'mcp: the client pass finishes' "rc $mcp_rc: ${mcp_out:0:300}"
+fi
+
+mcp_kubectl 40 'MCP is switched off again' set env "deployment/$RELEASE-factory" -n "$NAMESPACE" \
+    "PUBLIC_URL=$BASE" MCP_ENABLED=false && mcp_restart_board 'restored' || true
 fi
 
 if [ "$PHASE" = bench ]; then

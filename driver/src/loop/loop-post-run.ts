@@ -8,12 +8,12 @@ import type { HelperFailureReport } from '../helpers.js';
 import { interruptDecision, setupDecision } from './loop-fence.js';
 import { stepLost } from '../step-control.js';
 import { runPostHelperPhase } from './loop-helpers.js';
-import { askGithubToken } from './loop-github.js';
 import { end, endIfDown } from './loop-conclusion.js';
 import { postHelperSkipWhy, ledgerOf } from './loop-ledger.js';
 import { type PhaseChain, phasesOf } from './loop-phase-checkpoints.js';
 import type { RunPhaseResult } from './loop-run.js';
-import { publishBranch, publishModeOf, publishOptionsOf } from './loop-verdict.js';
+import { publishModeOf, publishOptionsOf } from './loop-verdict.js';
+import { publishWithRetry } from './loop-publish-retry.js';
 import { type AttemptCtx, STOOD_DOWN } from './loop-types.js';
 import type { PublishOptions, PublishResult } from '../publish/publish.js';
 
@@ -54,17 +54,19 @@ async function publishPhase(
     options: PublishOptions | undefined,
     revision: string | null
 ): Promise<PublishResult | null | typeof STOOD_DOWN> {
-    const { rt, job, state } = ctx;
+    const { state } = ctx;
     const resumed = phases.resumePublish(revision);
     if (resumed) return resumed;
-    const githubToken = await askGithubToken(rt, job, 'the publish');
-    // The fence sits BETWEEN the ask and the push: a Stop during the ask killed the runner,
+    // The fence sits BETWEEN each token ask and its push: a Stop during the ask killed the runner,
     // and pushing now would outlive it. The push itself is never fenced — it cannot be
-    // recalled (issue #472).
-    if (await endIfDown(ctx, 'its publish')) return STOOD_DOWN;
+    // recalled (issue #472). A rejected or missing token, or a GitHub 5xx, retries (BEL-253).
     let published: PublishResult;
     try {
-        published = await publishBranch(rt, job, githubToken, options);
+        const answer = await publishWithRetry(ctx, { what: 'the publish', options }, () =>
+            endIfDown(ctx, 'its publish')
+        );
+        if (answer === STOOD_DOWN) return STOOD_DOWN;
+        published = answer;
     } catch (e) {
         if (!stepLost(e)) throw e;
         // The supervisor was lost under the push: no verdict on the publish, the next claim redoes it (#925).

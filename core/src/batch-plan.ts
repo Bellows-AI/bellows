@@ -43,7 +43,7 @@ export const MIN_BATCH_TIME_LIMIT_MINUTES = 1;
 export const MAX_BATCH_TIME_LIMIT_MINUTES = 1440;
 export const DEFAULT_BATCH_TIME_LIMIT_MINUTES = 720;
 
-const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+export const BATCH_REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
 export type BatchCompletion =
     | { kind: typeof BATCH_COMPLETION_PR }
@@ -262,7 +262,11 @@ function parseTarget(raw: unknown, path: string, issues: Issues): BatchTarget | 
     const fields = objectAt(raw, TARGET_FIELDS, path, issues);
     if (!fields) return undefined;
     const targetKey = key(fields.key, `${path}.key`, issues);
-    if (typeof fields.repo !== 'string' || fields.repo.length > BATCH_REPO_LIMIT || !REPO_PATTERN.test(fields.repo)) {
+    if (
+        typeof fields.repo !== 'string' ||
+        fields.repo.length > BATCH_REPO_LIMIT ||
+        !BATCH_REPO_PATTERN.test(fields.repo)
+    ) {
         issues.add(`${path}.repo`, 'must be owner/name');
     }
     const branch = optionalText(fields.branch, `${path}.branch`, BATCH_BRANCH_LIMIT, issues);

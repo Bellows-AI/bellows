@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import type { ExecutorScope } from '@factory-ai/core';
+import type { ExecutorScope, TaskTitleOrigin } from '@factory-ai/core';
 import { type AnswerOutcome, postAnswer } from './answer-question.js';
 import { refusalOf } from './refusal.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
@@ -19,8 +19,12 @@ export type TaskSort = 'newest' | 'oldest';
 export interface TaskSummary {
     /** The root job id — the route target. */
     id: string;
-    /** The root command; the UI derives the first-line title from it. */
+    /** The root command; the fallback title derives from it. */
     command: string;
+    /** The root's stored title, or null while the fallback stands (BEL-252). */
+    title: string | null;
+    titleOrigin: TaskTitleOrigin | null;
+    titleRevision: number;
     /** The newest run's status — the chain head's, not the root's. */
     status: JobStatus;
     cancelRequestedAt: string | null;
@@ -151,9 +155,19 @@ export interface UseTasks {
         markDone: (id: string) => Promise<string | null>;
         stop: (id: string) => Promise<string | null>;
         remove: (id: string) => Promise<string | null>;
+        rename: (id: string, title: string, revision: number) => Promise<RenameOutcome>;
         answerQuestion: (jobId: string, questionId: string, answers: Record<string, string>) => Promise<AnswerOutcome>;
     };
 }
+
+/**
+ * A rename's answer (BEL-252): saved, refused because the title moved on since the page rendered it
+ * (`stale` carries what the board holds now), or failed with a sentence to show.
+ */
+export type RenameOutcome =
+    | { state: 'saved' }
+    | { state: 'stale'; title: string; revision: number }
+    | { state: 'failed'; error: string };
 
 /** What starting a task takes — bundled so the queueing call stays under the param-count limit.
  * A null `workflow` is objective mode: the prompt runs as written. */
@@ -167,6 +181,8 @@ export interface QueueTaskInput {
     workflowParams: Record<string, string> | null;
     /** The branch the task works from; null is the repository's default branch. */
     baseBranch?: string | null;
+    /** The member's own title for the task (BEL-252); absent when the field was left blank. */
+    title?: string;
     /** Built-in skills the prompt names with a `/name` token; absent when it names none. */
     skills?: string[];
     /** Completed upload ids; absent for a text-only task, so that body is unchanged. */
@@ -431,6 +447,34 @@ async function followUpOnTask(id: string, command: string, files?: SubmittedFile
         return { id: body.id, error: null };
     } catch (e) {
         return { id: null, error: (e as Error).message };
+    }
+}
+
+const HTTP_STATUS_CONFLICT = 409;
+
+/** `PUT /api/jobs/:id/title`: compare-and-set on the revision the page rendered. A 409 names the current title. */
+async function renameTask(id: string, title: string, revision: number): Promise<RenameOutcome> {
+    try {
+        const response = await fetch(`/api/jobs/${id}/title`, {
+            method: 'PUT',
+            headers: JSON_HEADERS,
+            body: JSON.stringify({ title, revision }),
+        });
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+            reportUnauthenticated();
+            return { state: 'failed', error: 'Your session expired' };
+        }
+        if (response.status === HTTP_STATUS_CONFLICT) {
+            const current = (await response.json().catch(() => ({}))) as { title?: unknown; revision?: unknown };
+            if (typeof current.title === 'string' && typeof current.revision === 'number') {
+                return { state: 'stale', title: current.title, revision: current.revision };
+            }
+        }
+        if (!response.ok)
+            return { state: 'failed', error: (await refusalOf(response, 'Could not rename the task')).error };
+        return { state: 'saved' };
+    } catch (e) {
+        return { state: 'failed', error: (e as Error).message };
     }
 }
 
@@ -701,6 +745,11 @@ function useTaskActions(start: () => void): UseTasks['actions'] {
                 const error = await postTaskAction(`/api/jobs/${id}/remove`, 'Could not remove the task');
                 if (error === null) start();
                 return error;
+            },
+            async rename(id: string, title: string, revision: number): Promise<RenameOutcome> {
+                const outcome = await renameTask(id, title, revision);
+                if (outcome.state !== 'failed') start();
+                return outcome;
             },
             async answerQuestion(
                 jobId: string,

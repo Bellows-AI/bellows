@@ -1,8 +1,14 @@
-import { ERROR_CODES, validateBatchPlan, type BatchPlan } from '@factory-ai/core';
+import { batchStanding, ERROR_CODES, validateBatchPlan, type BatchPlan, type BatchStanding } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import { UUID } from '../../identifiers.js';
-import type { BatchRecord, BatchStore, BatchWriteRefusal } from '../../db/batches/batch-store-types.js';
+import {
+    BATCH_DRAFT,
+    type BatchRecord,
+    type BatchReport,
+    type BatchStore,
+    type BatchWriteRefusal,
+} from '../../db/batches/batch-store-types.js';
 import type { OrgRegistry, OrgRuntime } from '../../orgs.js';
 import { bad, body, guard } from '../helpers.js';
 import { HTTP_CONFLICT, HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNAVAILABLE } from '../jobs/job-limits.js';
@@ -123,4 +129,31 @@ export async function loadBatch(
         return null;
     }
     return found.value;
+}
+
+/**
+ * The batch with the board's verdict on it, and the report that verdict was read from, all from ONE
+ * store snapshot: the record fields, `standing` and `report` describe the same instant, so a fence
+ * or a merge landing between two reads cannot mix states. When the snapshot cannot be read the
+ * record in hand is answered with `inconclusive` and no report, because the write that led here
+ * (a start, a cancel) has already happened and a 503 would hide it.
+ */
+export async function withStanding(
+    ctx: Context,
+    request: FastifyRequest,
+    record: BatchRecord
+): Promise<BatchRecord & { standing: BatchStanding; report: BatchReport | null }> {
+    if (record.status === BATCH_DRAFT) return { ...record, standing: batchStanding(record, null), report: null };
+    let snapshot: Awaited<ReturnType<BatchStore['snapshot']>> = null;
+    try {
+        snapshot = await ctx.store.snapshot(record.id);
+    } catch (e) {
+        request.log.error({ err: e }, 'batch snapshot read failed');
+    }
+    const { record: seen, report } = snapshot ?? { record, report: null };
+    return {
+        ...seen,
+        standing: batchStanding(seen, (report?.tasks ?? null) as readonly unknown[] | null),
+        report,
+    };
 }

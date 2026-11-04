@@ -102,7 +102,7 @@ interface StateTask extends BoardMergeRow {
     stage_key: string;
     target_key: string;
     executor: string | null;
-    /** Null beside a null executor: the claim's default needs no scope. */
+    /** Null beside a null executor, which only a board with no executor store or no caller launches. */
     executor_scope: ExecutorScope | null;
     objective: string;
     acceptance: string;

@@ -115,7 +115,7 @@ export function createAttachmentStore({
         // The deadline is taken before the stamp is issued, so a slow stamp can only shorten the write window (docs/persistence.md).
         const deadline = Date.now() + writeBoundMs;
         const stamped = await rows.beginAttempt(row.id);
-        if (!stamped) throw new AttachmentGoneError();
+        if (!stamped) return settledElsewhere(row, new AttachmentGoneError());
         const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
         const put = await confirmed('put', () => objects.put(row.objectKey, bytes, { signal }));
         if (put === 'exists') await verifyHeld(row);
@@ -125,7 +125,17 @@ export function createAttachmentStore({
             throw new AttachmentIntegrityError('the stored size differs from the recorded size');
         const marked = await rows.markReady(row.id);
         if (marked) return marked;
-        throw new AttachmentUnavailableError('the row left the pending state');
+        return settledElsewhere(row, new AttachmentUnavailableError('the row left the pending state'));
+    }
+
+    /**
+     * A concurrent replay of the same keyed upload may have finished the row first (or bound it already): that finished
+     * row is the answer. A row that is not ready or bound for its uploader (taken by the sweep) keeps `otherwise`.
+     */
+    async function settledElsewhere(row: AttachmentRow, otherwise: Error): Promise<AttachmentRow> {
+        const done = row.uploaderId === null ? null : await rows.find(row.id, row.uploaderId);
+        if (done) return done;
+        throw otherwise;
     }
 
     return {

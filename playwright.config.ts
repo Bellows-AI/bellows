@@ -71,7 +71,8 @@ export const E2E_DATABASE_URL = databaseUrl(`${DB_PREFIX}_e2e`);
 export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
-const AUTH_SPECS = /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|task-connect-auth)\.spec\.ts$/;
+const AUTH_SPECS =
+    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect)\.spec\.ts$/;
 /**
  * Heavy captures that gate nothing — the baseline gallery, the fixed-seed gremlins — carry this tag
  * and run only under playwright.nightly.config.ts (`npm run verify:ui:nightly`), with the specimen.
@@ -181,6 +182,9 @@ export default defineConfig({
                 // even where no driver ever connects.
                 JOB_BOARD_TOKEN: 'an-e2e-board-secret-of-at-least-32-chars',
                 PUBLIC_URL: `http://127.0.0.1:${AUTH_PORT}`,
+                // The MCP authorization server (BEL-103): an http loopback PUBLIC_URL needs a loopback bind.
+                MCP_ENABLED: 'true',
+                HOST: '127.0.0.1',
                 // The three overrides that point the exchange at the stub. Environment only — and
                 // the server logs loudly when they are in use, because a configurable authorize
                 // URL reaching a real deployment would be a phishing vector.

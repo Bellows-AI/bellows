@@ -114,7 +114,7 @@ function pairOf(request: FastifyRequest): { jobId: string; leaseToken: string } 
 }
 
 /** The request's pair, or the reply that refused it (already sent). */
-function pairOrRefuse(request: FastifyRequest, reply: FastifyReply) {
+export function pairOrRefuse(request: FastifyRequest, reply: FastifyReply) {
     reply.header('cache-control', 'no-store');
     const pair = pairOf(request);
     if (pair === 'unauthenticated') {

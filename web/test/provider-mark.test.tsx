@@ -1,10 +1,10 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ProviderMark } from '../src/components/ProviderMark.js';
-import { INTEGRATION_PROVIDERS } from '../src/settings/integration-providers.js';
+import { INTEGRATION_CATALOG } from '@factory-ai/core';
 
 describe('ProviderMark', () => {
-    it.each(INTEGRATION_PROVIDERS.map((provider) => [provider.id, provider.label] as const))(
+    it.each(INTEGRATION_CATALOG.map((provider) => [provider.id, provider.label] as const))(
         'draws %s as a labelled image filled with its brand token',
         (id, label) => {
             const html = renderToStaticMarkup(<ProviderMark provider={id} />);

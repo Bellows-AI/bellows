@@ -78,7 +78,7 @@ never utilities, and every color it renders resolves through a token.
 ## Shared classes
 
 Shell and navigation: `shell-main`, `page-header-eyebrow`, `page-header-leading`,
-`page-header-description`, `page-header-meta`, `page-header-actions`, `skip-link`, `appbar-brand`,
+`task-heading`, `page-header-description`, `page-header-meta`, `page-header-actions`, `skip-link`, `appbar-brand`,
 `appbar-org`, `appbar-trigger`, `appbar-actions`, `sidenav-brand`, `sidenav-items`, `sidenav-link`,
 `sidenav-sublink`, `sidenav-subitems`, `sidenav-count`, `sidenav-newtask`, `sidenav-preview`,
 `sidenav-section`, `sidenav-empty`, `sidenav-task-title`, `sidenav-task-summary`,
@@ -96,7 +96,7 @@ Surfaces and feedback: `panel-flat`, `panel-head`, `panel-actions`, `status`, `a
 `pill-bad`, `pill-done`, `pill-accent`, `pill-question`, `pill-list`, `count`, `switch`, `inbox-chip`.
 
 Data display: `table-wrap`, `data`, `sortable`, `align-end`, `asc`, `kv`, `by-user-user`,
-`table-cards`, `data-compact`, `search-field`, `updated-at`, `icon`.
+`table-cards`, `cell-wrap`, `data-compact`, `search-field`, `updated-at`, `icon`.
 
 Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-precision`,
 `usage-precision-words`, `usage-coverage`, `usage-breakdown`, `usage-breakdown-toggle`,

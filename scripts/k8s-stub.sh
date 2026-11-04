@@ -122,6 +122,15 @@ for arg in "$@"; do
         env | grep -q -e '^GITHUB_TOKEN=' -e '^GH_TOKEN=' || echo 'github no env token'
         break
         ;;
+    *factory-stub-title*)
+        # `factory-stub-title` (BEL-252): the agent names its task through the task-title helper on the attempt
+        # pair of the pod's env (the supervisor's control socket relays the lease it follows now).
+        title_exit=0
+        FACTORY_CONTROL_SOCKET="$FACTORY_CTL_OUT/control.sock" node /usr/local/bin/task-title.cjs 'Lane agent title' >/tmp/title.out 2>/tmp/title.err || title_exit=$?
+        echo "title exit $title_exit"
+        cat /tmp/title.out /tmp/title.err
+        break
+        ;;
     *factory-stub-connect*)
         # `factory-stub-connect`: the Jira helper for a task with no Jira connection asks the board on the
         # supervisor's agent socket and exits 3; the driver ends this run as a requirement wait. The stub keeps no

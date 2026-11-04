@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { createUserResolver, resolveBearer } from '../auth/plugin.js';
+import { boundCallerOf } from '../auth/bridge-binding.js';
 import type { GitHubIdentity, GitHubIdentityClient } from '../auth/github.js';
 import { createGitHubAppClient, type InstallationRepo } from '../github/app-client.js';
 import { installationTokenProvider } from '../github/app-token.js';
@@ -14,6 +15,7 @@ import {
     hashToken,
     oauthCookieOptions,
     pendingCookieOptions,
+    PATH_CHECK_ORIGIN,
     safeReturnPath,
     sessionCookieOptions,
     sign,
@@ -76,24 +78,31 @@ export interface AuthRouteDeps {
  * dead end for the human sitting in front of it — there is no page, no way back, and nothing that
  * says what to do. A redirect carrying a reason lands them on the app, which can explain.
  */
-const failure = (returnTo: string, reason: string): string =>
-    `${safeReturnPath(returnTo)}?auth_error=${encodeURIComponent(reason)}`;
+const failure = (returnTo: string, reason: string): string => {
+    // Built with URL so a destination that already carries a query keeps it.
+    const url = new URL(safeReturnPath(returnTo, PATH_CHECK_ORIGIN), PATH_CHECK_ORIGIN);
+    url.searchParams.set('auth_error', reason);
+    return `${url.pathname}${url.search}${url.hash}`;
+};
 
 type DecodedState = { returnTo: string; org: string | null; reselect: boolean };
 
 async function redirectToInstallPage(
+    ctx: Pick<CallbackCtx, 'appSlug' | 'secret'>,
     request: FastifyRequest,
     reply: FastifyReply,
-    appSlug: (() => Promise<string>) | undefined,
     returnTo: string
 ): Promise<void> {
     // The ordinary first-run state, not a fault: the App exists but is installed nowhere this
     // account can see. GitHub's own install page is where that is fixed — and its setup URL
     // sends the browser back here once it is done.
     try {
-        const slug = await appSlug?.();
+        const slug = await ctx.appSlug?.();
         if (!slug) throw new Error('no slug provider');
-        reply.redirect(`https://github.com/apps/${slug}/installations/new`, HTTP_FOUND);
+        // GitHub hands `state` back to the setup URL, which is how the destination survives the
+        // round trip through the install page.
+        const state = encodeURIComponent(encodeState(returnTo, ctx.secret));
+        reply.redirect(`https://github.com/apps/${slug}/installations/new?state=${state}`, HTTP_FOUND);
     } catch (e) {
         request.log.error({ err: e }, 'could not resolve the App slug for the install redirect');
         reply.redirect(failure(returnTo, 'install'), HTTP_FOUND);
@@ -156,7 +165,7 @@ async function resolveCallbackCaller(
     // truncated one is as corrosive as ever (see github.ts's page cap).
     const installations = await ctx.identity.installations(accessToken);
     if (installations.length === 0) {
-        await redirectToInstallPage(request, reply, ctx.appSlug, returnTo);
+        await redirectToInstallPage(ctx, request, reply, returnTo);
         return { kind: 'handled' };
     }
     const reported = installations.map((install) => ({ id: install.id, name: install.account ?? install.id }));
@@ -344,6 +353,9 @@ export const authRoutes =
         // A present bearer is the credential here as on every person route — the CLI's `auth status`
         // asks who its token acts as; a bad one is its 401 and an `oat_` its 403, never a fall-through.
         const resolveMe = (reply: FastifyReply) => async (request: FastifyRequest) => {
+            // The MCP bridge's injected request carries its caller on the request class, never on a header.
+            const bound = boundCallerOf(request.raw);
+            if (bound) return bound;
             if (auth.mode !== 'none' && (await resolveBearer(request, reply, store))) {
                 return request.auth?.kind === 'user' ? request.auth.caller : null;
             }
@@ -374,6 +386,8 @@ export const authRoutes =
                     avatarUrl: caller.user.avatarUrl,
                 },
                 role: caller.role,
+                // What the credential may do: `'all'` for a session or a `fat_`, the granted scopes for the MCP bridge.
+                scopes: caller.scopes,
                 membership: caller.membership,
                 account: {
                     createdAt: caller.user.createdAt,
@@ -386,6 +400,8 @@ export const authRoutes =
                 // So the SPA knows whether to offer a sign-out at all: under AUTH_MODE=none there is
                 // no session to end, and a button that cannot work is worse than no button.
                 mode: auth.mode,
+                // Whether this board serves MCP: the account page shows the connected apps only when it does.
+                mcp: config.mcp.enabled,
             });
         });
 
@@ -402,7 +418,7 @@ export const authRoutes =
 
         app.get('/api/auth/github', async (request, reply) => {
             const query = request.query as { returnTo?: string; org?: string; reselect?: string };
-            const returnTo = safeReturnPath(query.returnTo);
+            const returnTo = safeReturnPath(query.returnTo, auth.publicUrl);
             // A deep link can ask to land in a specific organization. It rides the signed state —
             // one signature covers destination and org — and is only a preference: the callback
             // validates it against the installations GitHub reports, and falls back to the first.
@@ -444,14 +460,17 @@ export const authRoutes =
          * reports as its own outcome rather than as a failure.
          */
         app.get('/api/auth/github/setup', async (request, reply) => {
-            const query = request.query as { installation_id?: string };
+            const query = request.query as { installation_id?: string; state?: string };
+            const returnTo = decodeState(query.state, secret)?.returnTo ?? '/';
             if (query.installation_id && INSTALLATION_ID.test(query.installation_id)) {
                 // The org rides along as the sign-in's preference, and reselect makes an existing
                 // account reopen the choice instead of silently reusing the membership set from
                 // before this installation existed. Completion still decides what to materialize.
-                return reply.redirect(`/api/auth/github?org=${query.installation_id}&reselect=1`, HTTP_FOUND);
+                const restart = new URLSearchParams({ org: query.installation_id, reselect: '1' });
+                if (returnTo !== '/') restart.set('returnTo', returnTo);
+                return reply.redirect(`/api/auth/github?${restart}`, HTTP_FOUND);
             }
-            return reply.redirect('/?auth_error=install_cancelled', HTTP_FOUND);
+            return reply.redirect(failure(returnTo, 'install_cancelled'), HTTP_FOUND);
         });
 
         app.post('/api/auth/org', { bodyLimit: ORG_SWITCH_BODY_LIMIT }, (request, reply) =>

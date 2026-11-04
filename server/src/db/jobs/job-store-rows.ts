@@ -4,7 +4,14 @@
  * `exists` probe, the running-member check and the workspace-path rule.
  */
 
-import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode, type UserRef } from '@factory-ai/core';
+import {
+    USER_SCOPE,
+    WORKFLOW_MODE,
+    type ExecutorScope,
+    type JobMode,
+    type TaskTitleOrigin,
+    type UserRef,
+} from '@factory-ai/core';
 import type { Sql, Fragment, TransactionSql } from 'postgres';
 import type {
     JobStatus,
@@ -101,6 +108,10 @@ export interface JobRow {
     publication_base_branch?: string | null;
     /** Only the detail reads (get/thread) select the thread's effective base branch. */
     base_branch?: string | null;
+    /** The thread root's title columns (122); absent on a read that does not project them. */
+    title?: string | null;
+    title_origin?: TaskTitleOrigin | null;
+    title_revision?: number;
 }
 
 /**
@@ -130,6 +141,9 @@ export interface TaskRow {
     waiting_since: Date | string | null;
     wait_terminal_reason: string | null;
     needs_answer: boolean;
+    title: string | null;
+    title_origin: TaskTitleOrigin | null;
+    title_revision: number;
 }
 
 export const iso = (value: Date | null): string | null => (value === null ? null : value.toISOString());
@@ -178,12 +192,19 @@ const failureOf = (row: JobRow): Pick<Job, 'failureKind' | 'failureCause'> => ({
     failureCause: (row.failure_cause as Job['failureCause']) ?? null,
 });
 
+const titleOf = (row: JobRow) => ({
+    title: row.title ?? null,
+    titleOrigin: row.title_origin ?? null,
+    titleRevision: row.title_revision ?? 0,
+});
+
 const baseBranchOf = (row: JobRow): string | null => row.base_branch ?? null;
 
 export function toJob(orgId: string, row: JobRow): Job {
     return {
         id: row.id,
         command: row.command,
+        ...titleOf(row),
         status: row.status,
         attempts: row.attempts,
         maxAttempts: row.max_attempts,
@@ -255,6 +276,9 @@ export function toTask(row: TaskRow): TaskSummary {
         id: row.id,
         headRunId: row.head_id,
         command: row.command,
+        title: row.title,
+        titleOrigin: row.title_origin,
+        titleRevision: row.title_revision,
         status: row.status,
         cancelRequestedAt: stampOf(row.cancel_requested_at),
         doneAt: stampOf(row.done_at),
@@ -657,6 +681,16 @@ export function threadBaseBranchFragment(sql: Sql): Fragment {
                          (select r.base_branch from job r where r.org_id = job.org_id and r.id = job.root_job_id))`;
 }
 
+/**
+ * The thread ROOT's title columns for a read whose `job` alias is any member of the thread: the
+ * title lives on the root only (122), so every member reads it from there.
+ */
+export function threadTitleColumnsFragment(sql: Sql): Fragment {
+    return sql`(select r.title from job r where r.org_id = job.org_id and r.id = job.root_job_id) as title,
+               (select r.title_origin from job r where r.org_id = job.org_id and r.id = job.root_job_id) as title_origin,
+               (select r.title_revision from job r where r.org_id = job.org_id and r.id = job.root_job_id) as title_revision`;
+}
+
 export function publicationColumnsFragment(sql: Sql): Fragment {
     return sql`
         , pub.publication_repo, pub.publication_pr_number, pub.publication_pr_url
@@ -670,7 +704,7 @@ export function taskPreviewColumnsFragment(sql: Sql): Fragment {
     return sql`
         id, head_id, command, repo, executor, executor_scope, created_at, status, done_at, cancel_requested_at,
         summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url,
-        wait_reason, waiting_since, wait_terminal_reason, needs_answer
+        wait_reason, waiting_since, wait_terminal_reason, needs_answer, title, title_origin, title_revision
     `;
 }
 

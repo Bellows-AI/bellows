@@ -78,6 +78,9 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if not .Values.auth.publicUrl }}
 {{- fail "auth.publicUrl is required: the origin GitHub redirects back to" }}
 {{- end }}
+{{- if and .Values.mcp.enabled (not (hasPrefix "https://" .Values.auth.publicUrl)) }}
+{{- fail "mcp.enabled requires an https auth.publicUrl: the MCP endpoint carries bearer tokens" }}
+{{- end }}
 {{- if .Values.ingress.enabled }}
 {{- if not .Values.ingress.hosts }}
 {{- fail "ingress.hosts is required when ingress.enabled: the Ingress would answer no host at all" }}

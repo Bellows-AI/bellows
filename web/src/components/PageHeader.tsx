@@ -17,18 +17,26 @@ export function PageHeader({
     description,
     meta,
     actions,
+    titleClassName,
+    titleTooltip,
 }: {
     eyebrow?: ReactNode;
     title: ReactNode;
     description?: ReactNode;
     meta?: ReactNode;
     actions?: ReactNode;
+    /** Styles the `h1` for a title that may be long (the task header's two-line clamp). */
+    titleClassName?: string;
+    /** The full text on hover, for a title the clamp may cut. */
+    titleTooltip?: string;
 }) {
     return (
         <header className="page-header">
             {eyebrow ? <p className="page-header-eyebrow">{eyebrow}</p> : null}
             <div className="page-header-leading">
-                <h1>{title}</h1>
+                <h1 className={titleClassName} title={titleTooltip}>
+                    {title}
+                </h1>
                 {description ? <p className="page-header-description">{description}</p> : null}
             </div>
             {meta ? <div className="page-header-meta">{meta}</div> : null}

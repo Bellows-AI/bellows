@@ -27,63 +27,9 @@ const me = {
     mode: 'github',
 };
 
-const workspace = (overrides: Record<string, unknown> = {}) => ({
-    executors: [
-        { name: 'mine', type: 'claude', suspended: false },
-        { name: 'paused', type: 'claude', suspended: true },
-    ],
-    orgExecutors: [{ name: 'team', type: 'opencode', suspended: false }],
-    defaultExecutor: { scope: 'user', name: 'mine' },
-    ...overrides,
-});
-
-const tracked = (overrides: Record<string, unknown> = {}) => ({
-    repos: [
-        { owner: 'acme', name: 'api', private: true, defaultBranch: 'main', pushedAt: null },
-        { owner: 'acme', name: 'web', private: false, defaultBranch: 'main', pushedAt: null },
-    ],
-    installation: null,
-    meta: { fetchedAt: null, error: null },
-    ...overrides,
-});
-
-const skills = [
-    { name: 'plain', description: 'Nothing needed', requires: { tools: [], connections: [] } },
-    {
-        name: 'jira',
-        description: 'Work Jira items',
-        requires: { tools: [], connections: [{ name: 'jira', env: [], selectedBy: 'connections' }] },
-    },
-    {
-        name: 'gh',
-        description: 'GitHub',
-        requires: { tools: [], connections: [{ name: 'github', env: ['GH_TOKEN'], selectedBy: null }] },
-    },
-];
-
-const CONNECTION = '3f2b6c1e-0000-4000-8000-000000000001';
-const connections = [
-    {
-        id: CONNECTION,
-        provider: 'jira',
-        credential: 'legacy_api_token',
-        ownership: 'legacy-org',
-        principal: null,
-        site: 'acme.atlassian.net',
-        account: 'a@acme.test',
-        access: 'read',
-        status: 'active',
-        createdAt: '',
-    },
-];
-
 const board = (overrides: Record<string, () => Response> = {}) => ({
     '/api/version': () => json({ version: '9.9.9' }),
     '/api/auth/me': () => json(me),
-    '/api/repos': () => json(tracked()),
-    '/api/workspace': () => json(workspace()),
-    '/api/skills': () => json({ skills }),
-    '/api/connections': () => json({ connections }),
     ...overrides,
 });
 
@@ -269,223 +215,109 @@ describe('bellows auth status: identity', () => {
 });
 
 describe('bellows job preflight', () => {
-    const preflight = async (args: string[], routes = board()) => {
-        const h = harness(routes);
-        const code = await run(['job', 'preflight', ...args, '--json'], h.io);
+    const READY = {
+        ready: true,
+        checks: [
+            { subject: 'repo', name: 'acme/api', status: 'ok', detail: 'tracked by this board' },
+            { subject: 'executor', name: 'mine', status: 'ok', detail: 'user claude' },
+        ],
+    };
+    const BLOCKED = {
+        ready: false,
+        checks: [
+            { subject: 'repo', name: 'acme/nope', status: 'blocked', detail: 'acme/nope is not tracked by this board' },
+            { subject: 'executor', name: null, status: 'unverified', detail: 'the board checks it at claim' },
+        ],
+    };
+    const ARGS = ['job', 'preflight', '--repo', 'acme/api', '--executor', 'mine'];
+
+    const preflight = async (answer: () => Response, args: string[] = []) => {
+        const h = harness(board({ '/api/jobs/preflight': answer }));
+        const code = await run([...ARGS, ...args, '--json'], { ...h.io, sleep: async () => {} });
         return { code, result: envelope(h.out), calls: h.calls, printed: h.printed };
     };
 
-    it('passes a ready selection, reading only the workspace and the tracked repositories', async () => {
-        const { code, result, calls } = await preflight(['--repo', 'acme/api', '--executor', 'mine']);
+    it('posts the selection to the board and passes its ready verdict through, exit 0', async () => {
+        const { code, result, calls } = await preflight(
+            () => json(READY),
+            [
+                '--executor-scope',
+                'org',
+                '--base-branch',
+                'dev',
+                '--skill',
+                'jira',
+                '--connection',
+                '3f2b6c1e-0000-4000-8000-000000000001',
+            ]
+        );
         expect(code).toBe(0);
-        expect(result.data.ready).toBe(true);
-        expect(result.data.checks).toEqual([
-            { subject: 'repo', name: 'acme/api', status: 'ok', detail: 'tracked by this board' },
-            { subject: 'executor', name: 'mine', status: 'ok', detail: 'user claude' },
-        ]);
-        expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /api/workspace', 'GET /api/repos']);
+        expect(result.data).toEqual(READY);
+        expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['POST /api/jobs/preflight']);
+        expect(calls[0]!.body).toEqual({
+            repo: 'acme/api',
+            executor: 'mine',
+            executorScope: 'org',
+            baseBranch: 'dev',
+            skills: ['jira'],
+            connections: ['3f2b6c1e-0000-4000-8000-000000000001'],
+        });
     });
 
-    it('checks every --connection id against the connection list', async () => {
-        const { code, result } = await preflight([
-            '--repo',
-            'acme/api',
-            '--executor',
-            'mine',
-            '--connection',
-            CONNECTION,
-            '--connection',
-            'other',
-        ]);
-        const checks = result.data.checks.filter((check: { subject: string }) => check.subject === 'connection');
-        expect(checks.map((check: { name: string; status: string }) => [check.name, check.status])).toEqual([
-            [CONNECTION, 'ok'],
-            ['other', 'blocked'],
-        ]);
-        expect(code).toBe(1);
+    it('sends nothing the flags did not name, and makes no other request', async () => {
+        const { calls } = await preflight(() => json(READY));
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.body).toEqual({ repo: 'acme/api', executor: 'mine' });
     });
 
-    it('reads skills and connections only when they are selected, and never writes', async () => {
-        const { code, calls } = await preflight([
-            '--repo',
-            'acme/api',
-            '--executor',
-            'team',
-            '--executor-scope',
-            'org',
-            '--skill',
-            'plain',
-            '--skill',
-            'jira',
-            '--connection',
-            CONNECTION,
-        ]);
-        expect(code).toBe(0);
-        expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
-            'GET /api/workspace',
-            'GET /api/repos',
-            'GET /api/skills',
-            'GET /api/connections',
-        ]);
-    });
-
-    it.each([
-        ['no --repo', [], 'repo', /pass --repo: a task runs against a tracked repository/],
-        ['a repo the board does not track', ['--repo', 'acme/nope'], 'repo', /acme\/nope is not tracked by this board/],
-        ['an unknown executor', ['--repo', 'acme/api', '--executor', 'ghost'], 'executor', /no user executor ghost/],
-        ['a suspended executor', ['--repo', 'acme/api', '--executor', 'paused'], 'executor', /suspended/],
-        [
-            'a personal name under the org scope',
-            ['--repo', 'acme/api', '--executor', 'mine', '--executor-scope', 'org'],
-            'executor',
-            /no org executor mine/,
-        ],
-        [
-            'an uninstalled skill',
-            ['--repo', 'acme/api', '--executor', 'mine', '--skill', 'ghost'],
-            'skill',
-            /not installed/,
-        ],
-        [
-            'a Jira skill with no connection',
-            ['--repo', 'acme/api', '--executor', 'mine', '--skill', 'jira'],
-            'skill',
-            /pass --connection/,
-        ],
-        [
-            'a connection not available to you',
-            ['--repo', 'acme/api', '--executor', 'mine', '--connection', 'other'],
-            'connection',
-            /no such connection/,
-        ],
-    ])('blocks %s, exit 1, naming why', async (_label, args, subject, detail) => {
-        const { code, result } = await preflight(args);
+    it('is refused, exit 1, naming the first blocked check, when the board says not ready', async () => {
+        const { code, result } = await preflight(() => json(BLOCKED));
         expect(code).toBe(1);
         expect(result.outcome).toBe('refused');
-        expect(result.data.ready).toBe(false);
-        const blocked = result.data.checks.find((check: { status: string }) => check.status === 'blocked');
-        expect(blocked.subject).toBe(subject);
-        expect(blocked.detail).toMatch(detail);
-        expect(result.error.message).toMatch(detail);
-    });
-
-    it('blocks when no --executor is named: the board applies no default at create', async () => {
-        const { code, result } = await preflight(['--repo', 'acme/api']);
-        expect(code).toBe(1);
-        expect(result.data.checks[1]).toEqual({
-            subject: 'executor',
-            name: null,
-            status: 'blocked',
-            detail: 'no executor selected: pass --executor (your default is user mine)',
-        });
-    });
-
-    it('blocks a suspended default executor when none is named', async () => {
-        const { code, result } = await preflight(
-            ['--repo', 'acme/api'],
-            board({ '/api/workspace': () => json(workspace({ defaultExecutor: { scope: 'user', name: 'paused' } })) })
-        );
-        expect(code).toBe(1);
-        expect(result.data.checks[1]).toMatchObject({ subject: 'executor', status: 'blocked' });
-    });
-
-    it('leaves an env-connection requirement unverified, not blocked', async () => {
-        const { code, result } = await preflight(['--repo', 'acme/api', '--executor', 'mine', '--skill', 'gh']);
-        expect(code).toBe(0);
-        expect(result.data.checks).toContainEqual({
-            subject: 'skill',
-            name: 'gh',
-            status: 'unverified',
-            detail: 'needs the github connection; the board checks it at claim',
-        });
-    });
-
-    it('leaves a missing repo unverified while the board names an error on its list', async () => {
-        const { code, result } = await preflight(
-            ['--repo', 'acme/nope', '--executor', 'mine'],
-            board({ '/api/repos': () => json(tracked({ meta: { fetchedAt: null, error: 'GitHub is unreachable' } })) })
-        );
-        expect(code).toBe(0);
-        expect(result.data.checks[0]).toMatchObject({ subject: 'repo', name: 'acme/nope', status: 'unverified' });
-        expect(result.data.checks[0].detail).toContain('GitHub is unreachable');
-    });
-
-    it('leaves the repo unverified when the tracked list could not be read', async () => {
-        const { code, result } = await preflight(
-            ['--repo', 'acme/api', '--executor', 'mine'],
-            board({ '/api/repos': () => json({ error: 'down', code: 'UNAVAILABLE' }, 503) })
-        );
-        expect(code).toBe(0);
-        expect(result.data.checks[0]).toMatchObject({ subject: 'repo', name: 'acme/api', status: 'unverified' });
-    });
-
-    it('keeps a listed repo ok even when the list carries a refresh error', async () => {
-        const { result } = await preflight(
-            ['--repo', 'acme/api', '--executor', 'mine'],
-            board({ '/api/repos': () => json(tracked({ meta: { fetchedAt: null, error: 'stale' } })) })
-        );
-        expect(result.data.checks[0]).toMatchObject({ status: 'ok' });
-    });
-
-    it('surfaces an unauthorized identity as the board refusal', async () => {
-        const { code, result } = await preflight(
-            ['--repo', 'acme/api'],
-            board({ '/api/workspace': () => json({ error: 'Invalid access token', code: 'UNAUTHENTICATED' }, 401) })
-        );
-        expect(code).toBe(1);
-        expect(result.error).toMatchObject({ status: 401 });
+        expect(result.data).toEqual(BLOCKED);
+        expect(result.error.message).toBe('not ready to launch: acme/nope is not tracked by this board');
     });
 
     it('prints one line per check for a person, and says the board rechecks', async () => {
-        const { out, err, io } = harness(board());
-        expect(await run(['job', 'preflight', '--repo', 'acme/nope', '--executor', 'mine'], io)).toBe(1);
-        expect(out.join('')).toContain('blocked     repo acme/nope  acme/nope is not tracked by this board');
-        expect(err.join('')).toContain('the board rechecks at create and at claim');
+        const h = harness(board({ '/api/jobs/preflight': () => json(BLOCKED) }));
+        expect(await run(ARGS, h.io)).toBe(1);
+        expect(h.out.join('')).toBe(
+            [
+                'blocked     repo acme/nope  acme/nope is not tracked by this board',
+                'unverified  executor  the board checks it at claim',
+                '',
+            ].join('\n')
+        );
+        expect(h.err.join('')).toContain('preflight is advisory: the board rechecks at create and at claim');
+    });
+
+    it('reports a board error as unreachable, exit 7, never as a refused selection', async () => {
+        for (const status of [500, 503]) {
+            const { code, result } = await preflight(() => json({ error: 'down', code: 'UNAVAILABLE' }, status));
+            expect(code, String(status)).toBe(7);
+            expect(result.outcome).toBe('unreachable');
+        }
+    });
+
+    it('reports a request that never gets an answer as unreachable, exit 7', async () => {
+        const h = harness({});
+        h.io.fetch = (async () => {
+            throw new TypeError('fetch failed');
+        }) as unknown as typeof globalThis.fetch;
+        expect(await run([...ARGS, '--json'], { ...h.io, sleep: async () => {} })).toBe(7);
+        expect(envelope(h.out).outcome).toBe('unreachable');
+    });
+
+    it('surfaces a refused credential as the board refusal, exit 1', async () => {
+        const { code, result } = await preflight(() =>
+            json({ error: 'Sign in required', code: 'UNAUTHENTICATED' }, 401)
+        );
+        expect(code).toBe(1);
+        expect(result.error).toMatchObject({ code: 'UNAUTHENTICATED', status: 401 });
     });
 
     it('never prints the token', async () => {
-        const { printed } = await preflight(['--repo', 'acme/nope']);
-        expect(printed()).not.toContain('s3cr3t');
-    });
-
-    it("is advisory: a selection that changes after preflight is the board's refusal at create", async () => {
-        let listed = true;
-        const routes = board({
-            '/api/repos': () => json(tracked({ repos: listed ? tracked().repos : [] })),
-            // The board's own recheck at create, against the list at that moment.
-            '/api/jobs': () =>
-                listed
-                    ? json({ id: 'job-1', status: 'queued' }, 201)
-                    : json({ error: 'acme/api is not a tracked repository.', code: 'UNKNOWN_REPO' }, 400),
-        });
-        const first = harness(routes);
-        expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'mine'], first.io)).toBe(0);
-
-        listed = false;
-        const launch = harness(routes);
-        expect(await run(['job', 'create', '--repo', 'acme/api', '--json', '--', 'npm test'], launch.io)).toBe(1);
-        expect(envelope(launch.out).error).toMatchObject({ code: 'UNKNOWN_REPO', status: 400 });
-        // Re-running preflight now names the same change the board refused on.
-        const again = harness(routes);
-        expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'mine'], again.io)).toBe(1);
-    });
-
-    it('surfaces the board refusal of an executor preflight reports as missing, in the same words', async () => {
-        const missing = 'There is no personal executor "ghost". Choose one that exists, or name its scope.';
-        const routes = board({
-            '/api/jobs': () => json({ error: missing, code: 'UNKNOWN_EXECUTOR' }, 404),
-        });
-        const checked = harness(routes);
-        expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'ghost'], checked.io)).toBe(1);
-        expect(checked.out.join('')).toContain('no user executor ghost');
-
-        const launch = harness(routes);
-        expect(
-            await run(
-                ['job', 'create', '--repo', 'acme/api', '--executor', 'ghost', '--json', '--', 'npm test'],
-                launch.io
-            )
-        ).toBe(1);
-        expect(envelope(launch.out).error).toMatchObject({ code: 'UNKNOWN_EXECUTOR', status: 404, message: missing });
+        const { printed } = await preflight(() => json(READY));
+        expect(printed()).not.toContain(SECRET);
     });
 });

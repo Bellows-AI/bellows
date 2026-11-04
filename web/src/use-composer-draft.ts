@@ -248,6 +248,7 @@ export function queuedTask(
         workflow: state.workflow === '' ? null : state.workflow,
         workflowParams: chosenParams,
         baseBranch: state.baseBranch === '' ? null : state.baseBranch,
+        ...(state.title.trim() === '' ? {} : { title: state.title.trim() }),
         ...(builtinSkills.length > 0 ? { skills: [...builtinSkills] } : {}),
     };
 }

@@ -1,3 +1,4 @@
+import { integrationProvider } from '@factory-ai/core';
 import { useState, type ComponentType } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { deleteConnection, type ConnectionView, type StartAuthorizationInput } from '../api/connections.js';
@@ -9,7 +10,7 @@ import { PageHeader } from '../components/PageHeader.js';
 import { ProviderMark } from '../components/ProviderMark.js';
 import { commitDate } from '../format.js';
 import { JiraConnectionActions, type ConnectionActionsProps } from '../panels/JiraConnectionActions.js';
-import { accessSentence, connectionState, integrationProvider } from '../settings/integration-providers.js';
+import { accessSentence, connectionState } from '../settings/integration-providers.js';
 import { DISCONNECTED_STATE, useIntegrationNotice } from '../settings/useIntegrationNotice.js';
 import { integrationPath, STATE_PILL } from './SettingsIntegrationsPage.js';
 

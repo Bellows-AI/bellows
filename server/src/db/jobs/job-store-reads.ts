@@ -11,6 +11,7 @@ import {
     toJobRow,
     type TaskRow,
     threadBaseBranchFragment,
+    threadTitleColumnsFragment,
     toTask,
     userRef,
     workspacePathFor,
@@ -153,7 +154,8 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
                sum(wall_clock_ms) over () as task_wall_clock_ms,
                wall_clock_ms, agent_turns, setup_ms, interruptions, summary, failure_kind, failure_cause,
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason,
-               ${threadBaseBranchFragment(sql)} as base_branch
+               ${threadBaseBranchFragment(sql)} as base_branch,
+               ${threadTitleColumnsFragment(sql)}
                ${publicationColumns}
                ${authorColumns}
         from job ${authorJoin}
@@ -252,7 +254,8 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
                -- The thread's wait (036) and publication (#324), served by the detail reads on
                -- the same thread-wide rule thread() follows — the per-run lists answer null.
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason,
-               ${threadBaseBranchFragment(sql)} as base_branch
+               ${threadBaseBranchFragment(sql)} as base_branch,
+               ${threadTitleColumnsFragment(sql)}
                ${publicationColumns}
                ${authorColumns}
         from job ${authorJoin}
@@ -614,7 +617,8 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                    picked.done_at as done_at, head.cancel_requested_at as cancel_requested_at,
                    job.created_at as created_at, head.started_at as started_at,
                    picked.finished_at as finished_at,
-                   picked.task_wall_clock_ms as task_wall_clock_ms
+                   picked.task_wall_clock_ms as task_wall_clock_ms,
+                   job.title as title, job.title_origin as title_origin, job.title_revision as title_revision
                    ${authorColumns}
             from picked
             join job on job.org_id = ${orgId} and job.id = picked.root_job_id
@@ -651,7 +655,8 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                -- The close-time summary and the run's own banked clock ride beside the
                -- vitals, both bounded where output is not (#109); the structured failure
                -- kind (044) is what a list badge or a query reads.
-               summary, wall_clock_ms, agent_turns, failure_kind, failure_cause
+               summary, wall_clock_ms, agent_turns, failure_kind, failure_cause,
+               ${threadTitleColumnsFragment(sql)}
                ${authorColumns}
         from job ${authorJoin}
         where org_id = ${orgId} ${
@@ -704,7 +709,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
             -- thread) rather than scanning the org's runs and filtering id = root_job_id —
             -- the EXPLAIN-measured difference between touching every run and touching one
             -- row per thread.
-            select h.root_job_id as id, h.id as head_id, r.command, r.repo, r.executor, r.executor_scope, r.created_at,
+            select h.root_job_id as id, h.id as head_id, r.command, r.title, r.title_origin, r.title_revision, r.repo, r.executor, r.executor_scope, r.created_at,
                    h.status, h.done_at, h.cancel_requested_at, h.summary, h.runtime,
                    -- The sort key is truncated to milliseconds, the precision an ISO
                    -- stamp and a JS Date carry: the cursor's value round-trips EXACTLY,
