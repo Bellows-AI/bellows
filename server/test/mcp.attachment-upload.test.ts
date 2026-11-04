@@ -563,6 +563,7 @@ describe('PUT /api/attachments/uploads/:capability', () => {
         const made = await call(world.url, 'unbound', 'create_attachment_upload', {});
 
         expect(made.isError).toBe(true);
+        expect(made.data).toMatchObject({ outcome: 'refused', status: 403, code: 'FORBIDDEN' });
         expect(world.caps.rows.size).toBe(0);
     });
 
