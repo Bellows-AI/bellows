@@ -235,10 +235,15 @@ describe('the tool wrapper', () => {
         expect((await run()).isError).toBeUndefined();
     });
 
-    it('advertises the output schema to the server', () => {
+    it('advertises the output schema to the server: validated by the tool schema, open in its JSON Schema', async () => {
         const { server, configs } = capture();
         registerTools(server, callerWith('all'), runtimeOf(okBridge), [probe]);
-        expect(configs.get('probe')?.outputSchema).toBe(probe.output);
+        const advertised = configs.get('probe')?.outputSchema as unknown as typeof probe.output;
+        const standard = advertised['~standard'];
+        expect(standard.validate).toBe(probe.output['~standard'].validate);
+        const json = standard.jsonSchema.output({ target: 'draft-2020-12' });
+        expect(JSON.stringify(json)).not.toContain('"additionalProperties":false');
+        expect(json).toMatchObject({ type: 'object' });
     });
 
     it('a success whose structured content fails the output schema is inconclusive, not success', async () => {
