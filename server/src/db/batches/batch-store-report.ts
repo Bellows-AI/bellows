@@ -243,6 +243,7 @@ async function assembleReport(
         };
     });
     const mergedTasks = new Set(merged.map((row) => row.task_key));
+    const fenced = batch.cancelled_at !== null || batch.expired_at !== null;
     return {
         id: batch.id,
         title: batch.title,
@@ -279,9 +280,11 @@ async function assembleReport(
         totals: {
             accepted: rows.filter((task) => task.gate === GATE_PASSED).length,
             failed: rows.filter((task) => task.execution === 'failed').length,
+            // Under a fence only a task that left a PR still needs its person, as in the standing (core/src/batch-standing.ts).
             needsAttention:
-                rows.filter((task) => task.attention !== null || task.waitReason !== null).length +
-                verification.filter((row) => row.state === VERIFY_FAILED).length,
+                rows.filter(
+                    (task) => (task.attention !== null || task.waitReason !== null) && (!fenced || task.pr !== null)
+                ).length + verification.filter((row) => row.state === VERIFY_FAILED).length,
             infraRetries: rows.reduce((sum, task) => sum + task.infraRetries, 0),
             repairs: rows.reduce((sum, task) => sum + task.repairs, 0),
             wallClockMs: rows.reduce((sum, task) => sum + task.usage.wallClockMs, 0),
