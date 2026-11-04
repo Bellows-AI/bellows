@@ -25,7 +25,8 @@ const HTTP_UNAUTHORIZED = 401;
 const REDIRECT_PORT = 59174;
 const REDIRECT = `http://127.0.0.1:${REDIRECT_PORT}/callback`;
 const CLIENT_NAME = 'E2E MCP Connect';
-const WAIT_SECONDS = 1;
+/** Past the tool's 3 s headroom, so the wait makes at least one real read of the board before it gives up. */
+const WAIT_SECONDS = 5;
 const NARROW_WIDTH = 390;
 
 /** An in-memory OAuth client: what the SDK needs to run discovery, registration, PKCE and the token exchange. */
@@ -110,94 +111,124 @@ async function expectRowFits(page: Page, row: Locator): Promise<void> {
     expect(wrap, 'the table fits its card without its own scroll').toBeLessThanOrEqual(0);
 }
 
-test.beforeEach(async ({ page }) => {
-    await throughSignIn(page);
-});
-
-test('an SDK client is challenged, connects through the consent page, runs the task tools, and is cut off on Disconnect', async ({
-    page,
-}) => {
-    // 1. Unauthenticated: the challenge names the protected-resource metadata the client discovers from.
-    const challenge = await fetch(RESOURCE, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+test.describe('the connect journey', () => {
+    test.beforeEach(async ({ page }) => {
+        await throughSignIn(page);
     });
-    expect(challenge.status).toBe(HTTP_UNAUTHORIZED);
-    expect(challenge.headers.get('www-authenticate')).toMatch(/resource_metadata="[^"]+oauth-protected-resource/);
 
-    // 2. The SDK discovers, registers and builds the authorization request; the browser takes it from there.
-    const provider = memoryProvider();
-    await expect(newClient().connect(transportFor(provider))).rejects.toBeInstanceOf(UnauthorizedError);
-    expect(provider.authorizationUrl, 'the SDK reached the authorization step').toBeDefined();
-    const authorizationUrl = provider.authorizationUrl as URL;
-    expect(authorizationUrl.pathname).toBe('/api/oauth/authorize');
-    expect(authorizationUrl.searchParams.get('resource')).toBe(RESOURCE.toString());
+    test('an SDK client is challenged, connects through the consent page, runs the task tools, and is cut off on Disconnect', async ({
+        page,
+    }) => {
+        // 1. Unauthenticated: the challenge names the protected-resource metadata the client discovers from.
+        const challenge = await fetch(RESOURCE, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        });
+        expect(challenge.status).toBe(HTTP_UNAUTHORIZED);
+        expect(challenge.headers.get('www-authenticate')).toMatch(/resource_metadata="[^"]+oauth-protected-resource/);
 
-    // 3. The member allows it; the SDK exchanges the code and reconnects with the token.
-    const callback = await approve(page, authorizationUrl);
-    expect(callback.get('state')).toBe('e2e-connect-state');
-    const transport = transportFor(provider);
-    await transport.finishAuth(callback);
-    const mcp = newClient();
-    await mcp.connect(transportFor(provider));
+        // 2. The SDK discovers, registers and builds the authorization request; the browser takes it from there.
+        const provider = memoryProvider();
+        const refused = newClient();
+        const refusedTransport = transportFor(provider);
+        try {
+            await expect(refused.connect(refusedTransport)).rejects.toBeInstanceOf(UnauthorizedError);
+        } finally {
+            await refused.close().catch(() => undefined);
+            await refusedTransport.close().catch(() => undefined);
+        }
+        expect(provider.authorizationUrl, 'the SDK reached the authorization step').toBeDefined();
+        const authorizationUrl = provider.authorizationUrl as URL;
+        expect(authorizationUrl.pathname).toBe('/api/oauth/authorize');
+        expect(authorizationUrl.searchParams.get('resource')).toBe(RESOURCE.toString());
 
-    // 4. The task tools.
-    const repos = dataOf(await mcp.callTool({ name: 'list_repos', arguments: {} }));
-    const repo = (repos.repos as { repo: string }[])[0]?.repo;
-    expect(repo, 'the seeded stored repository is visible to the member').toBeDefined();
+        // 3. The member allows it; the SDK exchanges the code and reconnects with the token.
+        const callback = await approve(page, authorizationUrl);
+        expect(callback.get('state')).toBe('e2e-connect-state');
+        const exchange = transportFor(provider);
+        try {
+            await exchange.finishAuth(callback);
+        } finally {
+            await exchange.close().catch(() => undefined);
+        }
+        const mcp = newClient();
+        try {
+            await mcp.connect(transportFor(provider));
 
-    const createdResult = await mcp.callTool({
-        name: 'create_task',
-        arguments: { command: 'Say hello from the e2e connect journey.', repo },
+            // 4. The task tools.
+            const repos = dataOf(await mcp.callTool({ name: 'list_repos', arguments: {} }));
+            const repo = (repos.repos as { repo: string }[])[0]?.repo;
+            expect(repo, 'the seeded stored repository is visible to the member').toBeDefined();
+
+            const createdResult = await mcp.callTool({
+                name: 'create_task',
+                arguments: { command: 'Say hello from the e2e connect journey.', repo },
+            });
+            expect(createdResult.isError, JSON.stringify(createdResult.content)).toBeFalsy();
+            const taskId = dataOf(createdResult).id as string;
+            expect(taskId).toMatch(/^[0-9a-f-]{36}$/);
+
+            // No driver claims the task here, so the bounded wait ends on its budget instead of a settlement. The run
+            // id and status are only present once the tool has read the board, so they show the wait did not just time out.
+            const waited = await mcp.callTool({
+                name: 'wait_task',
+                arguments: { taskId, budgetSeconds: WAIT_SECONDS },
+            });
+            expect(waited.isError, JSON.stringify(waited.content)).toBeFalsy();
+            const waitedData = dataOf(waited);
+            expect(waitedData.result).toBe('timeout');
+            expect(waitedData.taskId).toBe(taskId);
+            expect(waitedData.status).toBe('queued');
+            expect(waitedData.runId).toEqual(expect.any(String));
+
+            const log = await mcp.callTool({ name: 'read_job_log', arguments: { jobId: taskId } });
+            expect(log.isError, JSON.stringify(log.content)).toBeFalsy();
+            const logData = dataOf(log);
+            expect(logData.jobId).toBe(taskId);
+            expect(logData.streams).toEqual([]);
+            expect(logData.segments).toEqual([]);
+            expect(logData.bytes).toBe(0);
+            expect(logData.complete).toBe(false);
+        } finally {
+            await mcp.close().catch(() => undefined);
+        }
+
+        // 5. Disconnect on the account page, then the same token is refused.
+        await page.goto('/account');
+        const row = page.getByRole('row', { name: new RegExp(CLIENT_NAME) });
+        await expect(row).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/mcp-connect-connected-apps.png`, fullPage: true });
+        await expectRowFits(page, row);
+        await page.setViewportSize({ width: NARROW_WIDTH, height: 800 });
+        await expect(row).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/mcp-connect-connected-apps-narrow.png`, fullPage: true });
+        await expectRowFits(page, row);
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await row.getByRole('button', { name: `Disconnect ${CLIENT_NAME}` }).click();
+        const revoked = page.waitForResponse((r) => r.url().includes('/revoke') && r.request().method() === 'POST');
+        await page.getByRole('dialog').getByRole('button', { name: 'Disconnect' }).click();
+        expect((await revoked).status()).toBe(200);
+        await expect(page.getByRole('row', { name: new RegExp(CLIENT_NAME) })).toHaveCount(0);
+
+        const token = (await provider.tokens())?.access_token;
+        expect(token, 'the SDK holds an access token to replay').toBeTruthy();
+        const after = await fetch(RESOURCE, {
+            method: 'POST',
+            headers: {
+                authorization: `Bearer ${token}`,
+                'content-type': 'application/json',
+                accept: 'application/json, text/event-stream',
+            },
+            body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 2,
+                method: 'tools/call',
+                params: { name: 'whoami', arguments: {} },
+            }),
+        });
+        expect(after.status, await after.text()).toBe(HTTP_UNAUTHORIZED);
     });
-    expect(createdResult.isError, JSON.stringify(createdResult.content)).toBeFalsy();
-    const taskId = dataOf(createdResult).id as string;
-    expect(taskId).toMatch(/^[0-9a-f-]{36}$/);
-
-    // No driver claims the task here, so the bounded wait ends on its budget instead of a settlement.
-    const waited = await mcp.callTool({ name: 'wait_task', arguments: { taskId, budgetSeconds: WAIT_SECONDS } });
-    expect(waited.isError).toBeFalsy();
-    expect(dataOf(waited).result).toBe('timeout');
-
-    const log = await mcp.callTool({ name: 'read_job_log', arguments: { jobId: taskId } });
-    expect(log.isError).toBeFalsy();
-    expect(dataOf(log).complete).toBe(false);
-    await mcp.close();
-
-    // 5. Disconnect on the account page, then the same token is refused.
-    await page.goto('/account');
-    const row = page.getByRole('row', { name: new RegExp(CLIENT_NAME) });
-    await expect(row).toBeVisible();
-    await page.screenshot({ path: `${SHOTS}/mcp-connect-connected-apps.png`, fullPage: true });
-    await expectRowFits(page, row);
-    await page.setViewportSize({ width: NARROW_WIDTH, height: 800 });
-    await expect(row).toBeVisible();
-    await page.screenshot({ path: `${SHOTS}/mcp-connect-connected-apps-narrow.png`, fullPage: true });
-    await expectRowFits(page, row);
-    await page.setViewportSize({ width: 1280, height: 720 });
-    await row.getByRole('button', { name: `Disconnect ${CLIENT_NAME}` }).click();
-    const revoked = page.waitForResponse((r) => r.url().includes('/revoke') && r.request().method() === 'POST');
-    await page.getByRole('dialog').getByRole('button', { name: 'Disconnect' }).click();
-    expect((await revoked).status()).toBe(200);
-    await expect(page.getByRole('row', { name: new RegExp(CLIENT_NAME) })).toHaveCount(0);
-
-    const token = (await provider.tokens())?.access_token ?? '';
-    const after = await fetch(RESOURCE, {
-        method: 'POST',
-        headers: {
-            authorization: `Bearer ${token}`,
-            'content-type': 'application/json',
-            accept: 'application/json, text/event-stream',
-        },
-        body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 2,
-            method: 'tools/call',
-            params: { name: 'whoami', arguments: {} },
-        }),
-    });
-    expect(after.status, await after.text()).toBe(HTTP_UNAUTHORIZED);
 });
 
 /** Names the missing capability, not a ticket: nothing in the board yet parks a task on a missing integration. */
