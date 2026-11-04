@@ -66,9 +66,16 @@ export const inconclusive = (reason: string): CallToolResult =>
         `inconclusive: ${reason}. The outcome is unknown; check the board before retrying.`
     );
 
-/** A success: the board's data as structured content plus a one-line text for clients that do not read it. */
+/**
+ * A success: the board's data as structured content, and as text a one-line summary followed by the same data
+ * serialized — the MCP spec's backward-compatible shape. A client that hands the model only `content` (claude.ai)
+ * otherwise sees "failed" or "5 runs" with no cause, PR, gates or log text behind it.
+ */
 export const success = (data: Record<string, unknown>, summary: string): CallToolResult => ({
-    content: [{ type: 'text', text: summary }],
+    content: [
+        { type: 'text', text: summary },
+        { type: 'text', text: JSON.stringify(data) },
+    ],
     structuredContent: data,
 });
 
