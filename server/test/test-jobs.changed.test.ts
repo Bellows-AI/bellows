@@ -123,6 +123,7 @@ describe('test-jobs --changed path-to-phase map', () => {
         expect(classify(['e2e/stub-idp.mjs']).selected).toEqual(['mcp']);
         expect(classify(['scripts/mcp-phase-client.mjs']).selected).toEqual(['mcp']);
         expect(classify(['e2e/mcp-connect.spec.ts']).selected).toEqual([]);
+        expect(classify(['scripts/mcp-kind-client.mjs']).selected).toEqual([]);
     });
 
     it('runs the image-checks phase for an executor image file and for either image check script', () => {
