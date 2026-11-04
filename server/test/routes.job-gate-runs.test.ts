@@ -38,14 +38,14 @@ const READ_ROW = {
 
 function stubStore(answer: Answer = 'ok') {
     const written: Written[] = [];
-    const read: [string, string, number][] = [];
+    const read: [string, string][] = [];
     const store = jobStoreSlice<GateRunStore>({
         async writeGateRun(...args: Written) {
             written.push(args);
             return { result: answer };
         },
-        async readGateRuns(id: string, leaseToken: string, runClaimSeq: number) {
-            read.push([id, leaseToken, runClaimSeq]);
+        async readGateRuns(id: string, leaseToken: string) {
+            read.push([id, leaseToken]);
             return answer === 'ok'
                 ? { result: 'ok' as const, runs: [READ_ROW] }
                 : { result: answer === 'conflict' ? ('lost' as const) : answer };
@@ -131,22 +131,15 @@ describe('POST /api/jobs/:id/gate-run', () => {
 });
 
 describe('POST /api/jobs/:id/gate-runs', () => {
-    it('answers the run’s rows under the lease', async () => {
+    it('answers the thread’s rows under the lease', async () => {
         const { store, read } = stubStore();
-        const res = await post(await harnessWith(store), `/api/jobs/${ID}/gate-runs`, {
-            leaseToken: TOKEN,
-            runClaimSeq: 2,
-        });
+        const res = await post(await harnessWith(store), `/api/jobs/${ID}/gate-runs`, { leaseToken: TOKEN });
         expect(res.statusCode).toBe(200);
         expect(res.json()).toEqual({ runs: [READ_ROW] });
-        expect(read).toEqual([[ID, TOKEN, 2]]);
+        expect(read).toEqual([[ID, TOKEN]]);
     });
 
-    it.each([
-        ['a bad lease token', { leaseToken: 'nope', runClaimSeq: 2 }],
-        ['a fractional run claim', { leaseToken: TOKEN, runClaimSeq: 1.5 }],
-        ['a missing run claim', { leaseToken: TOKEN }],
-    ])('refuses %s with 400', async (_label, payload) => {
+    it.each([['a bad lease token', { leaseToken: 'nope' }]])('refuses %s with 400', async (_label, payload) => {
         const { store, read } = stubStore();
         const res = await post(await harnessWith(store), `/api/jobs/${ID}/gate-runs`, payload);
         expect(res.statusCode).toBe(400);
@@ -159,7 +152,6 @@ describe('POST /api/jobs/:id/gate-runs', () => {
     ] as const)('answers a %s job as %i', async (answer, status) => {
         const res = await post(await harnessWith(stubStore(answer).store), `/api/jobs/${ID}/gate-runs`, {
             leaseToken: TOKEN,
-            runClaimSeq: 2,
         });
         expect(res.statusCode).toBe(status);
     });

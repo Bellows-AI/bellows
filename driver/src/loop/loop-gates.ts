@@ -637,7 +637,6 @@ async function reusableAfterWalk(
     const reused = reusableRun(pool, gate, {
         identity: gateSession.ledger.identity(gate),
         tree: content,
-        runClaimSeq: gateSession.runClaimSeq,
     });
     if (!reused || !executed) return { reused, pool };
     const unchanged = await treeUnchanged(w);
@@ -690,17 +689,17 @@ async function passOver(
 }
 
 /**
- * The run's gate record, read once before the declared gates (issue #983): null — reuse nothing, run
+ * The task thread's gate record, read once before the declared gates (issue #983): null — reuse nothing, run
  * every gate — for a tree that could not be read (nothing can match it), a read the board did not
  * answer in full, one that timed out, or a stand-down that cut it short. Never an empty record by
  * default: an unconfirmed read is not an answer.
  */
 async function readGateRuns(ctx: GatesRunCtx): Promise<GateRunRecord[] | null> {
-    const { rt, job, gateSession, state } = ctx;
+    const { rt, job, state } = ctx;
     const signal = AbortSignal.any([state.signal, AbortSignal.timeout(GATE_RUNS_READ_MS)]);
     const raced = await raceStep(
         state.signal,
-        rt.board.gateRuns(job, gateSession.runClaimSeq, signal).catch(() => null)
+        rt.board.gateRuns(job, signal).catch(() => null)
     );
     return raced?.value ?? null;
 }

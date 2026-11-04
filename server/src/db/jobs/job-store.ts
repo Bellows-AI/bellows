@@ -179,9 +179,9 @@ function workerMethods(
             return writeGateRun(ctx, { id, leaseToken }, run);
         },
 
-        async readGateRuns(id, leaseToken, runClaimSeq) {
+        async readGateRuns(id, leaseToken) {
             await gate();
-            return readGateRuns(ctx, { id, leaseToken }, runClaimSeq);
+            return readGateRuns(ctx, { id, leaseToken });
         },
 
         async writePrOperation(id, leaseToken, operation) {
