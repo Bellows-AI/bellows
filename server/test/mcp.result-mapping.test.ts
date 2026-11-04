@@ -12,12 +12,16 @@ const unsafe = (text: string): boolean =>
 const map = (outcome: BridgeOutcome) => mapResult(outcome, Schema, summarize);
 
 describe('mapping a bridge outcome to a tool result', () => {
-    it('a 2xx that passes the schema is structured content plus a text summary', () => {
+    it('a 2xx that passes the schema is structured content, a text summary and the same data as JSON text', () => {
         const mapped = map(respond(200, { items: ['a', 'b'] }));
         expect(mapped.outcome).toBe('ok');
         expect(mapped.result.isError).toBeUndefined();
         expect(mapped.result.structuredContent).toEqual({ items: ['a', 'b'] });
-        expect(mapped.result.content).toEqual([{ type: 'text', text: '2 items' }]);
+        // A client that hands the model only `content` (claude.ai) must still see every field, not just the summary.
+        expect(mapped.result.content).toEqual([
+            { type: 'text', text: '2 items' },
+            { type: 'text', text: JSON.stringify({ items: ['a', 'b'] }) },
+        ]);
     });
 
     it('a stale payload stays stale, and fields the schema does not name are kept', () => {
