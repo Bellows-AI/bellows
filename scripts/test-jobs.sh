@@ -3927,8 +3927,11 @@ task_title_lane() { # task_title_lane <claude|opencode>
     done
     fake_port="$(cat "$work/fake-title-$cli.port")"
     if [ "$cli" = opencode ]; then
-        api PUT /api/env/org "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
-            process.stdout.write(JSON.stringify({ vars: [{ name: "ANTHROPIC_API_KEY", value: "fake-key", isSecret: true }, { name: "OPENCODE_CONFIG_CONTENT", value: JSON.stringify(config), isSecret: false }] }));' "$fake_port")" >/dev/null
+        # OPENCODE_CONFIG_CONTENT is reserved at /api/env; the claim synthesizes it from the executor row's
+        # config (job-store-claim-executor.ts), so the scripted endpoint rides the row. The key is a plain env name.
+        api PUT /api/env/org '{"vars":[{"name":"ANTHROPIC_API_KEY","value":"fake-key","isSecret":true}]}' >/dev/null
+        api PUT /api/workspace/executors "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
+            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$fake_port")" >/dev/null
     else
         point_runners_at "$fake_port"
     fi
@@ -3938,6 +3941,9 @@ task_title_lane() { # task_title_lane <claude|opencode>
     expect_field "$cli: the agent's title is the task's title" "$body_json" title 'Lane agent title'
     expect_field "$cli: the title is marked as set by the agent" "$body_json" titleOrigin agent
     lane_endpoint_stop "$fake_pid"
+    if [ "$cli" = opencode ]; then
+        api PUT /api/workspace/executors '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}' >/dev/null
+    fi
     stop_driver
 }
 
