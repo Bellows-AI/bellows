@@ -41,7 +41,11 @@ export const preflightTask = defineTool({
             .max(MAX_NAME_CHARS)
             .optional()
             .describe("The branch to check out and publish against; default is the repository's default branch."),
-        executor: z.string().max(MAX_NAME_CHARS).optional().describe('An executor profile name from list_executors.'),
+        executor: z
+            .string()
+            .max(MAX_NAME_CHARS)
+            .optional()
+            .describe('An executor profile name from list_executors; omit to check your default.'),
         executorScope: z.enum(['user', 'org']).optional().describe('Which profile list `executor` names.'),
         skills: z
             .array(z.string().max(MAX_NAME_CHARS))

@@ -232,6 +232,7 @@ export {
     EXECUTOR_SCOPES,
     EXECUTOR_TYPES,
     executorMissingMessage,
+    noExecutorMessage,
     executorSuspendedMessage,
     MAX_GATE_FIX_ROUNDS,
     OPENCODE,

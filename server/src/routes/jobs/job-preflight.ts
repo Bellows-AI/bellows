@@ -3,6 +3,7 @@ import {
     executorMissingMessage,
     executorSuspendedMessage,
     requiredProviders,
+    noExecutorMessage,
     selectedBy,
     type ExecutorScope,
 } from '@factory-ai/core';
@@ -136,15 +137,25 @@ async function executorCheck(
         };
     }
     if (executor === null) {
-        // The board applies no default at create; the default is only the web composer's preselection.
+        // Create stamps the caller's resolved default on a task naming none (executor-usable.ts), so that is the verdict.
         const fallback = await attempt(log, 'default executor', () => store.resolvedDefault(userId));
-        const hint =
-            fallback.ok && fallback.value ? ` (your default is ${fallback.value.scope} ${fallback.value.name})` : '';
+        if (!fallback.ok) {
+            return {
+                subject: 'executor',
+                name: null,
+                status: 'unverified',
+                detail: 'the default executor could not be read',
+            };
+        }
+        if (fallback.value === null) {
+            return { subject: 'executor', name: null, status: 'blocked', detail: noExecutorMessage };
+        }
+        const { scope: defaultScope, name } = fallback.value;
         return {
             subject: 'executor',
-            name: null,
-            status: 'blocked',
-            detail: `no executor selected: pass executor${hint}`,
+            name,
+            status: 'ok',
+            detail: `none selected: the task runs on your default, ${defaultScope} ${name}`,
         };
     }
     const row = await attempt(log, 'executor profile', () => store.configFor(userId, executor, scope));
