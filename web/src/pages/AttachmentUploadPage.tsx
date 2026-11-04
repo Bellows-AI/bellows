@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { useLocation } from 'react-router-dom';
 import { uploadByCapability, type UploadedAttachment, type UploadOutcome } from '../api/uploadByCapability.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
@@ -23,12 +23,29 @@ type Phase =
     | { kind: 'done'; attachment: UploadedAttachment }
     | { kind: 'final'; message: string };
 
-function UploadShell({ children }: { children: ReactNode }) {
+/**
+ * One shell for every phase, so the polite live region below stays mounted and a screen reader hears each change.
+ * The heading takes focus when the phase changes: the control that held it has gone.
+ */
+function UploadShell({
+    children,
+    announce = '',
+    headingRef,
+}: {
+    children: ReactNode;
+    announce?: string;
+    headingRef?: Ref<HTMLHeadingElement>;
+}) {
     return (
         <>
             <PublicPageHeader context="Upload a file" actions={<ThemeSelector />} />
             <main className="onboarding">
-                <h1>Upload a file to {PRODUCT_NAME}</h1>
+                <h1 ref={headingRef ?? null} tabIndex={-1}>
+                    Upload a file to {PRODUCT_NAME}
+                </h1>
+                <div className="visually-hidden" role="status" aria-live="polite">
+                    {announce}
+                </div>
                 {children}
             </main>
         </>
@@ -46,7 +63,18 @@ export function AttachmentUploadPage() {
     const [capability] = useState(() => capabilityOf(hash));
     const [phase, setPhase] = useState<Phase>({ kind: 'choose', notice: null });
     const input = useRef<HTMLInputElement>(null);
+    const heading = useRef<HTMLHeadingElement>(null);
+    const firstRender = useRef(true);
     useFileDropGuard();
+
+    // Not on mount: only a phase change leaves focus on a control that is gone.
+    useEffect(() => {
+        if (firstRender.current) {
+            firstRender.current = false;
+            return;
+        }
+        heading.current?.focus();
+    }, [phase.kind]);
 
     // The link lives only in this page: once read, the address bar, history and any referrer lose it.
     useEffect(() => {
@@ -58,7 +86,7 @@ export function AttachmentUploadPage() {
 
     if (capability === null) {
         return (
-            <UploadShell>
+            <UploadShell headingRef={heading}>
                 <StateNote state="error">
                     This upload link is incomplete. Ask your app for a new link and open it as given.
                 </StateNote>
@@ -79,13 +107,17 @@ export function AttachmentUploadPage() {
 
     const take = (files: File[]) => {
         const [first] = files;
-        if (first) void send(first);
+        if (files.length > 1) setPhase({ kind: 'choose', notice: 'This link takes one file. Choose a single file.' });
+        else if (first) void send(first);
     };
 
     if (phase.kind === 'done') {
         return (
-            <UploadShell>
-                <p role="status">
+            <UploadShell
+                headingRef={heading}
+                announce={`${phase.attachment.name || 'Your file'} was uploaded. Attachment id ${phase.attachment.id}.`}
+            >
+                <p>
                     <strong>{phase.attachment.name || 'Your file'}</strong> was uploaded
                     {phase.attachment.size > 0 ? ` (${sizeLabel(phase.attachment.size)})` : ''}.
                 </p>
@@ -98,14 +130,14 @@ export function AttachmentUploadPage() {
     }
     if (phase.kind === 'final') {
         return (
-            <UploadShell>
+            <UploadShell headingRef={heading}>
                 <StateNote state="error">{phase.message}</StateNote>
             </UploadShell>
         );
     }
     if (phase.kind === 'uploading') {
         return (
-            <UploadShell>
+            <UploadShell headingRef={heading} announce={`Uploading ${phase.file.name}`}>
                 <p>
                     Uploading <strong>{phase.file.name}</strong> ({sizeLabel(phase.file.size)})…
                 </p>
@@ -116,7 +148,7 @@ export function AttachmentUploadPage() {
     if (phase.kind === 'retry') {
         const file = phase.file;
         return (
-            <UploadShell>
+            <UploadShell headingRef={heading}>
                 <StateNote state="error">{phase.message}</StateNote>
                 <p>
                     <strong>{file.name}</strong> ({sizeLabel(file.size)})
@@ -133,7 +165,7 @@ export function AttachmentUploadPage() {
         );
     }
     return (
-        <UploadShell>
+        <UploadShell headingRef={heading}>
             <p className="onboarding-purpose">
                 Your app asked for a file. Choose one to hand it over. This link takes one file, once, and expires soon.
             </p>

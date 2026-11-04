@@ -20,6 +20,9 @@ const PNG = Buffer.from(
     'base64'
 );
 
+/** Different bytes: identical bytes replay the stored file (201) by contract, so only these prove the link is spent. */
+const OTHER_PNG = Buffer.concat([PNG, Buffer.from([0])]);
+
 async function mint(page: Page): Promise<string> {
     const response = await page.request.post('/api/attachments/upload-requests', { data: {} });
     expect(response.status(), await response.text()).toBe(HTTP_CREATED);
@@ -72,7 +75,9 @@ test('a signed-out browser uploads one file through the link, sees its id, and t
     // A fresh page: a fragment-only goto on the open page would be a same-document navigation, not a reload.
     const again = await guest.context.newPage();
     await again.goto(pageUrl);
-    await again.getByTestId('upload-input').setInputFiles({ name: 'again.png', mimeType: 'image/png', buffer: PNG });
+    await again
+        .getByTestId('upload-input')
+        .setInputFiles({ name: 'again.png', mimeType: 'image/png', buffer: OTHER_PNG });
     await expect(again.getByRole('alert')).toContainText(/already used/);
     await again.screenshot({ path: `${SHOTS}/attachment-upload-spent.png`, fullPage: true });
     await guest.context.close();

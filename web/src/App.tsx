@@ -6,6 +6,7 @@ import { BatchDetailPage } from './pages/BatchDetailPage.js';
 import { BatchesPage } from './pages/BatchesPage.js';
 import { BatchNewPage } from './pages/BatchNewPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
+import { UPLOAD_PAGE_ROUTE } from './upload-route.js';
 import { AttachmentUploadPage } from './pages/AttachmentUploadPage.js';
 import { OAuthConsentPage } from './pages/OAuthConsentPage.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
@@ -55,7 +56,7 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
         <Route path="oauth/consent" element={<OAuthConsentPage />} />
         {/* The MCP attachment handoff (BEL-248): signed out is fine, the single-use link in the fragment is
             the credential (LoginGate steps past it), and like the consent screen it sits outside the shell. */}
-        <Route path="attachments/upload" element={<AttachmentUploadPage />} />
+        <Route path={UPLOAD_PAGE_ROUTE.slice(1)} element={<AttachmentUploadPage />} />
         <Route element={<AppShell />}>
             <Route index element={<DashboardPage />} />
             {/* The organization's settings tree (issues 150 and 180): one sidenav item — an

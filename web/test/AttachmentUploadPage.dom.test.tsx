@@ -1,6 +1,7 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { returnToOf } from '../src/return-to.js';
 import { LoginGate } from '../src/components/LoginGate.js';
 import { AttachmentUploadPage } from '../src/pages/AttachmentUploadPage.js';
 import { ThemeProvider } from '../src/theme.js';
@@ -99,21 +100,18 @@ describe('the attachment upload page', () => {
         expect(screen.queryByRole('alert')).toBeNull();
     });
 
-    it('says an expired, used or revoked link plainly and offers no further upload', async () => {
-        for (const [status, code, text] of [
-            [410, 'UPLOAD_CAPABILITY_EXPIRED', /expired/],
-            [409, 'UPLOAD_CAPABILITY_SPENT', /already used/],
-            [404, 'UPLOAD_CAPABILITY_INVALID', /not valid.*revoked/],
-        ] as const) {
-            const { user } = setup();
-            await pick(user, file());
-            (FakeXhr.all.at(-1) as FakeXhr).reply(status, { error: 'x', code });
-            const alert = await screen.findByRole('alert');
-            expect(alert.textContent).toMatch(text);
-            expect(screen.queryByTestId('upload-input')).toBeNull();
-            expect(screen.queryByText(/return to your app/i)).toBeNull();
-            document.body.innerHTML = '';
-        }
+    it.each([
+        [410, 'UPLOAD_CAPABILITY_EXPIRED', /expired/],
+        [409, 'UPLOAD_CAPABILITY_SPENT', /already used/],
+        [404, 'UPLOAD_CAPABILITY_INVALID', /not valid.*revoked/],
+    ] as const)('says a %i link plainly and offers no further upload', async (status, code, text) => {
+        const { user } = setup();
+        await pick(user, file());
+        (FakeXhr.all.at(-1) as FakeXhr).reply(status, { error: 'x', code });
+        const alert = await screen.findByRole('alert');
+        expect(alert.textContent).toMatch(text);
+        expect(screen.queryByTestId('upload-input')).toBeNull();
+        expect(screen.queryByText(/return to your app/i)).toBeNull();
     });
 
     it('lets the member choose another file after a too-large or unsupported refusal', async () => {
@@ -142,6 +140,29 @@ describe('the attachment upload page', () => {
         expect(await screen.findByText('att-9')).toBeTruthy();
     });
 
+    it('refuses a multi-file drop with a visible one-file notice and uploads nothing', async () => {
+        setup();
+        const zone = document.querySelector('.upload-zone') as HTMLElement;
+        fireEvent.drop(zone, { dataTransfer: { types: ['Files'], files: [file('a.pdf'), file('b.pdf')] } });
+        expect((await screen.findByRole('alert')).textContent).toMatch(/one file/i);
+        expect(FakeXhr.all).toHaveLength(0);
+        expect(screen.getByTestId('upload-input')).toBeTruthy();
+    });
+
+    it('keeps one live region mounted across phases, announces progress and the result, and moves focus', async () => {
+        const { user } = setup();
+        const region = document.querySelector('[aria-live="polite"]') as HTMLElement;
+        expect(region).toBeTruthy();
+        await pick(user, file());
+        await waitFor(() => expect(region.textContent).toMatch(/Uploading spec sheet\.pdf/));
+        expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }));
+        (FakeXhr.all[0] as FakeXhr).reply(201, { id: 'att-5', name: 'spec sheet.pdf', size: 5, state: 'ready' });
+        await screen.findByText('att-5');
+        expect(document.querySelector('[aria-live="polite"]')).toBe(region);
+        expect(region.textContent).toMatch(/uploaded.*att-5/);
+        expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }));
+    });
+
     it('a link-less visit says the link is incomplete', async () => {
         setup('');
         expect((await screen.findByRole('alert')).textContent).toMatch(/incomplete/);
@@ -150,6 +171,41 @@ describe('the attachment upload page', () => {
 });
 
 describe('the login gate', () => {
+    it.each(['/attachments/upload', '/attachments/upload/'])(
+        'lets %s through signed out, without a session call, and never puts the link in a URL',
+        async (path) => {
+            const calls = stubFetch(() => undefined);
+            window.history.replaceState(null, '', `${path}#${CAP}`);
+            renderAt(
+                <ThemeProvider>
+                    <LoginGate>
+                        <p>the page</p>
+                    </LoginGate>
+                </ThemeProvider>,
+                `${path}#${CAP}`
+            );
+            expect(screen.getByText('the page')).toBeTruthy();
+            expect(calls.filter((c) => c.url === '/api/auth/me')).toHaveLength(0);
+            for (const a of document.querySelectorAll('[href]')) expect(a.getAttribute('href')).not.toContain('fcu_');
+        }
+    );
+
+    it('never forwards a link fragment into the sign-in returnTo of any other page', async () => {
+        stubFetch(({ url }) => (url === '/api/auth/me' ? { authenticated: false } : undefined));
+        window.history.replaceState(null, '', `/tasks#${CAP}`);
+        renderAt(
+            <ThemeProvider>
+                <LoginGate>
+                    <p>the page</p>
+                </LoginGate>
+            </ThemeProvider>,
+            `/tasks#${CAP}`
+        );
+        const link = await screen.findByRole('link', { name: 'Sign in with GitHub' });
+        expect(link.getAttribute('href')).not.toContain('fcu_');
+        expect(link.getAttribute('href')).toBe('/api/auth/github?returnTo=%2Ftasks');
+    });
+
     it('lets the upload page through with no session', async () => {
         stubFetch(({ url }) => (url === '/api/auth/me' ? { authenticated: false } : undefined));
         window.history.replaceState(null, '', `/attachments/upload#${CAP}`);
@@ -163,5 +219,14 @@ describe('the login gate', () => {
         );
         expect(await screen.findByText('the page')).toBeTruthy();
         expect(within(document.body).queryByRole('link', { name: 'Sign in with GitHub' })).toBeNull();
+    });
+});
+
+describe('returnToOf', () => {
+    it('keeps a path and an ordinary fragment, and drops any capability fragment', () => {
+        expect(returnToOf('/tasks', '#x=1')).toBe('/tasks#x=1');
+        expect(returnToOf('/attachments/upload/', `#${CAP}`)).toBe('/attachments/upload/');
+        expect(returnToOf('/anything', `#${CAP}`)).toBe('/anything');
+        expect(returnToOf('/anything', `#a=1&b=${CAP}`)).toBe('/anything');
     });
 });

@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
-import { useLocation } from 'react-router-dom';
+import { matchPath, useLocation } from 'react-router-dom';
 import { useSession } from '../api/useSession.js';
 import { PRODUCT_NAME } from '../brand.js';
+import { returnToOf } from '../return-to.js';
+import { UPLOAD_PAGE_ROUTE } from '../upload-route.js';
 import { PublicPageHeader } from './PublicPageHeader.js';
 import { StateNote } from './StateNote.js';
 import { ThemeSelector } from './ThemeSelector.js';
@@ -29,6 +31,15 @@ function LoginProblem({ message }: { message: string }) {
  * render a sign-in button in.
  */
 export function LoginGate({ children }: { children: ReactNode }) {
+    const { pathname } = useLocation();
+    // The attachment upload page (BEL-248) is signed-out by design: the single-use link in its fragment is the
+    // credential. Matched the way the router matches (a trailing slash included), and before any session call, so
+    // the page neither waits for nor sends the cookie.
+    if (matchPath({ path: UPLOAD_PAGE_ROUTE, end: true }, pathname)) return <>{children}</>;
+    return <SessionGate>{children}</SessionGate>;
+}
+
+function SessionGate({ children }: { children: ReactNode }) {
     const { session, loading, error } = useSession();
     const { pathname } = useLocation();
 
@@ -40,13 +51,11 @@ export function LoginGate({ children }: { children: ReactNode }) {
     // reselect arrives with a live session that must not be required to pass a gate it is about
     // to re-answer. Either way the page answers for itself.
     if (pathname === '/onboarding') return <>{children}</>;
-    // The attachment upload page (BEL-248) is signed-out by design: the single-use link in its fragment is the credential.
-    if (pathname === '/attachments/upload') return <>{children}</>;
     if (session) return <>{children}</>;
 
     const params = new URLSearchParams(window.location.search);
     const reason = params.get('auth_error');
-    const returnTo = `${window.location.pathname}${window.location.hash}`;
+    const returnTo = returnToOf(window.location.pathname, window.location.hash);
 
     return (
         <>
