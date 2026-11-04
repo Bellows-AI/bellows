@@ -22,6 +22,7 @@ The board's MCP endpoint (`POST /api/mcp`): a stateless Streamable HTTP server w
 | Batch tools, wait and control (`wait_batch`, `get_batch_tasks`: `factory:read`; `retry_batch_task`, `accept_batch_task`, `cancel_batch`: `factory:write`, `cancel_batch` destructive and refused without `confirm: true`): `wait_batch` is `wait_task`'s bounded loop over `GET /api/batches/:id?waitFor=terminal`, and its verdict, `attention[]` and `verificationFailures[]` come from a re-read of the board's `standing` (a fence is `cancelled`, an `inconclusive` standing is an inconclusive call, never a verdict; a board that answers settled over a running standing is re-read every 5 s to `timeout`, like the CLI), mapped like `bellows batch wait` (0/4/5/6, timeout 3); `get_batch_tasks` pages the record, plan and report of one `GET /api/batches/:id` read in plan order behind a `(batch, filters, version, stage, key)` cursor (`bad_cursor`, `stale_cursor`), no board route added, a report that misses a task is `inconclusive` | `server/src/mcp/tools/batch-wait.ts`, `server/src/mcp/tools/batch-tasks.ts`, `server/src/mcp/tools/batches.ts` | `server/test/mcp.wait-batch.test.ts`, `server/test/mcp.tools-batch.test.ts`, `server/test-db/mcp.tools-batch.test.ts` |
 | Attachment handoff (`create_attachment_upload`, `factory:write`; the registry is 40 tools): no file bytes, local path or URL ever passes through MCP. Without `uploadId` it mints a single-use, 15-minute upload link bound to the caller, org, OAuth grant family, size and media types (`uploadUrl` for one HTTP PUT of the raw file, `pageUrl` for the browser page); with `uploadId` it reads the state (`open`, `completed` with `attachmentId`, `expired`, `removed`), and an unreadable state is `inconclusive`, never "missing". A retry of the same bytes returns the same file, other bytes are `UPLOAD_CAPABILITY_SPENT`; the ids bind through `create_task` / `follow_up_task` like any upload. Clients: Claude Code and any client with a shell PUT to `uploadUrl`; a client without a shell (claude.ai, Claude Desktop) opens `pageUrl`; a client with neither cannot attach files | `server/src/mcp/tools/attachments.ts`, `server/src/routes/attachment-uploads.ts`, `server/src/routes/attachment-ingest.ts`, `server/src/attachments/upload-capability-store.ts`, `server/migrations/124_attachment_upload.sql`, `web/src/pages/AttachmentUploadPage.tsx` | `server/test/mcp.attachment-upload.test.ts`, `server/test-db/mcp.attachment-handoff.test.ts`, `server/test-db/attachment-store.test.ts`, `web/test/AttachmentUploadPage.dom.test.tsx`, `e2e/attachment-upload.spec.ts` |
 | Which routes a scoped caller may reach, and which open routes a bridged call may | `server/src/auth/route-class.ts` | `server/test/auth.enforcement.test.ts`, `server/test/auth.me-bridged.test.ts` |
+| End to end: a real SDK client through consent and a task to its end (e2e, docker lane, kind lane); the 40-tool registry snapshot; the chart's https-only gate and ingress routing | `e2e/mcp-connect.spec.ts`, `scripts/mcp-phase-client.mjs`, `scripts/mcp-kind-client.mjs`, `charts/factory/templates/validate.yaml`, `charts/factory/templates/ingress.yaml` | `e2e/mcp-connect.spec.ts`, `server/test/mcp.registry-snapshot.test.ts`, `scripts/test-jobs.sh` (`--phase mcp`), `scripts/test-k8s.sh` (`mcp` phase), [kubernetes.md](kubernetes.md) |
 | `factory_mcp_tool_duration_seconds{tool,outcome}` | `server/src/metrics.ts` | `server/test/mcp.whoami.test.ts` |
 
 ## Adding a tool
@@ -31,6 +32,34 @@ and add it to `TOOLS` in `registry.ts`. `run(args, ctx)` returns a `Tagged` resu
 for one board call, or `ctx.fetch` plus `judge`/`success` from `result.ts` when several are composed.
 `routes` lists each backing route as registered; `mcp.registry.test.ts` fails when `scope` disagrees with a route's class
 in `route-class.ts`, or when a route has none; `output` (a zod object) is required, advertised as `outputSchema`, and a success that fails it is `inconclusive`. A destructive tool takes `annotations: DESTRUCTIVE, confirm: true`.
+
+## Connecting a client
+
+The endpoint is `https://<board host>/api/mcp`; a client finds the authorization server from the 401 challenge and the
+`/.well-known/oauth-*` documents, registers by CIMD or DCR, and the member approves on the consent screen.
+
+```bash
+claude mcp add --transport http factory https://<board host>/api/mcp   # then /mcp -> Authenticate (browser consent)
+claude -p "call whoami on the factory server"                          # headless, once authenticated
+```
+
+A generic SDK client is `@modelcontextprotocol/client` v2: a `StreamableHTTPClientTransport` on that URL with an
+`OAuthClientProvider` (DCR, PKCE, scopes `factory:read factory:write`) and `versionNegotiation` pinned to `2026-07-28`.
+The working reference is `e2e/mcp-connect.spec.ts` (browser consent) and `scripts/mcp-phase-client.mjs` (no browser).
+
+## Client support
+
+- **Known to work:** the SDK v2 client on `2026-07-28`, run through consent to a finished task on every PR lane
+  (`e2e/mcp-connect.spec.ts`, `scripts/test-jobs.sh --phase mcp`), and headless Claude Code (probed when the endpoint
+  was designed; it is not a CI lane). Legacy `initialize` clients on `2025-11-25` and `2025-06-18` are served by the same route.
+- **Stated limit: GUI clients are unverified.** claude.ai and Claude Desktop custom connectors, Cursor and VS Code
+  Copilot were never run against this server by a person; what is known of them is from their source, vendor docs or
+  the defaults here. Check a real connector before relying on one. `core/test/docs.mcp.test.ts` pins this sentence.
+- **Stated limit: no file bytes through MCP.** A GUI client cannot send a local file, so `create_attachment_upload`
+  returns a page on the board where the person attaches it in the browser (`web/src/pages/AttachmentUploadPage.tsx`).
+- **Stated limit: a call ends at 55 s** (`toolDeadlineMs`, `server/src/mcp/routes.ts`), under Claude Code's 60 s; progress
+  extends nothing, and VS Code sends no progress token. A `2024-11-05` HTTP+SSE client is refused
+  (`server/test/mcp.transport.test.ts`).
 
 ## Invariants
 
