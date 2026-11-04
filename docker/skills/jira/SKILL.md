@@ -51,6 +51,20 @@ comments. Creating or transitioning issues is not supported.
 - Name the fields you need. `description` and comment bodies come back as ADF JSON: read the
   `text` nodes.
 
+## Naming the task after a ticket
+
+Only after `issue <KEY>` exited 0, and only if the task's title is still generic or does not describe
+the ticket's work, give the task a title with the task-title helper: the ticket's actionable subject
+in a few words (up to 120 characters), not its description and not the key alone.
+
+```bash
+node /usr/local/share/factory-skills/task-title/task-title.cjs "Fix redirect loop after login"
+```
+
+If the read failed, was refused or returned nothing usable, never invent a subject: do not call the
+helper, and carry on with the task as the helper's guidance says. A failing title call never blocks the
+work. This sets the Bellows task's title only; never rename the Jira issue.
+
 ## When the helper stops
 
 Exit 0 is success. Any other exit means **stop and report it** — quote the guidance the helper

@@ -3842,7 +3842,11 @@ connection_roundtrip_lane() {
     # The helper reaches the board from inside the container, where the driver's loopback URL is not the host's.
     RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
 
-    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/jira/jira.cjs issue ABC-1; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/jira/jira.cjs issue ABC-1 && node /usr/local/share/factory-skills/task-title/task-title.cjs \"Lane Jira subject\"; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
+    # BEL-252: the image's Jira skill carries the title hook (the scripted model cannot read prose, so the
+    # chained command below stands for an agent that follows it: the title call runs only after a read exit 0).
+    docker run --rm --entrypoint cat "$image" /usr/local/share/factory-skills/jira/SKILL.md 2>/dev/null | grep 'Naming the task after a ticket' >/dev/null &&
+        ok 'the image ships the Jira skill title hook' || bad 'the image ships the Jira skill title hook' 'SKILL.md in the image lacks the section; make runners'
     ask_pid=$!
     lane_endpoint_started "$ask_pid"
     for _ in $(seq 1 20); do
@@ -3869,6 +3873,8 @@ connection_roundtrip_lane() {
         bad 'the asking task is queued behind one open requirement, not failed' \
             "$(field "$body_json" status); the helper's result: $(curl -s --max-time 5 "http://127.0.0.1:$ask_port/steps" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).results[0].text).replace(/\n/g,"|").slice(-330))}catch{}})'); driver: $(grep -F "job $id" "$work/driver.log" | grep -i 'connect\|requirement' | tail -4 | cut -c1-300); board: $(grep -E 'requirements|credentials/connections|/attempt' "$work/server.log" | tail -6 | cut -c1-300)"
     expect_field 'the hand-back refunds the attempt' "$body_json" attempts 0
+    # The failed read ended the chain before the title helper: no fabricated subject reached the board.
+    expect_field 'a failed issue read leaves the title off the agent subject' "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === "Lane Jira subject" || j.titleOrigin === "agent" }))' "$body_json")" named false
     local session
     session="$(field "$body_json" sessionId)"
     [ -n "$session" ] && ok 'the waiting task kept its session' || bad 'the waiting task kept its session' "$body_json"
@@ -3898,6 +3904,8 @@ process.stdout.write(made.ok ? made.connectionId : "");
     body_json="$(body "$(api GET "/api/jobs/$id")")"
     expect_field 'the resumed run is the same session' "$body_json" sessionId "$session"
     expect_field 'the requirement is closed' "$(node -e 'process.stdout.write(JSON.stringify({ open: JSON.parse(process.argv[1]).integrationRequirements.length }))' "$body_json")" open 0
+    # The stub site has no issue to return, so the resumed read fails too and the chain stops again.
+    expect_field 'a read the stub site cannot answer still leaves the title unset by the agent' "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === "Lane Jira subject" || j.titleOrigin === "agent" }))' "$body_json")" named false
     lane_endpoint_stop "$ask_pid"
     stop_driver
 }

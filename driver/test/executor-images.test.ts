@@ -1257,6 +1257,21 @@ describe('the shared executor skills', () => {
         expect(existsSync(join(ROOT, `${SKILLS}/jira/jira.cjs`))).toBe(true);
     });
 
+    // BEL-252: after a successful issue read the jira skill hands the issue's subject to the title helper, only on
+    // exit 0, never renaming the Jira issue; the title skill states the same rule without naming a provider.
+    it('the jira skill sets the task title only after a successful issue read, and the title skill stays provider-neutral', () => {
+        const jira = read(`${SKILLS}/jira/SKILL.md`);
+        expect(jira).toContain('node /usr/local/share/factory-skills/task-title/task-title.cjs');
+        expect(jira).toMatch(/## Naming the task after a ticket/);
+        expect(jira).toMatch(/Only after `issue <KEY>` exited 0/);
+        expect(jira).toMatch(/never invent a subject/);
+        expect(jira).toMatch(/never rename the Jira issue/);
+        const title = read(`${SKILLS}/task-title/SKILL.md`);
+        expect(title).toMatch(/## After an issue read/);
+        expect(title).toMatch(/Only when the read succeeded/);
+        expect(title).not.toMatch(/Jira|Linear/);
+    });
+
     // BEL-252: the agent names its task with the board's agent-title route; the pair helper is baked beside the skills.
     it('the task-title skill names its helper at the fixed path, never an env title, and both images ship it', () => {
         const text = read(`${SKILLS}/task-title/SKILL.md`);

@@ -25,3 +25,9 @@ this attempt holds now and prints one JSON line.
 | 4 | Unknown: the board did not confirm | The title may or may not have changed; retry once later if it matters |
 
 Never treat exit 4 as "unchanged". A title is a courtesy: if setting it fails, continue the task.
+
+## After an issue read
+
+When an integration read of a tracker issue succeeds and the title is still generic, set it from the
+issue's actionable subject, concise and not the whole description. Only when the read succeeded: a missing
+or failed lookup is never a reason to call the helper with a guessed subject, and it never blocks the task.
