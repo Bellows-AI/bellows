@@ -30,6 +30,14 @@ export const [USER_SCOPE, ORG_SCOPE] = EXECUTOR_SCOPES;
 
 const scopeLabel = (scope: ExecutorScope): string => (scope === ORG_SCOPE ? 'organization' : 'personal');
 
+/**
+ * The sentence a task naming no executor is refused with when its author has no usable profile to default to — at
+ * create, at a batch launch and in preflight — so the caller learns what to configure before anything is queued.
+ */
+export const noExecutorMessage =
+    'No executor is selected and you have no usable executor profile to default to. Add one in Settings → ' +
+    'Executors (or ask an admin for an organization one), or name one with executor and executorScope.';
+
 /** The sentence a selection naming no profile in its scope is refused with, before anything launches. */
 export const executorMissingMessage = (scope: ExecutorScope, name: string): string =>
     `There is no ${scopeLabel(scope)} executor "${name}". Choose one that exists, or name its scope.`;

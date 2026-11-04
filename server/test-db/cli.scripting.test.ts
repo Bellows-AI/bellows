@@ -13,6 +13,7 @@ import { createAuthStore } from '../src/auth/store.js';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/jobs/job-store-org-resolvers.js';
 import { createOrgRegistry } from '../src/orgs.js';
+import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretStore } from './env-secrets-harness.js';
 import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
@@ -67,6 +68,13 @@ beforeEach(async () => {
         createdBy: caller.user.id,
         label: 'cli scripting',
         tokenHash: hashToken(token),
+    });
+    // A task naming no executor runs on the caller's default; the org's one profile is it.
+    await createUserExecutorStore({ sql, orgId }).createOrg({
+        name: 'main',
+        type: 'claude-code',
+        config: {},
+        createdBy: caller.user.id,
     });
     // The board refuses a create whose repo it does not track; offline the tracked list is the stored sessions' repos.
     const name = `repo-${randomUUID().slice(0, 8)}`;

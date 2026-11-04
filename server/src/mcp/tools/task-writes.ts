@@ -54,7 +54,13 @@ export const createTask = defineTool({
             .max(MAX_NAME_CHARS)
             .describe('owner/name of the repository (list_repos); the board requires it.'),
         baseBranch: z.string().max(MAX_NAME_CHARS).optional().describe("Default: the repository's default branch."),
-        executor: z.string().max(MAX_NAME_CHARS).optional().describe('An executor profile name (list_executors).'),
+        executor: z
+            .string()
+            .max(MAX_NAME_CHARS)
+            .optional()
+            .describe(
+                'An executor profile name (list_executors). Omit to run on your default (marked `default` there); with no usable profile the board refuses NO_EXECUTOR: tell the person to add one in Settings → Executors.'
+            ),
         executorScope: z.enum(['user', 'org']).optional().describe('Which profile list `executor` names.'),
         skills: z
             .array(z.string().max(MAX_NAME_CHARS))

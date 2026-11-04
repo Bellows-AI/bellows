@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { noExecutorMessage } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView } from '../src/db/connection-store.js';
 import type { Resolution, ResolveRefusal } from '../src/db/connection-bindings.js';
@@ -187,10 +188,19 @@ describe('POST /api/jobs/preflight executor', () => {
         expect(check).toMatchObject({ name: 'nope', status: 'blocked' });
     });
 
-    it('is blocked when nothing is selected, naming the default', async () => {
+    it('is ok when nothing is selected and the caller has a default, naming the profile create will stamp', async () => {
         const { check } = await verdict(await boot(), { repo: 'acme/web' }, 'executor');
+        expect(check).toMatchObject({ name: 'main', status: 'ok' });
+        expect(check?.detail).toContain('your default');
+    });
+
+    it('is blocked when nothing is selected and the caller has no usable profile, saying where to configure one', async () => {
+        const booted = await boot();
+        const [row] = booted.executors.rows();
+        await booted.executors.setPersonalSuspended(booted.member.user.id, row!.id, true);
+        const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
         expect(check).toMatchObject({ name: null, status: 'blocked' });
-        expect(check?.detail).toContain('your default is user main');
+        expect(check?.detail).toBe(noExecutorMessage);
     });
 
     it('is blocked when the profile is suspended', async () => {
