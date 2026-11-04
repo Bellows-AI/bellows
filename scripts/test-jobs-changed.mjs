@@ -115,6 +115,7 @@ export const RULES = [
     [/^(docker-compose\.yml|package\.json|package-lock\.json|tsconfig(\.base)?\.json|VERSION|Makefile|\.dockerignore)$/, FULL, 'what the lane builds and boots'],
 
     // --- outside the lane's inputs ----------------------------------------------------------------
+    [/^e2e\/stub-idp\.mjs$/, ['mcp'], 'the mcp phase signs its member in through it'],
     [/^(web|e2e|docs|openspec|charts|lint|cli|plugins|\.github|\.claude|\.claude-plugin|\.opencode|\.factory)\//, NONE, 'not executed by the docker lane'],
     [/(^|\/)(test|test-db)\//, NONE, 'unit and integration tests'],
     [/^[^/]+\.(md|json|yaml|yml|ts|config\.ts)$|^(LICENSE|VERSION|Makefile|\.[a-z]+)$/, NONE, 'repo-level config and documents'],

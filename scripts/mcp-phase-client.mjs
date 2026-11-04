@@ -5,13 +5,22 @@
 // through the MCP tools while a real driver runs the stub runner. It adds no route to the board: the member is signed
 // in the way e2e/mcp-connect.spec.ts signs one in, and consent is the same two calls the consent page makes.
 //
-//   MCP_BOARD=http://127.0.0.1:8130 MCP_MARKER=<text the task prints> node scripts/mcp-phase-client.mjs
+//   MCP_BOARD=http://127.0.0.1:8130 MCP_RUN_ID=<id the task prints after `mcp-phase-`> node scripts/mcp-phase-client.mjs
 //
 // stdout: one `ok\t<check>` or `bad\t<check>\t<detail>` line per check, which test-jobs.sh turns into its own.
-import { Client, StreamableHTTPClientTransport, UnauthorizedError } from '@modelcontextprotocol/client';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+
+// The SDK is a dependency of the server workspace (server/package.json), not of the repository root: resolve it from there.
+const fromServer = createRequire(new URL('../server/package.json', import.meta.url));
+const { Client, StreamableHTTPClientTransport, UnauthorizedError } = await import(
+    pathToFileURL(fromServer.resolve('@modelcontextprotocol/client')).href
+);
 
 const BOARD = process.env.MCP_BOARD ?? '';
-const MARKER = process.env.MCP_MARKER ?? '';
+const RUN_ID = process.env.MCP_RUN_ID ?? '';
+// What the task prints is joined by printf, so the command text never contains it: finding it in the log proves the runner ran.
+const PRINTED = `mcp-phase-${RUN_ID}`;
 const SETTLE_SECONDS = Number(process.env.MCP_SETTLE_SECONDS ?? 120);
 const WAIT_BUDGET_SECONDS = 20;
 const MODERN = '2026-07-28';
@@ -153,7 +162,7 @@ async function consent(authorizationUrl) {
 }
 
 async function main() {
-    if (!BOARD || !MARKER) throw new Error('MCP_BOARD and MCP_MARKER are required');
+    if (!BOARD || !RUN_ID) throw new Error('MCP_BOARD and MCP_RUN_ID are required');
 
     const challenge = await fetch(resource, {
         method: 'POST',
@@ -207,7 +216,7 @@ async function main() {
         if (!check('mcp: list_executors shows the stored claude executor', Boolean(executor), JSON.stringify(executors))) return;
 
         const created = await call('create_task', {
-            command: `echo ${MARKER}`,
+            command: `printf '%s-%s\\n' mcp-phase ${RUN_ID}`,
             repo,
             executor: executor.name,
             executorScope: executor.scope,
@@ -245,7 +254,7 @@ async function main() {
         const log = await call('read_job_log', { jobId: taskId });
         const logged = dataOf(log);
         const text = (logged.segments ?? []).map((segment) => segment.text ?? '').join('');
-        check('mcp: read_job_log returns the run log', !log.isError && text.includes(MARKER), JSON.stringify(logged).slice(0, 400));
+        check('mcp: read_job_log returns the run log', !log.isError && text.includes(PRINTED), JSON.stringify(logged).slice(0, 400));
     } finally {
         await mcp.close().catch(() => undefined);
     }

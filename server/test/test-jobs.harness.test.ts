@@ -302,7 +302,6 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('upstream:0');
     });
 
-    // Issue #831: two drivers on two boards under one shared admission budget, one of them killed.
     it('the mcp phase signs a member in through the stub identity provider and settles a task through the MCP tools', () => {
         const start = SCRIPT.indexOf("echo '# mcp (board + driver + MCP client, stub runner)'");
         expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# question round trip"));
@@ -320,6 +319,7 @@ describe('the test-jobs harness', () => {
         expect(client).toContain('/api/oauth/consent/approve');
     });
 
+    // Issue #831: two drivers on two boards under one shared admission budget, one of them killed.
     it('the capacity phase runs two boards and two drivers under one shared budget, kills one, and samples the rows', () => {
         const start = SCRIPT.indexOf("echo '# capacity'");
         expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# run deadline'"));

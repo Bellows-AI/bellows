@@ -119,6 +119,12 @@ describe('test-jobs --changed path-to-phase map', () => {
         expect(classify(['server/src/auth/session.ts']).selected).toEqual(['board', 'auth']);
     });
 
+    it('maps every file outside the lane inputs that a phase executes to that phase', () => {
+        expect(classify(['e2e/stub-idp.mjs']).selected).toEqual(['mcp']);
+        expect(classify(['scripts/mcp-phase-client.mjs']).selected).toEqual(['mcp']);
+        expect(classify(['e2e/mcp-connect.spec.ts']).selected).toEqual([]);
+    });
+
     it('runs the image-checks phase for an executor image file and for either image check script', () => {
         for (const file of [
             'docker/claude-executor/test.sh',

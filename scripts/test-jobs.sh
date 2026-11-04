@@ -3921,10 +3921,9 @@ echo
 echo '# mcp (board + driver + MCP client, stub runner)'
 
 MCP_PORT=$((PORT + 1))
-MCP_IDP_PORT=$((PORT + 3))
+MCP_IDP_PORT=$((PORT + 2)) # the mint board that used PORT + 2 is stopped by now
 MCP_BASE="http://127.0.0.1:$MCP_PORT"
 MCP_ORG=999999 # the installation e2e/stub-idp.mjs reports; the board names the member's organization after it
-MCP_MARKER="mcp-phase-$RUN_ID"
 
 kill "$server_pid" 2>/dev/null
 wait "$server_pid" 2>/dev/null
@@ -3971,7 +3970,7 @@ else
     disruption_driver JOB_BOARD_URL="$MCP_BASE" JOB_BOARD_TOKEN="$MCP_TOKEN"
 
     mcp_out="$work/mcp-client.out"
-    MCP_BOARD="$MCP_BASE" MCP_MARKER="$MCP_MARKER" timeout 240 node scripts/mcp-phase-client.mjs >"$mcp_out" 2>"$work/mcp-client.err"
+    MCP_BOARD="$MCP_BASE" MCP_RUN_ID="$RUN_ID" timeout 240 node scripts/mcp-phase-client.mjs >"$mcp_out" 2>"$work/mcp-client.err"
     mcp_exit=$?
     while IFS="$(printf '\t')" read -r kind name detail; do
         case "$kind" in
