@@ -43,15 +43,14 @@ claude mcp add --transport http factory https://<board host>/api/mcp   # then /m
 claude -p "call whoami on the factory server"                          # headless, once authenticated
 ```
 
-A generic SDK client is `@modelcontextprotocol/client` v2: a `StreamableHTTPClientTransport` on that URL with an
-`OAuthClientProvider` (DCR, PKCE, scopes `factory:read factory:write`) and `versionNegotiation` pinned to `2026-07-28`.
-The working reference is `e2e/mcp-connect.spec.ts` (browser consent) and `scripts/mcp-phase-client.mjs` (no browser).
+The working references are `e2e/mcp-connect.spec.ts` and `scripts/mcp-phase-client.mjs`.
 
 ## Client support
 
-- **Known to work:** the SDK v2 client on `2026-07-28`, run through consent to a finished task on every PR lane
-  (`e2e/mcp-connect.spec.ts`, `scripts/test-jobs.sh --phase mcp`), and headless Claude Code (probed when the endpoint
-  was designed; it is not a CI lane). Legacy `initialize` clients on `2025-11-25` and `2025-06-18` are served by the same route.
+- **Known to work:** the SDK v2 client on `2026-07-28`, run through consent to a finished task by the e2e suite and
+  the docker lane (`e2e/mcp-connect.spec.ts`, `scripts/test-jobs.sh --phase mcp`). Legacy `initialize` clients on
+  `2025-11-25` and `2025-06-18` are served by the same route (`server/test/mcp.transport.test.ts`).
+- **Stated limit: headless Claude Code is not run by any lane.** The connect commands above are the supported path, unverified in CI.
 - **Stated limit: GUI clients are unverified.** claude.ai and Claude Desktop custom connectors, Cursor and VS Code
   Copilot were never run against this server by a person; what is known of them is from their source, vendor docs or
   the defaults here. Check a real connector before relying on one. `core/test/docs.mcp.test.ts` pins this sentence.

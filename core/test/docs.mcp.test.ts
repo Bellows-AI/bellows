@@ -23,6 +23,10 @@ describe('the MCP client-support record', () => {
         for (const client of ['claude.ai', 'Claude Desktop', 'Cursor', 'VS Code']) expect(mcpDoc).toContain(client);
     });
 
+    it('states that no lane runs headless Claude Code', () => {
+        expect(prose(mcpDoc)).toContain('**Stated limit: headless Claude Code is not run by any lane.**');
+    });
+
     it('states the attachment and deadline limits', () => {
         expect(prose(mcpDoc)).toContain('**Stated limit: no file bytes through MCP.**');
         expect(prose(mcpDoc)).toContain('**Stated limit: a call ends at 55 s**');

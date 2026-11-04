@@ -944,7 +944,8 @@ expect_contains 'the enabled ingress carries the ingress class' "$ingress_doc" '
 expect_contains 'the enabled ingress carries the host' "$ingress_doc" 'host: "factory.example"'
 expect_contains 'annotations pass through verbatim' "$ingress_doc" 'alb.ingress.kubernetes.io/target-type: ip'
 expect_contains 'tls passes through verbatim' "$ingress_doc" 'secretName: factory-tls'
-expect_contains 'the ingress backs the dashboard service by name' "$ingress_doc" "name: $RELEASE-factory"
+expect_contains 'the ingress backs the dashboard service by name' "$ingress_doc" "service:
+                            name: $RELEASE-factory"
 expect_contains 'the ingress backs the dashboard port' "$ingress_doc" 'number: 8080'
 expect_contains 'the ingress is the dashboard component' "$ingress_doc" 'app.kubernetes.io/component: dashboard'
 helm lint charts/factory "${GH_SETS[@]}" --set ingress.enabled=true --set 'ingress.hosts={factory.example}' \
@@ -971,7 +972,8 @@ expect_contains 'MCP and the ingress render together' "$(grep -A1 'name: MCP_ENA
     bad 'the MCP ingress has one path rule per host: nothing shadows /.well-known/oauth-* or /api/mcp' "$(grep -- '- path:' <<<"$mcp_ingress")"
 expect_contains 'the one rule is the / prefix, which carries /.well-known/oauth-* and /api/mcp' "$mcp_ingress" '- path: /
                     pathType: Prefix'
-expect_contains 'the MCP paths reach the dashboard service' "$mcp_ingress" "name: $RELEASE-factory"
+expect_contains 'the MCP paths reach the dashboard service' "$mcp_ingress" "service:
+                            name: $RELEASE-factory"
 refuses 'MCP behind an ingress over a non-https publicUrl is refused' 'mcp.enabled requires an https auth.publicUrl' \
     "${GH_SETS[@]}" --set-string auth.publicUrl=http://factory.example --set mcp.enabled=true \
     --set ingress.enabled=true --set 'ingress.hosts={factory.example}'
@@ -5000,9 +5002,10 @@ with f as (
 insert into oauth_token (token_hash, kind, family_id, scopes, expires_at)
 select decode(:'hash', 'hex'), 'access', f.id, array['factory:read', 'factory:write'], now() + interval '1 hour' from f;
 SQL
-    )" && ok 'mcp: an access token is minted for the member' || bad 'mcp: an access token is minted for the member' "$mcp_minted"
-    [ -z "$mcp_minted" ] && mcp_ready=1
+    )" && { ok 'mcp: an access token is minted for the member'; mcp_ready=1; } ||
+        bad 'mcp: an access token is minted for the member' "$mcp_minted"
 fi
+[ -n "$mcp_ready" ] || bad 'mcp: the client pass runs' 'MCP was not enabled or no token was minted, so the client was skipped'
 if [ -n "$mcp_ready" ]; then
     mcp_out="$(MCP_BOARD="$BASE" MCP_PUBLIC_HOST="$MCP_PUBLIC_HOST" MCP_TOKEN="$MCP_TOKEN" bounded 120 node scripts/mcp-kind-client.mjs 2>&1)"
     mcp_rc=$?
