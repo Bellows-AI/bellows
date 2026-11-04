@@ -4,8 +4,9 @@ import { createGateServer } from '../src/gates.js';
 import { newJobState } from '../src/loop/loop-attempt.js';
 import { recordEnding, transition } from '../src/loop/loop-phase.js';
 import { createPublishRelay } from '../src/loop/loop-publish.js';
+import { publishWithRetry } from '../src/loop/loop-publish-retry.js';
 import type { LoopRuntime } from '../src/loop/loop-types.js';
-import { type PublishResult, publishFailed } from '../src/publish/publish.js';
+import { type PublishResult, publishFailed, type TreeProbe } from '../src/publish/publish.js';
 import type { PublishRelay, PublishVerdict } from '../src/publish/publish-control.js';
 import type { PublishOptions } from '../src/publish/publish.js';
 
@@ -340,5 +341,76 @@ describe('the publish relay: what an attempt may publish', () => {
                 },
             ]);
         });
+    });
+});
+
+describe('a revision-bound publish across retries (BEL-253)', () => {
+    const REVISION = 'head-1:tree-1';
+    const rejected = publishFailed(
+        "git push: remote: Invalid username or token.\nfatal: Authentication failed for 'x'",
+        'denied'
+    );
+
+    /** `publishWithRetry` over scripted probes (one per call, the last repeats) and publishes. */
+    async function retrying(probes: TreeProbe[], publishes: PublishResult[]) {
+        const revisions: (string | undefined)[] = [];
+        const state = newJobState();
+        const rt = {
+            runner: {
+                probeGateTree: async () => (probes.length > 1 ? probes.shift() : probes[0]),
+                publishGit: async (_job: BoardJob, _token?: string, options?: PublishOptions) => {
+                    revisions.push(options?.revision);
+                    return publishes.shift() ?? LANDED;
+                },
+            },
+            board: { githubCredential: async () => 'ghs' },
+            log: () => {},
+            sleep: async () => {},
+        } as unknown as LoopRuntime;
+        const result = await publishWithRetry(
+            { rt, job: JOB, state },
+            { what: 'the publish', options: { revision: REVISION } },
+            () => false
+        );
+        return { result, revisions };
+    }
+    const probe = (fingerprint: string | null, content: string | null): TreeProbe => ({
+        fingerprint,
+        content,
+        mutatedSince: null,
+    });
+
+    it('rebinds to the fingerprint its own commit moved when the content is the one assessed', async () => {
+        const r = await retrying([probe(REVISION, 'c1'), probe('head-2:tree-1', 'c1')], [rejected, LANDED]);
+        expect(r.result).toEqual(LANDED);
+        expect(r.revisions).toEqual([REVISION, 'head-2:tree-1']);
+    });
+
+    it('keeps the original binding when the content changed between tries, so the retry is refused as stale', async () => {
+        const r = await retrying([probe(REVISION, 'c1'), probe('head-2:tree-2', 'c2')], [rejected, LANDED]);
+        expect(r.revisions).toEqual([REVISION, REVISION]);
+    });
+
+    it('keeps the original binding when a probe is inconclusive', async () => {
+        const r = await retrying([probe(REVISION, 'c1'), probe(null, null)], [rejected, LANDED]);
+        expect(r.revisions).toEqual([REVISION, REVISION]);
+    });
+
+    it('never probes an unbound publish', async () => {
+        let probed = 0;
+        const rt = {
+            runner: {
+                probeGateTree: async () => {
+                    probed += 1;
+                    return probe(null, null);
+                },
+                publishGit: async () => LANDED,
+            },
+            board: { githubCredential: async () => 'ghs' },
+            log: () => {},
+            sleep: async () => {},
+        } as unknown as LoopRuntime;
+        await publishWithRetry({ rt, job: JOB, state: newJobState() }, { what: 'x', options: undefined }, () => false);
+        expect(probed).toBe(0);
     });
 });
