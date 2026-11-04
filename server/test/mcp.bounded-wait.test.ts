@@ -82,7 +82,20 @@ describe('boundedWait', () => {
         });
         expect(sent.length).toBeGreaterThan(0);
         for (let i = 1; i < sent.length; i++) expect(sent[i]!).toBeGreaterThan(sent[i - 1]!);
-        expect(sent).toEqual([0.4, 1]);
+        expect(sent).toEqual([0, 0.4, 1]);
+    });
+
+    it('reports the first hold that ended inside the same millisecond it started', async () => {
+        const sent: number[] = [];
+        let opens = 1;
+        await boundedWait<string>({
+            budgetSeconds: 45,
+            now: () => 0,
+            signal: idle,
+            hold: async () => (opens-- > 0 ? { kind: 'open' } : { kind: 'settled', value: 'x' }),
+            progress: async (elapsed) => void sent.push(elapsed),
+        });
+        expect(sent).toEqual([0]);
     });
 
     it('is ended by the client leaving while a hold is in flight', async () => {

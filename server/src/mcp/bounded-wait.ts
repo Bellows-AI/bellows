@@ -74,7 +74,8 @@ export async function boundedWait<T>(wait: BoundedWait<T>): Promise<WaitEnd<T>> 
     const start = wait.now();
     const budgetMs = effectiveBudgetSeconds(wait.budgetSeconds) * MS_PER_SECOND;
     const deadlineAt = start + budgetMs;
-    let lastProgress = 0;
+    // Below any elapsed value, so the first open hold reports even when it ended in the millisecond it began.
+    let lastProgress = -1;
     for (;;) {
         if (wait.signal.aborted) return { kind: 'aborted' };
         const seconds = holdSecondsLeft(deadlineAt, wait.now());
