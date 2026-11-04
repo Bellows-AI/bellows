@@ -153,6 +153,8 @@ export function stubBoard(
         /** The board's answer to a reclaim renew; held when absent (issue #821). */
         renewReclaim?: (id: string, token: string, signal?: AbortSignal) => Promise<ReclaimRenewal>;
         githubToken?: string | null;
+        /** Answers shifted per GitHub token ask, falling back to `githubToken` (BEL-253). */
+        githubTokens?: (string | null)[];
         /** The board's answer to a question report (issue #226); held when absent. */
         questionVerdict?: QuestionVerdict;
         /** Every artifact call throws, as a board that is down does. */
@@ -183,6 +185,7 @@ export function stubBoard(
     const queue = [...jobs];
     const reclaimQueue = options.reclaims ? [...options.reclaims] : [];
     let ackFailures = options.failAckReclaimTimes ?? 0;
+    const githubTokenQueue = options.githubTokens ? [...options.githubTokens] : [];
 
     const board: BoardStub = {
         completed: [],
@@ -313,7 +316,8 @@ export function stubBoard(
         },
         async githubCredential(claimed) {
             board.githubAsks.push(claimed.id);
-            return options.githubToken ?? null;
+            const queued = githubTokenQueue.shift();
+            return queued === undefined ? (options.githubToken ?? null) : queued;
         },
         async phaseCheckpoint(claimed, checkpoint) {
             board.phaseCheckpointsWritten.push({
@@ -380,6 +384,8 @@ export function stubRunner(
         /** What the runner proves of the agent container's start; a normal run's default is proven. */
         agentStarted?: boolean;
         publish?: PublishResult | null;
+        /** Results shifted per `publishGit`, falling back to `publish` (BEL-253). */
+        publishSequence?: PublishResult[];
         sync?: SyncResult | null;
         syncError?: Error;
         reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null | undefined;
@@ -436,6 +442,7 @@ export function stubRunner(
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
+    const publishQueue = options.publishSequence ? [...options.publishSequence] : [];
     const runner = {
         servicesReleased: [] as string[],
         probed: [] as BoardJob[],
@@ -486,6 +493,7 @@ export function stubRunner(
             runner.githubTokens.push(githubToken);
             runner.publishOptions.push(publishOptions);
             return (
+                publishQueue.shift() ??
                 publish ?? {
                     ok: true,
                     published: false,

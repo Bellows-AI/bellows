@@ -91,6 +91,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
   attempt — `driver/src/labels.ts`, `driver/test/docker/`. On docker each also carries the board's
   `factory.board`, the only objects that board's reaper scans — `driver/test/docker-reaper-boards.test.ts`.
 - **A supervisor lost under a publish is an interruption, never `publishFailed`** (`stepLost` is rethrown by `publishCheckout` and `publishBranch`, ended in `loop-post-run.ts`) — `driver/test/publish-reconcile.test.ts`, `loop/`.
+- **A publish re-asks the board for a GitHub token and retries (3 tries) a missing or rejected token or a GitHub 5xx**, never a refusal, conflict or stale revision; fenced before each ask and push — `publishWithRetry` in `driver/src/loop/loop-publish-retry.ts`, `publishRetryable` in `driver/src/publish/publish.ts`, `driver/test/loop-run.test.ts`, `publish-control.test.ts`, `publish-cause.test.ts`.
 - **The publish decision is made in `driver/src/loop/loop-verdict.ts` and `loop-publish.ts` only** —
   `driver/test/docker/`, `k8s/`.
 - **A decided verdict is staged, then completed, and only then is the attempt torn down**; it is retried on

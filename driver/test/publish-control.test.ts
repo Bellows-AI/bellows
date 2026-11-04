@@ -5,7 +5,7 @@ import { newJobState } from '../src/loop/loop-attempt.js';
 import { recordEnding, transition } from '../src/loop/loop-phase.js';
 import { createPublishRelay } from '../src/loop/loop-publish.js';
 import type { LoopRuntime } from '../src/loop/loop-types.js';
-import type { PublishResult } from '../src/publish/publish.js';
+import { type PublishResult, publishFailed } from '../src/publish/publish.js';
 import type { PublishRelay, PublishVerdict } from '../src/publish/publish-control.js';
 import type { PublishOptions } from '../src/publish/publish.js';
 
@@ -177,17 +177,27 @@ describe('the publish relay: what an attempt may publish', () => {
         published: { token: string | undefined; options: PublishOptions | undefined }[];
     }
     const relayFor = (
-        over: { job?: Partial<BoardJob>; publishGit?: LoopRuntime['runner']['publishGit']; token?: string | null } = {},
+        over: {
+            job?: Partial<BoardJob>;
+            publishGit?: LoopRuntime['runner']['publishGit'];
+            token?: string | null;
+            /** Tokens shifted per ask, then `token` (BEL-253). */
+            tokens?: (string | null)[];
+            /** Results shifted per publish, then LANDED (BEL-253). */
+            publishes?: PublishResult[];
+        } = {},
         onAsk: () => void = () => {}
     ) => {
         const calls: Calls = { asks: 0, published: [] };
+        const tokens = [...(over.tokens ?? [])];
+        const publishes = [...(over.publishes ?? [])];
         const state = newJobState();
         const runner = {
             publishGit:
                 over.publishGit ??
                 (async (_job: BoardJob, token?: string, options?: PublishOptions) => {
                     calls.published.push({ token, options });
-                    return LANDED;
+                    return publishes.shift() ?? LANDED;
                 }),
         };
         const rt = {
@@ -196,10 +206,13 @@ describe('the publish relay: what an attempt may publish', () => {
                 githubCredential: async () => {
                     calls.asks += 1;
                     onAsk();
+                    const queued = tokens.shift();
+                    if (queued !== undefined) return queued;
                     return 'token' in over ? over.token : 'ghs_fresh';
                 },
             },
             log: () => {},
+            sleep: async () => {},
         } as unknown as LoopRuntime;
         return { relay: createPublishRelay(rt, { ...JOB, ...over.job }, state), state, calls };
     };
@@ -217,6 +230,34 @@ describe('the publish relay: what an attempt may publish', () => {
         const { relay, calls } = relayFor({ token: null });
         await relay.publish();
         expect(calls.published[0]?.token).toBeUndefined();
+    });
+
+    it('retries a draft whose token GitHub rejected, with a new token', async () => {
+        const rejected = publishFailed(
+            "git push: remote: Invalid username or token.\nfatal: Authentication failed for 'x'",
+            'denied'
+        );
+        const { relay, state, calls } = relayFor({ tokens: ['ghs_a', 'ghs_b'], publishes: [rejected] });
+        await expect(relay.publish()).resolves.toEqual(LANDED);
+        expect(calls.asks).toBe(2);
+        expect(calls.published.map((c) => c.token)).toEqual(['ghs_a', 'ghs_b']);
+        for (const c of calls.published) {
+            expect(c.options).toEqual({ draft: true, recordPrOperation: expect.any(Function) });
+        }
+        expect(state.draftPublication).toEqual(LANDED);
+    });
+
+    it('publishes nothing more once the attempt is gone between tries', async () => {
+        const rejected = publishFailed('gh pr create: HTTP 502: Bad Gateway', 'transport');
+        const gonePublish = async (_job: BoardJob, token?: string, options?: PublishOptions) => {
+            calls.published.push({ token, options });
+            recordEnding(state, 'lost');
+            return rejected;
+        };
+        const { relay, state, calls } = relayFor({ publishGit: gonePublish });
+        await expect(relay.publish()).resolves.toBe('gone');
+        expect(calls.published).toHaveLength(1);
+        expect(calls.asks).toBe(1);
     });
 
     it('is the board’s on a workflow task whose publication belongs to another step', async () => {

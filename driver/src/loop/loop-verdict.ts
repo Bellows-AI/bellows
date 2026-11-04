@@ -6,7 +6,6 @@
  * `loop-run.ts` is the only importer.
  */
 
-import { prOperationRecorder } from './loop-pr-operation.js';
 import type { Board, BoardJob, LeaseState, VerdictEvidence } from '../board/board.js';
 import { runTimeoutMs } from '../claim.js';
 import type { HelperFailureReport } from '../helpers.js';
@@ -23,9 +22,8 @@ import {
     statusOf,
 } from './loop-ledger.js';
 import { end } from './loop-conclusion.js';
-import { stepLost } from '../step-control.js';
 import type { AttemptCtx, LoopRuntime, VerdictBody } from './loop-types.js';
-import { type PublishOptions, type PublishResult, publishFailed } from '../publish/publish.js';
+import type { PublishOptions, PublishResult } from '../publish/publish.js';
 import type { DeadService, RunOutcome } from '../runner.js';
 import type { GateRunNote, TimeoutActivity } from '../timeout-note.js';
 import { timeoutNote } from '../timeout-note.js';
@@ -53,26 +51,6 @@ export function publishModeOf(job: BoardJob, ledger: Ledger): 'publish' | 'draft
 export function publishOptionsOf(mode: 'publish' | 'draft', revision: string | null): PublishOptions | undefined {
     if (mode === 'draft') return revision === null ? { draft: true } : { draft: true, revision };
     return revision === null ? undefined : { revision };
-}
-
-/**
- * Pushes the branch and opens the PR. A lost supervisor (`stepLost`) is thrown, never a failed publish:
- * the caller hands the attempt back as an interruption (#925). Deliberately NOT raced against the stand-down and not
- * abortable: a push already in flight is not a thing the driver can take back, and half a push is
- * worse than a fenced one. The caller fences before asking for the token instead (issue #472).
- */
-export async function publishBranch(
-    rt: LoopRuntime,
-    job: BoardJob,
-    githubToken: string | null,
-    options?: PublishOptions
-): Promise<PublishResult> {
-    return rt.runner
-        .publishGit(job, githubToken ?? undefined, { ...options, recordPrOperation: prOperationRecorder(rt, job) })
-        .catch((e: Error) => {
-            if (stepLost(e)) throw e;
-            return publishFailed(`the publish threw: ${e.message}`, 'unknown');
-        });
 }
 
 /** The publication identity to ride the verdict, only when the publish really happened and landed. */
