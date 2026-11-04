@@ -89,7 +89,8 @@ function accessTokenMethods(
             const row = findLiveToken(state, tokenHash, 'personal');
             if (!row || row.userId === null) return null;
             touch(row);
-            return memberOf(state, row.userId, row.orgId);
+            const caller = memberOf(state, row.userId, row.orgId);
+            return caller && { ...caller, accessTokenId: row.id };
         },
 
         async findOrgToken(tokenHash): Promise<OrgTokenIdentity | null> {

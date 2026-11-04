@@ -159,6 +159,25 @@ describe.skipIf(!enabled)('attachment store', () => {
         expect((await storeOf(ORG).upload(upload('one', { idempotencyKey: key }))).meta.state).toBe('bound');
     });
 
+    it('settles concurrent replays of one keyed upload on the single file, none of them failing', async () => {
+        const key = `idem-${randomUUID()}`;
+
+        const results = await Promise.allSettled(
+            Array.from({ length: 8 }, () => storeOf(ORG).upload(upload('raced', { idempotencyKey: key })))
+        );
+
+        expect(
+            results.filter((r) => r.status === 'rejected').map((r) => String((r as PromiseRejectedResult).reason))
+        ).toEqual([]);
+        const ids = results.map(
+            (r) => (r as PromiseFulfilledResult<{ meta: { id: string; state: string } }>).value.meta
+        );
+        expect(new Set(ids.map((m) => m.id)).size).toBe(1);
+        expect(new Set(ids.map((m) => m.state))).toEqual(new Set(['ready']));
+        const rows = await sql`select 1 from input_attachment where org_id = ${ORG} and idempotency_key = ${key}`;
+        expect(rows).toHaveLength(1);
+    });
+
     it('scopes a key to the uploader', async () => {
         const key = `idem-${randomUUID()}`;
         const mine = await storeOf(ORG).upload(upload('x', { idempotencyKey: key }));

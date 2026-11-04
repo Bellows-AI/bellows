@@ -16,6 +16,7 @@ import type { OrgRegistry } from '../src/orgs.js';
 import { batchRoutes } from '../src/routes/batches/batches.js';
 import { readVersion } from '../src/version.js';
 import type { MemoryAuthStore } from './helpers.js';
+import { memoryUploadCapabilities } from './helpers-upload-capability.js';
 import {
     buildWithAuth,
     githubAuth,
@@ -120,6 +121,8 @@ async function build(
             // The worker routes' org resolvers: the one job the constants describe, nothing else.
             orgOfJob: async (jobId) => (jobId === JOB_ID ? ORG : null),
             orgOfReclaim: async (reclaimId) => (reclaimId === JOB_ID ? ORG : null),
+            // The upload-request routes and the capability PUT exist exactly when the store does.
+            uploadCapabilities: memoryUploadCapabilities().store,
         }
     );
     track(app);
@@ -306,6 +309,10 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // A member's own uploads: a person's act, so 'user' (an organization token is refused).
     ['/api/attachments', 'user'],
     ['/api/attachments/limits', 'user'],
+    ['/api/attachments/upload-requests', 'user'],
+    ['/api/attachments/upload-requests/:id', 'user'],
+    // The capability in the path IS the credential (docs/auth.md); the route resolves it itself.
+    ['/api/attachments/uploads/:capability', 'open'],
     ['/api/attachments/:id', 'user'],
     ['/api/attachments/:id/content', 'user'],
     // Managing connections is a person's settings act; it falls through to 'user'.
@@ -410,6 +417,7 @@ describe('the route table', () => {
                 store: telemetryStoreStub(),
                 auth: store,
                 oauth: {} as OAuthStore,
+                uploadCapabilities: memoryUploadCapabilities().store,
                 commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
                 // The runner credential routes exist exactly when their per-call check does.
                 attemptOfLease: async () => ({ ok: false, pending: false }),

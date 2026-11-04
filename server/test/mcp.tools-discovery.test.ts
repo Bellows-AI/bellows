@@ -198,6 +198,7 @@ const WRITE_TOOL_NAMES = [
     'accept_batch_task',
     'answer_question',
     'cancel_batch',
+    'create_attachment_upload',
     'create_task',
     'edit_task',
     'follow_up_task',

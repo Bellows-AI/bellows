@@ -10,6 +10,7 @@ import type { Tool, ToolContext } from './tool.js';
 import { getBatchTasks } from './tools/batch-tasks.js';
 import { waitBatch } from './tools/batch-wait.js';
 import { BATCH_TOOLS } from './tools/batches.js';
+import { createAttachmentUpload } from './tools/attachments.js';
 import { listAvailableIntegrations, listConnections } from './tools/connections.js';
 import { listExecutors, listRepos } from './tools/discovery.js';
 import { listJobStreams, readJobLog } from './tools/logs.js';
@@ -42,6 +43,7 @@ export const TOOLS: readonly Tool[] = [
     readJobLog,
     listQuestions,
     ...TASK_WRITE_TOOLS,
+    createAttachmentUpload,
     ...BATCH_TOOLS,
     waitBatch,
     getBatchTasks,
