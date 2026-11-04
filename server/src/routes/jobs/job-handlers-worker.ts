@@ -22,6 +22,7 @@ import {
     validateExecutorField,
     validateExecutorScopeField,
     validateRepoField,
+    validateTitleField,
     validateSkillsField,
     validateVerdictBody,
 } from './job-field-validation.js';
@@ -189,6 +190,22 @@ function selectedSkillsOf(reply: FastifyReply, raw: unknown): string[] | null {
     return result.value;
 }
 
+/**
+ * The create's shape-checked simple fields (title, repo, executor and its scope), each refused with its own
+ * code; null once a 400 has landed on `reply`. The title is null when none was given.
+ */
+function checkedFields(reply: FastifyReply, fields: Record<string, unknown>) {
+    const title = validateTitleField(fields.title);
+    if (!title.ok) return void bad(reply, ERROR_CODES.BAD_TITLE, title.message);
+    const repo = validateRepoField(fields.repo);
+    if (!repo.ok) return void bad(reply, ERROR_CODES.BAD_REPO, repo.message);
+    const executor = validateExecutorField(fields.executor);
+    if (!executor.ok) return void bad(reply, ERROR_CODES.BAD_EXECUTOR, executor.message);
+    const scope = validateExecutorScopeField(fields.executorScope);
+    if (!scope.ok) return void bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, scope.message);
+    return { title: title.value, repo: repo.value, executor: executor.value, executorScope: scope.value };
+}
+
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeFor<keyof JobActionStore>(orgs, request);
     if (!store) return noBoard(reply);
@@ -199,15 +216,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     // interpolated ENTRY prompt built below.
     let command = commandResult.value;
 
-    const repoResult = validateRepoField(fields.repo);
-    if (!repoResult.ok) return bad(reply, ERROR_CODES.BAD_REPO, repoResult.message);
-    const executorResult = validateExecutorField(fields.executor);
-    if (!executorResult.ok) return bad(reply, ERROR_CODES.BAD_EXECUTOR, executorResult.message);
-    const scopeResult = validateExecutorScopeField(fields.executorScope);
-    if (!scopeResult.ok) return bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, scopeResult.message);
-    const repo = repoResult.value;
-    const executor = executorResult.value;
-    const executorScope = scopeResult.value;
+    const simple = checkedFields(reply, fields);
+    if (!simple) return reply;
+    const { title, repo, executor, executorScope } = simple;
     const selectedSkills = selectedSkillsOf(reply, fields.skills);
     if (selectedSkills === null) return reply;
     const skills = selectedSkills;
@@ -270,6 +281,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 executorScope,
                 skills,
                 baseBranch,
+                title,
                 ...refs,
                 ...(workflow ? { workflow } : {}),
                 idempotency: idempotency.value,

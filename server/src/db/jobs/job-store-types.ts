@@ -9,6 +9,7 @@ import type { AttachmentMeta } from '@factory-ai/core';
 import type { ClaimAttachment } from './job-store-attachments.js';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
+import type { JobTitleStore } from './job-store-title.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { JobActionStore } from './job-store-actions.js';
@@ -20,7 +21,7 @@ import type { JobReclaimStore } from './job-store-reclaims.js';
 import type { JobReadStore } from './job-store-reads.js';
 import type { JobWorkerStore } from './job-store-worker.js';
 import type { JobConclusionStore } from './job-store-conclusions.js';
-import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
+import type { UserRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
 import type { AdmissionBudgets, ClaimObserver, JobAdmissionStore } from './job-store-admission.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from '../pr-lifecycle-store.js';
@@ -163,6 +164,12 @@ export interface JobInterruption {
 export interface Job {
     id: string;
     command: string;
+    /** The thread root's stored title (BEL-252), or null while the fallback derived from `command` stands. */
+    title: string | null;
+    /** Who set `title`: null exactly when `title` is. */
+    titleOrigin: TaskTitleOrigin | null;
+    /** The root's compare-and-set token a rename sends back. */
+    titleRevision: number;
     status: JobStatus;
     attempts: number;
     maxAttempts: number;
@@ -911,6 +918,7 @@ export type JobStore = JobActionStore &
     JobReadStore &
     JobReclaimStore &
     JobReviewStore &
+    JobTitleStore &
     JobWorkerStore &
     PhaseCheckpointStore &
     GateRunStore &
@@ -931,8 +939,12 @@ export interface TaskSummary {
     id: string;
     /** The newest run's id — the run `status` and `activity` describe; every other run of the thread is history. */
     headRunId: string;
-    /** The root command; the UI derives the first-line title from it. */
+    /** The root command; the fallback title derives from it. */
     command: string;
+    /** The root's stored title, or null while the fallback stands (BEL-252). */
+    title: string | null;
+    titleOrigin: TaskTitleOrigin | null;
+    titleRevision: number;
     /** The newest run's status — the thread's present tense, the sidenav's chainHead rule. */
     status: JobStatus;
     /** The head run's stop-request stamp, when a stop has landed but not yet parked. */

@@ -157,6 +157,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
                 ...SELECTION_OPTIONS,
                 ...IDEMPOTENCY_KEY_OPTION,
                 ...ATTACH_OPTION,
+                title: { type: 'string' },
             },
         })
     );
@@ -166,7 +167,14 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
     const paths = parsed.values.attach ?? [];
     const attachments = await attachedIds(paths, key, boardFor(io), io.stderr);
     const created = await recoverable(
-        () => boardFor(io).createJob({ ...selection, command, idempotencyKey: key, attachments }),
+        () =>
+            boardFor(io).createJob({
+                ...selection,
+                command,
+                title: parsed.values.title,
+                idempotencyKey: key,
+                attachments,
+            }),
         key,
         paths.length > 0
     );

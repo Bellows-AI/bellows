@@ -26,6 +26,7 @@ import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
+import { registerTitleRoute } from './routes/jobs/job-handlers-title.js';
 import { jobRoutes } from './routes/jobs/jobs.js';
 import { prometheusRoutes } from './routes/prometheus.js';
 import { repoRoutes } from './routes/repos.js';
@@ -317,6 +318,7 @@ export async function buildApp({
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
     await app.register(jobRoutes({ orgs, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
+    registerTitleRoute(app, orgs);
     if (metrics) await app.register(prometheusRoutes(metrics));
     await app.register(attachmentRoutes({ orgs, maxInFlight: attachmentMaxInFlight }));
     await app.register(taskRoutes({ orgs }));

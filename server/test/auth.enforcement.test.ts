@@ -207,6 +207,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // hand — and all fall through to 'user'.
     ['/api/jobs/:id/follow-up', 'user'],
     ['/api/jobs/:id/retry', 'user'],
+    // The user's rename of a task title (BEL-252): a person's action.
+    ['/api/jobs/:id/title', 'user'],
     // The owner binds a connection of their own to the thread (BEL-59): a person's action, never a worker's.
     ['/api/jobs/:id/connections', 'user'],
     // The same owner declines a provider the thread asked for; the runner's own ask is a worker route.

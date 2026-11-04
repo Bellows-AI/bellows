@@ -543,6 +543,10 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
             'repo',
             'status',
             'summary',
+            // The root's stored title (122); null while the fallback stands.
+            'title',
+            'titleOrigin',
+            'titleRevision',
             // The PR-wait fields (036) ride the summary contract; this thread never waited, so all
             // three read null.
             'waitReason',

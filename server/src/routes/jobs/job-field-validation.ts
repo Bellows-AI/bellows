@@ -5,6 +5,7 @@ import {
     MAX_FILES_PER_REQUEST,
     EXECUTOR_SCOPES,
     MAX_TASK_SKILLS,
+    normalizeTaskTitle,
     SKILL_NAME,
     SKILL_NAME_LIMIT,
     USER_SCOPE,
@@ -82,6 +83,13 @@ export function validateCommandField(raw: unknown): { ok: true; value: string } 
         return { ok: false, message: `command exceeds ${COMMAND_LIMIT} characters` };
     }
     return { ok: true, value: raw };
+}
+
+/** A task title (BEL-252), normalized the one way every writer shares; absent or null means none given. */
+export function validateTitleField(raw: unknown): { ok: true; value: string | null } | { ok: false; message: string } {
+    if (raw === undefined || raw === null) return { ok: true, value: null };
+    const result = normalizeTaskTitle(raw);
+    return result.ok ? result : { ok: false, message: result.reason };
 }
 
 // Absent and explicit null both mean "not given" — what every job queued before the chat carries.
