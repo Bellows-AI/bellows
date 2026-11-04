@@ -116,6 +116,22 @@
         padding: 32px 24px 48px;
     }
 
+    /* The attachment upload page's drop target: a dashed region inside the .onboarding column. */
+    .upload-zone {
+        align-items: center;
+        border: 2px dashed var(--line-strong);
+        border-radius: var(--radius-md);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 32px 16px;
+        text-align: center;
+    }
+
+    .upload-zone.is-dragging {
+        border-color: var(--accent);
+    }
+
     .onboarding h1 {
         margin: 0;
     }
