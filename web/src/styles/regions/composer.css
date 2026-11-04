@@ -585,5 +585,9 @@
         .composer-branch-input {
             min-height: 44px;
         }
+
+        .task-compose .composer-title {
+            min-height: 44px;
+        }
     }
 }
