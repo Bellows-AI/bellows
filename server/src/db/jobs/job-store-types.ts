@@ -83,7 +83,7 @@ export type FailureCause = 'verification' | 'conflict' | 'denied' | 'config' | '
 /** Where one declared gate is, right now. 'pending' is a gate not yet started, 'running' the worker's claim, the others its verdict. */
 export interface GateReport {
     name: string;
-    status: 'pending' | 'running' | 'passed' | 'failed';
+    status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
     exitCode: number | null;
     /** When a `running` entry started (ISO); absent on the others. */
     startedAt?: string;

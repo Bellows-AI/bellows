@@ -1969,6 +1969,17 @@ describe('POST /api/jobs/:id/gates', () => {
         expect(store.gatesReported).toEqual([{ id: ID, results: gates }]);
     });
 
+    it('accepts a skipped gate entry and stores it', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const gates = [{ name: 'test', status: 'skipped', exitCode: null, output: 'no changes' }];
+
+        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.gatesReported).toEqual([{ id: ID, results: gates }]);
+    });
+
     it.each([
         ['a numeric startedAt', { status: 'running', startedAt: 7 }],
         ['an unparseable startedAt', { status: 'running', startedAt: 'yesterday' }],

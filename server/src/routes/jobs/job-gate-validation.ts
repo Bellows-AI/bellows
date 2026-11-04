@@ -12,8 +12,14 @@ function gateEntryCore(entry: Record<string, unknown>): Pick<GateReport, 'name' 
     if (typeof name !== 'string' || !name.trim() || name.length > GATE_NAME_LIMIT) {
         return `every gate needs a name of at most ${GATE_NAME_LIMIT} characters`;
     }
-    if (status !== 'pending' && status !== 'running' && status !== 'passed' && status !== 'failed') {
-        return "gate status must be 'pending', 'running', 'passed' or 'failed'";
+    if (
+        status !== 'pending' &&
+        status !== 'running' &&
+        status !== 'passed' &&
+        status !== 'failed' &&
+        status !== 'skipped'
+    ) {
+        return "gate status must be 'pending', 'running', 'passed', 'failed' or 'skipped'";
     }
     if (exitCode !== undefined && exitCode !== null && !Number.isInteger(exitCode)) {
         return 'gate exitCode must be an integer or null';

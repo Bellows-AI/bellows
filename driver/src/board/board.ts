@@ -579,7 +579,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
         job: BoardJob,
         results: readonly {
             name: string;
-            status: 'pending' | 'running' | 'passed' | 'failed';
+            status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
             exitCode: number | null;
             output: string | null;
             startedAt?: string;

@@ -377,7 +377,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
 export const VERIFICATION_ID = 'task-verification';
 
 /** Gate outcomes in reading order: what failed first, then what passed, then what is still going. */
-const GATE_ORDER: readonly GateCheck['status'][] = ['failed', 'passed', 'running', 'pending'];
+const GATE_ORDER: readonly GateCheck['status'][] = ['failed', 'passed', 'running', 'pending', 'skipped'];
 
 /**
  * The count pills: one per outcome that happened, words carrying the meaning — the tint is never

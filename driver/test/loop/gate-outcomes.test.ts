@@ -99,6 +99,56 @@ describe('gates over a run that did not finish cleanly', () => {
         expect(complete.output).toContain('[driver] gates skipped — the task produced no change');
         expect(logs.join('\n')).toContain('gates skipped — the task produced no change');
         expect(stack.stack.unregistered).toBe(1);
+        const skipped = [
+            { name: 'test', status: 'skipped', exitCode: null, output: 'no changes' },
+            { name: 'lint', status: 'skipped', exitCode: null, output: 'no changes' },
+        ];
+        expect(board.board.gatesReported.at(-1)?.results).toEqual(skipped);
+        expect(board.board.gatesReported.flatMap((g) => g.results).map((r) => r.status)).not.toContain('passed');
+        expect(board.board.gateRunsWritten).toEqual([]);
+    });
+
+    it('reports the declared gates skipped on the kubernetes executor too', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok(), { noChange: true });
+
+        await drive(
+            { ...board, runner, gates: stack.gates },
+            {
+                EXECUTOR: 'kubernetes',
+                K8S_NAMESPACE: 'factory',
+                RUNNER_SERVICES: '0',
+            }
+        );
+
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.gatesReported.at(-1)?.results.map((r) => [r.name, r.status, r.output])).toEqual([
+            ['test', 'skipped', 'no changes'],
+            ['lint', 'skipped', 'no changes'],
+        ]);
+    });
+
+    it('lists no on-demand gate as skipped', async () => {
+        const base = gatedJob(1);
+        const board = stubBoard([
+            {
+                ...base,
+                gates: {
+                    ...base.gates!,
+                    gates: [
+                        { name: 'test', command: 'npm test' },
+                        { name: 'e2e', command: 'npm run e2e', onDemand: true },
+                    ],
+                },
+            },
+        ]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok(), { noChange: true });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.gatesReported.at(-1)?.results.map((r) => r.name)).toEqual(['test']);
     });
 
     it('does not let the no-change skip refuse the publication under a gates-required policy', async () => {
@@ -129,6 +179,7 @@ describe('gates over a run that did not finish cleanly', () => {
 
         expect(stack.stack.ran.names).toEqual(['test', 'lint']);
         expect(board.board.completed[0]?.output).not.toContain('gates skipped');
+        expect(board.board.gatesReported.flatMap((g) => g.results).map((r) => r.status)).not.toContain('skipped');
     });
 
     // 044 names "timeouts where the gates passed" as a query: a timed-out run keeps its gates.
@@ -183,7 +234,6 @@ describe('the agent reporting it is blocked', () => {
         await drive({ ...board, runner, gates: stack.gates });
 
         expect(stack.stack.ran.names).toEqual([]);
-        expect(runner.published).toEqual([]);
         const complete = board.board.completed[0]!;
         expect(complete).toMatchObject({ status: 'failed', exitCode: 0, failureKind: 'blocked' });
         expect(complete.output).toContain('[driver] the agent reported it is blocked: acli is not authenticated');

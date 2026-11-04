@@ -149,6 +149,7 @@ export const GATE_PILL: Record<GateCheck['status'], string> = {
     failed: 'pill pill-bad',
     running: 'pill pill-done',
     pending: 'pill',
+    skipped: 'pill',
 };
 
 /** A gate status in the reader's words: a gate left `pending` on a finished run never ran. */
@@ -185,6 +186,7 @@ export function gateCounts(gates: GateCheck[] | null | undefined): {
     failed: number;
     running: number;
     pending: number;
+    skipped: number;
 } {
     const list = gates ?? [];
     return {
@@ -192,6 +194,7 @@ export function gateCounts(gates: GateCheck[] | null | undefined): {
         passed: list.filter((gate) => gate.status === 'passed').length,
         failed: list.filter((gate) => gate.status === 'failed').length,
         running: list.filter((gate) => gate.status === 'running').length,
+        skipped: list.filter((gate) => gate.status === 'skipped').length,
     };
 }
 
@@ -215,6 +218,7 @@ export function closePhase(job: Job): ClosePhase | null {
     let label = 'Agent finished — checks passed, finishing up';
     if (gates.some((gate) => gate.status === 'failed')) label = 'Agent finished — a check failed';
     else if (unfinished) label = 'Agent finished — running checks';
+    else if (gates.every((gate) => gate.status === 'skipped')) label = 'Agent finished — no changes, checks skipped';
     return {
         label,
         passed: gates.filter((gate) => gate.status === 'passed').length,
