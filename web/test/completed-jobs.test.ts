@@ -14,6 +14,9 @@ import { subscribeUnauthenticated } from '../src/api/useSession.js';
 const job = (id: string): Job => ({
     id,
     command: 'do the thing',
+    title: null,
+    titleOrigin: null,
+    titleRevision: 0,
     status: 'succeeded',
     attempts: 1,
     author: null,

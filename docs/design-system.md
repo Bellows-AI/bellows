@@ -78,7 +78,7 @@ never utilities, and every color it renders resolves through a token.
 ## Shared classes
 
 Shell and navigation: `shell-main`, `page-header-eyebrow`, `page-header-leading`,
-`page-header-description`, `page-header-meta`, `page-header-actions`, `skip-link`, `appbar-brand`,
+`task-heading`, `page-header-description`, `page-header-meta`, `page-header-actions`, `skip-link`, `appbar-brand`,
 `appbar-org`, `appbar-trigger`, `appbar-actions`, `sidenav-brand`, `sidenav-items`, `sidenav-link`,
 `sidenav-sublink`, `sidenav-subitems`, `sidenav-count`, `sidenav-newtask`, `sidenav-preview`,
 `sidenav-section`, `sidenav-empty`, `sidenav-task-title`, `sidenav-task-summary`,

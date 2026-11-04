@@ -17,6 +17,9 @@ const emptyRepos = { data: null, loading: true, error: null as string | null, re
 const taskSummary = (over: Partial<import('../src/api/useTasks.js').TaskSummary> = {}) => ({
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the flaky login test',
+    title: null,
+    titleOrigin: null,
+    titleRevision: 0,
     status: 'succeeded' as const,
     cancelRequestedAt: null,
     doneAt: null,
@@ -84,6 +87,22 @@ const linkHref = (html: string, attribute: string): string | undefined =>
         .match(/<a [^>]*>/g)
         ?.find((tag) => tag.includes(attribute))
         ?.match(/href="([^"]*)"/)?.[1];
+
+describe('TaskInboxPage rows — the display title (BEL-252)', () => {
+    const stored = { title: 'Fix the login crash', titleOrigin: 'agent' as const, titleRevision: 1 };
+
+    it('renders the stored title, not the command, with the full text as title=', () => {
+        const html = renderInbox({ items: [taskSummary({ ...stored, command: 'x'.repeat(500) })] });
+        const row = rowsOf(html)[0]!;
+        expect(row).toMatch(/<a [^>]*title="Fix the login crash"[^>]*>Fix the login crash<\/a>/);
+        expect(row).not.toContain('xxxxxxxx');
+    });
+
+    it('names a blank prompt Task #<short id>', () => {
+        const html = renderInbox({ items: [taskSummary({ command: '  ' })] });
+        expect(rowsOf(html)[0]).toContain('>Task #11111111<');
+    });
+});
 
 describe('TaskInboxPage header', () => {
     it('names the page, describes it, and offers New task as its one action', () => {

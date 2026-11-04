@@ -1,10 +1,10 @@
-import { taskTitleFromCommand } from '@factory-ai/core';
 import { useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import type { TaskNavigation, TaskSummary } from '../api/useTasks.js';
 import { PRODUCT_NAME } from '../brand.js';
 import { NAV_ITEMS, navCount } from '../nav-model.js';
 import { type SidenavPreview, sidenavPreview, taskDotClass } from '../task-tree.js';
+import { taskTitleText } from '../task-title.js';
 import { NavItemLink, NewTaskLink, SettingsSectionItems } from './NavItems.js';
 
 /**
@@ -62,17 +62,18 @@ function TaskRow({ task, onNavigate }: { task: TaskSummary; onNavigate?: (() => 
         waitTerminalReason: task.waitTerminalReason,
         needsAnswer: task.needsAnswer,
     });
+    const name = taskTitleText(task);
     const live = task.status === 'running' && task.activity !== null && task.activity.trim() !== '';
     return (
         <li>
             <NavLink
                 to={`/tasks/${task.id}`}
-                title={taskTitleFromCommand(task.command)}
+                title={name}
                 className={({ isActive }) => (isActive ? 'sidenav-task is-active' : 'sidenav-task')}
                 onClick={onNavigate}
             >
                 {dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null}
-                <span className="sidenav-task-title">{taskTitleFromCommand(task.command)}</span>
+                <span className="sidenav-task-title">{name}</span>
                 <span className="sidenav-task-author">{task.author?.login ?? 'unknown'}</span>
                 {live ? <span className="sidenav-task-summary">{task.activity}</span> : null}
             </NavLink>

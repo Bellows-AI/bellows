@@ -5,6 +5,7 @@ import { RelativeTime } from '../components/RelativeTime.js';
 import type { Job } from '../api/useJobs.js';
 import { tokens, wallClock } from '../format.js';
 import { type TaskTone, taskStatusLabel, taskTone } from '../task-tree.js';
+import { taskTitleText } from '../task-title.js';
 
 /** Each tone's status pill (plan §1.2): accent is the user's turn, bad a failure, ok a live run,
  * done parked or finished — the label carries the meaning, the tone only reinforces it. */
@@ -21,12 +22,9 @@ const STATUS_PILL: Record<TaskTone, string> = {
     done: 'pill pill-done',
 };
 
-/** The task's one-line identity: the root command's first non-empty line — the agent's closing
- * summary is outcome text, not task identity. Truncation is visual (a two-line clamp), not a
- * content edit. */
-function title(job: Job): string {
-    return job.command.split('\n').find((line) => line.trim() !== '') ?? '';
-}
+/** The task's one-line identity: its stored title, else the root command's first non-empty line — the
+ * agent's closing summary is outcome text, not task identity. Truncation is visual (a two-line clamp). */
+const title = taskTitleText;
 
 /** The columns take the panel's injected `now` so the relative stamps stay pure in tests. */
 const columns = (now: Date | undefined): DataTableColumn<Job>[] => [

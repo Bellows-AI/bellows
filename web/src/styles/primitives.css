@@ -120,6 +120,28 @@
         margin: 0;
     }
 
+    /* A task's name is prose a person or an agent wrote, so it is a deliberate step below the page
+       scale (22/30, the Settings pages' 26/34 smaller still than the base 28/36): at most two lines,
+       then an ellipsis, and a token with no break point wraps instead of widening the page. The full
+       text rides the title attribute. */
+    .page-header-leading h1.task-heading {
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        display: -webkit-box;
+        font-size: 22px;
+        line-clamp: 2;
+        line-height: 30px;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 640px) {
+        .page-header-leading h1.task-heading {
+            font-size: 20px;
+            line-height: 28px;
+        }
+    }
+
     .page-header-description {
         color: var(--ink-muted);
         font-size: 15px;
@@ -885,9 +907,11 @@
     }
 
     .sidenav-task {
+        align-items: center;
         border-radius: var(--radius-lg);
         color: var(--ink-muted);
-        display: block;
+        display: flex;
+        flex-wrap: wrap;
         font-size: 13px;
         overflow: hidden;
         padding: 4px 12px 4px 24px;
@@ -898,8 +922,8 @@
        command never pushes the live summary below it off the tree. The 10px is the dot and its margin,
        which share the title's line. */
     .sidenav-task-title {
-        display: inline-block;
-        max-width: calc(100% - 10px);
+        flex: 1 1 0;
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         vertical-align: middle;
@@ -911,6 +935,7 @@
     .sidenav-task-summary {
         color: var(--ink-muted);
         display: block;
+        flex: 0 0 100%;
         font-family: var(--font-mono);
         /* Task-information floor (issue 189); the token is the color — no extra opacity. */
         font-size: 12px;
@@ -924,11 +949,11 @@
        accounts existed has no author — not a display hint to invent one. */
     .sidenav-task-author {
         color: var(--ink-muted);
-        display: inline-block;
+        flex: none;
         /* Task-metadata floor (issue 189). */
         font-size: 12px;
         margin-left: 6px;
-        max-width: calc(100% - 10px);
+        max-width: 40%;
         overflow: hidden;
         text-overflow: ellipsis;
         vertical-align: middle;

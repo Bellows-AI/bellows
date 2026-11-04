@@ -668,6 +668,7 @@ function restoredDraft(overrides: Partial<ComposerDraftInput>): ComposerDraftInp
         repoTouched: false,
         workflowRepo: 'acme/web',
         baseBranch: '',
+        title: '',
         workflow: '',
         storedParams: { workflowId: null, values: {} },
         paramTouched: {},

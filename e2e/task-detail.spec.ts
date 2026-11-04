@@ -730,3 +730,126 @@ test.describe('the attachments in the task history', () => {
         await expect(page.getByRole('link', { name: /Download gone\.png/ })).toBeVisible();
     });
 });
+
+/** Stops the task the page shows (a queued stop lands directly) so no spec leaves a claimable task behind. */
+async function stopShownTask(page: Page): Promise<void> {
+    await header(page).getByRole('button', { name: 'Stop run' }).click();
+    await expect(page.locator('.page-header-meta')).toContainText('Stopped · Needs review', { timeout: 10_000 });
+}
+
+test.describe('the task title (BEL-252)', () => {
+    test.beforeEach(async ({ page }) => {
+        await saveExecutor(page);
+        await withExecutor(page);
+    });
+    test.afterEach(({ page }) => clearExecutors(page));
+
+    const LONG_PROMPT = 'investigate the intermittent checkout timeout '.repeat(27).trim();
+    const UNBROKEN_PROMPT = 'Q'.repeat(300);
+    const CELLS = [
+        { width: 1280, height: 800, scheme: 'light' as const },
+        { width: 1280, height: 800, scheme: 'dark' as const },
+        { width: 375, height: 800, scheme: 'light' as const },
+        { width: 375, height: 800, scheme: 'dark' as const },
+    ];
+
+    /** The header's two-line contract and the page-level overflow contract, in one cell. */
+    async function expectClampedHeader(page: Page, taskId: string, cell: (typeof CELLS)[number], shot: string) {
+        await page.setViewportSize({ width: cell.width, height: cell.height });
+        await page.emulateMedia({ colorScheme: cell.scheme });
+        await page.goto(`/tasks/${taskId}`);
+        const h1 = page.locator('.page-header-leading h1');
+        // `Tasks` (no title=) stands until the thread lands.
+        await expect(h1).toHaveAttribute('title', /.+/);
+        const metrics = await h1.evaluate((el) => ({
+            height: el.getBoundingClientRect().height,
+            lineHeight: Number.parseFloat(getComputedStyle(el).lineHeight),
+            title: el.getAttribute('title'),
+            text: el.textContent,
+        }));
+        expect(metrics.height, 'at most two lines').toBeLessThanOrEqual(2 * metrics.lineHeight + 1);
+        expect(metrics.title, 'the full display title rides title=').toBe(metrics.text);
+        const overflow = await page.evaluate(
+            () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+        );
+        expect(overflow, 'no horizontal page overflow').toBeLessThanOrEqual(0);
+        await page.screenshot({ path: `${SHOTS}/${shot}-${cell.width}-${cell.scheme}.png`, fullPage: true });
+    }
+
+    test('a 1,200-character prompt and an unbroken token clamp the heading to two lines and never widen the page', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        const longId = await queueTask(page, LONG_PROMPT);
+        await stopShownTask(page);
+        const unbrokenId = await queueTask(page, UNBROKEN_PROMPT);
+        await stopShownTask(page);
+        for (const cell of CELLS) {
+            await expectClampedHeader(page, longId, cell, 'task-title-long');
+            await expectClampedHeader(page, unbrokenId, cell, 'task-title-unbroken');
+        }
+        expect(problems).toEqual([]);
+    });
+
+    test('a long title is one ellipsized line in the sidebar and the actions stay in view', async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height: 800 });
+        const id = await queueTask(page, LONG_PROMPT);
+        await stopShownTask(page);
+        const row = page.locator(`.sidenav-task[href="/tasks/${id}"]`);
+        await expect(row).toBeVisible();
+        const title = row.locator('.sidenav-task-title');
+        const look = await title.evaluate((el) => ({
+            overflow: getComputedStyle(el).textOverflow,
+            whiteSpace: getComputedStyle(el).whiteSpace,
+            height: el.getBoundingClientRect().height,
+            lineHeight: Number.parseFloat(getComputedStyle(el).lineHeight),
+            clipped: el.scrollWidth > el.clientWidth,
+        }));
+        expect(look.overflow).toBe('ellipsis');
+        expect(look.whiteSpace).toBe('nowrap');
+        expect(look.height).toBeLessThanOrEqual(look.lineHeight + 1);
+        expect(look.clipped).toBe(true);
+        await expect(row.locator('.sidenav-task-author')).toBeVisible();
+        await expect(title).toHaveAttribute('class', /sidenav-task-title/);
+        await expect(row).toHaveAttribute('title', /.+/);
+        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeInViewport();
+        await page.screenshot({ path: `${SHOTS}/task-title-sidebar.png`, fullPage: true });
+    });
+
+    test('Rename updates the header, sidebar and inbox of a finished task without a reload', async ({ page }) => {
+        const id = await queueTask(page, 'e2e — rename me');
+        await stopShownTask(page);
+        // The detail poll has stopped: only the page's own refetch can show the new name.
+        await page.evaluate(() => {
+            (window as unknown as { __kept: boolean }).__kept = true;
+        });
+        await header(page).getByRole('button', { name: 'Rename task' }).click();
+        const dialog = page.getByRole('dialog');
+        await expect(dialog.getByLabel('Task title')).toHaveValue('e2e — rename me');
+        await dialog.getByLabel('Task title').fill('Renamed by the author');
+        await dialog.getByRole('button', { name: 'Save' }).click();
+        await expect(dialog).toHaveCount(0);
+
+        await expect(page.locator('.page-header-leading h1')).toHaveText('Renamed by the author');
+        await expect(page.locator(`.sidenav-task[href="/tasks/${id}"] .sidenav-task-title`)).toHaveText(
+            'Renamed by the author'
+        );
+        await page.getByRole('link', { name: 'View all tasks' }).click();
+        await expect(page.getByRole('link', { name: 'Renamed by the author' }).first()).toBeVisible();
+        expect(await page.evaluate(() => (window as unknown as { __kept?: boolean }).__kept)).toBe(true);
+    });
+
+    test('a task created with a title shows it in the header and sidebar', async ({ page }) => {
+        await page.goto('/tasks/new');
+        await page.getByLabel('Title (optional)').fill('Fix the login crash');
+        await page.getByLabel('What should the agent do?').fill('a long and rambling prompt about everything');
+        await page.getByRole('button', { name: 'Start task' }).click();
+        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
+        const id = /\/tasks\/([0-9a-f-]{36})$/.exec(page.url())![1]!;
+        await expect(page.locator('.page-header-leading h1')).toHaveText('Fix the login crash');
+        await stopShownTask(page);
+        await expect(page.locator(`.sidenav-task[href="/tasks/${id}"] .sidenav-task-title`)).toHaveText(
+            'Fix the login crash'
+        );
+    });
+});

@@ -1,3 +1,4 @@
+import { TASK_TITLE_MAX } from '@factory-ai/core';
 import type { ReactNode } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
@@ -48,6 +49,7 @@ const PROMPT_PLACEHOLDER = 'Example: Fix issue #' + '123, update the affected te
 const READINESS_ID = 'composer-readiness';
 const BLOCKER_ID = 'composer-blocker';
 const PROMPT_ID = 'composer-prompt';
+const TITLE_ID = 'composer-title';
 const REPO_PLACEHOLDER = 'Select a repository';
 
 type Update = (patch: Partial<ComposerDraftInput>) => void;
@@ -579,6 +581,18 @@ export function TaskComposer({
                     <label htmlFor={PROMPT_ID} className="composer-visually-hidden">
                         What should the agent do?
                     </label>
+                    <label htmlFor={TITLE_ID} className="composer-visually-hidden">
+                        Title (optional)
+                    </label>
+                    <input
+                        id={TITLE_ID}
+                        className="field composer-title"
+                        placeholder="Title (optional)"
+                        maxLength={TASK_TITLE_MAX}
+                        value={state.title}
+                        readOnly={frozen}
+                        onChange={(e) => update({ title: e.target.value })}
+                    />
                     <textarea
                         id={PROMPT_ID}
                         className="field composer-input"

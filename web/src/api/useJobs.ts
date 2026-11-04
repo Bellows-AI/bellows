@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AttachmentMeta, JobMode } from '@factory-ai/core';
+import type { AttachmentMeta, JobMode, TaskTitleOrigin } from '@factory-ai/core';
 import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
@@ -166,6 +166,12 @@ export interface Job {
     gates?: GateCheck[] | null;
     /** The attempt's last container vitals, or null until the driver's first sample lands. */
     runtime?: RuntimeVitals | null;
+    /** The thread root's stored title (BEL-252), or null while the title derived from `command` stands. */
+    title: string | null;
+    /** Who set `title`: null exactly when `title` is. */
+    titleOrigin: TaskTitleOrigin | null;
+    /** The root's compare-and-set token a rename sends back. */
+    titleRevision: number;
     /** The repository tab the task was queued from, or null for one queued before the chat. */
     repo: string | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */

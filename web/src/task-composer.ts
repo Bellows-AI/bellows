@@ -373,6 +373,7 @@ export function initialComposerState(restored: ComposerDraftInput | null, lists:
         repoTouched: false,
         workflowRepo: repo,
         baseBranch: '',
+        title: '',
         ...freshWorkflowDraft(),
     };
 }
@@ -391,6 +392,7 @@ export function draftIsFresh(state: ComposerDraftInput, lists: DraftLists): bool
         state.executorScope === fresh.executorScope &&
         state.repo === fresh.repo &&
         state.baseBranch === fresh.baseBranch &&
+        state.title === fresh.title &&
         state.workflow === fresh.workflow
     );
 }

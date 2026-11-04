@@ -1,16 +1,15 @@
-import { taskTitleFromCommand } from '@factory-ai/core';
 import { PRODUCT_NAME } from '../brand.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 
 /**
  * The remove confirmation's copy, exported pure so the offline suite holds it: the title names
- * the task — the root command's first line, the same name the page's h1 carries — and the body
+ * the task — the display title the page's h1 carries — and the body
  * states every consequence the board's remove contract actually has. Factory rows are deleted
  * immediately; the worktree's reclamation is queued; published branches and pull requests live
  * on GitHub and are not touched. No ceremony on top: the consequence IS the confirmation.
  */
-export function removeDialogTitle(command: string): string {
-    return `Remove \u201C${taskTitleFromCommand(command)}\u201D?`;
+export function removeDialogTitle(name: string): string {
+    return `Remove \u201C${name}\u201D?`;
 }
 
 export function removeDialogBody(runCount: number): string {
@@ -35,7 +34,7 @@ export function removeDialogBody(runCount: number): string {
  */
 export function TaskRemoveDialog({
     open,
-    command,
+    name,
     runCount,
     removing,
     error,
@@ -44,8 +43,8 @@ export function TaskRemoveDialog({
 }: {
     /** Controlled by the page — the menu item in the header opens this, never mutates. */
     open: boolean;
-    /** The thread's ROOT command; the title derives its first line from it. */
-    command: string;
+    /** The task's display title (`taskTitleText`) — the same name the page's h1 carries. */
+    name: string;
     /** The thread's whole length — every run the removal deletes. */
     runCount: number;
     /** The page's in-flight guard: the mutation is one request, and it cannot be dismissed. */
@@ -59,7 +58,7 @@ export function TaskRemoveDialog({
         <ConfirmDialog
             open={open}
             busy={removing}
-            title={removeDialogTitle(command)}
+            title={removeDialogTitle(name)}
             confirmClassName="chat-remove"
             confirmText={removing ? 'Removing\u2026' : 'Remove task'}
             onClose={onClose}

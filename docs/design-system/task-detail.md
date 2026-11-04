@@ -6,7 +6,7 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
 | Concern | Code | Test |
 | --- | --- | --- |
 | Page frame, grid, panel order, remove dialog | `web/src/pages/TaskDetailPage.tsx`, `web/src/panels/TaskDetail.tsx`, `web/src/components/TaskRemoveDialog.tsx` | `web/test/task-detail.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `e2e/task-detail.spec.ts` |
-| Head: state pill, metadata, action row | `web/src/panels/TaskHeader.tsx` | `web/test/task-header.render.test.tsx` |
+| Head: state pill, metadata, action row; the title is clamped to two lines (`task-heading`, `web/src/styles/primitives.css`) and renamed by its author or an admin | `web/src/panels/TaskHeader.tsx`, `web/src/components/TaskRenameDialog.tsx`, `web/src/task-title.ts` | `web/test/task-header.render.test.tsx`, `web/test/task-rename.dom.test.tsx` |
 | Outcome rail (interruptions included), and one run's exchange, output, close-phase progress strip, gates, published work | `web/src/panels/TaskOutcome.tsx`, `web/src/panels/TaskRun.tsx` | `web/test/task-outcome.render.test.tsx`, `web/test/task-run.render.test.tsx`, `e2e/task-detail.spec.ts` |
 | An agent question in its run's exchange: states, answer value, submit | `web/src/panels/TaskQuestion.tsx`, `web/src/task-question.ts`, `web/src/api/answer-question.ts` | `web/test/task-question.render.test.tsx`, `e2e/task-question.spec.ts` |
 | A connection requirement in the newest run's exchange: provider-generic block, bind, dismiss, read-only for anyone but the execution user | `web/src/panels/TaskConnect.tsx`, `web/src/api/connections.ts` | `web/test/task-connect.render.test.tsx`, `web/test/task-connect.dom.test.tsx`, `e2e/task-connect.spec.ts`, `e2e/task-connect-auth.spec.ts` |
@@ -26,7 +26,7 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
 Classes defined here: `task-layout`, `task-main`, `task-conversation`, `task-support`, `task-summary`, `task-clock`, `task-actions`,
 `task-action-help`, `task-closed`, `task-meta-line`, `task-opened-by`, `task-pill-wait`,
 `task-pill-done`, `task-outcome-body`, `task-outcome-label`, `task-history-item`, `task-branch`,
-`task-copy`, `task-verification-counts`, `task-remove-title`, `task-remove-actions`, `msg-user`,
+`task-copy`, `task-verification-counts`, `task-remove-title`, `task-remove-actions`, `task-rename-label`, `task-rename-field`, `msg-user`,
 `msg-meta`, `chat-exchange`, `chat-exit`, `chat-runtime`, `chat-activity`, `chat-gate-list`,
 `chat-output`, `chat-resume`, `chat-done`, `chat-stop`, `chat-remove`, `run-label`, `run-summary`,
 `run-output`, `run-history`, `run-close-phase`, `run-close-gates`, `run-well`, `run-publish`, `gate-output-wrap`, `question`,
