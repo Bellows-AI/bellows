@@ -84,7 +84,8 @@ test('Allow returns a code, the connected app lists, and Disconnect makes the ne
     page,
     request,
 }) => {
-    const name = `E2E Planner ${Date.now()}`;
+    // One unbroken token as well: a registered name need not have spaces to wrap at.
+    const name = `E2E Planner ${Date.now()} planner-for-a-registered-client-with-no-spaces-anywhere-x`;
     const { verifier, challenge } = pkce();
     const clientId = await register(page, name);
     await authorize(page, clientId, challenge);
