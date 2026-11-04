@@ -604,10 +604,12 @@
         font-family: var(--font-mono);
     }
 
-    /* A cell of running text (a scope list) wraps at word breaks instead of pushing the cells after it
-        off the panel. Qualified like the rule above: the cell base is (0,1,2) and sets `nowrap`. */
+    /* A cell of running text (an app name, a scope list) wraps instead of pushing the cells after it
+        off the panel; a token with no break opportunity breaks too. Qualified like the rule above:
+        the cell base is (0,1,2) and sets `nowrap`. */
     table.data td.cell-wrap {
         min-width: 16ch;
+        overflow-wrap: anywhere;
         white-space: normal;
     }
 
