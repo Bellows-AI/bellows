@@ -938,9 +938,9 @@ function stoppedGateResult(why, step, output) {
 }
 
 /**
- * A gate run that asked for a GitHub token and never got an answer — one that went unanswered, or is still
- * pending when the gate ends: whatever the gate then exited with, it ran without a token it needed. No
- * verdict, the next claim reruns it (the driver reads the flag).
+ * A gate run that asked for a GitHub token and never got an answer — one that went unanswered, was in
+ * flight when the gate was stopped, or is still pending when the gate ends: whatever the gate then exited
+ * with, it ran without a token it needed. No verdict, the next claim reruns it (the driver reads the flag).
  */
 function unansweredGateResult(flight, output) {
     if (!flight.unanswered && !flight.asking) return null;
@@ -984,6 +984,9 @@ function gateTick(run, step, flight) {
     if (!flight.why) {
         flight.why = gateStopReason(run, step, flight.startedAt);
         flight.stoppedAt = run.now();
+        // Decided at the stop, not at the settle: an ask the driver answers during the cancel grace never
+        // reaches the gate, so a gate stopped with an ask in flight ran without its answer.
+        if (flight.why && flight.asking) flight.unanswered = true;
         // Withdrawn before the loop took it: it never ran, and answers at once.
         if (flight.why && cancelGate(run, step.kind, step.id)) return stoppedGateResult(flight.why, step, '');
     }
@@ -994,12 +997,12 @@ function gateTick(run, step, flight) {
 }
 
 /**
- * Whether an ask stops trying, unanswered: the run settled, was stopped, or the ask's deadline passed.
- * Short of a settled run the ask stays unconfirmed, which the run's result reads as no verdict.
+ * Whether an ask stops trying, unanswered: the run settled or was stopped (the stop already marked an ask
+ * in flight, `gateTick`), or the ask's own deadline passed, which marks the run here.
  */
 function gateAskEnded(run, flight, left) {
-    if (flight.over) return true;
-    if (!flight.why && !run.stop.signal.aborted && left > 0) return false;
+    if (flight.over || flight.why || run.stop.signal.aborted) return true;
+    if (left > 0) return false;
     flight.unanswered = true;
     return true;
 }

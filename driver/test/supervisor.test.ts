@@ -205,9 +205,12 @@ interface Driver {
     seen: { method: string; url: string; authorization: string; body: Buffer; closed: boolean }[];
     /** Replaces the default relayed answer; the request has already been recorded in `seen`. */
     relayAnswer: ((response: ServerResponse, entry: Driver['seen'][number]) => void | Promise<void>) | null;
-    /** The gate steps each `POST /gate-token` named, and how the n-th ask (from 1) is answered: a status and body, or `drop`. */
+    /**
+     * The gate steps each `POST /gate-token` named, and how the n-th ask (from 1) is answered: a status and
+     * body, after `delayMs` when set, or `drop`.
+     */
     gateAsks: string[];
-    gateToken: (n: number) => { status: number; body: unknown } | 'drop';
+    gateToken: (n: number) => { status: number; body: unknown; delayMs?: number } | 'drop';
 }
 
 interface Report {
@@ -330,7 +333,9 @@ async function startDriver({
             if (request.method === 'POST' && request.url === GATE_TOKEN_PATH) {
                 driver.gateAsks.push((JSON.parse(await readBody(request)) as { step: string }).step);
                 const answer = driver.gateToken(driver.gateAsks.length);
-                return answer === 'drop' ? request.socket.destroy() : send(answer.status, answer.body);
+                if (answer === 'drop') return request.socket.destroy();
+                if (answer.delayMs) await new Promise((resolve) => setTimeout(resolve, answer.delayMs));
+                return send(answer.status, answer.body);
             }
             if (request.method === 'GET' && request.url === '/control') {
                 const cancel = driver.cancel.length > 0 ? { cancel: driver.cancel } : {};
@@ -2761,6 +2766,32 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
             driver.order(gateStep('gate-1', 'gh', { timeoutMs: 200 }));
             await until('the gate answer', () => driver.answers.has('gate-1'));
             expect(driver.gateAsks.length).toBeGreaterThan(0);
+            expect(driver.answers.get('gate-1')).toMatchObject({
+                exitCode: null,
+                timedOut: false,
+                tokenAskUnanswered: true,
+            });
+            supervised.agentExits(0);
+            await supervised.done;
+        }
+    );
+
+    it.each([
+        ['a token', { status: 200, body: { token: 'ghs_late', expiresAt: null } }],
+        ['a refusal', { status: 409, body: {} }],
+    ])(
+        'gives the run no verdict when %s arrives after the gate’s deadline, inside its cancel grace',
+        async (_what, late) => {
+            const driver = await startDriver();
+            // The gate's deadline passes at 200 ms with the ask in flight; the driver answers at 350 ms; the cancel
+            // grace (300 ms) settles the run at 500 ms, after the ask is no longer pending.
+            driver.gateToken = () => ({ ...late, delayMs: 350 });
+            const supervised = run(driver, { ...GATED, SUPERVISOR_GATE_ASK_MS: '5000' });
+            const gate = askingGate(supervised.box.gate);
+            gate.loop.ignoringCancel = true;
+            driver.order(gateStep('gate-1', 'gh', { timeoutMs: 200 }));
+            await until('the gate answer', () => driver.answers.has('gate-1'));
+            expect(gate.answer()).toBeNull();
             expect(driver.answers.get('gate-1')).toMatchObject({
                 exitCode: null,
                 timedOut: false,
