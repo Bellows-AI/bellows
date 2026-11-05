@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import type { EnvVarInput, EnvVarView } from '../src/api/useEnv.js';
 import { renderApp, stubFetch } from './dom.js';
+import { boardHandler, installationRepo, settingsBoard } from './settings-board.js';
 
 /**
  * The Core (organization) variables on /settings/organization, driven through the real route
@@ -18,12 +19,22 @@ interface EnvBoard {
     org: EnvVarView[];
     /** When set, a PUT is answered with this status and refusal, and nothing is stored. */
     refuse: { status: number; error: string } | null;
+    /** While true, a GET parks until released and answers with the rows as they were when it was asked. */
+    holdGets: boolean;
+    /** While true, a GET is answered 500. */
+    failGets: boolean;
+    parked: (() => void)[];
 }
 
 function envBoard(org: EnvVarView[] = []) {
-    const board: EnvBoard = { org, refuse: null };
+    const board: EnvBoard = { org, refuse: null, holdGets: false, failGets: false, parked: [] };
     const calls = stubFetch(({ method, url, body }) => {
-        if (method === 'GET' && url === '/api/env') return { org: board.org, workspace: [], repos: [] };
+        if (method === 'GET' && url === '/api/env') {
+            if (board.failGets) return { status: 500, body: { error: 'refresh failed' } };
+            const snapshot = { org: board.org, workspace: [], repos: [] };
+            if (!board.holdGets) return snapshot;
+            return new Promise((resolve) => board.parked.push(() => resolve(snapshot)));
+        }
         if (method === 'PUT' && url === '/api/env/org') {
             if (board.refuse) return { status: board.refuse.status, body: { error: board.refuse.error } };
             const { vars } = body as { vars: EnvVarInput[] };
@@ -272,5 +283,129 @@ describe('the Core variables summary and dialog', () => {
         const primaries = panel.querySelectorAll('button.primary');
         expect(primaries).toHaveLength(1);
         expect(primaries[0]!.textContent).toBe('Save changes');
+    });
+
+    // BEL-262 review: the dialog seeds from the last SAVED list, not from whatever the refetch has
+    // delivered, or the next whole-list PUT silently deletes the row that was just saved.
+    async function saveA(user: ReturnType<typeof userEvent.setup>, summary: ReturnType<typeof within>, name: string) {
+        const dialog = await openDialog(user, summary);
+        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
+        await user.type(dialog.getAllByLabelText(/^Variable \d+ name$/).at(-1)!, name);
+        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    }
+
+    it('reopens seeded with the saved row while the refresh is still held, and a second save keeps it', async () => {
+        const { board, puts } = envBoard();
+        const { user, summary } = await openCore();
+        board.holdGets = true;
+        await saveA(user, summary, 'E2E_FIRST');
+        await summary.findByText('E2E_FIRST');
+
+        const dialog = await openDialog(user, summary);
+        expect(dialog.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_FIRST');
+        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
+        await user.type(dialog.getByLabelText('Variable 2 name'), 'E2E_SECOND');
+        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
+        await waitFor(() => expect(puts()).toHaveLength(2));
+        expect((puts()[1]!.body as { vars: { name: string }[] }).vars.map((v) => v.name)).toEqual([
+            'E2E_FIRST',
+            'E2E_SECOND',
+        ]);
+    });
+
+    it('reopens seeded with the saved row when the refresh fails', async () => {
+        const { board } = envBoard();
+        const { user, summary } = await openCore();
+        board.failGets = true;
+        await saveA(user, summary, 'E2E_KEPT');
+        await summary.findByText('E2E_KEPT');
+        const dialog = await openDialog(user, summary);
+        expect(dialog.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_KEPT');
+    });
+
+    it('does not let a stale refresh that resolves after a later save overwrite it', async () => {
+        const { board } = envBoard();
+        const { user, summary } = await openCore();
+        board.holdGets = true;
+        await saveA(user, summary, 'E2E_ONE');
+        await summary.findByText('E2E_ONE');
+        // Parked GET #1 holds the list as it was after the first save (one row).
+        await saveA(user, summary, 'E2E_TWO');
+        await summary.findByText('2 variables', { exact: false });
+        // Release the stale answers: they carry the older snapshot, ignoring their abort.
+        // Newest answer first, the stale one last, so an unguarded read would win.
+        board.parked
+            .splice(0)
+            .reverse()
+            .forEach((release) => {
+                release();
+            });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(summary.getByText('2 variables', { exact: false })).toBeTruthy();
+        expect(summary.getByText('E2E_TWO')).toBeTruthy();
+    });
+});
+
+/**
+ * The same last-saved-list seed on the other two scopes (BEL-262 review): the workspace and the
+ * repository sections reopen with the row they just saved while the refetch is held.
+ */
+describe('the workspace and repository dialogs reopen from the last saved list', () => {
+    function scopedBoard(putUrl: string) {
+        let stored: EnvVarView[] = [];
+        let hold = false;
+        const handler = boardHandler(
+            settingsBoard({ installationRepos: [installationRepo('Bellows-AI', 'bellows.ai')] })
+        );
+        const calls = stubFetch((call) => {
+            if (call.method === 'GET' && call.url === '/api/env') {
+                const snapshot = {
+                    org: [],
+                    workspace: putUrl.endsWith('workspace') ? stored : [],
+                    repos: putUrl.endsWith('repo') ? [{ owner: 'Bellows-AI', name: 'bellows.ai', vars: stored }] : [],
+                };
+                return hold ? new Promise(() => {}) : snapshot;
+            }
+            if (call.method === 'PUT' && call.url === putUrl) {
+                const { vars } = call.body as { vars: EnvVarInput[] };
+                stored = vars.map((v) => ({ ...v, value: v.isSecret ? null : v.value, updatedAt: STORED_AT }));
+                return { vars: stored };
+            }
+            return handler(call);
+        });
+        return { calls, hold: () => (hold = true) };
+    }
+
+    async function saveThenReopen(summary: ReturnType<typeof within>, title: string, hold: () => void) {
+        const user = userEvent.setup();
+        await summary.findByText('No variables or secrets configured yet.');
+        hold();
+        await user.click(summary.getByRole('button', { name: 'Edit variables' }));
+        let dialog = within(await screen.findByRole('dialog', { name: title }));
+        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
+        await user.type(dialog.getByLabelText('Variable 1 name'), 'E2E_SAVED_FIRST');
+        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await summary.findByText('E2E_SAVED_FIRST');
+        await user.click(summary.getByRole('button', { name: 'Edit variables' }));
+        dialog = within(await screen.findByRole('dialog', { name: title }));
+        expect(dialog.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_SAVED_FIRST');
+    }
+
+    it('workspace', async () => {
+        const { hold } = scopedBoard('/api/env/workspace');
+        renderApp('/settings/workspace');
+        const heading = await screen.findByRole('heading', { name: 'My workspace' });
+        await saveThenReopen(within(heading.closest('section.panel') as HTMLElement), 'My workspace', hold);
+    });
+
+    it('repository', async () => {
+        const { hold } = scopedBoard('/api/env/repo');
+        const user = userEvent.setup();
+        renderApp('/settings/repos');
+        await user.click(await screen.findByRole('button', { name: 'Configure' }));
+        const heading = await screen.findByRole('heading', { name: 'Bellows-AI/bellows.ai' });
+        await saveThenReopen(within(heading.closest('section.panel') as HTMLElement), 'Bellows-AI/bellows.ai', hold);
     });
 });
