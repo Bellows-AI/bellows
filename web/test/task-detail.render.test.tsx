@@ -41,7 +41,7 @@ describe('TaskDetail — task activity (issues #339, #530)', () => {
         expect(html).toContain('No telemetry for this run.');
         expect(html).toContain('Open task statistics');
         // No chart in the activity panel itself — the page's other icons are not the chart's.
-        const panel = html.slice(html.indexOf('task-activity'), html.indexOf('<section class="panel task-follow-up'));
+        const panel = html.slice(html.indexOf('task-activity'), html.indexOf('<section class="task-follow-up"'));
         expect(panel).not.toContain('<svg');
     });
 });
@@ -148,7 +148,7 @@ describe('TaskDetail — the follow-up composer states', () => {
             label: 'your own task offers the composer',
             args: { jobs: [job({ author: me })], viewer },
             composer: true,
-            has: ['<h2>Follow up</h2>'],
+            has: ['Ask for a follow-up', 'id="follow-up-command"'],
         },
         {
             label: "another member's task names the author, and offers no composer",
@@ -210,7 +210,7 @@ describe('TaskDetail — the follow-up composer states', () => {
     it('disables the follow-up Send until text is typed', () => {
         const html = renderDetail({ jobs: [job()] });
         const LOOKBEHIND_CHARS = 200;
-        const at = html.lastIndexOf('>Send follow-up<');
+        const at = html.lastIndexOf('aria-label="Send follow-up"');
         const send = html.slice(at - LOOKBEHIND_CHARS, at);
         expect(send).toContain('disabled');
     });
@@ -495,7 +495,7 @@ describe('TaskDetail — who may follow up', () => {
 
     it("shows the composer to an admin on another member's task", () => {
         const html = renderDetail({ jobs: [job({ author: me })], viewer: admin });
-        expect(html).toContain('<h2>Follow up</h2>');
+        expect(html).toContain('id="follow-up-command"');
         expect(html).not.toContain('can continue this session');
     });
 
@@ -642,7 +642,9 @@ describe('TaskDetail — main column', () => {
             expect(order.every((at) => at >= 0)).toBe(true);
             expect(order).toEqual([...order].sort((a, b) => a - b));
         };
-        orderIn(main, ['Conversation', 'Follow up']);
+        orderIn(main, ['Conversation']);
+        // The follow-up input docks under the conversation, with no heading of its own.
+        expect(main.indexOf('<h2>Conversation</h2>')).toBeLessThan(main.indexOf('id="follow-up-command"'));
         orderIn(support, ['Services', 'Run history', 'Verification', 'Published work']);
         for (const heading of ['Run history', 'Verification', 'Services', 'Published work']) {
             expect(main).not.toContain(`<h2>${heading}</h2>`);
@@ -667,7 +669,7 @@ describe('TaskDetail — surface hierarchy (BEL-232)', () => {
         expect(classes('task-conversation')).not.toContain('panel');
         const conversation = html.slice(
             html.indexOf('task-conversation'),
-            html.indexOf('<section class="panel task-follow-up')
+            html.indexOf('<section class="task-follow-up"')
         );
         expect(conversation).not.toMatch(/class="([^"]* )?panel[ "]/);
         // The outcome rail stays a soft section.

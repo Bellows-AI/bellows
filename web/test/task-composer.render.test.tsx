@@ -198,7 +198,7 @@ describe('TaskComposer', () => {
     });
 });
 
-const START_RE = /<button type="button" class="primary composer-send"[^>]*aria-label="Start task"[^>]*>/;
+const START_RE = /<button type="button" class="primary chat-input-send"[^>]*aria-label="Start task"[^>]*>/;
 
 describe('TaskComposer — the prompt and the launch', () => {
     it('asks what the agent should do, and shows the example without prefilling it', () => {
@@ -207,11 +207,9 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).toContain('What should we work on?');
         expect(html).not.toContain('Include the outcome, relevant files or issue, and checks to run.');
         expect(html).not.toContain('composer-helper');
-        expect(html).toContain(
-            'placeholder="Example: Fix issue #123, update the affected tests, and run the relevant checks."'
-        );
+        expect(html).toContain('placeholder="/factory-fix TICKET-XXX"');
         // The example is the placeholder, never the value: an empty textarea carries no text.
-        expect(html).not.toContain('>Example: Fix issue #123');
+        expect(html).not.toContain('>/factory-fix TICKET-XXX');
     });
 
     it('starts against a selected, ready repository, saying nothing routine: the chips show what will run (#571)', () => {
@@ -219,16 +217,16 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).not.toContain('banner-bad');
         expect(html).not.toContain('banner-info');
         const start =
-            html.match(/<button type="button" class="primary composer-send"[^>]*aria-label="Start task"[^>]*>/)?.[0] ??
-            '';
+            html.match(
+                /<button type="button" class="primary chat-input-send"[^>]*aria-label="Start task"[^>]*>/
+            )?.[0] ?? '';
         expect(start).not.toContain('aria-describedby');
         expect(start).not.toContain('disabled');
     });
 
-    it('labels the launch and its shortcut, and the in-flight state too', () => {
+    it('labels the launch, and the in-flight state too', () => {
         const idle = renderComposer({});
         expect(idle).toMatch(START_RE);
-        expect(idle).toContain('<kbd');
         const busy = renderComposer({ sending: true });
         expect(busy.match(START_RE)?.[0]).toContain('aria-busy="true"');
         expect(busy).toContain('Starting the task…');
@@ -401,7 +399,7 @@ describe('the workflow parameter fields', () => {
 });
 
 describe('the redesigned composer (#280)', () => {
-    const START = /<button type="button" class="primary composer-send"[^>]*aria-label="Start task"[^>]*>/;
+    const START = /<button type="button" class="primary chat-input-send"[^>]*aria-label="Start task"[^>]*>/;
     const startButton = (html: string) => html.match(START)?.[0] ?? '';
 
     it('makes the prompt the one surface: no numbered steps, no secondary cards (#571)', () => {
@@ -413,7 +411,7 @@ describe('the redesigned composer (#280)', () => {
             expect(html).not.toContain(title);
         }
         expect(html.match(/class="panel /g) ?? []).toHaveLength(0);
-        expect(html.match(/class="composer-surface drop-zone"/g) ?? []).toHaveLength(1);
+        expect(html.match(/class="chat-input"/g) ?? []).toHaveLength(1);
         expect(html).toContain(
             '<label for="composer-prompt" class="composer-visually-hidden">What should the agent do?</label>'
         );
@@ -425,9 +423,10 @@ describe('the redesigned composer (#280)', () => {
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
         const order = [
-            'class="composer-surface drop-zone"',
+            'class="composer task-compose drop-zone"',
+            'class="chat-input"',
             '<textarea',
-            'class="composer-bar"',
+            'class="chat-input-bar"',
             'aria-label="Repository: acme/web"',
             'aria-label="Executor: main"',
             'aria-label="Reusable workflow: No workflow"',
@@ -445,9 +444,9 @@ describe('the redesigned composer (#280)', () => {
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] }],
         });
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(4);
-        expect(html.indexOf('id="composer-param-issue"')).toBeGreaterThan(html.indexOf('class="composer-bar"'));
+        expect(html.indexOf('id="composer-param-issue"')).toBeGreaterThan(html.indexOf('class="chat-input-bar"'));
         expect(html.match(/class="panel /g) ?? []).toHaveLength(0);
-        expect(html.match(/class="composer-surface drop-zone"/g) ?? []).toHaveLength(1);
+        expect(html.match(/class="chat-input"/g) ?? []).toHaveLength(1);
     });
 
     describe('the repository must be tracked and chosen', () => {
@@ -548,10 +547,10 @@ describe('the redesigned composer (#280)', () => {
         expect(start).toContain('M12 19V5');
     });
 
-    it('shows the shortcut hint beside an arrow-only Start', () => {
+    it('shows an arrow-only Start, with no shortcut hint drawn', () => {
         const html = renderComposer({});
-        expect(html).toContain('<kbd class="composer-hint"');
-        expect(html).toMatch(/Ctrl|⌘/);
+        expect(html).not.toContain('<kbd');
+        expect(html).not.toMatch(/Ctrl↵|⌘↵/);
         expect(html.match(START_RE)?.[0]).not.toContain('>Start task<');
         expect(html).not.toContain('>Start task</button>');
     });

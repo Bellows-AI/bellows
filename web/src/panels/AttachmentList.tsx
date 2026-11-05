@@ -12,17 +12,18 @@ export function sizeLabel(bytes: number): string {
     return `${bytes} B`;
 }
 
-const STATE_LABEL: Record<DraftAttachment['status'], string> = {
-    uploading: 'Uploading…',
-    done: 'Ready',
-    failed: 'Failed',
-};
+/** The upload's state, said to screen readers only: the square itself shows it. */
+function stateText(item: DraftAttachment): string {
+    if (item.status === 'failed') return `Failed: ${item.error ?? 'upload failed'}`;
+    return item.status === 'uploading' ? 'Uploading…' : 'Ready';
+}
 
 /**
- * The chosen files of a draft, one tile each in a wrapping row: a square thumbnail or a file
- * glyph, the name (truncated; whole in the tooltip), the size, the upload's state, and Remove
- * (and Retry once it failed). The server's refusal sits on the tile it refused, so the other
- * files stay as they were.
+ * The chosen files of a draft, one square tile each in a wrapping row: a spinner while the file
+ * uploads, then its thumbnail or a file glyph; a failed upload fills the square with a warning
+ * that retries on click. The name (and any refusal) is the tooltip and screen-reader text;
+ * Remove sits in the corner.
+ * The server's refusal sits on the tile it refused, so the other files stay as they were.
  */
 export function AttachmentChips({
     attachments,
@@ -42,38 +43,36 @@ export function AttachmentChips({
             {attachments.map((item) => (
                 <li
                     key={item.localId}
-                    className="attachment-chip"
+                    className="attachment-tile"
                     data-status={item.status}
                     data-kind={item.objectUrl === null ? 'file' : 'image'}
-                    title={`${item.file.name} · ${(item.meta?.mediaType ?? item.file.type) || 'file'}`}
+                    title={item.status === 'failed' ? `${item.file.name} · ${stateText(item)}` : item.file.name}
                 >
                     <span className="attachment-media">
-                        {item.objectUrl === null ? (
+                        {item.status === 'uploading' ? (
+                            <span className="attachment-spinner" aria-hidden="true" />
+                        ) : item.status === 'failed' ? (
+                            <button
+                                type="button"
+                                className="attachment-retry"
+                                disabled={locked}
+                                aria-label={`Retry ${item.file.name}`}
+                                onClick={() => onRetry(item.localId)}
+                            >
+                                <Icon name="alert-triangle" size={22} />
+                            </button>
+                        ) : item.objectUrl === null ? (
                             <Icon name="file" size={24} />
                         ) : (
                             <img className="attachment-thumb" src={item.objectUrl} alt="" />
                         )}
                     </span>
-                    <span className="attachment-body">
-                        <span className="attachment-name">{item.file.name}</span>
-                        <span className="attachment-meta">{sizeLabel(item.file.size)}</span>
-                        <span className="attachment-state" role={item.status === 'failed' ? 'alert' : undefined}>
-                            {item.status === 'failed'
-                                ? `${STATE_LABEL.failed}: ${item.error ?? 'upload failed'}`
-                                : STATE_LABEL[item.status]}
-                        </span>
+                    {/* Name and state are not drawn (the tooltip and the square carry them) but a
+                        screen reader still hears both. */}
+                    <span className="composer-visually-hidden">{item.file.name}</span>
+                    <span className="composer-visually-hidden" role={item.status === 'failed' ? 'alert' : undefined}>
+                        {stateText(item)}
                     </span>
-                    {item.status === 'failed' ? (
-                        <button
-                            type="button"
-                            className="attachment-action attachment-retry"
-                            disabled={locked}
-                            aria-label={`Retry ${item.file.name}`}
-                            onClick={() => onRetry(item.localId)}
-                        >
-                            Retry
-                        </button>
-                    ) : null}
                     <button
                         type="button"
                         className="attachment-action attachment-remove"

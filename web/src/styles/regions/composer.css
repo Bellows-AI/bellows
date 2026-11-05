@@ -8,20 +8,6 @@
         padding-top: 12px;
     }
 
-    /* The message textarea: the shared `field` skin carries the look; this only sizes it. */
-    .composer-input {
-        min-height: 64px;
-        resize: vertical;
-        width: 100%;
-    }
-
-    .composer-row {
-        align-items: center;
-        display: flex;
-        gap: 12px;
-        margin-top: 8px;
-    }
-
     /* A field's visible label, with an optional glyph. */
     .composer-label {
         align-items: center;
@@ -45,23 +31,23 @@
         padding: 2px 6px;
     }
 
-    .composer-row button.primary {
-        margin-left: auto;
-    }
-
-    /* The new-task page (issue 571): one prompt panel, with any restored-draft notice above it.
-       `.composer` above is the detail view's chat footer; the page variant drops its rule and
-       spacing. */
+    /* The new-task page (issue 571): the whole page is the drop zone, so it fills the main
+       column; `.composer` above is the detail view's chat footer, the page drops its rule. */
     .composer.task-compose {
         border-top: none;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
+        flex: 1;
         margin-top: 0;
+        min-height: 60vh;
         padding-top: 0;
     }
 
-    /* The new-task heading, centred above the one surface. */
+    .task-compose-body {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    /* The new-task heading, centred above the input. */
     .composer-heading {
         font-size: 20px;
         font-weight: 600;
@@ -69,25 +55,6 @@
         margin: 4px auto 0;
         max-width: var(--page-form);
         text-align: center;
-        width: 100%;
-    }
-
-    /* The one surface, the raised tier: the request on top, the chip-and-launch toolbar below, one
-       hairline, one radius and the soft float shadow (the chat-style input). It is the shared
-       composer surface (the follow-up composer reuses it): a neutral idle border that focus never
-       changes, so neither the border colour nor the box moves. The focus cue is the prompt's own
-       outline (below), never a second ring on the surface. */
-    .composer-surface {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        box-shadow: 0 2px 8px var(--shadow-float);
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        margin: 0 auto;
-        max-width: var(--page-form);
-        padding: 8px 12px 6px;
         width: 100%;
     }
 
@@ -102,37 +69,83 @@
         width: 1px;
     }
 
-    /* The request grows with its content down from about five lines and scrolls past half the
-       viewport; it wears no frame of its own, the surface is the frame. The docked follow-up
-       composer shares the recipe. */
-    .task-compose .composer-input,
-    .task-follow-up .composer-input {
-        background: transparent;
-        border: 0;
-        border-radius: var(--radius-md);
+    /* The one chat input (ChatInput.tsx), shared by the new-task page and the follow-up: the
+       files above, a bordered one-line field that grows, and the control row below. No surface
+       of its own — the field's border is the only frame. */
+    .chat-input {
+        display: flex;
+        flex-direction: column;
+        margin: 0 auto;
+        max-width: var(--page-form);
+        position: relative;
+        width: 100%;
+    }
+
+    .chat-input-field {
+        border-color: var(--line);
+        display: block;
         field-sizing: content;
-        font-size: 16px;
-        line-height: 24px;
+        line-height: 20px;
         max-height: 50vh;
-        min-height: 88px;
+        min-height: 0;
+        padding: 6px 10px;
         resize: none;
+        width: 100%;
     }
 
-    /* The prompt wears its own quiet ring: a 2px outline in the border's colour family instead of
-       the global accent ring, so keyboard focus stays discoverable on the focused element itself
-       without the loud frame. The chips keep the global ring. */
-    .task-compose .composer-input:focus-visible,
-    .task-follow-up .composer-input:focus-visible {
-        outline: 2px solid var(--line-strong);
-        outline-offset: 2px;
+    .chat-input-field:hover {
+        border-color: var(--line);
     }
 
-    /* An engine that cannot grow the field to its content gets room up front instead. */
-    @supports not (field-sizing: content) {
-        .task-compose .composer-input,
-        .task-follow-up .composer-input {
-            min-height: 160px;
-        }
+    /* Focus brightens the border a step instead of drawing the accent ring. The 1px outline sits
+       exactly on the border (offset -1px), so it reads as the brighter border while the keyboard
+       matrix still finds a ring on the focused element. */
+    .chat-input-field:focus,
+    .chat-input-field:focus-visible {
+        border-color: var(--line-strong);
+        outline: 1px solid var(--line-strong);
+        outline-offset: -1px;
+    }
+
+    .chat-input-bar {
+        align-items: center;
+        display: flex;
+        gap: 4px;
+        margin-top: 4px;
+    }
+
+    .chat-input-controls {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        min-width: 0;
+    }
+
+    .chat-input-end {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        justify-content: flex-end;
+        margin-left: auto;
+    }
+
+    /* Send: a small round arrow, the input's one filled control. */
+    .chat-input-send {
+        align-items: center;
+        border-radius: 50%;
+        display: inline-flex;
+        height: 24px;
+        justify-content: center;
+        min-height: 0;
+        padding: 0;
+        width: 24px;
+    }
+
+    .chat-input-send svg {
+        height: 14px;
+        width: 14px;
     }
 
     /* The request against the board's limit: shown only close to it, the stop lamp once over. */
@@ -215,24 +228,6 @@
         display: flex;
         flex-direction: column;
         gap: 12px;
-    }
-
-    /* The toolbar under the prompt: attach and the context chips at the start, the launch at the
-       far end. On a narrow screen the launch wraps below the chips. */
-    .composer-bar {
-        align-items: flex-start;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 16px;
-        justify-content: space-between;
-    }
-
-    .composer-toolbar {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        min-width: 0;
     }
 
     /* Repository, Executor and Workflow as borderless chips that wrap rather than overflow; the
@@ -373,36 +368,6 @@
         margin: 0;
     }
 
-    .composer-start {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        justify-content: flex-end;
-        margin-left: auto;
-    }
-
-    /* The Enter shortcut, a quiet hint beside the send arrow. */
-    .composer-hint {
-        background: transparent;
-        border: 0;
-        color: var(--ink-muted);
-        font-family: inherit;
-        font-size: 13px;
-        padding: 0;
-    }
-
-    /* Start: a round arrow button, the surface's one filled control. */
-    .composer-send {
-        align-items: center;
-        border-radius: 50%;
-        display: inline-flex;
-        height: 36px;
-        justify-content: center;
-        padding: 0;
-        width: 36px;
-    }
-
     .composer-blocker {
         color: var(--ink-muted);
         flex-basis: 100%;
@@ -433,12 +398,28 @@
     }
 
     /* ── attachments: the attach control, the drop overlay and one tile per file ── */
+    /* The paperclip: an icon button the size of the send arrow. */
     .attachment-add {
         align-items: center;
         background: transparent;
         border-color: transparent;
+        border-radius: 50%;
+        color: var(--ink-muted);
         display: inline-flex;
-        gap: 6px;
+        height: 24px;
+        justify-content: center;
+        min-height: 0;
+        padding: 0;
+        width: 24px;
+    }
+
+    .attachment-add:hover:not(:disabled) {
+        color: var(--ink);
+    }
+
+    .attachment-add svg {
+        height: 15px;
+        width: 15px;
     }
 
     /* A zone that takes dropped files; the overlay shows only while files are dragged over it. */
@@ -472,6 +453,11 @@
         padding: 0;
     }
 
+    /* In the chat input the draft's files sit above the field. */
+    .chat-input .attachment-list {
+        margin: 0 0 6px;
+    }
+
     /* In a task's history the list sits between two labelled blocks. */
     .attachment-list-history {
         margin-bottom: 16px;
@@ -487,10 +473,6 @@
         padding: 6px;
         position: relative;
         width: 112px;
-    }
-
-    .attachment-chip[data-status='failed'] {
-        border-color: var(--lamp-stop);
     }
 
     .attachment-media {
@@ -533,14 +515,6 @@
         overflow-wrap: anywhere;
     }
 
-    .attachment-chip[data-status='done'] .attachment-state {
-        opacity: 0.7;
-    }
-
-    .attachment-chip[data-status='failed'] .attachment-state {
-        color: var(--lamp-stop);
-    }
-
     .attachment-action {
         font-size: 12px;
         padding: 2px 8px;
@@ -563,15 +537,69 @@
         width: 22px;
     }
 
+    /* A draft's file: one square, no text. The spinner holds the square while it uploads; the
+       preview replaces it; a failure fills it with a warning that retries on click. */
+    .attachment-tile {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        position: relative;
+        width: 72px;
+    }
+
+    .attachment-tile[data-status='failed'] {
+        border-color: var(--lamp-stop);
+    }
+
+    .attachment-tile .attachment-remove {
+        height: 20px;
+        right: 4px;
+        top: 4px;
+        width: 20px;
+    }
+
+    .attachment-spinner {
+        animation: attachment-spin 0.8s linear infinite;
+        border: 2px solid var(--line-strong);
+        border-radius: 50%;
+        border-top-color: var(--accent);
+        height: 22px;
+        width: 22px;
+    }
+
+    @keyframes attachment-spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    .attachment-retry {
+        align-items: center;
+        background: var(--bad-wash);
+        border-radius: 0;
+        color: var(--lamp-stop);
+        display: flex;
+        height: 100%;
+        inset: 0;
+        justify-content: center;
+        min-height: 0;
+        padding: 0;
+        position: absolute;
+        width: 100%;
+    }
+
+    .attachment-retry:hover:not(:disabled) {
+        background: var(--bad-border);
+    }
+
     /* ── composer touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
-        .composer-start button,
-        .composer-row button,
+        .chat-input-bar button,
         .composer-param-input,
-        .composer-send,
+        .chat-input-send,
         .composer-notices-dismiss,
-        .attachment-add,
-        .attachment-action {
+        .attachment-chip .attachment-action {
             align-items: center;
             display: inline-flex;
             min-height: 44px;

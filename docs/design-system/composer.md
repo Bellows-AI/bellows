@@ -5,14 +5,15 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| One chat-style surface: prompt (no title field; the title derives from it), borderless chips with a note atop each listbox, round arrow Start, counter only near the limit, skeleton | `web/src/panels/TaskComposer.tsx`, `web/src/pages/TaskComposerPage.tsx` | `web/test/task-composer.render.test.tsx`, `web/test/styles.test.ts`, `e2e/composer.spec.ts` |
+| The new-task page: the chat input with the context chips in its control row (no title field; the title derives from it), a note atop each listbox, counter only near the limit, skeleton; the whole page is the drop zone | `web/src/panels/TaskComposer.tsx`, `web/src/pages/TaskComposerPage.tsx` | `web/test/task-composer.render.test.tsx`, `web/test/styles.test.ts`, `e2e/composer.spec.ts` |
 | Validation, blockers, readiness derivation | `web/src/task-composer.ts` | `web/test/task-composer-logic.test.ts` |
 | Draft persistence and restore | `web/src/use-composer-draft.ts` | `web/test/composer-draft.test.tsx` |
 | The shell's draft store: new-task fields and files, follow-up drafts per thread root, object-URL revocation | `web/src/composer-draft.tsx` | `web/test/composer-draft.test.tsx`, `web/test/composer-draft.dom.test.tsx` |
 | Upload client, limits, per-file state, submission key | `web/src/api/useAttachments.ts` | `web/test/task-composer.dom.test.tsx` |
-| Attach button and paste | `web/src/panels/AttachmentPicker.tsx` | `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
+| The chat input, shared by the new-task page and the follow-up: files above, a one-line bordered field that grows, a row with the paperclip, caller controls and the round send arrow | `web/src/panels/ChatInput.tsx` | `web/test/task-composer.render.test.tsx`, `web/test/task-run.render.test.tsx`, `web/test/styles.test.ts` |
+| Attach button (paperclip icon) and paste | `web/src/panels/AttachmentPicker.tsx` | `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | The drop zone: a region taking dropped files, with the "Drop files to attach" overlay | `web/src/panels/AttachmentDropZone.tsx` | `web/test/attachment-drop-zone.dom.test.tsx`, `e2e/composer.spec.ts`, `e2e/task-detail.spec.ts` |
-| One wrapping tile per file, composer and history (state, remove, retry, download) | `web/src/panels/AttachmentList.tsx` | `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
+| One wrapping tile per file: in a draft a square (spinner while uploading, then the preview; a failure is a ⚠ that retries; name in the tooltip; remove), in history a tile with name, size and download | `web/src/panels/AttachmentList.tsx` | `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | The follow-up composer's files and draft | `web/src/panels/TaskDetail.tsx` | `web/test/task-detail-follow-up.dom.test.tsx`, `e2e/task-detail.spec.ts` |
 | The base-branch chip: a pick-only combobox, debounced server-side search, "Load more" by cursor, an error row (never "no branches") | `web/src/components/BranchCombobox.tsx`, `web/src/api/useBranches.ts` | `web/test/branch-combobox.dom.test.tsx`, `e2e/composer.spec.ts` |
 | The prompt's `/` skill menu: built-ins and the repository's at the chosen branch; the picked `/name` stays in the text | `web/src/components/SlashSkillMenu.tsx`, `web/src/slash-skills.ts`, `web/src/api/useRepoSkills.ts` | `web/test/slash-skills.test.ts`, `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
@@ -28,18 +29,19 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
   (`400 UNKNOWN_REPO`) in `server/src/routes/jobs/job-handlers-worker.ts`,
   `server/test/routes.executor-lifecycle.test.ts`.
 
-`.composer-surface` is the reusable composer frame: `1px solid var(--line)` that focus never changes, so the border colour and the box never move. The focus cue is the prompt's own ring: `.composer-input:focus-visible` draws a 2px `--line-strong` outline (offset 2px) on the textarea itself, never on the surface, so the keyboard matrix finds a ring on the focused element and focused chips keep a single global ring. Reuse it, never restyle per composer. The page's heading stays; the empty-prompt state is silent (Start is simply disabled).
+`.chat-input` is the one chat input, reused by both composers, never restyled per composer. It has no surface of its own: the field (`.chat-input-field`) carries the only frame, `1px solid var(--line)`, and focus brightens that border to `--line-strong` instead of drawing a ring. The field starts one line high and grows with its text (`field-sizing: content`) up to half the viewport. The row below has no padding, sits 4px under the field, and holds the paperclip and the 24px round send arrow (44px on the compact shell). No shortcut hint is drawn; Ctrl/⌘+Enter still sends. The page's heading stays; the empty-prompt state is silent (Start is simply disabled).
 
-Classes defined here: `composer-row`, `composer-input`, `composer-label`, `composer-fields`,
+Classes defined here: `chat-input`, `chat-input-field`, `chat-input-bar`, `chat-input-controls`,
+`chat-input-end`, `chat-input-send`, `composer-label`, `composer-fields`,
 `composer-helper`, `composer-param-input`, `composer-param-error`, `composer-param-details`,
-`composer-heading`, `composer-surface`, `composer-visually-hidden`, `composer-bar`, `composer-toolbar`,
-`composer-start`, `composer-hint`, `composer-send`, `composer-blocker`, `composer-note`, `composer-counter`, `is-over`,
+`composer-heading`, `composer-visually-hidden`, `composer-blocker`, `composer-note`, `composer-counter`, `is-over`,
 `composer-context-item`, `composer-context-value`, `composer-branch`, `composer-branch-toggle`,
 `composer-branch-input`, `composer-branch-options`, `composer-branch-action`, `composer-branch-error`,
 `composer-skill-menu`, `composer-skill-option`, `composer-skill-name`, `composer-skill-description`,
 `composer-skill-source`, `composer-trigger-missing`,
 `composer-notices-body`, `composer-notices-dismiss`, `composer-skeleton-block`,
-`composer-skeleton-line`, `task-compose`, `attachment-add`, `attachment-list`, `attachment-chip`,
+`composer-skeleton-line`, `task-compose`, `task-compose-body`, `attachment-add`, `attachment-list`, `attachment-chip`,
+`attachment-tile`, `attachment-spinner`,
 `attachment-media`, `attachment-thumb`, `attachment-body`, `attachment-name`, `attachment-meta`, `attachment-state`,
 `attachment-action`, `attachment-retry`, `attachment-remove`, `attachment-download`,
 `attachment-list-history`, `drop-zone`, `is-dragging`, `drop-overlay`.

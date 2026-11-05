@@ -107,14 +107,12 @@ describe('Task detail: the conversation scrolls on its own, the follow-up compos
         expect(zone.contains(composer)).toBe(true);
     });
 
-    it('says the follow-up label and its helper as two separate elements', () => {
+    it('names the follow-up input by a hidden label, with no helper copy', () => {
         render(detail(followUpThread));
         const label = screen.getByText('Ask for a follow-up');
-        const helper = screen.getByText(/The agent continues the same task/);
         expect(label.tagName).toBe('LABEL');
-        expect(helper.tagName).toBe('P');
-        expect(label.contains(helper)).toBe(false);
-        expect(label.textContent).not.toContain('The agent continues');
+        expect(label.className).toBe('composer-visually-hidden');
+        expect(screen.queryByText(/The agent continues the same task/)).toBeNull();
     });
 
     it('keeps the reading position when output arrives to a reader scrolled up, and offers Jump to latest', async () => {

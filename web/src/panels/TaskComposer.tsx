@@ -5,8 +5,8 @@ import { useDownwardAnchor } from '../anchor.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
-import { AttachmentChips } from './AttachmentList.js';
-import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
+import { attachmentHandlers } from './AttachmentPicker.js';
+import { ChatInput, type ChatInputSend } from './ChatInput.js';
 import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from '../composer-draft.js';
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { BranchCombobox } from '../components/BranchCombobox.js';
@@ -26,7 +26,6 @@ import {
     paramValueMatches,
     repoReadiness,
     startBlocker,
-    submitShortcutHint,
     touchAll,
 } from '../task-composer.js';
 import { type ComposerDraft, type ComposerWorkflowOption, useComposerDraft } from '../use-composer-draft.js';
@@ -37,12 +36,8 @@ import {
     type ExecutorChoice,
 } from '../workspace/executors.js';
 
-/**
- * The prompt's placeholder example. The issue number travels as string parts because `123`
- * directly behind a hash scans as a hex color literal, and the stylesheet's color gate reads
- * every `.tsx` in the tree — the rendered copy stays exact.
- */
-const PROMPT_PLACEHOLDER = 'Example: Fix issue #' + '123, update the affected tests, and run the relevant checks.';
+/** The prompt's placeholder example: a skill invocation on a ticket. */
+const PROMPT_PLACEHOLDER = '/factory-fix TICKET-XXX';
 
 /** The ids Start's `aria-describedby` points at: the readiness banner, or the quiet status text. */
 const READINESS_ID = 'composer-readiness';
@@ -328,46 +323,27 @@ function ReadinessBanner({ blocker, workflow }: { blocker: StartBlocker | null; 
 }
 
 /**
- * The launch actions at the toolbar's far end: the round arrow Start and its shortcut, and quiet
- * status text for an empty prompt or a launch in flight. Start's `aria-describedby` names
- * whichever of that text or the readiness banner is saying why it is dark; a ready launch says
- * nothing — the chips already show what will run.
+ * The round arrow Start, and quiet status text for an empty prompt or a launch in flight.
+ * Start's `aria-describedby` names whichever of that text or the readiness banner is saying why
+ * it is dark; a ready launch says nothing — the chips already show what will run.
  */
-function ComposerLaunch({
-    blocker,
-    sending,
-    onStart,
-}: {
-    blocker: StartBlocker | null;
-    sending: boolean;
-    onStart: () => void;
-}) {
+function composerLaunch(
+    blocker: StartBlocker | null,
+    sending: boolean,
+    onStart: () => void
+): { send: ChatInputSend; status: ReactNode } {
     const tone = blockerTone(blocker);
     const describedBy = tone === 'quiet' ? BLOCKER_ID : tone === null ? undefined : READINESS_ID;
-    return (
-        <div className="composer-start">
-            <kbd className="composer-hint">
-                {submitShortcutHint(typeof navigator === 'undefined' ? undefined : navigator.platform)}
-            </kbd>
-            <button
-                type="button"
-                className="primary composer-send"
-                disabled={blocker !== null}
-                aria-busy={sending || undefined}
-                aria-describedby={describedBy}
-                aria-label="Start task"
-                onClick={onStart}
-            >
-                <Icon name="arrow-up" />
-            </button>
-            {/* Mounted even when silent — a live region can only announce a change it
-                survives — so the reason Start is dark reaches a screen reader the moment
-                it appears. */}
+    return {
+        send: { label: 'Start task', disabled: blocker !== null, busy: sending, describedBy, onSend: onStart },
+        // Mounted even when silent — a live region can only announce a change it survives — so
+        // the reason Start is dark reaches a screen reader the moment it appears.
+        status: (
             <span className="composer-blocker" id={BLOCKER_ID} role="status">
                 {describeQuietBlocker(blocker)}
             </span>
-        </div>
-    );
+        ),
+    };
 }
 
 /**
@@ -557,11 +533,13 @@ export function TaskComposer({
         return <ListPending loading="Loading repositories…" error={reposError} onRetry={onRetryRepos} />;
     }
 
+    const launch = composerLaunch(blocker, frozen, attemptStart);
     return (
-        <>
+        // The whole page takes dropped files, not only the input.
+        <AttachmentDropZone className="composer task-compose" accepts={() => limits !== null} onFiles={files.add}>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: the launch shortcut is a composer-wide keystroke surface — a member tabbed into any field of the guided form (prompt, selects, workflow inputs) presses Ctrl/⌘+Enter and gets exactly what the Start button would have given them, so the handler must sit above every control rather than on each one */}
             <div
-                className="composer task-compose"
+                className="task-compose-body"
                 onKeyDown={(e) => {
                     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) attemptStart();
                 }}
@@ -573,25 +551,36 @@ export function TaskComposer({
                 ) : null}
                 <RestoredNotices notices={composer.notices} onDismiss={composer.dismissNotices} />
                 <h2 className="composer-heading">What should we work on?</h2>
-                <AttachmentDropZone className="composer-surface" accepts={() => limits !== null} onFiles={files.add}>
-                    <label htmlFor={PROMPT_ID} className="composer-visually-hidden">
-                        What should the agent do?
-                    </label>
-                    <textarea
-                        id={PROMPT_ID}
-                        className="field composer-input"
-                        aria-describedby={nearLimit ? 'composer-prompt-count' : undefined}
-                        aria-invalid={promptTooLong || undefined}
-                        placeholder={PROMPT_PLACEHOLDER}
-                        value={state.draft}
-                        readOnly={frozen}
-                        {...dropAndPaste}
-                        {...slash.fieldProps}
-                        onChange={(e) => {
-                            update({ draft: e.target.value });
-                            slash.onTextChange(e.target);
-                        }}
-                    />
+                <ChatInput
+                    id={PROMPT_ID}
+                    label="What should the agent do?"
+                    placeholder={PROMPT_PLACEHOLDER}
+                    value={state.draft}
+                    readOnly={frozen}
+                    onChange={(e) => {
+                        update({ draft: e.target.value });
+                        slash.onTextChange(e.target);
+                    }}
+                    fieldProps={{
+                        'aria-describedby': nearLimit ? 'composer-prompt-count' : undefined,
+                        'aria-invalid': promptTooLong || undefined,
+                        ...dropAndPaste,
+                        ...slash.fieldProps,
+                    }}
+                    files={files}
+                    limits={limits}
+                    controls={
+                        <ComposerContextRow
+                            repos={repos}
+                            executors={executors}
+                            workflows={workflows}
+                            state={state}
+                            update={update}
+                        />
+                    }
+                    send={launch.send}
+                    status={launch.status}
+                >
                     {slash.menu === null ? null : <SlashSkillMenu {...slash.menu} />}
                     {nearLimit ? (
                         <p
@@ -601,31 +590,10 @@ export function TaskComposer({
                             {commandCount(state.draft)}
                         </p>
                     ) : null}
-                    <AttachmentChips
-                        attachments={files.attachments}
-                        onRemove={files.remove}
-                        onRetry={files.retry}
-                        locked={frozen}
-                    />
-                    <div className="composer-bar">
-                        <div className="composer-toolbar">
-                            {limits === null ? null : (
-                                <AttachmentPicker limits={limits} onPick={files.add} disabled={frozen} />
-                            )}
-                            <ComposerContextRow
-                                repos={repos}
-                                executors={executors}
-                                workflows={workflows}
-                                state={state}
-                                update={update}
-                            />
-                        </div>
-                        <ComposerLaunch blocker={blocker} sending={frozen} onStart={attemptStart} />
-                    </div>
-                    {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}
-                    <ReadinessBanner blocker={blocker} workflow={state.workflow} />
-                </AttachmentDropZone>
+                </ChatInput>
+                {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}
+                <ReadinessBanner blocker={blocker} workflow={state.workflow} />
             </div>
-        </>
+        </AttachmentDropZone>
     );
 }

@@ -196,9 +196,9 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.inbox-counts a',
     ],
     'styles/regions/composer.css': [
-        '.composer-start button',
+        '.chat-input-bar button',
         '.composer-param-input',
-        '.composer-send',
+        '.chat-input-send',
         '.composer-notices-dismiss',
     ],
     'styles/regions/task-detail.css': [
@@ -391,7 +391,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         const body = (selector: string) => rules(css).find(([prelude]) => prelude === selector)?.[1] ?? '';
         expect(body('.page')).toMatch(/max-width:\s*var\(--page-dense\)/);
         expect(body('.settings-content')).toMatch(/max-width:\s*var\(--page-standard\)/);
-        expect(body('.composer-surface')).toMatch(/max-width:\s*var\(--page-form\)/);
+        expect(body('.chat-input')).toMatch(/max-width:\s*var\(--page-form\)/);
         expect(body('.composer-heading')).toMatch(/max-width:\s*var\(--page-form\)/);
         const literal = [...stripComments(shippedCss()).matchAll(/^\s*max-width:\s*(\d+)px/gm)].filter(
             (m) => Number(m[1]) >= 600
@@ -663,27 +663,28 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(configured?.[1]).not.toContain('surface-raised');
     });
 
-    it('keeps the composer the one raised tier and its chips on the shared quiet trigger', () => {
+    it('draws the chat input with no surface: the field is the only frame, its chips on the shared quiet trigger', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         const all = rules(css);
         const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
-        expect(body('.composer-surface')).toMatch(/background:\s*var\(--surface-raised\)/);
-        expect(body('.composer-surface')).toMatch(/box-shadow:\s*0 \d+px \d+px var\(--shadow-float\)/);
-        expect(body('.composer-surface')).not.toMatch(/--line-strong/);
+        expect(body('.chat-input')).not.toMatch(/border|background|box-shadow|padding/);
+        expect(body('.chat-input-bar')).not.toMatch(/border|background|padding/);
+        expect(body('.chat-input-field')).toMatch(/border-color:\s*var\(--line\)/);
+        expect(body('.chat-input-field')).toMatch(/field-sizing:\s*content/);
         expect(body('.composer-context .select-trigger')).not.toMatch(/border|background/);
     });
 
-    it('focus on the composer surface never swaps its border or resizes it (BEL-261; not the RED, see the e2e)', () => {
+    it('focus on the chat input brightens its border and never resizes it (BEL-261; not the RED, see the e2e)', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         const focusRules = rules(css).filter(
-            ([prelude]) => /:focus(-within|-visible)?\b/.test(prelude) && /composer-(surface|input)/.test(prelude)
+            ([prelude]) => /:focus(-within|-visible)?\b/.test(prelude) && /chat-input/.test(prelude)
         );
         expect(focusRules.length).toBeGreaterThan(0);
-        for (const [, declarations] of focusRules)
-            expect(declarations).not.toMatch(/border|padding|margin|width|height/);
-        expect(rules(css).find(([p]) => p.trim() === '.composer-surface')?.[1]).toMatch(
-            /border:\s*1px solid var\(--line\)/
-        );
+        for (const [, declarations] of focusRules) {
+            // Only the colour moves: no width, padding or size change, so the box never jumps.
+            expect(declarations).not.toMatch(/border(-width)?:|padding|margin|width|height/);
+            expect(declarations).toMatch(/border-color:\s*var\(--line-strong\)/);
+        }
     });
 
     it('task detail: the conversation is the one scroll region, the composer docks under it (BEL-263)', () => {
@@ -700,19 +701,15 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.task-follow-up')).not.toMatch(/overflow/);
     });
 
-    it('the follow-up textarea shares the composer textarea recipe, not a copy (BEL-263)', () => {
+    it('both composers share one chat input recipe, not a copy per composer (BEL-263)', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
-        const shared = rules(css).find(([p]) => /\.task-follow-up \.composer-input\b/.test(p) && !/:focus/.test(p));
-        expect(shared?.[0]).toContain('.task-compose .composer-input');
-        expect(shared?.[1]).toMatch(/border:\s*0/);
-        expect(shared?.[1]).toMatch(/field-sizing:\s*content/);
-        expect(shared?.[1]).toMatch(/resize:\s*none/);
-        expect(shared?.[1]).toMatch(/max-height/);
-        // Focus shares the composer's quiet ring on the textarea itself: a visible outline, so the
-        // keyboard matrix finds a ring on the focused element (BEL-266), never `outline: none`.
-        const focus = rules(css).find(([p]) => /\.task-follow-up \.composer-input:focus-visible/.test(p));
-        expect(focus?.[0]).toContain('.task-compose .composer-input:focus-visible');
-        expect(focus?.[1]).toMatch(/outline:\s*2px solid var\(--line-strong\)/);
+        // No composer restyles the shared input: no rule reaches into it from either page.
+        const perComposer = rules(css).filter(([p]) => /\.(task-compose|task-follow-up)\b[^,{]*\.chat-input/.test(p));
+        expect(perComposer).toEqual([]);
+        // Focus keeps a visible ring on the field itself (BEL-266), drawn on the border, never `outline: none`.
+        const focus = rules(css).find(([p]) => /\.chat-input-field:focus-visible/.test(p));
+        expect(focus?.[1]).toMatch(/outline:\s*1px solid var\(--line-strong\)/);
+        expect(focus?.[1]).toMatch(/outline-offset:\s*-1px/);
         expect(focus?.[1]).not.toMatch(/outline:\s*none/);
     });
 

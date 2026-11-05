@@ -9,8 +9,8 @@ import { RelativeTime } from '../components/RelativeTime.js';
 import { endedOnQuestion, type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
 import { useStickToBottom } from '../use-stick-to-bottom.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
-import { AttachmentChips } from './AttachmentList.js';
-import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
+import { attachmentHandlers } from './AttachmentPicker.js';
+import { ChatInput } from './ChatInput.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
@@ -206,20 +206,13 @@ function FollowUpComposer({
     };
     return (
         <div className="composer">
-            <div className="composer-intro">
-                <label className="composer-label" htmlFor={FOLLOW_UP_INPUT_ID}>
-                    Ask for a follow-up
-                </label>
-                <p className="composer-label">The agent continues the same task, checkout, executor, and session.</p>
-            </div>
             {error !== null ? <p className="status">{error}</p> : null}
-            <textarea
+            <ChatInput
                 id={FOLLOW_UP_INPUT_ID}
-                className="field composer-input"
+                label="Ask for a follow-up"
                 placeholder="Describe the adjustment…"
                 value={draft}
                 readOnly={frozen}
-                {...dropAndPaste}
                 onChange={(e) =>
                     draftStore.updateFollowUp(rootId, (current) => ({
                         ...current,
@@ -227,31 +220,31 @@ function FollowUpComposer({
                         submissionKey: null,
                     }))
                 }
-                onKeyDown={(e) => {
-                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
+                fieldProps={{
+                    ...dropAndPaste,
+                    // Ctrl/⌘+Enter walks the same guarded path the arrow takes.
+                    onKeyDown: (e) => {
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
+                    },
                 }}
+                files={files}
+                limits={limits}
+                send={{
+                    label: frozen ? 'Sending…' : 'Send follow-up',
+                    disabled: blocked,
+                    busy: frozen,
+                    onSend: () => void send(),
+                }}
+                status={
+                    <span className="composer-blocker" role="status">
+                        {files.blocker === null
+                            ? ''
+                            : files.blocker === 'uploading'
+                              ? 'Wait for the files to finish uploading.'
+                              : 'Remove or retry the failed files to continue.'}
+                    </span>
+                }
             />
-            <AttachmentChips
-                attachments={files.attachments}
-                onRemove={files.remove}
-                onRetry={files.retry}
-                locked={frozen}
-            />
-            <div className="composer-row">
-                {limits === null ? null : <AttachmentPicker limits={limits} onPick={files.add} disabled={frozen} />}
-                {/* The shortcut is written down, and it is the same guarded path the button takes. */}
-                <span className="composer-label">Ctrl/⌘ + Enter</span>
-                <button type="button" className="primary" disabled={blocked} onClick={() => void send()}>
-                    {frozen ? 'Sending…' : 'Send follow-up'}
-                </button>
-            </div>
-            {files.blocker === null ? null : (
-                <p className="composer-label" role="status">
-                    {files.blocker === 'uploading'
-                        ? 'Wait for the files to finish uploading.'
-                        : 'Remove or retry the failed files to continue.'}
-                </p>
-            )}
         </div>
     );
 }
@@ -314,10 +307,7 @@ function FollowUp({
     }
     if (body === null) return null;
     return (
-        <section className="panel task-follow-up composer-surface">
-            <div className="panel-head">
-                <h2>Follow up</h2>
-            </div>
+        <section className="task-follow-up" aria-label="Follow up">
             {body}
         </section>
     );
