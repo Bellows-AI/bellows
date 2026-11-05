@@ -12,7 +12,7 @@ import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
 import { takeoverBoundMs } from '../supervisor-plan.js';
 import type { JobState } from './loop-attempt.js';
-import { askGithubToken } from './loop-github.js';
+import { askGithubToken, createGateTokenRelay } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay } from './loop-review.js';
@@ -272,6 +272,7 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
             createReviewRelay(rt, job, state)
         );
         attachConnection({ rt, job, state }, token);
+        gates.server.attachGateToken(token, createGateTokenRelay(rt, job, state));
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);

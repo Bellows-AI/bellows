@@ -306,6 +306,57 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
         expect(busy.calls).toHaveLength(3);
     });
 
+    it('githubGrant answers the token with its expiry, and a confirmed no as refused', async () => {
+        const granted = recorder(() =>
+            Response.json({ token: 'ghs_fresh', expiresAt: '2026-10-16T13:00:00.000Z' }, { status: 200 })
+        );
+        expect(await boardOn(granted.fetch).githubGrant(job, AbortSignal.timeout(5_000))).toEqual({
+            kind: 'token',
+            token: 'ghs_fresh',
+            expiresAt: '2026-10-16T13:00:00.000Z',
+        });
+        const noExpiry = recorder(() => Response.json({ token: 'ghs_x' }, { status: 200 }));
+        expect(await boardOn(noExpiry.fetch).githubGrant(job, AbortSignal.timeout(5_000))).toEqual({
+            kind: 'token',
+            token: 'ghs_x',
+            expiresAt: null,
+        });
+        for (const status of [403, 409]) {
+            const answered = recorder(() => Response.json({}, { status }));
+            expect(await boardOn(answered.fetch).githubGrant(job, AbortSignal.timeout(5_000))).toEqual({
+                kind: 'refused',
+            });
+            expect(answered.calls).toHaveLength(1);
+        }
+    });
+
+    it('githubGrant retries a board that did not answer until its deadline, then is unanswered, never refused', async () => {
+        for (const respond of [
+            () => Response.json({}, { status: 503 }),
+            () => Response.json({}, { status: 429 }),
+            () => Response.json({ token: '' }, { status: 200 }),
+            () => new Response('not json', { status: 200 }),
+        ]) {
+            const busy = recorder(respond);
+            const started = Date.now();
+            expect(await boardOn(busy.fetch).githubGrant(job, AbortSignal.timeout(900))).toEqual({
+                kind: 'unanswered',
+            });
+            expect(Date.now() - started).toBeLessThan(2_500);
+            expect(busy.calls.length).toBeGreaterThan(1);
+        }
+        const down = recorder(() => {
+            throw new Error('board unreachable');
+        });
+        expect(await boardOn(down.fetch).githubGrant(job, AbortSignal.timeout(600))).toEqual({ kind: 'unanswered' });
+    });
+
+    it('githubGrant stops asking at once for a signal that is already aborted', async () => {
+        const never = recorder(() => Response.json({ token: 'ghs_x' }, { status: 200 }));
+        expect(await boardOn(never.fetch).githubGrant(job, AbortSignal.abort())).toEqual({ kind: 'unanswered' });
+        expect(never.calls).toHaveLength(0);
+    });
+
     it('never retries an answer: a refused attempt or no App is asked once', async () => {
         for (const status of [403, 409]) {
             const answered = recorder(() => Response.json({}, { status }));

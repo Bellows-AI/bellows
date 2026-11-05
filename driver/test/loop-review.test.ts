@@ -43,6 +43,7 @@ function opened() {
                 },
                 attachCheckpoint: () => {},
                 attachConnection: () => {},
+                attachGateToken: () => {},
             },
             advertiseUrl: (port: number) => `http://driver:${port}`,
         },

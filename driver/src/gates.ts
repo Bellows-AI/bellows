@@ -16,6 +16,7 @@ import {
 
 import type { GateRunNote } from './timeout-note.js';
 import type { ConnectionRelay } from './connection-control.js';
+import type { GateTokenRelay } from './gate-token-control.js';
 import type { InputDelivery } from './input-control.js';
 import { attachersOf, createControlChannel } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
@@ -426,6 +427,8 @@ export interface GateServer {
     attachInputs(token: string, name: string, delivery: InputDelivery): void;
     /** Gives an open control token the relay of its agent's connection ask. */
     attachConnection(token: string, connection: ConnectionRelay): void;
+    /** Gives an open control token the relay of its supervisor's gate token ask (`POST /gate-token`). */
+    attachGateToken(token: string, gateToken: GateTokenRelay): void;
     /**
      * Settles a pending question on an open control token: an answer the board recorded, or an
      * answer arriving. False — and nothing changes — for an unknown token or id and a question

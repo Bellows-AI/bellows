@@ -608,3 +608,44 @@ describe('the step broker observer (issue #831)', () => {
         expect(seen).toEqual([]);
     });
 });
+
+describe('the step broker holdsGate (BEL-258)', () => {
+    const gate = (id: string) => step(id, { kind: 'gate' });
+
+    it('is true only for a pulled, unsettled gate step', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        expect(broker.holdsGate('unknown', 'g1')).toBe(false);
+        const answered = broker.submit('t', gate('g1'));
+        expect(broker.holdsGate('t', 'g1')).toBe(false);
+        expect(await broker.next('t', 0, never)).toMatchObject({ id: 'g1' });
+        expect(broker.holdsGate('t', 'g1')).toBe(true);
+        expect(broker.holdsGate('t', 'other')).toBe(false);
+        broker.settle('t', 'g1', 'i-1', result());
+        await answered;
+        expect(broker.holdsGate('t', 'g1')).toBe(false);
+    });
+
+    it('is false for a pulled step of another kind', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        void broker.submit('t', step('p1'));
+        await broker.next('t', 0, never);
+        expect(broker.holdsGate('t', 'p1')).toBe(false);
+    });
+
+    it('is false after a queued step is cancelled and after the group is released', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        const queued = broker.submit('t', gate('g1'));
+        queued.catch(() => undefined);
+        broker.cancel('t', 'g1');
+        expect(broker.holdsGate('t', 'g1')).toBe(false);
+        const pulled = broker.submit('t', gate('g2'));
+        pulled.catch(() => undefined);
+        await broker.next('t', 0, never);
+        expect(broker.holdsGate('t', 'g2')).toBe(true);
+        broker.release('t');
+        expect(broker.holdsGate('t', 'g2')).toBe(false);
+    });
+});

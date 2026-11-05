@@ -312,6 +312,8 @@ export function finalReportOf(log: string): FinalReport | null {
 /** The routes a supervisor reaches the driver's control endpoint by, beside `GET /control`. */
 export const STEP_PATH = '/step';
 export const REPORT_PATH = '/report';
+/** `POST /gate-token {step}`: a running gate step's GitHub token ask, relayed by the supervisor (BEL-258). */
+export const GATE_TOKEN_PATH = '/gate-token';
 
 /**
  * How long past its own timeout the driver waits for a step's answer before it counts the answer
