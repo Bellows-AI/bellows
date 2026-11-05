@@ -937,15 +937,30 @@ function stoppedGateResult(why, step, output) {
     };
 }
 
+/**
+ * A gate run that asked for a GitHub token and never got an answer — one that went unanswered, or is still
+ * pending when the gate ends: whatever the gate then exited with, it ran without a token it needed. No
+ * verdict, the next claim reruns it (the driver reads the flag).
+ */
+function unansweredGateResult(flight, output) {
+    if (!flight.unanswered && !flight.asking) return null;
+    const result = stepResult(null, output, 'a GitHub token ask went unanswered: no verdict');
+    return { result: { ...result, tokenAskUnanswered: true }, interrupted: false };
+}
+
+/** A stopped gate's result: a deadline that passed while an ask went unanswered is no verdict, not a timeout. */
+function stoppedGateRunResult(flight, step, output) {
+    return (
+        (flight.why === 'deadline' && unansweredGateResult(flight, output)) ||
+        stoppedGateResult(flight.why, step, output)
+    );
+}
+
 /** The loop's answer to a request: a stopped gate's (its own output kept), or the gate's own exit. */
 function answeredGateResult(flight, step, answer) {
-    if (flight.why) return stoppedGateResult(flight.why, step, answer.output);
-    // A GitHub token ask the gate made went unanswered: whatever the gate then exited with, it ran
-    // without a token it needed. No verdict, the next claim reruns it (the driver reads the flag).
-    if (flight.unanswered) {
-        const result = stepResult(null, answer.output, 'a GitHub token ask went unanswered: no verdict');
-        return { result: { ...result, tokenAskUnanswered: true }, interrupted: false };
-    }
+    if (flight.why) return stoppedGateRunResult(flight, step, answer.output);
+    const unanswered = unansweredGateResult(flight, answer.output);
+    if (unanswered) return unanswered;
     const lost =
         answer.exitCode === null ? `the ${step.kind} container lost the request mid-run: it answered no exit` : '';
     return { result: stepResult(answer.exitCode, answer.output, lost), interrupted: false };
@@ -973,9 +988,20 @@ function gateTick(run, step, flight) {
         if (flight.why && cancelGate(run, step.kind, step.id)) return stoppedGateResult(flight.why, step, '');
     }
     if (flight.why && run.now() - flight.stoppedAt >= run.settings.gateCancelMs) {
-        return stoppedGateResult(flight.why, step, '');
+        return stoppedGateRunResult(flight, step, '');
     }
     return gateSilentMs(run, step.kind, flight.startedAt) > run.settings.gateLostMs ? lostGateResult(run, step) : null;
+}
+
+/**
+ * Whether an ask stops trying, unanswered: the run settled, was stopped, or the ask's deadline passed.
+ * Short of a settled run the ask stays unconfirmed, which the run's result reads as no verdict.
+ */
+function gateAskEnded(run, flight, left) {
+    if (flight.over) return true;
+    if (!flight.why && !run.stop.signal.aborted && left > 0) return false;
+    flight.unanswered = true;
+    return true;
 }
 
 /**
@@ -988,11 +1014,7 @@ async function fetchGateToken(run, step, flight) {
     const deadline = run.now() + run.settings.gateAskMs;
     for (;;) {
         const left = deadline - run.now();
-        if (flight.over || flight.why || run.stop.signal.aborted) return { none: 'unanswered' };
-        if (left <= 0) {
-            flight.unanswered = true;
-            return { none: 'unanswered' };
-        }
+        if (gateAskEnded(run, flight, left)) return { none: 'unanswered' };
         const answer = await ask(run, 'POST', GATE_TOKEN_PATH, {
             body: { step: step.id },
             holdMs: left,

@@ -2750,6 +2750,27 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
         }
     );
 
+    it.each([false, true])(
+        'gives the run no verdict when the gate’s deadline passes with an ask still unanswered (loop ignores the cancel: %s)',
+        async (ignoringCancel) => {
+            const driver = await startDriver();
+            driver.gateToken = () => 'drop';
+            const supervised = run(driver, { ...GATED, SUPERVISOR_GATE_ASK_MS: '5000' });
+            const gate = askingGate(supervised.box.gate);
+            gate.loop.ignoringCancel = ignoringCancel;
+            driver.order(gateStep('gate-1', 'gh', { timeoutMs: 200 }));
+            await until('the gate answer', () => driver.answers.has('gate-1'));
+            expect(driver.gateAsks.length).toBeGreaterThan(0);
+            expect(driver.answers.get('gate-1')).toMatchObject({
+                exitCode: null,
+                timedOut: false,
+                tokenAskUnanswered: true,
+            });
+            supervised.agentExits(0);
+            await supervised.done;
+        }
+    );
+
     it('answers no ask after the driver cancelled the step', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
