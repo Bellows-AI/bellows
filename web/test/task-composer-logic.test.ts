@@ -20,7 +20,6 @@ import {
     paramsComplete,
     repoReadiness,
     startBlocker,
-    submitShortcutHint,
     touchAll,
     valuesForWorkflow,
 } from '../src/task-composer.js';
@@ -607,14 +606,5 @@ describe('commandNearLimit — the counter shows only close to the board limit',
         expect(commandNearLimit('x'.repeat(Math.floor(COMMAND_LIMIT * 0.9) - 1))).toBe(false);
         expect(commandNearLimit('x'.repeat(Math.ceil(COMMAND_LIMIT * 0.9)))).toBe(true);
         expect(commandNearLimit('x'.repeat(COMMAND_LIMIT + 1))).toBe(true);
-    });
-});
-
-describe('submitShortcutHint — the Enter shortcut named by platform', () => {
-    it('says ⌘↵ on Apple platforms and Ctrl↵ elsewhere, and without a navigator', () => {
-        expect(submitShortcutHint('MacIntel')).toBe('⌘↵');
-        expect(submitShortcutHint('iPhone')).toBe('⌘↵');
-        expect(submitShortcutHint('Win32')).toBe('Ctrl↵');
-        expect(submitShortcutHint(undefined)).toBe('Ctrl↵');
     });
 });

@@ -23,7 +23,7 @@ export function AttachmentPicker({
     return (
         <>
             <button type="button" className="attachment-add" disabled={disabled} onClick={() => input.current?.click()}>
-                <Icon name="plus" />
+                <Icon name="paperclip" />
                 <span className="composer-visually-hidden">Attach files</span>
             </button>
             <input

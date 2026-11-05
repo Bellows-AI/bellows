@@ -387,18 +387,24 @@ describe('TaskRun — questions (issue #534)', () => {
 });
 
 describe('follow-up composer', () => {
-    it('labels the composer Ask for a follow-up, with its helper and the shortcut visible', () => {
+    it('is the shared chat input: a hidden label, a one-line field, no helper copy, heading or shortcut hint', () => {
         const html = renderDetail({ jobs: [job()] });
-        expect(html).toContain('Ask for a follow-up');
-        expect(html).toContain('The agent continues the same task, checkout, executor, and session.');
-        expect(html).toContain('Ctrl/⌘ + Enter');
-        expect(html).toMatch(/<label[^>]*for="follow-up-command"/);
-        expect(html).toContain('id="follow-up-command"');
+        expect(html).toMatch(
+            /<label for="follow-up-command" class="composer-visually-hidden">Ask for a follow-up<\/label>/
+        );
+        expect(html).toMatch(/<textarea id="follow-up-command" class="field chat-input-field" rows="1"/);
+        expect(html).toContain('class="chat-input"');
+        expect(html).not.toContain('The agent continues the same task');
+        expect(html).not.toContain('<h2>Follow up</h2>');
+        expect(html).not.toContain('Ctrl/⌘ + Enter');
     });
 
     it('carries the placeholder and the send copy, including the sending state', () => {
         expect(renderDetail({ jobs: [job()] })).toContain('Describe the adjustment…');
-        expect(renderDetail({ jobs: [job()] })).toContain('Send follow-up');
+        // Send is the round arrow only: its words are the accessible name.
+        expect(renderDetail({ jobs: [job()] })).toMatch(
+            /class="primary chat-input-send"[^>]*aria-label="Send follow-up"/
+        );
         expect(renderDetail({ jobs: [job()], sending: true })).toContain('Sending…');
     });
 

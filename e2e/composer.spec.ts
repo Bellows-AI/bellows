@@ -103,7 +103,7 @@ test.describe('the guided task composer', () => {
         await page.setViewportSize({ width: 390, height: 800 });
         await page.goto('/tasks/new');
         await expect(page.getByRole('button', { name: 'Start task' })).toBeVisible();
-        await expect(page.locator('.composer-surface')).toBeVisible();
+        await expect(page.locator('.chat-input')).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await page.screenshot({ path: `${SHOTS}/composer-390.png`, fullPage: true });
     });
@@ -179,14 +179,14 @@ test.describe('the guided task composer', () => {
     });
 
     for (const width of [1440, 390] as const) {
-        test(`at ${width} wide, focusing the prompt changes neither the surface border colour nor its box (BEL-261)`, async ({
+        test(`at ${width} wide, focusing the prompt brightens its border without moving any box (BEL-261)`, async ({
             page,
         }) => {
             await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
             await page.goto('/tasks/new');
             const prompt = page.getByLabel('What should the agent do?');
             await expect(prompt).toBeVisible();
-            const surface = page.locator('.composer-surface');
+            const surface = page.locator('.chat-input');
             const read = (target: typeof surface) =>
                 target.evaluate((el) => {
                     const box = el.getBoundingClientRect();
@@ -206,11 +206,11 @@ test.describe('the guided task composer', () => {
             await page.screenshot({ path: `${SHOTS}/composer-compact-focused-${width}.png` });
 
             expect(focused.surface.box).toEqual(idle.surface.box);
-            expect(focused.surface.borderColor).toBe(idle.surface.borderColor);
-            expect(focused.surface.borderWidth).toBe(idle.surface.borderWidth);
             expect(focused.prompt.box).toEqual(idle.prompt.box);
-            // The cue is still there, on the focused prompt itself (the keyboard matrix reads the
-            // focused element's own outline): a visible outline, not a colour swap on the border.
+            expect(focused.prompt.borderWidth).toBe(idle.prompt.borderWidth);
+            // The cue is the field's own border, a step brighter; a 1px outline drawn on that
+            // border keeps a ring on the focused element for the keyboard matrix (BEL-266).
+            expect(focused.prompt.borderColor).not.toBe(idle.prompt.borderColor);
             expect(focused.prompt.outlineStyle).toBe('solid');
             expect(idle.prompt.outlineStyle).toBe('none');
             expect(focused.surface.outlineStyle).toBe('none');
@@ -464,7 +464,7 @@ test.describe('attachments in the composer', () => {
             const data = new DataTransfer();
             data.items.add(new File(['x'], 'dropped.txt', { type: 'text/plain' }));
             document
-                .querySelector('.composer-surface')!
+                .querySelector('.chat-input')!
                 .dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
         });
         await expect(chips(page).getByText('dropped.txt')).toBeVisible();
@@ -517,14 +517,15 @@ test.describe('attachments in the composer', () => {
         await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
     });
 
-    test('a drop anywhere on the card, not only the text field, attaches; the overlay shows while dragging', async ({
+    test('a drop anywhere on the page, not only the input, attaches; the overlay shows while dragging', async ({
         page,
     }) => {
         await stubAttachments(page);
         await page.goto('/tasks/new');
-        const card = page.locator('.composer-surface');
-        const overlay = card.getByText('Drop files to attach');
-        const label = page.getByText('What should the agent do?', { exact: true });
+        const zone = page.locator('.task-compose');
+        const overlay = zone.getByText('Drop files to attach');
+        // The page heading sits outside the input: a drop there still attaches.
+        const label = page.getByText('What should we work on?', { exact: true });
         await expect(overlay).toHaveCount(0);
         await dragFiles(label, 'dragenter', ['card.txt']);
         await expect(overlay).toBeVisible();

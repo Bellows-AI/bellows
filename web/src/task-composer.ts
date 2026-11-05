@@ -280,11 +280,6 @@ export function commandNearLimit(draft: string): boolean {
     return draft.length >= COMMAND_LIMIT * COUNTER_SHOWN_FROM;
 }
 
-/** The Enter shortcut the launch names: `⌘↵` on Apple platforms, `Ctrl↵` everywhere else. */
-export function submitShortcutHint(platform: string | undefined): string {
-    return platform !== undefined && /Mac|iPhone|iPad|iPod/.test(platform) ? '⌘↵' : 'Ctrl↵';
-}
-
 /** Whether the board would refuse this request for its length alone. */
 export function commandTooLong(draft: string): boolean {
     return draft.length > COMMAND_LIMIT;
