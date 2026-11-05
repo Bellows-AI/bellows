@@ -20,6 +20,7 @@ import type { GateRunRecord, GateRunWrite } from '../../src/board/board-gate-run
 import type { PrOperationWrite } from '../../src/board/board-pr-operations.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
+import type { GateTokenRelay } from '../../src/gate-token-control.js';
 import type { ConnectionRelay } from '../../src/connection-control.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
@@ -318,6 +319,12 @@ export function stubBoard(
             board.githubAsks.push(claimed.id);
             const queued = githubTokenQueue.shift();
             return queued === undefined ? (options.githubToken ?? null) : queued;
+        },
+        async githubGrant(claimed) {
+            board.githubAsks.push(claimed.id);
+            const queued = githubTokenQueue.shift();
+            const token = queued === undefined ? (options.githubToken ?? null) : queued;
+            return token === null ? { kind: 'refused' } : { kind: 'token', token, expiresAt: null };
         },
         async phaseCheckpoint(claimed, checkpoint) {
             board.phaseCheckpointsWritten.push({
@@ -761,6 +768,10 @@ export function stubGateStack(
             attachConnection: (token: string, connection: ConnectionRelay) => {
                 const control = stack.controls.get(token);
                 if (control) control.connecting.relay = connection;
+            },
+            attachGateToken: (token: string, gateToken: GateTokenRelay) => {
+                const control = stack.controls.get(token);
+                if (control) control.gateToken.relay = gateToken;
             },
             attachInputs: () => {},
             controlPolled: () => options.polled ?? true,

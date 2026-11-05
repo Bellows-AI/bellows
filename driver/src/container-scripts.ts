@@ -51,8 +51,18 @@ export const gateShellArgv = (command: string): string[] => ['sh', '-c', gateShe
 /** The gate container's loop over the gate mailbox: see scripts/gate-loop.sh. */
 export const gateLoopScript = script('gate-loop.sh');
 
-/** The gate container's command on both executors: the loop, with the gate shell it runs each request under. */
-export const gateLoopArgv = (): string[] => ['sh', '-c', gateLoopScript, 'gate-loop', gateShellScript];
+/** The gate's GitHub helper (git credential helper and `gh` shim) the loop installs: see scripts/gate-github.sh. */
+export const gateGithubScript = script('gate-github.sh');
+
+/** The gate container's command on both executors: the loop, with the gate shell and GitHub helper it serves them with. */
+export const gateLoopArgv = (): string[] => [
+    'sh',
+    '-c',
+    gateLoopScript,
+    'gate-loop',
+    gateShellScript,
+    gateGithubScript,
+];
 
 /** The reviewer container's loop over the review mailbox (issue #774): see scripts/review-loop.sh. */
 export const reviewLoopScript = script('review-loop.sh');

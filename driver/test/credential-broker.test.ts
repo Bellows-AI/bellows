@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
-import { CREDENTIAL_CACHE_DIR, envFileBody, gateEnvBody, TOOL_UID } from '../src/claim.js';
+import { CREDENTIAL_CACHE_DIR, envFileBody, TOOL_UID } from '../src/claim.js';
+import { stableGateEnvBody } from '../src/loop/loop-gates.js';
 import { loadDriverConfig } from '../src/config.js';
 import { dockerArgs } from '../src/docker/docker.js';
 import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
@@ -597,7 +598,7 @@ describe('F1: the credential mount and the attempt pair are the agent containerâ
         expect(args[at + 1]).toBe(`${CREDENTIAL_CACHE_DIR}:rw,noexec,nosuid,size=1m,mode=0700,uid=${TOOL_UID}`);
         expect(args.filter((arg) => arg === '--tmpfs')).toHaveLength(1);
         expect(envFileBody(job, config)).toMatch(/^RUNNER_JOB_ID=/m);
-        for (const aux of [envFileBody(job), gateEnvBody(job, 'ghs_gate_secret')]) {
+        for (const aux of [envFileBody(job), stableGateEnvBody(job)]) {
             expect(aux).not.toMatch(/^RUNNER_(JOB_ID|LEASE_TOKEN)=/m);
         }
     });

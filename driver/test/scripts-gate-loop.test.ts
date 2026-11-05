@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { gateLoopArgv, gateLoopScript, gateShellScript } from '../src/container-scripts.js';
-import { GATE_FILES, MAILBOXES } from '../src/supervisor-contract.js';
+import { gateGithubScript, gateLoopArgv, gateLoopScript, gateShellScript } from '../src/container-scripts.js';
+import { GATE_ASK_FILES, GATE_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 
 /*
  * The gate container's loop (`scripts/gate-loop.sh`), pinned by its bytes ONLY. It is never executed
@@ -18,7 +18,7 @@ const code = gateLoopScript
 
 describe('the gate loop script', () => {
     it('is the container command, with the gate shell passed by content beside it', () => {
-        expect(gateLoopArgv()).toEqual(['sh', '-c', gateLoopScript, 'gate-loop', gateShellScript]);
+        expect(gateLoopArgv()).toEqual(['sh', '-c', gateLoopScript, 'gate-loop', gateShellScript, gateGithubScript]);
     });
 
     it('serves the gate mailbox the contract names, by the file names the supervisor spells', () => {
@@ -61,6 +61,17 @@ describe('the gate loop script', () => {
         expect(subshell.indexOf('/bin/rm -f "$1/env"')).toBeLessThan(subshell.indexOf('exec /bin/sh'));
         expect(subshell).toContain('|| { echo');
         expect(subshell).toContain('exit 126');
+    });
+
+    it('installs the GitHub helper it is handed at bin/gh, and gives each request its mailbox and that bin', () => {
+        expect(code).toContain('github=$2');
+        expect(code).toContain(`"$box/${GATE_ASK_FILES.bin}"`);
+        expect(code).toContain('printf \'%s\\n\' "$github" > "$box/bin/gh"');
+        expect(code).toContain('/bin/chmod 0700 "$box/bin/gh"');
+        // Given to the gate shell alone, as the assignments of its own `exec`.
+        const subshell = code.slice(code.indexOf('serve() {'), code.indexOf('pid=$!'));
+        expect(subshell).toContain('FACTORY_GATE_RUN="$1" FACTORY_GATE_BIN="$box/bin" exec /bin/sh -c "$shell" gate');
+        expect(code.replace(subshell, '')).not.toContain('FACTORY_GATE_RUN');
     });
 
     it('runs its own commands by absolute path, so a request’s PATH can never reach them', () => {

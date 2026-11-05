@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from '../board/board.js';
 import type { GateRunRecord } from '../board/board-gate-runs.js';
-import { gateEnvBody, setupTimeoutMs } from '../claim.js';
+import { envFileBody, setupTimeoutMs } from '../claim.js';
 import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
 import { declaredTimeoutMs, type GateLedger, type GateRun } from '../gates.js';
@@ -12,7 +12,7 @@ import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
 import { takeoverBoundMs } from '../supervisor-plan.js';
 import type { JobState } from './loop-attempt.js';
-import { askGithubToken } from './loop-github.js';
+import { createGateTokenRelay } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay } from './loop-review.js';
@@ -135,9 +135,9 @@ export async function beginGates(
     // repository has no checkout and no gates either.
     const key = checkoutKey(job);
     if (!key) return null;
-    // The environment starts with the claim's own env — resolved for THIS author and repo — and a
-    // GitHub token fetched now, which is what a test suite needs to reach the forge.
-    const envBody = await gateEnvNow(rt, job, 'the gate environment');
+    // The environment starts with the claim's own env — resolved for THIS author and repo — and no
+    // GitHub token: a gate asks for one through its mailbox whenever git or gh needs it (docs/connections.md).
+    const envBody = stableGateEnvBody(job);
     // The job is the gate manager's attempt context: the group whose gate container runs it.
     await gates.manager.acquire(key, job.gates.image, envBody, { job, signal: state.signal });
     // A stand-down that landed while the acquire was in flight leaves the environment here:
@@ -156,7 +156,6 @@ export async function beginGates(
             envBody,
             job,
             gates: job.gates.gates,
-            freshEnv: () => gateEnvNow(rt, job, 'a gate run'),
             ledger,
             // The agent's ad-hoc gate found the supervisor lost: the attempt's, once its run is over.
             onInfraLoss: (reason) => {
@@ -272,6 +271,7 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
             createReviewRelay(rt, job, state)
         );
         attachConnection({ rt, job, state }, token);
+        gates.server.attachGateToken(token, createGateTokenRelay(rt, job, state));
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);
@@ -332,13 +332,6 @@ interface GatesRunCtx {
 }
 
 /**
- * The gate environment's body with a GitHub token asked now: every gate run starts on a token of
- * its own, and a run is never renewed (docs/connections.md).
- */
-const gateEnvNow = async (rt: LoopRuntime, job: BoardJob, what: string): Promise<string> =>
-    gateEnvBody(withoutGatePair(job), await askGithubToken(rt, job, what));
-
-/**
  * `beginGates` adds the gate server's own pair to `job.gateEnv` for the agent; a gate run never
  * gets it, or a gate could call `/run` on its own checkout and wait behind itself.
  */
@@ -347,12 +340,12 @@ const withoutGatePair = (job: BoardJob): BoardJob => ({
     gateEnv: Object.fromEntries(Object.entries(job.gateEnv ?? {}).filter(([name]) => !GATE_SERVER_PAIR.includes(name))),
 });
 
-/** The gate env body a gate's identity hashes: the claim's env, without the gate server's pair or a GitHub token. */
-export const stableGateEnvBody = (job: BoardJob): string => gateEnvBody(withoutGatePair(job), null);
+/** The gate env body of every gate run and its identity: the claim's env, without the gate server's pair. It never holds a GitHub token. */
+export const stableGateEnvBody = (job: BoardJob): string => envFileBody(withoutGatePair(job));
 
 /**
  * The gate-run record of one claim (issue #983): the runner's tree probes, the identity of a gate's
- * configuration — its env WITHOUT the per-run GitHub token, keyed by the board token — and the board
+ * configuration — its env, which never holds a GitHub token, keyed by the board token — and the board
  * write. The identity is computed from the current claim's job, never from a registered copy.
  */
 export function gateLedger(rt: LoopRuntime, job: BoardJob, runClaimSeq: number): GateLedger {
@@ -402,8 +395,8 @@ async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<{ run: 
     let end: GateEnd = { error: new Error('the gate run ended without an answer') };
     let failure: Error | null = null;
     try {
-        const run = await gateEnvNow(rt, job, `gate ${gate.name}`)
-            .then((envBody) => gates.manager.acquire(gateSession.key, gateSession.image, envBody, { job }))
+        const run = await gates.manager
+            .acquire(gateSession.key, gateSession.image, stableGateEnvBody(job), { job })
             .then(() => {
                 // The heartbeat can mark the lease lost — or the task stopped or removed — while
                 // acquire is pending: a slow revival or cluster request outlives the beat that said
@@ -486,8 +479,8 @@ const GATE_PASSED = Symbol('gate-passed');
  * run at all is a failed gate — an exit code of 125 is docker's "container not there", and
  * treating it as a pass would be the one lie this loop must never tell.
  *
- * Each gate re-acquires the environment first, exactly as the ad-hoc endpoint does: every gate
- * run starts on a GitHub token of its own (docs/connections.md).
+ * Each gate re-acquires the environment first, exactly as the ad-hoc endpoint does; a gate holds no
+ * GitHub token, it asks for one through its mailbox (docs/connections.md).
  */
 export async function runDeclaredGates(
     rt: LoopRuntime,
@@ -712,8 +705,8 @@ async function retryFailedSetup(ctx: GatesRunCtx): Promise<GateFailure | null> {
     const { rt, job, gateSession, state, signal } = ctx;
     const manager = rt.gates?.manager;
     if (!manager) return null;
-    const retried = gateEnvNow(rt, job, 'the setup retry')
-        .then((envBody) => manager.acquire(gateSession.key, gateSession.image, envBody, { job }))
+    const retried = manager
+        .acquire(gateSession.key, gateSession.image, stableGateEnvBody(job), { job })
         .then(() => (down(state) ? null : manager.runSetup(gateSession.key, { signal })))
         .catch(refusedToRun);
     const outcome = (await raceStep(state.signal, retried))?.value;

@@ -7,6 +7,8 @@
 #   running/<id>/cancel              the supervisor's order to kill it
 #   done/<id>/{output,exit}          the answer: `exit` written atomically, then the rename
 #   alive                            this loop's heartbeat, touched every iteration
+#   bin/gh                           the GitHub helper ($2, scripts/gate-github.sh), installed at start
+#   running/<id>/{asks,answers}      a GitHub token ask of the running request and the supervisor's answer
 #
 # A request's env is exported inside its own subshell alone, so it never reaches the loop's own
 # commands or the next request, and the env file is gone before the command starts; the loop's own
@@ -16,6 +18,7 @@
 # process of the user that runs it (driver/test/scripts-gate-loop.test.ts pins the bytes instead).
 box=${FACTORY_GATE_DIR:-/factory/gate}
 shell=$1
+github=$2
 
 beat() {
     : > "$box/alive"
@@ -38,7 +41,7 @@ serve() {
             /bin/rm -f "$1/env"
             cwd=$(/bin/cat "$1/cwd")
             cd "$cwd" 2>/dev/null || { echo "[gate] the worktree $cwd is missing"; exit 126; }
-            exec /bin/sh -c "$shell" gate "$(/bin/cat "$1/command")"
+            FACTORY_GATE_RUN="$1" FACTORY_GATE_BIN="$box/bin" exec /bin/sh -c "$shell" gate "$(/bin/cat "$1/command")"
         ) > "$1/output" 2>&1
         echo "$?" > "$1/code"
     ) &
@@ -58,7 +61,10 @@ serve() {
     echo "$code" > "$1/exit.tmp" && /bin/mv -f "$1/exit.tmp" "$1/exit"
 }
 
-/bin/mkdir -p "$box/requests" "$box/running" "$box/done"
+/bin/mkdir -p "$box/requests" "$box/running" "$box/done" "$box/bin"
+# The helper is `gh` on the gate's PATH and git's credential helper; no chmod in the image = no gh shim.
+printf '%s\n' "$github" > "$box/bin/gh"
+/bin/chmod 0700 "$box/bin/gh" 2>/dev/null
 # A request this loop held when its container restarted ran, and its answer is lost: done, no exit.
 for held in "$box/running"/*; do
     [ -d "$held" ] && /bin/mv "$held" "$box/done/"

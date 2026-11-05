@@ -51,11 +51,23 @@ export class StepTimedOut extends Error {
 }
 
 /**
+ * Thrown for a gate whose GitHub token ask the supervisor could not get answered: it ran without a
+ * token it needed, so its exit is no verdict, the same as a lost supervisor's (`stepLost`).
+ */
+export class StepTokenUnanswered extends Error {
+    constructor() {
+        super('a GitHub token ask of the gate went unanswered: no verdict');
+        this.name = 'StepTokenUnanswered';
+    }
+}
+
+/**
  * Whether a step failed because its supervisor was lost — the channel closed, or the answer never
- * came — which is no verdict on the step itself: the attempt was interrupted (issue #826).
+ * came, or a gate's GitHub token ask went unanswered — which is no verdict on the step itself: the
+ * attempt was interrupted (issue #826).
  */
 export const stepLost = (error: unknown): boolean =>
-    error instanceof StepChannelClosed || error instanceof StepTimedOut;
+    error instanceof StepChannelClosed || error instanceof StepTimedOut || error instanceof StepTokenUnanswered;
 
 /** What the runners and the loop use: submit a step, read the supervisor's report. */
 export interface StepSink {
@@ -108,6 +120,11 @@ export interface StepBroker extends StepSink {
     /** Whether the runner read the agent container over on this token, which the supervisor's control poll reads. */
     agentWasEnded(token: string): boolean;
     /**
+     * Whether a gate step of this id is running under the token: pulled by the supervisor (not still queued)
+     * and not settled, cancelled-while-queued or released. The gate token route (BEL-258) serves only such a step.
+     */
+    holdsGate(token: string, id: string): boolean;
+    /**
      * Takes the supervisor's report: `accepted` the first time, or a serving report's departure under
      * the same id; `duplicate` for a redelivery; `conflict` for another report than the one taken.
      */
@@ -115,6 +132,7 @@ export interface StepBroker extends StepSink {
 }
 
 interface Waiter {
+    step: StepRequest;
     resolve: (result: StepResult) => void;
     reject: (error: Error) => void;
     promise: Promise<StepResult>;
@@ -185,6 +203,14 @@ function cancelStep(slot: Slot, id: string): void {
         slot.waiters.delete(key);
         waiter.reject(new StepChannelClosed(`step ${id} was pulled: it was cancelled first`));
     }
+}
+
+/** Whether a gate step of this id is pulled and unsettled on the slot (`StepBroker.holdsGate`). */
+function holdsGateStep(slot: Slot | undefined, id: string): boolean {
+    if (!slot) return false;
+    return [...slot.waiters.values()].some(
+        ({ step }) => step.id === id && step.kind === 'gate' && !slot.queue.includes(step)
+    );
 }
 
 /** The report waiters of a group that is gone: its report will never come. */
@@ -277,7 +303,7 @@ export function createStepBroker(observe?: StepObserver): StepBroker {
             () => clearTimeout(lost),
             () => clearTimeout(lost)
         );
-        slot.waiters.set(key, { resolve, reject, promise });
+        slot.waiters.set(key, { step, resolve, reject, promise });
         const poller = slot.pollers.shift();
         if (poller) poller.resolve(step);
         else slot.queue.push(step);
@@ -363,6 +389,7 @@ export function createStepBroker(observe?: StepObserver): StepBroker {
         cancels: (token) => [...(slots.get(token)?.cancelled ?? [])],
         agentEnded: (token) => markAgentEnded(slots.get(token)),
         agentWasEnded: (token) => slots.get(token)?.agentEnded ?? false,
+        holdsGate: (token, id) => holdsGateStep(slots.get(token), id),
         report(token, report) {
             const slot = slots.get(token);
             return slot ? takeReport(slot, report) : 'conflict';
@@ -425,7 +452,9 @@ const parseResult = (raw: string): { invocation: string; result: StepResult } | 
     if (typeof invocation !== 'string' || !INVOCATION.test(invocation)) return null;
     if (exitCode !== null && typeof exitCode !== 'number') return null;
     if (typeof stdout !== 'string' || typeof stderr !== 'string' || typeof timedOut !== 'boolean') return null;
-    return { invocation, result: { exitCode, stdout, stderr, timedOut } };
+    // Only `true` is the supervisor's flag; anything else is dropped, never read as one.
+    const unanswered = parsed.tokenAskUnanswered === true ? { tokenAskUnanswered: true as const } : {};
+    return { invocation, result: { exitCode, stdout, stderr, timedOut, ...unanswered } };
 };
 
 /** `POST /step/:id`: the supervisor's answer to one call of a step. */
