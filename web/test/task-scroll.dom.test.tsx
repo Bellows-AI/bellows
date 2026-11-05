@@ -78,6 +78,16 @@ describe('Task detail: the conversation scrolls on its own, the follow-up compos
         expect(zone.contains(composer)).toBe(true);
     });
 
+    it('says the follow-up label and its helper as two separate elements', () => {
+        render(detail(followUpThread));
+        const label = screen.getByText('Ask for a follow-up');
+        const helper = screen.getByText(/The agent continues the same task/);
+        expect(label.tagName).toBe('LABEL');
+        expect(helper.tagName).toBe('P');
+        expect(label.contains(helper)).toBe(false);
+        expect(label.textContent).not.toContain('The agent continues');
+    });
+
     it('keeps the reading position when output arrives to a reader scrolled up, and offers Jump to latest', async () => {
         const user = userEvent.setup();
         const view = render(detail(followUpThread));

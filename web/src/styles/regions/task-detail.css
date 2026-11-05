@@ -78,6 +78,13 @@
         flex: none;
     }
 
+    /* The label and its helper line stack, a small gap apart. */
+    .composer-intro {
+        display: grid;
+        gap: 4px;
+        margin-bottom: 8px;
+    }
+
     /* Inside the docked surface the heading already separates; the legacy hairline goes. */
     .task-follow-up .composer {
         border-top: 0;

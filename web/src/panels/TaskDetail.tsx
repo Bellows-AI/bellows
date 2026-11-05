@@ -206,10 +206,12 @@ function FollowUpComposer({
     };
     return (
         <div className="composer">
-            <label className="composer-label" htmlFor={FOLLOW_UP_INPUT_ID}>
-                Ask for a follow-up
-            </label>
-            <p className="composer-label">The agent continues the same task, checkout, executor, and session.</p>
+            <div className="composer-intro">
+                <label className="composer-label" htmlFor={FOLLOW_UP_INPUT_ID}>
+                    Ask for a follow-up
+                </label>
+                <p className="composer-label">The agent continues the same task, checkout, executor, and session.</p>
+            </div>
             {error !== null ? <p className="status">{error}</p> : null}
             <textarea
                 id={FOLLOW_UP_INPUT_ID}

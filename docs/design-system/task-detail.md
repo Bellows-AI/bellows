@@ -24,7 +24,7 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
   composer next, the supporting panels (`task-support`) last; from 1024px the rail and panels
   share the right column.
 
-Classes defined here: `task-layout`, `task-main`, `task-thread`, `task-conversation`, `task-jump`, `task-support`, `task-follow-up`, `task-summary`, `task-clock`, `task-actions`,
+Classes defined here: `task-layout`, `task-main`, `task-thread`, `task-conversation`, `task-jump`, `task-support`, `task-follow-up`, `composer-intro`, `task-summary`, `task-clock`, `task-actions`,
 `task-action-help`, `task-closed`, `task-meta-line`, `task-opened-by`, `task-pill-wait`,
 `task-pill-done`, `task-outcome-body`, `task-outcome-label`, `task-history-item`, `task-branch`,
 `task-copy`, `task-verification-counts`, `task-remove-title`, `task-remove-actions`, `task-rename-label`, `task-rename-field`, `msg-user`,
