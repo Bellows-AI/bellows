@@ -24,6 +24,7 @@ scheduler runs one stage at a time as ordinary job threads.
 
 ## Invariants
 
+- **Batches are behind `BATCHES_ENABLED`, off by default** ([configuration.md](configuration.md)). Off, every `/api/batches` route answers `404 BATCHES_DISABLED` behind the auth wall, the batch MCP tools are not listed and are refused on call, and the reconciler, PR observer and merger do not start (`server/src/batch-loops.ts`); the single-task PR follower is not a batch feature and keeps running. Data is kept: batches in flight when the flag is turned off freeze, and turning it back on resumes them through the boot-time reconcile.
 - **Stage order is the only dependency model**; an unknown field (`dependsOn` above all) is refused at every
   level of the plan. `core/test/batch-plan.test.ts`.
 - **Only `start` and `validate` refuse an unsupported plan** (`409 BATCH_UNSUPPORTED`); launch checks run in one

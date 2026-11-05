@@ -113,6 +113,11 @@ mcp:
     # Browser origins besides auth.publicUrl allowed to call the endpoint: exact origins, no wildcard.
     trustedOrigins: []
 
+# Batches (docs/configuration.md). Off, the batch routes answer 404, the batch MCP tools are not listed and the batch
+# background loops do not start; data is kept and in-flight batches freeze until it is turned back on.
+batches:
+    enabled: false
+
 github:
     # The id and the key are required unless dashboard.offline: without them the server refuses to
     # boot — there is no no-fetch mode to fall back to.

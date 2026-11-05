@@ -103,7 +103,10 @@ interface Rig {
     otherStore: MemoryBatchStore;
 }
 
-async function boot(wrap: (store: MemoryBatchStore) => BatchStore = (store) => store): Promise<Rig> {
+async function boot(
+    wrap: (store: MemoryBatchStore) => BatchStore = (store) => store,
+    batchesEnabled = true
+): Promise<Rig> {
     const port = await freePort();
     const publicUrl = `http://${LOCALHOST}:${port}`;
     const resource = `${publicUrl}/api/mcp`;
@@ -133,6 +136,7 @@ async function boot(wrap: (store: MemoryBatchStore) => BatchStore = (store) => s
         auth: githubAuth({ publicUrl }),
         port,
         mcp: { enabled: true, resource, trustedOrigins: [] },
+        batches: { enabled: batchesEnabled },
     });
     const store = memoryBatchStore();
     const otherStore = memoryBatchStore();
@@ -197,6 +201,29 @@ interface PlanSchema {
 
 const READ_TOOLS = ['validate_batch', 'inspect_batch', 'list_batches', 'batch_report', 'wait_batch', 'get_batch_tasks'];
 const WRITE_TOOLS = ['import_batch', 'update_batch', 'start_batch', 'retry_batch_task', 'accept_batch_task'];
+
+describe('the batch tools with batches disabled', () => {
+    const BATCH_NAMES = [...READ_TOOLS, ...WRITE_TOOLS, 'cancel_batch'];
+
+    it('does not list a batch tool, and lists the rest', async () => {
+        const { url } = await boot(undefined, false);
+        const names = (await listed(url)).map((tool) => tool.name);
+        for (const name of BATCH_NAMES) expect(names, name).not.toContain(name);
+        expect(names).toContain('list_tasks');
+    });
+
+    it('refuses a batch tool call and touches no store', async () => {
+        const { url, store } = await boot(undefined, false);
+        const client = await connect(url, 'both');
+        const result = await client
+            .callTool({ name: 'list_batches', arguments: {} })
+            .then((r) => ({ isError: r.isError === true }))
+            .catch(() => ({ isError: true }));
+        await client.close();
+        expect(result.isError).toBe(true);
+        expect(store.writes).toEqual([]);
+    });
+});
 
 describe('the batch tools', () => {
     it('lists the batch tools with the annotations their route class implies, and the board plan schema as the plan input', async () => {

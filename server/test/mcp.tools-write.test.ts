@@ -152,6 +152,7 @@ async function boot(board: Board) {
         auth: githubAuth({ publicUrl }),
         port,
         mcp: { enabled: true, resource, trustedOrigins: [] },
+        batches: { enabled: true },
     });
     const orgs = staticRegistry({
         config,

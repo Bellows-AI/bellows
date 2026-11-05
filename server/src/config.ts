@@ -174,6 +174,8 @@ export interface AppConfig {
     readonly commerce: CommerceConfig;
     /** The board-hosted MCP server (MCP_*); off by default. See `config-mcp.ts`. */
     readonly mcp: McpConfig;
+    /** Batches (BATCHES_ENABLED); off by default. Off: routes answer 404, MCP tools are unlisted, loops do not start. */
+    readonly batches: { readonly enabled: boolean };
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -690,6 +692,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         admission: loadAdmission(env),
         integrations: { callbackOrigin: publicOriginOrNull(env, host, port)?.origin ?? null, jira: loadJiraOAuth(env) },
         commerce: loadCommerceConfig(env),
+        batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
         mcp: loadMcpConfig(
             env,
             bool(env.MCP_ENABLED, false, 'MCP_ENABLED'),

@@ -35,7 +35,7 @@ function observer(overrides: Partial<BatchPrObserver> = {}) {
 }
 
 async function build(batchObserver?: BatchPrObserver) {
-    const config = testConfig({ auth: githubAuth(), webhookSecret: SECRET });
+    const config = testConfig({ auth: githubAuth(), webhookSecret: SECRET, batches: { enabled: true } });
     app = await buildApp({
         config,
         orgs: staticRegistry({ config, telemetry: stubTelemetryClient(), ...(batchObserver ? { batchObserver } : {}) }),
