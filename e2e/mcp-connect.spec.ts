@@ -4,6 +4,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { AUTH_PORT } from '../playwright.config.js';
 import { expectRowFits } from './connected-apps.js';
+import { clearExecutors, saveExecutor } from './executor.js';
 import { throughSignIn } from './signin.js';
 
 /**
@@ -97,6 +98,13 @@ async function approve(page: Page, authorizationUrl: URL): Promise<URLSearchPara
 test.describe('the connect journey', () => {
     test.beforeEach(async ({ page }) => {
         await throughSignIn(page);
+        // create_task names no executor, so it runs on the member's default; a fresh member has none and the
+        // board refuses NO_EXECUTOR. Give the member one real profile, and put the shared board back after.
+        await saveExecutor(page);
+    });
+
+    test.afterEach(async ({ page }) => {
+        await clearExecutors(page);
     });
 
     test('an SDK client is challenged, connects through the consent page, runs the task tools, and is cut off on Disconnect', async ({
