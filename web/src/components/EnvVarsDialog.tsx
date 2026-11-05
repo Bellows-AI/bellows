@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
 import type { EnvSaveResult } from '../api/useEnv.js';
 import { countActive, envPayload, hasErrors, rowFieldErrors, scopeError, secretsNote } from '../panels/env-draft.js';
@@ -27,8 +27,6 @@ export interface EnvVarsDialogProps {
     draftId?: string;
     /** The scope's label in the guard dialog's body sentence. */
     draftLabel?: string;
-    /** Dirty mirror for a page that must ask before swapping the editor. */
-    onDirtyChange?: (dirty: boolean) => void;
 }
 
 /** One kind's heading, its count and its Add button. */
@@ -176,7 +174,6 @@ export function EnvVarsDialog({
     disabled = false,
     draftId,
     draftLabel,
-    onDirtyChange,
 }: EnvVarsDialogProps) {
     const uid = useId();
     const saveState = useEnvSaveState();
@@ -197,10 +194,6 @@ export function EnvVarsDialog({
     const dirty = rowsState.dirty || textBroken;
     const locked = disabled || saveState.saving;
     const canSave = !locked && dirty && !invalid && !textBroken;
-
-    useEffect(() => {
-        onDirtyChange?.(dirty);
-    }, [onDirtyChange, dirty]);
 
     const { baseline, setRows } = rowsState;
     const discard = useCallback(() => setRows(baseline), [setRows, baseline]);

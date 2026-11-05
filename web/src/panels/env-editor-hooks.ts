@@ -3,9 +3,9 @@ import { applyRawText, isDirty, rowsToRawText, seedRows } from './env-draft.js';
 import type { EnvPayloadRow, EnvRowState } from './env-draft.js';
 
 /**
- * The editor's stateful hooks, shared by the inline `EnvVarsPanel` and the modal
- * `EnvVarsDialog`: the rows (baseline, draft, add/update/remove/undo and the focus routing they
- * trigger) and the save-confirmation state. Moved out of the panel unchanged.
+ * The variables dialog's stateful hooks (`EnvVarsDialog`): the rows (baseline, draft,
+ * add/update/remove/undo and the focus routing they trigger), the save-error state and the
+ * list/`.env` mode.
  */
 
 /** Focus routing after add/remove/undo: a request recorded during the state update, resolved
@@ -30,8 +30,8 @@ function resolvePendingFocus(
 
 /**
  * The scope's rows: the baseline and the local draft, add/update/remove/undo, and the focus
- * routing they trigger. Split out of `EnvVarsPanel` so its own state and effect do not add to
- * the panel's line count.
+ * routing they trigger. Split out of `EnvVarsDialog` so its own state and effect do not add to
+ * the dialog's line count.
  */
 export function useEnvRows(initialVars: readonly EnvPayloadRow[], clearConfirmation: () => void) {
     // The seed is captured once per mount — initialVars may arrive as a new array on every parent
@@ -112,11 +112,10 @@ export function useEnvRows(initialVars: readonly EnvPayloadRow[], clearConfirmat
     };
 }
 
-/** The save-confirmation state: status text, the error and its focus, and clearing both on any
- * further edit. Split out of `EnvVarsPanel` for the same reason as `useEnvRows`. */
+/** The save-error state: the error, its focus, and clearing it on any further edit. Split out of
+ * `EnvVarsDialog` for the same reason as `useEnvRows`. */
 export function useEnvSaveState() {
     const [saving, setSaving] = useState(false);
-    const [statusText, setStatusText] = useState('');
     const [saveError, setSaveError] = useState<string | null>(null);
     const saveErrorRef = useRef<HTMLParagraphElement | null>(null);
 
@@ -125,11 +124,10 @@ export function useEnvSaveState() {
     }, [saveError]);
 
     const clearConfirmation = () => {
-        setStatusText('');
         setSaveError(null);
     };
 
-    return { saving, setSaving, statusText, setStatusText, saveError, setSaveError, saveErrorRef, clearConfirmation };
+    return { saving, setSaving, saveError, setSaveError, saveErrorRef, clearConfirmation };
 }
 
 export type EnvEditMode = 'list' | 'env';
