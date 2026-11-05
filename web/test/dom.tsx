@@ -116,6 +116,7 @@ export const OPEN_BOARD_SESSION: Session = {
     organizations: [],
     mode: 'none',
     mcp: false,
+    batches: false,
 };
 
 /**

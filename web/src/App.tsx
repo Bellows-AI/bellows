@@ -1,6 +1,7 @@
 import { createRoutesFromElements, Navigate, Outlet, Route } from 'react-router-dom';
 import type { RouteObject } from 'react-router-dom';
 import { AppShell } from './components/AppShell.js';
+import { BatchesGate } from './components/BatchesGate.js';
 import { AccountPage } from './pages/AccountPage.js';
 import { BatchDetailPage } from './pages/BatchDetailPage.js';
 import { BatchesPage } from './pages/BatchesPage.js';
@@ -84,8 +85,9 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
                 <Route path=":id" element={<TaskDetailPage />} />
             </Route>
             {/* Batches (docs/batches.md): the list, a blank draft, and one batch — a draft opens its
-                editor, a started batch its monitor. `new` precedes `:id` for the reason tasks' does. */}
-            <Route path="batches">
+                editor, a started batch its monitor. `new` precedes `:id` for the reason tasks' does. Behind
+                the deployment flag (BEL-264): off, `BatchesGate` redirects to the dashboard. */}
+            <Route path="batches" element={<BatchesGate />}>
                 <Route index element={<BatchesPage />} />
                 <Route path="new" element={<BatchNewPage />} />
                 <Route path=":id" element={<BatchDetailPage />} />

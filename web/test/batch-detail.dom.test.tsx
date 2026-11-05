@@ -12,7 +12,7 @@ import {
     type BatchTaskState,
     updateTask,
 } from '../src/batch-model.js';
-import { renderApp, stubFetch } from './dom.js';
+import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 import { usageBlock } from './tasks-fixtures.js';
 
 /**
@@ -103,6 +103,8 @@ function board(initial: BatchRecord, initialReport: BatchReportView | null = rep
         return record;
     };
     const calls = stubFetch(({ method, url }) => {
+        // The batch routes are behind the session's `batches` flag (BEL-264), so this board has it on.
+        if (url === '/api/auth/me') return { ...OPEN_BOARD_SESSION, batches: true };
         const prefix = `/api/batches/${ID}`;
         if (!url.startsWith(prefix)) return;
         const [action, key, taskAction] = url.slice(prefix.length).split('/').filter(Boolean);

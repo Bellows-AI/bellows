@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     MAX_PREVIEW,
     NAV_ITEMS,
+    navItems,
     SETTINGS_SECTIONS,
     ariaCurrentFor,
     countLabel,
@@ -41,6 +42,14 @@ describe('nav model', () => {
             ['/batches', 'Batches', false, 'layers'],
             ['/settings', 'Settings', false, 'settings'],
         ]);
+    });
+
+    it('lists Batches only when the session says batches are on (BEL-264)', () => {
+        const labels = (session: { batches: boolean } | null) => navItems(session).map((item) => item.label);
+        expect(labels({ batches: true })).toEqual(['Dashboard', 'Tasks', 'Batches', 'Settings']);
+        expect(labels({ batches: false })).toEqual(['Dashboard', 'Tasks', 'Settings']);
+        // Not yet known (loading, errored, anonymous) is off: never a link on an unconfirmed read.
+        expect(labels(null)).toEqual(['Dashboard', 'Tasks', 'Settings']);
     });
 
     it('carries the Settings tree, Overview first, in the order the sections ship', () => {
