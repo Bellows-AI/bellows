@@ -2841,7 +2841,8 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
         'skips a tick it could not read the asks directory on, and serves it once readable',
         async () => {
             const driver = await startDriver();
-            const supervised = run(driver, GATED);
+            // The gate is held for a while unanswered on purpose: neither a lost loop nor its deadline is the case here.
+            const supervised = run(driver, { ...GATED, SUPERVISOR_GATE_LOST_MS: '5000' });
             let asks = '';
             const gate = askingGate(supervised.box.gate, {
                 onTaken: (running) => {
@@ -2849,7 +2850,7 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
                     chmodSync(asks, 0o000);
                 },
             });
-            driver.order(gateStep('gate-1', 'gh'));
+            driver.order(gateStep('gate-1', 'gh', { timeoutMs: 60_000 }));
             await until('the gate to be taken', () => asks !== '');
             await new Promise((resolve) => setTimeout(resolve, 200));
             expect(gate.answer()).toBeNull();
