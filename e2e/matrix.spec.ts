@@ -314,7 +314,7 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
             });
 
             await openSettled(page, SEEDED_DETAIL, 'dark');
-            const more = page.locator('.page-header-actions').getByRole('button', { name: 'More task actions' });
+            const more = page.locator('.task-actions').getByRole('button', { name: 'More task actions' });
             await containsAndReturns(page, {
                 name: 'task: remove',
                 trigger: more,
@@ -543,7 +543,7 @@ const POLLED = [
     '.updated-at',
     '.usage-groups',
     '.toolbar-coverage',
-    '.task-verification-counts',
+    '.task-section-aside',
     '.chat-runtime',
     '.task-clock',
 ].join(', ');

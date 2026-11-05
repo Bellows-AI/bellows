@@ -5,28 +5,31 @@
 
     /* The tasks pages. */
 
-    /* The task detail page: the outcome rail, the main column (conversation → follow-up) and the
-       supporting panels (services → run activity → run history → verification → published work),
-       fed by the newest run. The DOM reads rail, main, panels; from 1024px the grid puts the main
-       column on the left and the rail over the panels in a 320px right one, and below that the
-       rail is a two-column summary above the main column, the panels last — DOM order is visual
-       order at every width, only the grid changes. */
+    /* The task detail page: the head (title, id line), the right column (`task-rail`: controls,
+       outcome, verification, task activity, services) and the main column (conversation →
+       follow-up). The DOM reads head, rail, main; below 1024px they stack in that order, and from
+       1024px the rail is a full-height right column from the app bar down, beside the head and the
+       main column — DOM order is visual order at every width, only the grid changes. */
     .task-layout {
         align-items: start;
         display: grid;
-        gap: 24px;
-        grid-template-areas: 'outcome' 'main' 'support';
-        grid-template-columns: 1fr;
-    }
-
-    .task-outcome {
-        grid-area: outcome;
-    }
-
-    .task-support {
-        display: grid;
         gap: 16px;
-        grid-area: support;
+        grid-template-areas: 'head' 'rail' 'main';
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .task-head {
+        display: grid;
+        gap: 12px;
+        grid-area: head;
+        min-width: 0;
+    }
+
+    .task-rail {
+        align-content: start;
+        display: grid;
+        gap: 12px;
+        grid-area: rail;
         min-width: 0;
     }
 
@@ -53,6 +56,7 @@
     }
 
     .task-conversation {
+        align-content: start;
         display: grid;
         gap: 16px;
         height: 100%;
@@ -86,8 +90,9 @@
     }
 
     @media (min-width: 1024px) {
-        /* The page is bounded to the viewport on the task route: header on top, the layout fills
-           the rest. The main column fills its row; the right column scrolls on its own. */
+        /* The page is bounded to the viewport on the task route and gives up its padding and
+           width cap: the rail meets the app bar and the window's right edge, the head and the main
+           column carry their own padding. */
         .shell:has(.task-layout) {
             height: 100dvh;
             overflow: hidden;
@@ -101,36 +106,138 @@
 
         .shell:has(.task-layout) .page {
             flex: 1 1 0;
+            gap: 0;
+            max-width: none;
             min-height: 0;
+            padding: 0;
+        }
+
+        .shell:has(.task-layout) .page > .status {
+            margin: 16px 24px 0;
         }
 
         .task-layout {
             flex: 1 1 0;
-            grid-template-areas: 'main outcome' 'main support';
-            grid-template-columns: minmax(0, 1fr) 320px;
-            grid-template-rows: minmax(0, fit-content(55%)) minmax(0, 1fr);
+            gap: 0;
+            grid-template-areas: 'head rail' 'main rail';
+            grid-template-columns: minmax(0, 1fr) 340px;
+            grid-template-rows: auto minmax(0, 1fr);
             min-height: 0;
+        }
+
+        .task-head {
+            padding: 24px 24px 0;
         }
 
         .task-main {
             align-self: stretch;
             height: auto;
+            padding: 16px 24px 24px;
         }
 
-        /* The whole right column is bounded: the rail takes its content up to 55% of the height
-           and scrolls past it, the panels scroll in the rest, so nothing there can grow the
-           track past the viewport and push the composer out. */
-        .task-outcome {
+        /* The whole right column is one scroll region, bounded by the viewport, so nothing in it
+           can grow the track and push the composer out. */
+        .task-rail {
             align-self: stretch;
+            border-left: 1px solid var(--line);
             min-height: 0;
             overflow-y: auto;
+            overscroll-behavior: contain;
+            padding: 12px;
         }
+    }
 
-        .task-support {
-            align-self: stretch;
-            min-height: 0;
-            overflow-y: auto;
-        }
+    /* The rail's first tile: the wall clock, the state, the live summary and small actions. */
+    .panel.task-controls {
+        display: grid;
+        gap: 8px;
+        padding: 12px 14px;
+    }
+
+    .task-controls-state {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 0;
+    }
+
+    .task-wait {
+        font-size: 12px;
+        margin: 0;
+    }
+
+    /* A collapsible rail tile (TaskSection.tsx): the head is the whole summary row — chevron,
+       title, and an aside that still says something while the tile is shut. */
+    .panel.task-section {
+        padding: 0;
+    }
+
+    .task-section-head {
+        align-items: center;
+        border-radius: var(--radius-xl);
+        cursor: pointer;
+        display: flex;
+        gap: 8px;
+        list-style: none;
+        min-height: 40px;
+        padding: 8px 14px;
+    }
+
+    .task-section-head::-webkit-details-marker {
+        display: none;
+    }
+
+    .task-section-head:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+    }
+
+    .task-section-head > .icon {
+        color: var(--ink-muted);
+        flex: none;
+    }
+
+    .task-section[open] > .task-section-head > .icon {
+        transform: rotate(90deg);
+    }
+
+    .task-section-head > h2 {
+        font-size: 14px;
+        margin: 0;
+    }
+
+    .task-section-aside {
+        align-items: center;
+        color: var(--ink-muted);
+        display: flex;
+        flex-wrap: wrap;
+        font-size: 12px;
+        gap: 4px;
+        justify-content: flex-end;
+        margin-left: auto;
+        min-width: 0;
+    }
+
+    .task-section-body {
+        border-top: 1px solid var(--line);
+        display: grid;
+        gap: 14px;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        padding: 12px 14px 14px;
+    }
+
+    /* The outcome's branch line: the mono chip, its copy button on the right edge. */
+    .task-publish {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        margin: 0;
+    }
+
+    .task-publish > .task-copy {
+        margin-left: auto;
     }
 
     /* The header's second line: #id · Opened … by (avatar) login · repo. */
@@ -141,18 +248,6 @@
         gap: 4px 8px;
     }
 
-    .task-opened-by {
-        align-items: center;
-        display: inline-flex;
-        gap: 6px;
-    }
-
-    .task-opened-by .avatar {
-        height: 20px;
-        line-height: 20px;
-        width: 20px;
-    }
-
     /* Two status-table rows the pill tones do not carry alone: a review wait's edge, and the
        done check in the run lamp's green. */
     .task-pill-wait {
@@ -161,16 +256,6 @@
 
     .task-pill-done > .icon {
         color: var(--lamp-run);
-    }
-
-    /* What the primary action does and does not do — the row's last line, as wide as the controls
-       above it. `width: 0` keeps the sentence out of the row's intrinsic width (the header's
-       actions slot sizes to its content), and `min-width: 100%` then fills the row and wraps. */
-    .task-action-help {
-        font-size: 13px;
-        margin: 0;
-        min-width: 100%;
-        width: 0;
     }
 
     .task-closed {
@@ -197,19 +282,6 @@
         color: var(--ink-muted);
         font-size: 13px;
         white-space: nowrap;
-    }
-
-    /* The verification panel: a focus target, so the rail's "View checks" lands the caret here. */
-    .task-verification:focus {
-        outline: 2px solid var(--accent);
-        outline-offset: 4px;
-    }
-
-    .task-verification-counts {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin: 0;
     }
 
     /* A gate's output: its own sunken mono well, lines kept whole and scrolled, not wrapped. */
@@ -256,46 +328,6 @@
         min-height: 28px;
         overflow-wrap: anywhere;
         padding: 0 8px;
-    }
-
-    /* The outcome's disclosure head: the native marker keeps signalling expandability (the
-       summary stays live at every width), and the heading reads like a panel head. */
-    .task-outcome > summary {
-        cursor: pointer;
-    }
-
-    .task-outcome > summary > h2 {
-        display: inline;
-        font-size: 15px;
-        margin: 0;
-    }
-
-    /* Below 1024px the rail is a two-column summary above the main column; in the 320px rail —
-       and on a phone, where two key/value columns cannot hold a label — it is one column. */
-    .task-outcome-body {
-        border-top: 1px solid var(--line);
-        display: grid;
-        gap: 16px;
-        grid-template-columns: 1fr;
-        margin-top: 12px;
-        padding-top: 12px;
-    }
-
-    .task-outcome-body > section {
-        min-width: 0;
-        overflow-wrap: anywhere;
-    }
-
-    @media (min-width: 600px) {
-        .task-outcome-body {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-    }
-
-    @media (min-width: 1024px) {
-        .task-outcome-body {
-            grid-template-columns: 1fr;
-        }
     }
 
     /* The conversation sits on the canvas: no fill, no frame. The exchanges separate by their own
@@ -351,28 +383,6 @@
         word-break: break-word;
     }
 
-    /* The run-history disclosure: a labelled, keyboard-focusable summary row. */
-    .run-history > summary {
-        cursor: pointer;
-        min-height: 24px;
-    }
-
-    .run-history > summary:focus-visible {
-        outline: 2px solid var(--accent);
-        outline-offset: 2px;
-    }
-
-    .run-history > summary {
-        align-items: baseline;
-        display: flex;
-        gap: 12px;
-        margin-bottom: 12px;
-    }
-
-    .run-history > summary h2 {
-        margin: 0;
-    }
-
     /* The raw-output disclosure: collapsed behind a summary, expanded when it is all there is. */
     .run-output > summary {
         cursor: pointer;
@@ -384,15 +394,6 @@
     .chat-output:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 4px;
-    }
-
-    /* The published-work line: the branch chip, its copy button, the PR link beside them. */
-    .run-publish {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin: 0;
     }
 
     .msg-meta {
@@ -428,7 +429,7 @@
         white-space: nowrap;
     }
 
-    /* The task's live summary — "what the agent is doing" — one line in the page header's meta
+    /* The task's live summary — "what the agent is doing" — one line in the rail's controls tile
        while the newest run is going. The same mono, muted treatment as the sidebar's activity
        row; `min-width: 0` lets this nowrap flex child actually clip instead of stretching the
        row, since a flex item's default min-width would size it to the full line. */
@@ -570,10 +571,19 @@
     .task-actions {
         align-items: center;
         display: flex;
-        flex: none;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: 6px;
         max-width: 100%;
+    }
+
+    /* The rail's actions are small: a 28px row, not the page's 40px call to action. */
+    .task-actions button {
+        align-items: center;
+        display: inline-flex;
+        font-size: 13px;
+        gap: 4px;
+        min-height: 28px;
+        padding: 2px 10px;
     }
 
     /* The overall wall clock in the head: a neutral reading, not a verdict — muted like the
@@ -581,7 +591,13 @@
     .task-clock {
         color: var(--ink-muted);
         font-size: 12px;
+        margin: 0;
         white-space: nowrap;
+    }
+
+    .task-clock-value {
+        color: var(--ink);
+        font-variant-numeric: tabular-nums;
     }
 
     /* The remove confirmation (issue 178): the one dialog the task's own actions can raise. The
@@ -924,11 +940,9 @@
         .task-actions button,
         .task-remove-actions button,
         .task-stats-head button,
-        .task-outcome section > button,
-        .task-outcome > summary,
+        .task-section-head,
         .run-output > summary,
         .chat-gate-list summary,
-        .run-history > summary,
         .question-option,
         .question button {
             align-items: center;
@@ -939,15 +953,14 @@
 
         /* A disclosure summary keeps its native marker only under `list-item` (issue 287), so it
            centers its line in the 44px box instead of taking the list's inline-flex. */
-        .task-outcome > summary,
         .run-output > summary {
             align-content: center;
             display: list-item;
         }
 
-        /* A gate row and the run-history heading stay full-width flex rows. */
+        /* A gate row and a rail tile's head stay full-width flex rows. */
         .chat-gate-list summary,
-        .run-history > summary {
+        .task-section-head {
             display: flex;
         }
     }

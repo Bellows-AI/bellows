@@ -143,7 +143,8 @@ describe('TaskComposer', () => {
     // A task always runs through a configured profile. The first is selected initially; with no
     // profiles the composer names the missing requirement and cannot start.
     it('preselects the first configured executor and blocks when there is none', () => {
-        const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('aria-label="Start task"'));
+        const trigger = (html: string) =>
+            html.slice(html.indexOf('Executor'), html.indexOf('aria-label="Reusable workflow'));
 
         const one = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude', scope: 'user' }] });
         expect(trigger(one)).toContain('>main</span></button>');
@@ -162,7 +163,8 @@ describe('TaskComposer', () => {
     });
 
     it('preselects the poll-resolved default over the first row (issue 215, the preference by 391)', () => {
-        const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('aria-label="Start task"'));
+        const trigger = (html: string) =>
+            html.slice(html.indexOf('Executor'), html.indexOf('aria-label="Reusable workflow'));
 
         const html = renderComposer({
             repos: [],
@@ -417,7 +419,7 @@ describe('the redesigned composer (#280)', () => {
         );
     });
 
-    it('puts the context chips and Start inside the prompt panel, after the textarea', () => {
+    it('puts Start inside the field and the context chips in the row below it', () => {
         const html = renderComposer({
             restored: restoredDraft({ draft: 'fix it' }),
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
@@ -426,11 +428,11 @@ describe('the redesigned composer (#280)', () => {
             'class="composer task-compose drop-zone"',
             'class="chat-input"',
             '<textarea',
+            'aria-label="Start task"',
             'class="chat-input-bar"',
             'aria-label="Repository: acme/web"',
             'aria-label="Executor: main"',
             'aria-label="Reusable workflow: No workflow"',
-            'aria-label="Start task"',
         ].map((marker) => html.indexOf(marker));
         expect(order.every((at) => at >= 0)).toBe(true);
         expect(order).toEqual([...order].sort((a, b) => a - b));

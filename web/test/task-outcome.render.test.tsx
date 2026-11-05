@@ -3,15 +3,18 @@ import { describe, expect, it } from 'vitest';
 import { job, renderDetail } from './tasks-fixtures.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
-/** The outcome rail's own markup — the main column below may repeat a word in its own voice. */
-const railOf = (html: string): string => html.slice(html.indexOf('task-outcome'), html.indexOf('task-main'));
+/** The right column's own markup — the main column below may repeat a word in its own voice. */
+const railOf = (html: string): string => html.slice(html.indexOf('task-rail'), html.indexOf('task-main'));
+
+/** A run whose output carries the driver's publish line, so the Outcome tile renders. */
+const PUBLISHED = '[driver] published fix/44 — https://github.com/o/r/pull/9';
 
 describe('TaskOutcome', () => {
     it('renders above the conversation in DOM order, as an expanded native disclosure', () => {
-        const html = renderDetail({ jobs: [job()] });
+        const html = renderDetail({ jobs: [job({ output: PUBLISHED })] });
         expect(html.indexOf('task-outcome')).toBeGreaterThan(-1);
         expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-conversation'));
-        expect(html).toMatch(/<details[^>]*class="task-outcome[^"]*"[^>]*open/);
+        expect(html).toMatch(/<details class="panel task-section task-outcome" open/);
         expect(html).toContain('<h2>Outcome</h2>');
         // The conversation names itself too: heading-by-heading navigation has to reach the
         // page's dominant panel, not just the summary beside it.
@@ -31,14 +34,13 @@ describe('TaskOutcome', () => {
                 }),
             ],
         });
-        // The rail carries one closure verdict and a done outranks a stop; the stop attribution
-        // is the run footer's.
+        // The rail carries the state and the newest exit; the closure attribution is each run's own note.
         const rail = railOf(html);
         expect(rail).toContain('Stopped');
-        expect(rail).toContain('done by kim');
-        expect(rail).not.toContain('stopped by lee');
+        expect(rail).toMatch(/<dt>Exit<\/dt><dd>0<\/dd>/);
+        expect(rail).not.toContain('done by kim');
+        expect(html).toContain('done by kim');
         expect(html).toContain('stopped by lee');
-        expect(rail).toContain('exit 0');
     });
 
     it('explains an open PR-review wait: what Bellows is waiting for, since when, and that no executor is occupied', () => {
@@ -54,11 +56,12 @@ describe('TaskOutcome', () => {
             ],
         });
         expect(html).toContain('Waiting for review');
-        // The outcome's own pill is the header's: the shared label in its tone — the per-run pill
-        // inside the conversation below is a different component and legitimately says "queued".
-        expect(railOf(html)).toMatch(/<span class="pill pill-done task-pill-wait">.*Waiting for review/);
-        // The header's pill is the page's one live region; a second would announce every change twice.
-        expect(railOf(html)).not.toContain('aria-live');
+        // The controls tile's pill: the shared label in its tone.
+        expect(railOf(html)).toMatch(
+            /<span class="pill pill-done task-pill-wait" aria-live="polite">.*Waiting for review/
+        );
+        // That pill is the page's one live region; a second would announce every change twice.
+        expect(html.match(/aria-live="polite"/g)).toHaveLength(1);
         expect(html).toMatch(/no executor|not occupied/i);
         expect(html).toContain('Bellows is waiting for review');
         expect(html).not.toContain('Factory');
@@ -79,8 +82,8 @@ describe('TaskOutcome', () => {
         const rail = railOf(html);
         expect(rail).not.toContain('Waiting for review');
         expect(rail).not.toContain('no executor is occupied');
-        expect(rail).toMatch(/<span class="pill pill-done task-pill-done">.*Done<\/span>/);
-        expect(rail).toContain('done by kim');
+        expect(rail).toMatch(/<span class="pill pill-done task-pill-done" aria-live="polite">.*Done<\/span>/);
+        expect(html).toContain('done by kim');
         // No follow-up is offered on the closed task.
         expect(html).not.toContain('<textarea');
     });
@@ -255,38 +258,36 @@ describe('TaskOutcome — gates, publication and services', () => {
         const html = renderDetail({
             jobs: [job({ gates }), job({ id: '44444444-4444-4444-8444-444444444444', gates: null })],
         });
-        expect(html).not.toContain('View checks');
+        expect(html).not.toContain('<h2>Verification</h2>');
         const counted = renderDetail({ jobs: [job({ gates })] });
-        expect(counted).toContain('>View checks</a>');
-        expect(counted).toContain('href="#task-verification"');
-        expect(counted).toContain('id="task-verification"');
+        // The counts ride the Verification tile's head, so a shut tile still says them.
+        expect(counted).toMatch(/<h2>Verification<\/h2><span class="task-section-aside">[\s\S]*1 failed/);
         expect(counted).toContain('1 passed');
         expect(counted).toContain('1 failed');
         expect(counted).toContain('1 running');
-        // Gate output stays on the run — the outcome's own slice never duplicates it.
-        const outcome = counted.slice(counted.indexOf('task-outcome'), counted.indexOf('task-conversation'));
-        expect(outcome).not.toContain('test gate output');
+        // Gate output appears once, in the Verification tile.
+        expect(counted.match(/test gate output/g)).toHaveLength(1);
     });
 
     it('renders the published branch code-styled, linking only a safe url', () => {
         const linked = renderDetail({
             jobs: [job({ output: '[driver] published fix/44 — https://github.com/o/r/pull/9' })],
         });
-        expect(linked).toContain('<code>fix/44</code>');
-        // The link is a reference, not a command: the outcome's labeled row carries just the
-        // number, the run's label-less publication line carries the full name.
-        const outcome = linked.slice(linked.indexOf('task-outcome'), linked.indexOf('task-conversation'));
+        expect(linked).toMatch(/<code class="task-branch">[\s\S]*?fix\/44<\/code>/);
+        // The link is a reference, not a command: the labeled row carries just the number, and the
+        // tile's head says which PR while it is shut — as text, never a link inside the summary.
+        const outcome = linked.slice(linked.indexOf('task-outcome'), linked.indexOf('task-main'));
         expect(outcome).toContain('>#9</a>');
-        expect(linked).toContain('Pull request #9');
+        expect(outcome).toContain('<span class="task-section-aside">PR #9</span>');
         expect(linked).not.toContain('Open pull request');
         expect(linked).toContain('rel="noopener noreferrer"');
         expect(linked).not.toContain('PR state');
-        expect(linked.slice(linked.indexOf('task-published'))).toContain('aria-label="Copy branch name"');
+        expect(outcome).toContain('aria-label="Copy branch name"');
 
         const unsafe = renderDetail({
             jobs: [job({ output: '[driver] published fix/5 — javascript:alert(1)' })],
         });
-        expect(unsafe).toContain('<code>fix/5</code>');
+        expect(unsafe).toMatch(/<code class="task-branch">[\s\S]*?fix\/5<\/code>/);
         expect(unsafe).not.toContain('<a href="javascript:');
     });
 
@@ -302,7 +303,7 @@ describe('TaskOutcome — gates, publication and services', () => {
 
     it('shows a branch without a url as the branch alone', () => {
         const html = renderDetail({ jobs: [job({ output: '[driver] published task/20260910' })] });
-        expect(html).toContain('<code>task/20260910</code>');
+        expect(html).toMatch(/<code class="task-branch">[\s\S]*?task\/20260910<\/code>/);
         expect(html).not.toContain('Pull request');
     });
 
@@ -436,8 +437,8 @@ describe('TaskOutcome — services and the placeholder sweep', () => {
 });
 
 /**
- * The failure's next step, in the rail — which a narrow screen reads before the conversation, so
- * a failed task never leaves the reader without one (plan §2.4, §3.3).
+ * A failure's next step is the controls tile's primary action — the rail carries it once, and no
+ * Outcome "Next action" repeats it.
  */
 describe('TaskOutcome — next action on a failure', () => {
     const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
@@ -445,40 +446,19 @@ describe('TaskOutcome — next action on a failure', () => {
     const viewer = { loading: false, id: me.id, admin: false };
     const failedGate = [{ name: 'lint', status: 'failed' as const, exitCode: 1, output: 'nope' }];
 
-    it('asks for another pass when the viewer may send one', () => {
+    it('asks for another pass once, in the controls tile, when the viewer may send one', () => {
         for (const latest of [job({ status: 'failed', author: me }), job({ author: me, gates: failedGate })]) {
-            const rail = railOf(renderDetail({ jobs: [latest], viewer }));
-            expect(rail, latest.status).toContain('Next action');
-            expect(rail, latest.status).toContain('>Ask for another pass</button>');
+            const html = renderDetail({ jobs: [latest], viewer });
+            expect(railOf(html), latest.status).not.toContain('Next action');
+            expect(html.match(/>Ask for another pass<\/button>/g), latest.status).toHaveLength(1);
         }
     });
 
-    it("explains another member's failure in the same words as the follow-up slot", () => {
+    it("explains another member's failure once, in the follow-up slot", () => {
         const html = renderDetail({ jobs: [job({ status: 'failed', author: other })], viewer });
         const sentence = 'Only octo-reviewer can continue this session. You can still mark it done.';
-        expect(railOf(html)).toContain(sentence);
+        expect(railOf(html)).not.toContain(sentence);
         expect(railOf(html)).not.toContain('Ask for another pass');
-        expect(html.match(new RegExp(sentence, 'g'))).toHaveLength(2);
-    });
-
-    it('says nothing while the session loads', () => {
-        const rail = railOf(
-            renderDetail({
-                jobs: [job({ status: 'failed', author: me })],
-                viewer: { loading: true, id: null, admin: false },
-            })
-        );
-        expect(rail).not.toContain('Next action');
-    });
-
-    it('offers no next action on a success, a closed failure, or a failure parked on its review wait', () => {
-        const cases = [
-            job({ author: me }),
-            job({ status: 'failed', author: me, doneAt: '2026-09-01T13:00:00.000Z' }),
-            job({ status: 'failed', author: me, waitReason: 'review', waitingSince: '2026-09-01T12:30:00.000Z' }),
-        ];
-        for (const latest of cases) {
-            expect(railOf(renderDetail({ jobs: [latest], viewer })), latest.status).not.toContain('Next action');
-        }
+        expect(html.match(new RegExp(sentence, 'g'))).toHaveLength(1);
     });
 });

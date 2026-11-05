@@ -1,9 +1,7 @@
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
-import { useId } from 'react';
 import { useDownwardAnchor } from '../anchor.js';
-import { isTerminal, type AuthorRef, type Job } from '../api/useJobs.js';
+import { isTerminal, type Job } from '../api/useJobs.js';
 import { PRODUCT_NAME } from '../brand.js';
-import { Avatar } from '../components/Avatar.js';
 import { Icon, type IconName } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
@@ -116,14 +114,12 @@ function PrimaryControl({
     latest,
     primary,
     marking,
-    doneHelpId,
     onStop,
     onDone,
 }: {
     latest: Job;
     primary: PrimaryAction;
     marking: boolean;
-    doneHelpId: string;
     onStop: (id: string) => Promise<void>;
     onDone: (id: string) => Promise<void>;
 }) {
@@ -150,13 +146,7 @@ function PrimaryControl({
             );
         case 'mark-done':
             return (
-                <button
-                    type="button"
-                    className="primary"
-                    disabled={marking}
-                    aria-describedby={doneHelpId}
-                    onClick={() => void onDone(latest.id)}
-                >
+                <button type="button" className="primary" disabled={marking} onClick={() => void onDone(latest.id)}>
                     {marking ? 'Marking done…' : 'Mark done'}
                 </button>
             );
@@ -166,10 +156,10 @@ function PrimaryControl({
 }
 
 /**
- * The **More task actions** overflow: Mark done while the primary is Ask for another pass, and
- * Remove task while no member of the thread is running (the board's 409 TASK_RUNNING stays the
- * authority on any race the UI cannot see). Remove is the destructive voice and lives nowhere
- * else. Null when it would hold nothing.
+ * The **More task actions** overflow: Mark done while the primary is Ask for another pass, Rename
+ * task for its author or an admin, and Remove task while no member of the thread is running (the
+ * board's 409 TASK_RUNNING stays the authority on any race the UI cannot see). Remove is the
+ * destructive voice and lives nowhere else. Null when it would hold nothing.
  */
 function MoreMenu({
     markDone,
@@ -177,29 +167,39 @@ function MoreMenu({
     removeAvailable,
     onDone,
     onRemoveRequest,
+    onRenameRequest,
 }: {
     markDone: boolean;
     marking: boolean;
     removeAvailable: boolean;
     onDone: () => void;
     onRemoveRequest: () => void;
+    onRenameRequest: (() => void) | null;
 }) {
     // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
     // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
     const { setReference, setFloating, floatingStyles } = useDownwardAnchor('end');
-    if (!markDone && !removeAvailable) return null;
+    if (!markDone && !removeAvailable && onRenameRequest === null) return null;
     return (
         <Menu>
-            <MenuButton ref={setReference} className="chat-resume">
-                More task actions
+            <MenuButton ref={setReference} className="chat-resume" aria-label="More task actions">
+                More
+                <Icon name="chevron-down" size={14} />
             </MenuButton>
-            {/* Focus lands back on this trigger — the menu restores it on close, and the dialog
-            Remove opens restores it to the element focused before it captured the caret. */}
+            {/* Focus lands back on this trigger — the menu restores it on close, and the dialogs
+            Rename and Remove open restore it to the element focused before they captured the caret. */}
             <MenuItems ref={setFloating} style={floatingStyles} portal className="popover">
                 {markDone ? (
                     <MenuItem>
                         <button type="button" className="popover-option" disabled={marking} onClick={onDone}>
                             {marking ? 'Marking done…' : 'Mark done'}
+                        </button>
+                    </MenuItem>
+                ) : null}
+                {onRenameRequest !== null ? (
+                    <MenuItem>
+                        <button type="button" className="popover-option" onClick={onRenameRequest}>
+                            Rename task
                         </button>
                     </MenuItem>
                 ) : null}
@@ -215,111 +215,55 @@ function MoreMenu({
     );
 }
 
-/** What the primary does and does not do, said beside it: one sentence per state that needs one. */
-function ActionHelp({ latest, primary, doneHelpId }: { latest: Job; primary: PrimaryAction; doneHelpId: string }) {
-    const waiting = isWaitingForReview(latest);
-    if (primary === 'mark-done' && waiting) {
-        return (
-            <p className="muted task-action-help" id={doneHelpId}>
-                No executor is running. The workflow is waiting for review. Closes this task in {PRODUCT_NAME}. Does not
-                merge or close the pull request.
-            </p>
-        );
-    }
-    if (primary === 'mark-done') {
-        return (
-            <p className="muted task-action-help" id={doneHelpId}>
-                Closes this task in {PRODUCT_NAME}. Does not merge or close the pull request.
-            </p>
-        );
-    }
-    if ((primary === 'stop' || primary === 'stopping') && waiting) {
-        return (
-            <p className="muted task-action-help">
-                Stopping cancels remaining automation. It does not close or merge the pull request.
-            </p>
-        );
-    }
-    return null;
-}
-
-/** The state's actions: the primary control, the overflow, and the copy that says what they do. */
-function TaskHeaderActions({
-    latest,
-    primary,
-    doneId,
-    removeAvailable,
-    onStop,
-    onDone,
-    onRemoveRequest,
-    onRenameRequest,
-}: {
-    latest: Job;
-    primary: PrimaryAction;
-    doneId: string | null;
-    removeAvailable: boolean;
-    onStop: (id: string) => Promise<void>;
-    onDone: (id: string) => Promise<void>;
-    onRemoveRequest: () => void;
-    /** Null when the viewer may not rename: only the author or an admin gets the control. */
-    onRenameRequest: (() => void) | null;
-}) {
-    const doneHelpId = useId();
-    const marking = doneId === latest.id;
-    return (
-        <div className="task-actions">
-            <PrimaryControl
-                latest={latest}
-                primary={primary}
-                marking={marking}
-                doneHelpId={doneHelpId}
-                onStop={onStop}
-                onDone={onDone}
-            />
-            {onRenameRequest === null ? null : (
-                <button type="button" className="chat-resume" onClick={onRenameRequest}>
-                    Rename task
-                </button>
-            )}
-            <MoreMenu
-                markDone={primary === 'ask'}
-                marking={marking}
-                removeAvailable={removeAvailable}
-                onDone={() => void onDone(latest.id)}
-                onRemoveRequest={onRemoveRequest}
-            />
-            <ActionHelp latest={latest} primary={primary} doneHelpId={doneHelpId} />
-        </div>
-    );
-}
-
 /** A task id is a uuid; the head names it by its first block, with the whole id on hover. */
 const SHORT_ID_LENGTH = 8;
 
-/** Who opened the task: the avatar when the account carries one, else its initial. */
-function OpenedBy({ author }: { author: AuthorRef | null }) {
-    if (author === null) return <span className="task-opened-by">unknown</span>;
+/**
+ * The page-level head of `/tasks/:id`, derived from the loaded thread: the task's name — its stored
+ * title, else the root command's first line (`taskTitleText`) — as the page's one `h1`, and
+ * `#id · Opened …` beneath it. Who opened it, the repo, the state and the actions are the right
+ * column's (`TaskControls`, `TaskActivity`), never repeated here.
+ */
+export function TaskHeader({
+    jobs,
+}: {
+    /** The task's whole chain, oldest first — null until the thread poll lands. */ jobs: Job[] | null;
+}) {
+    if (jobs === null || jobs.length === 0) {
+        // No task yet, so there is nothing to name — the detail poll has not landed. No eyebrow:
+        // "Tasks" over "Tasks" says the same thing twice.
+        return <PageHeader title="Tasks" />;
+    }
+    const rootTask = jobs[0]!;
+    const displayName = taskTitleText(rootTask);
     return (
-        <span className="task-opened-by">
-            <Avatar author={author} size={20} />
-            {author.login}
-        </span>
+        <PageHeader
+            eyebrow="Tasks"
+            title={displayName}
+            titleClassName="task-heading"
+            titleTooltip={displayName}
+            description={
+                <span className="task-meta-line">
+                    <span title={rootTask.id}>#{rootTask.id.slice(0, SHORT_ID_LENGTH)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                        Opened <RelativeTime at={rootTask.createdAt} />
+                    </span>
+                </span>
+            }
+        />
     );
 }
 
 /**
- * The page-level head of `/tasks/:id`, derived from the loaded thread: the task's name — its stored
- * title, else the root command's first line (`taskTitleText`) — as the page's one `h1`; `#id · Opened … by login · repo` beneath
- * it; the state pill, wall clock and live activity in the meta slot; and one primary action plus
- * the overflow in the actions slot. Prop-driven, like every panel: the poll, the mutations and
- * the removal dialog live in the page, so a static render of a loaded thread is a complete render.
- *
- * The pill is `taskStatusLabel` / `taskTone` of the newest run — the one precedence the inbox and
- * sidebar share, so a parked wait the member closed reads Done everywhere. The actions follow
- * `primaryAction`; Stop, Mark done and Remove carry no author restriction — only a follow-up does
- * (`followUpEligibility`), because only the board's follow-up route checks the author.
+ * The right column's first tile: the task's wall clock, its state pill (the page's one live
+ * region), the live summary, a review wait in words, and one small primary action plus the
+ * overflow. The pill is `taskStatusLabel` / `taskTone` of the newest run — the one precedence the
+ * inbox and sidebar share. The actions follow `primaryAction`; Stop, Mark done and Remove carry no
+ * author restriction — only a follow-up does (`followUpEligibility`), because only the board's
+ * follow-up route checks the author. Prop-driven: the mutations and dialogs live in the page.
  */
-export function TaskHeader({
+export function TaskControls({
     jobs,
     viewer,
     stoppingId,
@@ -329,8 +273,8 @@ export function TaskHeader({
     onRemoveRequest,
     onRenameRequest,
 }: {
-    /** The task's whole chain, oldest first — null until the thread poll lands. */
-    jobs: Job[] | null;
+    /** The task's whole chain, oldest first; non-empty. */
+    jobs: Job[];
     /** Who is looking — decides whether a failure asks for another pass or offers Mark done. */
     viewer: FollowUpViewer;
     /** The page's in-flight guards: a mutation mid-request relabels its control, once. */
@@ -343,14 +287,7 @@ export function TaskHeader({
     /** Opens the page's rename dialog; offered only to the task's author or an admin. */
     onRenameRequest: () => void;
 }) {
-    if (jobs === null || jobs.length === 0) {
-        // No task yet, so there is nothing to name — the detail poll has not landed. No eyebrow:
-        // "Tasks" over "Tasks" says the same thing twice.
-        return <PageHeader title="Tasks" />;
-    }
-
-    // The early return above guarantees a non-empty chain; its newest member is the run the
-    // actions act on, and its first member is the ROOT — the task's stable name is what was asked.
+    // The newest member is the run the actions act on; the ROOT carries the author.
     const latestTask = jobs[jobs.length - 1]!;
     const rootTask = jobs[0]!;
     const primary = primaryAction(latestTask, stoppingId, followUpEligibility(latestTask, viewer));
@@ -360,63 +297,57 @@ export function TaskHeader({
     // The task's live summary — the newest run's activity line, while there is one.
     const summary = taskSummary(latestTask.id, jobs);
     const verificationFailed = gateCounts(latestTask.gates).failed > 0;
-    const displayName = taskTitleText(rootTask);
+    const waiting = isWaitingForReview(latestTask);
     // The board checks the same: the task's author or an org admin renames (the viewer's role comes from the session).
     const canRename = !viewer.loading && (viewer.admin || (viewer.id !== null && rootTask.author?.id === viewer.id));
-
+    const marking = doneId === latestTask.id;
     return (
-        <PageHeader
-            eyebrow="Tasks"
-            title={displayName}
-            titleClassName="task-heading"
-            titleTooltip={displayName}
-            description={
-                <span className="task-meta-line">
-                    <span title={rootTask.id}>#{rootTask.id.slice(0, SHORT_ID_LENGTH)}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>
-                        Opened <RelativeTime at={rootTask.createdAt} /> by
-                    </span>
-                    <OpenedBy author={rootTask.author} />
-                    {latestTask.repo !== null ? (
-                        <>
-                            <span aria-hidden="true">·</span>
-                            <span>{latestTask.repo}</span>
-                        </>
-                    ) : null}
+        <section className="panel task-controls" aria-label="Task controls">
+            {/* The overall wall clock: everything the board has banked for the task, plus the head
+            run's live segment while it is going — the 2s poll is the ticker. A task that has
+            never run says so with a dash, not a zero. */}
+            <p className="task-clock">
+                Wall clock{' '}
+                <span className="task-clock-value">
+                    {wallClock(latestTask.taskWallClockMs, latestTask.status === 'running' ? latestTask : null)}
                 </span>
-            }
-            meta={
-                <>
-                    <TaskStatePill jobs={jobs} live />
-                    {verificationFailed ? (
-                        <span className="pill pill-bad">
-                            <Icon name="alert-circle" size={14} />
-                            Verification failed
-                        </span>
-                    ) : null}
-                    {/* The overall wall clock: everything the board has banked for the task,
-                    plus the head run's live segment while it is going — the 2s poll is the
-                    ticker. A task that has never run says so with a dash, not a zero. */}
-                    <span className="task-clock">
-                        Wall clock{' '}
-                        {wallClock(latestTask.taskWallClockMs, latestTask.status === 'running' ? latestTask : null)}
+            </p>
+            <p className="task-controls-state">
+                <TaskStatePill jobs={jobs} live />
+                {verificationFailed ? (
+                    <span className="pill pill-bad">
+                        <Icon name="alert-circle" size={14} />
+                        Verification failed
                     </span>
-                    {summary !== null ? <p className="task-summary">{summary}</p> : null}
-                </>
-            }
-            actions={
-                <TaskHeaderActions
+                ) : null}
+            </p>
+            {summary !== null ? <p className="task-summary">{summary}</p> : null}
+            {waiting ? (
+                <p className="muted task-wait">
+                    {PRODUCT_NAME} is waiting for review — no executor is occupied while it waits. Waiting since{' '}
+                    <RelativeTime at={latestTask.waitingSince} />.
+                </p>
+            ) : null}
+            {!waiting && latestTask.waitTerminalReason !== null ? (
+                <p className="muted task-wait">Review wait ended: {latestTask.waitTerminalReason}.</p>
+            ) : null}
+            <div className="task-actions">
+                <PrimaryControl
                     latest={latestTask}
                     primary={primary}
-                    doneId={doneId}
-                    removeAvailable={removeAvailable}
+                    marking={marking}
                     onStop={onStop}
                     onDone={onDone}
+                />
+                <MoreMenu
+                    markDone={primary === 'ask'}
+                    marking={marking}
+                    removeAvailable={removeAvailable}
+                    onDone={() => void onDone(latestTask.id)}
                     onRemoveRequest={onRemoveRequest}
                     onRenameRequest={canRename ? onRenameRequest : null}
                 />
-            }
-        />
+            </div>
+        </section>
     );
 }

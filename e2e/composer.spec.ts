@@ -646,8 +646,10 @@ test.describe('the base branch and the skill menu', () => {
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(launches.bodies).toHaveLength(1);
         expect(launches.bodies[0]).toMatchObject({ command: 'ship it', baseBranch: 'release/1.0' });
-        await expect(page.getByText('Base branch')).toBeVisible();
-        await expect(page.getByText('release/1.0')).toBeVisible();
+        // The task page's Task activity tile carries it; the tile starts shut.
+        await page.locator('.task-activity > summary').click();
+        await expect(page.locator('.task-activity').getByText('Base branch')).toBeVisible();
+        await expect(page.locator('.task-activity').getByText('release/1.0')).toBeVisible();
         expect(problems).toEqual([]);
     });
 

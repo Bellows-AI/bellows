@@ -10,7 +10,7 @@ import { useComposerDraftStore } from '../composer-draft.js';
 import { BatchBacklink } from '../components/BatchBacklink.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
 import { TaskRenameDialog } from '../components/TaskRenameDialog.js';
-import { TaskHeader } from '../panels/TaskHeader.js';
+import { TaskControls, TaskHeader } from '../panels/TaskHeader.js';
 import { taskTitleText } from '../task-title.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
 import type { OnAnswer } from '../panels/TaskRun.js';
@@ -295,19 +295,28 @@ export function TaskDetailPage() {
     return (
         <>
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
-            <TaskHeader
-                jobs={detail.jobs}
-                viewer={viewer}
-                stoppingId={stoppingId}
-                doneId={doneId}
-                onStop={stopTask}
-                onDone={doneTask}
-                onRemoveRequest={openRemove}
-                onRenameRequest={rename.openRename}
-            />
-            <BatchBacklink rootId={detail.jobs?.[0]?.id ?? null} enabled={session?.batches === true} />
             <TaskDetail
                 key={id ?? 'none'}
+                header={
+                    <>
+                        <TaskHeader jobs={detail.jobs} />
+                        <BatchBacklink rootId={detail.jobs?.[0]?.id ?? null} enabled={session?.batches === true} />
+                    </>
+                }
+                controls={
+                    detail.jobs !== null && detail.jobs.length > 0 ? (
+                        <TaskControls
+                            jobs={detail.jobs}
+                            viewer={viewer}
+                            stoppingId={stoppingId}
+                            doneId={doneId}
+                            onStop={stopTask}
+                            onDone={doneTask}
+                            onRemoveRequest={openRemove}
+                            onRenameRequest={rename.openRename}
+                        />
+                    ) : null
+                }
                 jobs={detail.jobs}
                 viewer={viewer}
                 error={detail.error}

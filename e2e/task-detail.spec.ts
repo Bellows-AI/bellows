@@ -72,7 +72,7 @@ async function threadLength(page: Page, taskId: string): Promise<number> {
     return ((await response.json()) as { jobs: unknown[] }).jobs.length;
 }
 
-const header = (page: Page) => page.locator('.page-header-actions');
+const header = (page: Page) => page.locator('.task-actions');
 
 test.describe('the task detail actions', () => {
     // queueTask starts through the real composer, which needs an executor to offer Start, and
@@ -96,20 +96,23 @@ test.describe('the task detail actions', () => {
         await queueTask(page, 'e2e — stop a queued task');
         await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeVisible();
         await expect(header(page).getByRole('button', { name: 'More task actions' })).toBeVisible();
-        await expect(page.locator('.page-header-meta')).toContainText('Queued');
+        await expect(page.locator('.task-controls')).toContainText('Queued');
         await page.screenshot({ path: `${SHOTS}/task-detail-queued.png`, fullPage: true });
 
         await header(page).getByRole('button', { name: 'Stop run' }).click();
-        await expect(page.locator('.page-header-meta')).toContainText('Stopped · Needs review', { timeout: 10_000 });
+        await expect(page.locator('.task-controls')).toContainText('Stopped · Needs review', { timeout: 10_000 });
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
 
-        // Running: claimed the way a driver claims. The overflow is gone — a running member
-        // hides Remove — and stopping reads as a disabled, busy control.
+        // Running: claimed the way a driver claims. The overflow keeps only Rename — a running
+        // member hides Remove — and stopping reads as a disabled, busy control.
         const runningId = await queueTask(page, 'e2e — stop a running task');
         const leaseToken = await claimQueued(page, runningId);
-        await expect(page.locator('.page-header-meta')).toContainText('Running', { timeout: 10_000 });
+        await expect(page.locator('.task-controls')).toContainText('Running', { timeout: 10_000 });
         await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeVisible();
-        await expect(header(page).getByRole('button', { name: 'More task actions' })).toBeHidden();
+        await header(page).getByRole('button', { name: 'More task actions' }).click();
+        await expect(page.getByRole('menuitem', { name: 'Rename task' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Remove task' })).toHaveCount(0);
+        await page.keyboard.press('Escape');
         await page.screenshot({ path: `${SHOTS}/task-detail-running.png`, fullPage: true });
 
         await header(page).getByRole('button', { name: 'Stop run' }).click();
@@ -129,7 +132,7 @@ test.describe('the task detail actions', () => {
         await header(page).getByRole('button', { name: 'Mark done' }).click();
         // The stand-in account AUTH_MODE=none attributes every action to.
         await expect(header(page).getByText('Closed by __local__')).toBeVisible({ timeout: 10_000 });
-        await expect(page.locator('.page-header-meta')).toContainText('Done');
+        await expect(page.locator('.task-controls')).toContainText('Done');
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeHidden();
         await expect(header(page).locator('button[disabled]')).toHaveCount(0);
         await page.screenshot({ path: `${SHOTS}/task-detail-done.png`, fullPage: true });
@@ -286,10 +289,10 @@ test.describe('the task detail page', () => {
         await expect(conversation.getByText('Request', { exact: true })).toBeVisible();
         await expect(conversation.getByText('Follow-up', { exact: true })).toBeVisible();
         // Verification is the newest run's: lint failed on run 2.
-        await expect(page.locator('#task-verification')).toContainText('lint');
-        // The thread's publication came from run 1; the link says what it is.
-        await expect(page.locator('.task-published')).toContainText('Pull request #1');
-        await expect(page.getByRole('link', { name: 'View checks' })).toBeVisible();
+        await expect(page.locator('.task-verification')).toContainText('lint');
+        // The thread's publication came from run 1; the Outcome tile names the PR, shut or open.
+        await expect(page.locator('.task-outcome .task-section-aside')).toHaveText('PR #1');
+        await expect(page.locator('.task-outcome').getByRole('link', { name: '#1' })).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/task-detail-thread.png`, fullPage: true });
     });
 
@@ -299,6 +302,7 @@ test.describe('the task detail page', () => {
         await routeThread(page, followUpThread);
         await page.goto(`/tasks/${followUpThread[1]!.id}`);
 
+        await page.locator('.task-activity > summary').click();
         await page.getByRole('button', { name: /Open task statistics/ }).click();
         const dialog = page.getByRole('dialog');
         await expect(dialog.getByText('1,240', { exact: true }).first()).toBeVisible();
@@ -321,6 +325,7 @@ test.describe('the task detail page', () => {
         await page.goto(`/tasks/${followUpThread[1]!.id}`);
         // The sidebar line is the newest run's own figures (2,000 uncached input), not the task's.
         await expect(page.locator('.task-stats-line')).toContainText('Uncached input 2,000');
+        await page.locator('.task-activity > summary').click();
         await page.getByRole('button', { name: /Open task statistics/ }).click();
         const dialog = page.getByRole('dialog');
 
@@ -363,6 +368,7 @@ test.describe('the task detail page', () => {
         );
         const problems = watchConsole(page);
         await page.goto(`/tasks/${followUpThread[1]!.id}`);
+        await page.locator('.task-activity > summary').click();
         await page.getByRole('button', { name: /Open task statistics/ }).click();
         const dialog = page.getByRole('dialog');
 
@@ -405,6 +411,7 @@ test.describe('the task detail page', () => {
             route.fulfill({ json: measuredActivityOf(runningThread, { live: true }) })
         );
         await page.goto(`/tasks/${runningThread[runningThread.length - 1]!.id}`);
+        await page.locator('.task-activity > summary').click();
         await page.getByRole('button', { name: /Open task statistics/ }).click();
         await expect(page.getByRole('dialog')).toContainText('provisional');
     });
@@ -416,6 +423,7 @@ test.describe('the task detail page', () => {
             route.fulfill({ status: 503, json: { error: 'telemetry unavailable', code: 'UNAVAILABLE' } })
         );
         await page.goto(`/tasks/${followUpThread[1]!.id}`);
+        await page.locator('.task-activity > summary').click();
         await page.getByRole('button', { name: /Open task statistics/ }).click();
         await expect(page.getByRole('dialog')).toContainText('Usage is unavailable');
     });
@@ -426,7 +434,9 @@ test.describe('the task detail page', () => {
         const problems = watchConsole(page);
         await page.goto(`/tasks/${interruptedThread[0]!.id}`);
 
-        const interruptions = page.locator('.task-outcome section', {
+        // The Task activity tile starts shut; its head opens it.
+        await page.locator('.task-activity > summary').click();
+        const interruptions = page.locator('.task-activity section', {
             has: page.getByRole('heading', { name: 'Interruptions' }),
         });
         await expect(interruptions).toContainText('not counted as failed attempts');
@@ -437,8 +447,7 @@ test.describe('the task detail page', () => {
         await expect(interruptions.locator('time')).toHaveCount(2);
         await page.screenshot({ path: `${SHOTS}/task-detail-interrupted.png`, fullPage: true });
 
-        await page.getByRole('heading', { name: 'Run history' }).click();
-        await expect(page.locator('.run-history')).toContainText('Run 1 interrupted: the driver was drained');
+        await expect(page.getByRole('heading', { name: 'Run history' })).toHaveCount(0);
         await page.setViewportSize({ width: 390, height: 1000 });
         await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({ path: `${SHOTS}/task-detail-interrupted-390.png`, fullPage: true });
@@ -494,35 +503,30 @@ test.describe('the task detail page', () => {
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 1000 });
             await page.goto(`/tasks/${publishedThread[0]!.id}`);
-            await expect(page.locator('.task-outcome')).toBeVisible();
+            await expect(page.locator('.task-controls')).toBeVisible();
             const overflow = await page.evaluate(
                 () => document.documentElement.scrollWidth - document.documentElement.clientWidth
             );
             expect(overflow, `${width}px overflows by ${overflow}px`).toBeLessThanOrEqual(0);
 
-            const outcome = await page.locator('.task-outcome').boundingBox();
+            const rail = await page.locator('.task-rail').boundingBox();
+            const controls = await page.locator('.task-controls').boundingBox();
             const conversation = await page.locator('.task-conversation').boundingBox();
-            const railColumns = await page
-                .locator('.task-outcome-body')
-                .evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length);
-            const support = await page.locator('.task-support').boundingBox();
+            const head = await page.locator('.task-head').boundingBox();
             if (width < 1024) {
-                // The outcome sits above the conversation, DOM order: a two-column summary, and
-                // one column on a phone, where two key/value columns cannot hold a label. The
-                // supporting panels follow the conversation and composer.
-                expect(outcome!.y + outcome!.height).toBeLessThanOrEqual(conversation!.y + 1);
-                const main = await page.locator('.task-main').boundingBox();
-                expect(main!.y + main!.height).toBeLessThanOrEqual(support!.y + 1);
-                expect(railColumns, `${width}px rail columns`).toBe(width < 600 ? 1 : 2);
+                // DOM order: the head, then the rail (controls first), then the conversation.
+                expect(head!.y + head!.height).toBeLessThanOrEqual(rail!.y + 1);
+                expect(rail!.y + rail!.height).toBeLessThanOrEqual(conversation!.y + 1);
             } else {
-                // The main column owns the left and stays the wider one; the rail is 320px.
-                expect(conversation!.x).toBeLessThan(outcome!.x);
-                expect(conversation!.width).toBeGreaterThan(outcome!.width!);
-                expect(Math.round(outcome!.width!)).toBe(320);
-                // The panels share the sidebar, under the outcome, not under the conversation.
-                expect(support!.x).toBeGreaterThan(conversation!.x + conversation!.width! - 1);
-                expect(support!.y).toBeGreaterThanOrEqual(outcome!.y + outcome!.height! - 1);
-                expect(railColumns, `${width}px rail columns`).toBe(1);
+                // The rail is a 340px right column from the app bar down, beside the head and the
+                // conversation; the controls tile leads it.
+                const appBar = await page.locator('header.appbar').boundingBox();
+                expect(Math.round(rail!.width)).toBe(340);
+                expect(conversation!.x + conversation!.width).toBeLessThanOrEqual(rail!.x + 1);
+                expect(head!.x + head!.width).toBeLessThanOrEqual(rail!.x + 1);
+                expect(Math.abs(rail!.y - (appBar!.y + appBar!.height))).toBeLessThanOrEqual(1);
+                expect(Math.round(rail!.x + rail!.width)).toBe(width);
+                expect(controls!.y).toBeLessThan(rail!.y + 20);
             }
             await page.screenshot({ path: `${SHOTS}/task-detail-${width}.png`, fullPage: true });
         }
@@ -543,21 +547,25 @@ test.describe('the task detail page', () => {
         });
         await page.goto(`/tasks/${failedGateThread[0]!.id}`);
 
-        await expect(page.locator('.page-header-meta')).toContainText('Failed · Needs review');
-        await expect(page.locator('.page-header-meta')).toContainText('Verification failed');
+        await expect(page.locator('.task-controls')).toContainText('Failed · Needs review');
+        await expect(page.locator('.task-controls')).toContainText('Verification failed');
 
-        const verification = page.locator('#task-verification');
-        await expect(verification.locator('.task-verification-counts')).toHaveText('1 failed2 passed');
-        await expect(verification.locator('details', { hasText: 'lint' })).toHaveAttribute('open', '');
-        await expect(verification.locator('details', { hasText: 'build' })).not.toHaveAttribute('open');
-        await expect(verification.locator('details', { hasText: 'test' }).first()).not.toHaveAttribute('open');
+        // A failed gate opens the Verification tile; its head still counts what happened.
+        const verification = page.locator('.task-verification');
+        await expect(verification).toHaveAttribute('open', '');
+        await expect(verification.locator('.task-section-aside')).toHaveText('1 failed2 passed');
+        const gate = (name: string) => verification.locator('.chat-gate-list details', { hasText: name });
+        await expect(gate('lint')).toHaveAttribute('open', '');
+        await expect(gate('build')).not.toHaveAttribute('open');
+        await expect(gate('test').first()).not.toHaveAttribute('open');
 
         // The one long unbroken line scrolls inside its own well, never the page.
         const well = verification.getByLabel('Output of lint').locator('pre');
         expect(await well.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
         await expect(verification.getByRole('button', { name: 'Copy output of lint' })).toBeVisible();
-        // Issue #733: environment.setup time is its own row, apart from the wall clock.
-        await expect(page.locator('.task-outcome')).toContainText('Environment setup4m');
+        // Issue #733: environment.setup time is its own row in the Task activity tile.
+        await page.locator('.task-activity > summary').click();
+        await expect(page.locator('.task-activity')).toContainText('Environment setup4m');
         await page.screenshot({ path: `${SHOTS}/task-detail-gate-failed.png`, fullPage: true });
 
         // Mark done and Remove both wait in the overflow.
@@ -566,11 +574,10 @@ test.describe('the task detail page', () => {
         await expect(page.getByRole('menuitem', { name: 'Remove task' })).toBeVisible();
         await page.keyboard.press('Escape');
 
-        // Ask for another pass lands the caret in the composer and sends nothing by itself — from
-        // the header and from the rail's next action alike.
+        // Ask for another pass lands the caret in the composer and sends nothing by itself; the rail
+        // offers it once.
+        await expect(page.getByRole('button', { name: 'Ask for another pass' })).toHaveCount(1);
         await header(page).getByRole('button', { name: 'Ask for another pass' }).click();
-        await expect(page.getByLabel('Ask for a follow-up')).toBeFocused();
-        await page.locator('.task-outcome').getByRole('button', { name: 'Ask for another pass' }).click();
         const box = page.getByLabel('Ask for a follow-up');
         await expect(box).toBeFocused();
         expect(sent).toEqual([]);
@@ -585,7 +592,7 @@ test.describe('the task detail page', () => {
 
         await expect(page.locator('.task-conversation')).toContainText(followUp.command, { timeout: 10_000 });
         await expect(page.locator('.task-conversation').getByText('Follow-up', { exact: true })).toBeVisible();
-        await expect(page.locator('.page-header-meta')).toContainText('Queued');
+        await expect(page.locator('.task-controls')).toContainText('Queued');
         // The head is queued now, so there is nothing to follow up yet.
         await expect(box).toHaveCount(0);
         expect(sent).toEqual([{ command: followUp.command }]);
@@ -734,7 +741,7 @@ test.describe('the attachments in the task history', () => {
 /** Stops the task the page shows (a queued stop lands directly) so no spec leaves a claimable task behind. */
 async function stopShownTask(page: Page): Promise<void> {
     await header(page).getByRole('button', { name: 'Stop run' }).click();
-    await expect(page.locator('.page-header-meta')).toContainText('Stopped · Needs review', { timeout: 10_000 });
+    await expect(page.locator('.task-controls')).toContainText('Stopped · Needs review', { timeout: 10_000 });
 }
 
 test.describe('the task title (BEL-252)', () => {
@@ -823,7 +830,8 @@ test.describe('the task title (BEL-252)', () => {
         await page.evaluate(() => {
             (window as unknown as { __kept: boolean }).__kept = true;
         });
-        await header(page).getByRole('button', { name: 'Rename task' }).click();
+        await header(page).getByRole('button', { name: 'More task actions' }).click();
+        await page.getByRole('menuitem', { name: 'Rename task' }).click();
         const dialog = page.getByRole('dialog');
         await expect(dialog.getByLabel('Task title')).toHaveValue('e2e — rename me');
         await dialog.getByLabel('Task title').fill('Renamed by the author');
@@ -1018,7 +1026,9 @@ test.describe('the conversation scrolls on its own above a docked composer (BEL-
         await page.screenshot({ path: `${SHOTS}/task-detail-docked-error-390-top.png` });
     });
 
-    test('1366x768: a tall expanded Outcome cannot push the composer out of the viewport', async ({ page }) => {
+    test('1366x768: a tall right column scrolls on its own and cannot push the composer out of the viewport', async ({
+        page,
+    }) => {
         const author = await sessionAuthor(page);
         await page.setViewportSize({ width: 1366, height: 768 });
         // The published thread carries verification and published work in the rail.
@@ -1027,8 +1037,8 @@ test.describe('the conversation scrolls on its own above a docked composer (BEL-
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000263000');
         await expect(page.locator('.task-follow-up textarea')).toBeVisible();
         // Workflow metadata makes the rail taller still: stand in for it with extra rows.
-        await page.locator('.task-outcome').evaluate((el) => {
-            for (let i = 0; i < 12; i++) {
+        await page.locator('.task-rail').evaluate((el) => {
+            for (let i = 0; i < 40; i++) {
                 const row = document.createElement('p');
                 row.textContent = `workflow metadata row ${i + 1}`;
                 row.style.margin = '12px 0';
@@ -1037,22 +1047,23 @@ test.describe('the conversation scrolls on its own above a docked composer (BEL-
         });
         const fit = await page.evaluate(() => {
             const composer = document.querySelector('.task-follow-up')!.getBoundingClientRect();
-            const support = document.querySelector('.task-support')!.getBoundingClientRect();
+            const rail = document.querySelector('.task-rail')!;
+            const box = rail.getBoundingClientRect();
             return {
                 pageOverflow: document.scrollingElement!.scrollHeight - window.innerHeight,
                 composerBottom: composer.bottom,
                 composerTop: composer.top,
-                supportTop: support.top,
-                supportBottom: support.bottom,
+                railBottom: box.bottom,
+                railScrolls: rail.scrollHeight > rail.clientHeight,
                 height: window.innerHeight,
             };
         });
         expect(fit.pageOverflow).toBeLessThanOrEqual(0);
         expect(fit.composerBottom).toBeLessThanOrEqual(fit.height);
         expect(fit.composerTop).toBeGreaterThan(0);
-        // The support column keeps real room inside the viewport instead of being squeezed out.
-        expect(fit.supportBottom).toBeLessThanOrEqual(fit.height);
-        expect(fit.supportBottom - fit.supportTop).toBeGreaterThan(80);
+        // The right column is bounded by the viewport and scrolls its own overflow.
+        expect(fit.railBottom).toBeLessThanOrEqual(fit.height);
+        expect(fit.railScrolls).toBe(true);
         await page.screenshot({ path: `${SHOTS}/task-detail-docked-published-1366x768.png` });
     });
 });

@@ -27,13 +27,14 @@ describe('TaskDetail — task activity (issues #339, #530)', () => {
         },
     };
 
-    it('renders the latest run’s pulse between the conversation and the panels', () => {
+    it('renders the latest run’s pulse in the right column, ahead of the conversation', () => {
         const html = renderDetail({ jobs: [job()], activity });
         expect(html).toContain('Task activity');
         expect(html).toMatch(/data-series="input"/);
         expect(html).not.toContain('bar-primary');
-        // The pulse follows the conversation and precedes nothing of the follow-up slot.
-        expect(html.indexOf('Task activity')).toBeGreaterThan(html.indexOf('</article>'));
+        // The rail leads the DOM: the tile sits in it, before the conversation's first article.
+        expect(html.indexOf('Task activity')).toBeGreaterThan(html.indexOf('task-rail'));
+        expect(html.indexOf('Task activity')).toBeLessThan(html.indexOf('<article'));
     });
 
     it('says so in place when the run has no telemetry to chart, and still offers the details', () => {
@@ -41,18 +42,20 @@ describe('TaskDetail — task activity (issues #339, #530)', () => {
         expect(html).toContain('No telemetry for this run.');
         expect(html).toContain('Open task statistics');
         // No chart in the activity panel itself — the page's other icons are not the chart's.
-        const panel = html.slice(html.indexOf('task-activity'), html.indexOf('<section class="task-follow-up"'));
-        expect(panel).not.toContain('<svg');
+        const panel = html.slice(html.indexOf('task-activity'), html.indexOf('task-main'));
+        expect(panel).not.toContain('role="img"');
     });
 });
 
 describe('TaskDetail', () => {
-    it('shows the command, status, executor and stamp of the task', () => {
+    it('shows the command, the state and the executor of the task — each once', () => {
         const html = renderDetail({ jobs: [job({ executor: 'main' })] });
         expect(html).toContain('fix the flaky login test');
-        expect(html).toContain('succeeded');
-        expect(html).toContain('main');
-        expect(html).toContain('2026-09-01 12:00');
+        expect(html).toContain('Succeeded');
+        expect(html).toContain('<dt>Executor</dt><dd>main</dd>');
+        // The run carries no status pill or stamp of its own: the controls tile says the state.
+        expect(html).not.toContain('<span class="pill">succeeded</span>');
+        expect(html).not.toContain('2026-09-01 12:00');
     });
 
     it('labels turns with their workflow node in the quiet footer, and stays quiet without one', () => {
@@ -197,10 +200,10 @@ describe('TaskDetail — the follow-up composer states', () => {
         for (const text of lacks) expect(html).not.toContain(text);
     });
 
-    it("keeps the transcript clean of task actions — those are the page header's", () => {
-        // The conversation panel carries no Stop/Done/Remove since the head lifted to the page;
+    it("keeps the transcript clean of task actions — those are the controls tile's", () => {
+        // The main column carries no Stop/Done/Remove — the right column's controls tile does;
         // its own composer's Send follow-up stays, of course.
-        const finished = renderDetail({ jobs: [job()] });
+        const finished = renderDetail({ jobs: [job()] }).split('task-main')[1]!;
         expect(finished).not.toContain('chat-resume');
         expect(finished).not.toContain('chat-stop');
         expect(finished).not.toContain('chat-remove');
@@ -239,7 +242,7 @@ describe('TaskDetail — checks', () => {
     it("renders the newest run's verification with a name and status per gate", () => {
         const html = renderDetail({ jobs: [job({ gates })] });
         expect(html).toContain('<h2>Verification</h2>');
-        expect(html).toContain('id="task-verification"');
+        expect(html).toContain('task-section task-verification');
         expect(html).toContain('test');
         expect(html).toContain('lint');
         expect(html).toContain('<details');
@@ -247,8 +250,8 @@ describe('TaskDetail — checks', () => {
 
     it('draws only the counts that happened — "0 failed" is no news, and never a pill', () => {
         const html = renderDetail({ jobs: [job({ gates: [gates[0]!] })] });
-        // Both count rows: the main column's Verification and the outcome rail's.
-        expect(html.match(/<span class="pill pill-ok">1(<!-- -->)? (<!-- -->)?passed<\/span>/g)?.length).toBe(2);
+        // One count row: the Verification tile's head.
+        expect(html.match(/<span class="pill pill-ok">1(<!-- -->)? (<!-- -->)?passed<\/span>/g)?.length).toBe(1);
         expect(html).not.toMatch(/>0(<!-- -->)? (<!-- -->)?(failed|running)</);
         expect(html).not.toContain('pill-bad');
     });
@@ -275,8 +278,8 @@ describe('TaskDetail — checks', () => {
                 }),
             ],
         });
-        const start = html.indexOf('task-verification-counts');
-        const counts = html.slice(start, html.indexOf('</p>', start));
+        const start = html.indexOf('task-section-aside', html.indexOf('task-verification'));
+        const counts = html.slice(start, html.indexOf('</summary>', start));
         expect(counts).toContain('pill pill-ok');
         expect(counts).toContain('pill pill-bad');
         expect(counts).toContain('pill pill-done');
@@ -411,7 +414,7 @@ describe('TaskDetail — turn stats', () => {
         return html.slice(start, next === -1 ? undefined : next);
     };
 
-    it('shows its own scrape on every terminal turn, including the newest', () => {
+    it('shows no scrape on any turn — the thread totals are the Task activity tile’s', () => {
         const ROOT_CONTEXT_TOKENS = 30_000;
         const ROOT_COST_USD = 0.1;
         const CHILD_CONTEXT_TOKENS = 90_433;
@@ -422,12 +425,11 @@ describe('TaskDetail — turn stats', () => {
                 child({ runtime: scrape(CHILD_CONTEXT_TOKENS, CHILD_COST_USD) }),
             ],
         });
-        const rootMeta = turnMeta(html, 'first command');
-        expect(rootMeta).toContain('ctx 30,000 tok');
-        expect(rootMeta).toContain('$0.1000');
-        const childMeta = turnMeta(html, 'second command');
-        expect(childMeta).toContain('ctx 90,433 tok');
-        expect(childMeta).toContain('$0.2100');
+        expect(turnMeta(html, 'first command')).not.toContain('ctx');
+        expect(turnMeta(html, 'second command')).not.toContain('ctx');
+        // Context is the newest run's; cost sums the thread.
+        expect(html).toContain('<dt>Context</dt><dd>90,433 tok</dd>');
+        expect(html).toContain('<dt>Cost</dt><dd>$0.3100</dd>');
     });
 
     it('shows no scrape on a turn that is still going', () => {
@@ -451,11 +453,10 @@ describe('TaskDetail — turn stats', () => {
         expect(turnMeta(html, 'second command')).not.toContain('ctx');
     });
 
-    it('shows ctx without money on a zero-dollar turn', () => {
+    it('shows the context of a zero-dollar thread in the Task activity tile', () => {
         const ZERO_DOLLAR_CONTEXT_TOKENS = 1_200;
         const html = renderDetail({ jobs: [job({ runtime: scrape(ZERO_DOLLAR_CONTEXT_TOKENS, 0) })] });
-        expect(html).toContain('ctx 1,200 tok');
-        expect(html).not.toContain('$0.0000');
+        expect(html).toContain('<dt>Context</dt><dd>1,200 tok</dd>');
     });
 
     it('never emits a placeholder value', () => {
@@ -543,50 +544,17 @@ describe('TaskDetail — who may follow up', () => {
         expect(composer.indexOf(refusal)).toBeLessThan(composer.indexOf('<textarea'));
     });
 
-    it('keeps a stop or Mark done refusal above both columns, not in the composer', () => {
+    it('keeps a stop or Mark done refusal under the head, ahead of both columns, not in the composer', () => {
         const html = renderDetail({ jobs: [job({ author: me })], viewer, actionError: 'Task is running' });
-        expect(html.indexOf('Task is running')).toBeLessThan(html.indexOf('task-layout'));
+        expect(html.indexOf('Task is running')).toBeGreaterThan(html.indexOf('task-head'));
+        expect(html.indexOf('Task is running')).toBeLessThan(html.indexOf('task-rail'));
     });
 });
 
 describe('TaskDetail — main column', () => {
-    const kim = { id: 'k', login: 'kim', name: null, avatarUrl: null };
-    const lee = { id: 'l', login: 'lee', name: null, avatarUrl: null };
-    const titlesOf = (html: string) =>
-        [...html.matchAll(/<li class="task-history-item"><span>([^<]+)<\/span>/g)].map((m) => m[1]);
-
-    it('lists recorded facts only, oldest first', () => {
-        const wait = { waitReason: 'review', waitingSince: '2026-09-01T12:05:00.000Z' };
-        const root = job(wait);
-        const child = job({
-            ...wait,
-            id: '44444444-4444-4444-8444-444444444444',
-            command: 'tighten it',
-            createdAt: '2026-09-01T12:10:00.000Z',
-            startedAt: '2026-09-01T12:10:01.000Z',
-            finishedAt: '2026-09-01T12:20:00.000Z',
-            doneAt: '2026-09-01T12:30:00.000Z',
-            doneBy: kim,
-        });
-        const html = renderDetail({ jobs: [root, child] });
-        expect(titlesOf(html)).toEqual([
-            'Task created',
-            'Run 1 started',
-            'Run 1 succeeded',
-            'Waiting for review',
-            'Follow-up queued',
-            'Run 2 started',
-            'Run 2 succeeded',
-            'Marked done by kim',
-        ]);
-        const history = html.slice(html.indexOf('task-history'), html.indexOf('</ol>'));
-        const stamps = [...history.matchAll(/dateTime="([^"]+)"/g)].map((m) => Date.parse(m[1]!));
-        expect(stamps).toEqual([...stamps].sort((a, b) => a - b));
-        expect(html).not.toMatch(/Implemented|Published PR|Published pull request/);
-    });
-
-    // Issue #796: an interruption is a recorded fact of the run, not a failed attempt.
-    it('records each interruption in the run history', () => {
+    // Issue #796: an interruption is a recorded fact of the thread, not a failed attempt — the
+    // Task activity tile lists it.
+    it('lists each interruption in the Task activity tile', () => {
         const html = renderDetail({
             jobs: [
                 job({
@@ -594,29 +562,15 @@ describe('TaskDetail — main column', () => {
                 }),
             ],
         });
-        expect(titlesOf(html)).toContain('Run 1 interrupted: the driver was drained');
+        const activity = html.slice(html.indexOf('task-activity'), html.indexOf('task-main'));
+        expect(activity).toContain('Claim 1: the driver was drained');
     });
 
-    it('collapses the run history behind a disclosure counting the runs', () => {
-        const html = renderDetail({ jobs: [job()] });
-        expect(html).toMatch(/<details class="run-history"><summary><h2>Run history<\/h2>.*?1 run</);
-        expect(html).not.toContain('<details class="run-history" open');
+    it('renders no run history', () => {
+        expect(renderDetail({ jobs: [job()] })).not.toContain('Run history');
     });
 
-    it('a queued run has only its queued fact; a stop names who asked', () => {
-        const queued = renderDetail({
-            jobs: [job({ status: 'queued', startedAt: null, finishedAt: null, exitCode: null })],
-        });
-        expect(titlesOf(queued)).toEqual(['Task created']);
-
-        const stopped = renderDetail({
-            jobs: [job({ status: 'stopped', cancelRequestedAt: '2026-09-01T12:02:00.000Z', stoppedBy: lee })],
-        });
-        expect(titlesOf(stopped)).toEqual(['Task created', 'Run 1 started', 'Stop requested by lee', 'Run 1 stopped']);
-        expect(titlesOf(renderDetail({ jobs: [job({ status: 'dead' })] }))).toContain('Run 1 lost its worker');
-    });
-
-    it('keeps only the conversation and composer in the main column; every other panel is in the sidebar', () => {
+    it('keeps only the conversation and composer in the main column; every other tile is in the rail', () => {
         const runtime = {
             cpuPercent: null,
             memUsedMb: null,
@@ -635,8 +589,8 @@ describe('TaskDetail — main column', () => {
             ],
         });
         const layout = html.slice(html.indexOf('task-layout'));
-        const main = layout.slice(layout.indexOf('task-main'), layout.indexOf('task-support'));
-        const support = layout.slice(layout.indexOf('task-support'));
+        const rail = layout.slice(layout.indexOf('task-rail'), layout.indexOf('task-main'));
+        const main = layout.slice(layout.indexOf('task-main'));
         const orderIn = (region: string, headings: string[]) => {
             const order = headings.map((h) => region.indexOf(`<h2>${h}</h2>`));
             expect(order.every((at) => at >= 0)).toBe(true);
@@ -645,13 +599,45 @@ describe('TaskDetail — main column', () => {
         orderIn(main, ['Conversation']);
         // The follow-up input docks under the conversation, with no heading of its own.
         expect(main.indexOf('<h2>Conversation</h2>')).toBeLessThan(main.indexOf('id="follow-up-command"'));
-        orderIn(support, ['Services', 'Run history', 'Verification', 'Published work']);
-        for (const heading of ['Run history', 'Verification', 'Services', 'Published work']) {
+        // Controls first, then the tiles in the mockup's order.
+        expect(rail.indexOf('task-controls')).toBeLessThan(rail.indexOf('<h2>Outcome</h2>'));
+        orderIn(rail, ['Outcome', 'Verification', 'Task activity', 'Services']);
+        for (const heading of ['Outcome', 'Verification', 'Task activity', 'Services']) {
             expect(main).not.toContain(`<h2>${heading}</h2>`);
         }
-        // The rail leads the DOM, so a narrow screen reads the summary first, the panels last.
-        expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-main'));
-        expect(html.indexOf('task-main')).toBeLessThan(html.indexOf('task-support'));
+        // The rail leads the DOM, so a narrow screen reads the controls and tiles before the conversation.
+        expect(html.indexOf('task-head')).toBeLessThan(html.indexOf('task-rail'));
+        expect(html.indexOf('task-rail')).toBeLessThan(html.indexOf('task-main'));
+    });
+
+    it('opens the Outcome tile, opens Verification only on a failed gate, and keeps the rest shut', () => {
+        const runtime = {
+            cpuPercent: null,
+            memUsedMb: null,
+            memPercent: null,
+            activity: null,
+            sampledAt: '2026-09-01T12:02:00.000Z',
+            services: [{ name: 'db', image: 'postgres:16', state: 'exited' }],
+        };
+        const tile = (html: string, name: string) =>
+            html.match(new RegExp(`<details class="panel task-section ${name}"( open="")?`))?.[1];
+        const passed = renderDetail({
+            jobs: [
+                job({
+                    output: '[driver] published fix/2 — https://github.com/acme/web/pull/2',
+                    gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }],
+                    runtime,
+                }),
+            ],
+        });
+        expect(tile(passed, 'task-outcome')).toBe(' open=""');
+        expect(tile(passed, 'task-verification')).toBeUndefined();
+        expect(tile(passed, 'task-activity')).toBeUndefined();
+        expect(passed).toMatch(/<details class="panel task-section">/);
+        const failed = renderDetail({
+            jobs: [job({ gates: [{ name: 'lint', status: 'failed', exitCode: 1, output: 'x' }] })],
+        });
+        expect(tile(failed, 'task-verification')).toBe(' open=""');
     });
 });
 

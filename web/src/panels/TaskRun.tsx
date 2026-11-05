@@ -2,21 +2,13 @@ import { type ReactNode, type Ref, useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import type { AnswerOutcome } from '../api/answer-question.js';
 import { Icon } from '../components/Icon.js';
-import { elapsedSeconds, runDuration, timestamp } from '../format.js';
-import {
-    closePhase,
-    FAILURE_KIND_LABEL,
-    GATE_PILL,
-    gateCounts,
-    gateStatusLabel,
-    isHttpUrl,
-    prNumber,
-    type ThreadPublish,
-} from '../task-outcome.js';
+import { elapsedSeconds } from '../format.js';
+import { closePhase, FAILURE_KIND_LABEL, GATE_PILL, gateCounts, gateStatusLabel } from '../task-outcome.js';
 import type { FollowUpViewer } from '../task-outcome.js';
 import { AttachmentHistory } from './AttachmentList.js';
 import { TaskConnect } from './TaskConnect.js';
 import { TaskQuestion } from './TaskQuestion.js';
+import { TaskSection } from './TaskSection.js';
 
 /**
  * One output well: a clipped log a keyboard user can actually reach. The wrapping section names
@@ -44,9 +36,6 @@ function OutputWell({
         </section>
     );
 }
-
-/** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
-const tokenCount = new Intl.NumberFormat('en-US');
 
 /**
  * The running attempt's sampled container vitals — CPU and memory — rendered while the run goes
@@ -235,8 +224,6 @@ function RunResponseBody({
     );
 }
 
-const COST_DECIMAL_PLACES = 4;
-
 /** An admin's turn on another member's task: who queued it, and on behalf of whom. */
 function ActingForNote({ job }: { job: Job }) {
     if (job.actingFor === null) return null;
@@ -248,33 +235,28 @@ function ActingForNote({ job }: { job: Job }) {
 }
 
 /**
- * The run's quiet metadata footer: status, timestamps, attribution — everything that follows the
- * work it describes rather than leading the article. Split out of `TaskRun` because its many
- * independent fields were the rest of its cognitive complexity.
+ * The run's own notes the right column does not already carry: why it failed, which workflow node
+ * it ran, who queued it for whom, who stopped or closed it. Status, timestamps, executor, duration,
+ * exit and tokens are the Controls and Task activity tiles' — never repeated per run. Nothing at
+ * all when there is no note.
  */
-function RunMetaFooter({ job, parked }: { job: Job; parked: boolean }) {
+function RunNotes({ job }: { job: Job }) {
+    const quiet =
+        job.failureKind == null &&
+        job.workflowNode === null &&
+        job.actingFor === null &&
+        job.stoppedBy === null &&
+        job.doneAt === null &&
+        job.doneBy === null;
+    if (quiet) return null;
     return (
         <p className="msg-meta">
-            <span className="pill">{job.status}</span>
             {/* The structured terminal reason (issue 339): the one-glance answer to "why did it
                 fail", instead of making the reader scan the output tail for the driver's note. */}
             {job.failureKind != null ? (
                 <span className="pill pill-bad">{FAILURE_KIND_LABEL[job.failureKind]}</span>
             ) : null}
-            <span className="muted">{timestamp(job.createdAt)}</span>
-            {job.executor !== null ? <span className="muted">{job.executor}</span> : null}
-            {job.workflowName != null ? <span className="muted">workflow {job.workflowName}</span> : null}
             {job.workflowNode !== null ? <span className="muted">node {job.workflowNode}</span> : null}
-            {!parked ? <span className="muted">{runDuration(job.startedAt, job.finishedAt)}</span> : null}
-            {job.exitCode !== null ? <span className="chat-exit">exit {job.exitCode}</span> : null}
-            {job.runtime?.contextTokens != null ? (
-                <span className="chat-activity">
-                    ctx {tokenCount.format(job.runtime.contextTokens)} tok
-                    {job.runtime.costUsd != null && job.runtime.costUsd > 0
-                        ? ` · $${job.runtime.costUsd.toFixed(COST_DECIMAL_PLACES)}`
-                        : ''}
-                </span>
-            ) : null}
             <ActingForNote job={job} />
             {job.stoppedBy !== null ? (
                 <span className="pill chat-stop">
@@ -313,7 +295,6 @@ export function TaskRun({
     connect?: ConnectContext | undefined;
 }) {
     const terminal = isTerminal(job.status);
-    const parked = job.status === 'queued';
     // Live logs start expanded; a finished run's log starts collapsed behind its summary, and
     // expanded when it is all there is. State is per mounted run (keyed by job id in
     // `TaskDetail`), so polling, appended follow-ups and the live-to-finished transition keep it.
@@ -333,7 +314,7 @@ export function TaskRun({
                 liveRef={liveRef}
                 questions={<RunQuestions job={job} onAnswer={onAnswer} connect={connect} />}
             />
-            <RunMetaFooter job={job} parked={parked} />
+            <RunNotes job={job} />
         </article>
     );
 }
@@ -373,9 +354,6 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
     );
 }
 
-/** The verification panel's id — the outcome rail's "View checks" link lands focus here. */
-export const VERIFICATION_ID = 'task-verification';
-
 /** Gate outcomes in reading order: what failed first, then what passed, then what is still going. */
 const GATE_ORDER: readonly GateCheck['status'][] = ['failed', 'passed', 'running', 'pending', 'skipped'];
 
@@ -412,13 +390,12 @@ export function GateCountPills({
  */
 export function Verification({ gates, terminal }: { gates: GateCheck[]; terminal: boolean }) {
     return (
-        <section className="panel task-verification" id={VERIFICATION_ID} tabIndex={-1}>
-            <div className="panel-head">
-                <h2>Verification</h2>
-                <p className="task-verification-counts">
-                    <GateCountPills gates={gates} terminal={terminal} />
-                </p>
-            </div>
+        <TaskSection
+            title="Verification"
+            className="task-verification"
+            defaultOpen={gateCounts(gates).failed > 0}
+            aside={<GateCountPills gates={gates} terminal={terminal} />}
+        >
             <ul className="chat-gate-list">
                 {gates.map((gate) => (
                     <li key={gate.name}>
@@ -440,37 +417,6 @@ export function Verification({ gates, terminal }: { gates: GateCheck[]; terminal
                     </li>
                 ))}
             </ul>
-        </section>
-    );
-}
-
-/**
- * The task's published work: the branch as a chip with its copy button, and the PR linked only
- * when its url is one the reader can safely open (`isHttpUrl`) — nothing a run echoed becomes a
- * handler href. The link says what it is — `Pull request #<n>`, a reference, never a CTA.
- */
-export function Publication({ publish }: { publish: ThreadPublish }) {
-    const url = publish.url !== null && isHttpUrl(publish.url) ? publish.url : null;
-    const number = url !== null ? prNumber(url) : null;
-    return (
-        <section className="panel task-published">
-            <div className="panel-head">
-                <h2>Published work</h2>
-            </div>
-            <p className="run-publish">
-                <code className="task-branch">
-                    <Icon name="git-branch" size={14} />
-                    {publish.branch}
-                </code>
-                <CopyButton text={publish.branch} label="Copy branch name" />
-                {url !== null ? (
-                    // A new window, not a navigation over the dashboard, and rel=noopener/noreferrer
-                    // so the opened PR cannot reach back into this tab.
-                    <a href={url} target="_blank" rel="noopener noreferrer">
-                        {number !== null ? `Pull request #${number}` : 'Pull request'}
-                    </a>
-                ) : null}
-            </p>
-        </section>
+        </TaskSection>
     );
 }

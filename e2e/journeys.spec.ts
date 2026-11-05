@@ -70,8 +70,8 @@ async function routeTask(page: Page, held: { jobs: ThreadJob[] }): Promise<void>
     });
 }
 
-const header = (page: Page) => page.locator('.page-header-actions');
-const meta = (page: Page) => page.locator('.page-header-meta');
+const header = (page: Page) => page.locator('.task-actions');
+const meta = (page: Page) => page.locator('.task-controls');
 const sidebarRow = (page: Page, id: string) =>
     page.locator(`nav[aria-label="Primary"] .sidenav-task[href="/tasks/${id}"]`);
 
@@ -104,18 +104,15 @@ test.describe('task journeys', () => {
         held.jobs = authoredBy(parkedReviewWaitThread, me);
         await expect(meta(page)).toContainText('Waiting for review', { timeout: 10_000 });
         await expect(header(page).getByRole('button', { name: 'Stop run' })).toHaveCount(0);
-        await expect(header(page)).toContainText('No executor is running. The workflow is waiting for review.');
+        await expect(meta(page)).toContainText('is waiting for review — no executor is occupied while it waits.');
         await expect(sidebarRow(page, id).locator('.sidenav-dot-paused')).toBeVisible({ timeout: 10_000 });
         await shoot(page, 'wait', 'parked', theme);
 
         await header(page).getByRole('button', { name: 'Mark done' }).click();
-        // Header.
+        // Controls tile.
         await expect(meta(page)).toContainText('Done', { timeout: 10_000 });
         await expect(meta(page)).not.toContainText('Waiting for review');
         await expect(header(page)).toContainText(`Closed by ${me.login}`);
-        // Rail.
-        await expect(page.locator('.task-outcome')).toContainText('Done');
-        await expect(page.locator('.task-outcome')).not.toContainText('Waiting for review');
         // Sidebar: a closed task leaves the preview, and nothing else is open.
         await expect(sidebarRow(page, id)).toHaveCount(0, { timeout: 10_000 });
         await expect(page.locator('nav[aria-label="Primary"] summary.sidenav-section')).toHaveText('All caught up');

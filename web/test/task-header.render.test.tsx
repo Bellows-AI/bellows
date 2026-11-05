@@ -33,9 +33,10 @@ describe('the task page header', () => {
         expect(html).not.toContain('More task actions');
     });
 
-    it('shows the status beside the title as the shared label in its tone, with the header’s own classes', () => {
+    it('shows the status in the controls tile as the shared label in its tone', () => {
         const html = renderHeader({ jobs: [job()] });
-        expect(html).toContain('page-header-meta');
+        expect(html).toContain('<section class="panel task-controls" aria-label="Task controls">');
+        expect(html).not.toContain('page-header-meta');
         expect(html).toMatch(/<span class="pill pill-accent" aria-live="polite">.*Succeeded · Needs review<\/span>/);
         const running = renderHeader({ jobs: [job({ status: 'running', finishedAt: null, exitCode: null })] });
         expect(running).toMatch(
@@ -61,19 +62,14 @@ describe('the task page header', () => {
         expect(after).not.toContain('Needs answer');
     });
 
-    it('names the task #id · Opened … by login · repo', () => {
+    it('names the task #id · Opened …, leaving the author and repo to the task activity tile', () => {
         const author = { id: 'a', login: 'octocat', name: 'Octo Cat', avatarUrl: null };
         const html = renderHeader({ jobs: [job({ author, repo: 'acme/web' })] });
         expect(html).toContain('page-header-description');
         expect(html).toContain('title="11111111-1111-4111-8111-111111111111">#11111111<');
         expect(html).toContain('<time dateTime="2026-09-01T12:00:00.000Z"');
-        expect(html).toContain('<span class="avatar avatar-fallback" aria-hidden="true">O</span>octocat');
-        expect(html).toContain('acme/web');
-
-        // A pre-accounts row says so; no repository, no repository segment.
-        const bare = renderHeader({ jobs: [job()] });
-        expect(bare).toContain('<span class="task-opened-by">unknown</span>');
-        expect(bare).not.toContain('acme/web');
+        expect(html).not.toContain('octocat');
+        expect(html).not.toContain('acme/web');
     });
 
     it('adds a Verification failed pill while the newest run has a failed gate', () => {
@@ -82,7 +78,7 @@ describe('the task page header', () => {
         expect(renderHeader({ jobs: [job()] })).not.toContain('Verification failed');
     });
 
-    it('preserves Stop run while waiting, with copy explaining it cancels automation but not the PR', () => {
+    it('preserves Stop run while waiting, and says the board waits for review', () => {
         const html = renderHeader({
             jobs: [
                 job({
@@ -96,8 +92,9 @@ describe('the task page header', () => {
             ],
         });
         expect(html).toContain('>Stop run<');
-        expect(html).toMatch(/cancels remaining automation/i);
-        expect(html).toMatch(/not close|does not close/i);
+        expect(html).toContain('is waiting for review — no executor is occupied while it waits.');
+        // No help sentence under the actions: the controls tile is buttons only.
+        expect(html).not.toMatch(/cancels remaining automation/i);
     });
 
     it('says Stopping while the stop request itself is in flight, and cannot be re-clicked', () => {
@@ -226,8 +223,9 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
     const wait = { waitReason: 'review', waitingSince: '2026-09-01T12:30:00.000Z' };
     const failedGate = [{ name: 'lint', status: 'failed' as const, exitCode: 1, output: 'nope' }];
     const doneAt = '2026-09-01T13:00:00.000Z';
+    // The controls tile carries no help sentence any more; the copy below must stay gone.
     const MARK_DONE_COPY = 'Closes this task in Bellows. Does not merge or close the pull request.';
-    const PARKED_COPY = 'No executor is running. The workflow is waiting for review.';
+    const PARKED_COPY = 'is waiting for review — no executor is occupied while it waits.';
     const STOPPING_BUTTON =
         '<button type="button" class="chat-resume chat-stop" disabled="" aria-busy="true">Stopping…</button>';
     /** The primary button's markup: the one `class="primary"` button in the row. */
@@ -400,14 +398,12 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
         }
     );
 
-    it('succeeded with no wait: Mark done, with what it does and does not do', () => {
+    it('succeeded with no wait: Mark done, with no help sentence beside it', () => {
         const html = renderHeader({ jobs: [job({ author: me })], viewer });
         expect(primaryOf(html)).toBe('Mark done');
-        expect(html).toContain(MARK_DONE_COPY);
+        expect(html).not.toContain(MARK_DONE_COPY);
         expect(html).not.toContain(PARKED_COPY);
-        const describedBy = html.match(/aria-describedby="([^"]+)"/)?.[1];
-        expect(describedBy).toBeDefined();
-        expect(html).toContain(`id="${describedBy}">${MARK_DONE_COPY}`);
+        expect(html).not.toContain('aria-describedby');
     });
 });
 
@@ -449,12 +445,16 @@ describe('the task page header — the display title (BEL-252)', () => {
 
     it('offers Rename task to the author and an admin, and to nobody else', () => {
         const author = { id: 'author-1', login: 'octocat', name: null, avatarUrl: null };
-        const jobs = [job({ author })];
+        // Rename lives in the More menu, which portals its items; a running task offers neither Remove
+        // nor Mark done there, so the trigger alone says whether Rename is on offer.
+        const jobs = [job({ author, status: 'running', finishedAt: null, exitCode: null })];
         const viewer = (id: string | null, admin: boolean) => ({ loading: false, id, admin });
-        expect(renderHeader({ jobs, viewer: viewer('author-1', false) })).toContain('Rename task');
-        expect(renderHeader({ jobs, viewer: viewer('someone-else', true) })).toContain('Rename task');
-        expect(renderHeader({ jobs, viewer: viewer('someone-else', false) })).not.toContain('Rename task');
-        expect(renderHeader({ jobs, viewer: { loading: true, id: null, admin: false } })).not.toContain('Rename task');
+        expect(renderHeader({ jobs, viewer: viewer('author-1', false) })).toContain('More task actions');
+        expect(renderHeader({ jobs, viewer: viewer('someone-else', true) })).toContain('More task actions');
+        expect(renderHeader({ jobs, viewer: viewer('someone-else', false) })).not.toContain('More task actions');
+        expect(renderHeader({ jobs, viewer: { loading: true, id: null, admin: false } })).not.toContain(
+            'More task actions'
+        );
     });
 });
 

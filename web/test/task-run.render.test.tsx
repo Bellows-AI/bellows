@@ -80,12 +80,15 @@ describe('TaskRun', () => {
         expect(html).not.toContain('View raw output');
     });
 
-    it('keeps status and failure metadata after the response and its output', () => {
+    it('keeps the failure note after the response and its output, and leaves status and exit to the rail', () => {
         const html = articleOf(
-            renderDetail({ jobs: [job({ status: 'failed', exitCode: 2, output: 'raw lines' })] }),
+            renderDetail({
+                jobs: [job({ status: 'failed', exitCode: 2, failureKind: 'timeout', output: 'raw lines' })],
+            }),
             '<article'
         );
-        expect(html.indexOf('</details>')).toBeLessThan(html.indexOf('exit 2'));
+        expect(html.indexOf('</details>')).toBeLessThan(html.indexOf('timed out'));
+        expect(html).not.toContain('exit 2');
     });
 
     it('a running run with activity reads the activity sentence, not a verdict', () => {
@@ -191,7 +194,7 @@ describe('TaskRun — gates, publication and metadata', () => {
         }
     });
 
-    it('metadata follows the work in markup order, and omits what the run does not carry', () => {
+    it('notes follow the work in markup order, and repeat nothing the right column carries', () => {
         const gates = [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }];
         const html = renderDetail({
             jobs: [
@@ -209,17 +212,16 @@ describe('TaskRun — gates, publication and metadata', () => {
         const metaAt = article.indexOf('msg-meta', responseAt);
         expect(responseAt).toBeGreaterThan(-1);
         expect(metaAt).toBeGreaterThan(responseAt);
-        expect(article).toContain('workflow fix-issue');
+        // The node is the run's own; the workflow, executor, duration, exit and tokens are the
+        // Task activity tile's.
         expect(article).toContain('node implement');
-        expect(article).toContain('4m');
-        expect(article).toContain('exit 0');
-        expect(article).toContain('ctx 3,000 tok');
-        expect(article).toContain('$0.0100');
+        expect(article).not.toContain('workflow fix-issue');
+        expect(article).not.toContain('exit 0');
+        expect(article).not.toContain('ctx 3,000 tok');
+        expect(article).not.toContain('$0.0100');
 
-        const bare = articleOf(renderDetail({ jobs: [job()] }), 'first command');
-        expect(bare).not.toContain('workflow');
-        expect(bare).not.toContain('node ');
-        expect(bare).not.toContain('ctx');
+        const bare = articleOf(renderDetail({ jobs: [job()] }), 'fix the flaky login test');
+        expect(bare).not.toContain('msg-meta');
     });
 });
 
@@ -399,8 +401,9 @@ describe('follow-up composer', () => {
         expect(html).not.toContain('Ctrl/⌘ + Enter');
     });
 
-    it('carries the placeholder and the send copy, including the sending state', () => {
-        expect(renderDetail({ jobs: [job()] })).toContain('Describe the adjustment…');
+    it('carries no placeholder, and the send copy, including the sending state', () => {
+        // The empty field is named by its hidden label alone.
+        expect(renderDetail({ jobs: [job()] })).not.toContain('placeholder=');
         // Send is the round arrow only: its words are the accessible name.
         expect(renderDetail({ jobs: [job()] })).toMatch(
             /class="primary chat-input-send"[^>]*aria-label="Send follow-up"/
@@ -471,7 +474,7 @@ describe('TaskRun close-phase strip', () => {
     it('a skipped gate renders a skipped pill and its "no changes" output', () => {
         const skipped = { name: 'test', status: 'skipped' as const, exitCode: null, output: 'no changes' };
         const html = renderDetail({ jobs: [job({ status: 'succeeded', gates: [skipped] })] });
-        const panel = html.slice(html.indexOf('id="task-verification"'));
+        const panel = html.slice(html.indexOf('task-verification'));
         expect(panel).toContain('1 skipped');
         expect(panel).toContain('>skipped<');
         expect(panel).toContain('no changes');
@@ -485,13 +488,13 @@ describe('TaskRun close-phase strip', () => {
 
     it('the Verification panel of a finished run reads "not run" for a pending gate, "pending" while running', () => {
         const finished = renderDetail({ jobs: [job({ status: 'failed', gates: closing() })] });
-        const panel = finished.slice(finished.indexOf('id="task-verification"'));
+        const panel = finished.slice(finished.indexOf('task-verification'));
         expect(panel).toContain('1 not run');
         expect(panel).toContain('>not run<');
         expect(panel).not.toContain('>pending<');
 
         const live = renderDetail({ jobs: [liveJob(closing())] });
-        const livePanel = live.slice(live.indexOf('id="task-verification"'));
+        const livePanel = live.slice(live.indexOf('task-verification'));
         expect(livePanel).toContain('1 pending');
         expect(livePanel).not.toContain('not run');
     });

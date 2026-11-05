@@ -39,7 +39,9 @@ function board(rename: (call: FetchCall) => FetchReply) {
 }
 
 const openDialog = async (user: ReturnType<typeof userEvent.setup>) => {
-    await user.click(await screen.findByRole('button', { name: 'Rename task' }));
+    // Rename lives in the controls tile's More menu.
+    await user.click(await screen.findByRole('button', { name: 'More task actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Rename task' }));
     return within(await screen.findByRole('dialog'));
 };
 

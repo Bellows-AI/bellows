@@ -36,7 +36,7 @@ async function mounted<T extends HTMLElement = HTMLElement>(root: ParentNode, se
 }
 
 describe('the task detail page', () => {
-    it('a finished thread reads request, response, history, verification, published work', async () => {
+    it('a finished thread reads request, response, verification and published work, each tile folding on its own', async () => {
         board(authoredBy(publishedThread, LOCAL_AUTHOR));
         const { container } = renderApp(`/tasks/${publishedThread[0]!.id}`);
         const user = userEvent.setup();
@@ -44,42 +44,38 @@ describe('the task detail page', () => {
         const conversation = await mounted(container, '.task-conversation');
         await waitFor(() => expect(within(conversation).getByText('Request', { exact: true })).toBeTruthy());
         const main = container.querySelector<HTMLElement>('.task-main')!;
-        const support = container.querySelector<HTMLElement>('.task-support')!;
-        for (const name of ['Run history', 'Verification', 'Published work']) {
-            expect(within(support).getByRole('heading', { name })).toBeTruthy();
+        const rail = container.querySelector<HTMLElement>('.task-rail')!;
+        for (const name of ['Outcome', 'Verification', 'Task activity']) {
+            expect(within(rail).getByRole('heading', { name })).toBeTruthy();
             expect(within(main).queryByRole('heading', { name })).toBeNull();
         }
+        expect(within(rail).queryByRole('heading', { name: 'Run history' })).toBeNull();
         expect(conversation.textContent).toContain('fix #177 please');
 
-        // The stored summary is the response; the raw output and the run history start collapsed,
-        // and each toggles on its own.
+        // The stored summary is the response; the raw output and the shut tiles toggle on their own.
         expect(within(conversation).getByText('Rebuilt the task detail layout and outcome summary.')).toBeTruthy();
         const rawOutput = conversation.querySelector<HTMLDetailsElement>('.run-output')!;
-        const history = container.querySelector<HTMLDetailsElement>('.run-history')!;
+        const activity = rail.querySelector<HTMLDetailsElement>('.task-activity')!;
         expect(rawOutput.open).toBe(false);
-        expect(history.open).toBe(false);
+        expect(activity.open).toBe(false);
         await user.click(within(rawOutput).getByText('View raw output'));
         await waitFor(() => expect(rawOutput.open).toBe(true));
-        expect(history.open).toBe(false);
-        await user.click(within(history).getByRole('heading', { name: 'Run history' }));
-        await waitFor(() => expect(history.open).toBe(true));
+        expect(activity.open).toBe(false);
+        await user.click(within(activity).getByRole('heading', { name: 'Task activity' }));
+        await waitFor(() => expect(activity.open).toBe(true));
         expect(rawOutput.open).toBe(true);
 
-        // The outcome answers "what happened and where" without duplicating the gate output.
-        const outcome = container.querySelector<HTMLElement>('.task-outcome')!;
-        expect(outcome.textContent).toContain('Verification');
-        expect(outcome.textContent).toContain('1 passed');
-        expect(outcome.textContent).not.toContain('all green');
+        // The outcome is the published work only: the branch, the PR and the issue.
+        const outcome = rail.querySelector<HTMLDetailsElement>('.task-outcome')!;
+        expect(outcome.open).toBe(true);
+        expect(outcome.textContent).toContain('fix/177');
         expect(outcome.textContent).toContain('#9');
         expect(outcome.textContent).toContain('#177');
-        const published = container.querySelector<HTMLElement>('.task-published')!;
-        expect(published.textContent).toContain('Pull request #9');
-        expect(published.textContent).toContain('fix/177');
+        expect(outcome.textContent).not.toContain('Verification');
+        // The verification tile's head counts the gates; the output is inside it once.
+        const verification = rail.querySelector<HTMLElement>('.task-verification')!;
+        expect(verification.textContent).toContain('1 passed');
         expectNoPlaceholder(document.body.textContent);
-
-        // The outcome's checks link lands focus on the verification panel itself.
-        await user.click(screen.getByRole('link', { name: 'View checks' }));
-        expect(document.activeElement).toBe(document.getElementById('task-verification'));
     });
 
     it('a live run’s raw output collapses and reopens from its summary, landing on the tail', async () => {
@@ -296,7 +292,7 @@ describe('the task detail page', () => {
         });
         const { container, router } = renderApp(`/tasks/${firstId}`);
         const user = userEvent.setup();
-        const header = await mounted(container, '.page-header-actions');
+        const header = await mounted(container, '.task-actions');
 
         await user.click(await within(header).findByRole('button', { name: 'Mark done' }));
         const pending = await within(header).findByRole('button', { name: 'Marking done…' });
@@ -311,7 +307,7 @@ describe('the task detail page', () => {
         // Let the refusal settle before reading what it left behind.
         await new Promise((resolve) => setTimeout(resolve, 50));
         expect(screen.queryByText('Task is running')).toBeNull();
-        const markDone = within(container.querySelector<HTMLElement>('.page-header-actions')!).getByRole('button', {
+        const markDone = within(container.querySelector<HTMLElement>('.task-actions')!).getByRole('button', {
             name: 'Mark done',
         });
         expect((markDone as HTMLButtonElement).disabled).toBe(false);
