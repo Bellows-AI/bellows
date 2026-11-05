@@ -708,8 +708,12 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(shared?.[1]).toMatch(/field-sizing:\s*content/);
         expect(shared?.[1]).toMatch(/resize:\s*none/);
         expect(shared?.[1]).toMatch(/max-height/);
+        // Focus shares the composer's quiet ring on the textarea itself: a visible outline, so the
+        // keyboard matrix finds a ring on the focused element (BEL-266), never `outline: none`.
         const focus = rules(css).find(([p]) => /\.task-follow-up \.composer-input:focus-visible/.test(p));
-        expect(focus?.[1]).toMatch(/outline:\s*none/);
+        expect(focus?.[0]).toContain('.task-compose .composer-input:focus-visible');
+        expect(focus?.[1]).toMatch(/outline:\s*2px solid var\(--line-strong\)/);
+        expect(focus?.[1]).not.toMatch(/outline:\s*none/);
     });
 
     it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {

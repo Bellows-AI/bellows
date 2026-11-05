@@ -187,8 +187,8 @@ test.describe('the guided task composer', () => {
             const prompt = page.getByLabel('What should the agent do?');
             await expect(prompt).toBeVisible();
             const surface = page.locator('.composer-surface');
-            const read = () =>
-                surface.evaluate((el) => {
+            const read = (target: typeof surface) =>
+                target.evaluate((el) => {
                     const box = el.getBoundingClientRect();
                     const style = getComputedStyle(el);
                     return {
@@ -200,17 +200,20 @@ test.describe('the guided task composer', () => {
                 });
 
             await page.screenshot({ path: `${SHOTS}/composer-compact-idle-${width}.png` });
-            const idle = await read();
+            const idle = { surface: await read(surface), prompt: await read(prompt) };
             await prompt.focus();
-            const focused = await read();
+            const focused = { surface: await read(surface), prompt: await read(prompt) };
             await page.screenshot({ path: `${SHOTS}/composer-compact-focused-${width}.png` });
 
-            expect(focused.box).toEqual(idle.box);
-            expect(focused.borderColor).toBe(idle.borderColor);
-            expect(focused.borderWidth).toBe(idle.borderWidth);
-            // The cue is still there: a visible outline, not a colour swap on the border.
-            expect(focused.outlineStyle).toBe('solid');
-            expect(idle.outlineStyle).toBe('none');
+            expect(focused.surface.box).toEqual(idle.surface.box);
+            expect(focused.surface.borderColor).toBe(idle.surface.borderColor);
+            expect(focused.surface.borderWidth).toBe(idle.surface.borderWidth);
+            expect(focused.prompt.box).toEqual(idle.prompt.box);
+            // The cue is still there, on the focused prompt itself (the keyboard matrix reads the
+            // focused element's own outline): a visible outline, not a colour swap on the border.
+            expect(focused.prompt.outlineStyle).toBe('solid');
+            expect(idle.prompt.outlineStyle).toBe('none');
+            expect(focused.surface.outlineStyle).toBe('none');
         });
     }
 });
