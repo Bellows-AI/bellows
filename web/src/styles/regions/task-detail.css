@@ -23,26 +23,104 @@
         grid-area: outcome;
     }
 
-    .task-main,
     .task-support {
         display: grid;
         gap: 16px;
+        grid-area: support;
         min-width: 0;
     }
 
+    /* The main column is a bounded flex column (BEL-263): the conversation is its one scroll
+       region and the follow-up composer docks under it, so the composer never moves as output
+       grows. Narrow, the block is a viewport tall (100dvh less the app bar and the page padding)
+       inside the page's own flow; from 1024px the shell is bounded instead, below. */
     .task-main {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
         grid-area: main;
+        height: calc(100dvh - 72px);
+        min-height: 0;
+        min-width: 0;
     }
 
-    .task-support {
-        grid-area: support;
+    /* The conversation's frame: the scroll region fills it, the Jump to latest control floats in
+       its bottom corner. */
+    .task-thread {
+        flex: 1 1 0;
+        min-height: 0;
+        position: relative;
+    }
+
+    .task-conversation {
+        display: grid;
+        gap: 16px;
+        height: 100%;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        /* A focusable scroll region: the keyboard reaches its overflow. */
+        padding-right: 4px;
+    }
+
+    .task-jump {
+        bottom: 12px;
+        box-shadow: 0 2px 8px var(--shadow-float);
+        left: 50%;
+        position: absolute;
+        transform: translateX(-50%);
+    }
+
+    /* The composer is the docked tier: it keeps its natural height under the conversation and
+       never scrolls itself. Its border and focus treatment are the shared `composer-surface`
+       (composer.css), the understated separation from the conversation above. */
+    .task-follow-up {
+        flex: none;
+    }
+
+    /* Inside the docked surface the heading already separates; the legacy hairline goes. */
+    .task-follow-up .composer {
+        border-top: 0;
+        margin-top: 0;
+        padding-top: 0;
     }
 
     @media (min-width: 1024px) {
+        /* The page is bounded to the viewport on the task route: header on top, the layout fills
+           the rest. The main column fills its row; the right column scrolls on its own. */
+        .shell:has(.task-layout) {
+            height: 100dvh;
+            overflow: hidden;
+        }
+
+        .shell:has(.task-layout) .shell-main {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .shell:has(.task-layout) .page {
+            flex: 1 1 0;
+            min-height: 0;
+        }
+
         .task-layout {
+            flex: 1 1 0;
             grid-template-areas: 'main outcome' 'main support';
             grid-template-columns: minmax(0, 1fr) 320px;
-            grid-template-rows: auto 1fr;
+            grid-template-rows: auto minmax(0, 1fr);
+            min-height: 0;
+        }
+
+        .task-main {
+            align-self: stretch;
+            height: auto;
+        }
+
+        .task-support {
+            align-self: stretch;
+            min-height: 0;
+            overflow-y: auto;
         }
     }
 

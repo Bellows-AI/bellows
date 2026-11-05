@@ -686,6 +686,20 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         );
     });
 
+    it('task detail: the conversation is the one scroll region, the composer docks under it (BEL-263)', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/task-detail.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.task-conversation')).toMatch(/overflow-y:\s*auto/);
+        expect(body('.task-conversation')).toMatch(/min-height:\s*0/);
+        expect(body('.task-main')).toMatch(/display:\s*flex/);
+        expect(body('.task-main')).toMatch(/flex-direction:\s*column/);
+        expect(body('.task-main')).toMatch(/min-height:\s*0/);
+        expect(body('.task-main')).toMatch(/height:\s*calc\(100dvh/);
+        expect(body('.task-follow-up')).toMatch(/flex:\s*none/);
+        expect(body('.task-follow-up')).not.toMatch(/overflow/);
+    });
+
     it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/inbox.css'), 'utf8'));
         const all = rules(css);
