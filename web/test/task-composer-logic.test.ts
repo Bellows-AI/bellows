@@ -348,7 +348,6 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
         repoTouched: false,
         workflowRepo: 'acme/web',
         baseBranch: '',
-        title: '',
         ...freshWorkflowDraft(),
     };
 
@@ -364,6 +363,12 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
             baseBranch: null,
         });
         expect('defaultWorkflow' in body).toBe(false);
+    });
+
+    it('ignores a legacy `title` on a restored draft without throwing (BEL-261)', () => {
+        const legacy = { ...held, title: '  Fix the login crash ' } as ComposerDraftInput;
+        const body = queuedTask(legacy, [], {});
+        expect('title' in body).toBe(false);
     });
 
     it('carries the named workflow, its trimmed params and the stamped scope', () => {
@@ -442,7 +447,6 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
         repoTouched: true,
         workflowRepo: 'acme/api',
         baseBranch: '',
-        title: '',
         workflow: 'fix-issue',
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: { issue: true },
@@ -457,7 +461,6 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
             repoTouched: false,
             workflowRepo: 'acme/web',
             baseBranch: '',
-            title: '',
             ...freshWorkflowDraft(),
         });
         // No resolved default (no preference, no rows at all): the fresh composer holds nothing,
@@ -498,7 +501,6 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
         repoTouched: false,
         workflowRepo: 'acme/web',
         baseBranch: '',
-        title: '',
         workflow: 'fix-issue',
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: {},

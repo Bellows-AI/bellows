@@ -36,7 +36,6 @@ const next: ComposerDraftInput = {
     repoTouched: true,
     workflowRepo: 'acme/app',
     baseBranch: '',
-    title: '',
     workflow: 'w1',
     storedParams: { workflowId: 'w1', values: { issue: '#12' } },
     paramTouched: { issue: true },

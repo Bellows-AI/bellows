@@ -673,6 +673,19 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.composer-context .select-trigger')).not.toMatch(/border|background/);
     });
 
+    it('focus on the composer surface never swaps its border or resizes it (BEL-261; not the RED, see the e2e)', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
+        const focusRules = rules(css).filter(
+            ([prelude]) => /:focus(-within|-visible)?\b/.test(prelude) && /composer-(surface|input)/.test(prelude)
+        );
+        expect(focusRules.length).toBeGreaterThan(0);
+        for (const [, declarations] of focusRules)
+            expect(declarations).not.toMatch(/border|padding|margin|width|height/);
+        expect(rules(css).find(([p]) => p.trim() === '.composer-surface')?.[1]).toMatch(
+            /border:\s*1px solid var\(--line\)/
+        );
+    });
+
     it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/inbox.css'), 'utf8'));
         const all = rules(css);
