@@ -848,7 +848,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         expect(await taskOf(id)).toMatchObject({ gate: 'passed', attention: null });
     });
 
-    it('a PR closed without merging emits task.blocked on the succeeded head beside the task.ready', async () => {
+    it('a PR closed without merging emits task.blocked on the succeeded head, and no task.ready', async () => {
         const { id, root } = await observedAs({ state: 'closed' });
         await store.reconcile(id);
         await store.reconcile(id);
@@ -856,9 +856,8 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
             select kind, reason, job_id from notification_event
             where org_id = ${ORG} and root_job_id = ${root} order by kind
         `;
-        expect(rows.map((r) => r.kind)).toEqual(['task.blocked', 'task.ready']);
-        expect(rows[0]).toMatchObject({ reason: 'closed' });
-        expect(rows[0]!.job_id).toBe(rows[1]!.job_id);
+        expect(rows.map((r) => r.kind)).toEqual(['task.blocked']);
+        expect(rows[0]).toMatchObject({ reason: 'closed', job_id: root });
     });
 
     it('clears the closed attention when the PR is reopened, and the gate waits again', async () => {
