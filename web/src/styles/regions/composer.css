@@ -74,9 +74,9 @@
 
     /* The one surface, the raised tier: the request on top, the chip-and-launch toolbar below, one
        hairline, one radius and the soft float shadow (the chat-style input). It is the shared
-       composer surface (the follow-up composer reuses it): a neutral idle border, and on focus a
-       2px outline in the same colour family drawn over the border, so neither the border colour nor
-       the box moves. */
+       composer surface (the follow-up composer reuses it): a neutral idle border that focus never
+       changes, so neither the border colour nor the box moves. The focus cue is the prompt's own
+       outline (below), never a second ring on the surface. */
     .composer-surface {
         background: var(--surface-raised);
         border: 1px solid var(--line);
@@ -89,11 +89,6 @@
         max-width: var(--page-form);
         padding: 8px 12px 6px;
         width: 100%;
-    }
-
-    .composer-surface:focus-within {
-        outline: 2px solid var(--line-strong);
-        outline-offset: -1px;
     }
 
     /* The label is still the textarea's name; the heading above carries the visible question. */
@@ -114,6 +109,7 @@
     .task-follow-up .composer-input {
         background: transparent;
         border: 0;
+        border-radius: var(--radius-md);
         field-sizing: content;
         font-size: 16px;
         line-height: 24px;
@@ -122,11 +118,13 @@
         resize: none;
     }
 
-    /* The surface's own focus outline is the cue for the prompt; a second accent ring inside it
-       would double the frame. The chips keep the global ring. */
+    /* The prompt wears its own quiet ring: a 2px outline in the border's colour family instead of
+       the global accent ring, so keyboard focus stays discoverable on the focused element itself
+       without the loud frame. The chips keep the global ring. */
     .task-compose .composer-input:focus-visible,
     .task-follow-up .composer-input:focus-visible {
-        outline: none;
+        outline: 2px solid var(--line-strong);
+        outline-offset: 2px;
     }
 
     /* An engine that cannot grow the field to its content gets room up front instead. */

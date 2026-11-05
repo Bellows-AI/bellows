@@ -28,7 +28,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
   (`400 UNKNOWN_REPO`) in `server/src/routes/jobs/job-handlers-worker.ts`,
   `server/test/routes.executor-lifecycle.test.ts`.
 
-`.composer-surface` is the reusable composer frame: idle `1px solid var(--line)`, focus a 2px `--line-strong` outline (offset -1px) so the border colour and the box never change. Reuse it, never restyle per composer. The page's heading stays; the empty-prompt state is silent (Start is simply disabled).
+`.composer-surface` is the reusable composer frame: `1px solid var(--line)` that focus never changes, so the border colour and the box never move. The focus cue is the prompt's own ring: `.composer-input:focus-visible` draws a 2px `--line-strong` outline (offset 2px) on the textarea itself, never on the surface, so the keyboard matrix finds a ring on the focused element and focused chips keep a single global ring. Reuse it, never restyle per composer. The page's heading stays; the empty-prompt state is silent (Start is simply disabled).
 
 Classes defined here: `composer-row`, `composer-input`, `composer-label`, `composer-fields`,
 `composer-helper`, `composer-param-input`, `composer-param-error`, `composer-param-details`,
