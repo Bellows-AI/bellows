@@ -197,6 +197,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
     ],
     'styles/regions/composer.css': [
         '.chat-input-bar button',
+        '.chat-input-box > button',
         '.composer-param-input',
         '.chat-input-send',
         '.composer-notices-dismiss',
@@ -205,7 +206,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.chat-resume',
         '.task-actions button',
         '.task-remove-actions button',
-        '.task-outcome > summary',
+        '.task-section-head',
         '.run-output > summary',
         '.chat-gate-list summary',
         '.question-option',
@@ -488,7 +489,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         };
         for (const [rel, selectors] of [
             ['styles/regions/dashboard.css', ['.chart-disclosure summary']],
-            ['styles/regions/task-detail.css', ['.task-outcome > summary', '.run-output > summary']],
+            ['styles/regions/task-detail.css', ['.run-output > summary']],
             ['styles/regions/entry.css', ['.onboarding-org-summary']],
             ['styles/regions/settings.css', ['.picker-advanced > summary']],
         ] as const) {

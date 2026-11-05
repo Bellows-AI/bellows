@@ -24,9 +24,9 @@ export interface ChatInputSend {
 
 /**
  * The one chat input, shared by the new-task page and the task's follow-up: the draft's files
- * above, a one-line bordered field that grows with its text, and a row below with the paperclip,
- * any caller controls, and the round send arrow. The visible label is hidden; the field keeps it
- * as its name. Drop is the surrounding `AttachmentDropZone`'s.
+ * above, then a one-line bordered field that grows with its text, with the paperclip and the round
+ * send arrow inside its frame; caller controls and the status sit in a row below. The visible label
+ * is hidden; the field keeps it as its name. Drop is the surrounding `AttachmentDropZone`'s.
  */
 export function ChatInput({
     id,
@@ -45,7 +45,8 @@ export function ChatInput({
 }: {
     id: string;
     label: string;
-    placeholder: string;
+    /** Absent: an empty field, named by its hidden label alone. */
+    placeholder?: string;
     value: string;
     readOnly: boolean;
     onChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
@@ -73,39 +74,37 @@ export function ChatInput({
             <label htmlFor={id} className="composer-visually-hidden">
                 {label}
             </label>
-            <textarea
-                id={id}
-                className="field chat-input-field"
-                rows={1}
-                placeholder={placeholder}
-                value={value}
-                readOnly={readOnly}
-                {...fieldProps}
-                onChange={onChange}
-            />
-            {children}
-            <div className="chat-input-bar">
-                <div className="chat-input-controls">
-                    {limits === null ? null : (
-                        <AttachmentPicker limits={limits} onPick={files.add} disabled={readOnly} />
-                    )}
-                    {controls}
-                </div>
-                <div className="chat-input-end">
-                    <button
-                        type="button"
-                        className="primary chat-input-send"
-                        disabled={send.disabled}
-                        aria-busy={send.busy || undefined}
-                        aria-describedby={send.describedBy}
-                        aria-label={send.label}
-                        onClick={send.onSend}
-                    >
-                        <Icon name="arrow-up" />
-                    </button>
-                    {status}
-                </div>
+            <div className="chat-input-box">
+                {limits === null ? null : <AttachmentPicker limits={limits} onPick={files.add} disabled={readOnly} />}
+                <textarea
+                    id={id}
+                    className="field chat-input-field"
+                    rows={1}
+                    placeholder={placeholder}
+                    value={value}
+                    readOnly={readOnly}
+                    {...fieldProps}
+                    onChange={onChange}
+                />
+                <button
+                    type="button"
+                    className="primary chat-input-send"
+                    disabled={send.disabled}
+                    aria-busy={send.busy || undefined}
+                    aria-describedby={send.describedBy}
+                    aria-label={send.label}
+                    onClick={send.onSend}
+                >
+                    <Icon name="arrow-up" />
+                </button>
             </div>
+            {children}
+            {controls === undefined && status === undefined ? null : (
+                <div className="chat-input-bar">
+                    <div className="chat-input-controls">{controls}</div>
+                    <div className="chat-input-end">{status}</div>
+                </div>
+            )}
         </div>
     );
 }

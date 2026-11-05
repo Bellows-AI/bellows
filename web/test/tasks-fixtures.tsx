@@ -19,7 +19,7 @@ import type {
 import { type ComposerDraftInput, type ComposerDraftStore, EMPTY_FILES } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
-import { TaskHeader } from '../src/panels/TaskHeader.js';
+import { TaskControls, TaskHeader } from '../src/panels/TaskHeader.js';
 import type { RepoOption, WorkflowParamChoice } from '../src/task-composer.js';
 import type { FollowUpViewer } from '../src/task-outcome.js';
 
@@ -216,6 +216,21 @@ export const renderDetail = ({
         // under a router the same way the page mounts it.
         <MemoryRouter>
             <TaskDetail
+                header={null}
+                controls={
+                    jobs !== null && jobs.length > 0 ? (
+                        <TaskControls
+                            jobs={jobs}
+                            viewer={viewer}
+                            stoppingId={null}
+                            doneId={null}
+                            onStop={async () => {}}
+                            onDone={async () => {}}
+                            onRemoveRequest={() => {}}
+                            onRenameRequest={() => {}}
+                        />
+                    ) : null
+                }
                 jobs={jobs}
                 viewer={viewer}
                 error={error}
@@ -245,16 +260,21 @@ export const renderHeader = ({
     viewer = ANONYMOUS_VIEWER,
 }: HeaderArgs = {}) =>
     renderToStaticMarkup(
-        <TaskHeader
-            jobs={jobs}
-            viewer={viewer}
-            stoppingId={stoppingId}
-            doneId={doneId}
-            onStop={async () => {}}
-            onDone={async () => {}}
-            onRemoveRequest={() => {}}
-            onRenameRequest={() => {}}
-        />
+        <>
+            <TaskHeader jobs={jobs} />
+            {jobs !== null && jobs.length > 0 ? (
+                <TaskControls
+                    jobs={jobs}
+                    viewer={viewer}
+                    stoppingId={stoppingId}
+                    doneId={doneId}
+                    onStop={async () => {}}
+                    onDone={async () => {}}
+                    onRemoveRequest={() => {}}
+                    onRenameRequest={() => {}}
+                />
+            ) : null}
+        </>
     );
 
 export const NO_TOKENS: Tokens = { input: null, output: null, cacheRead: null, cacheCreation: null };

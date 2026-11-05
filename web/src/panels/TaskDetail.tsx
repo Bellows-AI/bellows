@@ -5,8 +5,7 @@ import type { SubmittedFiles } from '../api/useTasks.js';
 import { type ComposerDraftStore, threadScope } from '../composer-draft.js';
 import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
-import { RelativeTime } from '../components/RelativeTime.js';
-import { endedOnQuestion, type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
+import { endedOnQuestion, type FollowUpViewer, followUpEligibility } from '../task-outcome.js';
 import { useStickToBottom } from '../use-stick-to-bottom.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { attachmentHandlers } from './AttachmentPicker.js';
@@ -14,89 +13,11 @@ import { ChatInput } from './ChatInput.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
-import { type OnAnswer, Publication, TaskRun, Verification } from './TaskRun.js';
+import { type OnAnswer, TaskRun, Verification } from './TaskRun.js';
+import { TaskSection } from './TaskSection.js';
 
 /** No run's activity has been answered yet — every run reads as loading. */
 const NO_ACTIVITY: ThreadActivity = {};
-
-/** One recorded fact of the task's life: what happened, and the stamp the board holds for it. */
-interface HistoryItem {
-    key: string;
-    title: string;
-    at: string;
-}
-
-/** Each attempt of one run the infrastructure interrupted (issue 796), as recorded facts. */
-const interruptionItems = (job: Job, run: string): HistoryItem[] =>
-    job.interruptions.map((interruption) => ({
-        key: `${job.id}-interrupted-${interruption.claimSeq}-${interruption.at}`,
-        title: `${run} interrupted: ${interruption.reason}`,
-        at: interruption.at,
-    }));
-
-/**
- * The run history: only facts the board recorded — each run's queued/started/finished stamps, its
- * interruptions, a stop request, the review wait's start and the Done verdict — oldest first.
- * Nothing inferred: no "Implemented changes", no "Published PR", because no stamp says when
- * either happened. The wait and the verdict are the thread's (every member carries the same wait,
- * and only the newest run can be closed), so they are read off the newest run once.
- */
-function runHistory(jobs: Job[]): HistoryItem[] {
-    const items: HistoryItem[] = [];
-    jobs.forEach((job, i) => {
-        const run = `Run ${i + 1}`;
-        items.push({
-            key: `${job.id}-created`,
-            title: i === 0 ? 'Task created' : 'Follow-up queued',
-            at: job.createdAt,
-        });
-        if (job.startedAt !== null)
-            items.push({ key: `${job.id}-started`, title: `${run} started`, at: job.startedAt });
-        items.push(...interruptionItems(job, run));
-        if (job.cancelRequestedAt !== null) {
-            const by = job.stoppedBy !== null ? ` by ${job.stoppedBy.login}` : '';
-            items.push({ key: `${job.id}-stop`, title: `Stop requested${by}`, at: job.cancelRequestedAt });
-        }
-        if (job.finishedAt !== null && isTerminal(job.status)) {
-            // `dead` is the board's word for a run whose worker vanished; the history says so.
-            const verdict = job.status === 'dead' ? 'lost its worker' : job.status;
-            items.push({ key: `${job.id}-finished`, title: `${run} ${verdict}`, at: job.finishedAt });
-        }
-    });
-    const latest = jobs[jobs.length - 1]!;
-    if (latest.waitingSince !== null) {
-        items.push({ key: 'waiting', title: 'Waiting for review', at: latest.waitingSince });
-    }
-    if (latest.doneAt !== null) {
-        const by = latest.doneBy !== null ? ` by ${latest.doneBy.login}` : '';
-        items.push({ key: 'done', title: `Marked done${by}`, at: latest.doneAt });
-    }
-    // A stable sort on the ISO stamps: same-instant facts keep the order they were pushed in.
-    return items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-}
-
-function RunHistory({ jobs }: { jobs: Job[] }) {
-    return (
-        <section className="panel">
-            <details className="run-history">
-                <summary>
-                    <h2>Run history</h2>
-                    <span className="muted">
-                        {jobs.length} {jobs.length === 1 ? 'run' : 'runs'}
-                    </span>
-                </summary>
-                <ol className="task-history">
-                    {runHistory(jobs).map((item) => (
-                        <li key={item.key} className="task-history-item">
-                            <span>{item.title}</span>
-                            <RelativeTime at={item.at} />
-                        </li>
-                    ))}
-                </ol>
-            </details>
-        </section>
-    );
-}
 
 /** The Services panel shows only the first few rows; the rest collapse into a count. */
 const MAX_VISIBLE_SERVICES = 3;
@@ -127,10 +48,7 @@ function Services({ services }: { services: readonly ServiceStatus[] }) {
     const overflow = services.length - MAX_VISIBLE_SERVICES;
     const visible = services.slice(0, MAX_VISIBLE_SERVICES);
     return (
-        <section className="panel">
-            <div className="panel-head">
-                <h2>Services</h2>
-            </div>
+        <TaskSection title="Services" aside={String(services.length)}>
             {/* The fleet is torn down when the attempt ends, so these are its record of it, not a
             claim about now. */}
             <KeyValues pairs={visible.map((service) => [service.name, service.state] as [string, ReactNode])} />
@@ -138,7 +56,7 @@ function Services({ services }: { services: readonly ServiceStatus[] }) {
                 <ServiceEnding key={service.name} service={service} />
             ))}
             {overflow > 0 ? <p className="muted">and {overflow} more</p> : null}
-        </section>
+        </TaskSection>
     );
 }
 
@@ -210,7 +128,6 @@ function FollowUpComposer({
             <ChatInput
                 id={FOLLOW_UP_INPUT_ID}
                 label="Ask for a follow-up"
-                placeholder="Describe the adjustment…"
                 value={draft}
                 readOnly={frozen}
                 onChange={(e) =>
@@ -338,11 +255,11 @@ function JumpToLatest({ show, onJump }: { show: boolean; onJump: () => void }) {
 }
 
 /**
- * One task, whole: the outcome rail, the main column — the conversation (every run's request
- * and response, the root first) and the follow-up — and the supporting panels: services, run
- * activity, run history, the newest run's verification and the published work. The rail leads
- * the DOM, so a narrow screen reads it first as a summary, then the conversation, then the
- * panels; from 1024px the grid puts the rail and the panels in the right sidebar.
+ * One task, whole: the page's `header`, the right column (`task-rail`) — the caller's `controls`
+ * tile, then the outcome, verification, task activity and services tiles — and the main column:
+ * the conversation (every run's request and response, the root first) and the follow-up. DOM
+ * order is header, rail, main, so a narrow screen reads the title, the controls and the tiles
+ * before the conversation; from 1024px the rail is a full-height right column beside both.
  *
  * Props in, markup out, like every panel: the detail poll lives in the page (`useThread`) and
  * this component owns only the follow-up draft and the live-output tail. Follow-ups are new rows
@@ -350,6 +267,8 @@ function JumpToLatest({ show, onJump }: { show: boolean; onJump: () => void }) {
  * top to bottom in this one view, and sending an adjustment extends it in place.
  */
 export function TaskDetail({
+    header,
+    controls,
     jobs,
     viewer,
     error,
@@ -362,13 +281,17 @@ export function TaskDetail({
     onConnectionChange,
     activity = NO_ACTIVITY,
 }: {
+    /** The page's head: title, id line, batch backlink. Rendered whatever the poll holds. */
+    header: ReactNode;
+    /** The right column's first tile (the page's `TaskControls`); null until the thread lands. */
+    controls: ReactNode;
     /** The task's whole chain, oldest first — null until the thread poll lands. */
     jobs: Job[] | null;
     /** Who is looking — only the task's author is offered the composer. */
     viewer: FollowUpViewer;
     /** Why there is no task yet. Said in place, never silently. */
     error: string | null;
-    /** Why the last stop or Mark done did not land. Said above both columns. */
+    /** Why the last stop or Mark done did not land. Said under the header. */
     actionError: string | null;
     /** Why the last follow-up did not queue. Said inside the composer, beside the draft. */
     followUpError: string | null;
@@ -402,9 +325,12 @@ export function TaskDetail({
 
     if (jobs === null || jobs.length === 0) {
         return (
-            <section className="panel">
-                {error !== null ? <p className="muted">{error}</p> : <p className="muted">Loading the task…</p>}
-            </section>
+            <>
+                {header}
+                <section className="panel">
+                    {error !== null ? <p className="muted">{error}</p> : <p className="muted">Loading the task…</p>}
+                </section>
+            </>
         );
     }
 
@@ -412,67 +338,64 @@ export function TaskDetail({
     const latestTask = latest as Job;
     const gates = latestTask.gates ?? null;
     const services = latestTask.runtime?.services ?? null;
-    const publish = threadPublish(jobs);
 
     return (
-        <>
-            {/* The action error leads the page, above both columns — it is about the reader's last
-            stop or Mark done, not about either panel's content. */}
-            {actionError !== null ? <p className="status">{actionError}</p> : null}
-            <div className="task-layout">
-                <TaskOutcome jobs={jobs} viewer={viewer} />
-                <AttachmentDropZone
-                    className="task-main"
-                    accepts={() => followUpAdd.current !== null}
-                    onFiles={(dropped) => followUpAdd.current?.(dropped)}
-                >
-                    <div className="task-thread">
-                        {/* The one scroll region: the composer below is its sibling, never inside it. */}
-                        <section className="task-conversation" aria-label="Conversation" ref={conversation.ref}>
-                            <div className="panel-head">
-                                <h2>Conversation</h2>
-                            </div>
-                            {jobs.map((task, index) => (
-                                <TaskRun
-                                    key={task.id}
-                                    job={task}
-                                    index={index + 1}
-                                    liveRef={
-                                        task.id === latestTask.id && !isTerminal(task.status) ? liveWell.ref : undefined
-                                    }
-                                    onAnswer={onAnswer}
-                                    connect={
-                                        task.id === latestTask.id
-                                            ? { viewer, onChanged: onConnectionChange }
-                                            : undefined
-                                    }
-                                />
-                            ))}
-                        </section>
-                        <JumpToLatest show={conversation.hasUnseen} onJump={conversation.jumpToLatest} />
-                    </div>
-                    <FollowUp
-                        latest={latestTask}
-                        rootId={jobs[0]?.id ?? latestTask.id}
-                        draftStore={draftStore}
-                        viewer={viewer}
-                        error={followUpError}
-                        sending={sending}
-                        onFollowUp={onFollowUp}
-                        adder={followUpAdd}
-                    />
-                </AttachmentDropZone>
-                <div className="task-support">
-                    {services !== null && services.length > 0 ? <Services services={services} /> : null}
-                    {/* The latest run's pulse and the thread's statistics modal (issue 530). */}
-                    <TaskActivity jobs={jobs} activity={activity} />
-                    <RunHistory jobs={jobs} />
-                    {gates !== null && gates.length > 0 ? (
-                        <Verification gates={gates} terminal={isTerminal(latestTask.status)} />
-                    ) : null}
-                    {publish !== null ? <Publication publish={publish} /> : null}
-                </div>
+        <div className="task-layout">
+            <div className="task-head">
+                {header}
+                {/* The action error sits under the title — it is about the reader's last stop or
+                Mark done, not about either column's content. */}
+                {actionError !== null ? <p className="status">{actionError}</p> : null}
             </div>
-        </>
+            <aside className="task-rail" aria-label="Task details">
+                {controls}
+                <TaskOutcome jobs={jobs} />
+                {gates !== null && gates.length > 0 ? (
+                    <Verification gates={gates} terminal={isTerminal(latestTask.status)} />
+                ) : null}
+                {/* The thread's execution facts, the latest run's pulse and the statistics modal (issue 530). */}
+                <TaskActivity jobs={jobs} activity={activity} />
+                {services !== null && services.length > 0 ? <Services services={services} /> : null}
+            </aside>
+            <AttachmentDropZone
+                className="task-main"
+                accepts={() => followUpAdd.current !== null}
+                onFiles={(dropped) => followUpAdd.current?.(dropped)}
+            >
+                <div className="task-thread">
+                    {/* The one scroll region: the composer below is its sibling, never inside it. */}
+                    <section className="task-conversation" aria-label="Conversation" ref={conversation.ref}>
+                        <div className="panel-head">
+                            <h2>Conversation</h2>
+                        </div>
+                        {jobs.map((task, index) => (
+                            <TaskRun
+                                key={task.id}
+                                job={task}
+                                index={index + 1}
+                                liveRef={
+                                    task.id === latestTask.id && !isTerminal(task.status) ? liveWell.ref : undefined
+                                }
+                                onAnswer={onAnswer}
+                                connect={
+                                    task.id === latestTask.id ? { viewer, onChanged: onConnectionChange } : undefined
+                                }
+                            />
+                        ))}
+                    </section>
+                    <JumpToLatest show={conversation.hasUnseen} onJump={conversation.jumpToLatest} />
+                </div>
+                <FollowUp
+                    latest={latestTask}
+                    rootId={jobs[0]?.id ?? latestTask.id}
+                    draftStore={draftStore}
+                    viewer={viewer}
+                    error={followUpError}
+                    sending={sending}
+                    onFollowUp={onFollowUp}
+                    adder={followUpAdd}
+                />
+            </AttachmentDropZone>
+        </div>
     );
 }

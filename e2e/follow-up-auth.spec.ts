@@ -68,8 +68,11 @@ test('a turn an admin queued names the author it was queued on behalf of', async
     await routeThread(page, onBehalf);
     await page.goto(`/tasks/${root.id}`);
     await expect(page.getByText(`queued by ${me.login} on behalf of ${owner.login}`)).toBeVisible();
-    await expect(page.locator('.task-opened-by')).toContainText(owner.login);
-    await expect(page.locator('.task-opened-by')).not.toContainText(me.login);
+    // The Task activity tile names who started the task: the owner, not the admin who queued the turn.
+    await page.locator('.task-activity > summary').click();
+    const startedBy = page.locator('.task-activity dt', { hasText: 'Started by' }).locator('+ dd');
+    await expect(startedBy).toContainText(owner.name ?? owner.login);
+    await expect(startedBy).not.toContainText(me.name ?? me.login);
     await expect(page.getByLabel('Ask for a follow-up')).toBeVisible();
     await page.screenshot({ path: 'artifacts/ui/task-detail-admin-on-behalf.png', fullPage: true });
 });

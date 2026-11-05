@@ -70,8 +70,9 @@
     }
 
     /* The one chat input (ChatInput.tsx), shared by the new-task page and the follow-up: the
-       files above, a bordered one-line field that grows, and the control row below. No surface
-       of its own — the field's border is the only frame. */
+       files above, a bordered one-line field that grows with the paperclip and the send arrow
+       inside its frame, and the caller's control row below. No surface of its own — the field's
+       border is the only frame. */
     .chat-input {
         display: flex;
         flex-direction: column;
@@ -88,9 +89,35 @@
         line-height: 20px;
         max-height: 50vh;
         min-height: 0;
-        padding: 6px 10px;
+        padding: 6px 38px 6px 10px;
         resize: none;
         width: 100%;
+    }
+
+    /* The paperclip and the arrow sit on the field's last line, inside its border; the field's
+       side padding keeps the text clear of them. */
+    .chat-input-box {
+        position: relative;
+    }
+
+    .chat-input-box:has(> .attachment-add) > .chat-input-field {
+        padding-left: 38px;
+    }
+
+    /* `min-height: 0` outranks `button.primary`'s 40px; the compact shell's 44px rule below
+       comes later at the same weight and wins there. */
+    .chat-input-box > button {
+        bottom: 6px;
+        min-height: 0;
+        position: absolute;
+    }
+
+    .chat-input-box > .attachment-add {
+        left: 8px;
+    }
+
+    .chat-input-box > .chat-input-send {
+        right: 8px;
     }
 
     .chat-input-field:hover {
@@ -596,6 +623,7 @@
     /* ── composer touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .chat-input-bar button,
+        .chat-input-box > button,
         .composer-param-input,
         .chat-input-send,
         .composer-notices-dismiss,
@@ -604,6 +632,17 @@
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
+        }
+
+        /* The field grows to hold the two 44px targets on its line. */
+        .chat-input-field {
+            min-height: 56px;
+            padding-right: 58px;
+            padding-top: 17px;
+        }
+
+        .chat-input-box:has(> .attachment-add) > .chat-input-field {
+            padding-left: 58px;
         }
 
         /* The base-branch chip's two controls fill the chip, so each one is a full-height target. */

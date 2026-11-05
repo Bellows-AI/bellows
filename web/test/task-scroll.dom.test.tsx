@@ -62,6 +62,8 @@ function TaskDetailUnder({ jobs, store }: { jobs: readonly ThreadJob[]; store: C
     return (
         <MemoryRouter>
             <TaskDetail
+                header={null}
+                controls={null}
                 jobs={[...jobs] as never}
                 viewer={ADMIN}
                 error={null}

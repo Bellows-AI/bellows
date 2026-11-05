@@ -84,7 +84,7 @@ test.describe('answering an agent question', () => {
     test('answers a pending single-select question → Answered by the member', async ({ page }) => {
         const question = await open(page, await seedQuestion());
         await expect(status(question)).toHaveText('Claude is waiting for your answer');
-        await expect(page.locator('.page-header-meta')).toContainText('Needs answer');
+        await expect(page.locator('.task-controls')).toContainText('Needs answer');
         const submit = question.getByRole('button', { name: 'Submit' });
         await expect(submit).toBeDisabled();
         await shoot(question, 'waiting');
@@ -137,18 +137,16 @@ test.describe('answering an agent question', () => {
     });
 });
 
-// Issue 738: the time a run waits for an answer is not wall clock — the live timer in the head and
-// the outcome panel both leave it out, answered or still pending.
+// Issue 738: the time a run waits for an answer is not wall clock — the controls tile's live timer
+// leaves it out, answered or still pending.
 test.describe('the wall clock while a question waits', () => {
     test('2m running, 10m waiting for the answer, 3m running reads 5m', async ({ page }) => {
         await open(page, await seedQuestion({ startedMinutesAgo: 15, askedMinutesAgo: 13, answeredMinutesAgo: 3 }));
         await expect(page.locator('.task-clock')).toHaveText('Wall clock 5m');
-        await expect(page.locator('.task-outcome')).toContainText('Wall clock5m');
     });
 
     test('a pending question stops the clock where it was asked', async ({ page }) => {
         await open(page, await seedQuestion({ startedMinutesAgo: 12, askedMinutesAgo: 10, answeredMinutesAgo: null }));
         await expect(page.locator('.task-clock')).toHaveText('Wall clock 2m');
-        await expect(page.locator('.task-outcome')).toContainText('Wall clock2m');
     });
 });

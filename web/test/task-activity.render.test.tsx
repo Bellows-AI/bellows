@@ -99,7 +99,8 @@ describe('TaskActivity', () => {
         for (const answer of ['unavailable' as const, payload({ buckets: [], usage: usageBlock(null) })]) {
             const html = render({ [RUN_ID]: answer });
             expect(html).toContain('No telemetry for this run.');
-            expect(html).not.toContain('<svg');
+            // No chart: the only svg is the tile head's chevron.
+            expect(html).not.toContain('role="img"');
             expect(html).toContain('task-stats-trigger');
         }
     });

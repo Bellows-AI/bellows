@@ -29,9 +29,9 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
   (`400 UNKNOWN_REPO`) in `server/src/routes/jobs/job-handlers-worker.ts`,
   `server/test/routes.executor-lifecycle.test.ts`.
 
-`.chat-input` is the one chat input, reused by both composers, never restyled per composer. It has no surface of its own: the field (`.chat-input-field`) carries the only frame, `1px solid var(--line)`, and focus brightens that border to `--line-strong` instead of drawing a ring. The field starts one line high and grows with its text (`field-sizing: content`) up to half the viewport. The row below has no padding, sits 4px under the field, and holds the paperclip and the 24px round send arrow (44px on the compact shell). No shortcut hint is drawn; Ctrl/⌘+Enter still sends. The page's heading stays; the empty-prompt state is silent (Start is simply disabled).
+`.chat-input` is the one chat input, reused by both composers, never restyled per composer. It has no surface of its own: the field (`.chat-input-field`) carries the only frame, `1px solid var(--line)`, and focus brightens that border to `--line-strong` instead of drawing a ring. The field starts one line high and grows with its text (`field-sizing: content`) up to half the viewport. The paperclip and the 24px round send arrow (44px on the compact shell) sit inside the field's frame on its last line (`.chat-input-box`); the row below holds only caller controls and the status. No shortcut hint is drawn; Ctrl/⌘+Enter still sends. The page's heading stays; the empty-prompt state is silent (Start is simply disabled).
 
-Classes defined here: `chat-input`, `chat-input-field`, `chat-input-bar`, `chat-input-controls`,
+Classes defined here: `chat-input`, `chat-input-field`, `chat-input-box`, `chat-input-bar`, `chat-input-controls`,
 `chat-input-end`, `chat-input-send`, `composer-label`, `composer-fields`,
 `composer-helper`, `composer-param-input`, `composer-param-error`, `composer-param-details`,
 `composer-heading`, `composer-visually-hidden`, `composer-blocker`, `composer-note`, `composer-counter`, `is-over`,
