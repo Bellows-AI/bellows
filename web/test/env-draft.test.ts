@@ -11,6 +11,9 @@ import {
     secretState,
     seedRows,
     advancedUnapplied,
+    applyRawText,
+    rowsToRawText,
+    secretsNote,
     type EnvRowState,
 } from '../src/panels/env-draft.js';
 import { serializeEnv } from '../src/panels/env-raw.js';
@@ -212,5 +215,94 @@ describe('tab counts', () => {
         ];
         expect(countActive(rows, false)).toBe(1);
         expect(countActive(rows, true)).toBe(2);
+    });
+});
+
+describe('the shared structured/.env draft (BEL-262)', () => {
+    let counter = 0;
+    const nextId = () => {
+        counter += 1;
+        return `n${counter}`;
+    };
+    const blankNew: EnvRowState = {
+        id: 'blank',
+        name: '',
+        value: '',
+        isSecret: false,
+        isNew: true,
+        pendingRemove: false,
+    };
+
+    it('writes only the active variables into the text: no secret, no pending removal, no blank addition', () => {
+        const rows = [
+            storedVar('A', '1'),
+            storedSecret('TOKEN'),
+            { ...storedVar('GONE', 'x'), pendingRemove: true },
+            blankNew,
+            storedVar('E', ''),
+        ];
+        expect(rowsToRawText(rows)).toBe('A=1\nE=');
+    });
+
+    it('keeps a secret out of the text even when its value was typed', () => {
+        const typed: EnvRowState = { ...storedSecret('TOKEN'), value: 'hunter2', isNew: true };
+        expect(rowsToRawText([typed, storedVar('A', '1')])).not.toContain('hunter2');
+        expect(rowsToRawText([typed])).toBe('');
+    });
+
+    it('applies valid text as the whole variable set and passes the secret rows around untouched', () => {
+        const secret = { ...storedSecret('TOKEN'), value: 'typed', isNew: false };
+        const result = applyRawText('B=2\nA=\n', [storedVar('OLD', 'x'), secret], nextId);
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(envPayload(result.rows)).toEqual([
+            { name: 'B', value: '2', isSecret: false },
+            { name: 'A', value: '', isSecret: false },
+            { name: 'TOKEN', value: 'typed', isSecret: true },
+        ]);
+        expect(result.rows.at(-1)).toBe(secret);
+    });
+
+    it('reports line-numbered errors and no rows for malformed text, a secret name included', () => {
+        const result = applyRawText('A=1\nnot a pair\nTOKEN=x', [storedSecret('TOKEN')], nextId);
+        expect(result).toEqual({
+            ok: false,
+            errors: [
+                'line 2: expected KEY=value',
+                'line 3: "TOKEN" is already a secret in this scope — edit it on the Secrets tab',
+            ],
+        });
+    });
+
+    it('refuses an unterminated quote and keeps every row, so no corrupted value is applied', () => {
+        const rows = [storedVar('KEEP', 'x')];
+        for (const text of ['A="first\nB=second"', 'A="first\n#second']) {
+            const result = applyRawText(text, rows, nextId);
+            expect(result.ok).toBe(false);
+            if (!result.ok) expect(result.errors[0]).toMatch(/^line 1: /);
+        }
+    });
+
+    it('does not count a pending-removed secret as a collision', () => {
+        const removed = { ...storedSecret('TOKEN'), pendingRemove: true };
+        expect(applyRawText('TOKEN=x', [removed], nextId).ok).toBe(true);
+    });
+
+    it('reads clean after a structured -> text -> structured round trip of empty and quoted values', () => {
+        const baseline = seedRows([
+            { name: 'EMPTY', value: '', isSecret: false },
+            { name: 'QUOTED', value: '"x"', isSecret: false },
+            { name: 'TOKEN', value: null, isSecret: true },
+        ]);
+        const result = applyRawText(rowsToRawText(baseline), baseline, nextId);
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(isDirty(baseline, result.rows)).toBe(false);
+    });
+
+    it('words the count note for the secrets the text does not show', () => {
+        expect(secretsNote(0)).toBeNull();
+        expect(secretsNote(1)).toBe('1 secret is edited in the list view.');
+        expect(secretsNote(2)).toBe('2 secrets are edited in the list view.');
     });
 });

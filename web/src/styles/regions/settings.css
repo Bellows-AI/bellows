@@ -578,6 +578,94 @@
         white-space: pre-wrap;
     }
 
+    /* The variables editor modal (BEL-262): the shared `dialog` panel widened, as a clipped column
+       of head, scrolling body and footer — only the body scrolls, so Save and Cancel stay reachable
+       with any number of rows. */
+    .env-dialog {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-width: var(--measure-wide);
+        overflow: hidden;
+    }
+
+    .env-dialog-head {
+        align-items: center;
+        display: flex;
+        flex: none;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        justify-content: space-between;
+    }
+
+    .env-dialog-head h2 {
+        margin: 0;
+    }
+
+    .env-dialog-modes {
+        border: 0;
+        display: flex;
+        gap: 4px;
+        margin: 0;
+        min-width: 0;
+        padding: 0;
+    }
+
+    .env-dialog-modes button[aria-pressed='true'] {
+        background: var(--surface-strong);
+        border-color: var(--ink-muted);
+    }
+
+    .env-dialog-modes button[aria-disabled='true'] {
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+
+    .env-dialog-body {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+        gap: 16px;
+        min-height: 0;
+        overflow-y: auto;
+    }
+
+    .env-dialog-section-head {
+        align-items: center;
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 4px;
+    }
+
+    .env-dialog-section-head h3 {
+        font-size: 14px;
+        margin: 0;
+    }
+
+    .env-dialog-footer {
+        border-top: 1px solid var(--line);
+        display: flex;
+        flex: none;
+        flex-direction: column;
+        gap: 8px;
+        padding-top: 12px;
+    }
+
+    .env-dialog-actions {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+
+    /* Outranks `.env-raw textarea`, whose `font: inherit` would otherwise win. */
+    .env-raw .env-dialog-text {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        min-height: 240px;
+    }
+
     /* A cell's input fills its column, with a floor that keeps the stored-secret instruction —
         "Leave blank to keep the current secret" — readable instead of clipped to a sliver. */
     .env-vars td input {

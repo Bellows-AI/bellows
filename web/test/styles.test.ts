@@ -787,6 +787,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.chat-exit',
             '.chat-activity',
             '.task-summary',
+            '.env-raw .env-dialog-text',
         ]);
         const offenders = rules(css)
             .filter(([, body]) => /font-family\s*:\s*var\(--font-mono\)/.test(body))
@@ -1011,5 +1012,26 @@ describe('the design-system inventory', () => {
         const preludes = rules(css).map(([prelude]) => prelude);
         expect(preludes.some((p) => p.includes('.state-note'))).toBe(true);
         expect(preludes.some((p) => p.includes('.state-note.error'))).toBe(true);
+    });
+});
+
+describe('the variables editor modal (BEL-262)', () => {
+    const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
+    const all = rules(css);
+    const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+
+    it('scrolls its body only: the panel is a clipped column, the footer stays outside the scroll region', () => {
+        expect(body('.env-dialog')).toMatch(/display:\s*flex/);
+        expect(body('.env-dialog')).toMatch(/flex-direction:\s*column/);
+        expect(body('.env-dialog')).toMatch(/overflow:\s*hidden/);
+        expect(body('.env-dialog-body')).toMatch(/overflow-y:\s*auto/);
+        expect(body('.env-dialog-body')).toMatch(/min-height:\s*0/);
+        expect(body('.env-dialog-footer')).toMatch(/flex:\s*none/);
+        expect(body('.env-dialog-footer')).not.toMatch(/overflow/);
+        expect(body('.env-dialog-head')).toMatch(/flex:\s*none/);
+    });
+
+    it('sets the .env text in the mono font token', () => {
+        expect(body('.env-raw .env-dialog-text')).toMatch(/font-family:\s*var\(--font-mono\)/);
     });
 });
