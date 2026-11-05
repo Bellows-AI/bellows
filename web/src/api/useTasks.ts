@@ -181,8 +181,6 @@ export interface QueueTaskInput {
     workflowParams: Record<string, string> | null;
     /** The branch the task works from; null is the repository's default branch. */
     baseBranch?: string | null;
-    /** The member's own title for the task (BEL-252); absent when the field was left blank. */
-    title?: string;
     /** Built-in skills the prompt names with a `/name` token; absent when it names none. */
     skills?: string[];
     /** Completed upload ids; absent for a text-only task, so that body is unchanged. */

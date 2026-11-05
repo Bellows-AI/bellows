@@ -83,7 +83,8 @@ describe('the composer launch triggers', () => {
         // The shortcut is the button, never a bypass: an empty prompt sends nothing and says why.
         await user.click(prompt);
         await user.keyboard(KEYBOARD_LAUNCH);
-        expect(screen.getByText('Describe the task to continue.')).toBeTruthy();
+        expect(screen.queryByText('Describe the task to continue.')).toBeNull();
+        expect((screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement).disabled).toBe(true);
         expect(launches()).toHaveLength(0);
         expect(router.state.location.pathname).toBe('/tasks/new');
 
@@ -610,24 +611,18 @@ describe('the composer base branch and skill menu', () => {
         });
     });
 
-    it('sends a filled Title field as title, trimmed (BEL-252)', async () => {
-        const user = userEvent.setup();
-        const { launches } = openComposer(reposReply(['web']), undefined, board);
-        const prompt = await screen.findByLabelText('What should the agent do?');
-        await user.type(await screen.findByLabelText('Title (optional)'), '  Fix the login crash ');
-        await user.type(prompt, 'a long and rambling prompt');
-        const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
-        await waitFor(() => expect(start.disabled).toBe(false));
-        await user.click(start);
-        await waitFor(() => expect(launches()).toHaveLength(1));
-        expect((launches()[0]!.body as Record<string, unknown>).title).toBe('Fix the login crash');
+    it('has no Title field: the title is derived from the prompt (BEL-261)', async () => {
+        openComposer(reposReply(['web']), undefined, board);
+        await screen.findByLabelText('What should the agent do?');
+        expect(screen.queryByLabelText('Title (optional)')).toBeNull();
+        expect(screen.queryByPlaceholderText('Title (optional)')).toBeNull();
+        expect(document.querySelector('.composer-title')).toBeNull();
     });
 
-    it('sends no title when the Title field is blank (BEL-252)', async () => {
+    it('sends no title key with a filled prompt (BEL-261)', async () => {
         const user = userEvent.setup();
         const { launches } = openComposer(reposReply(['web']), undefined, board);
         const prompt = await screen.findByLabelText('What should the agent do?');
-        await user.type(await screen.findByLabelText('Title (optional)'), '   ');
         await user.type(prompt, 'fix the login crash');
         const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
         await waitFor(() => expect(start.disabled).toBe(false));

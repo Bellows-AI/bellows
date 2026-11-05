@@ -839,10 +839,12 @@ test.describe('the task title (BEL-252)', () => {
         expect(await page.evaluate(() => (window as unknown as { __kept?: boolean }).__kept)).toBe(true);
     });
 
-    test('a task created with a title shows it in the header and sidebar', async ({ page }) => {
+    test('a task created without a title shows the first line of its prompt in the header and sidebar', async ({
+        page,
+    }) => {
         await page.goto('/tasks/new');
-        await page.getByLabel('Title (optional)').fill('Fix the login crash');
-        await page.getByLabel('What should the agent do?').fill('a long and rambling prompt about everything');
+        await expect(page.getByLabel('Title (optional)')).toHaveCount(0);
+        await page.getByLabel('What should the agent do?').fill('Fix the login crash');
         await page.getByRole('button', { name: 'Start task' }).click();
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
         const id = /\/tasks\/([0-9a-f-]{36})$/.exec(page.url())![1]!;
