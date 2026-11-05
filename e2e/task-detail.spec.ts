@@ -855,3 +855,204 @@ test.describe('the task title (BEL-252)', () => {
         );
     });
 });
+
+test.describe('the conversation scrolls on its own above a docked composer (BEL-263)', () => {
+    type Thread = ReturnType<typeof authoredBy>;
+
+    /** `count` finished exchanges ahead of `tail`, enough to overflow any viewport. */
+    function longThread(tail: Thread[number], count = 14): Thread {
+        const lead = followUpThread[0]!;
+        const earlier = Array.from({ length: count }, (_, i) => ({
+            ...lead,
+            id: `aaaaaaaa-0000-4000-8000-0000002630${String(i).padStart(2, '0')}`,
+            command: `step ${i + 1}: tidy the module and say what changed`,
+            summary: `Step ${i + 1} done. ${'The agent explained what it changed and why. '.repeat(6)}`,
+        }));
+        return [...earlier, tail] as Thread;
+    }
+
+    const metrics = (page: Page) =>
+        page.evaluate(() => {
+            const conversation = document.querySelector('.task-conversation')!;
+            const composer = document.querySelector('.task-follow-up')?.getBoundingClientRect();
+            const exchanges = conversation.querySelectorAll('.chat-exchange');
+            return {
+                pageOverflow: document.scrollingElement!.scrollHeight - window.innerHeight,
+                scrolls: conversation.scrollHeight > conversation.clientHeight,
+                scrollTop: conversation.scrollTop,
+                // A running run has no composer to dock: the conversation's own edge stands in.
+                composerTop: composer?.top ?? conversation.getBoundingClientRect().bottom,
+                composerBottom: composer?.bottom ?? null,
+                lastBottom: exchanges[exchanges.length - 1]!.getBoundingClientRect().bottom,
+            };
+        });
+
+    const toBottom = (page: Page) =>
+        page.evaluate(() => {
+            const conversation = document.querySelector('.task-conversation')!;
+            conversation.scrollTop = conversation.scrollHeight;
+        });
+
+    for (const [state, tailOf] of [
+        ['completed', () => followUpThread[0]!],
+        ['error', () => followUpThread[1]!],
+    ] as const) {
+        test(`${state}: the page does not scroll, the composer does not move and the last line stays reachable`, async ({
+            page,
+        }) => {
+            const author = await sessionAuthor(page);
+            await page.setViewportSize({ width: 1440, height: 900 });
+            await routeThread(
+                page,
+                authoredBy(
+                    longThread({ ...tailOf(), id: 'aaaaaaaa-0000-4000-8000-000000263999' } as Thread[number]),
+                    author
+                )
+            );
+            const problems = watchConsole(page);
+            await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000263000');
+            await expect(page.locator('.task-follow-up textarea')).toBeVisible();
+
+            await toBottom(page);
+            const bottom = await metrics(page);
+            expect(bottom.scrolls, 'the conversation is the scroller').toBe(true);
+            expect(bottom.pageOverflow, 'no page-level scroll beside it').toBeLessThanOrEqual(0);
+            // The last line is reachable and sits above the composer, never behind it.
+            expect(bottom.lastBottom).toBeLessThanOrEqual(bottom.composerTop! + 1);
+            await page.screenshot({ path: `${SHOTS}/task-detail-docked-${state}-1440-bottom.png` });
+
+            await page.evaluate(() => {
+                document.querySelector('.task-conversation')!.scrollTop = 0;
+            });
+            const top = await metrics(page);
+            expect(Math.round(top.composerTop!), 'the composer does not move while the thread scrolls').toBe(
+                Math.round(bottom.composerTop!)
+            );
+            expect(top.pageOverflow).toBeLessThanOrEqual(0);
+            expect(problems).toEqual([]);
+        });
+    }
+
+    test('scrolled up, new content does not move the reader; Jump to latest brings the newest line back', async ({
+        page,
+    }) => {
+        const author = await sessionAuthor(page);
+        await page.setViewportSize({ width: 1440, height: 900 });
+        const running = (extra: string) =>
+            authoredBy(
+                longThread({
+                    ...runningThread[0]!,
+                    id: 'aaaaaaaa-0000-4000-8000-000000263998',
+                    output: `${runningThread[0]!.output}${extra}`,
+                } as Thread[number]),
+                author
+            );
+        await routeThread(page, running(''));
+        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000263000');
+        await expect(page.locator('.task-conversation pre.chat-output').last()).toContainText('step 81 running');
+        await toBottom(page);
+        await page.screenshot({ path: `${SHOTS}/task-detail-docked-running-1440-bottom.png` });
+
+        await page.evaluate(() => {
+            document.querySelector('.task-conversation')!.scrollTop = 300;
+        });
+        // The next poll streams more output into the capped well: the thread's own height does
+        // not move, and the reader stays put with Jump to latest on offer.
+        await routeThread(page, running('\nstep 82 running\nstep 83 running'));
+        const jump = page.getByRole('button', { name: 'Jump to latest' });
+        await expect(jump).toBeVisible({ timeout: 10_000 });
+        expect((await metrics(page)).scrollTop).toBe(300);
+        await page.screenshot({ path: `${SHOTS}/task-detail-docked-running-1440-scrolled-up.png` });
+
+        await jump.click();
+        await expect(jump).toBeHidden();
+        const after = await metrics(page);
+        expect(after.lastBottom).toBeLessThanOrEqual(after.composerTop! + 1);
+    });
+
+    test('the live raw-output well does not follow new output once its reader scrolled up', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        const withOutput = (lines: number) => [
+            {
+                ...runningThread[0]!,
+                output: Array.from({ length: lines }, (_, i) => `step ${i + 1} ok`).join('\n'),
+            },
+        ];
+        await routeThread(page, withOutput(80));
+        await page.goto(`/tasks/${runningThread[0]!.id}`);
+        const well = page.locator('.task-conversation pre.chat-output');
+        await expect(well).toContainText('step 80 ok');
+        await well.evaluate((el) => {
+            el.scrollTop = 40;
+        });
+        await routeThread(page, withOutput(120));
+        await expect(well).toContainText('step 120 ok', { timeout: 10_000 });
+        expect(await well.evaluate((el) => el.scrollTop)).toBe(40);
+    });
+
+    test('a phone keeps the composer visible under the conversation', async ({ page }) => {
+        const author = await sessionAuthor(page);
+        await page.setViewportSize({ width: 390, height: 700 });
+        await routeThread(
+            page,
+            authoredBy(
+                longThread({ ...followUpThread[1]!, id: 'aaaaaaaa-0000-4000-8000-000000263999' } as Thread[number]),
+                author
+            )
+        );
+        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000263000');
+        await expect(page.locator('.task-follow-up textarea')).toBeVisible();
+        await page.evaluate(() => {
+            const main = document.querySelector('.task-main')!;
+            window.scrollTo(0, main.getBoundingClientRect().top + window.scrollY - 56);
+        });
+        await toBottom(page);
+        const phone = await metrics(page);
+        expect(phone.scrolls).toBe(true);
+        expect(phone.composerBottom!).toBeLessThanOrEqual(700);
+        expect(phone.lastBottom).toBeLessThanOrEqual(phone.composerTop! + 1);
+        await page.screenshot({ path: `${SHOTS}/task-detail-docked-error-390-bottom.png` });
+        await page.evaluate(() => {
+            document.querySelector('.task-conversation')!.scrollTop = 0;
+        });
+        await page.screenshot({ path: `${SHOTS}/task-detail-docked-error-390-top.png` });
+    });
+
+    test('1366x768: a tall expanded Outcome cannot push the composer out of the viewport', async ({ page }) => {
+        const author = await sessionAuthor(page);
+        await page.setViewportSize({ width: 1366, height: 768 });
+        // The published thread carries verification and published work in the rail.
+        const tail = { ...publishedThread[publishedThread.length - 1]!, id: 'aaaaaaaa-0000-4000-8000-000000263997' };
+        await routeThread(page, authoredBy(longThread(tail as Thread[number]), author));
+        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000263000');
+        await expect(page.locator('.task-follow-up textarea')).toBeVisible();
+        // Workflow metadata makes the rail taller still: stand in for it with extra rows.
+        await page.locator('.task-outcome').evaluate((el) => {
+            for (let i = 0; i < 12; i++) {
+                const row = document.createElement('p');
+                row.textContent = `workflow metadata row ${i + 1}`;
+                row.style.margin = '12px 0';
+                el.appendChild(row);
+            }
+        });
+        const fit = await page.evaluate(() => {
+            const composer = document.querySelector('.task-follow-up')!.getBoundingClientRect();
+            const support = document.querySelector('.task-support')!.getBoundingClientRect();
+            return {
+                pageOverflow: document.scrollingElement!.scrollHeight - window.innerHeight,
+                composerBottom: composer.bottom,
+                composerTop: composer.top,
+                supportTop: support.top,
+                supportBottom: support.bottom,
+                height: window.innerHeight,
+            };
+        });
+        expect(fit.pageOverflow).toBeLessThanOrEqual(0);
+        expect(fit.composerBottom).toBeLessThanOrEqual(fit.height);
+        expect(fit.composerTop).toBeGreaterThan(0);
+        // The support column keeps real room inside the viewport instead of being squeezed out.
+        expect(fit.supportBottom).toBeLessThanOrEqual(fit.height);
+        expect(fit.supportBottom - fit.supportTop).toBeGreaterThan(80);
+        await page.screenshot({ path: `${SHOTS}/task-detail-docked-published-1366x768.png` });
+    });
+});

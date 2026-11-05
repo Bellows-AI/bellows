@@ -108,8 +108,10 @@
     }
 
     /* The request grows with its content down from about five lines and scrolls past half the
-       viewport; it wears no frame of its own, the surface is the frame. */
-    .task-compose .composer-input {
+       viewport; it wears no frame of its own, the surface is the frame. The docked follow-up
+       composer shares the recipe. */
+    .task-compose .composer-input,
+    .task-follow-up .composer-input {
         background: transparent;
         border: 0;
         field-sizing: content;
@@ -122,13 +124,15 @@
 
     /* The surface's own focus outline is the cue for the prompt; a second accent ring inside it
        would double the frame. The chips keep the global ring. */
-    .task-compose .composer-input:focus-visible {
+    .task-compose .composer-input:focus-visible,
+    .task-follow-up .composer-input:focus-visible {
         outline: none;
     }
 
     /* An engine that cannot grow the field to its content gets room up front instead. */
     @supports not (field-sizing: content) {
-        .task-compose .composer-input {
+        .task-compose .composer-input,
+        .task-follow-up .composer-input {
             min-height: 160px;
         }
     }
