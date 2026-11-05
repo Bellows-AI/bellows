@@ -111,8 +111,8 @@ const render = (
 describe('Settings organization page', () => {
     it('renders identity and scope context, and holds the core editor back until the environment arrives', () => {
         // The stub is gone (issue 180): the page answers "who am I and what is this scope" before
-        // any editor. The editor still mounts only on data: its draft is seeded from initialVars
-        // in a state initializer, so an early mount would freeze empty rows over the stored ones.
+        // any editor. The summary still mounts only on data: the dialog it opens seeds its draft
+        // once per mount, so an early mount would freeze empty rows over the stored ones.
         const html = render('/settings/organization');
         expect(html).toContain('Bellows AI');
         expect(html).toContain('Your role');
@@ -121,7 +121,7 @@ describe('Settings organization page', () => {
         expect(html).toContain('Loading environment…');
         expect(html).toMatch(/<p class="state-note" role="status">Loading environment…/);
         expect(html).not.toContain('Any member can edit.');
-        expect(html).not.toContain('No variables configured.');
+        expect(html).not.toContain('No variables or secrets configured yet.');
         expectNoPlaceholder(html);
     });
 
@@ -164,7 +164,7 @@ describe('Settings organization page', () => {
         }
     });
 
-    it('renders the organization-wide scope line and both tab counts once the environment arrives', () => {
+    it('renders the organization-wide scope line and the variable and secret counts once the environment arrives', () => {
         const html = render('/settings/organization', {
             env: {
                 loading: false,
@@ -180,8 +180,11 @@ describe('Settings organization page', () => {
         });
         expect(html).toContain('Applies to every member');
         expect(html).toContain('Any member can edit.');
-        expect(html.replace(/<[^>]+>/g, '')).toContain('Variables (1)');
-        expect(html.replace(/<[^>]+>/g, '')).toContain('Secrets (1)');
+        expect(html.replace(/<[^>]+>/g, '')).toContain('1 variable');
+        expect(html.replace(/<[^>]+>/g, '')).toContain('1 secret');
+        // The summary names the rows and offers the dialog; it never prints a value.
+        expect(html).toContain('Edit variables');
+        expect(html).not.toContain('debug');
     });
 
     it('renders no editor after a failed environment read — the error is the whole story', () => {
@@ -193,7 +196,7 @@ describe('Settings organization page', () => {
         expect(html).toContain('The environment request failed');
         expect(html).toMatch(/<p class="state-note error" role="alert">The environment request failed/);
         expect(html).toContain('<h1');
-        expect(html).not.toContain('No variables configured.');
+        expect(html).not.toContain('No variables or secrets configured yet.');
         expect(html).not.toContain('Add variable');
     });
 
@@ -276,7 +279,7 @@ describe('Settings workspace page', () => {
             env: { loading: false, data: { org: [], workspace: [], repos: [] } },
         });
         expect(html).toContain('My workspace');
-        expect(html).toContain('No variables configured.');
+        expect(html).toContain('No variables or secrets configured yet.');
     });
 
     it('shows the title "My workspace" as visible text exactly once, as the editor\u2019s h2', () => {
@@ -324,7 +327,7 @@ describe('Settings workspace page', () => {
             env: { loading: false, error: 'The environment request failed' },
         });
         expect(html).toContain('The environment request failed');
-        expect(html).not.toContain('No variables configured.');
+        expect(html).not.toContain('No variables or secrets configured yet.');
         expect(html).not.toContain('Add variable');
     });
 });
@@ -472,7 +475,7 @@ describe('Settings repositories page', () => {
         const html = render('/settings/repos');
         expect(html).toContain('Loading repositories');
         expect(html).not.toContain('No repositories');
-        expect(html).not.toContain('No variables configured.');
+        expect(html).not.toContain('No variables or secrets configured yet.');
         expectNoPlaceholder(html);
     });
 
@@ -538,7 +541,7 @@ describe('Settings repositories page', () => {
             env: { loading: false, error: 'The environment request failed' },
         });
         expect(html).toContain('The environment request failed');
-        expect(html).not.toContain('No variables configured.');
+        expect(html).not.toContain('No variables or secrets configured yet.');
         expect(html).not.toContain('Add variable');
     });
 
@@ -569,12 +572,12 @@ describe('settings scope context (issue 182 invariants)', () => {
         repos: [{ owner: 'octo', name: 'hooks', vars: [] }],
     };
 
-    it('renders the org editor under its scope sentence, tabs counting the stored rows', () => {
+    it('renders the org summary under its scope sentence, counting the stored rows', () => {
         const html = render('/settings/organization', { env: { loading: false, data: envData } });
         const text = html.replace(/<[^>]*>/g, '');
         expect(text).toContain('Applies to every member\u2019s tasks in the organization.');
-        expect(text).toContain('Variables (0)');
-        expect(text).toContain('Secrets (1)');
+        expect(text).toContain('0 variables');
+        expect(text).toContain('1 secret');
         expect(html).not.toContain('Discard unsaved changes?');
     });
 
@@ -591,7 +594,7 @@ describe('settings scope context (issue 182 invariants)', () => {
             env: { loading: false, data: envData },
         });
         expect(html).toContain('Applies to tasks you start.');
-        expect(html).toContain('No variables configured.');
+        expect(html).toContain('No variables or secrets configured yet.');
         expect(html).not.toContain('Discard unsaved changes?');
     });
 

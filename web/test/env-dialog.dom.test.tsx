@@ -134,14 +134,6 @@ describe('the variables editor modal', () => {
         expect((screen.getByLabelText('Variable 1 value') as HTMLInputElement).value).toBe('debugx');
         expect(onClose).not.toHaveBeenCalled();
     });
-
-    it('mirrors the dirty state to the caller', async () => {
-        const onDirtyChange = vi.fn();
-        const { user } = setup({ onDirtyChange });
-        expect(onDirtyChange).toHaveBeenLastCalledWith(false);
-        await user.type(screen.getByLabelText('Variable 1 value'), 'x');
-        expect(onDirtyChange).toHaveBeenLastCalledWith(true);
-    });
 });
 
 describe('closing the variables editor modal', () => {

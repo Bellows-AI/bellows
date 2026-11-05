@@ -3,20 +3,17 @@ import {
     countActive,
     envPayload,
     isDirty,
-    nextTabIndex,
     payloadEquals,
     rowFieldErrors,
     scopeError,
     SECRET_STATE_LABEL,
     secretState,
     seedRows,
-    advancedUnapplied,
     applyRawText,
     rowsToRawText,
     secretsNote,
     type EnvRowState,
 } from '../src/panels/env-draft.js';
-import { serializeEnv } from '../src/panels/env-raw.js';
 
 const storedVar = (name: string, value: string, id = name): EnvRowState => ({
     id,
@@ -168,44 +165,7 @@ describe('secret state', () => {
     });
 });
 
-describe('the advanced .env disclosure', () => {
-    it('holds nothing unapplied while the text matches the active variable rows', () => {
-        const rows = [storedVar('A', '1'), storedSecret('TOKEN')];
-        expect(advancedUnapplied(serializeEnv(rows), rows)).toBe(false);
-    });
-
-    it('holds unapplied text once the textarea differs from the draft', () => {
-        const rows = [storedVar('A', '1'), storedSecret('TOKEN')];
-        expect(advancedUnapplied('A=2', rows)).toBe(true);
-        // A pending-removed variable is not in the seed text: applying the untouched text twice
-        // must not resurrect it, and the untouched text counts as applied.
-        const pending = [storedVar('A', '1'), { ...storedVar('B', '2', 'r2'), pendingRemove: true }];
-        expect(advancedUnapplied(serializeEnv([pending[0]!]), pending)).toBe(false);
-    });
-});
-
-describe('tab roving focus', () => {
-    const key = (current: number, k: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End') => nextTabIndex(current, 2, k);
-
-    it('wraps in both directions', () => {
-        expect(key(0, 'ArrowRight')).toBe(1);
-        expect(key(1, 'ArrowRight')).toBe(0);
-        expect(key(0, 'ArrowLeft')).toBe(1);
-        expect(key(1, 'ArrowLeft')).toBe(0);
-    });
-
-    it('jumps Home to the first tab and End to the last', () => {
-        expect(key(1, 'Home')).toBe(0);
-        expect(key(0, 'End')).toBe(1);
-    });
-
-    it('answers null for any other key, and for a count of zero', () => {
-        expect(nextTabIndex(0, 2, 'Enter')).toBeNull();
-        expect(nextTabIndex(0, 0, 'ArrowRight')).toBeNull();
-    });
-});
-
-describe('tab counts', () => {
+describe('row counts', () => {
     it('include additions and exclude pending removals', () => {
         const rows = [
             storedVar('A', '1'),
@@ -269,7 +229,7 @@ describe('the shared structured/.env draft (BEL-262)', () => {
             ok: false,
             errors: [
                 'line 2: expected KEY=value',
-                'line 3: "TOKEN" is already a secret in this scope — edit it on the Secrets tab',
+                'line 3: "TOKEN" is already a secret in this scope — edit it in the list view',
             ],
         });
     });

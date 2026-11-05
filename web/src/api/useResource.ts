@@ -30,7 +30,11 @@ export function useResource<Body, T>(url: string, select: (body: Body) => T) {
                     setLoading(false);
                     return;
                 }
-                setData(select((await response.json()) as Body));
+                const body = (await response.json()) as Body;
+                // A read that was superseded (a newer refresh, or a write that adopted its own
+                // rows) must never land: its answer is older than what the page already holds.
+                if (signal.aborted) return;
+                setData(select(body));
                 setError(null);
             } catch (e) {
                 if (signal.aborted) return;
@@ -54,5 +58,5 @@ export function useResource<Body, T>(url: string, select: (body: Body) => T) {
         return () => controller.current?.abort();
     }, [refresh]);
 
-    return { data, loading, error, refresh };
+    return { data, setData, loading, error, refresh };
 }

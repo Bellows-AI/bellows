@@ -96,7 +96,7 @@ function parseEnvLine(
     if (context.secrets.has(name)) {
         return {
             ok: false,
-            error: `line ${lineNo}: "${name}" is already a secret in this scope — edit it on the Secrets tab`,
+            error: `line ${lineNo}: "${name}" is already a secret in this scope — edit it in the list view`,
         };
     }
     if (context.secrets.size + context.activeCount >= MAX_ENV_VARS_PER_SCOPE) {

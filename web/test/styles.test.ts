@@ -219,7 +219,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.settings-actions button',
         '.unsaved-actions button',
         '.env-add',
-        '.env-advanced-toggle',
+        '.env-edit',
         '.env-raw input',
         '.env-raw select',
         '.env-raw button',

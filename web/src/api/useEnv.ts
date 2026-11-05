@@ -51,6 +51,14 @@ export interface UseEnv {
 
 const selectEnv = (body: EnvPayload) => body;
 
+/** The repo scopes with one scope's rows replaced (or added, for a repository with no stored row yet). */
+function withRepoVars(repos: EnvRepoScope[], repo: { owner: string; name: string }, vars: EnvVarView[]) {
+    const known = repos.some((r) => r.owner === repo.owner && r.name === repo.name);
+    return known
+        ? repos.map((r) => (r.owner === repo.owner && r.name === repo.name ? { ...r, vars } : r))
+        : [...repos, { ...repo, vars }];
+}
+
 /**
  * The runner environment, fetched once and refetched after each save.
  *
@@ -59,7 +67,7 @@ const selectEnv = (body: EnvPayload) => body;
  * the editors, remounting them under a typing hand.
  */
 export function useEnv(): UseEnv {
-    const { data, loading, error, refresh } = useResource('/api/env', selectEnv);
+    const { data, setData, loading, error, refresh } = useResource('/api/env', selectEnv);
     const [saving, setSaving] = useState(false);
 
     const put = useCallback(async (url: string, body: unknown): Promise<EnvSaveResult> => {
@@ -76,34 +84,45 @@ export function useEnv(): UseEnv {
         }
     }, []);
 
-    // Each save refetches on success, so the page-level data (the repository select's options,
-    // in particular) tracks the store. The editor that saved adopts the PUT's own rows instead
-    // of waiting on this — a remount here would wipe its "Saved." confirmation.
+    // A successful save adopts the PUT's own rows as the scope's current rows at once, then
+    // refetches so the rest of the page (the repository select's options) tracks the store. The
+    // adoption is what the next dialog seeds from: waiting on the refetch would let a held or
+    // failed read hand the next whole-list PUT a list without the row just saved. The refetch
+    // aborts any older read, so none can land afterwards with pre-save rows.
     const saveOrg = useCallback(
         async (vars: EnvVarInput[]) => {
             const result = await put('/api/env/org', { vars });
-            if (result.error === null) refresh();
+            if (result.error === null) {
+                setData((prev) => prev && { ...prev, org: result.vars });
+                refresh();
+            }
             return result;
         },
-        [put, refresh]
+        [put, refresh, setData]
     );
 
     const saveWorkspace = useCallback(
         async (vars: EnvVarInput[]) => {
             const result = await put('/api/env/workspace', { vars });
-            if (result.error === null) refresh();
+            if (result.error === null) {
+                setData((prev) => prev && { ...prev, workspace: result.vars });
+                refresh();
+            }
             return result;
         },
-        [put, refresh]
+        [put, refresh, setData]
     );
 
     const saveRepo = useCallback(
         async (repo: { owner: string; name: string }, vars: EnvVarInput[]) => {
             const result = await put('/api/env/repo', { repo, vars });
-            if (result.error === null) refresh();
+            if (result.error === null) {
+                setData((prev) => prev && { ...prev, repos: withRepoVars(prev.repos, repo, result.vars) });
+                refresh();
+            }
             return result;
         },
-        [put, refresh]
+        [put, refresh, setData]
     );
 
     return { data, loading, error, saving, refresh, saveOrg, saveWorkspace, saveRepo };

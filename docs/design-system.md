@@ -91,7 +91,7 @@ Controls and overlays: `primary`, `tertiary`, `icon-button`, `danger`, `tabs`, `
 `user-menu-panel`, `avatar-fallback`, `avatar-lg`, `task-avatar`, `row-actions-trigger`,
 `dialog-layer`, `dialog-backdrop`, `dialog-position`, `lamp-glow`.
 
-Surfaces and feedback: `panel-flat`, `panel-head`, `panel-actions`, `status`, `alert`, `error`, `muted`,
+Surfaces and feedback: `panel-flat`, `panel-head`, `status`, `alert`, `error`, `muted`,
 `badge-warn`, `banner-warn`, `banner-bad`, `banner-info`, `banner-title`, `pill-ok`, `pill-warn`,
 `pill-bad`, `pill-done`, `pill-accent`, `pill-question`, `pill-list`, `count`, `switch`, `inbox-chip`.
 

@@ -166,15 +166,6 @@ export function secretState(row: EnvRowState): SecretState {
 }
 
 /**
- * Whether the advanced textarea holds text the draft has not absorbed: the seed text is the
- * serialization of the ACTIVE variable rows, so an untouched disclosure never blocks Save, and
- * neither does one whose text matches the table again after an Apply.
- */
-export function advancedUnapplied(text: string, rows: readonly EnvRowState[]): boolean {
-    return text !== serializeEnv(rows.filter((row) => !row.isSecret && !row.pendingRemove));
-}
-
-/**
  * The `.env` text the draft's variables serialize to — the modal editor's text mode. Secrets
  * never enter it (their values are write-only and cannot round-trip through text), a pending
  * removal stays out so re-reading the text cannot resurrect it, and an untouched blank addition
@@ -212,18 +203,4 @@ export function applyRawText(text: string, rows: readonly EnvRowState[], nextId:
 export function secretsNote(count: number): string | null {
     if (count === 0) return null;
     return count === 1 ? '1 secret is edited in the list view.' : `${count} secrets are edited in the list view.`;
-}
-
-export type TabNavKey = 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
-
-/** The roving-tabindex step for a keydown on the tab strip: the next tab, or null to ignore. */
-export function nextTabIndex(current: number, count: number, key: string): number | null {
-    if (count === 0) return null;
-    if (key === 'ArrowLeft' || key === 'ArrowRight') {
-        const step = key === 'ArrowLeft' ? -1 : 1;
-        return (current + step + count) % count;
-    }
-    if (key === 'Home') return 0;
-    if (key === 'End') return count - 1;
-    return null;
 }
