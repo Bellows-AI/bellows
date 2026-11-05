@@ -58,7 +58,8 @@ ask() {
         if [ -n "$start" ]; then
             now=$(/bin/date +%s 2>/dev/null)
             case $now in '' | *[!0-9]*) now=$start ;; esac
-            [ $((now - start)) -ge "$limit" ] && break
+            # Whole seconds: -gt so the wait is never shorter than the limit.
+            [ $((now - start)) -gt "$limit" ] && break
         fi
         # The wall clock bounds the wait; the count only backstops an image with no `date`.
         [ -z "$start" ] && [ "$tries" -ge $((limit * 5)) ] && break

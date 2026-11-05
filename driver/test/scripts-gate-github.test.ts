@@ -201,7 +201,8 @@ describe.each(SHELLS)('the gate GitHub helper under %s', (shell) => {
         it('answers 127 when the image has no gh of its own', async () => {
             const r = rig();
             r.supervisor(() => `token ${TOKEN}\n`);
-            const ran = await shim(r, []);
+            // No system dirs on PATH: a CI host may ship its own gh in /usr/bin.
+            const ran = await shim(r, [], { PATH: `${r.bin}:${r.real}` });
             expect(ran.status).toBe(127);
             expect(ran.stderr).toContain('gh: not found');
         });
