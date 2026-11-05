@@ -1,4 +1,3 @@
-import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
 import type { OrgRegistry } from '../../orgs.js';
 import {
@@ -13,7 +12,7 @@ import {
     handleStart,
     handleValidate,
 } from './batch-handlers.js';
-import { BODY_LIMIT, CONTROL_BODY_LIMIT, HTTP_NOT_FOUND } from '../jobs/job-limits.js';
+import { BODY_LIMIT, CONTROL_BODY_LIMIT, batchesDisabled } from '../jobs/job-limits.js';
 
 /**
  * The batch lifecycle's HTTP surface (docs/batches.md): human credentials only — the hook walls
@@ -28,12 +27,7 @@ export const batchRoutes =
         // Off (BATCHES_ENABLED): the routes stay registered behind the auth wall and answer a coded 404 before any
         // body is parsed or store read, so nothing is discoverable and the web and CLI can branch on the code.
         if (!enabled) {
-            app.addHook('onRequest', async (_request, reply) =>
-                reply.code(HTTP_NOT_FOUND).send({
-                    error: 'Batches are disabled on this deployment (set BATCHES_ENABLED=true to enable them)',
-                    code: ERROR_CODES.BATCHES_DISABLED,
-                })
-            );
+            app.addHook('onRequest', async (_request, reply) => batchesDisabled(reply));
         }
         app.post('/api/batches', { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreate(orgs, request, reply));
         app.get('/api/batches', (request, reply) => handleList(orgs, request, reply));

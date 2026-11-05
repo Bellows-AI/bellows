@@ -28,6 +28,7 @@ import type {
     JobQuestion,
     CancelWaitResult,
     EditCommandResult,
+    BatchesDisabledRefusal,
     FollowUpRefusal,
     JobStore,
     LeaseResult,
@@ -199,15 +200,15 @@ function stubStore(
         records?: ActivityRecords;
         /** What `taskJobIds` answers: the canonical task's job ids, from board records; just the asked id when absent. */
         taskJobs?: string[];
-        followUp?: FollowUpRefusal;
-        retry?: RetryRefusal;
+        followUp?: FollowUpRefusal | BatchesDisabledRefusal;
+        retry?: RetryRefusal | BatchesDisabledRefusal;
         /** What the store answers a queued-command edit with; ok echoes the new command back. */
         edit?: EditCommandResult;
         /** The store recognizes the request's key: it answers the row already made (#589). */
         replayed?: boolean;
         /** The store finds the request's key already used for a different request (#589). */
         keyReused?: boolean;
-        done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch';
+        done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch' | BatchesDisabledRefusal;
         /** Where the board says the suspend landed, on the 'ok' path. */
         suspendStatus?: JobStatus;
         stop?: StopResult;
@@ -2720,6 +2721,24 @@ describe('POST /api/jobs/:id/follow-up', () => {
     });
 });
 
+describe('a batch thread while BATCHES_ENABLED is off (BEL-264)', () => {
+    const DISABLED = { code: 'BATCHES_DISABLED' };
+
+    it("answers a follow-up on it 404 BATCHES_DISABLED, the batch routes' answer", async () => {
+        const instance = await harnessWith(stubStore({ followUp: 'batches_disabled' }));
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
+        expect(response.statusCode).toBe(404);
+        expect(response.json()).toMatchObject(DISABLED);
+    });
+
+    it('answers a retry on it 404 BATCHES_DISABLED', async () => {
+        const instance = await harnessWith(stubStore({ retry: 'batches_disabled' }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(404);
+        expect(response.json()).toMatchObject(DISABLED);
+    });
+});
+
 describe('POST /api/jobs/:id/retry', () => {
     // Retry takes NOTHING from the body: the command is the thread head's, copied at insert, and
     // everything else about the run comes from the thread. A stale body is ignored, never read.
@@ -2848,6 +2867,17 @@ describe('POST /api/jobs/:id/done', () => {
         pr: 'https://github.com/acme/web/pull/7',
         doneAt: '2026-10-13T12:00:00.000Z',
     };
+
+    it.each([{}, { force: true }])(
+        'answers 404 BATCHES_DISABLED for done %j on a batch thread with the flag off, and closes nothing (BEL-264)',
+        async (payload) => {
+            const { instance, calls } = await harnessWithBatches(stubStore({ done: 'batches_disabled' }), CLOSED);
+            const response = await post(instance, `/api/jobs/${ID}/done`, payload);
+            expect(response.statusCode).toBe(404);
+            expect(response.json().code).toBe('BATCHES_DISABLED');
+            expect(calls).toEqual([]);
+        }
+    );
 
     it('refuses a plain done on a live batch thread, naming --force (#676)', async () => {
         const { instance, calls } = await harnessWithBatches(stubStore({ done: 'batch' }), CLOSED);

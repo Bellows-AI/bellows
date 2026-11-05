@@ -210,6 +210,7 @@ function buildOrgStores({
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
         admission: config.admission,
+        batches: config.batches.enabled,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),
     });
     // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled
