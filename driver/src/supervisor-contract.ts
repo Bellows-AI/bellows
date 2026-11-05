@@ -108,6 +108,13 @@ export const GATE_FILES = {
     exit: 'exit',
     cancel: 'cancel',
 } as const;
+/**
+ * A gate request's GitHub token mailbox, beside `GATE_FILES` (`GATE_ASK_FILES` of supervisor.cjs, the
+ * names `scripts/gate-github.sh` and `scripts/gate-loop.sh` spell): the supervisor makes `asks/` and
+ * `answers/` in the request, the helper writes `asks/<pid>` and reads `answers/<pid>`, and the loop
+ * installs the helper at `bin/gh`. A review has none of it.
+ */
+export const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' } as const;
 /** The review mailbox's layout is the gate mailbox's (`scripts/review-loop.sh` spells the same names). */
 export const REVIEW_FILES = GATE_FILES;
 /** How long a cancelled or timed-out gate may take to answer before the supervisor answers for it. */
@@ -256,6 +263,8 @@ export interface StepResult {
     replayed?: boolean;
     /** Set by the driver's own pre-flight steps, never by the supervisor: why the run was refused (a review's missing input file). */
     failureKind?: string;
+    /** A gate that asked for its GitHub token and was never answered: it has no verdict, whatever its exit (`gateRunOf` reads it as a lost step). */
+    tokenAskUnanswered?: true;
 }
 
 /**

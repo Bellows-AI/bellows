@@ -51,11 +51,23 @@ export class StepTimedOut extends Error {
 }
 
 /**
+ * Thrown for a gate whose GitHub token ask the supervisor could not get answered: it ran without a
+ * token it needed, so its exit is no verdict, the same as a lost supervisor's (`stepLost`).
+ */
+export class StepTokenUnanswered extends Error {
+    constructor() {
+        super('a GitHub token ask of the gate went unanswered: no verdict');
+        this.name = 'StepTokenUnanswered';
+    }
+}
+
+/**
  * Whether a step failed because its supervisor was lost — the channel closed, or the answer never
- * came — which is no verdict on the step itself: the attempt was interrupted (issue #826).
+ * came, or a gate's GitHub token ask went unanswered — which is no verdict on the step itself: the
+ * attempt was interrupted (issue #826).
  */
 export const stepLost = (error: unknown): boolean =>
-    error instanceof StepChannelClosed || error instanceof StepTimedOut;
+    error instanceof StepChannelClosed || error instanceof StepTimedOut || error instanceof StepTokenUnanswered;
 
 /** What the runners and the loop use: submit a step, read the supervisor's report. */
 export interface StepSink {
@@ -440,7 +452,9 @@ const parseResult = (raw: string): { invocation: string; result: StepResult } | 
     if (typeof invocation !== 'string' || !INVOCATION.test(invocation)) return null;
     if (exitCode !== null && typeof exitCode !== 'number') return null;
     if (typeof stdout !== 'string' || typeof stderr !== 'string' || typeof timedOut !== 'boolean') return null;
-    return { invocation, result: { exitCode, stdout, stderr, timedOut } };
+    // Only `true` is the supervisor's flag; anything else is dropped, never read as one.
+    const unanswered = parsed.tokenAskUnanswered === true ? { tokenAskUnanswered: true as const } : {};
+    return { invocation, result: { exitCode, stdout, stderr, timedOut, ...unanswered } };
 };
 
 /** `POST /step/:id`: the supervisor's answer to one call of a step. */

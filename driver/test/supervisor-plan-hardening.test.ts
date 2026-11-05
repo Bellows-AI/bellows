@@ -105,7 +105,9 @@ describe('the hardened git of the supervisor’s steps', () => {
             return /\/(usr\/)?(local\/)?bin\/git\b/.test(text) || /\bPATH\s*[:=]\s*['"`$]/.test(text);
         });
 
-        // The supervisor itself sets PATH for its children, which is the point.
-        expect(offenders).toEqual(['supervisor.cjs']);
+        // The supervisor itself sets PATH for its children, which is the point. The gate shell puts the
+        // gate helper's directory first on the PATH of a gate command: that runs in the gate container,
+        // where git is the image's own and no supervised step's hardened shim applies.
+        expect(offenders).toEqual(['gate-shell.sh', 'supervisor.cjs']);
     });
 });

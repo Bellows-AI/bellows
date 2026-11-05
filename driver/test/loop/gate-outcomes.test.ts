@@ -9,8 +9,8 @@ import { drive, gatedJob, job, ok, stubBoard, stubGateStack, stubRunner } from '
  * fire the workflow's `gate-failed` edge on work that never happened.
  */
 describe('the gate environment’s GitHub token (docs/connections.md)', () => {
-    // A gate run after an hour-long agent turn must not start on the token minted before it.
-    it('is asked at each gate run’s start and rides the gate env file, never the runner’s', async () => {
+    // A gate holds no token of its own: it asks for one through its mailbox when git or gh needs it.
+    it('is a gate environment that carries no GitHub token, the sync’s ask the only start-time mint', async () => {
         const board = stubBoard([{ ...gatedJob(1), publish: false }]);
         let minted = 0;
         board.board.githubCredential = async () => {
@@ -22,26 +22,12 @@ describe('the gate environment’s GitHub token (docs/connections.md)', () => {
 
         await drive({ ...board, runner, gates });
 
-        // The sync's ask is ghs_1; the environment starts on ghs_2, and each declared gate's
-        // re-acquire carries a token of its own.
-        expect(stack.envBodies.map((body) => /GITHUB_TOKEN=(\S+)/.exec(body)?.[1])).toEqual([
-            'ghs_2',
-            'ghs_3',
-            'ghs_4',
-        ]);
+        expect(stack.envBodies.length).toBeGreaterThan(0);
+        for (const body of stack.envBodies) expect(body).not.toMatch(/GITHUB_TOKEN|GH_TOKEN/);
         // The gate server's own pair is the agent's: no gate run's body carries it.
         for (const body of stack.envBodies) expect(body).not.toMatch(/BELLOWS_GATE_(URL|TOKEN)/);
+        expect(minted).toBe(1);
         expect(stack.ran.names).toEqual(['test', 'lint']);
-    });
-
-    it('starts the environment without one when the board issues none', async () => {
-        const board = stubBoard([{ ...gatedJob(1), publish: false }]);
-        const runner = stubRunner(async () => ok());
-        const { gates, stack } = stubGateStack();
-
-        await drive({ ...board, runner, gates });
-
-        expect(stack.envBodies[0]).not.toContain('GITHUB_TOKEN');
     });
 });
 

@@ -1,4 +1,5 @@
 import {
+    chmodSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -31,7 +32,9 @@ import { bindingBody } from '../src/supervisor-plan.js';
 import {
     AGENT_MAILBOX_DIR,
     GATE_CANCEL_GRACE_MS,
+    GATE_ASK_FILES,
     GATE_FILES,
+    GATE_TOKEN_PATH,
     REVIEW_FILES,
     GATE_LOST_MS,
     MAILBOX_FILES,
@@ -72,6 +75,8 @@ interface SupervisorModule {
     REPORT_MS: number;
     STEP_KINDS: string[];
     GATE_FILES: Record<string, string>;
+    GATE_ASK_FILES: Record<string, string>;
+    GATE_TOKEN_PATH: string;
     GATE_LOST_MS: number;
     GATE_CANCEL_MS: number;
     createMachine(initial?: string): Machine;
@@ -152,6 +157,7 @@ interface StepAnswer {
     stderr: string;
     timedOut: boolean;
     replayed?: boolean;
+    tokenAskUnanswered?: true;
 }
 
 interface Driver {
@@ -199,6 +205,9 @@ interface Driver {
     seen: { method: string; url: string; authorization: string; body: Buffer; closed: boolean }[];
     /** Replaces the default relayed answer; the request has already been recorded in `seen`. */
     relayAnswer: ((response: ServerResponse, entry: Driver['seen'][number]) => void | Promise<void>) | null;
+    /** The gate steps each `POST /gate-token` named, and how the n-th ask (from 1) is answered: a status and body, or `drop`. */
+    gateAsks: string[];
+    gateToken: (n: number) => { status: number; body: unknown } | 'drop';
 }
 
 interface Report {
@@ -272,6 +281,8 @@ async function startDriver({
         leaseToken,
         seen: [],
         relayAnswer: null,
+        gateAsks: [],
+        gateToken: (n) => ({ status: 200, body: { token: `ghs_ask_${n}`, expiresAt: null } }),
         stop: false,
         kill: false,
         agentEnded: false,
@@ -316,6 +327,11 @@ async function startDriver({
             }
             if (driver.silentControl) return request.socket.destroy();
             if (driver.closed || request.headers.authorization !== `Bearer ${driver.token}`) return send(401, {});
+            if (request.method === 'POST' && request.url === GATE_TOKEN_PATH) {
+                driver.gateAsks.push((JSON.parse(await readBody(request)) as { step: string }).step);
+                const answer = driver.gateToken(driver.gateAsks.length);
+                return answer === 'drop' ? request.socket.destroy() : send(answer.status, answer.body);
+            }
             if (request.method === 'GET' && request.url === '/control') {
                 const cancel = driver.cancel.length > 0 ? { cancel: driver.cancel } : {};
                 const ended = driver.agentEnded ? { agentEnded: true } : {};
@@ -1185,6 +1201,8 @@ function fakeGateLoop(
         cancelled: [] as string[],
         beating: true,
         taking: true,
+        /** A loop that does not honor a `cancel` order: the request stays open for the supervisor's grace. */
+        ignoringCancel: false,
     };
     const held = new Map<string, { plan: GatePlan; since: number }>();
     const answer = (id: string, exitCode: number, output: string) => {
@@ -1212,7 +1230,7 @@ function fakeGateLoop(
             }
         }
         for (const [id, { plan: answerPlan, since }] of held) {
-            if (existsSync(at(GATE_FILES.running, id, GATE_FILES.cancel))) {
+            if (!loop.ignoringCancel && existsSync(at(GATE_FILES.running, id, GATE_FILES.cancel))) {
                 loop.cancelled.push(id);
                 answer(id, 137, 'killed');
             } else if (
@@ -1629,6 +1647,8 @@ describe('what crosses the mailboxes', () => {
         expect(supervisor.REPORT_PREFIX).toBe(SUPERVISOR_REPORT_PREFIX);
         expect(supervisor.STEP_KINDS).toEqual([...STEP_KINDS]);
         expect(supervisor.GATE_FILES).toEqual(GATE_FILES);
+        expect(supervisor.GATE_ASK_FILES).toEqual(GATE_ASK_FILES);
+        expect(supervisor.GATE_TOKEN_PATH).toBe(GATE_TOKEN_PATH);
         expect(supervisor.GATE_LOST_MS).toBe(GATE_LOST_MS);
         expect(supervisor.GATE_CANCEL_MS).toBe(GATE_CANCEL_GRACE_MS);
     });
@@ -2619,6 +2639,201 @@ describe('a stop while the driver endpoint holds a request open', () => {
     });
 });
 
+const ASK = '4242';
+/**
+ * A gate that asks for its GitHub token once, as the helper does: `asks/<ASK>` written when the loop takes the
+ * request, the request held open until the supervisor's `answers/<ASK>` lands, which is kept for the test.
+ * `echo` makes the gate's output the token it was given.
+ */
+function askingGate(
+    gateDir: string,
+    {
+        exitCode = 0,
+        echo = false,
+        ask = ASK,
+        onTaken,
+    }: { exitCode?: number; echo?: boolean; ask?: string; onTaken?: (running: string) => void } = {}
+) {
+    const state = { answer: null as string | null, askedAt: 0, answeredAt: 0, dirs: [] as string[] };
+    const loop = fakeGateLoop(gateDir, (request) => {
+        const running = join(gateDir, GATE_FILES.running, request.id);
+        state.dirs = readdirSync(running).sort();
+        state.askedAt = Date.now();
+        writeFileSync(join(running, 'asks', ask), 'ask\n');
+        onTaken?.(running);
+        return {
+            exitCode,
+            get output() {
+                const token = /^token (.*)$/m.exec(state.answer ?? '')?.[1] ?? '';
+                return echo ? `token=${token}\n` : '';
+            },
+            heldUntil: () => {
+                const file = join(running, 'answers', ask);
+                if (!existsSync(file)) return false;
+                state.answer = readFileSync(file, 'utf8');
+                state.answeredAt = Date.now();
+                return true;
+            },
+        };
+    });
+    return { loop, state, answer: () => state.answer };
+}
+
+describe('the supervisor run: a gate’s GitHub token asks', () => {
+    it('creates the asks and answers directories in a gate request, and none in a review request', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, { ...GATED, ...REVIEWING });
+        const gate = askingGate(supervised.box.gate);
+        const review = fakeGateLoop(supervised.box.review, (request) => ({
+            exitCode: 0,
+            output: readdirSync(join(supervised.box.review, GATE_FILES.running, request.id))
+                .sort()
+                .join(','),
+        }));
+        driver.order(gateStep('gate-1', 'gh'));
+        driver.order(reviewStep('review-1', ['echo']));
+        await until('both answers', () => driver.answers.has('gate-1') && driver.answers.has('review-1'));
+        expect(gate.state.dirs).toEqual(expect.arrayContaining(['asks', 'answers']));
+        expect(driver.answers.get('review-1')!.stdout).not.toMatch(/asks|answers/);
+        expect(review.seen).toHaveLength(1);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers the ask with the driver’s token, and asks the driver for the running step', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const gate = askingGate(supervised.box.gate);
+        driver.order(gateStep('gate-1', 'gh'));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(gate.answer()).toBe('token ghs_ask_1\n');
+        expect(driver.gateAsks).toEqual(['gate-1']);
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 0 });
+        expect(driver.answers.get('gate-1')).not.toHaveProperty('tokenAskUnanswered');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers a refused ask `none refused`, and the gate’s own exit stands', async () => {
+        const driver = await startDriver();
+        driver.gateToken = () => ({ status: 409, body: {} });
+        const supervised = run(driver, GATED);
+        const gate = askingGate(supervised.box.gate, { exitCode: 3 });
+        driver.order(gateStep('gate-1', 'gh'));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(gate.answer()).toBe('none refused\n');
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 3 });
+        expect(driver.answers.get('gate-1')).not.toHaveProperty('tokenAskUnanswered');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it.each([0, 1])(
+        'answers an unanswered ask `none unanswered` at its deadline and gives the run no verdict (loop exit %i)',
+        async (exitCode) => {
+            const driver = await startDriver();
+            driver.gateToken = () => 'drop';
+            const supervised = run(driver, { ...GATED, SUPERVISOR_GATE_ASK_MS: '300' });
+            const gate = askingGate(supervised.box.gate, { exitCode });
+            driver.order(gateStep('gate-1', 'gh'));
+            await until('the gate answer', () => driver.answers.has('gate-1'));
+            expect(gate.answer()).toBe('none unanswered\n');
+            expect(gate.answer()).not.toMatch(/^token /);
+            const waited = gate.state.answeredAt - gate.state.askedAt;
+            expect(waited).toBeGreaterThanOrEqual(290);
+            expect(waited).toBeLessThan(300 + 1_500);
+            expect(driver.gateAsks.length).toBeGreaterThan(0);
+            expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: null, tokenAskUnanswered: true });
+            expect(driver.answers.get('gate-1')?.stderr).toMatch(/unanswered/);
+            supervised.agentExits(0);
+            await supervised.done;
+        }
+    );
+
+    it('answers no ask after the driver cancelled the step', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        loop.ignoringCancel = true;
+        driver.order(gateStep('gate-1', 'gh', { timeoutMs: 60_000 }));
+        await until('the gate to be taken', () => loop.seen.length === 1);
+        const running = join(supervised.box.gate, GATE_FILES.running, 'gate-1');
+        driver.cancel = ['gate-1'];
+        await until('the cancel order', () => existsSync(join(running, GATE_FILES.cancel)));
+        writeFileSync(join(running, 'asks', ASK), 'ask\n');
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(existsSync(join(running, 'answers', ASK))).toBe(false);
+        expect(driver.gateAsks).toEqual([]);
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers no ask in a request the loop never took', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const loop = fakeGateLoop(supervised.box.gate);
+        loop.taking = false;
+        driver.order(gateStep('gate-1', 'gh', { timeoutMs: 60_000 }));
+        const requested = join(supervised.box.gate, GATE_FILES.requests, 'gate-1');
+        await until('the request', () => existsSync(join(requested, 'asks')));
+        writeFileSync(join(requested, 'asks', ASK), 'ask\n');
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(existsSync(join(requested, 'answers', ASK))).toBe(false);
+        expect(driver.gateAsks).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it.skipIf(process.getuid?.() === 0)(
+        'skips a tick it could not read the asks directory on, and serves it once readable',
+        async () => {
+            const driver = await startDriver();
+            const supervised = run(driver, GATED);
+            let asks = '';
+            const gate = askingGate(supervised.box.gate, {
+                onTaken: (running) => {
+                    asks = join(running, 'asks');
+                    chmodSync(asks, 0o000);
+                },
+            });
+            driver.order(gateStep('gate-1', 'gh'));
+            await until('the gate to be taken', () => asks !== '');
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            expect(gate.answer()).toBeNull();
+            expect(driver.gateAsks).toEqual([]);
+            chmodSync(asks, 0o755);
+            await until('the gate answer', () => driver.answers.has('gate-1'));
+            expect(gate.answer()).toBe('token ghs_ask_1\n');
+            supervised.agentExits(0);
+            await supervised.done;
+        }
+    );
+
+    it('ignores and removes an ask whose name is not a pid, and leaves the helper’s staging file alone', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        let latch = false;
+        let asks = '';
+        fakeGateLoop(supervised.box.gate, (request) => {
+            asks = join(supervised.box.gate, GATE_FILES.running, request.id, 'asks');
+            for (const name of ['abc', 'x y', '.4242.tmp']) writeFileSync(join(asks, name), 'ask\n');
+            return { exitCode: 0, output: '', heldUntil: () => latch };
+        });
+        driver.order(gateStep('gate-1', 'gh'));
+        await until(
+            'the junk to be removed',
+            () => asks !== '' && !existsSync(join(asks, 'abc')) && !existsSync(join(asks, 'x y'))
+        );
+        expect(existsSync(join(asks, '.4242.tmp'))).toBe(true);
+        expect(driver.gateAsks).toEqual([]);
+        latch = true;
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+});
+
 // BEL-60 slice 4: a step's GitHub token never survives in the output the supervisor keeps or returns.
 describe('the supervisor run: a gate step’s injected GitHub token in its output', () => {
     const TOKENS = { GITHUB_TOKEN: 'ghs_gatetoken0123456789', GH_TOKEN: 'ghs_ghtoken9876543210' };
@@ -2629,18 +2844,17 @@ describe('the supervisor run: a gate step’s injected GitHub token in its outpu
     });
     const everything = (supervised: ReturnType<typeof run>, id: string) => JSON.stringify(supervised.ledger(id));
 
-    it('redacts it from a gate answer and its ledger', async () => {
+    it('redacts a token served through an ask from a gate answer and its ledger', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
-        fakeGateLoop(supervised.box.gate, echoes);
-        driver.order(gateStep('gate-1', 'echo $GITHUB_TOKEN', { env: TOKENS }));
+        const gate = askingGate(supervised.box.gate, { echo: true });
+        driver.order(gateStep('gate-1', 'gh auth token'));
         await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(gate.answer()).toBe('token ghs_ask_1\n');
         const answered = driver.answers.get('gate-1')!;
-        expect(answered.stdout).toBe('token=[redacted] gh=[redacted]\n');
-        for (const value of Object.values(TOKENS)) {
-            expect(JSON.stringify(answered)).not.toContain(value);
-            expect(everything(supervised, 'gate-1')).not.toContain(value);
-        }
+        expect(answered.stdout).toBe('token=[redacted]\n');
+        expect(JSON.stringify(answered)).not.toContain('ghs_ask_1');
+        expect(JSON.stringify(supervised.ledger('gate-1'))).not.toContain('ghs_ask_1');
         supervised.agentExits(0);
         await supervised.done;
     });

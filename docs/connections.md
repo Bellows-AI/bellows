@@ -25,7 +25,8 @@ Over the 60-line cap on purpose: four independent surfaces (connection store, Ji
 | GitHub mint: narrowed to the task's repo and `RUNNER_TOKEN_PERMISSIONS`, answer checked against that ceiling | `server/src/github/app-token.ts` | `server/test/github.app-token.test.ts` |
 | Runner broker client (byte-identical in both images) and the GitHub helper behind `credential.helper` and `gh` | `docker/executor-common/credential-broker.cjs`, `docker/executor-common/github-credential.cjs`, `docker/executor-common/gh-wrapper.sh` | `driver/test/credential-broker.test.ts`, `driver/test/github-credential.test.ts`, `driver/test/executor-images.test.ts` |
 | Attempt pair on an adopted runner, and the credential cache (`CREDENTIAL_CACHE_DIR`) | `driver/src/scripts/supervisor.cjs` (`relayRequest`), `docker/executor-common/attempt-pair.cjs`, `driver/src/claim.ts`, `driver/src/docker/docker.ts`, `driver/src/k8s/k8s-podspec.ts` | `driver/test/supervisor.test.ts`, `driver/test/attempt-pair.test.ts`, `driver/test/takeover-sim.test.ts` |
-| GitHub, driver side: asked before the sync fetch, each publish, github-writing helper and gate run | `driver/src/github-credential-call.ts`, `driver/src/loop/loop-github.ts`, `driver/src/loop/loop-gates.ts`, `driver/src/gates.ts`, `driver/src/k8s/k8s-gate.ts`, `driver/src/supervised-steps.ts` | `driver/test/board.test.ts`, `driver/test/gates.test.ts`, `driver/test/loop/`, `driver/test/k8s/` |
+| GitHub, driver side: asked before the sync fetch, each publish and github-writing helper | `driver/src/github-credential-call.ts`, `driver/src/loop/loop-github.ts`, `driver/src/loop/loop-gates.ts`, `driver/src/gates.ts`, `driver/src/k8s/k8s-gate.ts`, `driver/src/supervised-steps.ts` | `driver/test/board.test.ts`, `driver/test/gates.test.ts`, `driver/test/loop/`, `driver/test/k8s/` |
+| Gate asks: a gate's git and `gh` get a token through the gate mailbox (helper, shim, supervisor relay, driver route) | `driver/src/scripts/gate-github.sh`, `gate-loop.sh`, `gate-shell.sh`, `driver/src/scripts/supervisor.cjs` (`serveGateAsks`), `driver/src/gate-token-control.ts`, `driver/src/loop/loop-github.ts` | `driver/test/supervisor-gate-token.test.ts`, `driver/test/scripts-gate-github.test.ts`, `driver/test/scripts-gate-shell.test.ts`, `driver/test/supervisor.test.ts`, `driver/test/gate-token-control.test.ts` |
 | `GITHUB_TOKEN`/`GH_TOKEN` reserved env names | `core/src/env.ts`, `driver/src/claim.ts`, `driver/src/config.ts`, `server/migrations/072_github_env_reserved.sql` | `server/test/routes.env.test.ts`, `driver/test/config.test.ts` |
 | GitHub lanes (forced expiry, App-less refusal) | `server/src/offline-mint.ts`, `scripts/test-jobs.sh`, `scripts/test-k8s.sh`, `scripts/k8s-stub.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/lane-stubs.test.ts` |
 | Integration layer (imports nothing from `server`) and the Jira adapter | `core/src/integrations/`, `core/src/integrations/jira.ts`, `server/src/integrations/providers/jira.ts`, `lint/no-cross-package-imports.grit` | `core/test/integrations.operation.test.ts`, `core/test/integrations.boundary.test.ts`, `core/test/integrations.jira.test.ts`, `server/test/integrations.contract.test.ts`, `server/test/integrations.jira-hooks.test.ts` |
@@ -64,6 +65,7 @@ Over the 60-line cap on purpose: four independent surfaces (connection store, Ji
   row lock and the root's; an unconfirmed read is `503`, never "unchanged". `server/test-db/agent-title.test.ts`.
 - **An enumeration is a candidate list, never a verdict**: a store that does not answer leaves the row for the next
   tick. `server/test-db/integration-recovery.test.ts`.
+- A gate asks through its mailbox, answered only while its step runs under the live lease; an unanswered ask is no verdict, never an empty token.
 
 ## Stated limits
 
@@ -71,11 +73,8 @@ Over the 60-line cap on purpose: four independent surfaces (connection store, Ji
 - A wedged secret reference is permanent: the grant moves to a fresh reference on reconnect, the old one stays uncollected.
 - GitHub is the App's alone: no member token, no PAT. The helper answers `https://github.com` only.
 - A runner lost without SIGTERM never runs `clear`: its GitHub token lives until GitHub's own expiry (an hour at most).
-- A gate run's GitHub token is asked at its start and never renewed during it: one gate running past
-  its hour runs on an expired token. It rides that run's gate step, whose env the gate container
-  exports for the run alone (`driver/src/gates.ts`, `driver/src/scripts/gate-loop.sh`). Its value is redacted
-  from the gate's output before the supervisor keeps or returns it (`driver/src/scripts/supervisor.cjs`
-  `redactedResult`, `driver/test/supervisor.test.ts`).
+- A gate gets no `GITHUB_TOKEN`/`GH_TOKEN` in its env: git and gh get a token through the gate helper, and a gate script reading `$GITHUB_TOKEN` itself gets nothing.
+- A gate image without `chmod` gets no `gh` shim, and one with git older than 2.31 gets no credential helper: both run tokenless.
 - A supervised step's token rides its step request across the mailbox volume, not memory.
 - The token reaches every site the Atlassian account can reach; there is no in-place edit and no per-task picker in the UI.
 - Only the pair one claim back is pending: after two takeovers before the relay, the oldest pair is refused

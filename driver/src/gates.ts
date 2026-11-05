@@ -22,7 +22,7 @@ import { attachersOf, createControlChannel } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { TASK_MOUNT } from './task-volume.js';
 import { reportTail } from './runner.js';
-import { stepLost, type StepBroker } from './step-control.js';
+import { StepTokenUnanswered, stepLost, type StepBroker } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
 import { respondJson } from './http.js';
@@ -196,9 +196,11 @@ export function envBodyRecord(body: string): Record<string, string> {
  * A step's answer as a gate verdict: its status and its output's tail, trimmed like a terminal's —
  * or, for a gate the supervisor killed at its deadline, 124 with the deadline named when it said
  * nothing. No exit at all is a harness failure (the gate container never took the request, or was
- * lost mid-run), which rejects: never a verdict.
+ * lost mid-run), which rejects: never a verdict. A gate whose GitHub token ask went unanswered rejects
+ * as a lost step (`stepLost`) whatever it exited with.
  */
 function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
+    if (result.tokenAskUnanswered) throw new StepTokenUnanswered();
     const output = reportTail(`${result.stdout}${result.stderr}`.trim());
     if (result.timedOut) {
         return { exitCode: TIMEOUT_EXIT_CODE, output: output || `[driver] gate killed after ${deadlineMs}ms` };
@@ -363,8 +365,6 @@ export interface GateClaim {
     envBody?: string;
     job: BoardJob;
     gates: readonly DeclaredGate[];
-    /** The env body asked for when a run starts (a GitHub token of its own); absent, `envBody` stands. */
-    freshEnv?: () => Promise<string>;
     /** The dead-service note the loop's sampler last set (issue #487); set on the stored claim, never at register. */
     deadServices?: string | undefined;
     /**
@@ -533,8 +533,7 @@ const runRegisteredGate = async (
 /** Acquires the checkout's gate environment for the claim; the error that kept it from starting, or null. */
 const acquireFor = async (manager: Pick<GateManager, 'acquire'>, claim: GateClaim): Promise<Error | null> => {
     try {
-        const envBody = claim.freshEnv ? await claim.freshEnv() : (claim.envBody ?? '');
-        await manager.acquire(claim.key, claim.image, envBody, claim.job && { job: claim.job });
+        await manager.acquire(claim.key, claim.image, claim.envBody ?? '', claim.job && { job: claim.job });
         return null;
     } catch (e) {
         return e as Error;
