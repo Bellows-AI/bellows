@@ -121,9 +121,16 @@ describe('the raw .env editor parser — refusals', () => {
 
     it('refuses a quoted value that runs over the next line, because parsing is line-structured', () => {
         // The real shape of "a value containing a newline": the continuation arrives as its own
-        // line, and a line with no = is refused — docker --env-file would have truncated it.
+        // line, and a line with no = is refused — docker --env-file would have truncated it. Both
+        // refusals are reported: the line that opened the quote, then the stray continuation.
         const result = parseEnvRaw('A="starts\nstill starting"', noSecrets);
-        expect(result).toEqual({ ok: false, errors: ['line 2: expected KEY=value'] });
+        expect(result).toEqual({
+            ok: false,
+            errors: [
+                'line 1: value for "A" opens a quote that does not close at the end of the line',
+                'line 2: expected KEY=value',
+            ],
+        });
     });
 
     it('refuses duplicate names within the text, with both line numbers', () => {

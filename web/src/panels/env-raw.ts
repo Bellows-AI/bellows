@@ -41,9 +41,7 @@ function startsWithQuote(value: string): boolean {
 }
 
 /** One line's parse: `null` for a skipped blank/comment line, otherwise the pair or the error. */
-type LineParseResult =
-    | { ok: true; name: string; value: string }
-    | { ok: false; error: string; unterminatedQuote?: true };
+type LineParseResult = { ok: true; name: string; value: string } | { ok: false; error: string };
 
 /**
  * One line of the raw editor's text, checked in the server's own order: shape, name, value,
@@ -79,7 +77,6 @@ function parseEnvLine(
             return {
                 ok: false,
                 error: `line ${lineNo}: value for "${name}" opens a quote that does not close at the end of the line`,
-                unterminatedQuote: true,
             };
         }
         value = value.slice(1, -1);
@@ -126,20 +123,13 @@ export function parseEnvRaw(text: string, secretNames: readonly string[]): EnvRa
     const pairs: { name: string; value: string }[] = [];
     const firstSeen = new Map<string, number>();
 
-    // An unterminated quote's continuation line is usually refused on its own (no `=`); that
-    // refusal already flags the run-over, so the opening line's error is dropped in its favor.
-    let openQuoteError = false;
     const lines = text.replace(/\r\n?/g, '\n').split('\n');
     for (const [index, rawLine] of lines.entries()) {
         const lineNo = index + 1;
         const result = parseEnvLine(rawLine, lineNo, { secrets, firstSeen, activeCount: pairs.length });
-        const afterOpenQuote = openQuoteError;
-        openQuoteError = false;
         if (result === null) continue;
         if (!result.ok) {
-            if (afterOpenQuote) errors.pop();
             errors.push(result.error);
-            openQuoteError = result.unterminatedQuote === true;
             continue;
         }
         firstSeen.set(result.name, lineNo);
