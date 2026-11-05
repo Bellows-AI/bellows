@@ -31,6 +31,15 @@ export const NAV_ITEMS: readonly PrimaryNavItem[] = [
 ];
 
 /**
+ * The primary items this session may see. Batches is behind a deployment flag (BEL-264): the row
+ * shows only on a confirmed `batches: true`, so a loading, errored or anonymous session — and a
+ * `/me` without the key — lists no Batches link.
+ */
+export function navItems(session: { batches: boolean } | null): readonly PrimaryNavItem[] {
+    return NAV_ITEMS.filter((item) => item.to !== '/batches' || session?.batches === true);
+}
+
+/**
  * The Settings tree's sections, in the issue's order. Static — no data behind them. Overview is
  * the `/settings` page itself, end-matched so it never stays lit on a section page (issue 274).
  */

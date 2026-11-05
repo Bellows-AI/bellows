@@ -23,6 +23,8 @@ export interface Session {
     mode: 'github' | 'none';
     /** Whether this board serves MCP, and so has connected apps to show. */
     mcp: boolean;
+    /** Whether this board has Batches turned on (`BATCHES_ENABLED`). Anything but `true` means off. */
+    batches: boolean;
 }
 
 /** The role as the settings pages print it. */

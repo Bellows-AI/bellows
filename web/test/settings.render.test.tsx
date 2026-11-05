@@ -34,6 +34,7 @@ const local: Session = {
     account: { createdAt: null, lastLoginAt: null },
     mode: 'none',
     mcp: false,
+    batches: false,
 };
 
 describe('IdentityPanel', () => {

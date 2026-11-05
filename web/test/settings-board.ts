@@ -115,6 +115,7 @@ function session(board: SettingsBoard): Session {
         organizations: [{ id: 'org1', name: 'Bellows-AI' }],
         mode: 'github',
         mcp: false,
+        batches: false,
     };
 }
 
