@@ -690,6 +690,7 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
                 warmAll: async () => {},
                 reconcileBatches: async () => {},
                 observeBatchPrs: async () => {},
+                followPrs: async () => {},
             },
             store: telemetryStoreStub(),
             auth: store,
@@ -857,7 +858,7 @@ describe('the batch routes are a person’s', () => {
             if (route.method === 'HEAD') return;
             registered.add(`${route.method} ${route.url.replace(':id', JOB_ID).replace(':key', 'a')}`);
         });
-        await batches.register(batchRoutes({ orgs: {} as OrgRegistry }));
+        await batches.register(batchRoutes({ orgs: {} as OrgRegistry, enabled: true }));
         await batches.ready();
         await batches.close();
 
@@ -901,7 +902,15 @@ describe('the batch routes are a person’s', () => {
 
     it('lets a signed-in member through the wall', async () => {
         const store = memoryAuthStore();
-        const server = await build(githubAuth(), store);
+        const config = testConfig({ auth: githubAuth(), batches: { enabled: true } });
+        const server = track(
+            await buildApp({
+                config,
+                orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
+                store: telemetryStoreStub(),
+                auth: store,
+            })
+        );
         const cookie = await signedIn(store, store.seedMember(ORG, 'octocat'));
         const response = await server.inject({ method: 'GET', url: '/api/batches', headers: { cookie } });
         // No batch store behind this registry, so the route's own 503: it got past the hook.

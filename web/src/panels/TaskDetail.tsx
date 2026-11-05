@@ -7,6 +7,7 @@ import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { endedOnQuestion, type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
+import { useStickToBottom } from '../use-stick-to-bottom.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { AttachmentChips } from './AttachmentList.js';
 import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
@@ -205,10 +206,12 @@ function FollowUpComposer({
     };
     return (
         <div className="composer">
-            <label className="composer-label" htmlFor={FOLLOW_UP_INPUT_ID}>
-                Ask for a follow-up
-            </label>
-            <p className="composer-label">The agent continues the same task, checkout, executor, and session.</p>
+            <div className="composer-intro">
+                <label className="composer-label" htmlFor={FOLLOW_UP_INPUT_ID}>
+                    Ask for a follow-up
+                </label>
+                <p className="composer-label">The agent continues the same task, checkout, executor, and session.</p>
+            </div>
             {error !== null ? <p className="status">{error}</p> : null}
             <textarea
                 id={FOLLOW_UP_INPUT_ID}
@@ -311,12 +314,36 @@ function FollowUp({
     }
     if (body === null) return null;
     return (
-        <section className="panel task-follow-up">
+        <section className="panel task-follow-up composer-surface">
             <div className="panel-head">
                 <h2>Follow up</h2>
             </div>
             {body}
         </section>
+    );
+}
+
+/** Changes exactly when the thread's content does — a poll that brings the same rows leaves it. */
+function threadContentKey(jobs: Job[] | null): string {
+    return (jobs ?? [])
+        .map(
+            (j) => `${j.id}:${j.status}:${j.output?.length ?? 0}:${j.summary?.length ?? 0}:${j.questions?.length ?? 0}`
+        )
+        .join('|');
+}
+
+/** The output the live-following well tracks: the newest run's, only while it can still move. */
+function liveOutputOf(latest: Job | null | undefined): string | null | undefined {
+    return latest && !isTerminal(latest.status) ? latest.output : undefined;
+}
+
+/** Offered when output landed under a reader who scrolled up: the way back to the newest line. */
+function JumpToLatest({ show, onJump }: { show: boolean; onJump: () => void }) {
+    if (!show) return null;
+    return (
+        <button type="button" className="task-jump" onClick={onJump}>
+            Jump to latest
+        </button>
     );
 }
 
@@ -369,7 +396,6 @@ export function TaskDetail({
      */
     activity?: ThreadActivity;
 }) {
-    const outputRef = useRef<HTMLPreElement | null>(null);
     const followUpAdd = useRef<((files: File[]) => void) | null>(null);
 
     // The conversation continues on the newest run: the composer, the live-output tail and the
@@ -377,15 +403,12 @@ export function TaskDetail({
     // below needs it on every render.
     const latest = jobs === null || jobs.length === 0 ? null : jobs[jobs.length - 1];
 
-    // The output streams in while the newest run goes, and somebody watching a run wants the
-    // newest line — so the pane follows the tail while the task can still move.
-    const liveStatus = latest?.status;
-    const liveOutput = latest?.output;
-    useEffect(() => {
-        if (liveStatus !== undefined && !isTerminal(liveStatus) && outputRef.current) {
-            outputRef.current.scrollTop = outputRef.current.scrollHeight;
-        }
-    }, [liveStatus, liveOutput]);
+    // Three scrollers follow what streams in, each only while its reader is near its own bottom
+    // (BEL-263): the conversation (with a Jump to latest when the reader is away), and the live
+    // run's raw-output well. The log opened from its summary lands on the tail in `TaskRun`.
+    // `jobs` changes identity with every poll; the hook judges height, not identity.
+    const conversation = useStickToBottom<HTMLElement>(threadContentKey(jobs));
+    const liveWell = useStickToBottom<HTMLPreElement>(liveOutputOf(latest));
 
     if (jobs === null || jobs.length === 0) {
         return (
@@ -413,23 +436,31 @@ export function TaskDetail({
                     accepts={() => followUpAdd.current !== null}
                     onFiles={(dropped) => followUpAdd.current?.(dropped)}
                 >
-                    <section className="task-conversation">
-                        <div className="panel-head">
-                            <h2>Conversation</h2>
-                        </div>
-                        {jobs.map((task, index) => (
-                            <TaskRun
-                                key={task.id}
-                                job={task}
-                                index={index + 1}
-                                liveRef={task.id === latestTask.id && !isTerminal(task.status) ? outputRef : undefined}
-                                onAnswer={onAnswer}
-                                connect={
-                                    task.id === latestTask.id ? { viewer, onChanged: onConnectionChange } : undefined
-                                }
-                            />
-                        ))}
-                    </section>
+                    <div className="task-thread">
+                        {/* The one scroll region: the composer below is its sibling, never inside it. */}
+                        <section className="task-conversation" aria-label="Conversation" ref={conversation.ref}>
+                            <div className="panel-head">
+                                <h2>Conversation</h2>
+                            </div>
+                            {jobs.map((task, index) => (
+                                <TaskRun
+                                    key={task.id}
+                                    job={task}
+                                    index={index + 1}
+                                    liveRef={
+                                        task.id === latestTask.id && !isTerminal(task.status) ? liveWell.ref : undefined
+                                    }
+                                    onAnswer={onAnswer}
+                                    connect={
+                                        task.id === latestTask.id
+                                            ? { viewer, onChanged: onConnectionChange }
+                                            : undefined
+                                    }
+                                />
+                            ))}
+                        </section>
+                        <JumpToLatest show={conversation.hasUnseen} onJump={conversation.jumpToLatest} />
+                    </div>
                     <FollowUp
                         latest={latestTask}
                         rootId={jobs[0]?.id ?? latestTask.id}

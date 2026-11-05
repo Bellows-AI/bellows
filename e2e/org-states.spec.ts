@@ -40,6 +40,7 @@ function session(role: Role) {
         organizations: [{ id: 'org-e2e', name: LONG_ORG }],
         mode: 'github',
         mcp: false,
+        batches: false,
     };
 }
 
@@ -141,12 +142,18 @@ for (const width of WIDTHS) {
                 const core = page.locator('section.panel', {
                     has: page.getByRole('heading', { name: 'Core (organization)' }),
                 });
-                await expect(core.getByLabel(/^Variable \d+ value$/)).toHaveValue(VARIABLE_VALUE);
-                await core.getByRole('tab', { name: /^Secrets \(/ }).click();
-                const secretValue = core.getByLabel(/^Secret \d+ new value$/);
+                // The summary names the rows and never prints a value; the dialog holds them.
+                await expect(core).not.toContainText(VARIABLE_VALUE);
+                await core.getByRole('button', { name: 'Edit variables' }).click();
+                const editor = page.locator('.env-dialog');
+                await expect(editor.getByLabel(/^Variable \d+ value$/)).toHaveValue(VARIABLE_VALUE);
+                const secretValue = editor.getByLabel(/^Secret \d+ new value$/);
                 await expect(secretValue).toHaveAttribute('type', 'password');
                 await expect(secretValue).toHaveValue('');
-                await expect(core.getByText('Set', { exact: true })).toBeVisible();
+                await expect(editor.getByText('Set', { exact: true })).toBeVisible();
+                await assertFits(page, width);
+                await page.keyboard.press('Escape');
+                await expect(editor).toBeHidden();
 
                 await assertFits(page, width);
                 expect(problems).toEqual([]);

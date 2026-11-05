@@ -21,6 +21,7 @@ import {
     HTTP_NOT_FOUND,
     HTTP_OK,
     HTTP_SERVICE_UNAVAILABLE,
+    HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
 
@@ -97,6 +98,8 @@ async function setup(
         branchReadFails?: Error;
         /** The repo list read is failing: the cached list is served with this reason attached. */
         listError?: string;
+        /** The deployment flag; the suite runs with batches on unless a case says otherwise. */
+        batchesEnabled?: boolean;
     } = {}
 ) {
     const auth = memoryAuthStore();
@@ -111,7 +114,7 @@ async function setup(
             return { id: 'never' };
         },
     });
-    const config = testConfig({ auth: githubAuth() });
+    const config = testConfig({ auth: githubAuth(), batches: { enabled: options.batchesEnabled ?? true } });
     const repos = reposWithDefaults(
         options.repos ?? [
             { ...WEB, defaultBranch: 'main' },
@@ -614,7 +617,7 @@ describe('org scoping and availability', () => {
     it('answers 503 when the org’s runtime carries no batch store', async () => {
         const auth = memoryAuthStore();
         const member = auth.seedMember(ORG, 'octocat');
-        const config = testConfig({ auth: githubAuth() });
+        const config = testConfig({ auth: githubAuth(), batches: { enabled: true } });
         const app = track(await buildApp({ config, orgs: staticRegistry({ config }), auth }));
         const response = await app.inject({
             method: 'GET',
@@ -886,5 +889,41 @@ describe('accept', () => {
         expect(stray.statusCode).toBe(HTTP_BAD_REQUEST);
         await s.call('POST', `/api/batches/${id}/cancel`, {});
         expect((await s.call('POST', `/api/batches/${id}/tasks/a/accept`, {})).json().code).toBe('BATCH_CANCELLED');
+    });
+});
+
+describe('batches disabled (BATCHES_ENABLED off)', () => {
+    const ID = '11111111-1111-4111-8111-111111111111';
+    const routes: [method: 'GET' | 'POST' | 'PUT', url: string][] = [
+        ['POST', '/api/batches'],
+        ['GET', '/api/batches'],
+        ['GET', `/api/batches/${ID}`],
+        ['GET', `/api/batches/${ID}/report`],
+        ['PUT', `/api/batches/${ID}`],
+        ['POST', `/api/batches/${ID}/validate`],
+        ['POST', `/api/batches/${ID}/start`],
+        ['POST', `/api/batches/${ID}/tasks/a/retry`],
+        ['POST', `/api/batches/${ID}/tasks/a/accept`],
+        ['POST', `/api/batches/${ID}/cancel`],
+    ];
+
+    it.each(routes)(
+        '%s %s answers 404 BATCHES_DISABLED naming the variable, and touches no store',
+        async (method, url) => {
+            const s = await setup({ batchesEnabled: false });
+            const response = await s.call(method, url, method === 'GET' ? undefined : { plan: plan() });
+            expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+            expect(response.json().code).toBe('BATCHES_DISABLED');
+            expect(response.json().error).toMatch(/BATCHES_ENABLED/);
+            expect(s.batches.writes).toEqual([]);
+            expect(s.otherBatches.writes).toEqual([]);
+        }
+    );
+
+    it('keeps the auth wall in front: an anonymous caller is refused 401, not told the feature is off', async () => {
+        const s = await setup({ batchesEnabled: false });
+        const response = await s.call('GET', '/api/batches', undefined, { cookie: '' });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(response.json().code).not.toBe('BATCHES_DISABLED');
     });
 });

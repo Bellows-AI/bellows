@@ -116,7 +116,11 @@ export function AppShell() {
             <a className="skip-link" href="#main-content">
                 Skip to main content
             </a>
-            <SideNav navigation={onTasks ? tasks.navigation : null} onNavigate={() => setNavOpen(false)} />
+            <SideNav
+                navigation={onTasks ? tasks.navigation : null}
+                session={session}
+                onNavigate={() => setNavOpen(false)}
+            />
             <div className="shell-main">
                 <AppBar
                     meta={data?.meta ?? null}
@@ -143,6 +147,7 @@ export function AppShell() {
                 onNavigate={() => setNavOpen(false)}
                 navigation={onTasks ? tasks.navigation : null}
                 meta={data?.meta ?? null}
+                session={session}
             />
         </div>
     );

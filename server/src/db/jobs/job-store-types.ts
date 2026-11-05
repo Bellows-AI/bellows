@@ -771,6 +771,12 @@ export type SettleRefusal = { result: 'lost' } | { result: 'missing' } | { resul
 export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
 
 /**
+ * The refusal of a task-path write (retry, follow-up, Done) on a thread that backs a batch task while
+ * `BATCHES_ENABLED` is off (BEL-264): the batch is hidden, so its threads are not reachable through the task routes.
+ */
+export type BatchesDisabledRefusal = 'batches_disabled';
+
+/**
  * Why a retry was refused (issue #326). The follow-up set — a session is never a precondition of
  * either.
  *
@@ -1013,6 +1019,11 @@ export interface TaskListResponse {
 export interface CreateJobStoreDeps {
     sql: Sql;
     orgId: string;
+    /**
+     * `config.batches.enabled` (BEL-264), default on. Off, the claim skips every job of a batch thread and
+     * retry, follow-up and Done refuse one with `batches_disabled`; a job outside a batch is unchanged.
+     */
+    batches?: boolean;
     ready?: Promise<unknown>;
     /**
      * The env-var store's resolver, when the deployment stores runner environment. Present in
@@ -1155,6 +1166,8 @@ export interface JobStorePrs {
 export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admission'>> {
     sql: Sql;
     orgId: string;
+    /** The deployment's batch flag (`CreateJobStoreDeps.batches`). */
+    batches: boolean;
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];

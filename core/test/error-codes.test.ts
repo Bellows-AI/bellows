@@ -32,4 +32,8 @@ describe('ERROR_CODES', () => {
     it('carries the lease-pending answer the runner helpers retry on', () => {
         expect(ERROR_CODES.LEASE_PENDING).toBe('LEASE_PENDING');
     });
+
+    it('carries the disabled-batches answer the web and CLI branch on', () => {
+        expect(ERROR_CODES.BATCHES_DISABLED).toBe('BATCHES_DISABLED');
+    });
 });

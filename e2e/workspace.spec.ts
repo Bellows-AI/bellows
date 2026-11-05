@@ -13,8 +13,8 @@ import { throughSignIn } from './signin.js';
  * The server here is the offline entry, with no GitHub App credential; the stored fallback
  * reports the seed's one repository (SEED_REPO, scoped to the caller's org) as the tracked list.
  * The board keeps no checkouts, so neither page carries checkout state. The repositories page's
- * Configure switch dialog and the executor dialog are
- * web/test/repository-selection.dom.test.tsx's and web/test/executor-dialog.dom.test.tsx's.
+ * Configure is web/test/repository-selection.dom.test.tsx's and the executor dialog is
+ * web/test/executor-dialog.dom.test.tsx's.
  */
 
 const SHOTS = 'artifacts/ui';

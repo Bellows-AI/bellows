@@ -325,29 +325,37 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
                 },
             });
 
-            // A dirty settings editor guards in-app navigation with the one unsaved-changes dialog.
+            // The variables dialog fits the viewport whole and traps focus; a dirty draft asks
+            // through the one unsaved-changes dialog before it closes.
             await page.goto('/settings/organization');
             const core = page.locator('section.panel', {
                 has: page.getByRole('heading', { name: 'Core (organization)' }),
             });
             await expect(core).toBeVisible(SETTLED);
-            await core.getByRole('button', { name: 'Add variable' }).click();
-            await core
+            const edit = core.getByRole('button', { name: 'Edit variables' });
+            await containsAndReturns(page, {
+                name: 'settings: variables dialog',
+                trigger: edit,
+                panel: page.locator('.env-dialog'),
+                open: () => edit.click(),
+            });
+            await edit.click();
+            await page.locator('.env-dialog').getByRole('button', { name: 'Add variable' }).click();
+            await page
+                .locator('.env-dialog')
                 .getByLabel(/^Variable \d+ name$/)
                 .last()
                 .fill('E2E_MATRIX_GUARD');
-            // The side nav's Tasks link on a wide screen; the app bar's brand link in the compact shell.
-            const leave = page
-                .getByRole('link', { name: 'Tasks', exact: true })
-                .or(page.getByRole('link', { name: 'Bellows', exact: true }))
-                .filter({ visible: true })
-                .first();
-            await containsAndReturns(page, {
-                name: 'settings: leave guard',
-                trigger: leave,
-                panel: page.locator('.unsaved'),
-                open: () => leave.click(),
-            });
+            await page.keyboard.press('Escape');
+            await expect(page.locator('.unsaved')).toBeVisible();
+            const guardBox = (await page.locator('.unsaved').boundingBox())!;
+            const view = page.viewportSize()!;
+            expect.soft(guardBox.x, 'settings: leave guard: left edge inside the viewport').toBeGreaterThanOrEqual(0);
+            expect
+                .soft(guardBox.x + guardBox.width, 'settings: leave guard: right edge inside the viewport')
+                .toBeLessThanOrEqual(view.width + 1);
+            await page.getByRole('button', { name: 'Discard changes' }).click();
+            await expect(page.locator('.env-dialog')).toBeHidden();
 
             await page.unrouteAll({ behavior: 'ignoreErrors' });
             await mockExecutors(page, []);

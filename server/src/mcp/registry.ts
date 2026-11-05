@@ -23,6 +23,9 @@ import { waitTask } from './tools/task-wait.js';
 import { TASK_WRITE_TOOLS } from './tools/task-writes.js';
 import { whoami } from './tools/whoami.js';
 
+/** Every batch tool: what `BATCHES_ENABLED` off removes from `tools/list` (docs/mcp.md). */
+export const ALL_BATCH_TOOLS: readonly Tool[] = [...BATCH_TOOLS, waitBatch, getBatchTasks];
+
 /** Alphabetical by name: `tools/list` is the same on every replica and every call. */
 export const TOOLS: readonly Tool[] = [
     whoami,
@@ -44,9 +47,7 @@ export const TOOLS: readonly Tool[] = [
     listQuestions,
     ...TASK_WRITE_TOOLS,
     createAttachmentUpload,
-    ...BATCH_TOOLS,
-    waitBatch,
-    getBatchTasks,
+    ...ALL_BATCH_TOOLS,
 ].sort((a, b) => a.name.localeCompare(b.name));
 
 /** In-process cap on one caller's simultaneous tool calls (per replica). */
@@ -118,6 +119,10 @@ const openOutput = <S extends z.ZodType>(schema: S): S => {
         },
     } as unknown as S;
 };
+
+/** The tools a board advertises: all of them, minus the batch tools while batches are disabled. */
+export const toolsFor = (batchesEnabled: boolean): readonly Tool[] =>
+    batchesEnabled ? TOOLS : TOOLS.filter((tool) => !ALL_BATCH_TOOLS.includes(tool));
 
 /** Registers every tool on a per-request server. */
 export function registerTools(

@@ -1,6 +1,6 @@
 import { McpServer, type AuthInfo, type McpRequestContext } from '@modelcontextprotocol/server';
 import type { Caller } from '../auth/store.js';
-import { registerTools, type ToolRuntime } from './registry.js';
+import { registerTools, toolsFor, type ToolRuntime } from './registry.js';
 
 /** The server name clients show; there is no per-deployment naming. */
 const SERVER_NAME = 'factory';
@@ -10,6 +10,8 @@ export interface BoardMcpContext {
     readonly era: McpRequestContext['era'];
     /** Null only when the request carried no resolved caller, which the gate never lets through. */
     readonly caller: Caller | null;
+    /** Whether batches are enabled on this deployment; off, the batch tools are neither listed nor callable. */
+    readonly batches: boolean;
     /** The bridge and budgets the tools run with; absent in a test that registers no board tool. */
     readonly tools?: ToolRuntime;
 }
@@ -31,6 +33,6 @@ export const callerOfAuthInfo = (info: AuthInfo | undefined): Caller | null => {
  */
 export function createBoardMcpServer(version: string, context: BoardMcpContext): McpServer {
     const server = new McpServer({ name: SERVER_NAME, version }, { capabilities: { tools: { listChanged: false } } });
-    if (context.tools) registerTools(server, context.caller, context.tools);
+    if (context.tools) registerTools(server, context.caller, context.tools, toolsFor(context.batches));
     return server;
 }

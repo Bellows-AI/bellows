@@ -3,17 +3,17 @@ import {
     countActive,
     envPayload,
     isDirty,
-    nextTabIndex,
     payloadEquals,
     rowFieldErrors,
     scopeError,
     SECRET_STATE_LABEL,
     secretState,
     seedRows,
-    advancedUnapplied,
+    applyRawText,
+    rowsToRawText,
+    secretsNote,
     type EnvRowState,
 } from '../src/panels/env-draft.js';
-import { serializeEnv } from '../src/panels/env-raw.js';
 
 const storedVar = (name: string, value: string, id = name): EnvRowState => ({
     id,
@@ -165,44 +165,7 @@ describe('secret state', () => {
     });
 });
 
-describe('the advanced .env disclosure', () => {
-    it('holds nothing unapplied while the text matches the active variable rows', () => {
-        const rows = [storedVar('A', '1'), storedSecret('TOKEN')];
-        expect(advancedUnapplied(serializeEnv(rows), rows)).toBe(false);
-    });
-
-    it('holds unapplied text once the textarea differs from the draft', () => {
-        const rows = [storedVar('A', '1'), storedSecret('TOKEN')];
-        expect(advancedUnapplied('A=2', rows)).toBe(true);
-        // A pending-removed variable is not in the seed text: applying the untouched text twice
-        // must not resurrect it, and the untouched text counts as applied.
-        const pending = [storedVar('A', '1'), { ...storedVar('B', '2', 'r2'), pendingRemove: true }];
-        expect(advancedUnapplied(serializeEnv([pending[0]!]), pending)).toBe(false);
-    });
-});
-
-describe('tab roving focus', () => {
-    const key = (current: number, k: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End') => nextTabIndex(current, 2, k);
-
-    it('wraps in both directions', () => {
-        expect(key(0, 'ArrowRight')).toBe(1);
-        expect(key(1, 'ArrowRight')).toBe(0);
-        expect(key(0, 'ArrowLeft')).toBe(1);
-        expect(key(1, 'ArrowLeft')).toBe(0);
-    });
-
-    it('jumps Home to the first tab and End to the last', () => {
-        expect(key(1, 'Home')).toBe(0);
-        expect(key(0, 'End')).toBe(1);
-    });
-
-    it('answers null for any other key, and for a count of zero', () => {
-        expect(nextTabIndex(0, 2, 'Enter')).toBeNull();
-        expect(nextTabIndex(0, 0, 'ArrowRight')).toBeNull();
-    });
-});
-
-describe('tab counts', () => {
+describe('row counts', () => {
     it('include additions and exclude pending removals', () => {
         const rows = [
             storedVar('A', '1'),
@@ -212,5 +175,94 @@ describe('tab counts', () => {
         ];
         expect(countActive(rows, false)).toBe(1);
         expect(countActive(rows, true)).toBe(2);
+    });
+});
+
+describe('the shared structured/.env draft (BEL-262)', () => {
+    let counter = 0;
+    const nextId = () => {
+        counter += 1;
+        return `n${counter}`;
+    };
+    const blankNew: EnvRowState = {
+        id: 'blank',
+        name: '',
+        value: '',
+        isSecret: false,
+        isNew: true,
+        pendingRemove: false,
+    };
+
+    it('writes only the active variables into the text: no secret, no pending removal, no blank addition', () => {
+        const rows = [
+            storedVar('A', '1'),
+            storedSecret('TOKEN'),
+            { ...storedVar('GONE', 'x'), pendingRemove: true },
+            blankNew,
+            storedVar('E', ''),
+        ];
+        expect(rowsToRawText(rows)).toBe('A=1\nE=');
+    });
+
+    it('keeps a secret out of the text even when its value was typed', () => {
+        const typed: EnvRowState = { ...storedSecret('TOKEN'), value: 'hunter2', isNew: true };
+        expect(rowsToRawText([typed, storedVar('A', '1')])).not.toContain('hunter2');
+        expect(rowsToRawText([typed])).toBe('');
+    });
+
+    it('applies valid text as the whole variable set and passes the secret rows around untouched', () => {
+        const secret = { ...storedSecret('TOKEN'), value: 'typed', isNew: false };
+        const result = applyRawText('B=2\nA=\n', [storedVar('OLD', 'x'), secret], nextId);
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(envPayload(result.rows)).toEqual([
+            { name: 'B', value: '2', isSecret: false },
+            { name: 'A', value: '', isSecret: false },
+            { name: 'TOKEN', value: 'typed', isSecret: true },
+        ]);
+        expect(result.rows.at(-1)).toBe(secret);
+    });
+
+    it('reports line-numbered errors and no rows for malformed text, a secret name included', () => {
+        const result = applyRawText('A=1\nnot a pair\nTOKEN=x', [storedSecret('TOKEN')], nextId);
+        expect(result).toEqual({
+            ok: false,
+            errors: [
+                'line 2: expected KEY=value',
+                'line 3: "TOKEN" is already a secret in this scope — edit it in the list view',
+            ],
+        });
+    });
+
+    it('refuses an unterminated quote and keeps every row, so no corrupted value is applied', () => {
+        const rows = [storedVar('KEEP', 'x')];
+        for (const text of ['A="first\nB=second"', 'A="first\n#second']) {
+            const result = applyRawText(text, rows, nextId);
+            expect(result.ok).toBe(false);
+            if (!result.ok) expect(result.errors[0]).toMatch(/^line 1: /);
+        }
+    });
+
+    it('does not count a pending-removed secret as a collision', () => {
+        const removed = { ...storedSecret('TOKEN'), pendingRemove: true };
+        expect(applyRawText('TOKEN=x', [removed], nextId).ok).toBe(true);
+    });
+
+    it('reads clean after a structured -> text -> structured round trip of empty and quoted values', () => {
+        const baseline = seedRows([
+            { name: 'EMPTY', value: '', isSecret: false },
+            { name: 'QUOTED', value: '"x"', isSecret: false },
+            { name: 'TOKEN', value: null, isSecret: true },
+        ]);
+        const result = applyRawText(rowsToRawText(baseline), baseline, nextId);
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(isDirty(baseline, result.rows)).toBe(false);
+    });
+
+    it('words the count note for the secrets the text does not show', () => {
+        expect(secretsNote(0)).toBeNull();
+        expect(secretsNote(1)).toBe('1 secret is edited in the list view.');
+        expect(secretsNote(2)).toBe('2 secrets are edited in the list view.');
     });
 });

@@ -65,6 +65,8 @@ const webRequestOf = (request: FastifyRequest, origin: string, signal: AbortSign
 
 export interface McpRouteDeps {
     readonly version: string;
+    /** `config.batches.enabled`: off, the batch tools are not registered. */
+    readonly batches: boolean;
     /** The board's public origin; only the base of the Request the SDK is handed, never a trust decision. */
     readonly origin: string;
     /** Builds the per-request server; defaults to the board's own. A seam for tests that need a tool of their own. */
@@ -80,7 +82,14 @@ export interface McpRouteDeps {
  */
 export async function mcpRoutes(
     app: FastifyInstance,
-    { version, origin, metrics, toolDeadlineMs = TOOL_DEADLINE_MS, buildServer = createBoardMcpServer }: McpRouteDeps
+    {
+        version,
+        batches,
+        origin,
+        metrics,
+        toolDeadlineMs = TOOL_DEADLINE_MS,
+        buildServer = createBoardMcpServer,
+    }: McpRouteDeps
 ): Promise<void> {
     const tools = {
         bridge: createBridge(app),
@@ -90,7 +99,8 @@ export async function mcpRoutes(
         log: app.log,
     };
     const handler = createMcpHandler(
-        (context) => buildServer(version, { era: context.era, caller: callerOfAuthInfo(context.authInfo), tools }),
+        (context) =>
+            buildServer(version, { era: context.era, caller: callerOfAuthInfo(context.authInfo), batches, tools }),
         { legacy: 'stateless', onerror: (error) => app.log.error(error) }
     );
     app.addHook('onClose', async () => handler.close());

@@ -55,6 +55,7 @@ async function harness(boards: Record<string, { artifacts: ArtifactStore; jobPre
                 warmAll: async () => {},
                 reconcileBatches: async () => {},
                 observeBatchPrs: async () => {},
+                followPrs: async () => {},
             },
         })
     );

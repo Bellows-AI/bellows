@@ -305,7 +305,7 @@ export function TaskDetailPage() {
                 onRemoveRequest={openRemove}
                 onRenameRequest={rename.openRename}
             />
-            <BatchBacklink rootId={detail.jobs?.[0]?.id ?? null} />
+            <BatchBacklink rootId={detail.jobs?.[0]?.id ?? null} enabled={session?.batches === true} />
             <TaskDetail
                 key={id ?? 'none'}
                 jobs={detail.jobs}

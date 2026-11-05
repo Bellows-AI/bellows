@@ -31,8 +31,6 @@ export interface ComposerDraftState {
     workflowRepo: string;
     /** The branch the task works from; '' is the repository's default. Reset when `repo` changes. */
     baseBranch: string;
-    /** The member's own title for the task (BEL-252); '' sends none. */
-    title: string;
     workflow: string;
     storedParams: WorkflowDraft['storedParams'];
     paramTouched: WorkflowDraft['paramTouched'];

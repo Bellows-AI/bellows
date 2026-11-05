@@ -479,6 +479,13 @@ render | grep -A4 'name: COMMERCE_TOKEN$' | grep 'key: commerce-token' >/dev/nul
 render --set-string secret.commerceToken=commerce-token-value | grep 'commerce-token: "commerce-token-value"' >/dev/null &&
     ok 'the secret renders the commerce token key' || bad 'the secret renders the commerce token key' 'no commerce-token key'
 
+# Batches are off by default and the chart value renders to BATCHES_ENABLED.
+render | grep -A1 'name: BATCHES_ENABLED$' | grep 'value: "false"' >/dev/null && ok 'batches default to off' ||
+    bad 'batches default to off' "$(render | grep -A1 BATCHES_ENABLED)"
+render --set batches.enabled=true | grep -A1 'name: BATCHES_ENABLED$' | grep 'value: "true"' >/dev/null &&
+    ok 'batches.enabled renders BATCHES_ENABLED' ||
+    bad 'batches.enabled renders BATCHES_ENABLED' "$(render --set batches.enabled=true | grep -A1 BATCHES_ENABLED)"
+
 # Jira Cloud OAuth (docs/configuration.md): the client id is a plain value, the secret a secretKeyRef; unset, both are
 # empty and the board reads Jira as unconfigured.
 render --set-string integrations.jira.clientId=atl-client | grep -A1 'name: ATLASSIAN_CLIENT_ID$' |

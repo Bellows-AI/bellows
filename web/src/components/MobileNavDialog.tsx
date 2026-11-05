@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import type { TaskNavigation } from '../api/useTasks.js';
 import type { StatsPayload } from '../api/useStats.js';
 import { switchOrg } from '../api/org.js';
-import { NAV_ITEMS, countLabel } from '../nav-model.js';
+import { countLabel, navItems } from '../nav-model.js';
 import { NavItemLink, NewTaskLink, SettingsSectionItems } from './NavItems.js';
 import { OrgSelector } from './OrgSelector.js';
 
@@ -31,6 +31,7 @@ export function MobileNavDialog({
     onNavigate,
     navigation,
     meta,
+    session = null,
 }: {
     open: boolean;
     onClose: () => void;
@@ -38,6 +39,8 @@ export function MobileNavDialog({
     /** The same prop SideNav gets — the shell's one poll, never a second one. Null off `/tasks*`. */
     navigation: TaskNavigation | null;
     meta: StatsPayload['meta'] | null;
+    /** The shell's session; decides which primary items are listed, as it does for SideNav. */
+    session?: { batches: boolean } | null;
 }) {
     // The Settings tree renders only inside the settings area, the same gating SideNav applies —
     // navigation for the section you are in, not a second table of contents.
@@ -61,7 +64,7 @@ export function MobileNavDialog({
                         column is display:none here, so the list carries the Primary label. */}
                     <nav aria-label="Primary">
                         <ul className="sidenav-items">
-                            {NAV_ITEMS.map((item) => (
+                            {navItems(session).map((item) => (
                                 <li key={item.to}>
                                     <NavItemLink item={item} onNavigate={onNavigate} />
                                 </li>

@@ -121,9 +121,16 @@ describe('the raw .env editor parser — refusals', () => {
 
     it('refuses a quoted value that runs over the next line, because parsing is line-structured', () => {
         // The real shape of "a value containing a newline": the continuation arrives as its own
-        // line, and a line with no = is refused — docker --env-file would have truncated it.
+        // line, and a line with no = is refused — docker --env-file would have truncated it. Both
+        // refusals are reported: the line that opened the quote, then the stray continuation.
         const result = parseEnvRaw('A="starts\nstill starting"', noSecrets);
-        expect(result).toEqual({ ok: false, errors: ['line 2: expected KEY=value'] });
+        expect(result).toEqual({
+            ok: false,
+            errors: [
+                'line 1: value for "A" opens a quote that does not close at the end of the line',
+                'line 2: expected KEY=value',
+            ],
+        });
     });
 
     it('refuses duplicate names within the text, with both line numbers', () => {
@@ -134,7 +141,7 @@ describe('the raw .env editor parser — refusals', () => {
     it('refuses a name that collides with a secret in the scope', () => {
         expect(parseEnvRaw('A=1\nS=new', ['S'])).toEqual({
             ok: false,
-            errors: ['line 2: "S" is already a secret in this scope — edit it on the Secrets tab'],
+            errors: ['line 2: "S" is already a secret in this scope — edit it in the list view'],
         });
     });
 
@@ -199,5 +206,89 @@ describe('serializeEnv', () => {
         const text = serializeEnv(rows);
         const result = parseEnvRaw(text, []);
         expect(result).toEqual(ok(rows));
+    });
+});
+
+describe('the raw .env round trip (BEL-262)', () => {
+    const roundTrip = (rows: EnvVarRow[]) => parseEnvRaw(serializeEnv(rows), noSecrets);
+
+    it('returns every value shape unchanged, empty and quoted ones included', () => {
+        const values = [
+            '',
+            'plain',
+            ' leading',
+            'trailing ',
+            '"quoted"',
+            "'single'",
+            '"',
+            "'",
+            '""',
+            '"a" ',
+            'a"',
+            '"a',
+            `"mixed'`,
+            'a=b=c',
+            'x # not a comment',
+            'back\\slash\\n',
+            'export FOO',
+            '  "padded quoted"  ',
+            '\t',
+            '# starts like a comment',
+        ];
+        const rows = values.map((value, index) => variable(`V_${index}`, value));
+        expect(roundTrip(rows)).toEqual(ok(rows));
+    });
+
+    it('returns a name that merely starts with export unchanged', () => {
+        const rows = [variable('export', 'a'), variable('exported', ''), variable('EXPORT_X', '"q"')];
+        expect(roundTrip(rows)).toEqual(ok(rows));
+    });
+
+    it('reads a valid quoted or empty line from hand-written text as written', () => {
+        expect(parseEnvRaw('A=\nB=""\nC="x"\nD=\'y z\'\nexport E=', noSecrets)).toEqual(
+            ok([variable('A', ''), variable('B', ''), variable('C', 'x'), variable('D', 'y z'), variable('E', '')])
+        );
+    });
+
+    it('names both lines of a duplicate and the line of an illegal name', () => {
+        expect(parseEnvRaw('A=1\n\nA=2', noSecrets)).toEqual({
+            ok: false,
+            errors: ['line 3: duplicate name "A" (first seen on line 1)'],
+        });
+        expect(parseEnvRaw('A=1\n1BAD=2', noSecrets)).toEqual({
+            ok: false,
+            errors: ['line 2: "1BAD" is not a legal environment variable name'],
+        });
+    });
+});
+
+describe('.env text that must not parse to something else (BEL-262 review)', () => {
+    const refused = (text: string) => {
+        const result = parseEnvRaw(text, noSecrets);
+        expect(result.ok).toBe(false);
+        return result.ok ? [] : result.errors;
+    };
+
+    it('refuses a quote opened and not closed on its line, naming the opening line, applying nothing', () => {
+        expect(refused('A="first\nB=second"')).toEqual([expect.stringMatching(/^line 1: .*"A".*quote/)]);
+        expect(refused('A="first\n#second')).toEqual([expect.stringMatching(/^line 1: .*"A".*quote/)]);
+        expect(refused("ok=1\nA='first\nB=2")).toEqual([expect.stringMatching(/^line 2: .*"A".*quote/)]);
+    });
+
+    it('refuses a lone quote, mismatched quote types and text after a closing quote', () => {
+        for (const text of ['A="', "A='", `A="x'`, `A='x"`, 'A="x" y', 'A="x"y', "A='x' y"]) {
+            expect(refused(text)).toEqual([expect.stringMatching(/^line 1: /)]);
+        }
+    });
+
+    it('still reads a quote inside or after unquoted text, and a quoted value holding quotes, literally', () => {
+        expect(parseEnvRaw(`A=x "y"\nB="it's"\nC='say "hi"'\nD=a'`, noSecrets)).toEqual(
+            ok([variable('A', 'x "y"'), variable('B', "it's"), variable('C', 'say "hi"'), variable('D', "a'")])
+        );
+    });
+
+    it('round-trips a value that starts with a quote without being a matched pair', () => {
+        const rows = ['"x', "'a", `"x'`, `'x"`, '"', "'", '"a" b', '"a"b'].map((value, i) => variable(`Q_${i}`, value));
+        expect(parseEnvRaw(serializeEnv(rows), noSecrets)).toEqual(ok(rows));
     });
 });

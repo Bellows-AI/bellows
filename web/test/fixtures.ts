@@ -34,6 +34,7 @@ export function memberSession(
         organizations: [BELLOWS],
         mode: 'github',
         mcp: false,
+        batches: false,
         ...rest,
     };
 }

@@ -436,23 +436,6 @@
         text-overflow: ellipsis;
     }
 
-    /* The tabs and their actions share one line: tabs underlined on the leading edge, Add and the
-        .env toggle on the trailing one. */
-    .env-toolbar {
-        align-items: center;
-        border-bottom: 1px solid var(--line);
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        justify-content: space-between;
-        margin-bottom: 8px;
-    }
-
-    /* The shared .tabs strip rides the toolbar's own rule; its underline would double it. */
-    .env-toolbar .tabs {
-        border-bottom: none;
-    }
-
     /* Aligned Name/Value/Actions columns, bounded rows: the Value column absorbs the width the
         fixed Name and Actions columns leave, so a long value wraps instead of clipping. */
     .env-vars {
@@ -492,16 +475,7 @@
         border-color: var(--lamp-stop);
     }
 
-    /* Add stays a quiet outline, the .env disclosure trigger stays plain text — neither competes
-        with the panel's one `.primary` Save action. */
-    .env-toolbar-actions {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        padding-bottom: 4px;
-    }
-
+    /* Add stays a quiet outline: it never competes with the dialog's one `.primary` Save. */
     .env-add {
         background: transparent;
         color: var(--accent);
@@ -509,22 +483,8 @@
         padding: 4px 10px;
     }
 
-    /* Accent text hovers on the accent's wash; the text-style toggle stays unfilled. */
     .env-add:hover:not(:disabled) {
         background: var(--accent-wash);
-    }
-
-    .env-advanced-toggle:hover {
-        background: transparent;
-    }
-
-    .env-advanced-toggle {
-        background: transparent;
-        border: none;
-        color: var(--ink-muted);
-        font-size: 13px;
-        padding: 6px 4px;
-        text-decoration: underline;
     }
 
     .env-row-remove {
@@ -546,12 +506,6 @@
         flex-wrap: wrap;
         gap: 8px;
         padding: 8px 10px;
-    }
-
-    /* The advanced editor's warning line: what Apply will replace, and what can never appear. */
-    .env-advanced-note {
-        color: var(--ink-muted);
-        margin: 0;
     }
 
     .env-raw {
@@ -576,6 +530,122 @@
     .env-errors {
         font-size: 12px;
         white-space: pre-wrap;
+    }
+
+    /* The settings pages' compact variables summary: counts, then the first few names, never a value. */
+    .env-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .env-summary-counts {
+        margin: 0;
+    }
+
+    .env-summary-names {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .env-summary-names li {
+        overflow-wrap: anywhere;
+    }
+
+    .env-summary > p {
+        margin: 0;
+    }
+
+    /* The variables editor modal (BEL-262): the shared `dialog` panel widened, as a clipped column
+       of head, scrolling body and footer — only the body scrolls, so Save and Cancel stay reachable
+       with any number of rows. */
+    .env-dialog {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-width: var(--measure-wide);
+        overflow: hidden;
+    }
+
+    .env-dialog-head {
+        align-items: center;
+        display: flex;
+        flex: none;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        justify-content: space-between;
+    }
+
+    .env-dialog-head h2 {
+        margin: 0;
+    }
+
+    .env-dialog-modes {
+        border: 0;
+        display: flex;
+        gap: 4px;
+        margin: 0;
+        min-width: 0;
+        padding: 0;
+    }
+
+    .env-dialog-modes button[aria-pressed='true'] {
+        background: var(--surface-strong);
+        border-color: var(--ink-muted);
+    }
+
+    .env-dialog-modes button[aria-disabled='true'] {
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+
+    .env-dialog-body {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+        gap: 16px;
+        min-height: 0;
+        overflow-y: auto;
+    }
+
+    .env-dialog-section-head {
+        align-items: center;
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 4px;
+    }
+
+    .env-dialog-section-head h3 {
+        font-size: 14px;
+        margin: 0;
+    }
+
+    .env-dialog-footer {
+        border-top: 1px solid var(--line);
+        display: flex;
+        flex: none;
+        flex-direction: column;
+        gap: 8px;
+        padding-top: 12px;
+    }
+
+    .env-dialog-actions {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+
+    /* Outranks `.env-raw textarea`, whose `font: inherit` would otherwise win. */
+    .env-raw .env-dialog-text {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        min-height: 240px;
     }
 
     /* A cell's input fills its column, with a floor that keeps the stored-secret instruction —
@@ -940,11 +1010,11 @@
         .settings-actions button,
         .unsaved-actions button,
         .env-add,
+        .env-edit,
         .executor-add,
         .org-executor-add,
         button.notification-subscription-add,
         .integration-actions button,
-        .env-advanced-toggle,
         .env-raw input,
         .env-raw select,
         .env-raw button,

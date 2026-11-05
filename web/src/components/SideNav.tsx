@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import type { TaskNavigation, TaskSummary } from '../api/useTasks.js';
 import { PRODUCT_NAME } from '../brand.js';
-import { NAV_ITEMS, navCount } from '../nav-model.js';
+import { navCount, navItems } from '../nav-model.js';
 import { type SidenavPreview, sidenavPreview, taskDotClass } from '../task-tree.js';
 import { taskTitleText } from '../task-title.js';
 import { NavItemLink, NewTaskLink, SettingsSectionItems } from './NavItems.js';
@@ -134,9 +134,11 @@ function TaskPreview({
 
 export function SideNav({
     navigation,
+    session = null,
     onNavigate,
 }: {
     navigation: TaskNavigation | null;
+    session?: { batches: boolean } | null;
     onNavigate?: (() => void) | undefined;
 }) {
     // The Settings tree renders only inside the settings area — the same gating reading the task
@@ -153,7 +155,7 @@ export function SideNav({
         <nav className="sidenav" aria-label="Primary">
             <div className="sidenav-brand">{PRODUCT_NAME}</div>
             <ul className="sidenav-items">
-                {NAV_ITEMS.map((item) => (
+                {navItems(session).map((item) => (
                     <li key={item.to}>
                         <NavItemLink item={item} count={navCount(item, navigation)} onNavigate={onNavigate} />
                         {item.to === '/settings' && onSettings ? (

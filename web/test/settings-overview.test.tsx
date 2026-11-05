@@ -351,6 +351,7 @@ const fullSession = memberSession({
     user: { githubUserId: 1 },
     mode: 'none',
     mcp: false,
+    batches: false,
 });
 
 const idleWorkspace = {

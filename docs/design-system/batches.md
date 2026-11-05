@@ -14,7 +14,8 @@ the batch contract: [../batches.md](../batches.md).
 | Token usage: batch section, task-card figures, provisional and partial notes | `web/src/panels/BatchUsage.tsx`, `web/src/batch-model.ts` (`batchUsageState`), `web/src/components/usage/` | `web/test/batch-model.test.ts`, `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` |
 | Verdict, task state labels, retry eligibility, morning report | `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
 | Task page backlink | `web/src/components/BatchBacklink.tsx`, `server/src/routes/batches/batch-handlers.ts` (`?task=`) | `server/test/routes.batches.test.ts`, `e2e/batches.spec.ts` |
-| Sidenav item | `web/src/nav-model.ts` | `web/test/nav-model.test.ts` |
+| Sidenav item, shown only when `/api/auth/me` says `batches: true` (BEL-264) | `web/src/nav-model.ts` (`navItems`) | `web/test/nav-model.test.ts`, `web/test/batches-flag.dom.test.tsx` |
+| Batch routes and backlink behind the flag: off redirects to the dashboard, no batch read | `web/src/components/BatchesGate.tsx`, `web/src/components/BatchBacklink.tsx` | `web/test/batches-flag.dom.test.tsx`, `e2e/batches-disabled.spec.ts` |
 | Desktop and mobile widths without page overflow | — | `e2e/batches.spec.ts` |
 
 ## Invariants

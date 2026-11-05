@@ -235,7 +235,7 @@ async function reserveCandidate(
     refusal: ClaimRefusal,
     takeoverOnly: boolean
 ): Promise<ReservedCandidate | null> {
-    const { sql, orgId, admission } = ctx;
+    const { sql, orgId, admission, batches } = ctx;
     const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
     const full = await fullScope(sql, admission, orgId);
     if (full === 'global') refusal.global = true;
@@ -249,6 +249,11 @@ async function reserveCandidate(
               -- A review is leased to its caller's claim in the request's own transaction (issue
               -- #774); the open queue never offers one.
               and j.review_of is null
+              -- BATCHES_ENABLED off (BEL-264): a batch task's thread is not offered, queued or running; its rows are
+              -- kept and offered again when the flag is on. A job outside a batch is unaffected.
+              and (${batches}::boolean or not exists (
+                  select 1 from batch_task bt where bt.org_id = j.org_id and bt.root_job_id = j.root_job_id
+              ))
               and j.lease_expires_at <= now()
               and (j.attempts < j.max_attempts or ${recovering})
               and (j.claim_deferred_until is null or j.claim_deferred_until <= now())

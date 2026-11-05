@@ -54,6 +54,8 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         integrations: { callbackOrigin: null, jira: null },
         commerce: { enabled: false },
         mcp: { enabled: false },
+        // The production default: a batch test opts in, so a forgotten opt-in fails loudly.
+        batches: { enabled: false },
         ...overrides,
     };
 }

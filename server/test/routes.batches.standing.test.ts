@@ -46,7 +46,7 @@ async function setup() {
     const auth = memoryAuthStore();
     const member = auth.seedMember(ORG, 'octocat');
     const batches = memoryBatchStore();
-    const config = testConfig({ auth: githubAuth() });
+    const config = testConfig({ auth: githubAuth(), batches: { enabled: true } });
     const base = staticRepoSource([{ owner: 'Bellows-AI', name: 'bellows.ai' }], { error: null });
     const repos = {
         ...base,

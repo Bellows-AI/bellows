@@ -20,7 +20,7 @@
  */
 
 import { ENV_NAME, ENV_NAME_LIMIT, ENV_VALUE_LIMIT, isReservedEnvName, MAX_ENV_VARS_PER_SCOPE } from '@factory-ai/core';
-import { serializeEnv } from './env-raw.js';
+import { parseEnvRaw, serializeEnv } from './env-raw.js';
 
 /** One editable row in the panel's draft state. `id` is a React key only — never in a payload. */
 export interface EnvRowState {
@@ -166,24 +166,41 @@ export function secretState(row: EnvRowState): SecretState {
 }
 
 /**
- * Whether the advanced textarea holds text the draft has not absorbed: the seed text is the
- * serialization of the ACTIVE variable rows, so an untouched disclosure never blocks Save, and
- * neither does one whose text matches the table again after an Apply.
+ * The `.env` text the draft's variables serialize to — the modal editor's text mode. Secrets
+ * never enter it (their values are write-only and cannot round-trip through text), a pending
+ * removal stays out so re-reading the text cannot resurrect it, and an untouched blank addition
+ * (no name, no value) is not a variable yet and would only read back as a malformed line.
  */
-export function advancedUnapplied(text: string, rows: readonly EnvRowState[]): boolean {
-    return text !== serializeEnv(rows.filter((row) => !row.isSecret && !row.pendingRemove));
+export function rowsToRawText(rows: readonly EnvRowState[]): string {
+    const untouchedBlank = (row: EnvRowState) => row.isNew && row.name.trim() === '' && (row.value ?? '') === '';
+    return serializeEnv(rows.filter((row) => !row.isSecret && !row.pendingRemove && !untouchedBlank(row)));
 }
 
-export type TabNavKey = 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
+export type RawApplyResult = { ok: true; rows: EnvRowState[] } | { ok: false; errors: string[] };
 
-/** The roving-tabindex step for a keydown on the tab strip: the next tab, or null to ignore. */
-export function nextTabIndex(current: number, count: number, key: string): number | null {
+/**
+ * Reads the text as the WHOLE variable set against the draft's rows: the parsed pairs become the
+ * variable rows and the secret rows (pending states included) pass around untouched. Malformed
+ * text returns its line-numbered errors and no rows — the caller keeps the draft it had, so a bad
+ * edit can never overwrite a value. A pending-removed secret is not a name collision.
+ */
+export function applyRawText(text: string, rows: readonly EnvRowState[], nextId: () => string): RawApplyResult {
+    const secretNames = rows.filter((row) => row.isSecret && !row.pendingRemove).map((row) => row.name);
+    const result = parseEnvRaw(text, secretNames);
+    if (!result.ok) return result;
+    const variables: EnvRowState[] = result.vars.map((row) => ({
+        id: nextId(),
+        name: row.name,
+        value: row.value,
+        isSecret: false,
+        isNew: false,
+        pendingRemove: false,
+    }));
+    return { ok: true, rows: [...variables, ...rows.filter((row) => row.isSecret)] };
+}
+
+/** The text mode's one line about the secrets it does not show; null when there are none. */
+export function secretsNote(count: number): string | null {
     if (count === 0) return null;
-    if (key === 'ArrowLeft' || key === 'ArrowRight') {
-        const step = key === 'ArrowLeft' ? -1 : 1;
-        return (current + step + count) % count;
-    }
-    if (key === 'Home') return 0;
-    if (key === 'End') return count - 1;
-    return null;
+    return count === 1 ? '1 secret is edited in the list view.' : `${count} secrets are edited in the list view.`;
 }

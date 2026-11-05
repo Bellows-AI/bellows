@@ -210,6 +210,9 @@ spec:
                         value: {{ .Values.mcp.enabled | quote }}
                       - name: MCP_TRUSTED_ORIGINS
                         value: {{ join "," .Values.mcp.trustedOrigins | quote }}
+                      # Batches (docs/configuration.md); off by default.
+                      - name: BATCHES_ENABLED
+                        value: {{ .Values.batches.enabled | quote }}
                       - name: COOKIE_SECURE
                         value: {{ .Values.auth.cookieSecure | quote }}
                       - name: INGEST_TOKEN

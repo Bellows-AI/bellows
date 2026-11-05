@@ -105,8 +105,10 @@ export interface OrgRegistry {
     warmAll(): Promise<void>;
     /** One scheduling pass over every org's open batches (docs/batches.md); one org's failure is logged, not thrown. */
     reconcileBatches(): Promise<void>;
-    /** One observation pass, then one merge pass, over every org's batch PRs (docs/batches.md), then the PR follower's pass (docs/workflows.md); one org's failure is logged, not thrown. */
+    /** One observation pass, then one merge pass, over every org's batch PRs (docs/batches.md); one org's failure is logged, not thrown. */
     observeBatchPrs(): Promise<void>;
+    /** One PR-follower pass over every org's single-task PRs (docs/workflows.md); runs whether or not batches are enabled. */
+    followPrs(): Promise<void>;
 }
 
 export type OrgRegistryDeps = {
@@ -208,6 +210,7 @@ function buildOrgStores({
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
         admission: config.admission,
+        batches: config.batches.enabled,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),
     });
     // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled
@@ -488,13 +491,26 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                     } catch (e) {
                         console.error(`[batches] observe for "${org.id}" failed: ${(e as Error).message}`);
                     }
-                    try {
-                        await (await this.for(org.id))?.prFollower?.observeDue();
-                    } catch (e) {
-                        console.error(`[pr-follow] pass for "${org.id}" failed: ${(e as Error).message}`);
-                    }
                 })
             );
         },
+
+        async followPrs() {
+            await ready;
+            await followOrgPrs(this);
+        },
     };
+}
+
+/** One PR-follower pass over every org; one org's failure is logged, not thrown. */
+async function followOrgPrs(registry: Pick<OrgRegistry, 'list' | 'for'>): Promise<void> {
+    await Promise.all(
+        (await registry.list()).map(async (org) => {
+            try {
+                await (await registry.for(org.id))?.prFollower?.observeDue();
+            } catch (e) {
+                console.error(`[pr-follow] pass for "${org.id}" failed: ${(e as Error).message}`);
+            }
+        })
+    );
 }

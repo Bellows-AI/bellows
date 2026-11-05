@@ -1537,12 +1537,6 @@
         color: var(--accent);
     }
 
-    /* A panel's trailing action row (the advanced .env editor's Apply/Cancel). */
-    .panel-actions {
-        display: flex;
-        gap: 8px;
-    }
-
     /* Token usage (web/src/components/usage). Four figures side by side, never one combined
        number; a dash is plain text, and `~` plus its words mark an estimate, so no state rides on
        color. The partial and unavailable states are sentences, not tints. */

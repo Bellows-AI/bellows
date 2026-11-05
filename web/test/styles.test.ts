@@ -219,7 +219,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.settings-actions button',
         '.unsaved-actions button',
         '.env-add',
-        '.env-advanced-toggle',
+        '.env-edit',
         '.env-raw input',
         '.env-raw select',
         '.env-raw button',
@@ -673,6 +673,49 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.composer-context .select-trigger')).not.toMatch(/border|background/);
     });
 
+    it('focus on the composer surface never swaps its border or resizes it (BEL-261; not the RED, see the e2e)', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
+        const focusRules = rules(css).filter(
+            ([prelude]) => /:focus(-within|-visible)?\b/.test(prelude) && /composer-(surface|input)/.test(prelude)
+        );
+        expect(focusRules.length).toBeGreaterThan(0);
+        for (const [, declarations] of focusRules)
+            expect(declarations).not.toMatch(/border|padding|margin|width|height/);
+        expect(rules(css).find(([p]) => p.trim() === '.composer-surface')?.[1]).toMatch(
+            /border:\s*1px solid var\(--line\)/
+        );
+    });
+
+    it('task detail: the conversation is the one scroll region, the composer docks under it (BEL-263)', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/task-detail.css'), 'utf8'));
+        const all = rules(css);
+        const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.task-conversation')).toMatch(/overflow-y:\s*auto/);
+        expect(body('.task-conversation')).toMatch(/min-height:\s*0/);
+        expect(body('.task-main')).toMatch(/display:\s*flex/);
+        expect(body('.task-main')).toMatch(/flex-direction:\s*column/);
+        expect(body('.task-main')).toMatch(/min-height:\s*0/);
+        expect(body('.task-main')).toMatch(/height:\s*calc\(100dvh/);
+        expect(body('.task-follow-up')).toMatch(/flex:\s*none/);
+        expect(body('.task-follow-up')).not.toMatch(/overflow/);
+    });
+
+    it('the follow-up textarea shares the composer textarea recipe, not a copy (BEL-263)', () => {
+        const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
+        const shared = rules(css).find(([p]) => /\.task-follow-up \.composer-input\b/.test(p) && !/:focus/.test(p));
+        expect(shared?.[0]).toContain('.task-compose .composer-input');
+        expect(shared?.[1]).toMatch(/border:\s*0/);
+        expect(shared?.[1]).toMatch(/field-sizing:\s*content/);
+        expect(shared?.[1]).toMatch(/resize:\s*none/);
+        expect(shared?.[1]).toMatch(/max-height/);
+        // Focus shares the composer's quiet ring on the textarea itself: a visible outline, so the
+        // keyboard matrix finds a ring on the focused element (BEL-266), never `outline: none`.
+        const focus = rules(css).find(([p]) => /\.task-follow-up \.composer-input:focus-visible/.test(p));
+        expect(focus?.[0]).toContain('.task-compose .composer-input:focus-visible');
+        expect(focus?.[1]).toMatch(/outline:\s*2px solid var\(--line-strong\)/);
+        expect(focus?.[1]).not.toMatch(/outline:\s*none/);
+    });
+
     it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/inbox.css'), 'utf8'));
         const all = rules(css);
@@ -748,6 +791,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.chat-exit',
             '.chat-activity',
             '.task-summary',
+            '.env-raw .env-dialog-text',
         ]);
         const offenders = rules(css)
             .filter(([, body]) => /font-family\s*:\s*var\(--font-mono\)/.test(body))
@@ -972,5 +1016,26 @@ describe('the design-system inventory', () => {
         const preludes = rules(css).map(([prelude]) => prelude);
         expect(preludes.some((p) => p.includes('.state-note'))).toBe(true);
         expect(preludes.some((p) => p.includes('.state-note.error'))).toBe(true);
+    });
+});
+
+describe('the variables editor modal (BEL-262)', () => {
+    const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
+    const all = rules(css);
+    const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+
+    it('scrolls its body only: the panel is a clipped column, the footer stays outside the scroll region', () => {
+        expect(body('.env-dialog')).toMatch(/display:\s*flex/);
+        expect(body('.env-dialog')).toMatch(/flex-direction:\s*column/);
+        expect(body('.env-dialog')).toMatch(/overflow:\s*hidden/);
+        expect(body('.env-dialog-body')).toMatch(/overflow-y:\s*auto/);
+        expect(body('.env-dialog-body')).toMatch(/min-height:\s*0/);
+        expect(body('.env-dialog-footer')).toMatch(/flex:\s*none/);
+        expect(body('.env-dialog-footer')).not.toMatch(/overflow/);
+        expect(body('.env-dialog-head')).toMatch(/flex:\s*none/);
+    });
+
+    it('sets the .env text in the mono font token', () => {
+        expect(body('.env-raw .env-dialog-text')).toMatch(/font-family:\s*var\(--font-mono\)/);
     });
 });

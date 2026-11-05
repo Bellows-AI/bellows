@@ -171,6 +171,51 @@ test.describe('the guided task composer', () => {
         await page.screenshot({ path: `${SHOTS}/composer-too-long.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
+
+    test('the composer has no Title field (BEL-261)', async ({ page }) => {
+        await page.goto('/tasks/new');
+        await expect(page.getByLabel('What should the agent do?')).toBeVisible();
+        await expect(page.getByLabel('Title (optional)')).toHaveCount(0);
+    });
+
+    for (const width of [1440, 390] as const) {
+        test(`at ${width} wide, focusing the prompt changes neither the surface border colour nor its box (BEL-261)`, async ({
+            page,
+        }) => {
+            await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+            await page.goto('/tasks/new');
+            const prompt = page.getByLabel('What should the agent do?');
+            await expect(prompt).toBeVisible();
+            const surface = page.locator('.composer-surface');
+            const read = (target: typeof surface) =>
+                target.evaluate((el) => {
+                    const box = el.getBoundingClientRect();
+                    const style = getComputedStyle(el);
+                    return {
+                        box: [box.x, box.y, box.width, box.height],
+                        borderColor: style.borderColor,
+                        borderWidth: style.borderWidth,
+                        outlineStyle: style.outlineStyle,
+                    };
+                });
+
+            await page.screenshot({ path: `${SHOTS}/composer-compact-idle-${width}.png` });
+            const idle = { surface: await read(surface), prompt: await read(prompt) };
+            await prompt.focus();
+            const focused = { surface: await read(surface), prompt: await read(prompt) };
+            await page.screenshot({ path: `${SHOTS}/composer-compact-focused-${width}.png` });
+
+            expect(focused.surface.box).toEqual(idle.surface.box);
+            expect(focused.surface.borderColor).toBe(idle.surface.borderColor);
+            expect(focused.surface.borderWidth).toBe(idle.surface.borderWidth);
+            expect(focused.prompt.box).toEqual(idle.prompt.box);
+            // The cue is still there, on the focused prompt itself (the keyboard matrix reads the
+            // focused element's own outline): a visible outline, not a colour swap on the border.
+            expect(focused.prompt.outlineStyle).toBe('solid');
+            expect(idle.prompt.outlineStyle).toBe('none');
+            expect(focused.surface.outlineStyle).toBe('none');
+        });
+    }
 });
 
 test.describe('the draft survives the configuration detour (F1)', () => {

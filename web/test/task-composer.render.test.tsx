@@ -586,7 +586,7 @@ describe('the redesigned composer (#280)', () => {
         expect(start).toContain('disabled');
         expect(html).not.toContain('banner-bad');
         expect(html).not.toContain('banner-info');
-        expect(html).toContain('Describe the task to continue.');
+        expect(html).not.toContain('Describe the task to continue.');
         expect(startButton(html)).toContain('aria-describedby="composer-blocker"');
     });
 
@@ -668,7 +668,6 @@ function restoredDraft(overrides: Partial<ComposerDraftInput>): ComposerDraftInp
         repoTouched: false,
         workflowRepo: 'acme/web',
         baseBranch: '',
-        title: '',
         workflow: '',
         storedParams: { workflowId: null, values: {} },
         paramTouched: {},

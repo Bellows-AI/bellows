@@ -60,6 +60,7 @@ import {
     waitLateralFragment,
     publicationJoinFragment,
     publicationColumnsFragment,
+    batchThreadHidden,
 } from './job-store-rows.js';
 import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
 import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob } from './job-store-worker.js';
@@ -234,6 +235,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         executorConfig,
         prs,
         admission = {},
+        batches = true,
         metrics,
     } = deps;
     const gate = async () => {
@@ -257,6 +259,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         publicationJoin: publicationJoinFragment(sql),
         publicationColumns: publicationColumnsFragment(sql),
         admission,
+        batches,
     };
 
     return jobStoreMethods(ctx, gate);
@@ -284,6 +287,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             >
         ) {
             await gate();
+            if (await batchThreadHidden(ctx, parentId)) return 'batches_disabled';
             return createFollowUpRow(ctx.sql, {
                 orgId: ctx.orgId,
                 parentId,
@@ -308,6 +312,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
 
         async createRetry(id, createdBy, idempotency, admin) {
             await gate();
+            if (await batchThreadHidden(ctx, id)) return 'batches_disabled';
             return createRetryRow(ctx.sql, { orgId: ctx.orgId, id, createdBy, idempotency, admin });
         },
 

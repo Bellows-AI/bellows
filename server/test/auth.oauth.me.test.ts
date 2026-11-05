@@ -57,8 +57,22 @@ describe('/api/auth/me', () => {
             ],
             mode: 'github',
             mcp: false,
+            batches: false,
         });
         expect(body).not.toHaveProperty('workspacePath');
+    });
+
+    it('reports batches: true when the deployment enables them', async () => {
+        const { app } = await setup({ config: { batches: { enabled: true } } });
+        const cookie = await signIn(app);
+
+        const response = await app.inject({
+            method: 'GET',
+            url: '/api/auth/me',
+            cookies: { [SESSION_COOKIE]: cookie },
+        });
+
+        expect(response.json()).toMatchObject({ batches: true });
     });
 
     it('answers 503, not "not signed in", when the session store cannot be reached', async () => {

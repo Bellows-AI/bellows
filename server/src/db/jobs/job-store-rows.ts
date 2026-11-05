@@ -720,6 +720,23 @@ export async function backsBatchTask(tx: TransactionSql, orgId: string, rootJobI
 }
 
 /**
+ * Whether the named job's thread backs a batch task while `BATCHES_ENABLED` is off (BEL-264): the batch
+ * is hidden then, so a retry or follow-up on its thread (a new job on the batch's task) is refused. A job
+ * outside a batch, a missing job, and every job with the flag on are not hidden.
+ */
+export async function batchThreadHidden(
+    { sql, orgId, batches }: Pick<JobStoreContext, 'sql' | 'orgId' | 'batches'>,
+    id: string
+): Promise<boolean> {
+    if (batches) return false;
+    const rows = await sql`
+        select 1 from job j join batch_task t on t.org_id = j.org_id and t.root_job_id = j.root_job_id
+        where j.org_id = ${orgId} and j.id = ${id}
+    `;
+    return rows.length > 0;
+}
+
+/**
  * Whether Done may close a batch task's thread: null when no task backs it, `closed` once the
  * batch ended (completed, cancelled or expired) or a person force-closed the task — nothing will
  * retry it — and `live` otherwise, where Done would block the task's retry (docs/batches.md).

@@ -58,6 +58,8 @@ interface Board {
     stop?: unknown;
     remove?: unknown;
     done?: unknown;
+    /** The refusal createFollowUp / createRetry answer, when set. */
+    created?: unknown;
     prompts?: unknown[];
 }
 
@@ -109,8 +111,8 @@ const storeOf = (board: Board) => {
         };
     return jobStoreSlice({
         create: record('create', () => ({ id: NEW_JOB })),
-        createFollowUp: record('createFollowUp', () => ({ id: NEW_JOB })),
-        createRetry: record('createRetry', () => ({ id: NEW_JOB })),
+        createFollowUp: record('createFollowUp', () => board.created ?? { id: NEW_JOB }),
+        createRetry: record('createRetry', () => board.created ?? { id: NEW_JOB }),
         editCommand: record('editCommand', (_id: string, command: string) => ({ result: 'edited', command })),
         markDone: record('markDone', () => board.done ?? { status: 'succeeded', doneAt: '2026-01-02T00:00:00.000Z' }),
         stop: record('stop', () => board.stop ?? { result: 'stopped' }),
@@ -152,6 +154,7 @@ async function boot(board: Board) {
         auth: githubAuth({ publicUrl }),
         port,
         mcp: { enabled: true, resource, trustedOrigins: [] },
+        batches: { enabled: true },
     });
     const orgs = staticRegistry({
         config,
@@ -399,6 +402,21 @@ describe('the task write tools', () => {
         expect(forced.data).toMatchObject({ id: JOB, batch: 'b1', task: 'a', outcome: 'cancelled' });
         expect(forced.data.pr).toBe('https://example.test/pr/1');
         expect(board.calls.map((c) => c.op)).toEqual(['markDone', 'markDone', 'closeTask']);
+    });
+
+    it('refuses retry_task, follow_up_task and force_close_task on a batch thread with the flag off (BEL-264)', async () => {
+        const board: Board = { calls: [], created: 'batches_disabled', done: 'batches_disabled' };
+        const { url } = await boot(board);
+        for (const [name, args] of [
+            ['retry_task', { jobId: JOB }],
+            ['follow_up_task', { jobId: JOB, command: 'more' }],
+            ['force_close_task', { jobId: JOB, confirm: true }],
+        ] as const) {
+            const refused = await call(url, 'writer', name, args);
+            expect(refused.isError, name).toBe(true);
+            expect(refused.data, name).toMatchObject({ outcome: 'refused', code: 'BATCHES_DISABLED', status: 404 });
+        }
+        expect(board.calls.map((c) => c.op)).not.toContain('closeTask');
     });
 
     it('surfaces board refusals verbatim: a stop on a finished task, a remove on a running one', async () => {

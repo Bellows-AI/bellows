@@ -2,7 +2,7 @@ import { roleLabel } from '../api/useSession.js';
 import { Icon } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { StateNote } from '../components/StateNote.js';
-import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
+import { EnvVarsSection } from '../panels/EnvVarsSection.js';
 import { MembersSection } from '../panels/MembersSection.js';
 import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
 import { useSettingsPage } from './SettingsLayout.js';
@@ -48,8 +48,8 @@ export function SettingsOrganizationPage() {
 
             {env.error ? <StateNote state="error">{env.error}</StateNote> : null}
             {/*
-                The editor mounts only on DATA, not merely when the request settles: its draft is
-                seeded from initialVars in a state initializer, so mounting it early would freeze
+                The summary mounts only on DATA, not merely when the request settles: its draft is
+                seeded from the stored rows once per mount, so opening it early would freeze
                 empty rows over whatever is stored — after a failed read an enabled editor would
                 be one save away from wiping the scope. The error line above is the read-only
                 posture; a retry is the page's next full render.
@@ -57,10 +57,10 @@ export function SettingsOrganizationPage() {
             {env.loading && !env.data ? (
                 <StateNote state="loading">Loading environment…</StateNote>
             ) : env.data ? (
-                <EnvVarsPanel
+                <EnvVarsSection
                     title="Core (organization)"
                     scope={{ scope: 'organization' }}
-                    initialVars={env.data.org}
+                    vars={env.data.org}
                     onSave={env.saveOrg}
                     draftId="org"
                     draftLabel="Core (organization)"

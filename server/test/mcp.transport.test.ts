@@ -217,6 +217,8 @@ async function boot(
         auth,
         port,
         mcp: enabled ? { enabled: true, resource, trustedOrigins: [TRUSTED] } : { enabled: false },
+        // The tool-list pin below names the batch tools.
+        batches: { enabled: true },
     });
     const app = track(
         await buildApp({
@@ -499,6 +501,7 @@ describe('a client that disconnects', () => {
         });
         await app.register(mcpRoutes, {
             version: '0.0.0',
+            batches: false,
             origin: 'http://127.0.0.1',
             buildServer: () => {
                 const server = new McpServer({ name: 'probe', version: '0' }, { capabilities: { tools: {} } });
@@ -675,6 +678,7 @@ describe('a client that left before the handler ran', () => {
         });
         await app.register(mcpRoutes, {
             version: '0.0.0',
+            batches: false,
             origin: 'http://127.0.0.1',
             buildServer: () => {
                 const server = new McpServer({ name: 'probe', version: '0' }, { capabilities: { tools: {} } });

@@ -14,8 +14,7 @@ import { createAgentTitle } from './db/agent-title.js';
 import { createOperationReceipts } from './db/operation-receipts.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
-import { startBatchPrObserver } from './batch-pr-observer.js';
-import { startBatchReconciler } from './batch-reconciler.js';
+import { startBatchLoops } from './batch-loops.js';
 import { type ArtifactBackend, createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
 import { admissionOccupancy } from './db/jobs/job-store-admission.js';
 import { createServerMetrics, type ServerMetrics } from './metrics.js';
@@ -296,16 +295,13 @@ export async function start(options: StartOptions = {}): Promise<void> {
     // not awaited: a cold database must not hold `listen()`.
     void ready.then(() => orgs.warmAll()).catch((e: Error) => console.error(`[orgs] warm failed: ${e.message}`));
 
-    // Dispatch survives a missed callback or a restart: the first pass runs now, then on an interval.
+    // Dispatch survives a missed callback or a restart: the first pass runs now, then on an interval. The batch
+    // loops start only when BATCHES_ENABLED; the single-task PR follower always does (docs/batches.md).
     void ready.then(() =>
-        startBatchReconciler({
-            reconcileBatches: () => metrics.timedPass('batch_reconcile', () => orgs.reconcileBatches()),
-        })
-    );
-    // PR checks and mergeability are read from GitHub on a cadence; webhooks only hint (docs/batches.md).
-    void ready.then(() =>
-        startBatchPrObserver({
-            observeBatchPrs: () => metrics.timedPass('batch_pr_observe', () => orgs.observeBatchPrs()),
+        startBatchLoops({
+            batchesEnabled: config.batches.enabled,
+            orgs,
+            timedPass: (loop, fn) => metrics.timedPass(loop, fn),
         })
     );
 
