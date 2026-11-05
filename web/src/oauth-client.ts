@@ -57,8 +57,8 @@ export function redirectTarget(redirectUri: string): string {
 }
 
 const SCOPE_LABELS: Readonly<Record<string, string>> = {
-    'factory:read': 'Read tasks, batches, repositories and settings',
-    'factory:write': 'Create and change tasks and batches',
+    'factory:read': 'Read tasks, repositories and settings',
+    'factory:write': 'Create and change tasks',
 };
 
 /** A scope as a sentence; an unknown one is shown as written, never hidden. */

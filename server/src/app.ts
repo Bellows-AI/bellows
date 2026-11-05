@@ -201,7 +201,12 @@ async function registerMcp(
         const resolveClient = createClientResolver({ oauth, fetcher, log: app.log });
         await app.register(oauthRoutes({ config, auth, oauth, resolveClient }));
     }
-    await app.register(mcpRoutes, { version, origin: new URL(config.mcp.resource).origin, metrics });
+    await app.register(mcpRoutes, {
+        version,
+        batches: config.batches.enabled,
+        origin: new URL(config.mcp.resource).origin,
+        metrics,
+    });
 }
 
 /** Each org's own installation mints its runners' tokens; an org without one has none to give. */
@@ -385,7 +390,7 @@ export async function buildApp({
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
-    await app.register(batchRoutes({ orgs }));
+    await app.register(batchRoutes({ orgs, enabled: config.batches.enabled }));
     await app.register(envRoutes({ config, orgs }));
     // The provider catalog exists on every board; where no OAuth client is wired every OAuth provider reads `unavailable`.
     await app.register(integrationCatalogRoutes({ orgs, configured: integrations?.configured }));

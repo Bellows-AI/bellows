@@ -55,6 +55,8 @@ const shared = {
     SECRETS_ACTIVE_KEY_ID: 'e2e',
     SECRETS_OPERATION_KEY: e2eKey('b'),
     SECRETS_FINGERPRINT_KEY: e2eKey('c'),
+    // Batches are off by default; the existing batch specs need them.
+    BATCHES_ENABLED: 'true',
 };
 
 /**

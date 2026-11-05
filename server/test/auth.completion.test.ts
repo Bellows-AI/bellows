@@ -81,6 +81,7 @@ describe('completion and the org repo cache', () => {
             warmAll: async () => {},
             reconcileBatches: async () => {},
             observeBatchPrs: async () => {},
+            followPrs: async () => {},
         };
         const app = await buildApp({
             config,

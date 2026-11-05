@@ -402,6 +402,8 @@ export const authRoutes =
                 mode: auth.mode,
                 // Whether this board serves MCP: the account page shows the connected apps only when it does.
                 mcp: config.mcp.enabled,
+                // Whether batches are enabled: the SPA shows the Batches pages only when they are.
+                batches: config.batches.enabled,
             });
         });
 

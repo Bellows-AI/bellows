@@ -1,7 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
 import { bad } from '../helpers.js';
-import { HTTP_CONFLICT, HTTP_FORBIDDEN, notFoundJob } from './job-limits.js';
+import { HTTP_CONFLICT, HTTP_FORBIDDEN, batchesDisabled, notFoundJob } from './job-limits.js';
 
 /**
  * The shared refusal renderers of the job routes' person writes — "what the store's refusal
@@ -9,7 +9,7 @@ import { HTTP_CONFLICT, HTTP_FORBIDDEN, notFoundJob } from './job-limits.js';
  * for that file's line budget. They render; they validate nothing.
  */
 
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'batches_disabled';
 export type RetryRefusal = FollowUpRefusal;
 
 /** The refusals follow-up and retry share; only the verb in the forbidden message differs. */
@@ -21,6 +21,8 @@ function finishedTaskRefusal(reply: FastifyReply, reason: FollowUpRefusal, verb:
             return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
         case 'task_done':
             return reply.code(HTTP_CONFLICT).send({ error: 'Task is done', code: ERROR_CODES.TASK_DONE });
+        case 'batches_disabled':
+            return batchesDisabled(reply);
         case 'forbidden':
             return bad(
                 reply,

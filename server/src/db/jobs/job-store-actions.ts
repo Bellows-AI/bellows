@@ -34,6 +34,7 @@ import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempoten
 import type {
     CancelWaitResult,
     EditCommandResult,
+    BatchesDisabledRefusal,
     FollowUpRefusal,
     JobStatus,
     JobStore,
@@ -155,7 +156,7 @@ export interface JobActionStore {
         admin?: boolean,
         /** Uploads to bind to the follow-up itself; `AttachmentRefusedError` when any is not the author's ready file. */
         attachmentIds?: readonly string[]
-    ): Promise<{ id: string; replayed?: boolean } | FollowUpRefusal>;
+    ): Promise<{ id: string; replayed?: boolean } | FollowUpRefusal | BatchesDisabledRefusal>;
 
     /**
      * The owner's answer to an open requirement: appends `connectionId` to the thread root's bindings
@@ -193,7 +194,7 @@ export interface JobActionStore {
         idempotency?: IdempotencyInput,
         /** The route's verdict that the caller is an org admin: it admits a thread whose owner is someone else. */
         admin?: boolean
-    ): Promise<{ id: string; replayed?: boolean } | RetryRefusal>;
+    ): Promise<{ id: string; replayed?: boolean } | RetryRefusal | BatchesDisabledRefusal>;
 
     /**
      * Edits a queued task's command in place (issue #329): same id, same thread, where a stop
@@ -228,7 +229,7 @@ export interface JobActionStore {
     markDone(
         id: string,
         doneBy: string | null
-    ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch'>;
+    ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch' | BatchesDisabledRefusal>;
 
     /**
      * The user's stop. A QUEUED row never started, so it is settled `stopped` right here: the
@@ -736,7 +737,7 @@ export async function markJobDone(
     ctx: JobStoreContext,
     id: string,
     doneBy: string | null
-): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch'> {
+): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch' | BatchesDisabledRefusal> {
     const { sql, orgId } = ctx;
     // One transaction, because done is what frees the tree now (issue #47's second half):
     // stamping done_at and queueing the worktree reclaim must be decided together, on the
@@ -752,7 +753,9 @@ export async function markJobDone(
         // A live batch task's thread is closed by the batch, never by a plain Done: Done would block
         // the task's retry and queue the reclaim of the tree that retry runs in. Once the batch ended
         // or a person force-closed the task, nothing retries it and Done closes it.
-        if ((await batchThreadState(tx, orgId, rootJobId)) === 'live') return 'batch';
+        // Off (BATCHES_ENABLED), the batch is hidden: the same thread answers the flag's refusal, not the batch's.
+        if ((await batchThreadState(tx, orgId, rootJobId)) === 'live')
+            return ctx.batches ? 'batch' : 'batches_disabled';
         // coalesce, not assignment: the second "done" answers the first one's instant,
         // which is what makes the route idempotent rather than silently rewriting history.
         // done_by rides the same rule: the first writer's actor survives a retried click.

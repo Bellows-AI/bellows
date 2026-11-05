@@ -12,7 +12,7 @@ import {
     handleStart,
     handleValidate,
 } from './batch-handlers.js';
-import { BODY_LIMIT, CONTROL_BODY_LIMIT } from '../jobs/job-limits.js';
+import { BODY_LIMIT, CONTROL_BODY_LIMIT, batchesDisabled } from '../jobs/job-limits.js';
 
 /**
  * The batch lifecycle's HTTP surface (docs/batches.md): human credentials only — the hook walls
@@ -22,8 +22,13 @@ import { BODY_LIMIT, CONTROL_BODY_LIMIT } from '../jobs/job-limits.js';
  * `db/batches/batch-store-schedule.ts`.
  */
 export const batchRoutes =
-    ({ orgs }: { orgs: OrgRegistry }): FastifyPluginAsync =>
+    ({ orgs, enabled }: { orgs: OrgRegistry; enabled: boolean }): FastifyPluginAsync =>
     async (app) => {
+        // Off (BATCHES_ENABLED): the routes stay registered behind the auth wall and answer a coded 404 before any
+        // body is parsed or store read, so nothing is discoverable and the web and CLI can branch on the code.
+        if (!enabled) {
+            app.addHook('onRequest', async (_request, reply) => batchesDisabled(reply));
+        }
         app.post('/api/batches', { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreate(orgs, request, reply));
         app.get('/api/batches', (request, reply) => handleList(orgs, request, reply));
         app.get('/api/batches/:id', (request, reply) => handleGet(orgs, request, reply));

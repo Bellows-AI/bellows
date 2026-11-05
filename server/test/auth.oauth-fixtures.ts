@@ -1,5 +1,6 @@
 import { expect } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import type { AppConfig } from '../src/config.js';
 import type { InstallationRepo } from '../src/github/app-client.js';
 import { OAUTH_COOKIE, PENDING_COOKIE, SESSION_COOKIE } from '../src/auth/session.js';
 import { githubAuth, harness, memoryAuthStore, oneInstallation, stubIdentityClient } from './helpers.js';
@@ -17,19 +18,21 @@ export interface SetupOptions {
     seed?: (store: MemoryAuthStore) => void;
     installations?: { id: string; account: string | null }[];
     installationListing?: (installationId: string) => Promise<InstallationRepo[] | null>;
+    config?: Partial<AppConfig>;
 }
 
 export async function setup({
     seed = () => {},
     installations = oneInstallation(ORG),
     installationListing,
+    config = {},
 }: SetupOptions = {}) {
     const auth = memoryAuthStore();
     seed(auth);
     const identity = stubIdentityClient();
     identity.installationsAnswer = installations;
     const { app, orgs, repos } = await harness({
-        config: { auth: githubAuth() },
+        config: { auth: githubAuth(), ...config },
         auth,
         identity,
         appSlug: async () => 'stub-app',

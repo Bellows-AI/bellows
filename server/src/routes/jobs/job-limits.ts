@@ -326,6 +326,17 @@ export function noBoard(reply: FastifyReply) {
     return bad(reply, ERROR_CODES.JOBS_UNAVAILABLE, NO_BOARD_MESSAGE, HTTP_UNAVAILABLE);
 }
 
+/**
+ * The one answer of BATCHES_ENABLED off (BEL-264): every batch route, and every task route that would advance a batch's
+ * thread (retry, follow-up, force-close), answers it, so the web and the CLI branch on the one code.
+ */
+export function batchesDisabled(reply: FastifyReply) {
+    return reply.code(HTTP_NOT_FOUND).send({
+        error: 'Batches are disabled on this deployment (set BATCHES_ENABLED=true to enable them)',
+        code: ERROR_CODES.BATCHES_DISABLED,
+    });
+}
+
 /** The lease-guarded routes all answer the same two refusals; named once instead of a dozen times. */
 export function notFoundJob(reply: FastifyReply) {
     return reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: ERROR_CODES.NOT_FOUND });

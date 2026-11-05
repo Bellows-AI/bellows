@@ -25,6 +25,7 @@ import {
     HTTP_NOT_FOUND,
     HTTP_NO_CONTENT,
     HTTP_OK,
+    batchesDisabled,
     conclusionConflict,
     LEASE_SECONDS_MAX,
     leaseLost,
@@ -174,6 +175,7 @@ export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, rep
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
+    if (result.value === 'batches_disabled') return batchesDisabled(reply);
     if (result.value === 'batch') {
         return force ? forceCloseBatchThread(orgs, { request, reply }, { id, by }) : liveBatchThreadRefusal(reply);
     }
