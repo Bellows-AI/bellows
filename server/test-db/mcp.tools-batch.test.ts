@@ -115,6 +115,7 @@ async function boot(wrap: (store: BatchStore) => BatchStore = (store) => store) 
         auth: githubAuth({ publicUrl }),
         port,
         mcp: { enabled: true, resource, trustedOrigins: [] },
+        batches: { enabled: true },
     });
     const repos = reposWithDefaults();
     const orgA = staticRegistry({ config, telemetry: stubTelemetryClient(), repos, jobs, batches: wrap(batches) });
