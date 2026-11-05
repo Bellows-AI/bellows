@@ -616,6 +616,7 @@ async function harnessOfBoards(boards: readonly (readonly [string, StoreStub])[]
             warmAll: async () => {},
             reconcileBatches: async () => {},
             observeBatchPrs: async () => {},
+            followPrs: async () => {},
         },
     });
     track(instance);
@@ -1522,6 +1523,7 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
                 warmAll: async () => {},
                 reconcileBatches: async () => {},
                 observeBatchPrs: async () => {},
+                followPrs: async () => {},
             },
         });
         track(instance);
@@ -1568,6 +1570,7 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
                 warmAll: async () => {},
                 reconcileBatches: async () => {},
                 observeBatchPrs: async () => {},
+                followPrs: async () => {},
             },
         });
         track(instance);

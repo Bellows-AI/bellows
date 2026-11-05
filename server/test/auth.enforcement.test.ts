@@ -690,6 +690,7 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
                 warmAll: async () => {},
                 reconcileBatches: async () => {},
                 observeBatchPrs: async () => {},
+                followPrs: async () => {},
             },
             store: telemetryStoreStub(),
             auth: store,

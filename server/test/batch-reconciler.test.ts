@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { startBatchPrObserver } from '../src/batch-pr-observer.js';
+import { startBatchPrObserver, startPrFollower } from '../src/batch-pr-observer.js';
 import { startBatchReconciler } from '../src/batch-reconciler.js';
 
 afterEach(() => {
@@ -14,12 +14,16 @@ afterEach(() => {
 describe.each([
     ['startBatchReconciler', 'reconcileBatches', startBatchReconciler],
     ['startBatchPrObserver', 'observeBatchPrs', startBatchPrObserver],
+    ['startPrFollower', 'followPrs', startPrFollower],
 ] as const)('%s', (_name, method, start) => {
     const pass = (impl: () => Promise<void>) => {
         const fn = vi.fn(impl);
         return {
             fn,
-            orgs: { reconcileBatches: fn, observeBatchPrs: fn } as Record<typeof method, () => Promise<void>>,
+            orgs: { reconcileBatches: fn, observeBatchPrs: fn, followPrs: fn } as Record<
+                typeof method,
+                () => Promise<void>
+            >,
         };
     };
 
@@ -56,7 +60,7 @@ describe.each([
             .fn<() => Promise<void>>()
             .mockRejectedValueOnce(new Error('db down'))
             .mockResolvedValue(undefined);
-        const stop = start({ reconcileBatches: fn, observeBatchPrs: fn } as never, 1000);
+        const stop = start({ reconcileBatches: fn, observeBatchPrs: fn, followPrs: fn } as never, 1000);
         await vi.advanceTimersByTimeAsync(1500);
         expect(fn).toHaveBeenCalledTimes(2);
         expect(error).toHaveBeenCalledWith(expect.stringContaining('db down'));

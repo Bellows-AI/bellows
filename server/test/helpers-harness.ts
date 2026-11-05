@@ -92,6 +92,7 @@ export function staticRegistry(
         warmAll: async () => {},
         reconcileBatches: async () => {},
         observeBatchPrs: async () => {},
+        followPrs: async () => {},
     };
 }
 

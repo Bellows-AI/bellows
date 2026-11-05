@@ -14,7 +14,7 @@ import { createAgentTitle } from './db/agent-title.js';
 import { createOperationReceipts } from './db/operation-receipts.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
-import { startBatchPrObserver } from './batch-pr-observer.js';
+import { startBatchPrObserver, startPrFollower } from './batch-pr-observer.js';
 import { startBatchReconciler } from './batch-reconciler.js';
 import { type ArtifactBackend, createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
 import { admissionOccupancy } from './db/jobs/job-store-admission.js';
@@ -308,6 +308,9 @@ export async function start(options: StartOptions = {}): Promise<void> {
             observeBatchPrs: () => metrics.timedPass('batch_pr_observe', () => orgs.observeBatchPrs()),
         })
     );
+
+    // The single-task PR follower is not a batch feature; it has its own schedule.
+    void ready.then(() => startPrFollower({ followPrs: () => metrics.timedPass('pr_follow', () => orgs.followPrs()) }));
 
     startCollectors({ sql, ready, secrets, artifacts, config, metrics, ...mcp });
 
