@@ -294,6 +294,34 @@ describe('the control routes of a step channel', () => {
         ).toBe(200);
     });
 
+    it('hands the waiter the supervisor’s unanswered-token-ask flag, and drops anything but `true`', async () => {
+        for (const [flag, expected] of [
+            [true, { tokenAskUnanswered: true }],
+            ['yes', {}],
+            [1, {}],
+            [false, {}],
+        ] as const) {
+            const answered = steps.submit(SUPERVISOR, step('s1'));
+            await call(SUPERVISOR, 'GET', '/step?wait=0');
+            const posted = await call(SUPERVISOR, 'POST', '/step/s1', {
+                invocation: 'i-1',
+                exitCode: null,
+                stdout: '',
+                stderr: 'a GitHub token ask went unanswered: no verdict',
+                timedOut: false,
+                tokenAskUnanswered: flag,
+            });
+            expect(posted.status).toBe(200);
+            expect(await answered, String(flag)).toEqual({
+                exitCode: null,
+                stdout: '',
+                stderr: 'a GitHub token ask went unanswered: no verdict',
+                timedOut: false,
+                ...expected,
+            });
+        }
+    });
+
     it('answers an empty poll with nothing, and a malformed answer with 400', async () => {
         expect(await (await call(SUPERVISOR, 'GET', '/step?wait=0')).json()).toEqual({});
         expect((await call(SUPERVISOR, 'POST', '/step/s1', { exitCode: 'zero' })).status).toBe(400);
@@ -606,5 +634,46 @@ describe('the step broker observer (issue #831)', () => {
         const { seen, broker } = observing();
         await expect(broker.submit('unknown', step('s1'))).rejects.toBeInstanceOf(StepChannelClosed);
         expect(seen).toEqual([]);
+    });
+});
+
+describe('the step broker holdsGate (BEL-258)', () => {
+    const gate = (id: string) => step(id, { kind: 'gate' });
+
+    it('is true only for a pulled, unsettled gate step', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        expect(broker.holdsGate('unknown', 'g1')).toBe(false);
+        const answered = broker.submit('t', gate('g1'));
+        expect(broker.holdsGate('t', 'g1')).toBe(false);
+        expect(await broker.next('t', 0, never)).toMatchObject({ id: 'g1' });
+        expect(broker.holdsGate('t', 'g1')).toBe(true);
+        expect(broker.holdsGate('t', 'other')).toBe(false);
+        broker.settle('t', 'g1', 'i-1', result());
+        await answered;
+        expect(broker.holdsGate('t', 'g1')).toBe(false);
+    });
+
+    it('is false for a pulled step of another kind', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        void broker.submit('t', step('p1'));
+        await broker.next('t', 0, never);
+        expect(broker.holdsGate('t', 'p1')).toBe(false);
+    });
+
+    it('is false after a queued step is cancelled and after the group is released', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        const queued = broker.submit('t', gate('g1'));
+        queued.catch(() => undefined);
+        broker.cancel('t', 'g1');
+        expect(broker.holdsGate('t', 'g1')).toBe(false);
+        const pulled = broker.submit('t', gate('g2'));
+        pulled.catch(() => undefined);
+        await broker.next('t', 0, never);
+        expect(broker.holdsGate('t', 'g2')).toBe(true);
+        broker.release('t');
+        expect(broker.holdsGate('t', 'g2')).toBe(false);
     });
 });

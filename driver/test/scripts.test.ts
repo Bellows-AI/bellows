@@ -27,6 +27,7 @@ import {
     checkpointScript,
     gitHardenScript,
     claudeTurnsScript,
+    gateGithubScript,
     gateLoopScript,
     reviewLoopScript,
     gateShellScript,
@@ -73,6 +74,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['gate-shell.sh', 'sh'],
+    ['gate-github.sh', 'sh'],
     // `sh -n` below only parses it: the gate loop is never run outside its container
     // (scripts-gate-loop.test.ts says why).
     ['gate-loop.sh', 'sh'],
@@ -142,6 +144,7 @@ describe('the container scripts', () => {
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
         expect(gateShellScript).toBe(readFileSync(pathOf('gate-shell.sh'), 'utf8'));
         expect(gateLoopScript).toBe(readFileSync(pathOf('gate-loop.sh'), 'utf8'));
+        expect(gateGithubScript).toBe(readFileSync(pathOf('gate-github.sh'), 'utf8'));
         expect(reviewLoopScript).toBe(readFileSync(pathOf('review-loop.sh'), 'utf8'));
         expect(serviceGenerationProbeScript).toBe(readFileSync(pathOf('service-generation-probe.sh'), 'utf8'));
         expect(serviceGenerationBumpScript).toBe(readFileSync(pathOf('service-generation-bump.sh'), 'utf8'));

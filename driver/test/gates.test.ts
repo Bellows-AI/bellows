@@ -170,11 +170,11 @@ describe('the supervised gate manager: one gate as a step', () => {
     it('hands each gate the env body of its newest acquire', async () => {
         const { runner, calls } = gateRunner();
         const manager = createSupervisedGateManager({ config, runner });
-        await manager.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_one\n', { job: JOB });
+        await manager.acquire(KEY, 'node:24', 'CI=one\n', { job: JOB });
         await manager.runGate(KEY, 'test', 'npm test');
-        await manager.acquire(KEY, 'node:24', 'GITHUB_TOKEN=ghs_two\n', { job: JOB });
+        await manager.acquire(KEY, 'node:24', 'CI=two\n', { job: JOB });
         await manager.runGate(KEY, 'test', 'npm test');
-        expect(calls.map((call) => call.gate.env)).toEqual([{ GITHUB_TOKEN: 'ghs_one' }, { GITHUB_TOKEN: 'ghs_two' }]);
+        expect(calls.map((call) => call.gate.env)).toEqual([{ CI: 'one' }, { CI: 'two' }]);
     });
 
     it('answers a gate killed at its deadline as the 124 of `timeout`, naming the deadline when it said nothing', async () => {
@@ -426,8 +426,8 @@ describe('the gate server', () => {
         await server.close();
     });
 
-    // An ad-hoc run an hour into the agent's turn must not start on the token minted at gate setup.
-    it('acquires an ad-hoc run with the env its claim asks for now, not the one it registered', async () => {
+    // A gate holds no GitHub token of its own: it asks for one through its mailbox, so a claim carries none to renew.
+    it('acquires an ad-hoc run with the env the claim registered, which carries no GitHub token', async () => {
         const bodies: (string | undefined)[] = [];
         const manager = {
             acquire: async (_key: string, _image: string, envBody?: string) => {
@@ -436,17 +436,14 @@ describe('the gate server', () => {
             runGate: async () => ({ exitCode: 0, output: 'ok' }),
         };
         const server = createGateServer({ host: '127.0.0.1', manager });
-        let asked = 0;
         server.register('tok-fresh', {
             key: KEY,
             image: 'node:24',
             job: JOB,
             gates: [{ name: 'test', command: 'npm test' }],
-            envBody: 'GITHUB_TOKEN=ghs_setup\n',
-            freshEnv: async () => {
-                asked += 1;
-                return `GITHUB_TOKEN=ghs_run${asked}\n`;
-            },
+            envBody: 'CI=true\n',
+            // @ts-expect-error a claim has no per-run env: the start-time GitHub token is gone
+            freshEnv: async () => 'GITHUB_TOKEN=ghs_run\n',
         });
         const port = await server.listen();
         for (let i = 0; i < 2; i++) {
@@ -457,7 +454,7 @@ describe('the gate server', () => {
             });
             expect(response.status).toBe(OK_STATUS);
         }
-        expect(bodies).toEqual(['GITHUB_TOKEN=ghs_run1\n', 'GITHUB_TOKEN=ghs_run2\n']);
+        expect(bodies).toEqual(['CI=true\n', 'CI=true\n']);
         await server.close();
     });
 

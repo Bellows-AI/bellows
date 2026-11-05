@@ -10,7 +10,7 @@ import { artifactCalls } from '../artifact-calls.js';
 import { type AttachmentContent, attachmentCalls, type ClaimAttachment } from './board-attachments.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
-import { githubCredentialCall } from '../github-credential-call.js';
+import { type GithubGrant, githubCredentialCall } from '../github-credential-call.js';
 import { type Reclaim, reclaimCalls } from '../reclaim-calls.js';
 import { recordCalls, type RecordBoard } from './board-pr-operations.js';
 import { phaseCheckpointCalls, type PhaseCheckpointBoard } from './board-phase-checkpoints.js';
@@ -600,6 +600,8 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
      * runs the step without one; the step then fails honestly on a private repository.
      */
     githubCredential(job: BoardJob): Promise<string | null>;
+    /** The same ask answered as what the board said (token and expiry, `refused`, or `unanswered` at `signal`'s deadline). */
+    githubGrant(job: BoardJob, signal: AbortSignal): Promise<GithubGrant>;
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**

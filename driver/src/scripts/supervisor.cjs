@@ -73,6 +73,7 @@
 //   SUPERVISOR_REVIEWER       — `1` when a reviewer container serves the review mailbox; absent, a review step is refused.
 //   SUPERVISOR_GATE_LOST_MS   — a gate loop heartbeat older than this is a lost gate container (default 30000).
 //   SUPERVISOR_GATE_CANCEL_MS — how long a cancelled gate may take to answer (default 10000).
+//   SUPERVISOR_GATE_ASK_MS    — how long one GitHub token ask of a running gate is retried before `none unanswered` (default 40000).
 //
 // Exit status: 0 finalized, 124 finalized after the run budget ended the agent, 70 the supervisor
 // itself failed, 75 the driver was lost before the agent was released (nothing ran to adopt). The
@@ -159,6 +160,8 @@ const GATE_FILES = {
     exit: 'exit',
     cancel: 'cancel',
 };
+/** A gate request's GitHub token mailbox (`GATE_ASK_FILES` of supervisor-contract.ts; scripts/gate-github.sh spells the same). */
+const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' };
 /** A name `sh` can export: the gate loop applies the env with `export "$line"`. */
 const GATE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** How much of a refused env name its refusal quotes. */
@@ -197,11 +200,15 @@ const HTTP_OK = 200;
 const HTTP_MULTIPLE_CHOICES = 300;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
+const HTTP_CONFLICT = 409;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_UNAVAILABLE = 503;
 const HTTP_SERVER_ERROR = 500;
+/** The driver's final answers to a gate token ask (gate-token-control.ts): it does not hold the step, or the caller is not the supervisor. */
+const GATE_TOKEN_REFUSALS = [HTTP_BAD_REQUEST, HTTP_UNAUTHORIZED, HTTP_FORBIDDEN, HTTP_CONFLICT];
 const REQUEST_TIMEOUT_MS = 10_000;
 const REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
 /** Logged once when the agent is released: the evidence a newer claim reads to take a running agent over (#829). */
@@ -209,6 +216,8 @@ const RELEASED_LINE = 'supervisor: released the agent';
 /** Logged once when the group stops serving the driver's steps: a newer claim reads its absence as "still serving" (#829). */
 const SERVED_LINE = 'supervisor: stopped serving the steps';
 const STEP_PATH = '/step';
+/** The driver route a gate's GitHub token ask is relayed to (`GATE_TOKEN_PATH` of supervisor-contract.ts). */
+const GATE_TOKEN_PATH = '/gate-token';
 const REPORT_PATH = '/report';
 
 const DEFAULT_CONTROL_MS = 5000;
@@ -224,6 +233,12 @@ const CHECKPOINT_CHUNK_BYTES = 1_048_576;
 const CHECKPOINT_UPLOAD_FAILED = 'upload_failed';
 const DEFAULT_GATE_LOST_MS = 30_000;
 const DEFAULT_GATE_CANCEL_MS = 10_000;
+/** One gate token ask, every try and backoff of it: under the helper's 60s wait, over the driver's 30s budget. */
+const DEFAULT_GATE_ASK_MS = 40_000;
+/** A token this close to its expiry is renewed, not served from the gate run's cache. */
+const GATE_RENEW_SKEW_MS = 300_000;
+/** The only ask names the supervisor answers: the helper's pid. A dot-prefixed name is its staging file. */
+const GATE_ASK_NAME = /^[0-9]{1,10}$/;
 /** A relayed publish waits for the whole answer (a supervised step allows 600s): this is that and headroom. */
 const DEFAULT_RELAY_MS = 900_000;
 
@@ -363,6 +378,7 @@ function settingsOf(env) {
         review: env.SUPERVISOR_REVIEWER === '1',
         gateLostMs: positive(env, 'SUPERVISOR_GATE_LOST_MS', DEFAULT_GATE_LOST_MS),
         gateCancelMs: positive(env, 'SUPERVISOR_GATE_CANCEL_MS', DEFAULT_GATE_CANCEL_MS),
+        gateAskMs: positive(env, 'SUPERVISOR_GATE_ASK_MS', DEFAULT_GATE_ASK_MS),
         // A step's children get the image's environment and the step's own: never the supervisor's credential.
         childEnv: Object.fromEntries(
             Object.entries({ ...process.env, ...env }).filter(([name]) => !name.startsWith('SUPERVISOR_'))
@@ -883,6 +899,10 @@ function postGateRequest(run, step, name) {
     fs.mkdirSync(staged, { recursive: true });
     const reviewing = lane === 'review';
     if (reviewing) fs.chmodSync(staged, REVIEW_DIR_MODE);
+    // The gate's GitHub token mailbox (scripts/gate-github.sh); a review holds no token and has none.
+    if (!reviewing) {
+        for (const name of [GATE_ASK_FILES.asks, GATE_ASK_FILES.answers]) fs.mkdirSync(path.join(staged, name));
+    }
     fs.writeFileSync(path.join(staged, GATE_FILES.command), laneCommand(step));
     fs.writeFileSync(path.join(staged, GATE_FILES.cwd), step.cwd);
     const env = Object.entries(step.env ?? {}).map(([n, v]) => `${n}=${v}\n`);
@@ -917,9 +937,30 @@ function stoppedGateResult(why, step, output) {
     };
 }
 
+/**
+ * A gate run that asked for a GitHub token and never got an answer — one that went unanswered, was in
+ * flight when the gate was stopped, or is still pending when the gate ends: whatever the gate then exited
+ * with, it ran without a token it needed. No verdict, the next claim reruns it (the driver reads the flag).
+ */
+function unansweredGateResult(flight, output) {
+    if (!flight.unanswered && !flight.asking) return null;
+    const result = stepResult(null, output, 'a GitHub token ask went unanswered: no verdict');
+    return { result: { ...result, tokenAskUnanswered: true }, interrupted: false };
+}
+
+/** A stopped gate's result: a deadline that passed while an ask went unanswered is no verdict, not a timeout. */
+function stoppedGateRunResult(flight, step, output) {
+    return (
+        (flight.why === 'deadline' && unansweredGateResult(flight, output)) ||
+        stoppedGateResult(flight.why, step, output)
+    );
+}
+
 /** The loop's answer to a request: a stopped gate's (its own output kept), or the gate's own exit. */
-function answeredGateResult(why, step, answer) {
-    if (why) return stoppedGateResult(why, step, answer.output);
+function answeredGateResult(flight, step, answer) {
+    if (flight.why) return stoppedGateRunResult(flight, step, answer.output);
+    const unanswered = unansweredGateResult(flight, answer.output);
+    if (unanswered) return unanswered;
     const lost =
         answer.exitCode === null ? `the ${step.kind} container lost the request mid-run: it answered no exit` : '';
     return { result: stepResult(answer.exitCode, answer.output, lost), interrupted: false };
@@ -939,31 +980,162 @@ function lostGateResult(run, step) {
  */
 function gateTick(run, step, flight) {
     const answer = takeGateAnswer(run, step.kind, step.id);
-    if (answer) return answeredGateResult(flight.why, step, answer);
+    if (answer) return answeredGateResult(flight, step, answer);
     if (!flight.why) {
         flight.why = gateStopReason(run, step, flight.startedAt);
         flight.stoppedAt = run.now();
+        // Decided at the stop, not at the settle: an ask the driver answers during the cancel grace never
+        // reaches the gate, so a gate stopped with an ask in flight ran without its answer.
+        if (flight.why && flight.asking) flight.unanswered = true;
         // Withdrawn before the loop took it: it never ran, and answers at once.
         if (flight.why && cancelGate(run, step.kind, step.id)) return stoppedGateResult(flight.why, step, '');
     }
     if (flight.why && run.now() - flight.stoppedAt >= run.settings.gateCancelMs) {
-        return stoppedGateResult(flight.why, step, '');
+        return stoppedGateRunResult(flight, step, '');
     }
     return gateSilentMs(run, step.kind, flight.startedAt) > run.settings.gateLostMs ? lostGateResult(run, step) : null;
+}
+
+/**
+ * Whether an ask stops trying, unanswered: the run settled or was stopped (the stop already marked an ask
+ * in flight, `gateTick`), or the ask's own deadline passed, which marks the run here.
+ */
+function gateAskEnded(run, flight, left) {
+    if (flight.over || flight.why || run.stop.signal.aborted) return true;
+    if (left > 0) return false;
+    flight.unanswered = true;
+    return true;
+}
+
+/**
+ * One GitHub token ask of a running gate, tried against the driver until the absolute per-ask deadline
+ * (`gateAskMs`): a token is cached on the gate run's `flight` while it is not near its expiry, a refusal
+ * (the driver does not hold the step) is final, and anything unconfirmed — no answer, a 5xx, a malformed
+ * body — is retried, then `unanswered`, which taints the run: no verdict. Never an empty token.
+ */
+async function fetchGateToken(run, step, flight) {
+    const deadline = run.now() + run.settings.gateAskMs;
+    for (;;) {
+        const left = deadline - run.now();
+        if (gateAskEnded(run, flight, left)) return { none: 'unanswered' };
+        const answer = await ask(run, 'POST', GATE_TOKEN_PATH, {
+            body: { step: step.id },
+            holdMs: left,
+            abort: AbortSignal.any([flight.abort.signal, AbortSignal.timeout(left)]),
+        });
+        const grant = grantOf(answer);
+        if (grant) {
+            flight.tokens.add(grant.token);
+            flight.cache = grant.expiresAt === null ? null : grant;
+            return { token: grant.token };
+        }
+        if (answer && GATE_TOKEN_REFUSALS.includes(answer.status)) return { none: 'refused' };
+        await sleep(run.settings.tickMs, run);
+    }
+}
+
+/** The driver's grant in an answer — a token with no whitespace, and when it expires or null — or null: never an empty token. */
+function grantOf(answer) {
+    const { token, expiresAt } = answer?.json ?? {};
+    if (answer?.status !== HTTP_OK || typeof token !== 'string' || !/^\S+$/.test(token)) return null;
+    const expires = typeof expiresAt === 'string' ? Date.parse(expiresAt) : Number.NaN;
+    return { token, expiresAt: Number.isFinite(expires) ? expires : null };
+}
+
+/** The token for an ask: the cache while it is fresh, else the one driver call every concurrent ask shares. */
+function gateToken(run, step, flight) {
+    const cached = flight.cache;
+    if (cached && run.now() < cached.expiresAt - GATE_RENEW_SKEW_MS) return Promise.resolve({ token: cached.token });
+    flight.asking ??= fetchGateToken(run, step, flight).finally(() => {
+        flight.asking = null;
+    });
+    return flight.asking;
+}
+
+/** Answers one ask of the running gate, unless the gate was stopped, rebound or ended meanwhile: then nobody asked. */
+async function answerGateAsk(run, step, flight, name) {
+    const gen = run.bindingGen;
+    const running = path.join(run.file.gate.running, step.id);
+    const got = await gateToken(run, step, flight);
+    if (flight.over || flight.why || run.bindingGen !== gen || !fs.existsSync(running)) return;
+    const answers = path.join(running, GATE_ASK_FILES.answers);
+    const staged = path.join(answers, `${name}.tmp`);
+    try {
+        fs.writeFileSync(staged, got.token ? `token ${got.token}\n` : `none ${got.none}\n`, { mode: GATE_ENV_MODE });
+        fs.renameSync(staged, path.join(answers, name));
+        fs.rmSync(path.join(running, GATE_ASK_FILES.asks, name), { force: true });
+    } catch (error) {
+        // The request ended under the write: nobody is left to read the answer. Anything else is logged once.
+        fs.rmSync(staged, { force: true });
+        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')
+            run.log(`supervisor: gate ${step.id} ask not answered: ${error.code}`);
+    }
+}
+
+/**
+ * The asks of one running gate, once a tick: `running/<id>/asks/<pid>` is answered with a token or a
+ * reason. Only a request the loop took is served (a request still in `requests/` ran nothing), and only
+ * while the gate is not being stopped. A directory that cannot be read is skipped this tick, never read as
+ * "no asks"; a dot-prefixed name is the helper's staging file, left alone; any other name is not an ask.
+ */
+function serveGateAsks(run, step, flight) {
+    if (step.kind !== 'gate' || flight.why || !run.settings.url) return;
+    const dir = path.join(run.file.gate.running, step.id, GATE_ASK_FILES.asks);
+    let names;
+    try {
+        names = fs.readdirSync(dir);
+    } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR' && !flight.readFailed) {
+            flight.readFailed = true;
+            run.log(`supervisor: gate ${step.id} asks unreadable: ${error.code}`);
+        }
+        return;
+    }
+    for (const name of names) {
+        if (name.startsWith('.') || flight.answering.has(name)) continue;
+        if (!GATE_ASK_NAME.test(name)) {
+            fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+            continue;
+        }
+        flight.answering.add(name);
+        answerGateAsk(run, step, flight, name)
+            .catch((error) => run.log(`supervisor: gate ${step.id} ask failed: ${error?.message ?? error}`))
+            .finally(() => flight.answering.delete(name));
+    }
 }
 
 /**
  * One gate, through the gate mailbox: the request posted, then read every tick until the loop
  * answers. A stop (the driver's cancel, the group's end, the deadline) cancels it and waits at most
  * `gateCancelMs` for the loop's answer. A loop silent past `gateLostMs` is a lost gate container.
+ * The gate's token asks are answered on the way; `flight` holds their cache and every token handed
+ * out, which the answer is redacted of, and is dropped when the gate is settled.
  */
 async function execGate(run, step) {
     postGateRequest(run, step, step.id);
-    const flight = { startedAt: run.now(), why: null, stoppedAt: 0 };
-    for (;;) {
-        const settled = gateTick(run, step, flight) ?? (run.stop.signal.aborted ? lostGateResult(run, step) : null);
-        if (settled) return settled;
-        await sleep(run.settings.tickMs, run);
+    const flight = {
+        startedAt: run.now(),
+        why: null,
+        stoppedAt: 0,
+        over: false,
+        abort: new AbortController(),
+        asking: null,
+        cache: null,
+        tokens: new Set(),
+        answering: new Set(),
+        unanswered: false,
+        readFailed: false,
+    };
+    try {
+        for (;;) {
+            serveGateAsks(run, step, flight);
+            const settled = gateTick(run, step, flight) ?? (run.stop.signal.aborted ? lostGateResult(run, step) : null);
+            if (settled) return { ...settled, tokens: [...flight.tokens] };
+            await sleep(run.settings.tickMs, run);
+        }
+    } finally {
+        flight.over = true;
+        flight.abort.abort();
     }
 }
 
@@ -1072,9 +1244,11 @@ async function runCall(run, entry, step) {
  * A gate or review step's output with its injected GitHub token values replaced: the command may echo them,
  * and what the ledger keeps and the driver is answered must never hold one. The one choke point of both executors.
  */
-function redactedResult(step, result) {
+function redactedResult(step, result, served = []) {
     if (!LANES.includes(step.kind)) return result;
-    const secrets = ['GITHUB_TOKEN', 'GH_TOKEN'].map((name) => step.env?.[name]).filter((value) => value);
+    const secrets = [...['GITHUB_TOKEN', 'GH_TOKEN'].map((name) => step.env?.[name]), ...served].filter(
+        (value) => value
+    );
     if (secrets.length === 0) return result;
     const redact = (text) => secrets.reduce((kept, secret) => kept.split(secret).join('[redacted]'), text);
     return { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) };
@@ -1083,7 +1257,7 @@ function redactedResult(step, result) {
 /** Records how a call ended: an effect that landed, a call done, or one interrupted. */
 function settleCall(run, entry, step, outcome) {
     const { interrupted } = outcome;
-    const result = redactedResult(step, outcome.result);
+    const result = redactedResult(step, outcome.result, outcome.tokens);
     if (interrupted) {
         recordCall(run, entry, step.invocation, { state: 'interrupted', result });
         return result;
@@ -1981,6 +2155,8 @@ module.exports = {
     REPORT_MS: DEFAULT_REPORT_MS,
     STEP_KINDS,
     GATE_FILES,
+    GATE_ASK_FILES,
+    GATE_TOKEN_PATH,
     GATE_LOST_MS: DEFAULT_GATE_LOST_MS,
     GATE_CANCEL_MS: DEFAULT_GATE_CANCEL_MS,
     createMachine,

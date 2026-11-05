@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { CONNECTION_BODY_LIMIT, CONNECTION_PATH, type ConnectionRelay, serveConnection } from './connection-control.js';
+import { GATE_TOKEN_BODY_LIMIT, type GateTokenRelay, serveGateToken } from './gate-token-control.js';
 import { CONTENT_TYPE_HEADER, OCTET_STREAM_CONTENT_TYPE, readBody, respondJson } from './http.js';
 import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish/publish-control.js';
 import {
@@ -13,7 +14,7 @@ import {
 } from './export-control.js';
 import { INPUT_PATH, type InputAnswer, type InputDelivery, serveInput } from './input-control.js';
 import { createStepBroker, serveReport, serveStepPoll, serveStepResult, type StepBroker } from './step-control.js';
-import { REPORT_PATH, STEP_PATH } from './supervisor-contract.js';
+import { GATE_TOKEN_PATH, REPORT_PATH, STEP_PATH } from './supervisor-contract.js';
 import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review/review-control.js';
 import {
     cancelPendingQuestions,
@@ -35,7 +36,7 @@ import {
  *  - the SUPERVISOR token — held by the task supervisor alone — reads the run's stop and kill orders
  *    (`GET /control`), relays the agent's questions (`POST /question`, `GET /question/:id`) and pulls
  *    and answers the supervised steps (`/step`, `POST /report`), and reads the task's input files
- *    (`GET /input/<delivery>/<id>`);
+ *    (`GET /input/<delivery>/<id>`), and relays a running gate step's GitHub token ask (`POST /gate-token`);
  *  - the EXPORTER token — all the transcript exporter holds — carries the transcript chunks
  *    (`/export`) and nothing else;
  *  - the AGENT token — all the agent container holds — reaches only the draft publication
@@ -54,7 +55,7 @@ export const PUBLISH_PATH = '/publish';
 export const QUESTION_PATH = '/question';
 /** The reviewer routes beside them (issue #549): `POST /review`, `GET /review/:key`. */
 export const REVIEW_PATH = '/review';
-export { CONNECTION_PATH };
+export { CONNECTION_PATH, GATE_TOKEN_PATH };
 
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
@@ -84,6 +85,8 @@ export interface ControlChannel {
     attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
     /** Gives an open token the relay of its agent's connection ask: `/connection` answers 503 until then. */
     attachConnection(token: string, connection: ConnectionRelay): void;
+    /** Gives an open token the relay of its supervisor's gate token ask (BEL-258): `/gate-token` answers 503 until then. */
+    attachGateToken(token: string, gateToken: GateTokenRelay): void;
     /**
      * Registers a delivery of task inputs on an open token (the task's own as `task`, a review's under its row id):
      * `GET /input/<name>/<id>` serves only the files of its manifest, read from the board under its row's lease.
@@ -122,6 +125,7 @@ type Route =
     | 'connection'
     | 'control'
     | 'export'
+    | 'gate-token'
     | 'input'
     | 'publish'
     | 'question'
@@ -144,6 +148,13 @@ function stepRouteOf(request: IncomingMessage, url: string): 'step' | 'report' |
     return request.method === 'GET' && (url === STEP_PATH || url.startsWith(`${STEP_PATH}?`)) ? 'step' : null;
 }
 
+/** The routes that are a POST of one exact path. */
+const POST_ROUTES = new Map<string, Route>([
+    [PUBLISH_PATH, 'publish'],
+    [CONNECTION_PATH, 'connection'],
+    [GATE_TOKEN_PATH, 'gate-token'],
+]);
+
 /** Which control route a request is, or null when it is none of them. */
 function routeOf(request: IncomingMessage): Route | null {
     const url = request.url ?? '';
@@ -151,8 +162,8 @@ function routeOf(request: IncomingMessage): Route | null {
     if (url === EXPORT_PATH || url.startsWith(`${EXPORT_PATH}/`)) return 'export';
     if (url === CHECKPOINT_PATH || url.startsWith(`${CHECKPOINT_PATH}/`)) return 'checkpoint';
     if (url.startsWith(`${INPUT_PATH}/`)) return 'input';
-    if (request.method === 'POST' && url === PUBLISH_PATH) return 'publish';
-    if (request.method === 'POST' && url === CONNECTION_PATH) return 'connection';
+    const post = request.method === 'POST' ? POST_ROUTES.get(url) : undefined;
+    if (post) return post;
     if (isPostOrGetOf(request, QUESTION_PATH)) return 'question';
     const stepRoute = stepRouteOf(request, url);
     if (stepRoute) return stepRoute;
@@ -163,8 +174,16 @@ type RelayRoute = 'checkpoint' | 'export' | 'input';
 const isRelayRoute = (route: Route): route is RelayRoute =>
     route === 'export' || route === 'checkpoint' || route === 'input';
 
-/** The routes each token opens: the supervisor's, the exporter's one and the agent's two. */
-const SUPERVISOR_ROUTES: readonly Route[] = ['checkpoint', 'control', 'input', 'question', 'report', 'step'];
+/** The routes each token opens: the supervisor's, the exporter's one and the agent's three. */
+const SUPERVISOR_ROUTES: readonly Route[] = [
+    'checkpoint',
+    'control',
+    'gate-token',
+    'input',
+    'question',
+    'report',
+    'step',
+];
 const EXPORTER_ROUTES: readonly Route[] = ['export'];
 const AGENT_ROUTES: readonly Route[] = ['connection', 'publish', 'review'];
 
@@ -251,6 +270,28 @@ const serveDraftPublish = (control: ControlEntry, request: IncomingMessage, stal
 const serveConnectionAsk = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
     afterBody(request, CONNECTION_BODY_LIMIT, stale, (raw) => serveConnection(control.connecting, raw));
 
+/** `POST /gate-token`: a running gate step's token ask, answered only while the supervisor still holds that step. */
+const serveGateTokenAsk = (
+    control: ControlEntry,
+    call: { request: IncomingMessage; reply: ServerResponse; stale: Stale },
+    steps: StepBroker,
+    token: string
+) =>
+    afterBody(call.request, GATE_TOKEN_BODY_LIMIT, call.stale, (raw) => {
+        // The supervisor hanging up ends the board call; the request's own close fires once its body is read.
+        const gone = new AbortController();
+        // A token in the body: no cache keeps it.
+        call.reply.setHeader('cache-control', 'no-store');
+        call.reply.once('close', () => {
+            if (!call.reply.writableFinished) gone.abort();
+        });
+        return serveGateToken(control.gateToken, raw, {
+            holds: (step) => steps.holdsGate(token, step),
+            open: () => call.stale() === null,
+            signal: gone.signal,
+        });
+    });
+
 /** `POST /review` / `GET /review/:key`, once the token is known. */
 const serveReview = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
     request.method === 'GET'
@@ -309,6 +350,16 @@ const serveRelayRoute = (
     return serveCheckpoint(control.checkpointing, call.request, call.open);
 };
 
+/** The `attach*` doors that hand an open token a relay for one of its routes. */
+const relayAttachers = (
+    controls: Map<string, ControlEntry>
+): Pick<ControlChannel, 'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachGateToken'> => ({
+    attachExporter: (token, exporter) => attachRelay(controls.get(token)?.exporting, exporter),
+    attachCheckpoint: (token, checkpoint) => attachRelay(controls.get(token)?.checkpointing, checkpoint),
+    attachConnection: (token, connection) => attachRelay(controls.get(token)?.connecting, connection),
+    attachGateToken: (token, gateToken) => attachRelay(controls.get(token)?.gateToken, gateToken),
+});
+
 export function createControlChannel(steps: StepBroker = createStepBroker()): ControlChannel {
     /** Every attempt, under its supervisor token. */
     const controls = new Map<string, ControlEntry>();
@@ -356,9 +407,7 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             exporters.set(exporterToken, exporter ? { owner: token, slot: { relay: exporter } } : { owner: token });
         },
         revokeExporter: (exporterToken) => void exporters.delete(exporterToken),
-        attachExporter: (token, exporter) => attachRelay(controls.get(token)?.exporting, exporter),
-        attachCheckpoint: (token, checkpoint) => attachRelay(controls.get(token)?.checkpointing, checkpoint),
-        attachConnection: (token, connection) => attachRelay(controls.get(token)?.connecting, connection),
+        ...relayAttachers(controls),
         attachInputs: (token, name, delivery) => void controls.get(token)?.inputs.deliveries.set(name, delivery),
         detachInputs: (token, name) => void controls.get(token)?.inputs.deliveries.delete(name),
         polled: (token) => controls.get(token)?.polled ?? false,
@@ -435,6 +484,8 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             const serveRoute = {
                 publish: serveDraftPublish,
                 connection: serveConnectionAsk,
+                'gate-token': (entry: ControlEntry, req: IncomingMessage, isStale: Stale) =>
+                    serveGateTokenAsk(entry, { request: req, reply, stale: isStale }, steps, auth),
                 review: serveReview,
                 question: serveQuestion,
                 step: serveStep,
@@ -454,13 +505,15 @@ export const attachersOf = ({
     attachExporter,
     attachCheckpoint,
     attachConnection,
+    attachGateToken,
     attachInputs,
 }: ControlChannel): Pick<
     ControlChannel,
-    'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachInputs'
+    'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachGateToken' | 'attachInputs'
 > => ({
     attachExporter,
     attachCheckpoint,
     attachConnection,
+    attachGateToken,
     attachInputs,
 });

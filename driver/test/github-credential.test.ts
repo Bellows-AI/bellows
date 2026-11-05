@@ -419,10 +419,13 @@ describe('the token cache and the runner env, on both executors', () => {
 });
 
 describe('the stated limit of a gate environment’s token', () => {
-    it('is in docs/connections.md: asked at each gate run’s start, never renewed during it', () => {
+    it('is in docs/connections.md: no GitHub token in a gate env, an ask through the mailbox that is never an empty token', () => {
         const docs = readFileSync(join(ROOT, 'docs/connections.md'), 'utf8').replace(/\s+/g, ' ');
-        expect(docs).toContain("A gate run's GitHub token is asked at its start and never renewed during it");
-        // Issue #773: the token rides the gate run's own step, exported for that run alone.
-        expect(docs).toContain("It rides that run's gate step, whose env the gate container exports for the run alone");
+        expect(docs).toContain(
+            'A gate gets no `GITHUB_TOKEN`/`GH_TOKEN` in its env: git and gh get a token through the gate helper, and a gate script reading `$GITHUB_TOKEN` itself gets nothing.'
+        );
+        expect(docs).toContain(
+            'A gate asks through its mailbox, answered only while its step runs under the live lease; an unanswered ask is no verdict, never an empty token.'
+        );
     });
 });
