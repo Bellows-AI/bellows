@@ -67,7 +67,7 @@ interface Ran {
     ms: number;
 }
 const exec = (shell: string, args: string[], env: Record<string, string>, stdin = ''): Promise<Ran> =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
         const started = Date.now();
         const child = spawn(shell, args, { env: { ...env } });
         let stdout = '';
@@ -75,11 +75,24 @@ const exec = (shell: string, args: string[], env: Record<string, string>, stdin 
         child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
         child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
         child.on('close', (status) => resolve({ status, stdout, stderr, ms: Date.now() - started }));
+        // The helper may exit without reading its request (another host, store, erase): the pipe it closed is an
+        // outcome under test, not a harness failure. Any other stdin error still fails the case.
+        child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+            if (error.code !== 'EPIPE') reject(error);
+        });
         child.stdin.end(stdin);
     });
 
 const GITHUB = 'protocol=https\nhost=github.com\n\n';
 const SHELLS = ['/bin/sh', ...(existsSync('/bin/dash') ? ['/bin/dash'] : [])];
+
+describe('the exec harness', () => {
+    it('reports a child that exits without reading its stdin, never an unhandled EPIPE', async () => {
+        // Far past a pipe's buffer, so the write is still in flight when the child is gone.
+        const ran = await exec('/bin/sh', ['-c', 'exit 0'], { PATH: '/usr/bin:/bin' }, 'x'.repeat(1 << 20));
+        expect(ran.status).toBe(0);
+    });
+});
 
 describe.each(SHELLS)('the gate GitHub helper under %s', (shell) => {
     const credential = (r: ReturnType<typeof rig>, op: string, stdin: string, extra: Record<string, string> = {}) =>
