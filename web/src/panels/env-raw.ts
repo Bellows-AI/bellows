@@ -9,7 +9,8 @@
  * runner environment.
  *
  * Accepted syntax: `KEY=value`, `export KEY=value`; blank and `#` comment lines skipped; one pair
- * of surrounding quotes stripped; no escape processing — the value is the literal text after `=`
+ * of surrounding quotes stripped (a value that opens a quote must close it, with the same quote, at
+ * the end of its line, or the text is refused); no escape processing — the value is the literal text after `=`
  * (quotes aside), so `\n` stays a literal backslash-n and an inline `#` is value text.
  *
  * Unlike a paste-merge, the text is the WHOLE truth: every parsed name becomes a row and every
@@ -34,8 +35,15 @@ function isQuotePair(value: string): boolean {
     return value.length >= 2 && (value[0] === '"' || value[0] === "'") && value[0] === value[value.length - 1];
 }
 
+/** Whether the value opens with a quote character, which obliges it to be a matched pair. */
+function startsWithQuote(value: string): boolean {
+    return value[0] === '"' || value[0] === "'";
+}
+
 /** One line's parse: `null` for a skipped blank/comment line, otherwise the pair or the error. */
-type LineParseResult = { ok: true; name: string; value: string } | { ok: false; error: string };
+type LineParseResult =
+    | { ok: true; name: string; value: string }
+    | { ok: false; error: string; unterminatedQuote?: true };
 
 /**
  * One line of the raw editor's text, checked in the server's own order: shape, name, value,
@@ -55,7 +63,6 @@ function parseEnvLine(
     const name = withoutExport.slice(0, eq).trim();
     let value = withoutExport.slice(eq + 1).trim();
     if (name === '') return { ok: false, error: `line ${lineNo}: expected KEY=value` };
-    if (isQuotePair(value)) value = value.slice(1, -1);
     if (!ENV_NAME.test(name)) {
         return { ok: false, error: `line ${lineNo}: "${name}" is not a legal environment variable name` };
     }
@@ -63,6 +70,19 @@ function parseEnvLine(
         return { ok: false, error: `line ${lineNo}: name exceeds ${ENV_NAME_LIMIT} characters` };
     if (isReservedEnvName(name)) {
         return { ok: false, error: `line ${lineNo}: "${name}" is reserved by the runner` };
+    }
+    if (startsWithQuote(value)) {
+        // A value that opens a quote must close it, with the same quote, as its last character —
+        // anything else (unterminated, mismatched, text after the closing quote) would parse to
+        // something the author did not write, so the whole text is refused instead.
+        if (!isQuotePair(value)) {
+            return {
+                ok: false,
+                error: `line ${lineNo}: value for "${name}" opens a quote that does not close at the end of the line`,
+                unterminatedQuote: true,
+            };
+        }
+        value = value.slice(1, -1);
     }
     if (value.includes('\n')) {
         // Structurally unreachable after line-splitting; kept as parity with the server's
@@ -106,13 +126,20 @@ export function parseEnvRaw(text: string, secretNames: readonly string[]): EnvRa
     const pairs: { name: string; value: string }[] = [];
     const firstSeen = new Map<string, number>();
 
+    // An unterminated quote's continuation line is usually refused on its own (no `=`); that
+    // refusal already flags the run-over, so the opening line's error is dropped in its favor.
+    let openQuoteError = false;
     const lines = text.replace(/\r\n?/g, '\n').split('\n');
     for (const [index, rawLine] of lines.entries()) {
         const lineNo = index + 1;
         const result = parseEnvLine(rawLine, lineNo, { secrets, firstSeen, activeCount: pairs.length });
+        const afterOpenQuote = openQuoteError;
+        openQuoteError = false;
         if (result === null) continue;
         if (!result.ok) {
+            if (afterOpenQuote) errors.pop();
             errors.push(result.error);
+            openQuoteError = result.unterminatedQuote === true;
             continue;
         }
         firstSeen.set(result.name, lineNo);
@@ -127,15 +154,16 @@ export function parseEnvRaw(text: string, secretNames: readonly string[]): EnvRa
 
 /**
  * Serialize the draft's non-secret rows into the raw editor's text — one `NAME=value` per line.
- * A value with leading or trailing whitespace, or one that is itself a matched pair of quotes
- * (which the parser would strip), is wrapped in double quotes so the parse round-trips.
+ * A value with leading or trailing whitespace, or one that starts with a quote character (a
+ * matched pair the parser would strip, or an unmatched one it would refuse), is wrapped in double
+ * quotes so the parse round-trips.
  */
 export function serializeEnv(rows: readonly EnvVarRow[]): string {
     return rows
         .filter((row) => !row.isSecret)
         .map((row) => {
             const value = row.value ?? '';
-            const needsQuotes = value !== value.trim() || isQuotePair(value);
+            const needsQuotes = value !== value.trim() || startsWithQuote(value);
             return `${row.name}=${needsQuotes ? `"${value}"` : value}`;
         })
         .join('\n');

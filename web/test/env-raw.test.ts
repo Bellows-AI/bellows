@@ -254,3 +254,34 @@ describe('the raw .env round trip (BEL-262)', () => {
         });
     });
 });
+
+describe('.env text that must not parse to something else (BEL-262 review)', () => {
+    const refused = (text: string) => {
+        const result = parseEnvRaw(text, noSecrets);
+        expect(result.ok).toBe(false);
+        return result.ok ? [] : result.errors;
+    };
+
+    it('refuses a quote opened and not closed on its line, naming the opening line, applying nothing', () => {
+        expect(refused('A="first\nB=second"')).toEqual([expect.stringMatching(/^line 1: .*"A".*quote/)]);
+        expect(refused('A="first\n#second')).toEqual([expect.stringMatching(/^line 1: .*"A".*quote/)]);
+        expect(refused("ok=1\nA='first\nB=2")).toEqual([expect.stringMatching(/^line 2: .*"A".*quote/)]);
+    });
+
+    it('refuses a lone quote, mismatched quote types and text after a closing quote', () => {
+        for (const text of ['A="', "A='", `A="x'`, `A='x"`, 'A="x" y', 'A="x"y', "A='x' y"]) {
+            expect(refused(text)).toEqual([expect.stringMatching(/^line 1: /)]);
+        }
+    });
+
+    it('still reads a quote inside or after unquoted text, and a quoted value holding quotes, literally', () => {
+        expect(parseEnvRaw(`A=x "y"\nB="it's"\nC='say "hi"'\nD=a'`, noSecrets)).toEqual(
+            ok([variable('A', 'x "y"'), variable('B', "it's"), variable('C', 'say "hi"'), variable('D', "a'")])
+        );
+    });
+
+    it('round-trips a value that starts with a quote without being a matched pair', () => {
+        const rows = ['"x', "'a", `"x'`, `'x"`, '"', "'", '"a" b', '"a"b'].map((value, i) => variable(`Q_${i}`, value));
+        expect(parseEnvRaw(serializeEnv(rows), noSecrets)).toEqual(ok(rows));
+    });
+});

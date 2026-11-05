@@ -274,6 +274,15 @@ describe('the shared structured/.env draft (BEL-262)', () => {
         });
     });
 
+    it('refuses an unterminated quote and keeps every row, so no corrupted value is applied', () => {
+        const rows = [storedVar('KEEP', 'x')];
+        for (const text of ['A="first\nB=second"', 'A="first\n#second']) {
+            const result = applyRawText(text, rows, nextId);
+            expect(result.ok).toBe(false);
+            if (!result.ok) expect(result.errors[0]).toMatch(/^line 1: /);
+        }
+    });
+
     it('does not count a pending-removed secret as a collision', () => {
         const removed = { ...storedSecret('TOKEN'), pendingRemove: true };
         expect(applyRawText('TOKEN=x', [removed], nextId).ok).toBe(true);
