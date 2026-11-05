@@ -201,3 +201,56 @@ describe('serializeEnv', () => {
         expect(result).toEqual(ok(rows));
     });
 });
+
+describe('the raw .env round trip (BEL-262)', () => {
+    const roundTrip = (rows: EnvVarRow[]) => parseEnvRaw(serializeEnv(rows), noSecrets);
+
+    it('returns every value shape unchanged, empty and quoted ones included', () => {
+        const values = [
+            '',
+            'plain',
+            ' leading',
+            'trailing ',
+            '"quoted"',
+            "'single'",
+            '"',
+            "'",
+            '""',
+            '"a" ',
+            'a"',
+            '"a',
+            `"mixed'`,
+            'a=b=c',
+            'x # not a comment',
+            'back\\slash\\n',
+            'export FOO',
+            '  "padded quoted"  ',
+            '\t',
+            '# starts like a comment',
+        ];
+        const rows = values.map((value, index) => variable(`V_${index}`, value));
+        expect(roundTrip(rows)).toEqual(ok(rows));
+    });
+
+    it('returns a name that merely starts with export unchanged', () => {
+        const rows = [variable('export', 'a'), variable('exported', ''), variable('EXPORT_X', '"q"')];
+        expect(roundTrip(rows)).toEqual(ok(rows));
+    });
+
+    it('reads a valid quoted or empty line from hand-written text as written', () => {
+        expect(parseEnvRaw('A=\nB=""\nC="x"\nD=\'y z\'\nexport E=', noSecrets)).toEqual(
+            ok([variable('A', ''), variable('B', ''), variable('C', 'x'), variable('D', 'y z'), variable('E', '')])
+        );
+    });
+
+    it('names both lines of a duplicate and the line of an illegal name', () => {
+        expect(parseEnvRaw('A=1\n\nA=2', noSecrets)).toEqual({
+            ok: false,
+            errors: ['line 3: duplicate name "A" (first seen on line 1)'],
+        });
+        expect(parseEnvRaw('A=1\n1BAD=2', noSecrets)).toEqual({
+            ok: false,
+            errors: ['line 2: "1BAD" is not a legal environment variable name'],
+        });
+    });
+});
