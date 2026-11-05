@@ -115,13 +115,22 @@
             flex: 1 1 0;
             grid-template-areas: 'main outcome' 'main support';
             grid-template-columns: minmax(0, 1fr) 320px;
-            grid-template-rows: auto minmax(0, 1fr);
+            grid-template-rows: minmax(0, fit-content(55%)) minmax(0, 1fr);
             min-height: 0;
         }
 
         .task-main {
             align-self: stretch;
             height: auto;
+        }
+
+        /* The whole right column is bounded: the rail takes its content up to 55% of the height
+           and scrolls past it, the panels scroll in the rest, so nothing there can grow the
+           track past the viewport and push the composer out. */
+        .task-outcome {
+            align-self: stretch;
+            min-height: 0;
+            overflow-y: auto;
         }
 
         .task-support {

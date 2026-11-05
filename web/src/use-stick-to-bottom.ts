@@ -18,62 +18,70 @@ export function isNearBottom(
 }
 
 /**
- * What to do when a render has landed content. `previousHeight` is the scroll height before it
- * landed (null: the first content this scroller ever showed); the live metrics are read after it
- * landed. Content grows below the reader, so scrollTop did not move — judge nearness against the
- * OLD height, or every append would look like the reader scrolled away.
+ * What a content change does, given only whether the reader was following the tail before it:
+ * a follower is carried to the new end, anyone else is told there is something unseen. Geometry
+ * after the change never enters the decision — new content, or a shorter viewport, moves the
+ * numbers under a reader who did not move.
  */
-export function decideOnContent(
-    previousHeight: number | null,
-    live: ScrollMetrics
-): { follow: boolean; unseen: boolean } {
-    if (previousHeight === null) return { follow: true, unseen: false };
-    const { scrollTop, clientHeight, scrollHeight } = live; // a DOM element's geometry is not spreadable
-    if (isNearBottom({ scrollTop, clientHeight, scrollHeight: previousHeight })) return { follow: true, unseen: false };
-    return { follow: false, unseen: scrollHeight > previousHeight };
+export function decideOnContent(following: boolean): { follow: boolean; unseen: boolean } {
+    return { follow: following, unseen: !following };
 }
 
 /**
- * Keeps a live-following scroller on its tail only while its reader is near the bottom.
- * Attach the returned `ref` to the scroll element; pass `signal` (anything that changes when
- * content lands). The near-bottom decision reads the element's live geometry in the layout
- * effect that follows the render — no flag cached from earlier. `hasUnseen` is true when content
- * landed under a reader who scrolled up; `jumpToLatest` scrolls to the end and clears it.
+ * Keeps a live-following scroller on its tail only while its reader follows it. `following` is
+ * state the READER sets: it is re-read from the element's live geometry on each scroll event
+ * only, so a content change or a resize (both move the geometry, neither moves the reader)
+ * never flips it, and programmatic scrolls to the end keep it true.
+ *
+ * Attach `ref` to the scroll element and pass `signal`: a value that changes exactly when
+ * meaningful content lands (a string or key, never the element's own scroll height — a capped
+ * well grows without its container moving). A resize of the scroller re-pins a follower to the
+ * end. `hasUnseen` is true when content landed under a reader who scrolled up; `jumpToLatest`
+ * scrolls to the end, resumes following and clears it.
  */
 export function useStickToBottom<T extends HTMLElement>(signal: unknown) {
     const [element, setElement] = useState<T | null>(null);
     const [hasUnseen, setHasUnseen] = useState(false);
     const tracked = useRef<T | null>(null);
-    const lastHeight = useRef<number | null>(null);
+    const following = useRef(true);
     const ref: RefCallback<T> = useCallback((node) => setElement(node), []);
 
     // `signal` is the trigger: it changes when content lands.
     useLayoutEffect(() => {
         if (element === null) return;
-        const previous = tracked.current === element ? lastHeight.current : null;
-        tracked.current = element;
-        const verdict = decideOnContent(previous, element);
+        if (tracked.current !== element) {
+            // A new scroller starts at its tail.
+            tracked.current = element;
+            following.current = true;
+            element.scrollTop = element.scrollHeight;
+            return;
+        }
+        const verdict = decideOnContent(following.current);
         if (verdict.follow) element.scrollTop = element.scrollHeight;
         setHasUnseen((seen) => (verdict.follow ? false : verdict.unseen || seen));
-        lastHeight.current = element.scrollHeight;
     }, [element, signal]);
 
-    // The reader's own scrolling: re-record the height it was read at, and clear the flag on
-    // arriving back at the bottom.
     useLayoutEffect(() => {
         if (element === null) return;
         const onScroll = () => {
-            lastHeight.current = element.scrollHeight;
-            if (isNearBottom(element)) setHasUnseen(false);
+            following.current = isNearBottom(element);
+            if (following.current) setHasUnseen(false);
         };
         element.addEventListener('scroll', onScroll, { passive: true });
-        return () => element.removeEventListener('scroll', onScroll);
+        const observer = new ResizeObserver(() => {
+            if (following.current) element.scrollTop = element.scrollHeight;
+        });
+        observer.observe(element);
+        return () => {
+            element.removeEventListener('scroll', onScroll);
+            observer.disconnect();
+        };
     }, [element]);
 
     const jumpToLatest = useCallback(() => {
         if (element === null) return;
+        following.current = true;
         element.scrollTop = element.scrollHeight;
-        lastHeight.current = element.scrollHeight;
         setHasUnseen(false);
     }, [element]);
 

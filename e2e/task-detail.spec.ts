@@ -943,7 +943,7 @@ test.describe('the conversation scrolls on its own above a docked composer (BEL-
                 longThread({
                     ...runningThread[0]!,
                     id: 'aaaaaaaa-0000-4000-8000-000000263998',
-                    command: `watch me run${extra}`,
+                    output: `${runningThread[0]!.output}${extra}`,
                 } as Thread[number]),
                 author
             );
@@ -956,8 +956,9 @@ test.describe('the conversation scrolls on its own above a docked composer (BEL-
         await page.evaluate(() => {
             document.querySelector('.task-conversation')!.scrollTop = 300;
         });
-        // The next poll brings a taller thread (a longer request line); the reader stays put.
-        await routeThread(page, running('\nand a longer request\nover several lines\nso the thread grows'));
+        // The next poll streams more output into the capped well: the thread's own height does
+        // not move, and the reader stays put with Jump to latest on offer.
+        await routeThread(page, running('\nstep 82 running\nstep 83 running'));
         const jump = page.getByRole('button', { name: 'Jump to latest' });
         await expect(jump).toBeVisible({ timeout: 10_000 });
         expect((await metrics(page)).scrollTop).toBe(300);
@@ -1015,5 +1016,43 @@ test.describe('the conversation scrolls on its own above a docked composer (BEL-
             document.querySelector('.task-conversation')!.scrollTop = 0;
         });
         await page.screenshot({ path: `${SHOTS}/task-detail-docked-error-390-top.png` });
+    });
+
+    test('1366x768: a tall expanded Outcome cannot push the composer out of the viewport', async ({ page }) => {
+        const author = await sessionAuthor(page);
+        await page.setViewportSize({ width: 1366, height: 768 });
+        // The published thread carries verification and published work in the rail.
+        const tail = { ...publishedThread[publishedThread.length - 1]!, id: 'aaaaaaaa-0000-4000-8000-000000263997' };
+        await routeThread(page, authoredBy(longThread(tail as Thread[number]), author));
+        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000263000');
+        await expect(page.locator('.task-follow-up textarea')).toBeVisible();
+        // Workflow metadata makes the rail taller still: stand in for it with extra rows.
+        await page.locator('.task-outcome').evaluate((el) => {
+            for (let i = 0; i < 12; i++) {
+                const row = document.createElement('p');
+                row.textContent = `workflow metadata row ${i + 1}`;
+                row.style.margin = '12px 0';
+                el.appendChild(row);
+            }
+        });
+        const fit = await page.evaluate(() => {
+            const composer = document.querySelector('.task-follow-up')!.getBoundingClientRect();
+            const support = document.querySelector('.task-support')!.getBoundingClientRect();
+            return {
+                pageOverflow: document.scrollingElement!.scrollHeight - window.innerHeight,
+                composerBottom: composer.bottom,
+                composerTop: composer.top,
+                supportTop: support.top,
+                supportBottom: support.bottom,
+                height: window.innerHeight,
+            };
+        });
+        expect(fit.pageOverflow).toBeLessThanOrEqual(0);
+        expect(fit.composerBottom).toBeLessThanOrEqual(fit.height);
+        expect(fit.composerTop).toBeGreaterThan(0);
+        // The support column keeps real room inside the viewport instead of being squeezed out.
+        expect(fit.supportBottom).toBeLessThanOrEqual(fit.height);
+        expect(fit.supportBottom - fit.supportTop).toBeGreaterThan(80);
+        await page.screenshot({ path: `${SHOTS}/task-detail-docked-published-1366x768.png` });
     });
 });

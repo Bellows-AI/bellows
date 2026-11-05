@@ -2,14 +2,43 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { followUpThread, runningThread, type ThreadJob } from '../../e2e/fixtures/threads.js';
 import { type ComposerDraftStore, EMPTY_FILES } from '../src/composer-draft.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 import type { FollowUpViewer } from '../src/task-outcome.js';
 import { inertDraftStore } from './tasks-fixtures.js';
 
-afterEach(cleanup);
+beforeEach(() => {
+    stubResizeObserver();
+});
+
+afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+});
+
+/** A ResizeObserver the test can fire: jsdom never lays out, so it never reports a resize. */
+function stubResizeObserver() {
+    const watched: Array<{ el: Element; fire: () => void }> = [];
+    vi.stubGlobal(
+        'ResizeObserver',
+        class {
+            private readonly callback: () => void;
+            constructor(callback: () => void) {
+                this.callback = callback;
+            }
+            observe(el: Element) {
+                watched.push({ el, fire: this.callback });
+            }
+            unobserve() {}
+            disconnect() {}
+        }
+    );
+    return (el: Element) => {
+        for (const entry of watched.filter((w) => w.el === el)) entry.fire();
+    };
+}
 
 const ADMIN: FollowUpViewer = { loading: false, id: 'someone', admin: true };
 
@@ -150,5 +179,59 @@ describe('Task detail: the conversation scrolls on its own, the follow-up compos
         }) as typeof conversation.removeEventListener;
         view.unmount();
         expect(removed).toContain('scroll');
+    });
+
+    describe('the reader scroll state, not the post-change geometry, decides', () => {
+        const running = (output: string): ThreadJob[] => [
+            ...followUpThread,
+            { ...runningThread[0]!, id: 'live-run', output } as ThreadJob,
+        ];
+
+        it('a reader at the bottom stays there when the run ends and the composer shrinks the viewport', () => {
+            const fire = stubResizeObserver();
+            const view = render(detail(running('a')));
+            const conversation = screen.getByRole('region', { name: 'Conversation' });
+            const box = scrollBox(conversation, { clientHeight: 600, scrollHeight: 2000, scrollTop: 1400 });
+            fireEvent.scroll(conversation);
+
+            // The run ends: its response lands, the composer appears, the viewport is shorter.
+            box.clientHeight = 450;
+            box.scrollHeight = 2100;
+            view.rerender(detail([...followUpThread, { ...followUpThread[0]!, id: 'live-run' }]));
+            fire(conversation);
+
+            expect(box.scrollTop).toBe(2100);
+            expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
+        });
+
+        it('offers Jump to latest when output grows only inside the capped live well', () => {
+            const view = render(detail(running('a')));
+            const conversation = screen.getByRole('region', { name: 'Conversation' });
+            const box = scrollBox(conversation, { clientHeight: 400, scrollHeight: 2000, scrollTop: 300 });
+            fireEvent.scroll(conversation);
+
+            // The well is at its cap: the outer scroll height does not move.
+            view.rerender(detail(running('a\nb\nc')));
+
+            expect(box.scrollTop).toBe(300);
+            expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeTruthy();
+        });
+
+        it('follows a resize while the reader follows, and leaves a reader who scrolled up alone', () => {
+            const fire = stubResizeObserver();
+            render(detail(followUpThread));
+            const conversation = screen.getByRole('region', { name: 'Conversation' });
+            const box = scrollBox(conversation, { clientHeight: 600, scrollHeight: 2000, scrollTop: 1400 });
+            fireEvent.scroll(conversation);
+            box.clientHeight = 450;
+            fire(conversation);
+            expect(box.scrollTop).toBe(2000);
+
+            box.scrollTop = 200;
+            fireEvent.scroll(conversation);
+            box.clientHeight = 400;
+            fire(conversation);
+            expect(box.scrollTop).toBe(200);
+        });
     });
 });

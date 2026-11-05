@@ -17,23 +17,11 @@ describe('isNearBottom', () => {
 });
 
 describe('decideOnContent', () => {
-    it('follows the first content it ever sees', () => {
-        expect(decideOnContent(null, { ...view, scrollTop: 0 })).toEqual({ follow: true, unseen: false });
-    });
-
-    it('follows new content while the reader was near the bottom of what was there before', () => {
-        // The content grew 2000 → 2300; scrollTop never moved, so judge against the OLD height.
-        const verdict = decideOnContent(2000, { scrollTop: 1600, clientHeight: 400, scrollHeight: 2300 });
-        expect(verdict).toEqual({ follow: true, unseen: false });
+    it('carries a follower to the new end and flags nothing', () => {
+        expect(decideOnContent(true)).toEqual({ follow: true, unseen: false });
     });
 
     it('leaves a reader who scrolled up alone and flags what they have not seen', () => {
-        const verdict = decideOnContent(2000, { scrollTop: 300, clientHeight: 400, scrollHeight: 2300 });
-        expect(verdict).toEqual({ follow: false, unseen: true });
-    });
-
-    it('flags nothing when a scrolled-up reader got no new height', () => {
-        const verdict = decideOnContent(2000, { scrollTop: 300, clientHeight: 400, scrollHeight: 2000 });
-        expect(verdict).toEqual({ follow: false, unseen: false });
+        expect(decideOnContent(false)).toEqual({ follow: false, unseen: true });
     });
 });

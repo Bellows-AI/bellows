@@ -323,6 +323,15 @@ function FollowUp({
     );
 }
 
+/** Changes exactly when the thread's content does — a poll that brings the same rows leaves it. */
+function threadContentKey(jobs: Job[] | null): string {
+    return (jobs ?? [])
+        .map(
+            (j) => `${j.id}:${j.status}:${j.output?.length ?? 0}:${j.summary?.length ?? 0}:${j.questions?.length ?? 0}`
+        )
+        .join('|');
+}
+
 /** The output the live-following well tracks: the newest run's, only while it can still move. */
 function liveOutputOf(latest: Job | null | undefined): string | null | undefined {
     return latest && !isTerminal(latest.status) ? latest.output : undefined;
@@ -398,7 +407,7 @@ export function TaskDetail({
     // (BEL-263): the conversation (with a Jump to latest when the reader is away), and the live
     // run's raw-output well. The log opened from its summary lands on the tail in `TaskRun`.
     // `jobs` changes identity with every poll; the hook judges height, not identity.
-    const conversation = useStickToBottom<HTMLElement>(jobs);
+    const conversation = useStickToBottom<HTMLElement>(threadContentKey(jobs));
     const liveWell = useStickToBottom<HTMLPreElement>(liveOutputOf(latest));
 
     if (jobs === null || jobs.length === 0) {
