@@ -65,6 +65,10 @@ listed="$(docker run --rm --entrypoint sh "$IMAGE" -c \
     'opencode debug skill >/tmp/skills.json 2>/dev/null; grep -o "/home/node/.config/opencode/skills/[^/]*/SKILL.md" /tmp/skills.json')"
 for skill in "$HERE"/../skills/*/; do
     name="$(basename "$skill")"
+    case "$name" in
+    factory-*) ok "built-in skill $name is under the reserved factory- prefix" ;;
+    *) bad "built-in skill $name is under the reserved factory- prefix" "name does not start with factory-" ;;
+    esac
     case "$listed" in
     *"/skills/$name/SKILL.md"*) ok "opencode discovers the $name skill" ;;
     *) bad "opencode discovers the $name skill" "listed: $listed" ;;

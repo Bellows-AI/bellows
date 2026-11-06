@@ -1,5 +1,5 @@
 ---
-name: gates
+name: factory-gates
 description: Run a repository's verification gates (tests, lint, build checks declared in .bellows.yaml) in the shared environment image, and read their output. Use before finishing a task, after changes that could break CI, or whenever asked to "run the gates", "run the checks" or "verify with CI steps". Requires BELLOWS_GATE_URL and BELLOWS_GATE_TOKEN to be set.
 ---
 
@@ -35,7 +35,7 @@ one before you push; the gates that run when you finish are a backstop, not a re
 A gate you ran unfiltered that passed on exactly the tree you finish with, with nothing touched while it
 ran, is reported as reused when you finish instead of running again; any later change runs it.
 An unavailable gate (an environment failure) is reported, not a blocker; the pull request itself
-(the github skill) is held back by a gate only where the repository sets `policy: gates: required`. The declared gates also run when you finish and a failing one fails
+(the factory-github skill) is held back by a gate only where the repository sets `policy: gates: required`. The declared gates also run when you finish and a failing one fails
 the task, but the work still ships as a draft; only a repository that sets `policy: gates:
 required` in `.bellows.yaml` holds the publish back until they pass.
 

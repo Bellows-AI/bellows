@@ -15,7 +15,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * real library's renewal is the point.
  */
 
-const HELPER = join(ROOT, 'docker/skills/jira/jira.cjs');
+const HELPER = join(ROOT, 'docker/skills/factory-jira/jira.cjs');
 const BROKER = join(ROOT, 'docker/executor-common/credential-broker.cjs');
 const require_ = createRequire(import.meta.url);
 

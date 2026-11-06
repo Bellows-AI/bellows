@@ -984,11 +984,11 @@ describe('POST /api/jobs skill selection', () => {
         const response = await post(instance, '/api/jobs', {
             repo: 'acme/web',
             command: 'echo hi',
-            skills: ['github', 'jira'],
+            skills: ['factory-github', 'factory-jira'],
         });
 
         expect(response.statusCode).toBe(201);
-        expect(jobs.skillSelections).toEqual([['github', 'jira']]);
+        expect(jobs.skillSelections).toEqual([['factory-github', 'factory-jira']]);
     });
 
     it('forwards no skills when the body names none', async () => {
@@ -1008,7 +1008,7 @@ describe('POST /api/jobs skill selection', () => {
         const response = await post(instance, '/api/jobs', {
             repo: 'acme/web',
             command: 'echo hi',
-            skills: ['github', 'ghost'],
+            skills: ['factory-github', 'ghost'],
         });
 
         expect(response.statusCode).toBe(404);

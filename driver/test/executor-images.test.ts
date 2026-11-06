@@ -1075,7 +1075,7 @@ describe('the skills and the allowlist agree on the gate and control commands (i
     });
 
     it('has the gates, github, review and pr-land skills call a wrapper', () => {
-        for (const skill of ['gates', 'github', 'review', 'pr-land']) {
+        for (const skill of ['factory-gates', 'factory-github', 'factory-review', 'factory-pr-land']) {
             expect(wrapperCommands(read(`docker/skills/${skill}/SKILL.md`)), skill).not.toEqual([]);
         }
     });
@@ -1250,23 +1250,23 @@ describe('the shared executor skills', () => {
 
     // The skill runs the helper, which asks the broker; the lease token and any Jira credential never ride an argv.
     it('76: the jira skill names the helper at its fixed path and no $JIRA_API, curl or Jira credential', () => {
-        const text = read(`${SKILLS}/jira/SKILL.md`);
-        expect(text).toContain('node /usr/local/share/factory-skills/jira/jira.cjs');
+        const text = read(`${SKILLS}/factory-jira/SKILL.md`);
+        expect(text).toContain('node /usr/local/share/factory-skills/factory-jira/jira.cjs');
         expect(text).not.toMatch(/JIRA_API|\bcurl\b|ATLASSIAN_|RUNNER_LEASE_TOKEN|Basic auth/);
         expect(text).toMatch(/Do not use an Atlassian MCP server or `acli`/);
-        expect(existsSync(join(ROOT, `${SKILLS}/jira/jira.cjs`))).toBe(true);
+        expect(existsSync(join(ROOT, `${SKILLS}/factory-jira/jira.cjs`))).toBe(true);
     });
 
     // BEL-252: after a successful issue read the jira skill hands the issue's subject to the title helper, only on
     // exit 0, never renaming the Jira issue; the title skill states the same rule without naming a provider.
     it('the jira skill sets the task title only after a successful issue read, and the title skill stays provider-neutral', () => {
-        const jira = read(`${SKILLS}/jira/SKILL.md`);
-        expect(jira).toContain('node /usr/local/share/factory-skills/task-title/task-title.cjs');
+        const jira = read(`${SKILLS}/factory-jira/SKILL.md`);
+        expect(jira).toContain('node /usr/local/share/factory-skills/factory-task-title/task-title.cjs');
         expect(jira).toMatch(/## Naming the task after a ticket/);
         expect(jira).toMatch(/Only after `issue <KEY>` exited 0/);
         expect(jira).toMatch(/never invent a subject/);
         expect(jira).toMatch(/never rename the Jira issue/);
-        const title = read(`${SKILLS}/task-title/SKILL.md`);
+        const title = read(`${SKILLS}/factory-task-title/SKILL.md`);
         expect(title).toMatch(/## After an issue read/);
         expect(title).toMatch(/Only when the read succeeded/);
         expect(title).not.toMatch(/Jira|Linear/);
@@ -1274,12 +1274,12 @@ describe('the shared executor skills', () => {
 
     // BEL-252: the agent names its task with the board's agent-title route; the pair helper is baked beside the skills.
     it('the task-title skill names its helper at the fixed path, never an env title, and both images ship it', () => {
-        const text = read(`${SKILLS}/task-title/SKILL.md`);
-        expect(text).toContain('node /usr/local/share/factory-skills/task-title/task-title.cjs');
+        const text = read(`${SKILLS}/factory-task-title/SKILL.md`);
+        expect(text).toContain('node /usr/local/share/factory-skills/factory-task-title/task-title.cjs');
         expect(text).not.toMatch(/\bcurl\b|RUNNER_LEASE_TOKEN/);
         expect(text).toMatch(/Never treat exit 4 as "unchanged"/);
-        expect(existsSync(join(ROOT, `${SKILLS}/task-title/task-title.cjs`))).toBe(true);
-        expect(read('docker/skills/task-title/task-title.cjs')).toContain('/usr/local/bin/attempt-pair.cjs');
+        expect(existsSync(join(ROOT, `${SKILLS}/factory-task-title/task-title.cjs`))).toBe(true);
+        expect(read('docker/skills/factory-task-title/task-title.cjs')).toContain('/usr/local/bin/attempt-pair.cjs');
         for (const image of ['claude-executor', 'opencode-executor']) {
             expect(read(`docker/${image}/Dockerfile`), image).toContain(
                 'COPY --from=skills --chown=root:root . /usr/local/share/factory-skills/'
@@ -1345,14 +1345,14 @@ describe('the shared executor skills', () => {
  * or a green-gate precondition.
  */
 describe('the executor PR boundary', () => {
-    const GITHUB_SKILL = 'docker/skills/github/SKILL.md';
+    const GITHUB_SKILL = 'docker/skills/factory-github/SKILL.md';
 
     it('no baked skill denies the agent a pull request or makes green gates a precondition', () => {
         const skills = [
             GITHUB_SKILL,
-            'docker/skills/gates/SKILL.md',
-            'docker/skills/backend-fix/SKILL.md',
-            'docker/skills/pr-land/SKILL.md',
+            'docker/skills/factory-gates/SKILL.md',
+            'docker/skills/factory-fix/SKILL.md',
+            'docker/skills/factory-pr-land/SKILL.md',
             'docker/opencode-executor/opencode-home/AGENTS.md',
         ];
         for (const skill of skills) {
@@ -1366,9 +1366,9 @@ describe('the executor PR boundary', () => {
     it('no baked skill tells the agent to cut a branch or add a worktree', () => {
         const skills = [
             GITHUB_SKILL,
-            'docker/skills/gates/SKILL.md',
-            'docker/skills/backend-fix/SKILL.md',
-            'docker/skills/pr-land/SKILL.md',
+            'docker/skills/factory-gates/SKILL.md',
+            'docker/skills/factory-fix/SKILL.md',
+            'docker/skills/factory-pr-land/SKILL.md',
             'docker/opencode-executor/opencode-home/AGENTS.md',
         ];
         for (const skill of skills) {
@@ -1377,13 +1377,13 @@ describe('the executor PR boundary', () => {
             expect(text).not.toMatch(/work in a dedicated worktree/i);
             expect(text).not.toMatch(/(?<!never `)git worktree add/i);
         }
-        expect(read('docker/skills/backend-fix/SKILL.md')).toMatch(
+        expect(read('docker/skills/factory-fix/SKILL.md')).toMatch(
             /Stay on the task branch the checkout is on.*never `git worktree add`/s
         );
     });
 
-    it('the backend-fix skill is an optional playbook: suggested order, policy stays the board’s (issue #550)', () => {
-        const text = read('docker/skills/backend-fix/SKILL.md');
+    it('the factory-fix skill is an optional playbook: suggested order, policy stays the board’s (issue #550)', () => {
+        const text = read('docker/skills/factory-fix/SKILL.md');
         expect(text).toContain('optional playbook');
         expect(text).toContain('The order is a suggestion, not a graph.');
         expect(text).toContain('What is *required* is policy');
@@ -1398,9 +1398,9 @@ describe('the executor PR boundary', () => {
         expect(text).not.toMatch(/^\s*gh pr checkout\b/m);
     });
 
-    it('the pr-land skill waits and fixes but never merges, closes or bypasses (issue #729)', () => {
-        const text = read('docker/skills/pr-land/SKILL.md');
-        expect(text).toContain('sh /usr/local/share/factory-skills/pr-land/pr-status.sh');
+    it('the factory-pr-land skill waits and fixes but never merges, closes or bypasses (issue #729)', () => {
+        const text = read('docker/skills/factory-pr-land/SKILL.md');
+        expect(text).toContain('sh /usr/local/share/factory-skills/factory-pr-land/pr-status.sh');
         expect(text).toContain('At most 5 fix-and-push iterations.');
         expect(text).toContain('At most 45 minutes of waiting in total');
         expect(text).toContain('Never merge, close or reopen the pull request, and never enable auto-merge.');
@@ -1608,7 +1608,7 @@ describe('the claude entrypoint Stop-hook model', () => {
 // The gate server refuses an ad-hoc run of a gate whose `timeout:` outlasts the call (issue #576);
 // the agent must hear that before it spends a turn retrying the 422.
 describe('the ad-hoc gate limit in the agent instructions', () => {
-    it.each(['docker/skills/gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+    it.each(['docker/skills/factory-gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
         '%s names the 10-minute limit, the 422 and the end-of-run pass',
         (path) => {
             const text = read(path).replace(/\s+/g, ' ');
@@ -1620,7 +1620,7 @@ describe('the ad-hoc gate limit in the agent instructions', () => {
     );
 
     // An `on_demand` gate never runs at the finish: the agent is the only caller it has.
-    it.each(['docker/skills/gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+    it.each(['docker/skills/factory-gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
         '%s says an on_demand gate runs only when the agent calls it',
         (path) => {
             const text = read(path).replace(/\s+/g, ' ');
@@ -1633,7 +1633,7 @@ describe('the ad-hoc gate limit in the agent instructions', () => {
 // Issue #1041: the agent runs the covering gates before every push, narrowed by a filter where the
 // gate opted in; both agent guides must say how, and that a filtered run proves nothing.
 describe('the gate filter and the pre-push gate run in the agent instructions (issue #1041)', () => {
-    it.each(['docker/skills/gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+    it.each(['docker/skills/factory-gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
         '%s documents filter: true, GATE_FILTER and the pre-push run',
         (path) => {
             const text = read(path).replace(/\s+/g, ' ');
@@ -1754,7 +1754,7 @@ describe('the agent launcher (issue #814)', () => {
         }
         // The skills reach it through `factory-control` (#1061), which dials the proxy's own socket.
         expect(read('docker/executor-common/factory-control.cjs')).toContain(`'${proxy.SOCKET}'`);
-        for (const skill of ['docker/skills/review/SKILL.md', 'docker/skills/github/SKILL.md']) {
+        for (const skill of ['docker/skills/factory-review/SKILL.md', 'docker/skills/factory-github/SKILL.md']) {
             expect(read(skill)).toContain('factory-control ');
         }
     });

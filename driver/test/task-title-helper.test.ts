@@ -12,7 +12,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * deadline compressed. Only the board is fake; the pair helper is the real one where the relayed lease is the
  * point.
  */
-const HELPER = join(ROOT, 'docker/skills/task-title/task-title.cjs');
+const HELPER = join(ROOT, 'docker/skills/factory-task-title/task-title.cjs');
 const PAIR_HELPER = join(ROOT, 'docker/executor-common/attempt-pair.cjs');
 const require_ = createRequire(import.meta.url);
 

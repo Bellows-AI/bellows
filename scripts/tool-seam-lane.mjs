@@ -22,7 +22,7 @@ const CLI_CACHE = '/tmp/node-compile-cache';
 /** Where the task checkout lives, and a second mount of the same volume that is nobody's checkout. */
 const TRUSTED = '/workspace';
 const UNTRUSTED = '/elsewhere';
-const SKILL = 'jira';
+const SKILL = 'factory-jira';
 /** Where each CLI finds the baked skills, and a private directory of its own the tool must not open. */
 const SKILL_BASE = {
     claude: `/etc/claude-code/.claude/skills/${SKILL}`,

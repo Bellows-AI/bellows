@@ -39,7 +39,8 @@ check 'gh installed'           'gh version'       run --entrypoint gh "$IMAGE" -
 # No plugin (issue #841): context-mode's executions cannot run as the tool uid yet.
 check 'no plugin installed'    'No plugins installed' run --entrypoint claude "$IMAGE" plugin list
 check 'CLAUDE.md present'      'Agent guide'      run --entrypoint head "$IMAGE" -1 /home/node/.claude/CLAUDE.md
-check 'skills present'         'backend-fix'      run --entrypoint ls "$IMAGE" /etc/claude-code/.claude/skills
+check 'skills present'         'factory-fix'      run --entrypoint ls "$IMAGE" /etc/claude-code/.claude/skills
+check 'every built-in skill is under factory-' 'ok' run --entrypoint sh "$IMAGE" -c 'for s in /etc/claude-code/.claude/skills/*/; do case "$(basename "$s")" in factory-*) ;; *) echo "bad:$s"; exit 1;; esac; done; echo ok'
 
 # The entrypoint's own contract: land in $WORKDIR, refuse a missing one.
 check 'defaults to /workspace' '/workspace'       run --entrypoint sh "$IMAGE" -c 'pwd'
@@ -112,7 +113,7 @@ check 'seeds an empty volume' 'CLAUDE.md' docker run --rm -v "$VOL:/cfg" -e CLAU
 # The skills are managed (issue #1024): read from the one path the tool uid can read, never copied
 # into the seeded volume, where the CLI would load the private-dir copy first.
 check 'the seeded volume carries no copy of the baked skills' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
-    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; test ! -e "$CLAUDE_CONFIG_DIR"/skills/backend-fix && ls /etc/claude-code/.claude/skills | grep backend-fix >/dev/null && echo ok'
+    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; test ! -e "$CLAUDE_CONFIG_DIR"/skills/factory-fix && ls /etc/claude-code/.claude/skills | grep factory-fix >/dev/null && echo ok'
 check 'seeding is idempotent' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; echo marker > "$CLAUDE_CONFIG_DIR"/keep; claude-executor -p seed >/dev/null 2>&1; [ -f "$CLAUDE_CONFIG_DIR"/keep ] && echo ok'
 # The seed runs once; the hooks block is re-laid on every start, so an agent that emptied it in the

@@ -1,5 +1,5 @@
 ---
-name: review
+name: factory-review
 description: Ask an independent, named reviewer to review your work in a separate run, then read its findings and verdict. Use before you finish, whenever the repository requires a review, or when you want fresh eyes on your changes. Requires `/run/factory-control/control.sock` to exist.
 ---
 

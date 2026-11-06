@@ -105,7 +105,7 @@ describe('the scripted-tools endpoint (--steps)', () => {
                     { type: 'tool_result', tool_use_id: 'toolu_1', content: 'one' },
                     {
                         type: 'text',
-                        text: 'Base directory for this skill: /etc/claude-code/.claude/skills/jira\n\n# Jira',
+                        text: 'Base directory for this skill: /etc/claude-code/.claude/skills/factory-jira\n\n# Jira',
                     },
                 ],
             },
@@ -117,7 +117,7 @@ describe('the scripted-tools endpoint (--steps)', () => {
                 { id: 'toolu_1', isError: false, text: 'one' },
                 { id: 'toolu_2', isError: true, text: 'two' },
             ],
-            skillBases: ['/etc/claude-code/.claude/skills/jira'],
+            skillBases: ['/etc/claude-code/.claude/skills/factory-jira'],
             agentRequests: 2,
         });
     });
@@ -132,7 +132,9 @@ describe('the scripted-tools endpoint (--steps)', () => {
 describe('the seam lane’s verdicts', () => {
     const CLIS = ['claude', 'opencode'] as const;
     const base = (cli: string) =>
-        cli === 'claude' ? '/etc/claude-code/.claude/skills/jira' : '/home/node/.config/opencode/skills/jira';
+        cli === 'claude'
+            ? '/etc/claude-code/.claude/skills/factory-jira'
+            : '/home/node/.config/opencode/skills/factory-jira';
     /** What a healthy runner answers, step by step, in the order of `seamSteps`. */
     const healthy = (cli: string): Evidence => {
         const ok = (text: string): Result => ({ isError: false, text });
@@ -152,7 +154,7 @@ describe('the seam lane’s verdicts', () => {
                     'CACHE_ENV=/home/factory-tool/.cache/node-compile-cache\nCACHE_DIR=/home/factory-tool/.cache/node-compile-cache/v24-x64\nCACHE_FILES=3\nCACHE_OWNER=1001\nCTRL_DIR=none\nCLI_CACHE=readonly'
                 ),
                 ok('TOOL_ON_CLI_REPO=ok\nCLONE=0\nINIT=0\nTOOL_ON_CTL=ok\nINIT_CTL=0'),
-                ok('Launching skill: jira'),
+                ok('Launching skill: factory-jira'),
                 ok('SKILL_READ=ok\nPRIVATE=denied'),
                 ok('COMMIT=0\nAUTHOR=factory-ai factory-ai@users.noreply.github.com'),
                 ok('GATE_URL=http://gate.invalid:9\nGATE_TOKEN=set'),
@@ -247,7 +249,7 @@ describe('the seam lane’s verdicts', () => {
     });
 
     it('fails #1024 when the two runs load a skill from different paths, or the tool cannot read it', () => {
-        const moved = { ...healthy('claude'), skillBases: ['/workspace/.factory/t/skills/jira'] };
+        const moved = { ...healthy('claude'), skillBases: ['/workspace/.factory/t/skills/factory-jira'] };
         expect(failing('claude', moved)).toEqual([expect.stringContaining('loaded from the one baked path')]);
         const missing = { ...healthy('opencode'), plainSkillBases: [] };
         expect(failing('opencode', missing)).toEqual([expect.stringContaining('loaded from the one baked path')]);

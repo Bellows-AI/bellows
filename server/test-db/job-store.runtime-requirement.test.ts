@@ -227,7 +227,7 @@ describe.skipIf(!enabled)('runtime connection requirement — database', () => {
 
     it('dismissing a creation-time requirement launches the task', async () => {
         const user = freshUser();
-        const id = await create(user.id, { skills: ['jira'] });
+        const id = await create(user.id, { skills: ['factory-jira'] });
         expect(await requirementRows(id)).toMatchObject([{ source: 'create', satisfied_at: null }]);
         expect(await store.claim(WORKER, LEASE_SECONDS)).toBeNull();
         expect(await store.dismissRequirement(id, 'jira', user.id)).toEqual({ ok: true });

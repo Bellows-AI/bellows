@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
     INTEGRATION_PROVIDERS,
+    isReservedSkillName,
     parseSkillFrontmatter,
     requiredProviders,
     RUNNER_TOOLS,
@@ -16,6 +17,16 @@ const skillNames = readdirSync(SKILLS_DIR);
 const read = (name: string) => readFileSync(new URL(`${name}/SKILL.md`, SKILLS_DIR), 'utf8');
 
 const head = (extra = '') => `---\nname: demo\ndescription: Does a thing.\n${extra}---\n\n# Body\n`;
+
+describe('reserved prefix', () => {
+    it.each(['factory-x', 'factory-fix', 'factory-a-b'])('%s is reserved for built-ins', (name) => {
+        expect(isReservedSkillName(name)).toBe(true);
+    });
+
+    it.each(['factory', 'factoryx', 'my-factory-x', 'fix'])('%s is free for other sources', (name) => {
+        expect(isReservedSkillName(name)).toBe(false);
+    });
+});
 
 describe('parseSkillFrontmatter', () => {
     it('reads name, description and the metadata requirement lists', () => {
@@ -53,9 +64,15 @@ describe('the shipped skills', () => {
         expect(parseSkillFrontmatter(read(name), name).name).toBe(name);
     });
 
+    it.each(skillNames)('%s is under the reserved factory- prefix', (name) => {
+        expect(isReservedSkillName(name)).toBe(true);
+    });
+
     it('declares the connection the github and jira skills need', () => {
-        expect(parseSkillFrontmatter(read('github'), 'github').requires.connections).toEqual(['github']);
-        expect(parseSkillFrontmatter(read('jira'), 'jira').requires.connections).toEqual(['jira']);
+        expect(parseSkillFrontmatter(read('factory-github'), 'factory-github').requires.connections).toEqual([
+            'github',
+        ]);
+        expect(parseSkillFrontmatter(read('factory-jira'), 'factory-jira').requires.connections).toEqual(['jira']);
     });
 
     it.each(skillNames)('%s carries no credential-looking literal', (name) => {

@@ -29,19 +29,19 @@ describe('readSkillCatalog', () => {
     it('loads the shipped skills with their declared requirements', () => {
         const byName = Object.fromEntries(readSkillCatalog().map((skill) => [skill.name, skill]));
         expect(Object.keys(byName).sort()).toEqual([
-            'backend-fix',
-            'gates',
-            'github',
-            'jira',
-            'pr-land',
-            'review',
-            'task-title',
+            'factory-fix',
+            'factory-gates',
+            'factory-github',
+            'factory-jira',
+            'factory-pr-land',
+            'factory-review',
+            'factory-task-title',
         ]);
-        expect(byName['task-title']?.requires).toEqual({ tools: [], connections: [] });
-        expect(byName['pr-land']?.requires).toEqual({ tools: ['gh'], connections: ['github'] });
-        expect(byName.jira?.requires).toEqual({ tools: [], connections: ['jira'] });
+        expect(byName['factory-task-title']?.requires).toEqual({ tools: [], connections: [] });
+        expect(byName['factory-pr-land']?.requires).toEqual({ tools: ['gh'], connections: ['github'] });
+        expect(byName['factory-jira']?.requires).toEqual({ tools: [], connections: ['jira'] });
         // The gates skill calls the image's factory-gate wrapper, not curl.
-        expect(byName.gates?.requires).toEqual({ tools: [], connections: [] });
+        expect(byName['factory-gates']?.requires).toEqual({ tools: [], connections: [] });
         expect(skillCatalog()).toEqual(readSkillCatalog());
     });
 
@@ -59,13 +59,13 @@ describe('readSkillCatalog', () => {
 describe('resolveClaimSkills', () => {
     it('is null for no selection, and for a held connection', () => {
         expect(resolveClaimSkills([], undefined)).toBeNull();
-        expect(resolveClaimSkills(['github'], undefined, ['github'])).toBeNull();
+        expect(resolveClaimSkills(['factory-github'], undefined, ['github'])).toBeNull();
     });
 
     it('asks for the App, never a member token, when the org holds no installation', () => {
-        const sentence = resolveClaimSkills(['github'], { GITHUB_TOKEN: 'x' });
+        const sentence = resolveClaimSkills(['factory-github'], { GITHUB_TOKEN: 'x' });
         expect(sentence).toBe(
-            '[skills unavailable] skill "github" needs the github connection: install the GitHub App on this organization. Fix this, then retry the task.'
+            '[skills unavailable] skill "factory-github" needs the github connection: install the GitHub App on this organization. Fix this, then retry the task.'
         );
     });
 });
@@ -78,17 +78,17 @@ describe('GET /api/skills', () => {
 
         expect(response.statusCode).toBe(200);
         const { skills } = response.json() as { skills: { name: string; requires: unknown }[] };
-        const jira = skills.find((skill) => skill.name === 'jira');
+        const jira = skills.find((skill) => skill.name === 'factory-jira');
         expect(jira?.requires).toEqual({
             tools: [],
             connections: [{ name: 'jira', env: [], selectedBy: 'connections' }],
         });
         // github is the App's: no env names and no body field selects it.
-        expect(skills.find((skill) => skill.name === 'github')?.requires).toEqual({
+        expect(skills.find((skill) => skill.name === 'factory-github')?.requires).toEqual({
             tools: ['gh'],
             connections: [{ name: 'github', env: [], selectedBy: null }],
         });
-        const body = readFileSync(join(root, 'docker/skills/jira/SKILL.md'), 'utf8').split('\n---\n')[1] ?? '';
+        const body = readFileSync(join(root, 'docker/skills/factory-jira/SKILL.md'), 'utf8').split('\n---\n')[1] ?? '';
         expect(body.length).toBeGreaterThan(100);
         expect(response.body).not.toContain(body.trim().slice(0, 80));
     });

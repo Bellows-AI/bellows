@@ -12,7 +12,16 @@ import { afterEach, describe, expect, it } from 'vitest';
  * `--jq` filter with a real jq, so the filters are exercised, not echoed back.
  */
 const execFile = promisify(execFileCb);
-const SCRIPT = join(fileURLToPath(import.meta.url), '..', '..', '..', 'docker', 'skills', 'pr-land', 'pr-status.sh');
+const SCRIPT = join(
+    fileURLToPath(import.meta.url),
+    '..',
+    '..',
+    '..',
+    'docker',
+    'skills',
+    'factory-pr-land',
+    'pr-status.sh'
+);
 
 const FAKE_GH = `#!/usr/bin/env node
 const { appendFileSync, readFileSync, writeFileSync, existsSync } = require('node:fs');

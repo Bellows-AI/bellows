@@ -90,7 +90,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
     it('a legacy API-token connection is never a default; a jira skill then records a missing requirement', async () => {
         await legacyConnection(sql, ORG, null);
         await legacyConnection(sql, ORG, BOB.id);
-        const id = await create(BOB.id, { skills: ['jira'] });
+        const id = await create(BOB.id, { skills: ['factory-jira'] });
         expect(await bindingsOf(sql, ORG, id)).toEqual([]);
         expect((await requirementsOf(sql, ORG, id)).map((r) => [r.provider, r.reason])).toEqual([['jira', 'missing']]);
     });
@@ -108,7 +108,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
     it('two personal candidates bind nothing and record an ambiguous requirement for a jira skill', async () => {
         await connect(BOB.id);
         await connect(BOB.id);
-        const id = await create(BOB.id, { skills: ['jira'] });
+        const id = await create(BOB.id, { skills: ['factory-jira'] });
         expect(await bindingsOf(sql, ORG, id)).toEqual([]);
         expect((await requirementsOf(sql, ORG, id)).map((r) => r.reason)).toEqual(['ambiguous']);
     });
@@ -131,14 +131,14 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
 
     it('a failure in binding resolution rolls the job row back (atomic with the requirement)', async () => {
         const before = await sql<{ n: number }[]>`select count(*)::int as n from job where org_id = ${ORG}`;
-        await expect(create(ALICE.id, { skills: ['jira'], connectionIds: ['not-a-uuid'] })).rejects.toThrow();
+        await expect(create(ALICE.id, { skills: ['factory-jira'], connectionIds: ['not-a-uuid'] })).rejects.toThrow();
         const after = await sql<{ n: number }[]>`select count(*)::int as n from job where org_id = ${ORG}`;
         expect(after[0]!.n).toBe(before[0]!.n);
     });
 
     it('follow-up, retry and workflow successor read the root: no rows of their own, no refusal', async () => {
         await connect(ALICE.id);
-        const root = await create(ALICE.id, { skills: ['jira'] });
+        const root = await create(ALICE.id, { skills: ['factory-jira'] });
         const first = (await claimNext())!;
         expect(first.id).toBe(root);
         expect(first.skillRefusal).toBeNull();
@@ -243,7 +243,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
     });
 
     it('a queued root with an open requirement is never claimed; attempts and claim_seq are untouched', async () => {
-        const id = await create(BOB.id, { skills: ['jira'] });
+        const id = await create(BOB.id, { skills: ['factory-jira'] });
         expect((await requirementsOf(sql, ORG, id)).length).toBe(1);
         const before = await jobRow(id);
         expect(await claimNext()).toBeNull();
@@ -256,7 +256,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
 
     it('a queued root whose only binding was disconnected gets a missing requirement at acquire; a running takeover is offered', async () => {
         const mine = await connect(ALICE.id);
-        const queued = await create(ALICE.id, { skills: ['jira'] });
+        const queued = await create(ALICE.id, { skills: ['factory-jira'] });
         expect(await requirementsOf(sql, ORG, queued)).toEqual([]);
         await connections.disconnect(mine, { userId: ALICE.id });
 
@@ -268,7 +268,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
 
         // A row already running is a takeover: it is offered whatever the requirement says.
         const runner = await connect(ALICE.id);
-        const running = await create(ALICE.id, { skills: ['jira'], connectionIds: [runner] });
+        const running = await create(ALICE.id, { skills: ['factory-jira'], connectionIds: [runner] });
         await sql`update job set status = 'stopped' where id = ${queued}`;
         const claim = (await claimNext())!;
         expect(claim.id).toBe(running);
@@ -279,7 +279,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
     });
 
     it('binding a connection through the requirement makes the root claimable', async () => {
-        const id = await create(ALICE.id, { skills: ['jira'] });
+        const id = await create(ALICE.id, { skills: ['factory-jira'] });
         expect(await claimNext()).toBeNull();
         const mine = await connect(ALICE.id);
         const revision = (await jobRow(id)).rev;
@@ -299,7 +299,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
 
     it('the bind route waits for an acquire that read "unbound", then satisfies the requirement it recorded', async () => {
         const first = await connect(ALICE.id);
-        const root = await create(ALICE.id, { skills: ['jira'] });
+        const root = await create(ALICE.id, { skills: ['factory-jira'] });
         await connections.disconnect(first, { userId: ALICE.id });
         const replacement = await connect(ALICE.id);
         const revision = (await jobRow(root)).rev;
@@ -344,7 +344,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
 
     it('binding an already-bound live connection while a requirement is open for it satisfies the requirement', async () => {
         const mine = await connect(ALICE.id);
-        const root = await create(ALICE.id, { skills: ['jira'] });
+        const root = await create(ALICE.id, { skills: ['factory-jira'] });
         await sql`insert into job_integration_requirement (org_id, root_job_id, provider, reason)
                   values (${ORG}, ${root}, 'jira', 'missing')`;
         const revision = (await jobRow(root)).rev;

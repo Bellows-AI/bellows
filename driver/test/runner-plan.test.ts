@@ -96,7 +96,7 @@ describe('the claude-code runner plan', () => {
 
     // Issue #545: a skill selection rides the master prompt verbatim.
     it('delivers a master prompt naming the selected skills verbatim', () => {
-        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
+        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: factory-github, factory-jira`;
         expect(plan({ ...job, masterPrompt }, { id: SESSION, resume: false }).cliArgs).toContain(masterPrompt);
     });
 
