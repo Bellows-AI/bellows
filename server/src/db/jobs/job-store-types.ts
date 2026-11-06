@@ -9,6 +9,7 @@ import type { AttachmentMeta } from '@factory-ai/core';
 import type { ClaimAttachment } from './job-store-attachments.js';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
+import type { PinnedSkill } from './job-store-skill-pin.js';
 import type { JobTitleStore } from './job-store-title.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
@@ -565,6 +566,13 @@ export interface Claim {
      * nothing was selected or every requirement is met.
      */
     skillRefusal: string | null;
+    /**
+     * The org and workspace skill versions this row's task runs with (BEL-273), pinned when the row was made: `[]`
+     * when it selected none and for a reviewer. Each version's bytes are the runner's to fetch under this lease
+     * (`POST /api/jobs/:id/skills/:versionId/content`, `x-content-sha256` = `sha256`); a pin is never re-resolved
+     * across claims, so a takeover or retry delivers the same versions.
+     */
+    skillPin: PinnedSkill[];
     /**
      * Why the task's execution plan cannot launch: its `.bellows.yaml` at the claimed revision does
      * not parse, declares an image the pod cannot run, or declares services whose ports collide in

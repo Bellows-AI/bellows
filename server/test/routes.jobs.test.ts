@@ -445,6 +445,10 @@ function stubStore(
             boom();
             return { result: 'missing' };
         },
+        async skillPin() {
+            boom();
+            return { result: 'missing' };
+        },
         async session(id, _token, sessionId, evidence) {
             boom();
             stub.sessions.push({ id, sessionId });

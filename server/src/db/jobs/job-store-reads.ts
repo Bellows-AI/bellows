@@ -6,6 +6,7 @@
 import type { Sql, Fragment } from 'postgres';
 import { bindingsOf, requirementsOf } from '../connection-bindings.js';
 import { attachmentsOfThread, effectiveAttachments, type ClaimAttachment } from './job-store-attachments.js';
+import type { PinnedSkill } from './job-store-skill-pin.js';
 import {
     type JobRow,
     toJobRow,
@@ -65,6 +66,12 @@ export interface JobReadStore {
      * confirmed throws; it never answers an empty set.
      */
     attachmentSet(id: string, leaseToken: string): Promise<AttachmentSetResult>;
+
+    /**
+     * The skill versions `id`'s row pinned (129), authorized by its LIVE lease like `attachmentSet` and read fresh on
+     * every call: the access check of the skill content route. A read that cannot be confirmed throws.
+     */
+    skillPin(id: string, leaseToken: string): Promise<SkillPinResult>;
 
     /**
      * The whole follow-up chain containing `id` — the root task and every adjustment after it,
@@ -482,6 +489,20 @@ export type AttachmentSetResult =
     | { result: 'ok'; attachments: ClaimAttachment[] }
     | { result: 'missing' }
     | { result: 'lost' };
+
+export type SkillPinResult = { result: 'ok'; pin: PinnedSkill[] } | { result: 'missing' } | { result: 'lost' };
+
+/** The pin of a live lease's row, the lease check being the claim's own. */
+export async function skillPinOf(ctx: JobStoreContext, id: string, leaseToken: string): Promise<SkillPinResult> {
+    const { sql, orgId } = ctx;
+    const [live] = await sql<{ skill_pin: PinnedSkill[] }[]>`
+        select skill_pin from job
+        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
+    `;
+    if (live) return { result: 'ok', pin: live.skill_pin };
+    const known = await sql`select 1 from job where org_id = ${orgId} and id = ${id}`;
+    return { result: known.length > 0 ? 'lost' : 'missing' };
+}
 
 /** The files of a live lease's run (`effectiveAttachments`), the lease check being the claim's own. */
 export async function attachmentSetOf(

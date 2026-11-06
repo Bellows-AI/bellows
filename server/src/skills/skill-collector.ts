@@ -7,7 +7,7 @@ import { lockObjectKey, skillKeyNamespace } from '../db/skill-store.js';
 /**
  * The skill retention sweep (docs/skills.md). A version is removed only when (a) its skill was soft-deleted at least
  * `retentionDays` ago AND (b) no job
- * references it (`findReferencedVersions`, the one place BEL-273's pin joins in). The object follows its last row, under
+ * references it (`findReferencedVersions`, which reads `job.skill_pin`). The object follows its last row, under
  * the same per-key lock the writer takes, so a writer re-creating the same content cannot lose its object. Any query
  * that fails aborts the pass and any object delete that is unconfirmed leaves its row: nothing unconfirmed is deleted.
  */
@@ -17,12 +17,21 @@ const BATCH = 100;
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /**
- * Which of these version ids a job row still references. Today no job column pins a skill version, so none do; BEL-273
- * adds `job.skill_pin` and extends THIS query (every status counts: a retry of a terminal job copies the pin). A
- * failure here must throw, never answer an empty set.
+ * Which of these version ids a job row still pins (`job.skill_pin`, 129). Every status counts: a retry of a terminal job
+ * copies the pin. A failure here must throw, never answer an empty set: the pass aborts and nothing is deleted.
  */
-export async function findReferencedVersions(_sql: Sql, _versionIds: string[]): Promise<Set<string>> {
-    return new Set();
+export async function findReferencedVersions(sql: Sql, versionIds: string[]): Promise<Set<string>> {
+    if (versionIds.length === 0) return new Set();
+    const rows = await sql<{ id: string }[]>`
+        select v.id::text as id
+        from unnest(${sql.array(versionIds)}::uuid[]) as v(id)
+        where exists (
+            select 1 from job j
+            where j.skill_pin <> '[]'::jsonb
+              and j.skill_pin @> jsonb_build_array(jsonb_build_object('versionId', v.id::text))
+        )
+    `;
+    return new Set(rows.map((row) => row.id));
 }
 
 export interface SkillCollectSummary {
