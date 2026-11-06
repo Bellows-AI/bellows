@@ -15,6 +15,14 @@ export function isReservedSkillName(name: string): boolean {
     return name.startsWith(RESERVED_SKILL_PREFIX);
 }
 
+/** Skill bundle limits (an uploaded skill is a SKILL.md plus supporting files): count, total and per-file bytes. */
+const BYTES_PER_KIB = 1024;
+const BYTES_PER_MIB = BYTES_PER_KIB * BYTES_PER_KIB;
+const SKILL_MIB = 5;
+export const MAX_SKILL_FILES = 64;
+export const MAX_SKILL_BYTES = SKILL_MIB * BYTES_PER_MIB;
+export const MAX_SKILL_FILE_BYTES = BYTES_PER_MIB;
+
 /** The most skills one task may select. */
 export const MAX_TASK_SKILLS = 16;
 
