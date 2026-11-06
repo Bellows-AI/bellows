@@ -95,6 +95,26 @@ async function tipOf(ctx: ReadContext, branch: string | null): Promise<string> {
     return commit.sha;
 }
 
+/** One element of the directory listing, kept only when it names itself and says what it is. */
+interface Listed {
+    readonly name: string;
+    readonly type: string;
+}
+
+const isListed = (entry: unknown): entry is Listed =>
+    typeof entry === 'object' &&
+    entry !== null &&
+    typeof (entry as Listed).name === 'string' &&
+    typeof (entry as Listed).type === 'string';
+
+/** Entries that cannot hold a skill and say so; any other `type` is an unknown shape, never skipped as harmless. */
+const NON_SKILL_TYPES: readonly string[] = ['file', 'symlink', 'submodule'];
+
+/**
+ * The listing's skill directories and whether they are ALL of them. Completeness is proven, never assumed: every
+ * element must validate (an object with a string `name` and `type`), only a well-formed file, symlink or submodule
+ * may be skipped, and the directories must fit `MAX_REPO_SKILLS`. A body that is not a listing throws.
+ */
 async function listSkillDirs(ctx: ReadContext, revision: string): Promise<{ dirs: string[]; complete: boolean }> {
     let body: unknown;
     try {
@@ -105,11 +125,12 @@ async function listSkillDirs(ctx: ReadContext, revision: string): Promise<{ dirs
         throw e;
     }
     if (!Array.isArray(body)) throw new GitHubReadError(`${SKILLS_DIR} is not a directory`, READ_BINDING);
-    const directories = (body as { type?: string; name?: unknown }[]).filter((entry) => entry.type === 'dir');
-    const named = directories.flatMap((entry) => (typeof entry.name === 'string' ? [entry.name] : []));
+    const valid = body.filter(isListed);
+    const dirs = valid.filter((entry) => entry.type === 'dir').map((entry) => entry.name);
+    const understood = valid.every((entry) => entry.type === 'dir' || NON_SKILL_TYPES.includes(entry.type));
     return {
-        dirs: named.slice(0, MAX_REPO_SKILLS),
-        complete: named.length === directories.length && named.length <= MAX_REPO_SKILLS,
+        dirs: dirs.slice(0, MAX_REPO_SKILLS),
+        complete: valid.length === body.length && understood && dirs.length <= MAX_REPO_SKILLS,
     };
 }
 
@@ -145,7 +166,8 @@ async function readAll(
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, dirs.length) }, worker));
     const skills = parsed.filter((skill): skill is RepoSkill => skill !== null);
     const unreadable = dirs.filter((_dir, index) => parsed[index] === null);
-    return { skills, unreadable, complete: listing.complete };
+    // A directory whose SKILL.md could not be read may declare any name: the listing proves nothing then.
+    return { skills, unreadable, complete: listing.complete && unreadable.length === 0 };
 }
 
 /**

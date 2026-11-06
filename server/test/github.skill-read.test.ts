@@ -158,6 +158,52 @@ describe('readRepoSkills', () => {
         expect(odd.complete).toBe(false);
     });
 
+    it.each([
+        ['an entry with no type', [{ name: 'repo-only' }]],
+        ['an entry with no name', [{ type: 'dir' }]],
+        ['a non-object element', ['repo-only']],
+        ['a null element', [null]],
+        ['an unknown entry type', [{ name: 'repo-only', type: 'mystery' }]],
+    ])('a listing with %s is incomplete', async (_label, listing) => {
+        const repo = freshRepo();
+        const read = await readRepoSkills(
+            fakeCall(repoWith(repo, {}, listing as unknown as ReturnType<typeof dirs>)).call,
+            repo,
+            'main'
+        );
+        expect(read.complete).toBe(false);
+    });
+
+    it('well-formed files, symlinks and submodules are skipped without losing completeness', async () => {
+        const repo = freshRepo();
+        const listing = [
+            ...dirs('fix'),
+            { type: 'file', name: 'README.md' },
+            { type: 'symlink', name: 'link' },
+            { type: 'submodule', name: 'sub' },
+        ] as ReturnType<typeof dirs>;
+        const read = await readRepoSkills(
+            fakeCall(repoWith(repo, { fix: skillMd('fix', 'd') }, listing)).call,
+            repo,
+            'main'
+        );
+        expect(read.complete).toBe(true);
+    });
+
+    it('a listing that is not an array throws, and an unreadable SKILL.md makes the read incomplete', async () => {
+        const repo = freshRepo();
+        const notList = repoWith(repo, {}, { type: 'file' } as unknown as ReturnType<typeof dirs>);
+        await expect(readRepoSkills(fakeCall(notList).call, repo, 'main')).rejects.toThrow();
+        const other = freshRepo();
+        const read = await readRepoSkills(
+            fakeCall(repoWith(other, { fix: skillMd('fix', 'd') }, dirs('fix', 'broken'))).call,
+            other,
+            'main'
+        );
+        expect(read.unreadable).toEqual(['broken']);
+        expect(read.complete).toBe(false);
+    });
+
     it('the deadline aborts in-flight reads and throws', async () => {
         const repo = freshRepo();
         const answers = repoWith(repo, { fix: skillMd('fix', 'd') });
