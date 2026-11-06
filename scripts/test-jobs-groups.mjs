@@ -33,6 +33,7 @@ const PHASE_SECONDS = {
     'ask-user-question': 35,
     'question-round-trip': 67,
     'repo-skills': 60,
+    'pinned-skills': 150,
     mcp: 40,
 };
 // What one group spends before its first phase: Postgres database, stub images, board boot.
@@ -44,7 +45,7 @@ export const GROUPS = [
     { name: 'cli-stop', phases: ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills'] },
     { name: 'core', phases: ['board', 'driver', 'github-credential', 'services', 'orphan-reaper', 'auth', 'mcp'] },
     { name: 'guards', phases: ['run-deadline', 'capacity', 'review'] },
-    { name: 'cli-ask', phases: ['ask-user-question', 'question-round-trip'] },
+    { name: 'cli-ask', phases: ['ask-user-question', 'question-round-trip', 'pinned-skills'] },
 ];
 
 /** The slots for `selected` phases (all of PHASES when null): `[{ groups: [{ name, phases }], seconds }]`. */

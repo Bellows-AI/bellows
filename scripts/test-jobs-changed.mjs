@@ -36,6 +36,7 @@ export const PHASES = [
     'repo-skills',
     'ask-user-question',
     'question-round-trip',
+    'pinned-skills',
     'mcp',
 ];
 
@@ -44,7 +45,7 @@ export const FULL = 'full';
 export const NONE = 'none';
 
 // The phases that boot a real agent CLI image (make runners) against the scripted model endpoint.
-const REAL = ['cooperative-stop', 'tool-isolation', 'ask-user-question', 'question-round-trip', 'repo-skills'];
+const REAL = ['cooperative-stop', 'tool-isolation', 'ask-user-question', 'question-round-trip', 'repo-skills', 'pinned-skills'];
 const RECOVERY = ['node-disruption', 'driver-kill'];
 
 // [pattern, phases | FULL | NONE, reason]. First match wins, so a specific file precedes its directory.
@@ -76,12 +77,14 @@ export const RULES = [
     [/^driver\/src\/scripts\/(review-[a-z-]+\.(cjs|sh)|git-review-snapshot\.cjs)$/, ['review'], 'reviewer'],
     [/^driver\/src\/(connection-control|loop\/loop-connection)\.ts$/, ['driver', 'cooperative-stop'], 'runtime connection requirement'],
     [/^driver\/src\/(question-control|question-validation|loop\/loop-questions)\.ts$/, ['ask-user-question', 'question-round-trip'], 'questions'],
-    [/^driver\/src\/(input-control\.ts|task-inputs\.ts|loop\/loop-inputs\.ts|skill-inputs\.ts|scripts\/skill-install\.cjs|scripts\/attachment-(?:fetch|extract)\.cjs)$/, ['driver'], 'task input and pinned skill delivery'],
+    [/^driver\/src\/(skill-inputs\.ts|scripts\/skill-install\.cjs|board\/board-skills\.ts)$/, ['driver', 'pinned-skills'], 'pinned skill delivery'],
+    [/^driver\/src\/(input-control\.ts|task-inputs\.ts|loop\/loop-inputs\.ts|scripts\/attachment-(?:fetch|extract)\.cjs)$/, ['driver', 'pinned-skills'], 'task input and pinned skill delivery'],
+    [/^scripts\/lane-skills\.mjs$/, ['pinned-skills'], 'the pinned-skills phase publisher'],
     [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop\/loop-gates|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
     [/^driver\/src\/scripts\/gate-(loop|shell|github)\.sh$/, ['driver', 'workflows'], 'gates'],
-    [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', ...RECOVERY], 'task volume'],
+    [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', 'pinned-skills', ...RECOVERY], 'task volume'],
     [/^driver\/src\/(docker\/docker-close-read|close-read|docker\/docker-teardown|loop\/loop-conclusion|loop\/loop-post-run)\.ts$/, ['driver', ...RECOVERY], 'task conclusion'],
     [/^driver\/src\/(master-prompt|continuation|transcript-export|loop\/loop-export|export-control|evidence-policy|helper-receipts|verdict-budget|loop\/loop-verdict|loop\/loop-attempt|telemetry-config)\.ts$/, ['driver', 'cooperative-stop'], 'agent run and its readout'],
     [/^driver\/src\/scripts\/(claude-export|claude-turns|opencode-cache-probe|opencode-readout)\.cjs$/, ['cooperative-stop', 'tool-isolation'], 'agent transcript readout'],
@@ -95,7 +98,7 @@ export const RULES = [
     [/^docker\/(claude-executor|opencode-executor)\/(stop-hook\.cjs|stop-plugin\/.*)$/, ['cooperative-stop'], 'cooperative stop'],
     [/^docker\/(claude|opencode)-executor\/test\.sh$/, ['image-checks'], 'executor image checks'],
     [/^docker\/claude-executor\/(Dockerfile|entrypoint\.sh|claude-bridge\.cjs|claude-progress\.cjs|turn-context-hook\.cjs|managed-settings\.json|claude-home\/.*)$/, [...REAL, 'image-checks'], 'claude-executor image'],
-    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|rate-limit-watch\.cjs|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills'], 'opencode-executor image'],
+    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|rate-limit-watch\.cjs|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills', 'pinned-skills'], 'opencode-executor image'],
     [/^docker\/executor-common\//, [...REAL, 'image-checks'], 'files both executor images copy in'],
     [/^docker\/tool-isolation-checks\.sh$/, ['tool-isolation'], 'tool isolation'],
     [/^docker\/skills\/factory-task-title\//, ['tool-isolation', 'question-round-trip'], 'task title helper and skill'],

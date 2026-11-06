@@ -70,6 +70,16 @@ exec ${JSON.stringify(realDirname)} "$@"
         expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|capacity|mcp|drain|bench]');
     });
 
+    it('delivers pinned org and workspace skills in the recovery phase and holds the sha set across a pod deletion (BEL-273)', () => {
+        const script = readRepoFile('scripts/test-k8s.sh');
+        const stub = readRepoFile('scripts/k8s-stub.sh');
+        expect(script).toContain('begin_phase recovery-skills');
+        expect(script).toContain('scripts/lane-skills.mjs');
+        expect(script).toContain('the resumed run holds the workspace skill at the sha it was made with');
+        expect(script).toContain('the resumed run does not hold the version published after the task was made');
+        expect(stub).toMatch(/\*factory-stub-skills\*\)[\s\S]*\.factory-skills\.json/);
+    });
+
     it('runs the failure-matrix acceptance phase in the full cluster run, one named check per case (issue #779)', () => {
         const script = readRepoFile('scripts/test-k8s.sh');
         expect(script).toContain('if selected_phase acceptance; then');
