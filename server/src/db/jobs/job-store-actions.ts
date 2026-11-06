@@ -368,8 +368,8 @@ export async function insertJobInTx(
     // validated launch values beside it (030). The mode (051) is decided here, once: no
     // named workflow is objective, and the thread inherits it.
     const mode = target.workflow ? WORKFLOW_MODE : OBJECTIVE_MODE;
-    // The org and workspace skills the task selected, pinned at the versions current now (BEL-273).
-    const pin = await resolveSkillPinInTx(tx, orgId, createdBy, target.skills ?? []);
+    // Every enabled org skill and the creator's workspace skills, pinned at the versions current now (BEL-273).
+    const pin = await resolveSkillPinInTx(tx, orgId, createdBy);
     const rows = await tx<{ id: string }[]>`
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
@@ -492,12 +492,12 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     // A busy thread is answered here, before the insert: the refusal read after it is a later snapshot, and a verdict
     // committing in between would turn not_finished into forbidden.
     if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
-    // A follow-up re-resolves the thread's selection against the catalog as it is now (BEL-273): the root's names, and
-    // the workspace of the thread's owner (an admin's turn is still the owner's run).
-    const [selection] = await tx<{ skills: string[]; owner: string | null }[]>`
-            select skills, execution_user_id as owner from job where org_id = ${orgId} and id = ${label.root_job_id}
+    // A follow-up re-resolves the pin against the catalog as it is now (BEL-273), for the workspace of the thread's
+    // owner (an admin's turn is still the owner's run).
+    const [thread] = await tx<{ owner: string | null }[]>`
+            select execution_user_id as owner from job where org_id = ${orgId} and id = ${label.root_job_id}
         `;
-    const pin = await resolveSkillPinInTx(tx, orgId, selection?.owner ?? null, selection?.skills ?? []);
+    const pin = await resolveSkillPinInTx(tx, orgId, thread?.owner ?? null);
     const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode

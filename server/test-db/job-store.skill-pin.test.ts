@@ -19,12 +19,12 @@ import { testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
- * BEL-273: a job row pins the org and workspace skill versions its task selected, and every path that makes a row
+ * BEL-273: a job row pins every enabled org skill and the creator’s workspace skills at the versions current when it is made, and every path that makes a row
  * carries or re-resolves that pin (docs/skills.md). Each case takes its own organization, so no case claims another's
  * queued row.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
-const ORGS = Array.from({ length: 16 }, () => testOrg());
+const ORGS = Array.from({ length: 24 }, () => testOrg());
 const ALICE = testUser('pin-alice');
 const BOB = testUser('pin-bob');
 const ADMIN = testUser('pin-admin');
@@ -111,23 +111,55 @@ const retry = async (c: Case, id: string, userId: string) => {
 };
 
 describe.skipIf(!enabled)('the skill pin on a job row', () => {
-    it('pins the selected org and workspace skills at create, and not built-ins, others’ skills or unselected ones', async () => {
+    it('pins every enabled org skill and the creator’s enabled workspace skills, selected or not, and no one else’s', async () => {
         const c = freshCase();
         const org = await skillOf(c, null, 'org-one');
+        const orgOther = await skillOf(c, null, 'org-unselected');
         const mine = await skillOf(c, ALICE.id, 'ws-one');
-        await skillOf(c, ALICE.id, 'ws-unselected');
+        const mineOther = await skillOf(c, ALICE.id, 'ws-unselected');
         await skillOf(c, BOB.id, 'bob-only');
 
         const id = await createJob(c, ALICE.id, ['org-one', 'ws-one', 'factory-jira', 'bob-only']);
 
-        expect(await pinOf(id)).toEqual([pinned(org), pinned(mine)]);
+        expect(await pinOf(id)).toEqual([pinned(org), pinned(orgOther), pinned(mine), pinned(mineOther)]);
     });
 
-    it('pins nothing for a task with no stored skill selected', async () => {
+    it('pins the enabled skills of a task that selected none', async () => {
         const c = freshCase();
-        await skillOf(c, null, 'org-one');
+        const org = await skillOf(c, null, 'org-one');
+        const mine = await skillOf(c, ALICE.id, 'ws-one');
 
-        expect(await pinOf(await createJob(c, ALICE.id, []))).toEqual([]);
+        expect(await pinOf(await createJob(c, ALICE.id, []))).toEqual([pinned(org), pinned(mine)]);
+    });
+
+    it('does not pin a disabled skill', async () => {
+        const c = freshCase();
+        const org = await skillOf(c, null, 'org-off');
+        const mine = await skillOf(c, ALICE.id, 'ws-off');
+        const on = await skillOf(c, ALICE.id, 'ws-on');
+        await c.skills.setEnabled(null, org.id, false);
+        await c.skills.setEnabled(ALICE.id, mine.id, false);
+
+        expect(await pinOf(await createJob(c, ALICE.id, []))).toEqual([pinned(on)]);
+    });
+
+    it('does not pin another member’s workspace skill into a member’s job', async () => {
+        const c = freshCase();
+        const org = await skillOf(c, null, 'org-one');
+        await skillOf(c, ALICE.id, 'alice-skill');
+        const bobs = await skillOf(c, BOB.id, 'bob-skill');
+
+        expect(await pinOf(await createJob(c, BOB.id, []))).toEqual([pinned(bobs), pinned(org)]);
+    });
+
+    it('pins only org skills for a job with no member principal', async () => {
+        const c = freshCase();
+        const org = await skillOf(c, null, 'org-one');
+        await skillOf(c, ALICE.id, 'alice-skill');
+        const ref = await c.jobs.create('work', null, { repo: null, executor: null, skills: [] });
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+
+        expect(await pinOf(ref.id)).toEqual([pinned(org)]);
     });
 
     it('lets the org skill win a name the workspace also holds', async () => {
@@ -136,6 +168,7 @@ describe.skipIf(!enabled)('the skill pin on a job row', () => {
         await skillOf(c, ALICE.id, 'shared', 'my own take');
 
         expect(await pinOf(await createJob(c, ALICE.id, ['shared']))).toEqual([pinned(org)]);
+        expect(await pinOf(await createJob(c, ALICE.id, []))).toEqual([pinned(org)]);
     });
 
     it('leaves the pin alone when a new version lands, and the claim carries the row’s own pin', async () => {
@@ -346,6 +379,7 @@ describe.skipIf(!enabled)('the retention sweep and job pins (F271-4)', () => {
         const c = freshCase();
         const org = await skillOf(c, null, 'org-one');
         const other = await skillOf(c, null, 'org-two');
+        await c.skills.setEnabled(null, other.id, false);
         const done = await createJob(c, ALICE.id, ['org-one']);
         await finish(c, done, 'failed');
         await createJob(c, ALICE.id, []);
