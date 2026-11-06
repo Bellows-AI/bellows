@@ -1,6 +1,7 @@
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
@@ -52,8 +53,8 @@ const created = async (store: SkillStore, owner: string | null, name: string, bo
 };
 
 const versionRows = async (skillId: string) =>
-    sql<{ id: string; sha256: string; status: string; object_key: string }[]>`
-        select id, sha256, status, object_key from skill_version where skill_id = ${skillId} order by created_at, id
+    sql<{ id: string; sha256: string; object_key: string }[]>`
+        select id, sha256, object_key from skill_version where skill_id = ${skillId} order by created_at, id
     `;
 
 const deletedAgo = (skillId: string, days: number) =>
@@ -65,7 +66,6 @@ const collectorOf = (over: Partial<ObjectStore> = {}, referenced?: (ids: string[
         objects: { ...objects, ...over } as ObjectStore,
         prefix: PREFIX,
         retentionDays: RETENTION_DAYS,
-        pendingGraceMs: 0,
         ...(referenced ? { referenced } : {}),
     });
 
@@ -136,7 +136,7 @@ describe.skipIf(!enabled)('the skill store', () => {
         expect(second.result).toBe('added');
         const rows = await versionRows(skill.id);
         expect(rows).toHaveLength(2);
-        expect(rows.find((r) => r.id === first.id)).toMatchObject({ sha256: first.sha256, status: 'ready' });
+        expect(rows.find((r) => r.id === first.id)).toMatchObject({ sha256: first.sha256 });
         expect((await store.get(null, skill.id))?.current.id).not.toBe(first.id);
 
         const again = await store.addVersion(null, skill.id, md('versioned', 'v2'));
@@ -150,24 +150,44 @@ describe.skipIf(!enabled)('the skill store', () => {
         expect(await versionRows(skill.id)).toHaveLength(2);
     });
 
-    it('converges after a crash between the pending row and the object write', async () => {
-        const store = storeOf(ORG, {
-            put: () => Promise.reject(new Error('node reclaimed')),
-        });
+    it('leaves no skill or version row when the object store fails, and a retry then succeeds', async () => {
+        const failing = storeOf(ORG, { put: () => Promise.reject(new Error('node reclaimed')) });
         const bundle = md('crashy');
-        await expect(store.create(null, { name: 'crashy', bundle, createdBy: ALICE.id })).rejects.toBeInstanceOf(
+        await expect(failing.create(null, { name: 'crashy', bundle, createdBy: ALICE.id })).rejects.toBeInstanceOf(
             SkillUnavailableError
         );
-        // Not visible: no current version yet.
-        expect(await store.listOrg()).toEqual([]);
+        const live = await created(storeOf(), null, 'has-versions');
+        await expect(failing.addVersion(null, live.id, md('has-versions', 'next'))).rejects.toBeInstanceOf(
+            SkillUnavailableError
+        );
+        expect(await sql`select 1 from skill where name = 'crashy'`).toHaveLength(0);
+        expect(await versionRows(live.id)).toHaveLength(1);
 
-        const retry = await storeOf().create(null, { name: 'crashy', bundle, createdBy: ALICE.id });
-        expect(retry.result).toBe('created');
-        const [count] = await sql<{ n: string }[]>`
-            select count(*)::text as n from skill_version v join skill s on s.id = v.skill_id where s.name = 'crashy'
-        `;
-        expect(count?.n).toBe('1');
-        expect(await storeOf().listOrg()).toHaveLength(1);
+        expect((await storeOf().create(null, { name: 'crashy', bundle, createdBy: ALICE.id })).result).toBe('created');
+        expect(await storeOf().listOrg()).toHaveLength(2);
+    });
+
+    it('writes with a pool of one connection without hanging', async () => {
+        const single = postgres(process.env.DATABASE_URL!, { max: 1 });
+        try {
+            const store = createSkillStore({ sql: single, objects, orgId: ORG, prefix: PREFIX });
+            const timeout = <T>(p: Promise<T>) =>
+                Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('hung')), 10_000))]);
+            const skill = await created(store, ALICE.id, 'solo');
+            await timeout(store.addVersion(ALICE.id, skill.id, md('solo', 'v2')));
+            await timeout(store.setEnabled(ALICE.id, skill.id, false));
+            expect((await timeout(store.promote(ALICE.id, skill.id))).result).toBe('promoted');
+            expect(await timeout(store.remove(null, skill.id))).toBe('deleted');
+            const [a, b] = await timeout(
+                Promise.all([
+                    store.create(null, { name: 'solo-race', bundle: md('solo-race', 'a'), createdBy: null }),
+                    store.create(null, { name: 'solo-race', bundle: md('solo-race', 'b'), createdBy: null }),
+                ])
+            );
+            expect([a.result, b.result].sort()).toEqual(['created', 'name_taken']);
+        } finally {
+            await single.end();
+        }
     });
 
     it('lists org skills for an org and workspace skills for their member, never deleted ones', async () => {
@@ -296,7 +316,7 @@ describe.skipIf(!enabled)('concurrent writers to one skill', () => {
         expect(rows).toHaveLength(1);
     });
 
-    it('serializes version writes, and a delete waits for a version write in flight', async () => {
+    it('a version write racing a delete and another write leaves one consistent, deleted skill', async () => {
         const store = storeOf();
         const skill = await created(store, null, 'busy', 'v1');
         const gated = gatedPut();
@@ -307,14 +327,14 @@ describe.skipIf(!enabled)('concurrent writers to one skill', () => {
         await new Promise((r) => setTimeout(r, 100));
         gated.release();
 
-        expect((await writing).result).toBe('added');
+        expect(['added', 'missing']).toContain((await writing).result);
         expect(await removing).toBe('deleted');
         // Whichever queued first, the other saw a settled skill: v3 either landed before the delete or found it gone.
         expect(['added', 'missing']).toContain((await second).result);
         expect(await store.get(null, skill.id)).toBeNull();
     });
 
-    it('promote waits for a same-name org create in flight and then clashes', async () => {
+    it('promote and an in-flight same-name org create: exactly one takes the org name', async () => {
         const store = storeOf();
         const mine = await created(store, ALICE.id, 'moving');
         const gated = gatedPut();
@@ -324,13 +344,12 @@ describe.skipIf(!enabled)('concurrent writers to one skill', () => {
             createdBy: BOB.id,
         });
         await gated.started;
-        const promoting = storeOf().promote(ALICE.id, mine.id);
-        await new Promise((r) => setTimeout(r, 100));
+        const promoting = await storeOf().promote(ALICE.id, mine.id);
         gated.release();
 
-        expect((await orgCreate).result).toBe('created');
-        expect(await promoting).toEqual({ result: 'name_taken' });
-        expect(await store.get(ALICE.id, mine.id)).toMatchObject({ scope: 'workspace' });
+        expect(promoting.result).toBe('promoted');
+        expect((await orgCreate).result).toBe('name_taken');
+        expect(await sql`select 1 from skill where name = 'moving' and user_id is null`).toHaveLength(1);
     });
 });
 
@@ -429,31 +448,6 @@ describe.skipIf(!enabled)('the skill retention sweep', () => {
 
         expect((await collectorOf().collect()).versions).toBe(1);
         expect(await objectOf(skill.current.objectKey)).toBeNull();
-    });
-
-    it('sweeps an abandoned pending version after its grace and keeps a fresh one', async () => {
-        const store = storeOf();
-        const skill = await created(store, null, 'abandoned');
-        const bundle = md('abandoned', 'next');
-        await expect(
-            storeOf(ORG, { put: () => Promise.reject(new Error('lost')) }).addVersion(null, skill.id, bundle)
-        ).rejects.toBeInstanceOf(SkillUnavailableError);
-        expect((await versionRows(skill.id)).filter((r) => r.status === 'pending')).toHaveLength(1);
-
-        const fresh = createSkillCollector({
-            sql,
-            objects,
-            prefix: PREFIX,
-            retentionDays: RETENTION_DAYS,
-            pendingGraceMs: 3_600_000,
-        });
-        expect((await fresh.collect()).versions).toBe(0);
-
-        expect((await collectorOf().collect()).versions).toBe(1);
-        const rows = await versionRows(skill.id);
-        expect(rows).toHaveLength(1);
-        expect(rows[0]!.id).toBe(skill.current.id);
-        expect(await objectOf(skill.current.objectKey)).not.toBeNull();
     });
 
     it('never touches a key outside the skill namespace', async () => {

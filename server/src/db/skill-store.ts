@@ -9,8 +9,10 @@ import type { SkillBundle } from '../skills/skill-bundle.js';
  * member's workspace (`owner` = their user id), like `user-executor-store.ts`; every by-id operation names its owner in
  * the WHERE, so another member's id, an org id reached through the workspace door and another organization's id all
  * match nothing and answer `missing`. Content is a chain of immutable `skill_version` rows over create-only objects:
- * a version is written `pending`, then its object, then `ready` together with the `current_version_id` swap, so a
- * `ready` row always has its whole object and a failure leaves a `pending` row for the sweep (`skill-collector.ts`).
+ * the object is stored first (content-addressed, create-only, outside any transaction), then ONE transaction on one
+ * connection inserts the skill and/or version row and swaps `current_version_id`, so a row always has its whole object
+ * and a failed or racing write leaves at most an unreferenced object (a stated limit, docs/skills.md). Races are decided
+ * by the unique live-name index and `select … for update` on the skill row; there is no lock held across IO or a pool.
  */
 
 /** The owner of a skill: null is the organization scope, a user id is that member's workspace. */
@@ -182,31 +184,6 @@ async function confirmed<T>(what: string, run: () => Promise<T>): Promise<T> {
     }
 }
 
-/**
- * Writers to one skill, and creators of one name, run one at a time across replicas: a session advisory lock on a
- * reserved connection (the work itself runs on the pool). A create in flight is therefore never adopted by a second
- * create, a version write never interleaves with another, and enable/delete/promote wait for a version write.
- */
-async function withAdvisoryLocks<T>(sql: Sql, keys: string[], work: () => Promise<T>): Promise<T> {
-    const held = await sql.reserve();
-    const ordered = [...new Set(keys)].sort();
-    let taken = 0;
-    try {
-        for (const key of ordered) {
-            await held`select pg_advisory_lock(hashtextextended(${key}, 0))`;
-            taken++;
-        }
-        return await work();
-    } finally {
-        try {
-            for (const key of ordered.slice(0, taken).reverse())
-                await held`select pg_advisory_unlock(hashtextextended(${key}, 0))`;
-        } finally {
-            held.release();
-        }
-    }
-}
-
 export function createSkillStore({
     sql,
     objects,
@@ -226,7 +203,7 @@ export function createSkillStore({
         select s.id, s.name, s.user_id, s.enabled, s.created_by, s.created_at::text, s.updated_at::text,
                v.id as v_id, v.sha256 as v_sha256, v.size_bytes as v_size, v.description as v_description,
                v.object_key as v_object_key, v.created_at::text as v_created_at
-        from skill s join skill_version v on v.id = s.current_version_id and v.status = 'ready'
+        from skill s join skill_version v on v.id = s.current_version_id
         where s.org_id = ${orgId} and s.deleted_at is null
           and ${
               'effectiveFor' in filter
@@ -249,138 +226,121 @@ export function createSkillStore({
             throw new SkillIntegrityError('the stored body differs from the recorded sha256');
     }
 
-    /** A new skill row, or the live row of an earlier create that crashed before its object; null when the name is taken. */
-    async function insertOrAdopt(owner: SkillOwner, name: string, createdBy: string | null): Promise<string | null> {
-        try {
-            const [row] = await sql<{ id: string }[]>`
-                insert into skill (org_id, user_id, name, created_by)
-                values (${orgId}, ${owner}, ${name}, ${createdBy}) returning id
-            `;
-            return row!.id;
-        } catch (error) {
-            if (!isUniqueViolation(error)) throw error;
-            const [abandoned] = await sql<{ id: string }[]>`
-                select s.id from skill s
-                where s.org_id = ${orgId} and s.name = ${name} and s.deleted_at is null
-                  and s.current_version_id is null and ${ownerIs(owner)}
-            `;
-            return abandoned?.id ?? null;
-        }
+    /** Stores the bundle's object first, outside any transaction: content-addressed and create-only, so a race is harmless. */
+    async function storeObject(bundle: SkillBundle): Promise<string> {
+        const key = skillObjectKey(prefix, orgId, bundle.sha256);
+        const put = await confirmed('put', () => objects.put(key, bundle.tar));
+        if (put === 'exists') await verifyHeld(key, bundle.sha256);
+        return key;
     }
 
     /**
-     * pending row → object → ready + current swap. A row for the same content is reused (a crashed attempt or an
-     * earlier version), so a retry converges on one version row. Returns whether the content was already a ready version.
+     * Inside the write's transaction: serialize with the sweep on the object's key, and re-put the object if the sweep
+     * removed it between the upload and now (the lock then keeps it). A tx lock dies with its connection.
      */
-    async function writeVersion(
-        owner: SkillOwner,
-        skillId: string,
-        bundle: SkillBundle
-    ): Promise<'added' | 'exists' | 'missing'> {
-        const key = skillObjectKey(prefix, orgId, bundle.sha256);
-        const [version] = await sql<{ id: string; status: string }[]>`
-            insert into skill_version (skill_id, sha256, size_bytes, object_key, description, status)
-            select s.id, ${bundle.sha256}, ${bundle.size}, ${key}, ${bundle.description}, 'pending'
-            from skill s
-            where s.id = ${skillId} and s.org_id = ${orgId} and s.deleted_at is null and ${ownerIs(owner)}
-            on conflict (skill_id, sha256) do update
-                set created_at = case when skill_version.status = 'pending' then now() else skill_version.created_at end
-            returning id, status
-        `;
-        if (!version) return 'missing';
-        const existed = version.status === 'ready';
-        if (!existed) {
-            const put = await confirmed('put', () => objects.put(key, bundle.tar));
-            if (put === 'exists') await verifyHeld(key, bundle.sha256);
-        }
-        const swapped = await sql.begin(async (tx) => {
-            await lockObjectKey(tx, key);
-            if (!existed) {
-                // The sweep may have removed the object between the put and this lock; the lock now keeps it.
-                const there = await confirmed('head', () => objects.head(key));
-                if (there === null) await confirmed('put', () => objects.put(key, bundle.tar));
-                const ready = await tx`
-                    update skill_version set status = 'ready', ready_at = coalesce(ready_at, now())
-                    where id = ${version.id} returning id
-                `;
-                if (ready.length === 0) throw new SkillUnavailableError('the pending version was swept; retry');
-            }
-            const done = await tx`
-                update skill set current_version_id = ${version.id}, updated_at = now()
-                where id = ${skillId} and org_id = ${orgId} and deleted_at is null
-                  and user_id is not distinct from ${owner}
-                returning id
-            `;
-            return done.length > 0;
-        });
-        if (!swapped) return 'missing';
-        return existed ? 'exists' : 'added';
+    async function holdObject(tx: TransactionSql, key: string, bundle: SkillBundle): Promise<void> {
+        await lockObjectKey(tx, key);
+        const there = await confirmed('head', () => objects.head(key));
+        if (there === null) await confirmed('put', () => objects.put(key, bundle.tar));
     }
 
-    const locked = <T>(keys: string[], work: () => Promise<T>): Promise<T> => withAdvisoryLocks(sql, keys, work);
-    const nameLock = (owner: SkillOwner, name: string): string => `skill-name:${orgId}:${owner ?? 'org'}:${name}`;
-    const idLock = (id: string): string => `skill:${orgId}:${id}`;
+    /** Inserts the version (or finds the row for the same content) and makes it current. `exists` when it was known. */
+    async function publishVersion(
+        tx: TransactionSql,
+        skillId: string,
+        key: string,
+        bundle: SkillBundle
+    ): Promise<'added' | 'exists'> {
+        await holdObject(tx, key, bundle);
+        const [version] = await tx<{ id: string; inserted: boolean }[]>`
+            insert into skill_version (skill_id, sha256, size_bytes, object_key, description)
+            values (${skillId}, ${bundle.sha256}, ${bundle.size}, ${key}, ${bundle.description})
+            on conflict (skill_id, sha256) do update set sha256 = excluded.sha256
+            returning id, (xmax = 0) as inserted
+        `;
+        await tx`update skill set current_version_id = ${version!.id}, updated_at = now() where id = ${skillId}`;
+        return version!.inserted ? 'added' : 'exists';
+    }
+
+    /** The skill row, locked for this transaction; null when it is missing, foreign, or deleted. */
+    const lockSkill = async (tx: TransactionSql, owner: SkillOwner, id: string): Promise<boolean> => {
+        const rows = await tx`
+            select id from skill
+            where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id is not distinct from ${owner}
+            for update
+        `;
+        return rows.length > 0;
+    };
 
     return {
-        create: (owner, { name, bundle, createdBy }) => {
-            if (isReservedSkillName(name)) return Promise.resolve({ result: 'reserved' });
-            if (!NAME_PATTERN_OK(name)) return Promise.resolve({ result: 'invalid_name' });
-            return locked([nameLock(owner, name)], async (): Promise<CreateResult> => {
-                const id = await insertOrAdopt(owner, name, createdBy);
-                if (id === null) return { result: 'name_taken' };
-                const written = await writeVersion(owner, id, bundle);
-                const skill = written === 'missing' ? null : await getOwned(owner, id);
-                return skill ? { result: 'created', skill } : { result: 'name_taken' };
-            });
+        async create(owner, { name, bundle, createdBy }) {
+            if (isReservedSkillName(name)) return { result: 'reserved' };
+            if (!NAME_PATTERN_OK(name)) return { result: 'invalid_name' };
+            const key = await storeObject(bundle);
+            let id: string;
+            try {
+                // One transaction: the unique live-name index decides a race, and a loser leaves nothing behind.
+                id = await sql.begin(async (tx) => {
+                    const [row] = await tx<{ id: string }[]>`
+                        insert into skill (org_id, user_id, name, created_by)
+                        values (${orgId}, ${owner}, ${name}, ${createdBy}) returning id
+                    `;
+                    await publishVersion(tx, row!.id, key, bundle);
+                    return row!.id;
+                });
+            } catch (error) {
+                if (isUniqueViolation(error)) return { result: 'name_taken' };
+                throw error;
+            }
+            const skill = await getOwned(owner, id);
+            return skill ? { result: 'created', skill } : { result: 'name_taken' };
         },
 
-        addVersion: (owner, id, bundle) =>
-            locked([idLock(id)], async (): Promise<AddVersionResult> => {
-                const written = await writeVersion(owner, id, bundle);
-                if (written === 'missing') return { result: 'missing' };
-                const skill = await getOwned(owner, id);
-                return skill ? { result: written, skill } : { result: 'missing' };
-            }),
+        async addVersion(owner, id, bundle) {
+            const key = await storeObject(bundle);
+            const written = await sql.begin(async (tx) =>
+                (await lockSkill(tx, owner, id)) ? publishVersion(tx, id, key, bundle) : ('missing' as const)
+            );
+            if (written === 'missing') return { result: 'missing' };
+            const skill = await getOwned(owner, id);
+            return skill ? { result: written, skill } : { result: 'missing' };
+        },
 
-        setEnabled: (owner, id, enabled) =>
-            locked([idLock(id)], async () => {
-                const rows = await sql`
+        async setEnabled(owner, id, enabled) {
+            // One statement takes the row lock, so it waits for a version write and re-checks deleted_at after it.
+            const rows = await sql`
                 update skill set enabled = ${enabled}, updated_at = now()
                 where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id is not distinct from ${owner}
                 returning id
             `;
-                return rows.length > 0 ? ('ok' as const) : ('missing' as const);
-            }),
+            return rows.length > 0 ? 'ok' : 'missing';
+        },
 
-        remove: (owner, id) =>
-            locked([idLock(id)], async () => {
-                const rows = await sql`
+        async remove(owner, id) {
+            const rows = await sql`
                 update skill set deleted_at = now(), updated_at = now()
                 where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id is not distinct from ${owner}
                 returning id
             `;
-                return rows.length > 0 ? ('deleted' as const) : ('missing' as const);
-            }),
+            return rows.length > 0 ? 'deleted' : 'missing';
+        },
 
-        promote: async (userId, id) => {
-            const named = await getOwned(userId, id);
-            if (!named) return { result: 'missing' };
-            return locked([idLock(id), nameLock(null, named.name)], async (): Promise<PromoteResult> => {
-                try {
-                    const rows = await sql`
-                        update skill set user_id = null, updated_at = now()
-                        where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id = ${userId}
-                          and current_version_id is not null
-                        returning id
-                    `;
-                    if (rows.length === 0) return { result: 'missing' };
-                } catch (error) {
-                    if (isUniqueViolation(error)) return { result: 'name_taken' };
-                    throw error;
-                }
-                const skill = await getOwned(null, id);
-                return skill ? { result: 'promoted', skill } : { result: 'missing' };
-            });
+        async promote(userId, id) {
+            try {
+                // The unique live-name index decides a clash with an org skill, atomically with the owner change.
+                const rows = await sql`
+                    update skill set user_id = null, updated_at = now()
+                    where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id = ${userId}
+                      and current_version_id is not null
+                    returning id
+                `;
+                if (rows.length === 0) return { result: 'missing' };
+            } catch (error) {
+                if (isUniqueViolation(error)) return { result: 'name_taken' };
+                throw error;
+            }
+            const skill = await getOwned(null, id);
+            return skill ? { result: 'promoted', skill } : { result: 'missing' };
         },
 
         async listOrg() {
@@ -403,7 +363,7 @@ export function createSkillStore({
             const [row] = await sql<{ sha256: string; object_key: string }[]>`
                 select v.sha256, v.object_key
                 from skill_version v join skill s on s.id = v.skill_id
-                where v.id = ${versionId} and v.status = 'ready' and s.org_id = ${orgId}
+                where v.id = ${versionId} and s.org_id = ${orgId}
                   and ${access === 'any' ? sql`true` : sql`s.user_id is not distinct from ${access.owner}`}
             `;
             if (!row) return null;

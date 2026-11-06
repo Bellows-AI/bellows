@@ -6,17 +6,14 @@ import { lockObjectKey, skillKeyNamespace } from '../db/skill-store.js';
 
 /**
  * The skill retention sweep (docs/skills.md). A version is removed only when (a) its skill was soft-deleted at least
- * `retentionDays` ago, or it is a `pending` version older than the write grace (an abandoned upload), AND (b) no job
+ * `retentionDays` ago AND (b) no job
  * references it (`findReferencedVersions`, the one place BEL-273's pin joins in). The object follows its last row, under
  * the same per-key lock the writer takes, so a writer re-creating the same content cannot lose its object. Any query
  * that fails aborts the pass and any object delete that is unconfirmed leaves its row: nothing unconfirmed is deleted.
  */
 
 export const SKILL_COLLECT_INTERVAL_MS = 3_600_000;
-/** Beyond any single skill upload (<= 5 MiB) plus the writer's retry; an older `pending` row is abandoned. */
-export const SKILL_PENDING_GRACE_MS = 3_600_000;
 const BATCH = 100;
-const MS_PER_SECOND = 1000;
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /**
@@ -53,24 +50,20 @@ export function createSkillCollector({
     objects,
     prefix,
     retentionDays,
-    pendingGraceMs = SKILL_PENDING_GRACE_MS,
     referenced = (ids) => findReferencedVersions(sql, ids),
 }: {
     sql: Sql;
     objects: ObjectStore;
     prefix: string;
     retentionDays: number;
-    pendingGraceMs?: number;
     /** Tests only: replaces the job-reference query. */
     referenced?: (versionIds: string[]) => Promise<Set<string>>;
 }): SkillCollector {
     const namespace = skillKeyNamespace(prefix);
-    const graceSeconds = pendingGraceMs / MS_PER_SECOND;
 
     /** The one eligibility rule, restated inside the delete so a racing writer or restore loses cleanly. */
     const eligible = sql`(
         (s.deleted_at is not null and s.deleted_at < now() - make_interval(days => ${retentionDays}))
-        or (v.status = 'pending' and v.created_at < now() - make_interval(secs => ${graceSeconds}))
     )`;
 
     /** One candidate: row first, then (if it was the last name for the key) the object, all under the key's lock. */

@@ -1,7 +1,7 @@
 -- Org and workspace skills (BEL-271): a skill is a named owner-scoped row (`user_id` null is the organization scope,
 -- set is that member's workspace) and each content change is an immutable `skill_version`. The bundle bytes live in
 -- the object store under `object_key` (`<prefix>_skills/<org>/<sha256>`, one object per org and content); the version
--- row arbitrates them: `pending` (row written, object not confirmed), then `ready`. `current_version_id` is the one
+-- row is written only after its object is stored (content-addressed, create-only), in one transaction with the skill row. `current_version_id` is the one
 -- new tasks resolve; older versions stay so a pin can still be served. A delete is soft (`deleted_at`) and the sweep
 -- removes a deleted skill's versions and objects only after the retention window and only when nothing references them.
 --
@@ -34,14 +34,11 @@ create table if not exists skill_version (
     size_bytes bigint not null check (size_bytes >= 0),
     object_key text not null,
     description text not null,
-    status text not null check (status in ('pending', 'ready')),
     created_at timestamptz not null default now(),
-    ready_at timestamptz,
     unique (skill_id, sha256)
 );
 
 create index if not exists skill_version_object_key on skill_version (object_key);
-create index if not exists skill_version_pending on skill_version (created_at) where status = 'pending';
 
 alter table skill drop constraint if exists skill_current_version_fk;
 alter table skill
