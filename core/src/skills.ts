@@ -8,6 +8,13 @@
 /** Agent Skills naming rule (the stricter of Claude Code's and OpenCode's). */
 export const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const SKILL_NAME_LIMIT = 64;
+/** Built-in skills, and only they, are named under this prefix; every other source is refused it. */
+export const RESERVED_SKILL_PREFIX = 'factory-';
+
+export function isReservedSkillName(name: string): boolean {
+    return name.startsWith(RESERVED_SKILL_PREFIX);
+}
+
 /** The most skills one task may select. */
 export const MAX_TASK_SKILLS = 16;
 

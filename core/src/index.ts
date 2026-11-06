@@ -246,10 +246,12 @@ export type { Skill, SkillRequirements } from './skills.js';
 export {
     connectionEnvNames,
     INTEGRATION_PROVIDERS,
+    isReservedSkillName,
     requiredProviders,
     selectedBy,
     MAX_TASK_SKILLS,
     parseSkillFrontmatter,
+    RESERVED_SKILL_PREFIX,
     RUNNER_TOOLS,
     SKILL_CONNECTIONS,
     SKILL_NAME,
