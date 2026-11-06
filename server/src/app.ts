@@ -41,6 +41,7 @@ import { jobRoutes } from './routes/jobs/jobs.js';
 import { prometheusRoutes } from './routes/prometheus.js';
 import { repoRoutes } from './routes/repos.js';
 import { skillRoutes } from './routes/skills.js';
+import { skillStoreRoutes } from './routes/skills-store.js';
 import { statsRoutes } from './routes/stats.js';
 import { taskRoutes } from './routes/tasks.js';
 import { tokenRoutes } from './routes/tokens.js';
@@ -369,6 +370,7 @@ export async function buildApp({
         await registerMcp(app, { config, auth, oauth, version, metrics });
     }
     await app.register(skillRoutes(skillCatalog, orgs));
+    await app.register(skillStoreRoutes({ orgs }));
     await app.register(statsRoutes(config, orgs, auth, now));
     await app.register(repoRoutes({ config, orgs }));
     if (store) await app.register(ingestRoutes(store, orgs));

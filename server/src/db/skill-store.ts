@@ -112,7 +112,8 @@ export interface SkillStore {
     listOrg(): Promise<SkillRecord[]>;
     listWorkspace(userId: string): Promise<SkillRecord[]>;
     get(owner: SkillOwner, id: string): Promise<SkillRecord | null>;
-    effective(userId: string): Promise<EffectiveSkill[]>;
+    /** Org skills plus the member's workspace skills; a caller with no member sees the org's alone. */
+    effective(userId: string | null): Promise<EffectiveSkill[]>;
     /**
      * A version's tar bytes verified against its sha256. Null when no such ready version is visible to `access`;
      * `SkillGoneError` when the store answers that the object is absent; an unconfirmed read throws
@@ -186,7 +187,7 @@ export function createSkillStore({
     const ownerIs = (owner: SkillOwner) => sql`s.user_id is not distinct from ${owner}`;
 
     /** Live skills with a ready current version: one owner's (optionally one id), or the enabled ones a member sees. */
-    const select = (filter: { owner: SkillOwner; id?: string } | { effectiveFor: string }) => sql<RecordRow[]>`
+    const select = (filter: { owner: SkillOwner; id?: string } | { effectiveFor: string | null }) => sql<RecordRow[]>`
         select s.id, s.name, s.user_id, s.enabled, s.created_by, s.created_at::text, s.updated_at::text,
                v.id as v_id, v.sha256 as v_sha256, v.size_bytes as v_size, v.description as v_description,
                v.object_key as v_object_key, v.created_at::text as v_created_at
@@ -194,7 +195,7 @@ export function createSkillStore({
         where s.org_id = ${orgId} and s.deleted_at is null
           and ${
               'effectiveFor' in filter
-                  ? sql`s.enabled and (s.user_id is null or s.user_id = ${filter.effectiveFor})`
+                  ? sql`s.enabled and (s.user_id is null or s.user_id = ${filter.effectiveFor}::uuid)`
                   : sql`${ownerIs(filter.owner)} and (${filter.id ?? null}::uuid is null or s.id = ${filter.id ?? null})`
 }
         order by s.name, s.id

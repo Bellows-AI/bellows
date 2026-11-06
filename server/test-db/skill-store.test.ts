@@ -210,6 +210,14 @@ describe.skipIf(!enabled)('the skill store', () => {
         expect((await storeOf(OTHER_ORG).effective(ALICE.id)).length).toBe(0);
     });
 
+    it('answers a caller with no member the organization skills alone', async () => {
+        const store = storeOf();
+        await created(store, null, 'org-only');
+        await created(store, ALICE.id, 'alice-only');
+        const effective = await store.effective(null);
+        expect(effective.map((s) => `${s.source}:${s.name}`)).toEqual(['org:org-only']);
+    });
+
     it('promotes a workspace skill to the org, and refuses an existing org name', async () => {
         const store = storeOf();
         const mine = await created(store, ALICE.id, 'promoted');
