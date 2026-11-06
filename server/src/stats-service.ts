@@ -34,8 +34,6 @@ export interface TelemetryMeta {
     otherRepoSessions: number;
     /** Board-owned sessions no branch report named: attributed and counted in the totals, but the hook is missing or failing. */
     sessionsWithoutHook: number;
-    /** Sessions no board task matches — the third exclusion, kept distinct from the two above. */
-    unattributedSessions: number;
 }
 
 /** One fetch of the store, cached whole: every range, scope and repo list is a re-reduction of it. */
@@ -152,7 +150,6 @@ function telemetryMeta({
         repoFilter: scopedNames,
         otherRepoSessions: stats?.otherRepoSessions ?? 0,
         sessionsWithoutHook: stats?.sessionsWithoutHook ?? 0,
-        unattributedSessions: stats?.unattributedSessions ?? 0,
     } as const;
 
     if (telemetrySource === 'off') {

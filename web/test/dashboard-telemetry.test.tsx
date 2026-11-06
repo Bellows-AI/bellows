@@ -41,7 +41,6 @@ const META: StatsPayload['meta'] = {
         repoFilter: ['Bellows-AI/bellows.ai'],
         otherRepoSessions: 1,
         sessionsWithoutHook: 1,
-        unattributedSessions: 4,
     },
 } as StatsPayload['meta'];
 
@@ -63,7 +62,6 @@ const READY_TELEMETRY = {
     },
     otherRepoSessions: 1,
     sessionsWithoutHook: 1,
-    unattributedSessions: 4,
     byUser: [],
     series: { granularity: 'day', points: [] },
     coverage: { from: null, to: null },
@@ -85,7 +83,6 @@ const NO_TELEMETRY = {
     totals: { sessions: 0 },
     otherRepoSessions: 0,
     sessionsWithoutHook: 0,
-    unattributedSessions: 0,
     byUser: [],
     series: { granularity: 'day', points: [] },
     coverage: { from: null, to: null },
@@ -363,17 +360,15 @@ describe('the shared state model', () => {
         expect(render(EMPTY)).toContain('Task board');
     });
 
-    it('stacks Usage by user above Recent tasks, each on its own row, when ready', () => {
+    it('puts Recent tasks last, on its own row, when ready', () => {
         const html = render(READY);
         expect(html).not.toContain('two-up');
-        expect(html.indexOf('Usage by user')).toBeLessThan(html.indexOf('Recent tasks'));
+        expect(html.indexOf('Per-task usage')).toBeLessThan(html.indexOf('Recent tasks'));
     });
 
-    it('keeps Recent tasks whenever Usage by user is absent', () => {
+    it('keeps Recent tasks in every state', () => {
         for (const data of [null, EMPTY, DISABLED]) {
-            const html = render(data);
-            expect(html).toContain('Recent tasks');
-            expect(html).not.toContain('Usage by user');
+            expect(render(data)).toContain('Recent tasks');
         }
     });
 
@@ -382,6 +377,11 @@ describe('the shared state model', () => {
         expect(html).toContain('Usage summary');
         expect(html).toContain('AI token usage');
         expect(html).toContain('Per-task usage');
-        expect(html).toContain('Usage by user');
+        // Usage is never broken down per person.
+        expect(html).not.toContain('Usage by user');
+        // The chart sits directly under the summary strip (By model, when there are model rows,
+        // follows it — e2e/dashboard.spec.ts pins that order on the seeded data).
+        expect(html.indexOf('Usage summary')).toBeLessThan(html.indexOf('AI token usage'));
+        expect(html.indexOf('AI token usage')).toBeLessThan(html.indexOf('Per-task usage'));
     });
 });

@@ -330,7 +330,6 @@ export type {
     UsagePrecision,
     UsageReport,
     UsageRow,
-    UserUsage,
 } from './usage.js';
 export { canonicalTask, resolveOwnership, sessionKeyId } from './usage-ownership.js';
 export type { SessionKey } from './usage-ownership.js';

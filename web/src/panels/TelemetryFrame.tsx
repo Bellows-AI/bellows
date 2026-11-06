@@ -8,12 +8,16 @@ import type { TelemetryMeta } from '../api/useStats.js';
  * means "measured, unavailable", and nothing was measured here. The 'fixture' badge is loud
  * because synthetic token counts sitting beside real PR numbers is precisely the
  * invented-number problem. `blurb` is optional: a panel may lead with its chart or table and
- * put its explanation after it (caption, disclosure) instead of a paragraph up top.
+ * put its explanation after it (caption, disclosure) instead of a paragraph up top. `actions`
+ * sit on the heading's row (a legend, a selector, an info popover); `compact` shrinks the heading
+ * for a panel that is a band under the summary rather than a section of its own.
  */
 export function TelemetryFrame({
     title,
     titleId,
     blurb,
+    actions,
+    compact,
     meta,
     children,
 }: {
@@ -21,16 +25,23 @@ export function TelemetryFrame({
     /** The heading's id, so a table inside the frame can point its labelled region at it. */
     titleId?: string;
     blurb?: ReactNode;
+    actions?: ReactNode;
+    compact?: boolean;
     meta: TelemetryMeta;
     children: ReactNode;
 }) {
     const broken = meta.status === 'unreachable';
     return (
-        <section className={broken ? 'panel bad' : 'panel'}>
-            <h2 id={titleId}>
-                {title}
-                {meta.source === 'fixture' ? <span className="badge">synthetic fixture</span> : null}
-            </h2>
+        <section
+            className={['panel', compact ? 'panel-compact' : null, broken ? 'bad' : null].filter(Boolean).join(' ')}
+        >
+            <div className="panel-head">
+                <h2 id={titleId}>
+                    {title}
+                    {meta.source === 'fixture' ? <span className="badge">synthetic fixture</span> : null}
+                </h2>
+                {actions && !broken ? <div className="panel-head-actions">{actions}</div> : null}
+            </div>
             {blurb ? <p className="muted">{blurb}</p> : null}
             {broken ? (
                 <p className="alert">

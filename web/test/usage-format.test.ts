@@ -9,6 +9,7 @@ import {
     precisionLabel,
     precisionMark,
     rowKey,
+    totalTokens,
 } from '../src/components/usage/usage-format.js';
 
 describe('usage format', () => {
@@ -34,7 +35,14 @@ describe('usage format', () => {
         expect(coverageLabel({ measured: 0, contributors: 0 })).toBeNull();
     });
 
-    it('labels the four types apart and the one sanctioned sum explicitly', () => {
+    it('sums input and output into Total tokens, and stays null when either side is unmeasured', () => {
+        expect(totalTokens({ input: 10, cacheRead: 200, cacheCreation: 30, output: 5 })).toBe(245);
+        expect(totalTokens({ input: 0, cacheRead: 0, cacheCreation: 0, output: 0 })).toBe(0);
+        expect(totalTokens({ input: 10, cacheRead: 200, cacheCreation: 30, output: null })).toBeNull();
+        expect(totalTokens({ input: null, cacheRead: null, cacheCreation: null, output: 5 })).toBeNull();
+    });
+
+    it('labels the four types apart and the input-side sum explicitly', () => {
         expect(TOKEN_TYPE_LABELS).toEqual({
             input: 'Uncached input',
             cacheRead: 'Cache read',

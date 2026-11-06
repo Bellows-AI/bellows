@@ -11,7 +11,7 @@
  * | S5 | a named review whose usage folds into the task |
  * | S6 | a cumulative series: one estimated increase and one unlocated first reading |
  * | removed | an execution whose task was removed |
- * | input-only author | a second author with input only: the by-user table's unmeasured Output |
+ * | input-only author | a second author with input only: an unmeasured Output |
  */
 import type postgres from 'postgres';
 import { CLAUDE_CODE } from '@factory-ai/core';

@@ -82,10 +82,26 @@ describe('the task board section', () => {
     it('heads the section Recent tasks with a Task board pill and the range/scope caption', () => {
         const html = render([job({})], null);
         expect(html).toContain('<h2 id="task-board-heading">Recent tasks</h2>');
-        expect(html).toContain('<span class="pill pill-done">Task board</span>');
-        expect(html).toContain('Not affected by range or scope');
+        // The range/scope note rides on the pill: a tooltip, and the note's accessible name.
+        expect(html).toContain(
+            '<span class="pill pill-done" role="note" title="Not affected by range or scope" aria-label="Task board — not affected by range or scope">Task board</span>'
+        );
+        // View all tasks sits in the head row, beside the title.
+        expect(html).toMatch(
+            /<div class="recent-tasks-head">.*<a class="recent-tasks-all" href="\/tasks"[^>]*>View all tasks<\/a><\/div>/
+        );
         // The old sentence is gone.
         expect(html).not.toContain('Latest finished tasks from the board');
+    });
+
+    it('shows the author as an avatar, with the name as its alt text and tooltip', () => {
+        const html = render([job({})], null);
+        expect(html).toContain(
+            '<span class="by-user-user" title="Alice Doe"><img class="task-avatar" src="https://example.com/alice.png" alt="Alice Doe"/></span>'
+        );
+        // No avatar: the name stays as text.
+        const plain = render([job({ author: { id: 'u-bob', login: 'bob', name: null, avatarUrl: null } })], null);
+        expect(plain).toContain('<span class="by-user-user" title="bob">bob</span>');
     });
 
     it.each([

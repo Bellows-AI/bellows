@@ -255,7 +255,7 @@ session('s08-july-b', {
 
 // Case: another repo -> excluded from totals, counted in otherRepoSessions. Deliberately the
 // largest session in the file, so a broken filter shows up as an obviously inflated total.
-// Carries a user: out-of-repo-scope sessions must stay out of byUser even when attributed.
+// Carries a user: out-of-repo-scope sessions must stay out of the "mine" totals even when attributed.
 session('s09-other-repo', {
     repo: 'Bellows-AI/other-service',
     from: '2026-07-12T09:00:00Z',

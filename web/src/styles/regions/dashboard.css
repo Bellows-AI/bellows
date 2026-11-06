@@ -189,9 +189,10 @@
         display: block;
     }
 
-    /* The metric summary: one open strip in reading order — Sessions, Tokens, Active time, Edit
-       acceptance — between two hairlines, each figure set apart from the next by a hairline alone.
-       Narrow widths restack the same DOM order; presentation never reorders content. */
+    /* The metric summary: one open strip in reading order — Sessions, Total tokens, Active time,
+       Edit acceptance — between two hairlines, each card set apart from the next by a hairline
+       alone: a muted label, one bold figure, one small visual, one short caption. Narrow widths
+       restack the same DOM order; presentation never reorders content. */
     .usage-groups {
         border-bottom: 1px solid var(--line);
         border-top: 1px solid var(--line);
@@ -224,9 +225,165 @@
     }
 
     .usage-label {
-        color: var(--ink);
-        font-size: 14px;
+        align-items: center;
+        color: var(--ink-muted);
+        display: flex;
+        font-size: 13px;
+        font-weight: 500;
+        gap: 6px;
+    }
+
+    .usage-group strong.usage-unmeasured {
+        color: var(--ink-muted);
+    }
+
+    .usage-visual {
+        margin-top: 6px;
+    }
+
+    /* The Total tokens card's two parts, side by side under the sum. */
+    .usage-pair {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr 1fr;
+        margin: 0;
+    }
+
+    .usage-pair dt {
+        color: var(--ink-muted);
+        font-size: 12px;
+        line-height: 16px;
+    }
+
+    .usage-pair dd {
+        font-size: 16px;
+        font-variant-numeric: tabular-nums;
         font-weight: 600;
+        line-height: 22px;
+        margin: 0;
+    }
+
+    /* Edit acceptance as a meter; the width is decoration (aria-hidden), the figure carries it. */
+    .usage-meter {
+        background: var(--surface-strong);
+        border-radius: 3px;
+        display: block;
+        height: 6px;
+        overflow: hidden;
+    }
+
+    .usage-meter > span {
+        background: var(--lamp-run);
+        display: block;
+        height: 100%;
+    }
+
+    /* The sessions sparkline: decoration under the figure; a dashed tail marks a partial bucket. */
+    .sparkline {
+        display: block;
+        height: 32px;
+        width: 100%;
+    }
+
+    .sparkline-area {
+        fill: var(--accent-wash);
+    }
+
+    .sparkline-line {
+        fill: none;
+        stroke: var(--accent);
+        stroke-width: 1.5;
+    }
+
+    .sparkline-partial {
+        stroke-dasharray: 3 3;
+    }
+
+    .sparkline-hit {
+        fill: transparent;
+    }
+
+    /* The per-task strip: the summary's grammar, one step smaller, four across inside a panel. */
+    .usage-groups-compact {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+
+    .usage-groups-compact .usage-group {
+        padding-block: 12px;
+    }
+
+    .usage-groups-compact .usage-group strong {
+        font-size: 22px;
+        line-height: 28px;
+    }
+
+    /* The small "i" / "?" button and the popover it reveals on hover, focus or a pinning click. */
+    .info-tip {
+        display: inline-flex;
+        position: relative;
+    }
+
+    /* The circle is drawn on the glyph, so the button can grow to a 44px touch target without
+       the circle growing with it. */
+    .info-tip-button {
+        align-items: center;
+        background: none;
+        border: 0;
+        color: var(--ink-muted);
+        cursor: pointer;
+        display: inline-flex;
+        justify-content: center;
+        padding: 0;
+    }
+
+    .info-tip-button:hover,
+    .info-tip-button[aria-expanded='true'] {
+        background: none;
+        color: var(--ink);
+    }
+
+    .info-tip-button > span {
+        align-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 50%;
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 600;
+        height: 18px;
+        justify-content: center;
+        width: 18px;
+    }
+
+    .info-tip-pop {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-xl);
+        box-shadow: 0 8px 24px var(--shadow-float);
+        color: var(--ink);
+        display: none;
+        font-size: 13px;
+        font-weight: 400;
+        inset-inline-start: -8px;
+        line-height: 18px;
+        padding: 12px 14px;
+        position: absolute;
+        top: calc(100% + 6px);
+        width: 300px;
+        z-index: 30;
+    }
+
+    .panel-head-actions .info-tip-pop {
+        inset-inline: auto -8px;
+    }
+
+    .info-tip:hover .info-tip-pop,
+    .info-tip:focus-within .info-tip-pop,
+    .info-tip[data-open='true'] .info-tip-pop {
+        display: block;
+    }
+
+    .info-tip-pop .usage-figures {
+        margin: 0;
     }
 
     .usage-caption {
@@ -277,6 +434,10 @@
 
     .recent-tasks-head h2 {
         margin: 0;
+    }
+
+    .recent-tasks-all {
+        margin-inline-start: auto;
     }
 
     /* A status pill is words, not a figure: it keeps the sans face the mono data cells would hand it. */
@@ -350,11 +511,6 @@
         background: var(--lamp-run);
     }
 
-    /* Kept in step with .line, which the sessions series draws with. */
-    .swatch-warn {
-        background: var(--lamp-wait);
-    }
-
     /* The legend's series toggles: tertiary buttons, dimmed when the series is off — a state
        the swatch's opacity carries without color alone. */
     .legend-button {
@@ -371,13 +527,7 @@
         opacity: 0.35;
     }
 
-    /* The chart's one-line caption and the calculation disclosure that follows it. */
-    .chart-caption {
-        color: var(--ink-muted);
-        font-size: 12px;
-        margin: 4px 0 0;
-    }
-
+    /* The By model disclosure under the usage chart. */
     .chart-disclosure {
         color: var(--ink-muted);
         font-size: 12px;
@@ -445,16 +595,56 @@
         stroke-width: 1.5;
     }
 
-    /* The proportional New-tokens bar in the by-user table. The track is a sunken well, the fill
-       the chart series blue; the width is decoration (aria-hidden in markup) — the cell's
-       accessible name carries the exact figure. */
+    /* A compact telemetry panel: a band under the summary, its heading one step down with the
+       legend, selector and info popover on the same row. */
+    .panel-compact h2 {
+        font-size: 15px;
+        margin: 0;
+    }
+
+    /* A telemetry heading with actions wraps them under the title on a narrow screen, rather
+       than squeezing the title to a word per line. */
+    .panel-head:has(> .panel-head-actions) {
+        flex-wrap: wrap;
+    }
+
+    .panel-head:has(> .panel-head-actions) > h2 {
+        white-space: nowrap;
+    }
+
+    .panel-head-actions {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .panel-head-actions .legend,
+    .panel-head-actions .task-usage-model {
+        margin: 0;
+    }
+
+    .chart-granularity {
+        margin-inline-end: 4px;
+    }
+
+    /* A model's share of the total in the By model table. The track is a sunken well, the fill
+       the chart series blue; the width is decoration (aria-hidden in markup) — the percent beside
+       it carries the figure. */
+    .model-share {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+    }
+
     .usage-track {
         background: var(--surface-sunken);
         border-radius: var(--radius-md);
         display: block;
-        height: 4px;
-        margin-top: 3px;
-        min-width: 120px;
+        flex: 1;
+        height: 6px;
+        min-width: 80px;
+        overflow: hidden;
     }
 
     .usage-bar {
@@ -464,8 +654,7 @@
         height: 100%;
     }
 
-    /* Selector rows above the by-user and per-task tables, and the per-user model drawers. */
-    .by-user-metric,
+    /* The per-task model selector. */
     .task-usage-model {
         align-items: center;
         color: var(--ink-muted);
@@ -475,7 +664,7 @@
         margin-bottom: 8px;
     }
 
-    .by-user-models-toggle {
+    .model-sources-toggle {
         background: none;
         border: 0;
         color: var(--accent);
@@ -483,23 +672,10 @@
         font-size: 13px;
         margin-inline-start: 8px;
         padding: 0;
-        text-decoration: underline;
-    }
-
-    .by-user-models {
-        margin-top: 12px;
     }
 
     .usage-by-model {
         margin-top: 8px;
-    }
-
-    .usage-attribution {
-        color: var(--ink-muted);
-        font-size: 13px;
-        line-height: 18px;
-        margin: 4px 0 0;
-        padding-inline-start: 16px;
     }
 
     /* The board section's task identity cell: the title wraps to at most two lines, then clamps.
@@ -519,7 +695,8 @@
         .range-draft input,
         .range-draft-actions button,
         .legend-button,
-        .by-user-models-toggle,
+        .model-sources-toggle,
+        .info-tip-button,
         .chart-disclosure summary {
             align-items: center;
             display: inline-flex;
@@ -534,7 +711,6 @@
             display: list-item;
         }
 
-        .by-user-metric select,
         .task-usage-model select {
             min-height: 44px;
         }

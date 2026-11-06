@@ -47,13 +47,19 @@ const columns = (now: Date | undefined): DataTableColumn<Job>[] => [
     {
         key: 'author',
         label: 'Author',
+        // Avatar only: the name stays as the image's alt and the cell's title, for hover and screen readers.
         cell: (job) =>
             job.author ? (
-                <span className="by-user-user">
+                <span className="by-user-user" title={job.author.name ?? job.author.login}>
                     {job.author.avatarUrl !== null ? (
-                        <img className="task-avatar" src={job.author.avatarUrl} alt="" />
-                    ) : null}
-                    {job.author.name ?? job.author.login}
+                        <img
+                            className="task-avatar"
+                            src={job.author.avatarUrl}
+                            alt={job.author.name ?? job.author.login}
+                        />
+                    ) : (
+                        (job.author.name ?? job.author.login)
+                    )}
                 </span>
             ) : (
                 'unknown'
@@ -96,30 +102,34 @@ export function RecentTasksPanel({ jobs, error, now }: { jobs: Job[] | null; err
         <section className="panel recent-tasks">
             <div className="recent-tasks-head">
                 <h2 id="task-board-heading">Recent tasks</h2>
-                <span className="pill pill-done">Task board</span>
+                <span
+                    className="pill pill-done"
+                    role="note"
+                    title="Not affected by range or scope"
+                    aria-label="Task board — not affected by range or scope"
+                >
+                    Task board
+                </span>
+                {jobs !== null && jobs.length > 0 ? (
+                    <Link className="recent-tasks-all" to="/tasks">
+                        View all tasks
+                    </Link>
+                ) : null}
             </div>
-            <p className="muted">Not affected by range or scope</p>
             {error !== null ? <p className="alert">The board could not be read — {error}.</p> : null}
             {jobs === null ? (
                 error === null ? (
                     <p className="muted">Loading…</p>
                 ) : null
             ) : (
-                <>
-                    <DataTable
-                        labelledBy="task-board-heading"
-                        columns={columns(now)}
-                        rows={jobs}
-                        rowKey={(job) => job.id}
-                        initialSort={{ key: 'finishedAt', direction: 'descending' }}
-                        empty={<p className="muted">No completed tasks yet.</p>}
-                    />
-                    {jobs.length > 0 ? (
-                        <p>
-                            <Link to="/tasks">View all tasks</Link>
-                        </p>
-                    ) : null}
-                </>
+                <DataTable
+                    labelledBy="task-board-heading"
+                    columns={columns(now)}
+                    rows={jobs}
+                    rowKey={(job) => job.id}
+                    initialSort={{ key: 'finishedAt', direction: 'descending' }}
+                    empty={<p className="muted">No completed tasks yet.</p>}
+                />
             )}
         </section>
     );

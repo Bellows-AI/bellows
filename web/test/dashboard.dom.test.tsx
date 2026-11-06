@@ -3,7 +3,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import type { StatsPayload, TelemetryMeta } from '../src/api/useStats.js';
-import { ByUserPanel } from '../src/panels/ByUserPanel.js';
+import { DataTable } from '../src/components/DataTable.js';
+import { UsageByModel, UsageSummaryPanel } from '../src/panels/UsageSummaryPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 import { fixtureStats } from './telemetry-fixture.js';
@@ -28,7 +29,6 @@ const telemetryMeta: TelemetryMeta = {
     repoFilter: [REPO],
     otherRepoSessions: 0,
     sessionsWithoutHook: 0,
-    unattributedSessions: 0,
 };
 
 const stats: StatsPayload = {
@@ -116,32 +116,72 @@ describe('the custom range picker', () => {
 describe('a supporting table', () => {
     it('sorts from the keyboard and announces the active column', async () => {
         const user = userEvent.setup();
-        render(<ByUserPanel telemetry={telemetry} meta={telemetryMeta} scope="org" />);
-        const header = screen.getByRole('button', { name: 'Total input' });
+        const rows = [
+            { id: 'a', name: 'alpha', count: 3 },
+            { id: 'b', name: 'beta', count: 7 },
+        ];
+        render(
+            <DataTable
+                labelledBy="t"
+                rows={rows}
+                rowKey={(r) => r.id}
+                initialSort={{ key: 'count', direction: 'descending' }}
+                empty={null}
+                columns={[
+                    { key: 'name', label: 'Name', cell: (r) => r.name, sortValue: (r) => r.name },
+                    { key: 'count', label: 'Count', cell: (r) => r.count, sortValue: (r) => r.count },
+                ]}
+            />
+        );
+        const header = screen.getByRole('button', { name: 'Count' });
         const th = header.closest('th');
-        // The by-user table opens ranked by Total input, largest first.
         expect(th?.getAttribute('aria-sort')).toBe('descending');
         header.focus();
         await user.keyboard('{Enter}');
         expect(th?.getAttribute('aria-sort')).toBe('ascending');
     });
+});
 
-    it('re-ranks by the selected metric and expands a user to the model rows without moving any figure', async () => {
+describe('the usage summary', () => {
+    it('pins the token breakdown open with a click and closes it with Escape', async () => {
         const user = userEvent.setup();
-        const { container } = render(<ByUserPanel telemetry={telemetry} meta={telemetryMeta} scope="org" />);
-        const selector = screen.getByLabelText('Rank by') as HTMLSelectElement;
-        expect(selector.value).toBe('inputSide');
-        await user.selectOptions(selector, 'output');
-        const th = screen.getAllByRole('button', { name: 'Output' })[0]?.closest('th');
-        expect(th?.getAttribute('aria-sort')).toBe('descending');
-        const before = container.querySelector('table')?.textContent;
-        const toggle = container.querySelector<HTMLButtonElement>('.by-user-models-toggle');
+        const { container } = render(<UsageSummaryPanel telemetry={telemetry} meta={stats.meta} />);
+        const button = screen.getByRole('button', { name: 'Token breakdown' });
+        const tip = container.querySelector('.info-tip') as HTMLElement;
+        expect(button.getAttribute('aria-expanded')).toBe('false');
+        await user.click(button);
+        expect(button.getAttribute('aria-expanded')).toBe('true');
+        expect(tip.dataset.open).toBe('true');
+        // The popover is described-by, so its figures reach assistive tech whether or not it shows.
+        const pop = document.getElementById(button.getAttribute('aria-describedby') ?? '');
+        expect(pop?.textContent).toContain('Cache read');
+        await user.keyboard('{Escape}');
+        expect(button.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('expands a model to its query sources without moving any figure', async () => {
+        const user = userEvent.setup();
+        const { container } = render(<UsageByModel telemetry={telemetry} />);
+        const details = container.querySelector('details') as HTMLDetailsElement;
+        expect(details.open).toBe(false);
+        await user.click(screen.getByText('By model'));
+        const toggle = container.querySelector<HTMLButtonElement>('.model-sources-toggle');
+        expect(toggle).not.toBeNull();
+        const figures = () =>
+            [...container.querySelectorAll('tbody tr:not(.usage-child-row), tfoot tr')].map((tr) =>
+                // The first cell holds the model name and its toggle, whose label flips.
+                [...tr.querySelectorAll('td')]
+                    .slice(1)
+                    .map((td) => td.textContent)
+                    .join('|')
+            );
+        const before = figures();
         expect(toggle?.getAttribute('aria-expanded')).toBe('false');
         await user.click(toggle as HTMLButtonElement);
         expect(toggle?.getAttribute('aria-expanded')).toBe('true');
-        expect(container.querySelector('.by-user-models .usage-breakdown')).not.toBeNull();
-        // The table's own cells are untouched by the expansion (the toggle's label aside).
-        expect(container.querySelector('table')?.textContent?.replace(/Hide models/, 'Show models')).toBe(before);
+        expect(container.querySelectorAll('.usage-child-row').length).toBeGreaterThan(0);
+        // A source row is part of its model, never added to it.
+        expect(figures()).toEqual(before);
     });
 });
 
@@ -160,8 +200,8 @@ describe('the user menu', () => {
 describe('the main chart', () => {
     it('wears the legend toggles as quiet tertiary buttons with their accessible names', () => {
         const { container } = render(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta} />);
-        const toggles = [...container.querySelectorAll<HTMLButtonElement>('.legend button')];
-        expect(toggles.map((b) => b.textContent?.trim())).toEqual(['Total input', 'Output', 'Sessions']);
+        const toggles = [...container.querySelectorAll<HTMLButtonElement>('.legend .legend-button')];
+        expect(toggles.map((b) => b.textContent?.trim())).toEqual(['Input', 'Output']);
         for (const toggle of toggles) expect(toggle.classList.contains('tertiary')).toBe(true);
     });
 

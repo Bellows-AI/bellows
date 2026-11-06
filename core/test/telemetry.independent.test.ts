@@ -86,13 +86,6 @@ describe('caller scope, recomputed by hand', () => {
         expect(mine.totals.sessions).toBe(ALICE_SESSION_COUNT);
     });
 
-    it('still names the unattributed sessions the scope dropped', () => {
-        const UNATTRIBUTED_SESSION_COUNT = 4;
-        const unattributed = telemetry.sessions.filter((s) => s.repo === FIXTURE_REPO && s.user === null).length;
-        expect(mine.unattributedSessions).toBe(unattributed);
-        expect(unattributed).toBe(UNATTRIBUTED_SESSION_COUNT);
-    });
-
     it('leaves coverage untouched', () => {
         expect(mine.coverage).toEqual(telemetry.coverage);
     });

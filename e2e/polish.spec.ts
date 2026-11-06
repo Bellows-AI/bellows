@@ -312,6 +312,8 @@ test('data cells and status lines read in Inter with tabular figures, never mono
     for (const route of ['/', '/settings/organization']) {
         await page.goto(route);
         await page.waitForLoadState('networkidle');
+        // The dashboard's data table (By model, collapsed) mounts once the stats read lands.
+        if (route === '/') await page.locator('table.data').first().waitFor({ state: 'attached' });
         const seen = await page.locator('table.data td:not(:first-child), .status').evaluateAll((nodes) =>
             nodes.map((node) => {
                 const style = getComputedStyle(node);
