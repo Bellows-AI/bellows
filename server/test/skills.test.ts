@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolveClaimSkills } from '../src/db/jobs/job-store-claim.js';
+import { resolveClaimSkills } from '../src/db/jobs/job-store-claim-skills.js';
 import { skillRoutes } from '../src/routes/skills.js';
 import { readSkillCatalog, skillCatalog } from '../src/skills.js';
 import { staticRegistry } from './helpers.js';
@@ -59,13 +59,15 @@ describe('readSkillCatalog', () => {
 describe('resolveClaimSkills', () => {
     it('is null for no selection, and for a held connection', () => {
         expect(resolveClaimSkills([], undefined)).toBeNull();
-        expect(resolveClaimSkills(['factory-github'], undefined, ['github'])).toBeNull();
+        expect(resolveClaimSkills(['factory-github'], undefined, { managed: ['github'] })).toBeNull();
     });
 
     it('on a repo job a name the board lacks is the checkout skill; a reserved name never is', () => {
-        expect(resolveClaimSkills(['repo-only'], undefined, [], 'acme/web')).toBeNull();
-        expect(resolveClaimSkills(['repo-only'], undefined, [], null)).toContain('skill "repo-only" is not installed');
-        expect(resolveClaimSkills(['factory-nope'], undefined, [], 'acme/web')).toContain('"factory-nope"');
+        expect(resolveClaimSkills(['repo-only'], undefined, { repo: 'acme/web' })).toBeNull();
+        expect(resolveClaimSkills(['repo-only'], undefined, { repo: null })).toContain(
+            'skill "repo-only" is not installed'
+        );
+        expect(resolveClaimSkills(['factory-nope'], undefined, { repo: 'acme/web' })).toContain('"factory-nope"');
     });
 
     it('asks for the App, never a member token, when the org holds no installation', () => {

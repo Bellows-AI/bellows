@@ -320,10 +320,12 @@ export interface WorkflowSuccessorInput {
 
 export async function insertWorkflowSuccessor(tx: TransactionSql, input: WorkflowSuccessorInput): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-        insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode)
-        values (${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
-                ${input.executor}, ${input.executorScope}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
-                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode}, ${WORKFLOW_MODE})
+        insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode, skill_pin)
+        select ${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
+               ${input.executor}, ${input.executorScope}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
+               ${input.workflowId}, ${input.workflowName}, ${input.workflowNode}, ${WORKFLOW_MODE},
+               -- The predecessor's pin (BEL-273): a successor continues the same run with the same skill versions.
+               coalesce((select p.skill_pin from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb)
         returning id
     `;
     return rows[0]!.id;

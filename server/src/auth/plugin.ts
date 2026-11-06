@@ -72,6 +72,8 @@ const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/[^/]+\/(checkpoint|transcripts)(\/chunk)?$/,
     // A task's input files, fetched by the runner under the job's live lease (job-handlers-attachment-content.ts).
     /^\/api\/jobs\/[^/]+\/attachments\/[^/]+\/content$/,
+    // A task's pinned org and workspace skill bundles, fetched the same way (job-handlers-skill-content.ts, BEL-273).
+    /^\/api\/jobs\/[^/]+\/skills\/[^/]+\/content$/,
 ];
 
 /** Machine-to-machine telemetry, from the collector. The branch route is NOT here — see BRANCH. */
