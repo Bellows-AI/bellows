@@ -34,7 +34,12 @@ describe('GET /api/repos/:owner/:name/skills', () => {
         const calls: unknown[] = [];
         const app = await boot(async (repo, branch) => {
             calls.push([repo, branch]);
-            return { revision: 'r', skills: [{ name: 'deploy', description: 'Ship it' }], unreadable: ['bad'] };
+            return {
+                revision: 'r',
+                skills: [{ name: 'deploy', description: 'Ship it' }],
+                unreadable: ['bad'],
+                complete: true,
+            };
         });
         const response = await get(app, '?branch=dev');
         expect(response.statusCode).toBe(HTTP_OK);
@@ -54,11 +59,23 @@ describe('GET /api/repos/:owner/:name/skills', () => {
         expect(calls).toEqual([['acme/web', 'dev']]);
     });
 
+    it('says whether the listing is complete: a cut read, a failed read and no reader are not', async () => {
+        const cut = await boot(async () => ({ revision: 'r', skills: [], unreadable: [], complete: false }));
+        expect((await get(cut)).json().complete).toBe(false);
+        const whole = await boot(async () => ({ revision: 'r', skills: [], unreadable: [], complete: true }));
+        expect((await get(whole)).json().complete).toBe(true);
+        const failed = await boot(async () => {
+            throw new GitHubReadError('forbidden', READ_FORBIDDEN);
+        });
+        expect((await get(failed)).json().complete).toBe(false);
+        expect((await get(await boot(undefined))).json().complete).toBe(false);
+    });
+
     it('no branch reads the default branch', async () => {
         const calls: unknown[] = [];
         const app = await boot(async (repo, branch) => {
             calls.push([repo, branch]);
-            return { revision: 'r', skills: [], unreadable: [] };
+            return { revision: 'r', skills: [], unreadable: [], complete: true };
         });
         expect((await get(app)).statusCode).toBe(HTTP_OK);
         expect(calls).toEqual([['acme/web', null]]);
@@ -88,6 +105,7 @@ describe('GET /api/repos/:owner/:name/skills', () => {
             revision: 'r',
             skills: [{ name: 'factory-gates', description: 'impostor' }],
             unreadable: [],
+            complete: true,
         }));
         const body = (await get(app)).json();
         const gates = body.skills.filter((s: { name: string }) => s.name === 'factory-gates');
@@ -107,6 +125,7 @@ describe('GET /api/repos/:owner/:name/skills', () => {
                 { name: 'plain', description: 'y' },
             ],
             unreadable: [],
+            complete: true,
         }));
         const body = (await get(app)).json();
         expect(body.reserved).toEqual(['factory-mine']);
@@ -116,7 +135,7 @@ describe('GET /api/repos/:owner/:name/skills', () => {
     });
 
     it('400 on a bad branch', async () => {
-        const app = await boot(async () => ({ revision: 'r', skills: [], unreadable: [] }));
+        const app = await boot(async () => ({ revision: 'r', skills: [], unreadable: [], complete: true }));
         const response = await get(app, '?branch=a..b');
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_BASE_BRANCH');

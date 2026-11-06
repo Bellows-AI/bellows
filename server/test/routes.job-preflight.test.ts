@@ -257,6 +257,7 @@ describe('POST /api/jobs/preflight skills', () => {
             revision: 'sha',
             skills: names.map((name) => ({ name, description: 'd' })),
             unreadable: [] as string[],
+            complete: true,
         });
 
     it('is blocked for a name a successful repository read lacks', async () => {
@@ -299,9 +300,22 @@ describe('POST /api/jobs/preflight skills', () => {
         expect(check).toMatchObject({ status: 'unverified' });
     });
 
+    it('is unverified, not blocked, for a name missing from a cut listing', async () => {
+        const booted = await boot({
+            repoSkills: async () => ({
+                revision: 'sha',
+                skills: [{ name: 'another', description: 'd' }],
+                unreadable: [],
+                complete: false,
+            }),
+        });
+        const { check } = await verdict(booted, { ...base, skills: ['repo-only'] }, 'skill');
+        expect(check).toMatchObject({ name: 'repo-only', status: 'unverified' });
+    });
+
     it('is unverified for a name whose directory could not be parsed', async () => {
         const booted = await boot({
-            repoSkills: async () => ({ revision: 'sha', skills: [], unreadable: ['repo-only'] }),
+            repoSkills: async () => ({ revision: 'sha', skills: [], unreadable: ['repo-only'], complete: true }),
         });
         const { check } = await verdict(booted, { ...base, skills: ['repo-only'] }, 'skill');
         expect(check).toMatchObject({ status: 'unverified' });

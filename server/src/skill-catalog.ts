@@ -12,12 +12,12 @@ import type { RepoSkillRead } from './github/skill-read.js';
 export type RepoSkillReader = (repo: string, branch: string | null, signal?: AbortSignal) => Promise<RepoSkillRead>;
 
 /**
- * What the repository read answered. Only `read` may confirm an absence, and then only for a name that is not in
+ * What the repository read answered. Only a `complete` `read` may confirm an absence, and then only for a name that is not in
  * `unreadable`; `unconfirmed` (no reader, a throw, a timeout, an abort) is no verdict (AGENTS.md: an unconfirmed read).
  */
 export type RepoReadState =
     | { state: 'not-asked' }
-    | { state: 'read'; revision: string; unreadable: readonly string[] }
+    | { state: 'read'; revision: string; unreadable: readonly string[]; complete: boolean }
     | { state: 'unconfirmed'; error: string };
 
 export interface EffectiveCatalog {
@@ -61,7 +61,12 @@ export async function effectiveCatalog(request: CatalogRequest): Promise<Effecti
             if (!request.read) throw new Error('Repository skills cannot be read on this board');
             const read = await request.read(request.repo, request.branch, request.signal);
             held = read.skills;
-            repo = { state: 'read', revision: read.revision, unreadable: [...read.unreadable] };
+            repo = {
+                state: 'read',
+                revision: read.revision,
+                unreadable: [...read.unreadable],
+                complete: read.complete,
+            };
         } catch (cause) {
             request.onUnconfirmed?.(cause);
             repo = { state: 'unconfirmed', error: cause instanceof Error ? cause.message : String(cause) };
@@ -82,7 +87,8 @@ export function standingOf(catalog: EffectiveCatalog, name: string): SkillStandi
     if (catalog.entries.some((entry) => entry.name === name)) return 'known';
     if (isReservedSkillName(name)) return 'absent';
     const { repo } = catalog;
-    if (repo.state === 'read') return repo.unreadable.includes(name) ? 'unverified' : 'absent';
+    // A cut or partly unnameable listing cannot say a name is missing.
+    if (repo.state === 'read') return repo.complete && !repo.unreadable.includes(name) ? 'absent' : 'unverified';
     return repo.state === 'unconfirmed' ? 'unverified' : 'absent';
 }
 

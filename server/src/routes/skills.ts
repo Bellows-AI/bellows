@@ -57,6 +57,8 @@ function repoMenuOf(result: EffectiveCatalog, canRead: boolean) {
         ),
         repoError,
         unreadable: repo.state === 'read' ? [...repo.unreadable] : [],
+        // False when the listing was cut or unconfirmed: the repo skills shown are what was read, not all there are.
+        complete: repo.state === 'read' && repo.complete,
         reserved: result.reserved,
     };
 }

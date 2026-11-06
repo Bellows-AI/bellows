@@ -1007,6 +1007,7 @@ describe('POST /api/jobs skill selection', () => {
             revision: 'sha',
             skills: names.map((name) => ({ name, description: 'd' })),
             unreadable: [] as string[],
+            complete: true,
         });
     const harnessReading = async (jobs: StoreStub, repoSkills: ReturnType<typeof readOf>) => {
         const config = testConfig();
@@ -1061,8 +1062,21 @@ describe('POST /api/jobs skill selection', () => {
             revision: 'sha',
             skills: [],
             unreadable: ['repo-only'],
+            complete: true,
         }));
         expect((await createWith(instance)).statusCode).toBe(201);
+    });
+
+    it('accepts a name missing from a cut listing: a truncated read is no verdict', async () => {
+        const jobs = stubStore();
+        const instance = await harnessReading(jobs, async () => ({
+            revision: 'sha',
+            skills: [{ name: 'another', description: 'd' }],
+            unreadable: [],
+            complete: false,
+        }));
+        expect((await createWith(instance)).statusCode).toBe(201);
+        expect(jobs.skillSelections).toEqual([['repo-only']]);
     });
 
     it('refuses a name a successful repository read lacks, queueing nothing', async () => {

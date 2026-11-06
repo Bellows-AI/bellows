@@ -72,7 +72,7 @@ describe('readRepoSkills', () => {
         const answers = repoWith(repo, {});
         answers[`/repos/${repo}/contents/.claude/skills`] = new GitHubReadError('nf', READ_NOT_FOUND);
         const read = await readRepoSkills(fakeCall(answers).call, repo, 'main');
-        expect(read).toEqual({ revision: SHA, skills: [], unreadable: [] });
+        expect(read).toEqual({ revision: SHA, skills: [], unreadable: [], complete: true });
     });
 
     it('a 404 tip is an error, not an empty list', async () => {
@@ -138,7 +138,24 @@ describe('readRepoSkills', () => {
         const read = await readRepoSkills(call, repo, 'main');
         expect(MAX_REPO_SKILLS).toBe(50);
         expect(read.skills).toHaveLength(MAX_REPO_SKILLS);
+        expect(read.complete).toBe(false);
         expect(paths.filter((p) => p.includes('SKILL.md'))).toHaveLength(MAX_REPO_SKILLS);
+    });
+
+    it('exactly the cap is complete; a directory entry with no usable name is not', async () => {
+        const repo = freshRepo();
+        const entries: Record<string, string> = {};
+        for (let i = 0; i < MAX_REPO_SKILLS; i += 1) entries[`s${i}`] = skillMd(`s${i}`, 'd');
+        const full = await readRepoSkills(fakeCall(repoWith(repo, entries)).call, repo, 'main');
+        expect(full.complete).toBe(true);
+        const other = freshRepo();
+        const listing = [...dirs('fix'), { type: 'dir' }] as ReturnType<typeof dirs>;
+        const odd = await readRepoSkills(
+            fakeCall(repoWith(other, { fix: skillMd('fix', 'd') }, listing)).call,
+            other,
+            'main'
+        );
+        expect(odd.complete).toBe(false);
     });
 
     it('the deadline aborts in-flight reads and throws', async () => {

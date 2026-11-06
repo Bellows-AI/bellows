@@ -7,6 +7,7 @@ const SOURCES = ['builtin', 'org', 'workspace', 'repo'] as const;
 
 const SkillsSchema = z.object({
     repoError: z.string().nullable().optional(),
+    complete: z.boolean().optional(),
     // The repo route lists overridden entries apart (declared requirements are not read for them).
     shadowed: z
         .array(
@@ -62,6 +63,9 @@ export const listSkills = defineTool({
     }),
     output: z.object({
         repoError: z.string().nullable(),
+        repoComplete: z
+            .boolean()
+            .describe('false when a repo was asked for and its skill listing was cut or unconfirmed: more may exist'),
         skills: z.array(
             z.object({
                 name: z.string(),
@@ -120,7 +124,14 @@ export const listSkills = defineTool({
         out.push(...overridden);
         return {
             outcome: 'ok',
-            result: success({ skills: out, repoError: skills.data.repoError ?? null }, `${out.length} skills`),
+            result: success(
+                {
+                    skills: out,
+                    repoError: skills.data.repoError ?? null,
+                    repoComplete: !args.repo || skills.data.complete === true,
+                },
+                `${out.length} skills`
+            ),
         };
     },
 });

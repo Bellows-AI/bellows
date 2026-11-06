@@ -379,6 +379,7 @@ describe('list_skills', () => {
                 { name: 'factory-fix', description: 'impostor' },
             ],
             unreadable: [] as string[],
+            complete: true,
         });
         const { data } = await call(await boot({ repoSkills }), 'alice', 'list_skills', {
             repo: 'acme/web',
@@ -388,6 +389,7 @@ describe('list_skills', () => {
         expect(by('deploy')).toMatchObject([{ source: 'repo', kind: 'manual' }]);
         expect(by('factory-fix')).toMatchObject([{ source: 'builtin' }, { source: 'repo', shadowedBy: 'builtin' }]);
         expect(data.repoError).toBeNull();
+        expect(data.repoComplete).toBe(true);
 
         const failing = await boot({
             repoSkills: async () => {
@@ -396,7 +398,16 @@ describe('list_skills', () => {
         });
         const failed = await call(failing, 'alice', 'list_skills', { repo: 'acme/web' });
         expect(failed.data.repoError).toEqual(expect.stringContaining('github down'));
+        expect(failed.data.repoComplete).toBe(false);
         expect(failed.data.skills.every((s: { source: string }) => s.source === 'builtin')).toBe(true);
+    });
+
+    it('says a cut repo listing is not complete, and a call with no repo is', async () => {
+        const cut = await boot({
+            repoSkills: async () => ({ revision: 'sha', skills: [], unreadable: [], complete: false }),
+        });
+        expect((await call(cut, 'alice', 'list_skills', { repo: 'acme/web' })).data.repoComplete).toBe(false);
+        expect((await call(cut, 'alice', 'list_skills')).data.repoComplete).toBe(true);
     });
 
     it('is inconclusive when the standing cannot be read: no guessed state', async () => {
