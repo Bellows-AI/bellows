@@ -23,7 +23,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT.slice(origin, origin + 120)).toContain('-p 127.0.0.1::9418');
         expect(SCRIPT).toContain('docker port "$ORIGIN_NAME" 9418/tcp');
         expect(origin).toBeLessThan(SCRIPT.indexOf('\nstart_open_board\n'));
-        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(5);
+        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(6);
         expect(SCRIPT).not.toContain('ORG_WORKSPACE_ROOT');
         expect(SCRIPT).not.toContain('.origins');
     });
@@ -187,9 +187,17 @@ describe('the test-jobs harness', () => {
 
     // The auth phase takes the open board down; the question round trip after it queues on $BASE.
     it('the open board is back up before the phases that follow the auth one', () => {
-        const restart = SCRIPT.lastIndexOf('start_open_board\n');
+        const restart = SCRIPT.indexOf('start_open_board\n', SCRIPT.indexOf("ok 'a worker token cannot queue a job'"));
         expect(restart).toBeGreaterThan(SCRIPT.indexOf("ok 'a worker token cannot queue a job'"));
         expect(restart).toBeLessThan(SCRIPT.lastIndexOf('ask_roundtrip_lane'));
+    });
+
+    // The pinned-skills phase runs its own authenticated board on the same port; the open board follows it.
+    it('the open board is back up after the pinned-skills phase, before the phases that follow it', () => {
+        const phase = SCRIPT.indexOf('begin_phase pinned-skills');
+        const restart = SCRIPT.indexOf('start_open_board\n', phase);
+        expect(restart).toBeGreaterThan(SCRIPT.indexOf('pinned_skills_lane\n', phase));
+        expect(restart).toBeLessThan(SCRIPT.indexOf('begin_phase mcp'));
     });
 
     // The bridge the claude entrypoint execs refuses any argv not ending in `-p <prompt>` (#536).

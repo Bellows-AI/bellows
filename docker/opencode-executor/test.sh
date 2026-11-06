@@ -358,10 +358,10 @@ else
 fi
 
 # Repo skills (BEL-270): opencode scans a checkout's .claude/skills (what claude-executor reads) as well
-# as .opencode/skills, .opencode/skill and .agents/skills, with no config of ours. On a name clash with a
-# baked global skill the PROJECT copy is the one listed, unlike claude-executor where the managed one wins
-# (a stated limit in docs/skills.md). A skills.paths entry beats both; that is the delivery seam for org and
-# workspace skills (BEL-273).
+# as .opencode/skills, .opencode/skill and .agents/skills, with no config of ours. On a name clash across sources
+# (a repo copy, a baked global skill, a skills.paths directory) opencode lists ONE copy, but which source wins is
+# not deterministic: measured under contention, skills.paths won 7 of 12 runs, the repo 4 and the global 1, so the
+# clash checks assert exactly one copy from an expected source, never a winner (docs/skills.md).
 skill_ws="$(mktemp -d)"
 for d in .claude/skills/probe-claude .opencode/skills/probe-ocskills .opencode/skill/probe-ocskill .agents/skills/probe-agents .claude/skills/factory-fix extra/factory-fix; do
     mkdir -p "$skill_ws/$d"
@@ -377,21 +377,23 @@ for want in /workspace/.claude/skills/probe-claude/SKILL.md /workspace/.opencode
     *) bad "opencode discovers ${want#/workspace/}" "listed: $located" ;;
     esac
 done
-case "$located" in
-*/workspace/.claude/skills/factory-fix/SKILL.md*)
-    case "$located" in
-    */home/node/.config/opencode/skills/factory-fix/SKILL.md*) bad 'a repo skill named like a built-in replaces the global one' "both listed: $located" ;;
-    *) ok 'a repo skill named like a built-in replaces the global one' ;;
-    esac
-    ;;
-*) bad 'a repo skill named like a built-in replaces the global one' "listed: $located" ;;
-esac
+# Exactly one copy of a clashing skill is listed, and it comes from one of the sources that hold it.
+clash_listing() { # clash_listing <name> <listing> <allowed path regex> -> ok / bad on the clash checks' behalf
+    local name="$1" listing="$2" allowed="$3" count
+    count="$(printf '%s\n' "$listing" | grep -c "/$name/SKILL.md")"
+    [ "$count" = 1 ] && [ -n "$(printf '%s\n' "$listing" | grep -E "^($allowed)\$")" ]
+}
+if clash_listing factory-fix "$located" '/workspace/.claude/skills/factory-fix/SKILL.md|/home/node/.config/opencode/skills/factory-fix/SKILL.md'; then
+    ok 'a repo skill named like a built-in is listed once, from the repo or the global copy'
+else
+    bad 'a repo skill named like a built-in is listed once, from the repo or the global copy' "listed: $located"
+fi
 located="$(docker run --rm -v "$skill_ws:/workspace" -w /workspace -e 'OPENCODE_CONFIG_CONTENT={"skills":{"paths":["/workspace/extra"]}}' \
     --entrypoint sh "$IMAGE" -c 'opencode debug skill >/tmp/s.json 2>/dev/null; grep -o "/[^\"]*factory-fix/SKILL.md" /tmp/s.json')"
-if [ "$located" = /workspace/extra/factory-fix/SKILL.md ]; then
-    ok 'a skills.paths directory beats both the project and the global skill of the same name'
+if clash_listing factory-fix "$located" '/workspace/extra/factory-fix/SKILL.md|/workspace/.claude/skills/factory-fix/SKILL.md|/home/node/.config/opencode/skills/factory-fix/SKILL.md'; then
+    ok 'a skills.paths directory, a project and a global skill of the same name list once, from one of them'
 else
-    bad 'a skills.paths directory beats both the project and the global skill of the same name' "listed: $located"
+    bad 'a skills.paths directory, a project and a global skill of the same name list once, from one of them' "listed: $located"
 fi
 rm -rf "$skill_ws"
 
