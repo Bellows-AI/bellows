@@ -1,13 +1,10 @@
-import {
-    type ConnectionOutcome,
-    connectionCalls,
-    connectionOutcomesOf,
-    type RequirementVerdict,
-} from './board-connection.js';
+import { type ConnectionOutcome, connectionCalls, type RequirementVerdict } from './board-connection.js';
 import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
 import { type AttachmentContent, attachmentCalls, type ClaimAttachment } from './board-attachments.js';
+import { claimOf } from './board-claim.js';
+import { type ClaimSkills, skillCalls } from './board-skills.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
 import { type GithubGrant, githubCredentialCall } from '../github-credential-call.js';
@@ -17,7 +14,7 @@ import { phaseCheckpointCalls, type PhaseCheckpointBoard } from './board-phase-c
 import { verdictCalls } from './board-verdict.js';
 import type { TaskRestore } from '../task-restore.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from '../evidence-policy.js';
-import { type ExecutorType, isExecutorType } from '../executors.js';
+import type { ExecutorType } from '../executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from '../http.js';
 import type { HelperPlan } from '../helpers.js';
 import type { ServiceSpec } from '../services.js';
@@ -59,7 +56,7 @@ export interface DeclaredGate {
     filter?: true;
 }
 
-export interface BoardJob {
+export interface BoardJob extends ClaimSkills {
     id: string;
     attachments?: ClaimAttachment[];
     command: string;
@@ -429,6 +426,7 @@ export type FailureKind =
     | 'policy'
     | 'checkpoint_unrestorable'
     | 'attachment_unavailable'
+    | 'skill_unavailable'
     | 'runner_error';
 
 /**
@@ -526,6 +524,8 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
     checkpointChunk(job: BoardJob, offset: number): Promise<{ bytes: Uint8Array; sha256: string } | null>;
     /** One task input's bytes under `job`'s lease (task or review row), sha256 verified; null when not in its set (see board-attachments.ts). */
     attachmentContent: AttachmentContent;
+    /** One pinned skill bundle's tar under `job`'s lease, sha256 verified; null when the version is not in its pin (see board-skills.ts). */
+    skillContent: AttachmentContent;
     /** The thread's raw Claude transcript streams (issue #775), read under the live lease like `checkpoint`. */
     transcripts(job: BoardJob): Promise<TranscriptStream[]>;
     /** One chunk of one such stream, its sha256 verified; null when the board has no such chunk. */
@@ -741,37 +741,6 @@ const bestEffortLeases = async (
     }
 };
 
-/** A claim text field read defensively: the string the board sent, else null. */
-const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
-
-/** The claim's `turnContext` when it is a non-empty string, else absent. */
-const knownTurnContext = (value: unknown): Pick<BoardJob, 'turnContext'> =>
-    typeof value === 'string' && value.length > 0 ? { turnContext: value } : {};
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
-
-/** A service entry of the claim's plan, as far as the driver's argv and pod specs rely on it. */
-const isServiceSpec = (value: unknown): value is ServiceSpec =>
-    isRecord(value) &&
-    typeof value.name === 'string' &&
-    typeof value.image === 'string' &&
-    Array.isArray(value.environment) &&
-    value.environment.every(
-        (entry) => isRecord(entry) && typeof entry.key === 'string' && typeof entry.value === 'string'
-    );
-
-/**
- * The claim's resolved services, read defensively. A malformed list is the board breaking its own
- * contract, never something to start a container from: it refuses the plan like any other.
- */
-const servicePlanOf = (value: unknown): Pick<BoardJob, 'services'> & { refusal: string | null } => {
-    if (value === undefined || value === null) return { refusal: null };
-    if (!Array.isArray(value) || !value.every(isServiceSpec)) {
-        return { refusal: 'The board delivered a malformed service list in the execution plan.' };
-    }
-    return { refusal: null, services: value };
-};
-
 /** The board's answer to a question report, read as a verdict. */
 function questionVerdictOf(response: Response): QuestionVerdict {
     if (response.status === HTTP_TOO_MANY_REQUESTS) return 'refused';
@@ -781,43 +750,6 @@ function questionVerdictOf(response: Response): QuestionVerdict {
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_CREATED = 201;
-
-/** A claim off the wire, read into the shape the loop works with: every optional field defaulted or dropped. */
-function claimOf(wire: Partial<BoardJob>): BoardJob {
-    // Destructured out rather than left in the base spread: an invalid (non-array) value
-    // must not survive under exactOptionalPropertyTypes, which refuses assigning
-    // `undefined` to this optional property directly — the conditional spread below is
-    // the only way to represent "absent".
-    const { helperPlans, turnContext, services, reviewerProfiles, connectionOutcomes, ...claimed } = wire;
-    const plan = servicePlanOf(services);
-    return {
-        ...(claimed as BoardJob),
-        ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
-        ...(plan.services ? { services: plan.services } : {}),
-        ...reviewerProfilesOf(reviewerProfiles),
-        ...connectionOutcomesOf(connectionOutcomes),
-        ...knownTurnContext(turnContext),
-        masterPrompt: textOrNull(claimed.masterPrompt),
-        resumeSessionId: claimed.resumeSessionId ?? null,
-        followUp: claimed.followUp ?? false,
-        userId: claimed.userId ?? null,
-        workspacePath: claimed.workspacePath ?? null,
-        rootJobId: claimed.rootJobId ?? null,
-        executorType: isExecutorType(claimed.executorType) ? claimed.executorType : null,
-        executorRefusal: textOrNull(claimed.executorRefusal),
-        skillRefusal: textOrNull(claimed.skillRefusal),
-        planRefusal: plan.refusal ?? textOrNull(claimed.planRefusal),
-        env: claimed.env ?? {},
-    };
-}
-
-/** The claim's reviewer profile names, or nothing: an empty or malformed list reads as no reviewer (issue #774). */
-function reviewerProfilesOf(value: unknown): { reviewerProfiles?: readonly string[] } {
-    const names = Array.isArray(value) ? (value as unknown[]) : [];
-    return names.length > 0 && names.every((name) => typeof name === 'string')
-        ? { reviewerProfiles: names as string[] }
-        : {};
-}
 
 /**
  * The board's answer to a review request or read. A 409 is two things here — the lease verdict, and
@@ -962,6 +894,7 @@ export function createBoard({
         ...artifactCalls({ url, token, fetch }),
         ...checkpointCalls(post),
         ...attachmentCalls(post),
+        ...skillCalls(post),
         ...githubCredentialCall({ url, fetch }),
         ...connectionCalls(post),
 

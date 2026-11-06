@@ -1492,6 +1492,85 @@ describe('the opencode-executor permission policy', () => {
         CASE_TIMEOUT_MS
     );
 
+    // BEL-273: the directory the driver installed the claim's pinned org and workspace skills in joins
+    // `skills.paths` (which beats the project and global skills) and gets its own external_directory allow.
+    it(
+        'adds the pinned skills directory to skills.paths and allows it, keeping what the config already had',
+        async () => {
+            const sandboxData = mkdtempSync(join(tmpdir(), 'executor-member-'));
+            try {
+                const skills = '/task/.factory/skills-root/.claude/skills';
+                const inline = JSON.parse(
+                    await runEntrypoint({
+                        env: {
+                            FACTORY_SKILLS_PATH: skills,
+                            XDG_DATA_HOME: join(sandboxData, 'org', 'uuid', '.factory', 'opencode', 'task'),
+                            OPENCODE_CONFIG_CONTENT: JSON.stringify({ skills: { paths: ['/already'] } }),
+                        },
+                    })
+                );
+                expect(inline).toEqual({
+                    skills: { paths: ['/already', skills] },
+                    permission: {
+                        external_directory: {
+                            [`${join(sandboxData, 'org', 'uuid')}/**`]: 'allow',
+                            [`${skills}/**`]: 'allow',
+                        },
+                    },
+                });
+            } finally {
+                rmSync(sandboxData, { recursive: true, force: true });
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'adds the pinned skills directory even where no member tree allow applies',
+        async () => {
+            const skills = '/task/.factory/skills-root/.claude/skills';
+            expect(JSON.parse(await runEntrypoint({ env: { FACTORY_SKILLS_PATH: skills } }))).toEqual({
+                skills: { paths: [skills] },
+                permission: { external_directory: { [`${skills}/**`]: 'allow' } },
+            });
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // opencode accepts a bare action for the whole permission block and for one permission: the merge widens either
+    // into its `*` rule so the allows still land, instead of throwing and starting the agent without its skills.
+    it.each([
+        [
+            'a scalar permission',
+            { permission: 'allow' },
+            { '*': 'allow', external_directory: { '/s/**': 'allow' } },
+            { paths: ['/s'] },
+        ],
+        [
+            'a scalar external_directory',
+            { permission: { external_directory: 'deny' } },
+            { external_directory: { '*': 'deny', '/s/**': 'allow' } },
+            { paths: ['/s'] },
+        ],
+        [
+            'a non-object skills value',
+            { skills: true },
+            { external_directory: { '/s/**': 'allow' } },
+            { paths: ['/s'] },
+        ],
+    ])(
+        'adds the pinned skills directory over %s',
+        async (_label, config, permission, skills) => {
+            const got = JSON.parse(
+                await runEntrypoint({
+                    env: { FACTORY_SKILLS_PATH: '/s', OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
+                })
+            );
+            expect(got).toEqual({ skills, permission });
+        },
+        CASE_TIMEOUT_MS
+    );
+
     // A value the merge cannot extend is passed through untouched, with a warning — never an abort
     // of the run under set -eu, and never the allows silently dropped onto an array.
     it.each([

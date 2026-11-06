@@ -395,6 +395,23 @@ else
 fi
 rm -rf "$skill_ws"
 
+# Pinned org and workspace skills (BEL-273): the driver installs them root-owned (0755/0644) under the task volume at
+# /task/.factory/skills-root/.claude/skills, and the entrypoint adds that directory to skills.paths (merged into
+# OPENCODE_CONFIG_CONTENT from FACTORY_SKILLS_PATH, pinned offline in driver/test/executor-images.test.ts). Here the
+# merged config is given as the entrypoint produces it, and the real CLI must list the installed skill.
+task_vol="$(mktemp -d)"
+mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-org"
+printf -- '---\nname: probe-org\ndescription: pinned org skill\n---\norg body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-org/SKILL.md"
+chmod -R a+rX "$task_vol"
+located="$(docker run --rm -v "$task_vol:/task:ro" -w /tmp -e 'OPENCODE_CONFIG_CONTENT={"skills":{"paths":["/task/.factory/skills-root/.claude/skills"]}}' \
+    --entrypoint sh "$IMAGE" -c 'opencode debug skill >/tmp/s.json 2>/dev/null; grep -o "/[^\"]*probe-org/SKILL.md" /tmp/s.json')"
+if [ "$located" = /task/.factory/skills-root/.claude/skills/probe-org/SKILL.md ]; then
+    ok 'a pinned skill installed under the task volume is listed through skills.paths'
+else
+    bad 'a pinned skill installed under the task volume is listed through skills.paths' "listed: $located"
+fi
+rm -rf "$task_vol"
+
 # The agent's tool isolation (issue #814), the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh
 . "$HERE/../tool-isolation-checks.sh"

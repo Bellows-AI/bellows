@@ -71,6 +71,15 @@ export function attachmentsDir(job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>): st
     return `${TASK_MOUNT}/.factory/attachments/${taskRootOf(job)}`;
 }
 
+/**
+ * Where the pinned org and workspace skills are installed (BEL-273): a base directory the claude CLI is given with
+ * `--add-dir`, which reads `<base>/.claude/skills/<name>/`, and the same skills directory opencode reads through
+ * `skills.paths`. On the task volume, outside the checkout, root-owned 0755/0644, so the tool uid reads the bundle
+ * files and never changes them. One per thread; never under `/etc/claude-code`.
+ */
+export const SKILLS_ROOT = `${TASK_MOUNT}/.factory/skills-root`;
+export const SKILLS_DIR = `${SKILLS_ROOT}/.claude/skills`;
+
 /** `factory-task-<root uuid>-<generation>`, the name of the thread's volume. */
 export function taskVolumeName(
     job: Pick<TaskVolumeJob, 'id' | 'rootJobId' | 'taskGeneration'>,

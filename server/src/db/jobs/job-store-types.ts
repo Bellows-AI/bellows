@@ -72,6 +72,7 @@ export type FailureKind =
     | 'policy'
     | 'checkpoint_unrestorable'
     | 'attachment_unavailable'
+    | 'skill_unavailable'
     | 'runner_error';
 
 /**

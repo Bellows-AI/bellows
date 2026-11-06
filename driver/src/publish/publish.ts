@@ -184,7 +184,8 @@ export const SYNC_FAILURE_KINDS = ['branch_unrestorable', 'missing_base_branch']
 export type SyncFailureKind =
     | (typeof SYNC_FAILURE_KINDS)[number]
     | 'checkpoint_unrestorable'
-    | 'attachment_unavailable';
+    | 'attachment_unavailable'
+    | 'skill_unavailable';
 
 /**
  * The turn context a conflict handed over by the sync adds (issue #661): the paths, and what the

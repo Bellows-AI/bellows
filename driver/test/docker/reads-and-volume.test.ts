@@ -433,6 +433,87 @@ describe('the docker runner restoring a task volume', () => {
             expect(names(steps)).toEqual(['restore']);
         });
 
+        const PIN = [
+            {
+                name: 'org-style',
+                source: 'org' as const,
+                versionId: '77777777-7777-4777-8777-777777777777',
+                sha256: 'b'.repeat(64),
+            },
+        ];
+
+        it('installs the pinned skills after the inputs, and for a first repo-free claim that has only a pin', async () => {
+            const both = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            await runner([], both, NONE).runner.syncCheckout(
+                repoFree({ followUp: false, attachments: [FILE], skillPin: PIN }),
+                undefined,
+                null
+            );
+            expect(names(both)).toEqual(['inputs', 'skills']);
+            const only = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            await runner([], only, NONE).runner.syncCheckout(
+                repoFree({ followUp: false, skillPin: PIN }),
+                undefined,
+                null
+            );
+            expect(names(only)).toEqual(['skills']);
+            expect(only.submitted[0]?.step.env).toMatchObject({ INPUT_FEED: '1', INPUT_DELIVERY: 'skills' });
+            expect(JSON.parse(only.submitted[0]?.step.env.PIN ?? '')).toEqual(PIN);
+        });
+
+        it('runs the installer for an explicit empty pin on a repo-free first claim, so a disabled last skill is pruned', async () => {
+            const empty = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            await runner([], empty, NONE).runner.syncCheckout(
+                repoFree({ followUp: false, skillPin: [] }),
+                undefined,
+                null
+            );
+            expect(names(empty)).toEqual(['skills']);
+            expect(JSON.parse(empty.submitted[0]?.step.env.PIN ?? '')).toEqual([]);
+        });
+
+        it('ends skill_unavailable on a definitive refusal and throws on a transient one or an unreadable pin', async () => {
+            const refused = fakeSteps((step) =>
+                ok(
+                    step.id.endsWith('-skills')
+                        ? '{"ok":false,"reason":"gone","kind":"skill_unavailable"}'
+                        : '{"ok":true,"reason":null}'
+                )
+            );
+            expect(
+                await runner([1], refused, NONE).runner.syncCheckout(
+                    restoreJob({ skillPin: PIN }),
+                    undefined,
+                    null,
+                    'ghs_x'
+                )
+            ).toMatchObject({ ok: false, kind: 'skill_unavailable' });
+            const transient = fakeSteps((step) =>
+                ok(
+                    step.id.endsWith('-skills')
+                        ? '{"ok":false,"reason":"503","transient":true}'
+                        : '{"ok":true,"reason":null}'
+                )
+            );
+            await expect(
+                runner([1], transient, NONE).runner.syncCheckout(
+                    restoreJob({ skillPin: PIN }),
+                    undefined,
+                    null,
+                    'ghs_x'
+                )
+            ).rejects.toThrow();
+            const unreadable = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            await expect(
+                runner([], unreadable, NONE).runner.syncCheckout(
+                    repoFree({ followUp: false, skillPinUnreadable: 'bad pin' }),
+                    undefined,
+                    null
+                )
+            ).rejects.toThrow(/bad pin/);
+            expect(names(unreadable)).toEqual([]);
+        });
+
         it('ends attachment_unavailable on a definitive refusal and throws on a transient one', async () => {
             const refused = fakeSteps((step) =>
                 ok(

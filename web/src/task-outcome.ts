@@ -173,6 +173,7 @@ export const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
     policy: 'evidence required',
     checkpoint_unrestorable: 'checkpoint unrestorable',
     attachment_unavailable: 'attachment unavailable',
+    skill_unavailable: 'skill unavailable',
     runner_error: 'runner error',
 };
 
