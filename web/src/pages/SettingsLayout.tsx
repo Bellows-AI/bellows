@@ -108,7 +108,15 @@ export function SettingsLayout() {
         []
     );
 
-    const api: GuardApi = useMemo(() => ({ registerDraft, confirmDiscard }), [registerDraft, confirmDiscard]);
+    const dirtyDraft = useCallback((id: string) => {
+        const draft = drafts.current.get(id);
+        return draft?.dirty ? draft : null;
+    }, []);
+
+    const api: GuardApi = useMemo(
+        () => ({ registerDraft, dirtyDraft, confirmDiscard }),
+        [registerDraft, dirtyDraft, confirmDiscard]
+    );
 
     // The router blocker: React Router 7 requires a data router for this hook — main.tsx mounts
     // one for exactly this reason. Idle while nothing is dirty, so a clean route proceeds

@@ -14,12 +14,11 @@ function WorkspaceEnvEditor({ env }: { env: UseEnv }) {
     if (!env.data) return null;
     return (
         <EnvVarsSection
-            title="My workspace"
-            scope={{ scope: 'workspace' }}
+            title="Workspace variables"
             vars={env.data.workspace}
             onSave={env.saveWorkspace}
             draftId="workspace"
-            draftLabel="My workspace"
+            draftLabel="Workspace variables"
         />
     );
 }

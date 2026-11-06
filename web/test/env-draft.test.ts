@@ -3,7 +3,9 @@ import {
     countActive,
     envPayload,
     isDirty,
+    isKindDirty,
     payloadEquals,
+    rowChange,
     rowFieldErrors,
     scopeError,
     SECRET_STATE_LABEL,
@@ -22,6 +24,7 @@ const storedVar = (name: string, value: string, id = name): EnvRowState => ({
     isSecret: false,
     isNew: false,
     pendingRemove: false,
+    updatedAt: null,
 });
 
 const storedSecret = (name: string, id = name): EnvRowState => ({
@@ -31,6 +34,7 @@ const storedSecret = (name: string, id = name): EnvRowState => ({
     isSecret: true,
     isNew: false,
     pendingRemove: false,
+    updatedAt: null,
 });
 
 describe('canonical dirty comparison', () => {
@@ -191,6 +195,7 @@ describe('the shared structured/.env draft (BEL-262)', () => {
         isSecret: false,
         isNew: true,
         pendingRemove: false,
+        updatedAt: null,
     };
 
     it('writes only the active variables into the text: no secret, no pending removal, no blank addition', () => {
@@ -229,7 +234,7 @@ describe('the shared structured/.env draft (BEL-262)', () => {
             ok: false,
             errors: [
                 'line 2: expected KEY=value',
-                'line 3: "TOKEN" is already a secret in this scope — edit it in the list view',
+                'line 3: "TOKEN" is already a secret in this scope — edit it in the Secrets tab',
             ],
         });
     });
@@ -262,7 +267,73 @@ describe('the shared structured/.env draft (BEL-262)', () => {
 
     it('words the count note for the secrets the text does not show', () => {
         expect(secretsNote(0)).toBeNull();
-        expect(secretsNote(1)).toBe('1 secret is edited in the list view.');
-        expect(secretsNote(2)).toBe('2 secrets are edited in the list view.');
+        expect(secretsNote(1)).toBe('1 secret is edited in the Secrets tab.');
+        expect(secretsNote(2)).toBe('2 secrets are edited in the Secrets tab.');
+    });
+});
+
+describe('per-kind dirty state', () => {
+    const baseline = [storedVar('A', '1'), storedSecret('TOKEN')];
+
+    it('is clean for both kinds on an untouched draft', () => {
+        expect(isKindDirty(baseline, baseline, false)).toBe(false);
+        expect(isKindDirty(baseline, baseline, true)).toBe(false);
+    });
+
+    it('marks only the kind that changed', () => {
+        const variableEdited = [storedVar('A', '2'), storedSecret('TOKEN')];
+        expect(isKindDirty(baseline, variableEdited, false)).toBe(true);
+        expect(isKindDirty(baseline, variableEdited, true)).toBe(false);
+
+        const secretReplaced = [storedVar('A', '1'), { ...storedSecret('TOKEN'), value: 'next' }];
+        expect(isKindDirty(baseline, secretReplaced, false)).toBe(false);
+        expect(isKindDirty(baseline, secretReplaced, true)).toBe(true);
+    });
+
+    it('counts an addition and a pending removal for their own kind', () => {
+        const added = [...baseline, { ...storedSecret('NEW', 'r1'), isNew: true, value: 'x' }];
+        expect(isKindDirty(baseline, added, true)).toBe(true);
+        expect(isKindDirty(baseline, added, false)).toBe(false);
+        const removed = [{ ...baseline[0]!, pendingRemove: true }, baseline[1]!];
+        expect(isKindDirty(baseline, removed, false)).toBe(true);
+        expect(isKindDirty(baseline, removed, true)).toBe(false);
+    });
+});
+
+describe('the unsaved-change marker of one row', () => {
+    const baseline = [storedVar('A', '1'), storedSecret('TOKEN')];
+
+    it('is null for a row equal to its stored twin, matched by name and not by id', () => {
+        expect(rowChange(storedVar('A', '1', 'other-id'), baseline)).toBeNull();
+        expect(rowChange(baseline[1]!, baseline)).toBeNull();
+    });
+
+    it('is new for an addition and for a rename, trimming the name', () => {
+        expect(rowChange({ ...storedVar('B', '1'), isNew: true }, baseline)).toBe('new');
+        expect(rowChange(storedVar('A2', '1', 'A'), baseline)).toBe('new');
+        expect(rowChange(storedVar(' A ', '1'), baseline)).toBeNull();
+    });
+
+    it('is changed for an edited variable value', () => {
+        expect(rowChange(storedVar('A', '2'), baseline)).toBe('changed');
+    });
+
+    it('matches by type: a secret of a stored variable name is new', () => {
+        expect(rowChange({ ...storedSecret('A'), isNew: true, value: 'x' }, baseline)).toBe('new');
+    });
+
+    it('is changed for a secret only once a replacement is typed', () => {
+        expect(rowChange({ ...storedSecret('TOKEN'), value: '' }, baseline)).toBeNull();
+        expect(rowChange({ ...storedSecret('TOKEN'), value: 'next' }, baseline)).toBe('changed');
+    });
+});
+
+describe('seeding keeps the last write for display', () => {
+    it('carries updatedAt through, and null when the stored row has none', () => {
+        const rows = seedRows([
+            { name: 'A', value: '1', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' },
+            { name: 'B', value: '2', isSecret: false },
+        ]);
+        expect(rows.map((row) => row.updatedAt)).toEqual(['2026-09-01T00:00:00.000Z', null]);
     });
 });

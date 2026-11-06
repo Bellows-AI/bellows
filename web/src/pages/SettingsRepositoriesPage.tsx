@@ -3,6 +3,7 @@ import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { EnvVarView, UseEnv } from '../api/useEnv.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { useUnsavedChanges } from '../components/UnsavedChangesDialog.js';
 import {
     RepositoryConfigDetail,
     RepositoryHeaderMeta,
@@ -47,7 +48,7 @@ function ConfiguredRepoEnv({
         <EnvVarsSection
             key={configured}
             title={configured}
-            scope={{ scope: 'repository', repository: { owner, name } }}
+            monoTitle
             vars={scope?.vars ?? []}
             onSave={(vars) => env.saveRepo({ owner, name }, vars)}
             draftId={`repo:${configured}`}
@@ -58,13 +59,20 @@ function ConfiguredRepoEnv({
 
 /**
  * The configured-repository detail: which repository is open and the focus handoff. Split out of
- * `SettingsRepositoriesPage` to keep its own state out of the page body. Switching repositories
- * needs no discard question of its own: the draft lives in the modal variables dialog, so no
- * dirty draft can sit behind the table when Configure is pressed.
+ * `SettingsRepositoriesPage` to keep its own state out of the page body. Switching away from a
+ * repository whose inline editor holds a dirty draft asks first: the switch remounts the editor,
+ * so it happens only after the reader chose Discard changes.
  */
 function useConfiguredRepoDetail() {
     const [configured, setConfigured] = useState<string | null>(null);
     const headingRef = useRef<HTMLHeadingElement | null>(null);
+    const guard = useUnsavedChanges();
+
+    const configure = async (next: string) => {
+        const draft = configured && next !== configured ? guard?.dirtyDraft(`repo:${configured}`) : null;
+        if (draft && guard && !(await guard.confirmDiscard(draft))) return;
+        setConfigured(next);
+    };
 
     // The handoff: the detail opens below the full-width table, so Configure moves the reader
     // there and the focus follows at every width.
@@ -73,15 +81,16 @@ function useConfiguredRepoDetail() {
         headingRef.current?.focus();
     }, [configured]);
 
-    return { configured, headingRef, configure: setConfigured };
+    return { configured, headingRef, configure };
 }
 
 /**
  * The Repositories section of the settings tree: the repositories this board tracks, and the
  * organization-wide environment of one of them. Configuration needs no per-member state — the
  * repository env scope is organization-wide and any member edits it; the server validates
- * installation visibility. The variables dialog's dirty draft rides the area's unsaved-change
- * guard (issue 182), so leaving the page while it is open meets the one discard confirmation.
+ * installation visibility. The variables editor's dirty draft rides the area's unsaved-change
+ * guard (issue 182), so leaving the page or switching repositories meets the one discard
+ * confirmation.
  */
 export function SettingsRepositoriesPage() {
     const { env, session, repos } = useSettingsPage();

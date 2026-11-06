@@ -139,21 +139,20 @@ for (const width of WIDTHS) {
                 ).toBeVisible();
                 await expect(notifications.getByText(MEMBER_NOTE)).toHaveCount(0);
 
-                const core = page.locator('section.panel', {
-                    has: page.getByRole('heading', { name: 'Core (organization)' }),
+                const editor = page.locator('section.env-editor', {
+                    has: page.getByRole('heading', { name: 'Organization variables' }),
                 });
-                // The summary names the rows and never prints a value; the dialog holds them.
-                await expect(core).not.toContainText(VARIABLE_VALUE);
-                await core.getByRole('button', { name: 'Edit variables' }).click();
-                const editor = page.locator('.env-dialog');
-                await expect(editor.getByLabel(/^Variable \d+ value$/)).toHaveValue(VARIABLE_VALUE);
-                const secretValue = editor.getByLabel(/^Secret \d+ new value$/);
+                // The variable's value reads in its row; the secret's never does.
+                await expect(editor.getByText(VARIABLE_VALUE)).toBeVisible();
+                await editor.getByRole('tab', { name: /^Secrets/ }).click();
+                await expect(editor.getByText('Set', { exact: true })).toBeVisible();
+                await editor.getByRole('button', { name: `Edit ${SECRET_NAME}` }).click();
+                const secretValue = editor.getByLabel('Secret new value');
                 await expect(secretValue).toHaveAttribute('type', 'password');
                 await expect(secretValue).toHaveValue('');
-                await expect(editor.getByText('Set', { exact: true })).toBeVisible();
                 await assertFits(page, width);
                 await page.keyboard.press('Escape');
-                await expect(editor).toBeHidden();
+                await expect(secretValue).toBeHidden();
 
                 await assertFits(page, width);
                 expect(problems).toEqual([]);
@@ -179,7 +178,7 @@ for (const width of WIDTHS) {
                 await expect(notifications.getByText(MEMBER_NOTE)).toBeVisible();
                 await expect(notifications.getByText(NO_SUBSCRIPTIONS_NOTE)).toBeVisible();
                 await expect(notifications.getByRole('button', { name: 'Add notification' })).toHaveCount(0);
-                await expect(page.getByRole('heading', { name: 'Core (organization)' })).toBeVisible();
+                await expect(page.getByRole('heading', { name: 'Organization variables' })).toBeVisible();
 
                 await assertFits(page, width);
                 expect(rosterReads, 'a member never reads the roster').toBe(0);
