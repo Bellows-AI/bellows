@@ -11,10 +11,11 @@
 //
 // The script owns what it installed: `.factory-skills.json` ({owned:{name:sha256}}), written last and atomically.
 //   - a name whose recorded sha256 equals the pin's and whose directory holds SKILL.md is kept, not fetched again;
-//   - a name the ledger owns that the pin no longer lists is removed, so an empty pin prunes everything the script
-//     installed; a ledger that is absent (ENOENT) owns nothing, but one that cannot be read or parsed is a transient
-//     failure and is left untouched: never a delete or an overwrite on a read nothing confirmed;
-//   - a directory the ledger does not own is kept, unless the pin names it: delivery overwrites a same-name directory.
+//   - a name the manifest owns that the pin no longer lists is removed, so an empty pin prunes everything the script
+//     installed; a manifest that is absent (ENOENT) owns nothing, but one that cannot be read or is not valid in every
+//     entry (a skill name and a sha256) is a transient failure, left untouched, with nothing pruned or installed;
+//     every read goes through `probe`, which reports absence only for ENOENT/ENOTDIR and throws on anything else;
+//   - a directory the manifest does not own is kept, unless the pin names it: delivery overwrites a same-name directory.
 //
 // One JSON verdict on the last line, exit 0:
 //   {ok:true, skills:N, fetched:M, pruned:K}
@@ -35,7 +36,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const KIND_UNAVAILABLE = 'skill_unavailable';
-const LEDGER_NAME = '.factory-skills.json';
+const MANIFEST_NAME = '.factory-skills.json';
 const STAGING_PREFIX = '.staging-';
 const SKILL_MD = 'SKILL.md';
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -236,34 +237,62 @@ const write = (dir, entries, dirs) => {
 /** Whether a read failed because the path is confirmed absent: the only failure that is an answer. */
 const absent = (e) => Boolean(e) && (e.code === 'ENOENT' || e.code === 'ENOTDIR');
 
+const ABSENT = Object.freeze({ kind: 'absent' });
+
 /**
- * The ledger's owned names: none only on a confirmed absence (ENOENT). A ledger that cannot be read, is not JSON or
- * has no owned map is a read that confirmed nothing: it THROWS (a transient failure), and the ledger is left as it
- * is, because replacing it would forget what this script owns for good.
+ * THE filesystem read of this script: `{kind:'absent'}` for a confirmed absence (ENOENT/ENOTDIR) and otherwise what
+ * is there: `{kind:'file', text?}`, `{kind:'dir', names}` or `{kind:'other'}`. Any other failure (EACCES, EIO, ...)
+ * is a read that confirmed nothing: it throws, the run is transient, and nothing is deleted or overwritten on it.
+ * No other function reads the filesystem; `skills-reads` pins that.
  */
-const ownedBy = (target) => {
-    let text;
+const probe = (target, { text = false } = {}) => {
     try {
-        text = fs.readFileSync(path.join(target, LEDGER_NAME), 'utf8');
+        const stat = fs.statSync(target);
+        if (stat.isDirectory()) return { kind: 'dir', names: fs.readdirSync(target) };
+        if (stat.isFile()) return text ? { kind: 'file', text: fs.readFileSync(target, 'utf8') } : { kind: 'file' };
+        return { kind: 'other' };
     } catch (e) {
-        if (absent(e)) return {};
+        if (absent(e)) return ABSENT;
         throw e;
     }
-    const ledger = JSON.parse(text);
-    if (!ledger || typeof ledger.owned !== 'object' || ledger.owned === null || Array.isArray(ledger.owned)) {
-        throw new Error(`${LEDGER_NAME} does not hold an owned map`);
-    }
-    return ledger.owned;
 };
 
-/** Whether the skill's SKILL.md is in place: false only on a confirmed absence, any other failure throws. */
-const installed = (target, name) => {
+/**
+ * The manifest's owned map ({name: sha256}), validated whole before anything acts on it: a plain object whose every
+ * key is a skill name and every value a lowercase sha256. Only a confirmed absence owns nothing. Anything else that is
+ * not a valid manifest THROWS (a transient failure) and the file is left as it is, because replacing it would forget
+ * what this script owns for good, and acting on a half-valid one would delete what it does not own.
+ */
+const manifestOf = (target) => {
+    const found = probe(path.join(target, MANIFEST_NAME), { text: true });
+    if (found.kind === 'absent') return {};
+    if (found.kind !== 'file') throw new Error(`${MANIFEST_NAME} is not a file`);
+    let doc;
     try {
-        return fs.statSync(path.join(target, name, SKILL_MD)).isFile();
+        doc = JSON.parse(found.text);
     } catch (e) {
-        if (absent(e)) return false;
-        throw e;
+        throw new Error(`${MANIFEST_NAME} is not JSON: ${e.message}`);
     }
+    const owned = doc && typeof doc === 'object' && !Array.isArray(doc) ? doc.owned : undefined;
+    if (!owned || typeof owned !== 'object' || Array.isArray(owned)) {
+        throw new Error(`${MANIFEST_NAME} does not hold an owned map`);
+    }
+    for (const [name, digest] of Object.entries(owned)) {
+        if (!SKILL_NAME.test(name) || typeof digest !== 'string' || !SHA256.test(digest)) {
+            throw new Error(`${MANIFEST_NAME} owns an entry that is not a skill name with a sha256`);
+        }
+    }
+    return owned;
+};
+
+/** Whether the skill's SKILL.md is in place: false only on a confirmed absence. */
+const installed = (target, name) => probe(path.join(target, name, SKILL_MD)).kind === 'file';
+
+/** The skills directory and the manifest's owned map, both confirmed: a directory that is absent owns nothing. */
+const survey = (target) => {
+    const dir = probe(target);
+    if (dir.kind !== 'absent' && dir.kind !== 'dir') throw new Error('TARGET_DIR is not a directory');
+    return { dir, owned: dir.kind === 'dir' ? manifestOf(target) : {} };
 };
 
 async function main() {
@@ -276,16 +305,18 @@ async function main() {
         delivery: process.env.INPUT_DELIVERY || 'skills',
         timeoutMs: Number(process.env.FETCH_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
     };
-    // Nothing is pinned and no skills directory exists: nothing was ever installed, so there is nothing to prune.
-    if (pin.length === 0 && !fs.existsSync(target)) return { ok: true, skills: 0, fetched: 0, pruned: 0 };
+    // Every read that decides anything comes first: nothing is created, removed or fetched until the directory and
+    // the manifest are both confirmed.
+    const { dir, owned } = survey(target);
+    // Nothing is pinned and the skills directory is confirmed absent: nothing was ever installed, nothing to prune.
+    if (pin.length === 0 && dir.kind === 'absent') return { ok: true, skills: 0, fetched: 0, pruned: 0 };
     fs.mkdirSync(target, { recursive: true, mode: DIR_MODE });
     fs.chmodSync(target, DIR_MODE);
     // A staging directory is only ever an uncommitted install: whatever a killed run left is discarded.
-    for (const name of fs.readdirSync(target)) {
-        if (name.startsWith(STAGING_PREFIX)) fs.rmSync(path.join(target, name), { recursive: true, force: true });
+    for (const name of dir.kind === 'dir' ? dir.names.filter((n) => n.startsWith(STAGING_PREFIX)) : []) {
+        fs.rmSync(path.join(target, name), { recursive: true, force: true });
     }
     const staging = path.join(target, STAGING_PREFIX + (process.env.STAGING_SEQ || '0'));
-    const owned = ownedBy(target);
 
     const missing = pin.filter((entry) => !(owned[entry.name] === entry.sha256 && installed(target, entry.name)));
     // Every bundle is read, checked and staged before any final name changes.
@@ -298,14 +329,15 @@ async function main() {
         fs.renameSync(path.join(staging, entry.name), path.join(target, entry.name));
     }
 
+    // Only names of the validated manifest are ever pruned.
     const names = new Set(pin.map((entry) => entry.name));
-    const stale = Object.keys(owned).filter((name) => !names.has(name) && SKILL_NAME.test(name));
+    const stale = Object.keys(owned).filter((name) => !names.has(name));
     for (const name of stale) fs.rmSync(path.join(target, name), { recursive: true, force: true });
 
-    const pending = path.join(target, LEDGER_NAME + '.tmp');
+    const pending = path.join(target, MANIFEST_NAME + '.tmp');
     fs.writeFileSync(pending, JSON.stringify({ owned: Object.fromEntries(pin.map((e) => [e.name, e.sha256])) }) + '\n');
     fs.chmodSync(pending, FILE_MODE);
-    fs.renameSync(pending, path.join(target, LEDGER_NAME));
+    fs.renameSync(pending, path.join(target, MANIFEST_NAME));
     fs.rmSync(staging, { recursive: true, force: true });
     return { ok: true, skills: pin.length, fetched: missing.length, pruned: stale.length };
 }
