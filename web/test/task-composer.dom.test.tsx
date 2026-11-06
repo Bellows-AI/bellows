@@ -564,9 +564,16 @@ describe('the composer base branch and skill menu', () => {
             within(menu)
                 .getAllByRole('option')
                 .map((o) => o.textContent)
-        ).toEqual(['/reviewReview the changeBuilt-in', '/release-notesWrite the notesRepository']);
+        ).toEqual(['/review', '/release-notesrepo']);
+        // The highlighted row's description is a tooltip beside the menu, and that row's description.
+        const [first, second] = within(menu).getAllByRole('option');
+        expect(screen.getByRole('tooltip').textContent).toBe('Review the change');
+        expect(first?.getAttribute('aria-describedby')).toBe(screen.getByRole('tooltip').id);
+        expect(second?.hasAttribute('aria-describedby')).toBe(false);
 
-        await user.keyboard('{ArrowDown}{Enter}');
+        await user.keyboard('{ArrowDown}');
+        expect(screen.getByRole('tooltip').textContent).toBe('Write the notes');
+        await user.keyboard('{Enter}');
         expect(prompt.value).toBe('please /release-notes ');
         expect(screen.queryByRole('listbox', { name: 'Skills' })).toBeNull();
         expect(launches()).toHaveLength(0);
