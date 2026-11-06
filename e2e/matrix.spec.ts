@@ -544,7 +544,7 @@ const POLLED = [
     '.usage-groups',
     '.toolbar-coverage',
     '.task-section-aside',
-    '.chat-runtime',
+    '.task-activity',
     '.task-clock',
 ].join(', ');
 

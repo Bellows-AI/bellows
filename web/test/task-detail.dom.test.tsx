@@ -42,7 +42,7 @@ describe('the task detail page', () => {
         const user = userEvent.setup();
 
         const conversation = await mounted(container, '.task-conversation');
-        await waitFor(() => expect(within(conversation).getByText('Request', { exact: true })).toBeTruthy());
+        await waitFor(() => expect(within(conversation).getByRole('article', { name: 'Run 1' })).toBeTruthy());
         const main = container.querySelector<HTMLElement>('.task-main')!;
         const rail = container.querySelector<HTMLElement>('.task-rail')!;
         for (const name of ['Outcome', 'Verification', 'Task activity']) {

@@ -301,11 +301,9 @@ describe('TaskDetail — checks', () => {
 });
 
 /**
- * The attempt's sampled vitals — the "is it stuck or working" strip: CPU and memory, rendered
- * above the output while the run is going ONLY: the sample is a liveness signal, and a stale
- * "cpu 167%" beside a finished run's verdict lies about a run that is no longer going. The
- * activity line is the sidebar's "currently running task", the view's summary line and the
- * nav and tab summaries, and lives where the task is met.
+ * The attempt's sampled vitals: CPU and memory rows in the Task activity tile's Execution list,
+ * while the run is going ONLY — a stale "167%" beside a finished run's verdict lies about a run
+ * that is no longer going. The conversation turn carries none of it.
  */
 describe('TaskDetail — runtime', () => {
     const runtime = {
@@ -315,32 +313,31 @@ describe('TaskDetail — runtime', () => {
         activity: '→ Read src/x.ts',
         sampledAt: '2026-09-09T10:00:00.000Z',
     };
+    const activityTile = (html: string): string => html.slice(html.indexOf('task-activity'));
+    const turn = (html: string): string => html.slice(html.indexOf('<article'), html.indexOf('</article>'));
 
-    it('renders cpu and memory above the output while the run is going', () => {
+    it('renders CPU and Memory rows in Task activity while the run is going, never in the turn', () => {
         const html = renderDetail({ jobs: [job({ status: 'running', runtime })] });
-        expect(html).toMatch(/cpu (<!-- -->)?93(<!-- -->)?%/);
-        expect(html).toMatch(/mem (<!-- -->)?544(<!-- -->)? MiB \((<!-- -->)?7(<!-- -->)?%\)/);
-        expect(html).toContain('chat-runtime');
+        expect(activityTile(html)).toContain('<dt>CPU</dt><dd>93%</dd>');
+        expect(activityTile(html)).toContain('<dt>Memory</dt><dd>544 MiB (7%)</dd>');
+        expect(turn(html)).not.toMatch(/cpu|MiB/);
     });
 
-    it('renders no strip once the run has ended, whatever it sampled last', () => {
+    it('renders no rows once the run has ended, whatever it sampled last', () => {
         for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
             const html = renderDetail({ jobs: [job({ status, runtime })] });
-            expect(html, status).not.toContain('chat-runtime');
+            expect(html, status).not.toContain('<dt>CPU</dt>');
+            expect(html, status).not.toContain('<dt>Memory</dt>');
         }
-    });
-
-    it('renders no strip until the driver has sampled one', () => {
-        expect(renderDetail({ jobs: [job({ status: 'running' })] })).not.toContain('chat-runtime');
     });
 
     /**
      * A services-only sample — the vitals read failed, a metrics-server-less cluster for one
-     * — carries no readable numbers: no pills at all beats pills that lie with zeros. The
+     * — carries no readable numbers: no rows at all beats rows that lie with zeros. The
      * board's key-wise merge OMITS the unreadable halves rather than storing nulls, so the
      * keys can be absent outright; the guard reads both the same.
      */
-    it('renders no pills the sample could not read', () => {
+    it('renders no rows the sample could not read', () => {
         const servicesOnly = {
             memPercent: null,
             activity: '→ Read x',
@@ -348,7 +345,8 @@ describe('TaskDetail — runtime', () => {
             services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
         } as RuntimeVitals;
         const html = renderDetail({ jobs: [job({ status: 'running', runtime: servicesOnly })] });
-        expect(html).not.toContain('chat-runtime');
+        expect(html).not.toContain('<dt>CPU</dt>');
+        expect(html).not.toContain('<dt>Memory</dt>');
         expectNoPlaceholder(html);
 
         const nulls = {
@@ -356,14 +354,14 @@ describe('TaskDetail — runtime', () => {
             cpuPercent: null,
             memUsedMb: null,
         };
-        expect(renderDetail({ jobs: [job({ status: 'running', runtime: nulls })] })).not.toContain('chat-runtime');
+        expect(renderDetail({ jobs: [job({ status: 'running', runtime: nulls })] })).not.toContain('<dt>CPU</dt>');
     });
 
     it('omits the percentage the sample does not carry', () => {
         const html = renderDetail({
             jobs: [job({ status: 'running', runtime: { ...runtime, memPercent: null } })],
         });
-        expect(html).toMatch(/mem (<!-- -->)?544(<!-- -->)? MiB</);
+        expect(html).toContain('<dt>Memory</dt><dd>544 MiB</dd>');
     });
 
     it('never emits a placeholder value', () => {

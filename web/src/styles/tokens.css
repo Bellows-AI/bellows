@@ -81,6 +81,8 @@
     --question: oklch(0.720 0.140 300);
     --question-wash: color-mix(in oklab, var(--question) 16%, transparent);
     --question-border: color-mix(in oklab, var(--question) 30%, var(--surface-raised));
+    --user-bubble: color-mix(in oklab, var(--accent) 16%, var(--surface-raised)); /* the member's chat bubble */
+    --user-bubble-border: color-mix(in oklab, var(--accent) 35%, var(--surface-raised));
 }
 
 /* ---------- Semantic tokens: light ---------- */
@@ -150,6 +152,8 @@
     --question: oklch(0.520 0.190 300);
     --question-wash: color-mix(in oklab, var(--question) 8%, var(--surface-raised));
     --question-border: color-mix(in oklab, var(--question) 30%, var(--surface-raised));
+    --user-bubble: color-mix(in oklab, var(--accent) 16%, var(--surface-raised)); /* the member's chat bubble */
+    --user-bubble-border: color-mix(in oklab, var(--accent) 35%, var(--surface-raised));
 }
 
 /* ---------- Expose semantic tokens as utilities ----------
