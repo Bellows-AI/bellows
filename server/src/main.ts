@@ -30,6 +30,7 @@ import {
 import { jiraRegistration } from './integrations/providers/jira.js';
 import { startTempSweep } from './artifacts/fs-store.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
+import { startSkillSweep } from './skills/skill-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
 import { startNotificationDelivery } from './notifications/delivery-loop.js';
@@ -95,6 +96,7 @@ function startCollectors({
     const { sweepTemps } = artifacts;
     if (sweepTemps) startTempSweep(sweepTemps, { log: (m) => console.log(`[artifacts] ${m}`) });
     void ready.then(() => startAttachmentSweep({ sql, ready, artifacts, config: config.artifacts, metrics }));
+    void ready.then(() => startSkillSweep({ sql, ready, artifacts, metrics }));
     // Expired codes, consent transactions and grant families; only a board that serves MCP ever writes them.
     if (config.mcp.enabled)
         void ready.then(() =>
