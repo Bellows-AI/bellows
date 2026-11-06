@@ -198,34 +198,12 @@ export function gateCounts(gates: GateCheck[] | null | undefined): {
     };
 }
 
-/** The close phase of a running task: the agent is done and the declared gates are walking. */
-export interface ClosePhase {
-    label: string;
-    passed: number;
-    total: number;
-    running: GateCheck | null;
-    gates: GateCheck[];
-}
-
 /**
- * The close-phase progress of a run, or null when there is none to show: only a running run whose
- * board-stored gate list is non-empty is in it. An absent list (a list response) is no strip, never "0/0".
+ * Whether a run is in its close phase: the agent is done and the declared gates are walking. Only
+ * a running run whose board-stored gate list is non-empty is; an absent list (a list response) is not.
  */
-export function closePhase(job: Job): ClosePhase | null {
-    const gates = job.gates;
-    if (job.status !== 'running' || !gates || gates.length === 0) return null;
-    const unfinished = gates.some((gate) => gate.status === 'running' || gate.status === 'pending');
-    let label = 'Agent finished — checks passed, finishing up';
-    if (gates.some((gate) => gate.status === 'failed')) label = 'Agent finished — a check failed';
-    else if (unfinished) label = 'Agent finished — running checks';
-    else if (gates.every((gate) => gate.status === 'skipped')) label = 'Agent finished — no changes, checks skipped';
-    return {
-        label,
-        passed: gates.filter((gate) => gate.status === 'passed').length,
-        total: gates.length,
-        running: gates.find((gate) => gate.status === 'running') ?? null,
-        gates,
-    };
+export function inClosePhase(job: Job): boolean {
+    return job.status === 'running' && (job.gates?.length ?? 0) > 0;
 }
 
 /**

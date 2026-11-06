@@ -281,13 +281,21 @@ test.afterAll(async () => {
 });
 
 test.describe('the task detail page', () => {
-    test('a follow-up thread labels its runs, verifies the newest, and links the thread PR', async ({ page }) => {
+    test('a follow-up thread names its runs, verifies the newest, and links the thread PR', async ({ page }) => {
         await routeThread(page, followUpThread);
         await page.goto(`/tasks/${followUpThread[1]!.id}`);
 
         const conversation = page.locator('.task-conversation');
-        await expect(conversation.getByText('Request', { exact: true })).toBeVisible();
-        await expect(conversation.getByText('Follow-up', { exact: true })).toBeVisible();
+        // No section labels: each turn is an article named Run N, the member's words a bubble on the right.
+        await expect(conversation.getByRole('article', { name: 'Run 1' })).toBeVisible();
+        await expect(conversation.getByRole('article', { name: 'Run 2' })).toBeVisible();
+        for (const label of ['Request', 'Follow-up']) {
+            await expect(conversation.getByText(label, { exact: true })).toHaveCount(0);
+        }
+        const bubble = await conversation.locator('.msg-user').first().boundingBox();
+        const column = await conversation.boundingBox();
+        expect(bubble!.x + bubble!.width).toBeGreaterThan(column!.x + column!.width * 0.75);
+        expect(bubble!.width).toBeLessThanOrEqual(column!.width * 0.75 + 1);
         // Verification is the newest run's: lint failed on run 2.
         await expect(page.locator('.task-verification')).toContainText('lint');
         // The thread's publication came from run 1; the Outcome tile names the PR, shut or open.
@@ -454,19 +462,26 @@ test.describe('the task detail page', () => {
         expect(problems).toEqual([]);
     });
 
-    test('a running task whose agent finished shows which gate runs and how many are left', async ({ page }) => {
+    test('a running task whose agent finished says Running checks in the turn and walks the gates in Verification', async ({
+        page,
+    }) => {
         await routeThread(page, closingGatesThread);
         const problems = watchConsole(page);
         await page.clock.setFixedTime(new Date(Date.parse(CLOSING_GATE_STARTED_AT) + 134_000));
         await page.goto(`/tasks/${closingGatesThread[0]!.id}`);
 
-        const strip = page.locator('.task-conversation .run-close-phase');
-        await expect(strip.getByRole('status')).toContainText('Agent finished — running checks');
-        await expect(strip.getByRole('status')).toContainText('3/5 gates passed');
-        const lint = strip.locator('li', { hasText: 'lint' });
+        const conversation = page.locator('.task-conversation');
+        await expect(conversation.getByRole('status')).toHaveText('Running checks');
+        await expect(conversation.locator('.run-checking .run-spinner')).toBeVisible();
+        // The gates are the right column's: no gate name in the turn.
+        await expect(conversation.getByText('prettier')).toHaveCount(0);
+        const verification = page.locator('.task-verification');
+        await expect(verification).toHaveAttribute('open', '');
+        const lint = verification.locator('li', { hasText: 'lint' });
         await expect(lint).toContainText('running');
         await expect(lint).toContainText('2m 14s');
-        await expect(strip.locator('li', { hasText: 'prettier' })).toContainText('pending');
+        await expect(lint.locator('.run-spinner')).toBeVisible();
+        await expect(verification.locator('li', { hasText: 'prettier' })).toContainText('pending');
         await page.screenshot({ path: `${SHOTS}/task-detail-closing-gates.png`, fullPage: true });
         await page.setViewportSize({ width: 390, height: 1000 });
         await page.screenshot({ path: `${SHOTS}/task-detail-closing-gates-390.png`, fullPage: true });
@@ -477,7 +492,7 @@ test.describe('the task detail page', () => {
         await routeThread(page, runningThread);
         const problems = watchConsole(page);
         await page.goto(`/tasks/${runningThread[0]!.id}`);
-        await expect(page.getByText('Agent activity', { exact: true })).toBeVisible();
+        await expect(page.getByText('Agent activity', { exact: true })).toHaveCount(0);
         await expect(page.locator('.task-conversation').getByText('→ Bash npm test')).toBeVisible();
         await expect(page.locator('.task-conversation pre')).toContainText('step 81 running');
 
@@ -591,7 +606,7 @@ test.describe('the task detail page', () => {
         await page.getByRole('button', { name: 'Send follow-up' }).click();
 
         await expect(page.locator('.task-conversation')).toContainText(followUp.command, { timeout: 10_000 });
-        await expect(page.locator('.task-conversation').getByText('Follow-up', { exact: true })).toBeVisible();
+        await expect(page.locator('.task-conversation article').last()).toContainText(followUp.command);
         await expect(page.locator('.task-controls')).toContainText('Queued');
         // The head is queued now, so there is nothing to follow up yet.
         await expect(box).toHaveCount(0);

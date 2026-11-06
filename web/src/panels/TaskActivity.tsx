@@ -34,6 +34,12 @@ function startedByNode(author: AuthorRef | null): ReactNode {
     );
 }
 
+/** A memory sample in MiB, with its share of the limit when the sample read one. */
+function memory(usedMb: number, percent: number | null | undefined): string {
+    const used = `${Math.round(usedMb)} MiB`;
+    return percent == null ? used : `${used} (${Math.round(percent)}%)`;
+}
+
 /**
  * The thread's execution facts: who started it, where and how it ran, what it cost. A value the
  * board does not carry omits its row entirely (a dash reads as a measurement, and nothing was
@@ -46,11 +52,17 @@ function executionPairs(jobs: Job[]): [string, ReactNode][] {
     const cost = threadCostUsd(jobs);
     const setupMs = threadSetupMs(jobs);
     const exit = newestTerminalExit(jobs);
+    const live = latest.status === 'running';
+    const vitals = latest.runtime;
     const rows: [string, ReactNode][] = [
         ['Started by', startedByNode(root.author)],
         ['Repository', latest.repo],
         ['Base branch', latest.baseBranch ?? 'Default'],
         ['Executor', latest.executor ?? 'No executor selected'],
+        // The running attempt's sampled container vitals. A finished run's last sample would lie
+        // about a run no longer going, and an unread number is no row rather than a zero.
+        ['CPU', live && vitals?.cpuPercent != null ? `${Math.round(vitals.cpuPercent)}%` : null],
+        ['Memory', live && vitals?.memUsedMb != null ? memory(vitals.memUsedMb, vitals.memPercent) : null],
         ['Workflow', latest.workflowName],
         ['Workflow node', latest.workflowNode],
         // The thread's stored execution mode (issue 543): objective, or a workflow's graph.

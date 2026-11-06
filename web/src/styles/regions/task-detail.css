@@ -341,9 +341,7 @@
         padding-top: 10px;
     }
 
-    /* The run article's section labels — Request / Follow-up, Agent response / Agent activity,
-       Checks and published work. Shared recipe with the outcome's group labels. */
-    .run-label,
+    /* The outcome's group labels. */
     .task-outcome-label {
         color: var(--ink-muted);
         font-size: 12px;
@@ -354,16 +352,23 @@
         text-transform: uppercase;
     }
 
-    .run-label {
-        margin-top: 14px;
+    /* The member's words as a chat bubble on the right: prose, line breaks kept, as wide as the
+       text up to three quarters of the column. Accent-tinted so "you" reads apart from the agent. */
+    .msg-user {
+        background: var(--user-bubble);
+        border: 1px solid var(--user-bubble-border);
+        border-radius: 16px 16px 4px 16px;
+        margin: 4px 0 12px auto;
+        max-width: min(75%, 560px);
+        overflow-wrap: anywhere;
+        padding: 8px 14px;
+        white-space: pre-wrap;
+        width: fit-content;
     }
 
-    /* The prompt is the member's words as prose — normal text, line breaks kept, not mono just
-       because it is agent input. */
-    .msg-user {
-        margin: 0;
-        white-space: pre-wrap;
-        word-break: break-word;
+    /* A request's files sit under its bubble, on the same side. */
+    .chat-exchange > .attachment-list-history {
+        justify-content: flex-end;
     }
 
     /* A recorded request's image, read from the original: it fills its square tile, cropped, so a
@@ -408,16 +413,6 @@
         color: var(--lamp-stop);
         font-family: var(--font-mono);
         font-size: 12px;
-    }
-
-    /* The running attempt's sampled vitals — the "is it stuck or working" strip above the output. */
-
-    .chat-runtime {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin: 0 0 8px;
     }
 
     .chat-activity {
@@ -465,31 +460,30 @@
         padding: 6px 10px;
     }
 
-    /* The close-phase strip: the agent is done and the declared gates are walking, at the bottom of the turn. */
-    .run-close-phase {
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        margin: 8px 0 0;
-        padding: 8px 10px;
-    }
-
-    .run-close-phase > p {
-        margin: 0 0 6px;
-    }
-
-    .run-close-gates {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 12px;
-        list-style: none;
-        margin: 0;
-        padding: 0;
-    }
-
-    .run-close-gates li {
+    /* The live turn's "Running checks" line: the gates walk in the Verification tile. */
+    .run-checking {
         align-items: center;
         display: flex;
         gap: 6px;
+        margin: 0 0 6px;
+    }
+
+    /* A gate that is running: in the turn's checks line and on the running gate's pill. */
+    .run-spinner {
+        animation: run-spin 0.8s linear infinite;
+        border: 2px solid currentColor;
+        border-radius: 50%;
+        border-right-color: transparent;
+        display: inline-block;
+        flex: none;
+        height: 10px;
+        width: 10px;
+    }
+
+    @keyframes run-spin {
+        to {
+            transform: rotate(360deg);
+        }
     }
 
     .chat-output {
