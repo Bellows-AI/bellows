@@ -218,6 +218,8 @@ for s in probe-repo factory-fix; do
     printf -- '---\nname: %s\ndescription: repo copy of %s\n---\nrepo body\n' "$s" "$s" >"$skill_ws/.claude/skills/$s/SKILL.md"
 done
 chmod -R a+rX "$skill_ws"
+skill_mounts=() # extra `docker run` args and CLI args of skill_base, set by the delivery check below
+skill_args=()
 skill_base() { # skill_base <skill>: where the CLI loaded <skill> from, with the checkout mounted at /workspace
     local out port pid base
     out="$(mktemp)"
@@ -226,8 +228,9 @@ skill_base() { # skill_base <skill>: where the CLI loaded <skill> from, with the
     for _ in $(seq 1 40); do [ -s "$out" ] && break; sleep 0.25; done
     port="$(cat "$out")"
     env -u CLAUDE_CODE_OAUTH_TOKEN docker run --rm --add-host host.docker.internal:host-gateway -v "$skill_ws:/workspace" \
+        ${skill_mounts[@]+"${skill_mounts[@]}"} \
         -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=http://host.docker.internal:$port" \
-        "$IMAGE" --dangerously-skip-permissions --model fake-model -p probe >/dev/null 2>&1
+        "$IMAGE" --dangerously-skip-permissions --model fake-model ${skill_args[@]+"${skill_args[@]}"} -p probe >/dev/null 2>&1
     base="$(node -e 'fetch(process.argv[1] + "/steps").then((r) => r.json()).then((j) => console.log(j.skillBases.join(" ")))' "http://127.0.0.1:$port")"
     kill "$pid" 2>/dev/null
     rm -f "$out"
@@ -249,6 +252,27 @@ else
     printf 'FAIL %s\n     got: %s\n' 'a repo skill named like a built-in loses to the managed built-in' "$got"
     fail=$((fail + 1))
 fi
+# Pinned org and workspace skills (BEL-273): the driver installs them root-owned (0755/0644) under the task volume at
+# /task/.factory/skills-root/.claude/skills and starts the CLI with `--add-dir /task/.factory/skills-root` (the plan
+# in driver/src/runner-plan.ts). The CLI loads the skill from there, through the image's real entrypoint and bridge.
+# It ranks below a checkout's own skill of the same name: a stated limit in docs/skills.md.
+task_vol="$(mktemp -d)"
+mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-org"
+printf -- '---\nname: probe-org\ndescription: pinned org skill\n---\norg body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-org/SKILL.md"
+chmod -R a+rX "$task_vol"
+skill_mounts=(-v "$task_vol:/task:ro")
+skill_args=(--add-dir /task/.factory/skills-root)
+got="$(skill_base probe-org)"
+if [ "$got" = /task/.factory/skills-root/.claude/skills/probe-org ]; then
+    printf 'ok   %s\n' 'a pinned skill installed under the task volume is loaded through --add-dir'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     got: %s\n' 'a pinned skill installed under the task volume is loaded through --add-dir' "$got"
+    fail=$((fail + 1))
+fi
+skill_mounts=()
+skill_args=()
+rm -rf "$task_vol"
 rm -rf "$skill_ws"
 
 # The agent's tool isolation (issue #814), the same checks in both images.

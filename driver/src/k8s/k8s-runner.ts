@@ -19,7 +19,7 @@ import { jobPath, jobPodsPath } from './k8s-auxspec.js';
 import { acquireClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { removeTaskVolumes } from './k8s-task-volume.js';
 import { claimContinuesSession } from '../claim.js';
-import { deliverTaskInputs, hasInputs } from '../task-inputs.js';
+import { deliverClaimInputs, hasClaimInputs } from '../skill-inputs.js';
 import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from '../task-restore.js';
 import { ensureGroup, finishGroup, forgetGroup, groupsOf, runnerGroupOf, takeGroupDown } from './k8s-group.js';
 import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.js';
@@ -503,9 +503,9 @@ async function syncCheckout(
     { githubToken, signal }: { githubToken?: string | undefined; signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
     const repoJob = checkoutDir(job) !== null;
-    // A command-only job syncs nothing, but its session may be owed a rebuild (a lost volume) and its inputs a delivery,
+    // A command-only job syncs nothing, but its session may be owed a rebuild (a lost volume) and its inputs and skills a delivery,
     // and both need the group: it plans the volume. A first claim with nothing attached has nothing to do here.
-    if (!repoJob && !claimContinuesSession(job) && !hasInputs(job)) return { ok: true, reason: null };
+    if (!repoJob && !claimContinuesSession(job) && !hasClaimInputs(job)) return { ok: true, reason: null };
 
     // The checkout fence is the repo job's: the sync is the first writer on its worktree.
     if (repoJob) await acquireClaim(deps, job);
@@ -533,7 +533,7 @@ async function syncCheckout(
         let result = restored && !restored.ok ? restored : await runSyncStep(host, job, githubToken);
         if (result.ok) {
             // The checkout result (fingerprint, conflicts) is the sync's to return; delivery only refuses.
-            const delivered = await deliverTaskInputs(host, job, { signal });
+            const delivered = await deliverClaimInputs(host, job, { signal });
             if (!delivered.ok) result = delivered;
         }
         // A failed sync means no runner follows — nobody else would give the checkout back.

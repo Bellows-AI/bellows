@@ -132,7 +132,9 @@ if [ -z "${BELLOWS_SESSION_ID:-}" ]; then
     fi
 fi
 
-if [ -n "$MEMBER_ROOT" ]; then
+if [ -n "$MEMBER_ROOT" ] || [ -n "${FACTORY_SKILLS_PATH:-}" ]; then
+    # FACTORY_SKILLS_PATH is the directory the driver installed the claim's pinned org and workspace skills in: it joins
+    # `skills.paths` and gets its own external_directory allow, so a bundle's helper files open for the tool uid.
     # Single-quoted: the shell expands nothing in the script. A value the merge cannot extend is
     # named in one line on stderr and passed through untouched.
     if amended="$(MEMBER_ROOT="$MEMBER_ROOT" node -e '
@@ -152,6 +154,13 @@ if [ -n "$MEMBER_ROOT" ]; then
         if (root) {
             c.permission.external_directory ??= {};
             c.permission.external_directory[root + "/**"] = "allow";
+        }
+        const skills = process.env.FACTORY_SKILLS_PATH;
+        if (skills) {
+            c.skills ??= {};
+            c.skills.paths = [...(Array.isArray(c.skills.paths) ? c.skills.paths : []), skills];
+            c.permission.external_directory ??= {};
+            c.permission.external_directory[skills + "/**"] = "allow";
         }
         process.stdout.write(JSON.stringify(c));
     ')"; then

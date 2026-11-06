@@ -256,6 +256,54 @@ describe('the claimed job', () => {
     });
 });
 
+describe('the claim’s skill pin (BEL-273)', () => {
+    const PIN = [
+        {
+            name: 'org-style',
+            source: 'org',
+            versionId: '77777777-7777-4777-8777-777777777777',
+            sha256: 'b'.repeat(64),
+        },
+        {
+            name: 'mine',
+            source: 'workspace',
+            versionId: '88888888-8888-4888-8888-888888888888',
+            sha256: 'c'.repeat(64),
+        },
+    ];
+    const claimWith = async (extra: Record<string, unknown>) => {
+        const { fetch } = recorder(() => claimed(extra));
+        return boardOn(fetch).claim('driver-1');
+    };
+
+    it('reads a well-formed pin as the row’s own list', async () => {
+        const job = await claimWith({ skillPin: PIN });
+        expect(job?.skillPin).toEqual(PIN);
+        expect(job).not.toHaveProperty('skillPinUnreadable');
+    });
+
+    it.each([[undefined], [null], [[]]])('reads an absent or empty pin (%j) as no skills', async (skillPin) => {
+        const job = await claimWith(skillPin === undefined ? {} : { skillPin });
+        expect(job?.skillPin).toEqual([]);
+        expect(job).not.toHaveProperty('skillPinUnreadable');
+    });
+
+    it.each<[string, unknown]>([
+        ['a pin that is not a list', { name: 'x' }],
+        ['an entry that is not an object', [null]],
+        ['an entry without a version id', [{ ...PIN[0], versionId: undefined }]],
+        ['a version id that is not a uuid', [{ ...PIN[0], versionId: '../..' }]],
+        ['a sha256 that is not a digest', [{ ...PIN[0], sha256: 'abc' }]],
+        ['a source that is not org or workspace', [{ ...PIN[0], source: 'repo' }]],
+        ['a name that is not a skill name', [{ ...PIN[0], name: '../x' }]],
+        ['a name twice', [PIN[0], { ...PIN[1], name: 'org-style' }]],
+    ])('marks %s unreadable, never as no skills', async (_name, skillPin) => {
+        const job = await claimWith({ skillPin });
+        expect(typeof job?.skillPinUnreadable).toBe('string');
+        expect(job).not.toHaveProperty('skillPin');
+    });
+});
+
 describe('asking for the attempt’s GitHub token (docs/connections.md)', () => {
     const job = boardJob();
 

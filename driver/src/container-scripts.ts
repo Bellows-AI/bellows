@@ -117,3 +117,6 @@ export const attachmentFetchScript = script('attachment-fetch.cjs');
 
 /** Text derived beside a delivered PDF or Word file, run by the fetch step over its directory: see scripts/attachment-extract.cjs. */
 export const attachmentExtractScript = script('attachment-extract.cjs');
+
+/** The pinned org and workspace skills fetched, verified, unpacked and installed from the control endpoint: see scripts/skill-install.cjs. */
+export const skillInstallScript = script('skill-install.cjs');

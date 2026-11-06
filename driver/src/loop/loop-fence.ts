@@ -274,6 +274,14 @@ export function syncFailureHalt(synced: SyncResult): SetupHalt {
             'attachment_unavailable'
         );
     }
+    // A pinned org or workspace skill the board will never deliver again: its own kind, an admin republishes or drops it.
+    if (synced.kind === 'skill_unavailable') {
+        return faultHalt(
+            `skills unavailable: ${synced.reason}`,
+            `The task's org and workspace skills could not be installed before the run: ${synced.reason}`,
+            'skill_unavailable'
+        );
+    }
     // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
     const deterministic = synced.kind !== undefined && (SYNC_FAILURE_KINDS as readonly string[]).includes(synced.kind);
     return faultHalt(
