@@ -40,9 +40,10 @@ export interface OrganizationMeta {
 }
 
 /**
- * The four types are never summed into one figure: a long cached conversation would
- * count the same context repeatedly. The one sanctioned sum is the labelled "Total input"
- * (uncached input + cache read + cache write, `inputTokens()` in `telemetry.ts`).
+ * Only two labelled sums exist, each shown beside its parts: "Total input" (uncached input +
+ * cache read + cache write, `inputTokens()` in `telemetry.ts`) and the dashboard's "Total tokens"
+ * (that plus output). A long cached conversation counts the same context on every request, so
+ * a total is volume processed, never unique context.
  */
 export interface TokenTotals {
     input: number | null;
@@ -141,8 +142,6 @@ export interface StatsUsage {
     totals: UsageBlock;
     /** Token buckets by observation time, on the same granularity as `TelemetryStats.series`. */
     series: { granularity: 'day' | 'week'; points: { start: string; partial: boolean; usage: UsageBlock }[] };
-    /** One entry per author of eligible usage; `userId` null is usage with no known author. */
-    byUser: { user: UserRef | null; userId: string | null; usage: UsageBlock }[];
     /** Usage the figures above deliberately leave out, so the gap is a number rather than a guess. */
     diagnostics: {
         unresolvedOwnership: { sessions: number; tokens: TokenTotals };
@@ -162,13 +161,6 @@ export interface TelemetryStats {
     otherRepoSessions: number;
     /** Board-owned sessions that no branch report named: attributed and counted, but the hook is missing or failing. */
     sessionsWithoutHook: number;
-    /** Per-user session counts over the in-scope sessions that carry a user. */
-    byUser: readonly { user: UserRef; sessions: number }[];
-    /**
-     * In-scope sessions with no user — telemetry exists but no board task matches the session
-     * id. Distinct from `sessionsWithoutHook`, which counts sessions with no repo at all.
-     */
-    unattributedSessions: number;
     /** The usage series, bucketed by the granularity the window span chose. */
     series: { granularity: 'day' | 'week'; points: TelemetryPoint[] };
     coverage: { from: string | null; to: string | null };

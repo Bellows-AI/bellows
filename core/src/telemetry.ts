@@ -9,7 +9,6 @@ import type {
     TelemetryPoint,
     TelemetryStats,
     TokenTotals,
-    UserRef,
 } from './types.js';
 import type { UsageOptions, UsageReport } from './usage.js';
 
@@ -71,8 +70,7 @@ export interface TelemetryStatsOptions {
     now?: Date;
     /**
      * Scopes every figure to the caller: only sessions whose landed user matches count toward
-     * the totals, the series and `byUser`. Unattributed sessions stay out of the totals but
-     * keep being named by `unattributedSessions` — out of "mine" is not the same as invisible.
+     * the totals and the series. Sessions with no landed user are out too.
      * Coverage and the two setup-failure counters describe the store, not the caller, and are
      * deliberately untouched.
      */
@@ -188,46 +186,12 @@ function scopeByRepo(
     return { repoScoped, otherRepoSessions, sessionsWithoutHook };
 }
 
-/**
- * Groups repo-scoped sessions by the user's id, not the object: two rows resolved from the
- * same app_user must land in one bucket. Sessions with no user are counted, never dropped —
- * the same honesty rule as sessionsWithoutHook.
- */
-function groupByUser(
-    sessions: readonly SessionRollup[],
-    user: { id: string } | undefined
-): { byUser: Map<string, { user: UserRef; sessions: SessionRollup[] }>; unattributedSessions: number } {
-    const byUser = new Map<string, { user: UserRef; sessions: SessionRollup[] }>();
-    let unattributedSessions = 0;
-    for (const session of sessions) {
-        if (session.user === null) {
-            unattributedSessions += 1;
-            continue;
-        }
-        if (user && session.user.id !== user.id) continue;
-        const bucket = byUser.get(session.user.id);
-        if (bucket) bucket.sessions.push(session);
-        else byUser.set(session.user.id, { user: session.user, sessions: [session] });
-    }
-    return { byUser, unattributedSessions };
-}
-
-/**
- * Re-shapes the report for the payload. A person is named from the session rollups (the report
- * only knows ids); an author with usage but no rollup in scope stays `user: null`, never invented.
- */
-function statsUsage(report: UsageReport, granularity: 'day' | 'week', sessions: readonly SessionRollup[]): StatsUsage {
-    const people = new Map<string, UserRef>();
-    for (const session of sessions) if (session.user) people.set(session.user.id, session.user);
+/** Re-shapes the report for the payload. */
+function statsUsage(report: UsageReport, granularity: 'day' | 'week'): StatsUsage {
     const { unresolvedOwnership, excludedRepo } = report.diagnostics;
     return {
         totals: report.eligible,
         series: { granularity, points: report.series },
-        byUser: report.byUser.map(({ userId, usage }) => ({
-            user: userId === null ? null : (people.get(userId) ?? null),
-            userId,
-            usage,
-        })),
         diagnostics: {
             unresolvedOwnership: { sessions: unresolvedOwnership.sessions, tokens: unresolvedOwnership.tokens },
             excludedRepo: { sessions: excludedRepo.sessions, tokens: excludedRepo.tokens },
@@ -261,17 +225,12 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
     const { repoScoped, otherRepoSessions, sessionsWithoutHook } = scopeByRepo(input.sessions, repos);
 
     // Caller scope is a filter, applied after the repo filter and before every figure below:
-    // a session the join attributed to someone else is out of "mine" entirely. Unattributed
-    // sessions are out too — but they keep their own figure, so "mine" narrows honestly.
+    // a session the join attributed to someone else, or to no one, is out of "mine" entirely.
     const inScope = user ? repoScoped.filter((s) => s.user !== null && s.user.id === user.id) : repoScoped;
 
     const totalAccepted = sum(inScope.map((s) => s.editsAccepted));
     const totalRejected = sum(inScope.map((s) => s.editsRejected));
     const totalActive = sum(inScope.map((s) => s.activeSeconds));
-
-    // The count runs over the repo-scoped set, so the unattributed figure means the same thing
-    // under both scopes.
-    const { byUser, unattributedSessions } = groupByUser(repoScoped, user);
 
     const granularity = seriesGranularity(options.range, input, now);
 
@@ -285,12 +244,8 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
         },
         otherRepoSessions,
         sessionsWithoutHook,
-        byUser: [...byUser.values()]
-            .map(({ user, sessions }) => ({ user, sessions: sessions.length }))
-            .sort((a, b) => a.user.login.localeCompare(b.user.login)),
-        unattributedSessions,
         series: { granularity, points: bucketSeries(inScope, granularity, now) },
         coverage: input.coverage,
-        usage: statsUsage(usage, granularity, repoScoped),
+        usage: statsUsage(usage, granularity),
     };
 }

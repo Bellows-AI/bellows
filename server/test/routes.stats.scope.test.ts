@@ -124,20 +124,14 @@ describe('GET /api/stats scope: computed figures', () => {
         await h.settle();
 
         const EXPECTED_MINE_SESSIONS = 2;
-        // Both the unknown-author task's session and the hook-only one: outside mine, still named.
-        const EXPECTED_UNATTRIBUTED = 2;
         const EXPECTED_MINE_INPUT_P50 = 2000;
         const EXPECTED_MINE_OUTPUT_P50 = 1000;
         const mine = (await app.inject({ method: 'GET', url: '/api/stats?scope=mine', headers: { cookie } })).json();
         expect(mine.meta.scope).toBe('mine');
         expect(mine.meta.scopeLogin).toBe('carol');
         expect(mine.telemetry.totals.sessions).toBe(EXPECTED_MINE_SESSIONS);
-        expect(mine.telemetry.byUser.map((row: { user: { login: string } }) => row.user.login)).toEqual(['carol']);
-        // Unattributed sessions stay out of the totals but keep their own figure.
-        expect(mine.telemetry.unattributedSessions).toBe(EXPECTED_UNATTRIBUTED);
         // Tokens follow the trusted author on the board, not the session count: only carol's two sessions.
         expect(mine.telemetry.usage.totals.tokens).toMatchObject({ input: 2 * ATTRIBUTED_TOKENS_INPUT, output: 1000 });
-        expect(mine.telemetry.usage.byUser.map((row: { userId: string }) => row.userId)).toEqual([caller.user.id]);
         // Coverage still describes the store, not the scope.
         expect(mine.telemetry.coverage.from).toBe('2026-08-20T00:00:00.000Z');
         // The task set narrows with the scope: only the caller's task survives.
