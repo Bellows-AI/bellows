@@ -208,6 +208,49 @@ else
     fail=$((fail + 1))
 fi
 
+# Repo skills (BEL-270), measured with the real CLI against the scripted model endpoint: the Skill tool's
+# "Base directory" line says which file the CLI loaded. With the managed settings and
+# CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1 in place, a checkout's .claude/skills/<name> is loaded; on a name
+# clash the MANAGED (baked) skill is the one that loads, so a repo cannot shadow a built-in at runtime.
+skill_ws="$(mktemp -d)"
+for s in probe-repo factory-fix; do
+    mkdir -p "$skill_ws/.claude/skills/$s"
+    printf -- '---\nname: %s\ndescription: repo copy of %s\n---\nrepo body\n' "$s" "$s" >"$skill_ws/.claude/skills/$s/SKILL.md"
+done
+chmod -R a+rX "$skill_ws"
+skill_base() { # skill_base <skill>: where the CLI loaded <skill> from, with the checkout mounted at /workspace
+    local out port pid base
+    out="$(mktemp)"
+    node "$REPO/scripts/fake-model-endpoint.mjs" --steps "[{\"tool\":\"Skill\",\"input\":{\"skill\":\"$1\"}}]" >"$out" &
+    pid=$!
+    for _ in $(seq 1 40); do [ -s "$out" ] && break; sleep 0.25; done
+    port="$(cat "$out")"
+    env -u CLAUDE_CODE_OAUTH_TOKEN docker run --rm --add-host host.docker.internal:host-gateway -v "$skill_ws:/workspace" \
+        -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=http://host.docker.internal:$port" \
+        "$IMAGE" --dangerously-skip-permissions --model fake-model -p probe >/dev/null 2>&1
+    base="$(node -e 'fetch(process.argv[1] + "/steps").then((r) => r.json()).then((j) => console.log(j.skillBases.join(" ")))' "http://127.0.0.1:$port")"
+    kill "$pid" 2>/dev/null
+    rm -f "$out"
+    printf '%s' "$base"
+}
+got="$(skill_base probe-repo)"
+if [ "$got" = /workspace/.claude/skills/probe-repo ]; then
+    printf 'ok   %s\n' "a checkout's .claude/skills skill is loaded with the managed settings in place"
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     got: %s\n' "a checkout's .claude/skills skill is loaded with the managed settings in place" "$got"
+    fail=$((fail + 1))
+fi
+got="$(skill_base factory-fix)"
+if [ "$got" = /etc/claude-code/.claude/skills/factory-fix ]; then
+    printf 'ok   %s\n' 'a repo skill named like a built-in loses to the managed built-in'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     got: %s\n' 'a repo skill named like a built-in loses to the managed built-in' "$got"
+    fail=$((fail + 1))
+fi
+rm -rf "$skill_ws"
+
 # The agent's tool isolation (issue #814), the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh
 . "$HERE/../tool-isolation-checks.sh"

@@ -357,6 +357,44 @@ else
     bad 'python3, ps, pgrep, pkill and rg are on PATH' 'one is missing'
 fi
 
+# Repo skills (BEL-270): opencode scans a checkout's .claude/skills (what claude-executor reads) as well
+# as .opencode/skills, .opencode/skill and .agents/skills, with no config of ours. On a name clash with a
+# baked global skill the PROJECT copy is the one listed, unlike claude-executor where the managed one wins
+# (a stated limit in docs/skills.md). A skills.paths entry beats both; that is the delivery seam for org and
+# workspace skills (BEL-273).
+skill_ws="$(mktemp -d)"
+for d in .claude/skills/probe-claude .opencode/skills/probe-ocskills .opencode/skill/probe-ocskill .agents/skills/probe-agents .claude/skills/factory-fix extra/factory-fix; do
+    mkdir -p "$skill_ws/$d"
+    printf -- '---\nname: %s\ndescription: repo copy\n---\nrepo body\n' "${d##*/}" >"$skill_ws/$d/SKILL.md"
+done
+chmod -R a+rX "$skill_ws"
+located="$(docker run --rm -v "$skill_ws:/workspace" -w /workspace --entrypoint sh "$IMAGE" -c \
+    'opencode debug skill >/tmp/s.json 2>/dev/null; grep -o "/[^\"]*SKILL.md" /tmp/s.json')"
+for want in /workspace/.claude/skills/probe-claude/SKILL.md /workspace/.opencode/skills/probe-ocskills/SKILL.md \
+    /workspace/.opencode/skill/probe-ocskill/SKILL.md /workspace/.agents/skills/probe-agents/SKILL.md; do
+    case "$located" in
+    *"$want"*) ok "opencode discovers ${want#/workspace/}" ;;
+    *) bad "opencode discovers ${want#/workspace/}" "listed: $located" ;;
+    esac
+done
+case "$located" in
+*/workspace/.claude/skills/factory-fix/SKILL.md*)
+    case "$located" in
+    */home/node/.config/opencode/skills/factory-fix/SKILL.md*) bad 'a repo skill named like a built-in replaces the global one' "both listed: $located" ;;
+    *) ok 'a repo skill named like a built-in replaces the global one' ;;
+    esac
+    ;;
+*) bad 'a repo skill named like a built-in replaces the global one' "listed: $located" ;;
+esac
+located="$(docker run --rm -v "$skill_ws:/workspace" -w /workspace -e 'OPENCODE_CONFIG_CONTENT={"skills":{"paths":["/workspace/extra"]}}' \
+    --entrypoint sh "$IMAGE" -c 'opencode debug skill >/tmp/s.json 2>/dev/null; grep -o "/[^\"]*factory-fix/SKILL.md" /tmp/s.json')"
+if [ "$located" = /workspace/extra/factory-fix/SKILL.md ]; then
+    ok 'a skills.paths directory beats both the project and the global skill of the same name'
+else
+    bad 'a skills.paths directory beats both the project and the global skill of the same name' "listed: $located"
+fi
+rm -rf "$skill_ws"
+
 # The agent's tool isolation (issue #814), the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh
 . "$HERE/../tool-isolation-checks.sh"
