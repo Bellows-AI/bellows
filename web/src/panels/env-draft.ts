@@ -31,14 +31,19 @@ export interface EnvRowState {
     isSecret: boolean;
     /** false for rows seeded from the server echo; a new row may vanish without Undo. */
     isNew: boolean;
-    /** Existing rows only: kept visible as "{name} will be removed when you save." until save. */
+    /** Existing rows only: kept visible, struck through with Undo, until save. */
     pendingRemove: boolean;
+    /** The stored row's last write (ISO); null for a row the draft added. Display only. */
+    updatedAt: string | null;
 }
 
 export type EnvPayloadRow = { name: string; value: string | null; isSecret: boolean };
 
+/** A stored row as a scope read echoes it: the payload plus its last write. */
+export type EnvStoredRow = EnvPayloadRow & { updatedAt?: string };
+
 /** The seed rows a panel starts from: the stored truth, nothing pending, nothing new. */
-export function seedRows(initialVars: readonly EnvPayloadRow[]): EnvRowState[] {
+export function seedRows(initialVars: readonly EnvStoredRow[]): EnvRowState[] {
     return initialVars.map((row, index) => ({
         id: `seed-${index}`,
         name: row.name,
@@ -46,6 +51,7 @@ export function seedRows(initialVars: readonly EnvPayloadRow[]): EnvRowState[] {
         isSecret: row.isSecret,
         isNew: false,
         pendingRemove: false,
+        updatedAt: row.updatedAt ?? null,
     }));
 }
 
@@ -76,6 +82,31 @@ export function payloadEquals(a: readonly EnvPayloadRow[], b: readonly EnvPayloa
 /** Canonical dirty state: the baseline payload against the draft's, nothing else consulted. */
 export function isDirty(baseline: readonly EnvRowState[], draft: readonly EnvRowState[]): boolean {
     return !payloadEquals(envPayload(baseline), envPayload(draft));
+}
+
+/** Dirty state of one type only — the tab marker for unsaved variables or secrets. */
+export function isKindDirty(
+    baseline: readonly EnvRowState[],
+    draft: readonly EnvRowState[],
+    isSecret: boolean
+): boolean {
+    const ofKind = (rows: readonly EnvRowState[]) => rows.filter((row) => row.isSecret === isSecret);
+    return isDirty(ofKind(baseline), ofKind(draft));
+}
+
+export type EnvRowChange = 'new' | 'changed';
+
+/**
+ * What a row's unsaved-change marker says: `new` when no stored row of its type has its name
+ * (an addition, or a rename), `changed` when the stored value differs or a secret has a
+ * replacement typed. Matched by name, not id — the raw editor re-keys every variable row.
+ */
+export function rowChange(row: EnvRowState, baseline: readonly EnvRowState[]): EnvRowChange | null {
+    const name = row.name.trim();
+    const stored = baseline.find((candidate) => candidate.isSecret === row.isSecret && candidate.name === name);
+    if (!stored) return 'new';
+    if (row.isSecret) return secretState(row) === 'replace' ? 'changed' : null;
+    return (row.value ?? '') === (stored.value ?? '') ? null : 'changed';
 }
 
 /** The tab count for one type: additions included, pending removals excluded. */
@@ -166,7 +197,7 @@ export function secretState(row: EnvRowState): SecretState {
 }
 
 /**
- * The `.env` text the draft's variables serialize to — the modal editor's text mode. Secrets
+ * The `.env` text the draft's variables serialize to — the editor's raw mode. Secrets
  * never enter it (their values are write-only and cannot round-trip through text), a pending
  * removal stays out so re-reading the text cannot resurrect it, and an untouched blank addition
  * (no name, no value) is not a variable yet and would only read back as a malformed line.
@@ -195,6 +226,7 @@ export function applyRawText(text: string, rows: readonly EnvRowState[], nextId:
         isSecret: false,
         isNew: false,
         pendingRemove: false,
+        updatedAt: rows.find((stored) => !stored.isSecret && stored.name === row.name)?.updatedAt ?? null,
     }));
     return { ok: true, rows: [...variables, ...rows.filter((row) => row.isSecret)] };
 }
@@ -202,5 +234,5 @@ export function applyRawText(text: string, rows: readonly EnvRowState[], nextId:
 /** The text mode's one line about the secrets it does not show; null when there are none. */
 export function secretsNote(count: number): string | null {
     if (count === 0) return null;
-    return count === 1 ? '1 secret is edited in the list view.' : `${count} secrets are edited in the list view.`;
+    return count === 1 ? '1 secret is edited in the Secrets tab.' : `${count} secrets are edited in the Secrets tab.`;
 }

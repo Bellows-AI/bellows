@@ -20,11 +20,11 @@ describe('the discard dialog copy', () => {
     });
 
     it('carries the scope label in the body, joined when more than one draft is dirty', () => {
-        expect(unsavedDialogBody(['Core (organization)'])).toBe(
-            'Your changes to Core (organization) have not been saved.'
+        expect(unsavedDialogBody(['Organization variables'])).toBe(
+            'Your changes to Organization variables have not been saved.'
         );
-        expect(unsavedDialogBody(['Core (organization)', 'octo/hooks'])).toBe(
-            'Your changes to Core (organization) and octo/hooks have not been saved.'
+        expect(unsavedDialogBody(['Organization variables', 'octo/hooks'])).toBe(
+            'Your changes to Organization variables and octo/hooks have not been saved.'
         );
     });
 });

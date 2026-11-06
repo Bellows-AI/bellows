@@ -44,7 +44,7 @@ test('reloading /settings/workspace directly serves the app rather than a 404', 
     const response = await page.goto('/settings/workspace');
     expect(response?.status()).toBe(200);
     // The 200 + shell is the deep-link contract; the heading proves the route resolved to the
-    // workspace section and not the catch-all. exact: the section's own h2 ("My workspace")
+    // workspace section and not the catch-all. exact: the section's own h2 ("Workspace variables")
     // would otherwise match alongside the page h1 (issue 190).
     await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(page.locator('.sidenav')).toBeVisible();
@@ -55,7 +55,7 @@ test('the workspace page carries no checkout state; the repositories page lists 
     await signedIn(page);
     await page.goto('/settings/workspace');
     await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'My workspace' }).first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('heading', { name: 'Workspace variables' }).first()).toBeVisible({ timeout: 60_000 });
     const workspaceText = await page.locator('main').innerText();
     for (const gone of ['Manage repository checkouts', 'Nothing checked out', 'workspace root', 'ORG_WORKSPACE_ROOT']) {
         expect(workspaceText, gone).not.toContain(gone);
@@ -96,7 +96,8 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
     /** Labels whose text runs over more than one line box, among the visible buttons in main. */
     const wrapped = () =>
         page.locator('main').evaluate((main) =>
-            [...main.querySelectorAll('button')]
+            // Tabs pair a label with a count pill, two boxes whose tops differ by design.
+            [...main.querySelectorAll<HTMLButtonElement>('button:not([role="tab"])')]
                 .filter((button) => button.offsetParent !== null && button.textContent?.trim())
                 .filter((button) => {
                     const range = document.createRange();
@@ -108,8 +109,8 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
         );
 
     for (const [path, ready] of [
-        ['/settings/organization', 'Core (organization)'],
-        ['/settings/workspace', 'My workspace'],
+        ['/settings/organization', 'Organization variables'],
+        ['/settings/workspace', 'Workspace variables'],
         ['/settings/executors', 'My workspace'],
     ] as const) {
         await page.goto(path);
@@ -124,8 +125,8 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
     const detailHeading = page.getByRole('heading', { name: /^Selected repository:/ });
     await expect(detailHeading).toBeVisible({ timeout: 60_000 });
     await expect(detailHeading).toBeFocused();
-    // Precedence shows once, inside the editor head below the heading.
-    await expect(page.getByText(/rightmost scope wins/)).toHaveCount(1);
+    // The repository's variables editor sits under the heading, titled by the repository.
+    await expect(page.locator('section.env-editor')).toHaveCount(1);
     expect(await wrapped(), '/settings/repos').toEqual([]);
     await page.screenshot({ path: `${SHOTS}/settings-repos-1024.png`, fullPage: true });
 });
@@ -151,4 +152,36 @@ test('the workspace section renders nothing malformed', async ({ page }) => {
     expect(errors).toEqual([]);
 
     await page.screenshot({ path: `${SHOTS}/settings-workspace-env.png`, fullPage: true });
+});
+
+test('Configure on another repository with a dirty variables draft asks before switching', async ({ page }) => {
+    await signedIn(page);
+    // The seed tracks one repository: the repos answer gains a second so a switch exists.
+    await page.route('**/api/repos', async (route) => {
+        const response = await route.fetch();
+        const body = (await response.json()) as { repos?: Array<Record<string, unknown>> };
+        const first = body.repos?.[0];
+        if (first) body.repos = [first, { ...first, name: `${String(first.name)}-second` }];
+        await route.fulfill({ response, json: body });
+    });
+    await page.goto('/settings/repos');
+    const configure = page.getByRole('button', { name: 'Configure' });
+    await expect(configure).toHaveCount(2, { timeout: 60_000 });
+    await configure.first().click();
+    const editor = page.locator('section.env-editor');
+    await editor.getByRole('button', { name: 'New variable' }).click();
+    await editor.getByLabel('Variable name').fill('E2E_REPO_SWITCH');
+    await page.keyboard.press('Enter');
+    const firstTitle = await editor.getByRole('heading').first().innerText();
+
+    await configure.last().click();
+    await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
+    await page.getByRole('button', { name: 'Continue editing' }).click();
+    await expect(editor.getByRole('heading').first()).toHaveText(firstTitle);
+    await expect(editor.getByText('E2E_REPO_SWITCH')).toBeVisible();
+
+    await configure.last().click();
+    await page.getByRole('button', { name: 'Discard changes' }).click();
+    await expect(editor.getByRole('heading').first()).not.toHaveText(firstTitle);
+    await expect(editor.getByText('E2E_REPO_SWITCH')).toHaveCount(0);
 });

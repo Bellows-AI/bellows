@@ -9,6 +9,8 @@ describe('Icon', () => {
             [
                 'home',
                 'list',
+                'pencil',
+                'braces',
                 'settings',
                 'plus',
                 'search',

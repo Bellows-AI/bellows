@@ -6,11 +6,11 @@ import { renderApp, stubFetch } from './dom.js';
 import { boardHandler, installationRepo, settingsBoard } from './settings-board.js';
 
 /**
- * The Core (organization) variables on /settings/organization, driven through the real route
- * table against an in-memory `/api/env` store: the compact summary, the dialog it opens, the
- * draft and its footer, pending removal, the `.env` text, the secret states, the tab guard and a
- * refused save. The dialog's own mechanics are pinned by `env-dialog.dom.test.tsx`; this file
- * pins what the PAGE wires: open, refresh after save, focus return, the navigation guard.
+ * The organization variables on /settings/organization, driven through the real route table
+ * against an in-memory `/api/env` store: the inline editor once the read has landed, the draft and
+ * its save bar, pending removal, the `.env` text, the secret states, the navigation guard and a
+ * refused save. The editor's own mechanics are pinned by `env-editor.dom.test.tsx`; this file pins
+ * what the PAGE wires: the title, the save and its echo, the guard, and the last-saved baseline.
  */
 
 const STORED_AT = '2026-09-01T12:00:00.000Z';
@@ -51,160 +51,141 @@ function envBoard(org: EnvVarView[] = []) {
     return { board, calls, puts: () => calls.filter((c) => c.method === 'PUT') };
 }
 
-/** The Core summary once the read has landed; `ready` is a text the loaded summary carries. */
-async function openCore(ready = 'No variables or secrets configured yet.') {
+type User = ReturnType<typeof userEvent.setup>;
+
+/** The organization editor once the read has landed. */
+async function openCore() {
     const user = userEvent.setup();
     const view = renderApp('/settings/organization');
-    const heading = await screen.findByRole('heading', { name: 'Core (organization)' });
-    const summary = within(heading.closest('section.panel') as HTMLElement);
-    await summary.findByText(ready);
-    return { user, summary, view };
+    const editor = within(await screen.findByRole('region', { name: 'Organization variables' }));
+    return { user, editor, view };
 }
 
-async function openDialog(user: ReturnType<typeof userEvent.setup>, summary: ReturnType<typeof within>) {
-    await user.click(summary.getByRole('button', { name: 'Edit variables' }));
-    return within(await screen.findByRole('dialog', { name: 'Core (organization)' }));
+const rowNames = (editor: ReturnType<typeof within>) =>
+    editor.queryAllByRole('listitem').map((li: HTMLElement) => li.querySelector('.env-name-text')?.textContent);
+
+async function addVariable(user: User, editor: ReturnType<typeof within>, name: string, value = '') {
+    await user.click(editor.getByRole('button', { name: 'New variable' }));
+    await user.type(editor.getByLabelText('Variable name'), name);
+    if (value) await user.type(editor.getByLabelText('Variable value'), value);
+    await user.keyboard('{Enter}');
 }
 
-describe('the Core variables summary and dialog', () => {
-    it('shows an empty state and no editing surface until Edit variables opens the dialog', async () => {
+describe('the organization variables editor', () => {
+    it('mounts inline with an empty state, tabs and no save bar, and no dialog or summary', async () => {
         envBoard();
-        const { user, summary } = await openCore();
+        const { editor } = await openCore();
         expect(screen.queryByRole('dialog')).toBeNull();
-        expect(summary.queryByRole('tab')).toBeNull();
-        expect(summary.queryByRole('button', { name: 'Save changes' })).toBeNull();
-
-        const dialog = await openDialog(user, summary);
-        expect(dialog.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', true);
-        expect(dialog.getByRole('button', { name: 'Add variable' })).toBeTruthy();
+        expect(editor.getByRole('tab', { name: /^Variables/ }).getAttribute('aria-selected')).toBe('true');
+        expect(editor.getByText('No variables yet.')).toBeTruthy();
+        expect(editor.queryByRole('button', { name: 'Save changes' })).toBeNull();
+        expect(editor.queryByRole('button', { name: 'Edit variables' })).toBeNull();
+        expect(editor.getByRole('button', { name: 'New variable' })).toBeTruthy();
     });
 
-    it('summarises stored rows by count and name, never by value', async () => {
+    it('lists stored rows by name with their value, and keeps a secret’s value out of the page', async () => {
         envBoard([
             { name: 'E2E_SUMMARY_VAR', value: 'plain-value-123', isSecret: false, updatedAt: STORED_AT },
             { name: 'E2E_SUMMARY_SECRET', value: null, isSecret: true, updatedAt: STORED_AT },
         ]);
-        const { summary } = await openCore('E2E_SUMMARY_VAR');
-        expect(summary.getByText('1 variable', { exact: false })).toBeTruthy();
-        expect(summary.getByText('1 secret', { exact: false })).toBeTruthy();
-        expect(summary.getByText('E2E_SUMMARY_SECRET')).toBeTruthy();
-        expect(document.body.textContent).not.toContain('plain-value-123');
-        expect(document.querySelector('input')).toBeNull();
+        const { user, editor } = await openCore();
+        expect(await editor.findByText('E2E_SUMMARY_VAR')).toBeTruthy();
+        expect(editor.getByText('plain-value-123')).toBeTruthy();
+        expect(document.querySelector('.env-rows input')).toBeNull();
+
+        await user.click(editor.getByRole('tab', { name: /^Secrets/ }));
+        expect(editor.getByText('E2E_SUMMARY_SECRET')).toBeTruthy();
+        expect(editor.getByText('Set')).toBeTruthy();
+        expect(document.querySelector('input[type="password"]')).toBeNull();
     });
 
-    it('closes clean without asking, and Cancel on a dirty draft asks before it discards', async () => {
-        envBoard();
-        const { user, summary } = await openCore();
-        let dialog = await openDialog(user, summary);
-        expect(dialog.queryByText('Unsaved changes')).toBeNull();
-
-        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
-        await user.type(dialog.getByLabelText('Variable 1 name'), 'E2E_CANCEL_VAR');
-        expect(dialog.getByText('Unsaved changes')).toBeTruthy();
-
-        await user.click(dialog.getByRole('button', { name: 'Cancel' }));
-        expect(screen.getByText('Discard unsaved changes?')).toBeTruthy();
-        await user.click(screen.getByRole('button', { name: 'Discard changes' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        expect(summary.getByText('No variables or secrets configured yet.')).toBeTruthy();
-
-        // Reopened, the draft starts from the stored rows again; clean closes without a question.
-        dialog = await openDialog(user, summary);
-        expect(dialog.queryByLabelText('Variable 1 name')).toBeNull();
-        await user.click(dialog.getByRole('button', { name: 'Cancel' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        expect(screen.queryByText('Discard unsaved changes?')).toBeNull();
-    });
-
-    it('saves from the dialog, refreshes the summary, confirms, and returns focus to Edit variables', async () => {
+    it('saves a new variable, sends the whole list, confirms, and shows the stored row with no bar', async () => {
         const { puts } = envBoard();
-        const { user, summary } = await openCore();
-        const dialog = await openDialog(user, summary);
-        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
-        await user.type(dialog.getByLabelText('Variable 1 name'), 'E2E_SAVED_VAR');
-        await user.type(dialog.getByLabelText('Variable 1 value'), 'saved-value');
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
+        const { user, editor } = await openCore();
+        await addVariable(user, editor, 'E2E_SAVED_VAR', 'saved-value');
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
 
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        await summary.findByText('E2E_SAVED_VAR');
-        expect(summary.getByText('1 variable', { exact: false })).toBeTruthy();
-        expect(summary.getByRole('status').textContent).toBe('Changes saved.');
-        expect(document.activeElement).toBe(summary.getByRole('button', { name: 'Edit variables' }));
+        await waitFor(() => expect(editor.getByRole('status').textContent).toBe('Changes saved.'));
         expect(puts().map((c) => c.body)).toEqual([
             { vars: [{ name: 'E2E_SAVED_VAR', value: 'saved-value', isSecret: false }] },
         ]);
+        expect(rowNames(editor)).toEqual(['E2E_SAVED_VAR']);
+        expect(editor.getByText(/^Updated /)).toBeTruthy();
+        expect(editor.queryByText('Not saved yet')).toBeNull();
+        expect(editor.queryByRole('button', { name: 'Save changes' })).toBeNull();
     });
 
     it('stages a removal with Undo, and only the save deletes', async () => {
         const { puts } = envBoard([{ name: 'E2E_UNDO_VAR', value: 'kept', isSecret: false, updatedAt: STORED_AT }]);
-        const { user, summary } = await openCore('E2E_UNDO_VAR');
-        const dialog = await openDialog(user, summary);
+        const { user, editor } = await openCore();
+        await editor.findByText('E2E_UNDO_VAR');
 
-        await user.click(dialog.getByRole('button', { name: 'Remove E2E_UNDO_VAR' }));
-        expect(dialog.getByText('E2E_UNDO_VAR will be removed when you save.')).toBeTruthy();
+        await user.click(editor.getByRole('button', { name: 'Remove E2E_UNDO_VAR' }));
+        expect(editor.getByText('Removed when you save')).toBeTruthy();
         expect(puts()).toHaveLength(0);
 
-        await user.click(dialog.getByRole('button', { name: 'Undo' }));
-        expect(dialog.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_UNDO_VAR');
+        await user.click(editor.getByRole('button', { name: 'Undo' }));
+        expect(editor.getByRole('button', { name: 'Edit E2E_UNDO_VAR' })).toBeTruthy();
+        expect(editor.queryByRole('button', { name: 'Save changes' })).toBeNull();
 
-        await user.click(dialog.getByRole('button', { name: 'Remove E2E_UNDO_VAR' }));
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        await summary.findByText('No variables or secrets configured yet.');
+        await user.click(editor.getByRole('button', { name: 'Remove E2E_UNDO_VAR' }));
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
+        await editor.findByText('No variables yet.');
         expect(puts().map((c) => c.body)).toEqual([{ vars: [] }]);
     });
 
     it('saves valid .env text, and malformed text shows line errors and blocks Save', async () => {
         const { puts } = envBoard();
-        const { user, summary } = await openCore();
-        const dialog = await openDialog(user, summary);
+        const { user, editor } = await openCore();
 
-        await user.click(dialog.getByRole('button', { name: '.env' }));
-        const text = dialog.getByLabelText('Variables as .env text');
+        await user.click(editor.getByRole('button', { name: 'Raw editor' }));
+        const text = editor.getByLabelText('Variables as .env text');
         await user.type(text, 'E2E_RAW_VAR=raw-value{Enter}THIS HAS SPACES=yes');
-        expect(dialog.getByText(/line 2/)).toBeTruthy();
-        expect(dialog.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', true);
+        expect(editor.getByText(/line 2/)).toBeTruthy();
+        expect(editor.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', true);
 
         await user.clear(text);
         await user.type(text, 'E2E_RAW_VAR=raw-value');
-        expect(dialog.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', false);
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        await summary.findByText('E2E_RAW_VAR');
+        expect(editor.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', false);
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
+        await editor.findByText('Changes saved.');
         expect(puts().map((c) => c.body)).toEqual([
             { vars: [{ name: 'E2E_RAW_VAR', value: 'raw-value', isSecret: false }] },
         ]);
+        // The save leaves nothing pending, and the stored variable reads back in the list.
+        await user.click(editor.getByRole('button', { name: 'List view' }));
+        expect(rowNames(editor)).toEqual(['E2E_RAW_VAR']);
     });
 
-    it('saves a new secret, keeps it write-only, and offers no value back on reopen', async () => {
+    it('saves a new secret, keeps it write-only, and offers no value back on edit', async () => {
         const { puts } = envBoard();
-        const { user, summary } = await openCore();
-        let dialog = await openDialog(user, summary);
+        const { user, editor } = await openCore();
 
-        await user.click(dialog.getByRole('button', { name: 'Add secret' }));
-        await user.type(dialog.getByLabelText('Secret 1 name'), 'E2E_SECRET');
-        // Not set: a new secret with nothing typed cannot save.
-        expect(dialog.getByText('Not set')).toBeTruthy();
-        expect(dialog.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', true);
+        await user.click(editor.getByRole('tab', { name: /^Secrets/ }));
+        await user.click(editor.getByRole('button', { name: 'New secret' }));
+        await user.type(editor.getByLabelText('Secret name'), 'E2E_SECRET');
+        // Not set: a new secret with nothing typed cannot be finished.
+        await user.keyboard('{Enter}');
+        expect(editor.getByText('Enter a value or remove the row.')).toBeTruthy();
 
-        await user.type(dialog.getByLabelText('Secret 1 new value'), 's3cret');
-        expect(dialog.getByText('Will replace when saved')).toBeTruthy();
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        await summary.findByText('E2E_SECRET');
+        await user.type(editor.getByLabelText('Secret new value'), 's3cret{Enter}');
+        expect(editor.getByText('Will replace when saved')).toBeTruthy();
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
+        await editor.findByText('Changes saved.');
         expect(document.body.textContent).not.toContain('s3cret');
         expect(puts().map((c) => c.body)).toEqual([
             { vars: [{ name: 'E2E_SECRET', value: 's3cret', isSecret: true }] },
         ]);
 
-        dialog = await openDialog(user, summary);
-        expect(dialog.getByText('Set', { exact: true })).toBeTruthy();
-        expect(dialog.getByLabelText('Secret 1 new value')).toHaveProperty('value', '');
+        expect(editor.getByText('Set', { exact: true })).toBeTruthy();
+        await user.click(editor.getByRole('button', { name: 'Edit E2E_SECRET' }));
+        expect(editor.getByLabelText('Secret new value')).toHaveProperty('value', '');
+        expect(document.body.innerHTML).not.toContain('s3cret');
     });
 
-    it('arms the browser tab guard only while the dialog holds unsaved edits', async () => {
+    it('arms the browser tab guard only while the editor holds unsaved edits', async () => {
         envBoard();
-        const { user, summary } = await openCore();
+        const { user, editor } = await openCore();
         const unload = () => {
             const event = new Event('beforeunload', { cancelable: true });
             window.dispatchEvent(event);
@@ -212,101 +193,99 @@ describe('the Core variables summary and dialog', () => {
         };
 
         expect(unload()).toBe(false);
-        const dialog = await openDialog(user, summary);
-        // Open but clean: still nothing to protect.
+        await user.click(editor.getByRole('button', { name: 'New variable' }));
+        // A blank addition already reads as dirty (an unfinished row is part of the draft) ...
+        expect(unload()).toBe(true);
+        await user.click(editor.getByRole('button', { name: 'Cancel editing variable' }));
+        // ... and cancelling it returns the page to nothing to protect.
         expect(unload()).toBe(false);
-
-        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
-        await user.type(dialog.getByLabelText('Variable 1 name'), 'E2E_BEFOREUNLOAD');
+        await user.click(editor.getByRole('button', { name: 'New variable' }));
+        await user.type(editor.getByLabelText('Variable name'), 'E2E_BEFOREUNLOAD');
         // Dirty: the browser's own guard is asked to hold the page.
         expect(unload()).toBe(true);
 
-        await user.click(dialog.getByRole('button', { name: 'Cancel' }));
-        await user.click(screen.getByRole('button', { name: 'Discard changes' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        await user.click(editor.getByRole('button', { name: 'Discard' }));
         expect(unload()).toBe(false);
+        expect(editor.getByText('No variables yet.')).toBeTruthy();
     });
 
-    it('asks before in-app navigation while the dialog has unsaved edits', async () => {
+    it('asks before in-app navigation while the editor has unsaved edits', async () => {
         envBoard();
-        const { user, summary } = await openCore();
-        const dialog = await openDialog(user, summary);
-        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
-        await user.type(dialog.getByLabelText('Variable 1 name'), 'E2E_NAV_GUARD');
+        const { user, editor } = await openCore();
+        await addVariable(user, editor, 'E2E_NAV_GUARD');
 
-        // Back/forward and programmatic navigation reach the route blocker even though a pointer
-        // cannot click the page behind a modal; the link click here stands for that navigation.
         await user.click(document.querySelector('a[href="/tasks"]') as HTMLElement);
         expect((await screen.findAllByText('Discard unsaved changes?')).length).toBeGreaterThan(0);
+        expect(screen.getByText(/Your changes to Organization variables have not been saved\./)).toBeTruthy();
         await user.click(screen.getByRole('button', { name: 'Continue editing' }));
-        expect(screen.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_NAV_GUARD');
+        expect(editor.getByText('E2E_NAV_GUARD')).toBeTruthy();
+        expect(editor.getByRole('button', { name: 'Save changes' })).toBeTruthy();
     });
 
-    it('retains the draft through a failed save with an alert, then a retry succeeds and closes', async () => {
+    it('asks before in-app navigation on a malformed raw text too', async () => {
+        envBoard();
+        const { user, editor } = await openCore();
+        await user.click(editor.getByRole('button', { name: 'Raw editor' }));
+        await user.type(editor.getByLabelText('Variables as .env text'), 'not a pair');
+        await user.click(document.querySelector('a[href="/tasks"]') as HTMLElement);
+        expect((await screen.findAllByText('Discard unsaved changes?')).length).toBeGreaterThan(0);
+    });
+
+    it('retains the draft through a failed save with an alert, then a retry succeeds', async () => {
         const { board, puts } = envBoard([
             { name: 'E2E_FAIL_VAR', value: 'kept', isSecret: false, updatedAt: STORED_AT },
         ]);
-        const { user, summary } = await openCore('E2E_FAIL_VAR');
-        const dialog = await openDialog(user, summary);
+        const { user, editor } = await openCore();
+        await editor.findByText('E2E_FAIL_VAR');
 
         // The server stays authoritative: a refusal is answered with its error, and the draft survives it.
         board.refuse = { status: 400, error: 'BAD_VALUE: the value is refused' };
-        const value = dialog.getByLabelText('Variable 1 value');
-        await user.clear(value);
-        await user.type(value, 'changed');
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
-        expect((await dialog.findByRole('alert')).textContent).toContain('BAD_VALUE');
-        expect(screen.getByRole('dialog')).toBeTruthy();
-        expect(dialog.getByLabelText('Variable 1 value')).toHaveProperty('value', 'changed');
-        expect(dialog.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', false);
+        await user.click(editor.getByRole('button', { name: 'Edit E2E_FAIL_VAR' }));
+        await user.clear(editor.getByLabelText('Variable value'));
+        await user.type(editor.getByLabelText('Variable value'), 'changed{Enter}');
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
+        expect((await editor.findByRole('alert')).textContent).toContain('BAD_VALUE');
+        expect(editor.getByText('changed')).toBeTruthy();
+        expect(editor.getByRole('button', { name: 'Save changes' })).toHaveProperty('disabled', false);
 
         // A removal staged before the failure survives it.
-        await user.click(dialog.getByRole('button', { name: 'Remove E2E_FAIL_VAR' }));
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
+        await user.click(editor.getByRole('button', { name: 'Remove E2E_FAIL_VAR' }));
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
         await waitFor(() => expect(puts()).toHaveLength(2));
-        expect((await dialog.findByRole('alert')).textContent).toContain('BAD_VALUE');
-        expect(dialog.getByText('E2E_FAIL_VAR will be removed when you save.')).toBeTruthy();
+        expect((await editor.findByRole('alert')).textContent).toContain('BAD_VALUE');
+        expect(editor.getByText('Removed when you save')).toBeTruthy();
 
         board.refuse = null;
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        await summary.findByText('No variables or secrets configured yet.');
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
+        await editor.findByText('Changes saved.');
+        await editor.findByText('No variables yet.');
         expect(board.org).toEqual([]);
     });
 
-    it('has Save as the dialog’s one primary action', async () => {
+    it('has Save as the editor’s one primary action beside New', async () => {
         envBoard();
-        const { user, summary } = await openCore();
-        const dialog = await openDialog(user, summary);
-        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
-        const panel = screen.getByRole('dialog');
-        const primaries = panel.querySelectorAll('button.primary');
-        expect(primaries).toHaveLength(1);
-        expect(primaries[0]!.textContent).toBe('Save changes');
+        const { user, editor } = await openCore();
+        await addVariable(user, editor, 'E2E_PRIMARY');
+        const primaries = [...document.querySelectorAll('section.env-editor button.primary')].map((b) => b.textContent);
+        expect(primaries.sort()).toEqual(['New variable', 'Save changes']);
     });
 
-    // BEL-262 review: the dialog seeds from the last SAVED list, not from whatever the refetch has
+    // BEL-262 review: the editor's baseline is the last SAVED list, not whatever the refetch has
     // delivered, or the next whole-list PUT silently deletes the row that was just saved.
-    async function saveA(user: ReturnType<typeof userEvent.setup>, summary: ReturnType<typeof within>, name: string) {
-        const dialog = await openDialog(user, summary);
-        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
-        await user.type(dialog.getAllByLabelText(/^Variable \d+ name$/).at(-1)!, name);
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    async function saveA(user: User, editor: ReturnType<typeof within>, name: string) {
+        await addVariable(user, editor, name);
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
+        await editor.findByText('Changes saved.');
     }
 
-    it('reopens seeded with the saved row while the refresh is still held, and a second save keeps it', async () => {
+    it('keeps the saved row while the refresh is still held, and a second save sends both', async () => {
         const { board, puts } = envBoard();
-        const { user, summary } = await openCore();
+        const { user, editor } = await openCore();
         board.holdGets = true;
-        await saveA(user, summary, 'E2E_FIRST');
-        await summary.findByText('E2E_FIRST');
+        await saveA(user, editor, 'E2E_FIRST');
 
-        const dialog = await openDialog(user, summary);
-        expect(dialog.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_FIRST');
-        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
-        await user.type(dialog.getByLabelText('Variable 2 name'), 'E2E_SECOND');
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
+        await addVariable(user, editor, 'E2E_SECOND');
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
         await waitFor(() => expect(puts()).toHaveLength(2));
         expect((puts()[1]!.body as { vars: { name: string }[] }).vars.map((v) => v.name)).toEqual([
             'E2E_FIRST',
@@ -314,25 +293,21 @@ describe('the Core variables summary and dialog', () => {
         ]);
     });
 
-    it('reopens seeded with the saved row when the refresh fails', async () => {
+    it('keeps the saved row when the refresh fails', async () => {
         const { board } = envBoard();
-        const { user, summary } = await openCore();
+        const { user, editor } = await openCore();
         board.failGets = true;
-        await saveA(user, summary, 'E2E_KEPT');
-        await summary.findByText('E2E_KEPT');
-        const dialog = await openDialog(user, summary);
-        expect(dialog.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_KEPT');
+        await saveA(user, editor, 'E2E_KEPT');
+        expect(rowNames(editor)).toEqual(['E2E_KEPT']);
+        expect(editor.queryByRole('button', { name: 'Save changes' })).toBeNull();
     });
 
     it('does not let a stale refresh that resolves after a later save overwrite it', async () => {
         const { board } = envBoard();
-        const { user, summary } = await openCore();
+        const { user, editor } = await openCore();
         board.holdGets = true;
-        await saveA(user, summary, 'E2E_ONE');
-        await summary.findByText('E2E_ONE');
-        // Parked GET #1 holds the list as it was after the first save (one row).
-        await saveA(user, summary, 'E2E_TWO');
-        await summary.findByText('2 variables', { exact: false });
+        await saveA(user, editor, 'E2E_ONE');
+        await saveA(user, editor, 'E2E_TWO');
         // Release the stale answers: they carry the older snapshot, ignoring their abort.
         // Newest answer first, the stale one last, so an unguarded read would win.
         board.parked
@@ -342,16 +317,16 @@ describe('the Core variables summary and dialog', () => {
                 release();
             });
         await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(summary.getByText('2 variables', { exact: false })).toBeTruthy();
-        expect(summary.getByText('E2E_TWO')).toBeTruthy();
+        expect(rowNames(editor)).toEqual(['E2E_ONE', 'E2E_TWO']);
+        expect(editor.getByRole('tab', { name: /^Variables/ }).querySelector('.env-tab-count')?.textContent).toBe('2');
     });
 });
 
 /**
- * The same last-saved-list seed on the other two scopes (BEL-262 review): the workspace and the
- * repository sections reopen with the row they just saved while the refetch is held.
+ * The same last-saved baseline on the other two scopes (BEL-262 review): the workspace and the
+ * repository sections keep the row they just saved while the refetch is held.
  */
-describe('the workspace and repository dialogs reopen from the last saved list', () => {
+describe('the workspace and repository editors keep the last saved list', () => {
     function scopedBoard(putUrl: string) {
         let stored: EnvVarView[] = [];
         let hold = false;
@@ -377,35 +352,41 @@ describe('the workspace and repository dialogs reopen from the last saved list',
         return { calls, hold: () => (hold = true) };
     }
 
-    async function saveThenReopen(summary: ReturnType<typeof within>, title: string, hold: () => void) {
+    async function saveThenSecond(
+        editor: ReturnType<typeof within>,
+        hold: () => void,
+        calls: ReturnType<typeof stubFetch>
+    ) {
         const user = userEvent.setup();
-        await summary.findByText('No variables or secrets configured yet.');
+        await editor.findByText('No variables yet.');
         hold();
-        await user.click(summary.getByRole('button', { name: 'Edit variables' }));
-        let dialog = within(await screen.findByRole('dialog', { name: title }));
-        await user.click(dialog.getByRole('button', { name: 'Add variable' }));
-        await user.type(dialog.getByLabelText('Variable 1 name'), 'E2E_SAVED_FIRST');
-        await user.click(dialog.getByRole('button', { name: 'Save changes' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        await summary.findByText('E2E_SAVED_FIRST');
-        await user.click(summary.getByRole('button', { name: 'Edit variables' }));
-        dialog = within(await screen.findByRole('dialog', { name: title }));
-        expect(dialog.getByLabelText('Variable 1 name')).toHaveProperty('value', 'E2E_SAVED_FIRST');
+        await addVariable(user, editor, 'E2E_SAVED_FIRST');
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
+        await editor.findByText('Changes saved.');
+        expect(rowNames(editor)).toEqual(['E2E_SAVED_FIRST']);
+
+        await addVariable(user, editor, 'E2E_SAVED_SECOND');
+        await user.click(editor.getByRole('button', { name: 'Save changes' }));
+        await waitFor(() => expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(2));
+        const sent = calls.filter((c) => c.method === 'PUT')[1]!.body as { vars: { name: string }[] };
+        expect(sent.vars.map((v) => v.name)).toEqual(['E2E_SAVED_FIRST', 'E2E_SAVED_SECOND']);
     }
 
     it('workspace', async () => {
-        const { hold } = scopedBoard('/api/env/workspace');
+        const { hold, calls } = scopedBoard('/api/env/workspace');
         renderApp('/settings/workspace');
-        const heading = await screen.findByRole('heading', { name: 'My workspace' });
-        await saveThenReopen(within(heading.closest('section.panel') as HTMLElement), 'My workspace', hold);
+        const editor = within(await screen.findByRole('region', { name: 'Workspace variables' }));
+        await saveThenSecond(editor, hold, calls);
     });
 
     it('repository', async () => {
-        const { hold } = scopedBoard('/api/env/repo');
+        const { hold, calls } = scopedBoard('/api/env/repo');
         const user = userEvent.setup();
         renderApp('/settings/repos');
         await user.click(await screen.findByRole('button', { name: 'Configure' }));
         const heading = await screen.findByRole('heading', { name: 'Bellows-AI/bellows.ai' });
-        await saveThenReopen(within(heading.closest('section.panel') as HTMLElement), 'Bellows-AI/bellows.ai', hold);
+        expect(heading.className).toContain('mono');
+        const editor = within(await screen.findByRole('region', { name: 'Bellows-AI/bellows.ai' }));
+        await saveThenSecond(editor, hold, calls);
     });
 });

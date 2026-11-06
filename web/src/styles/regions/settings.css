@@ -436,76 +436,245 @@
         text-overflow: ellipsis;
     }
 
-    /* Aligned Name/Value/Actions columns, bounded rows: the Value column absorbs the width the
-        fixed Name and Actions columns leave, so a long value wraps instead of clipping. */
-    .env-vars {
-        border-collapse: collapse;
-        table-layout: fixed;
-        width: 100%;
+    /* The variables editor (BEL-262), inline on a settings page: the title, the Variables |
+       Secrets tab strip, then one bordered box — a head (title, filter, raw toggle, New) over
+       rows that read as text and open one at a time for editing. */
+    .env-editor {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 0;
     }
 
-    .env-vars th {
-        border-bottom: 1px solid var(--line-strong);
+    .env-editor-title {
+        font-size: 18px;
+        margin: 0;
+    }
+
+    .env-tabs [role='tab'] {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+        padding: 8px 4px 10px;
+    }
+
+    .env-tabs [role='tab'] + [role='tab'] {
+        margin-left: 16px;
+    }
+
+    .env-tab-count {
+        background: var(--surface-strong);
+        border-radius: 999px;
         color: var(--ink-muted);
         font-size: 12px;
-        letter-spacing: 0.02em;
-        padding: 6px 10px;
-        text-align: left;
-        text-transform: uppercase;
+        padding: 0 7px;
     }
 
-    .env-vars td {
-        border-bottom: 1px solid var(--line);
-        padding: 8px 10px;
-        vertical-align: top;
+    /* The unsaved-change lamp: the wait lamp for a changed row or tab, the run lamp for an
+       addition. Its accessible name carries the meaning; the color only repeats it. */
+    .env-mark {
+        background: var(--lamp-wait);
+        border-radius: 50%;
+        display: inline-block;
+        flex: none;
+        height: 6px;
+        width: 6px;
     }
 
-    .env-vars th:first-child,
-    .env-vars td:first-child {
-        width: 30%;
+    .env-mark-new {
+        background: var(--lamp-run);
     }
 
-    .env-vars th:last-child,
-    .env-vars td:last-child {
-        text-align: center;
-        width: 56px;
+    .env-box {
+        background: var(--surface-soft);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        overflow: hidden;
     }
 
-    .env-vars input[aria-invalid='true'] {
-        border-color: var(--lamp-stop);
-    }
-
-    /* Add stays a quiet outline: it never competes with the dialog's one `.primary` Save. */
-    .env-add {
-        background: transparent;
-        color: var(--accent);
-        font-size: 13px;
-        padding: 4px 10px;
-    }
-
-    .env-add:hover:not(:disabled) {
-        background: var(--accent-wash);
-    }
-
-    .env-row-remove {
+    .env-box-head {
         align-items: center;
+        background: var(--surface-raised);
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 12px 10px 16px;
+    }
+
+    .env-box-head h3 {
+        font-size: 14px;
+        margin: 0 auto 0 0;
+    }
+
+    .env-search {
+        width: 220px;
+    }
+
+    /* The raw toggle is a quiet text button: it never competes with New or Save. */
+    .env-quiet {
+        align-items: center;
+        background: transparent;
+        border-color: transparent;
+        color: var(--ink-muted);
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    .env-quiet .icon {
+        color: var(--accent);
+    }
+
+    .env-quiet[aria-disabled='true'] {
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+
+    .env-new {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    .env-rows {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    /* Name, value, last update, actions. The value absorbs the width the others leave and
+       ellipsizes; the full value is its title and its edit field. */
+    .env-row {
+        align-items: center;
+        border-top: 1px solid var(--line);
+        display: grid;
+        gap: 12px;
+        grid-template-columns: minmax(160px, 30%) minmax(0, 1fr) 120px 76px;
+        min-height: 52px;
+        padding: 8px 12px 8px 16px;
+    }
+
+    .env-row:first-child {
+        border-top: 0;
+    }
+
+    .env-row:hover {
+        background: var(--surface-raised);
+    }
+
+    .env-name {
+        align-items: center;
+        display: flex;
+        font-size: 13px;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .env-name-text,
+    .env-value {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .env-value {
+        font-size: 13px;
+    }
+
+    .env-value-masked {
+        color: var(--ink-muted);
+    }
+
+    .env-secret-state {
+        font-size: 12px;
+        margin-left: 8px;
+    }
+
+    .env-secret-state.pending {
+        color: var(--lamp-wait);
+    }
+
+    .env-updated {
+        font-size: 12px;
+        white-space: nowrap;
+    }
+
+    .env-row-actions {
+        display: flex;
+        gap: 2px;
+        justify-content: flex-end;
+    }
+
+    /* The small square icon control, shared with `.row-actions-trigger`'s shape. */
+    .env-icon-button {
+        align-items: center;
+        background: transparent;
+        border-color: transparent;
+        color: var(--ink-muted);
         display: inline-flex;
         justify-content: center;
         padding: 0;
         width: 36px;
     }
 
-    /* A pending removal stays visible until the save that deletes it: compact, warning-edged,
-        the row's name and its sentence beside an Undo. */
-    .env-pending {
-        align-items: center;
-        background: var(--surface-sunken);
-        border: 1px solid var(--warn-border);
-        border-radius: var(--radius-lg);
+    .env-icon-button:hover:not(:disabled) {
+        color: var(--ink);
+    }
+
+    .env-remove:hover:not(:disabled) {
+        color: var(--lamp-stop);
+    }
+
+    .env-done {
+        color: var(--lamp-run);
+    }
+
+    /* Focus scrolls the open row clear of the sticky save bar instead of under it. */
+    .env-row-editing {
+        align-items: start;
+        scroll-margin-bottom: 96px;
+        background: var(--surface-raised);
+        grid-template-columns: minmax(160px, 30%) minmax(0, 1fr) 76px;
+    }
+
+    .env-field {
         display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        padding: 8px 10px;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+
+    .env-field input {
+        width: 100%;
+    }
+
+    .env-row-editing .env-value-input {
+        border-color: var(--accent);
+    }
+
+    .env-row-editing input[aria-invalid='true'] {
+        border-color: var(--lamp-stop);
+    }
+
+    .env-hint {
+        font-size: 12px;
+    }
+
+    .env-row-removed {
+        background: var(--bad-wash);
+    }
+
+    .env-row-removed .env-name-text,
+    .env-row-removed .env-value {
+        color: var(--ink-muted);
+        text-decoration: line-through;
+    }
+
+    .env-empty {
+        margin: 0;
+        padding: 32px 16px;
+        text-align: center;
     }
 
     .env-raw {
@@ -527,113 +696,57 @@
         width: 100%;
     }
 
+    .env-box .env-raw {
+        gap: 6px;
+        margin: 0;
+        padding: 12px 16px 16px;
+    }
+
+    .env-box .env-raw p {
+        font-size: 13px;
+        margin: 0;
+    }
+
+    /* Outranks `.env-raw textarea`, whose `font: inherit` would otherwise win. */
+    .env-raw .env-raw-text {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        line-height: 1.6;
+        min-height: 240px;
+        resize: vertical;
+        width: 100%;
+    }
+
     .env-errors {
         font-size: 12px;
         white-space: pre-wrap;
     }
 
-    /* The settings pages' compact variables summary: counts, then the first few names, never a value. */
-    .env-summary {
+    /* Shown only while there is something to save; sticks to the viewport's foot so Save stays
+       reachable below a long list. */
+    .env-savebar {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-xl);
+        bottom: 0;
+        box-shadow: 0 -4px 16px var(--shadow-float);
         display: flex;
-        flex-direction: column;
-        gap: 4px;
-    }
-
-    .env-summary-counts {
-        margin: 0;
-    }
-
-    .env-summary-names {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 16px;
-        list-style: none;
-        margin: 0;
-        padding: 0;
-    }
-
-    .env-summary-names li {
-        overflow-wrap: anywhere;
-    }
-
-    .env-summary > p {
-        margin: 0;
-    }
-
-    /* The variables editor modal (BEL-262): the shared `dialog` panel widened, as a clipped column
-       of head, scrolling body and footer — only the body scrolls, so Save and Cancel stay reachable
-       with any number of rows. */
-    .env-dialog {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        max-width: var(--measure-wide);
-        overflow: hidden;
-    }
-
-    .env-dialog-head {
-        align-items: center;
-        display: flex;
-        flex: none;
-        flex-wrap: wrap;
-        gap: 8px 16px;
-        justify-content: space-between;
-    }
-
-    .env-dialog-head h2 {
-        margin: 0;
-    }
-
-    .env-dialog-modes {
-        border: 0;
-        display: flex;
-        gap: 4px;
-        margin: 0;
-        min-width: 0;
-        padding: 0;
-    }
-
-    .env-dialog-modes button[aria-pressed='true'] {
-        background: var(--surface-strong);
-        border-color: var(--ink-muted);
-    }
-
-    .env-dialog-modes button[aria-disabled='true'] {
-        cursor: not-allowed;
-        opacity: 0.6;
-    }
-
-    .env-dialog-body {
-        display: flex;
-        flex: 1 1 auto;
-        flex-direction: column;
-        gap: 16px;
-        min-height: 0;
-        overflow-y: auto;
-    }
-
-    .env-dialog-section-head {
-        align-items: center;
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 4px;
-    }
-
-    .env-dialog-section-head h3 {
-        font-size: 14px;
-        margin: 0;
-    }
-
-    .env-dialog-footer {
-        border-top: 1px solid var(--line);
-        display: flex;
-        flex: none;
         flex-direction: column;
         gap: 8px;
-        padding-top: 12px;
+        padding: 10px 12px 10px 16px;
+        position: sticky;
+        z-index: 1;
     }
 
-    .env-dialog-actions {
+    .env-savebar p {
+        margin: 0;
+    }
+
+    .env-savebar-actions button {
+        white-space: nowrap;
+    }
+
+    .env-savebar-actions {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
@@ -641,62 +754,51 @@
         justify-content: flex-end;
     }
 
-    /* Outranks `.env-raw textarea`, whose `font: inherit` would otherwise win. */
-    .env-raw .env-dialog-text {
-        font-family: var(--font-mono);
-        font-size: 13px;
-        min-height: 240px;
+    .env-savebar-actions .settings-dirty {
+        margin-right: auto;
     }
 
-    /* A cell's input fills its column, with a floor that keeps the stored-secret instruction —
-        "Leave blank to keep the current secret" — readable instead of clipped to a sliver. */
-    .env-vars td input {
-        min-width: 140px;
-        width: 100%;
+    .env-saved:empty {
+        display: none;
     }
 
-    /* Narrow widths reflow an env row into a labeled group instead of compressing Name/Value
-        unusably: the header row steps aside and each cell names itself via data-label. */
+    /* Narrow widths stack a row: name over value, the actions beside both, no update column. The
+       save bar shrinks to one line so it covers as little of the list as it can. */
     @media (max-width: 640px) {
-        .env-vars tbody {
-            display: block;
+        .env-savebar {
+            padding: 8px 12px;
         }
 
-        .env-vars thead {
+        .env-savebar-actions {
+            flex-wrap: nowrap;
+        }
+
+        .env-savebar-actions .settings-dirty {
+            font-size: 12px;
+        }
+
+        .env-row,
+        .env-row-editing {
+            grid-template-columns: minmax(0, 1fr) auto;
+        }
+
+        .env-row .env-updated {
             display: none;
         }
 
-        .env-vars tr {
-            background: var(--surface);
-            border: 1px solid var(--line);
-            border-radius: var(--radius-lg);
-            display: block;
-            margin-bottom: 8px;
-            padding: 10px;
+        .env-row > .env-value,
+        .env-row-editing > .env-field + .env-field {
+            grid-column: 1;
+            grid-row: 2;
         }
 
-        .env-vars td {
-            border-bottom: none;
-            display: block;
-            padding: 2px 0;
-            text-align: left;
-            width: auto;
+        .env-row-actions {
+            grid-column: 2;
+            grid-row: 1 / span 2;
         }
 
-        /* Same specificity as the desktop `:first-child`/`:last-child` column pins, so the
-            cascade's source order — this rule comes later — decides instead of the pins winning
-            on specificity alone. */
-        .env-vars td:first-child,
-        .env-vars td:last-child {
-            text-align: left;
-            width: auto;
-        }
-
-        .env-vars td[data-label]::before {
-            color: var(--ink-muted);
-            content: attr(data-label);
-            display: block;
-            font-size: 12px;
+        .env-search {
+            width: 160px;
         }
     }
 
@@ -1009,15 +1111,19 @@
         .repo-table button,
         .settings-actions button,
         .unsaved-actions button,
-        .env-add,
-        .env-edit,
+        .env-quiet,
+        .env-box-head .env-new,
+        .env-search input,
+        .env-icon-button,
+        .env-row-actions button,
+        .env-savebar-actions button,
+        .env-raw input,
+        .env-raw select,
+        .env-raw button,
         .executor-add,
         .org-executor-add,
         button.notification-subscription-add,
         .integration-actions button,
-        .env-raw input,
-        .env-raw select,
-        .env-raw button,
         .picker-advanced > summary,
         .executor-about > summary,
         .picker-field-actions button,

@@ -120,8 +120,8 @@ describe('Settings organization page', () => {
         expect(html).not.toContain('bellows');
         expect(html).toContain('Loading environment…');
         expect(html).toMatch(/<p class="state-note" role="status">Loading environment…/);
-        expect(html).not.toContain('Any member can edit.');
-        expect(html).not.toContain('No variables or secrets configured yet.');
+        expect(html).not.toContain('env-editor');
+        expect(html).not.toContain('No variables yet.');
         expectNoPlaceholder(html);
     });
 
@@ -154,7 +154,9 @@ describe('Settings organization page', () => {
         // save-state rule, not a role gate.)
         expect(html.match(/<input [^>]*disabled/g) ?? []).toHaveLength(0);
         expect(html).not.toContain('shown here read-only');
-        expect(html).toContain('Any member can edit.');
+        // The tabs and the New button are live for a member too.
+        expect(html).toContain('New variable');
+        expect(html).not.toMatch(/<button[^>]*disabled[^>]*>(<[^>]+>)*New variable/);
     });
 
     it('carries no client-only admin gate in its source', () => {
@@ -164,7 +166,7 @@ describe('Settings organization page', () => {
         }
     });
 
-    it('renders the organization-wide scope line and the variable and secret counts once the environment arrives', () => {
+    it('renders the variable and secret counts on the tabs once the environment arrives', () => {
         const html = render('/settings/organization', {
             env: {
                 loading: false,
@@ -178,13 +180,12 @@ describe('Settings organization page', () => {
                 },
             },
         });
-        expect(html).toContain('Applies to every member');
-        expect(html).toContain('Any member can edit.');
-        expect(html.replace(/<[^>]+>/g, '')).toContain('1 variable');
-        expect(html.replace(/<[^>]+>/g, '')).toContain('1 secret');
-        // The summary names the rows and offers the dialog; it never prints a value.
-        expect(html).toContain('Edit variables');
-        expect(html).not.toContain('debug');
+        // The tabs carry the counts; the rows read as text, a secret's value never prints.
+        expect(html).toContain('Organization variables');
+        expect(html).toMatch(/role="tab"[^>]*>Variables<span class="env-tab-count">1<\/span>/);
+        expect(html).toMatch(/role="tab"[^>]*>Secrets<span class="env-tab-count">1<\/span>/);
+        expect(html).toContain('LOG_LEVEL');
+        expect(html).not.toContain('CORE_SECRET');
     });
 
     it('renders no editor after a failed environment read — the error is the whole story', () => {
@@ -196,8 +197,8 @@ describe('Settings organization page', () => {
         expect(html).toContain('The environment request failed');
         expect(html).toMatch(/<p class="state-note error" role="alert">The environment request failed/);
         expect(html).toContain('<h1');
-        expect(html).not.toContain('No variables or secrets configured yet.');
-        expect(html).not.toContain('Add variable');
+        expect(html).not.toContain('env-editor');
+        expect(html).not.toContain('No variables yet.');
     });
 
     it('carries the members section for an admin of a github-mode deployment (issue 410)', () => {
@@ -233,9 +234,7 @@ describe('Settings workspace page', () => {
             env: { loading: false, data: { org: [], workspace: [], repos: [] } },
         });
         expect(html).not.toContain('Loading your workspace');
-        expect(html).toContain('My workspace');
-        expect(html).toContain('Applies to tasks you start.');
-        expect(html).toContain('Edited only by that member.');
+        expect(html).toContain('Workspace variables');
         for (const gone of [
             'ORG_WORKSPACE_ROOT',
             'Your checkouts live at',
@@ -256,7 +255,7 @@ describe('Settings workspace page', () => {
             env: { loading: false, data: { org: [], workspace: [], repos: [] } },
         });
         expect(html).not.toContain('The workspace request failed');
-        expect(html).toContain('My workspace');
+        expect(html).toContain('Workspace variables');
     });
 
     it('announces a failed environment read as an alert', () => {
@@ -278,24 +277,25 @@ describe('Settings workspace page', () => {
             },
             env: { loading: false, data: { org: [], workspace: [], repos: [] } },
         });
-        expect(html).toContain('My workspace');
-        expect(html).toContain('No variables or secrets configured yet.');
+        expect(html).toContain('Workspace variables');
+        expect(html).toContain('No variables yet.');
     });
 
-    it('shows the title "My workspace" as visible text exactly once, as the editor\u2019s h2', () => {
+    it('shows the title "Workspace variables" as visible text exactly once, as the editor\u2019s h2', () => {
         const html = render('/settings/workspace', {
             env: { loading: false, data: { org: [], workspace: [], repos: [] } },
         });
-        expect(html.match(/>My workspace</g)).toHaveLength(1);
-        expect(html).toContain('<h2>My workspace</h2>');
+        expect(html.match(/>Workspace variables</g)).toHaveLength(1);
+        expect(html).toMatch(/<h2 id="[^"]*" class="env-editor-title">Workspace variables<\/h2>/);
         expect(html).not.toContain('scope-context-label');
     });
 
-    it('states precedence exactly once on the workspace and organization pages', () => {
+    it('mounts exactly one inline editor on the workspace and organization pages, with no precedence sentence', () => {
         const env = { loading: false, data: { org: [], workspace: [], repos: [] } };
         for (const path of ['/settings/workspace', '/settings/organization']) {
             const html = render(path, { env });
-            expect(html.match(/rightmost scope wins/g), path).toHaveLength(1);
+            expect(html.match(/<section class="env-editor"/g), path).toHaveLength(1);
+            expect(html, path).not.toContain('rightmost scope wins');
         }
     });
 
@@ -327,8 +327,8 @@ describe('Settings workspace page', () => {
             env: { loading: false, error: 'The environment request failed' },
         });
         expect(html).toContain('The environment request failed');
-        expect(html).not.toContain('No variables or secrets configured yet.');
-        expect(html).not.toContain('Add variable');
+        expect(html).not.toContain('env-editor');
+        expect(html).not.toContain('No variables yet.');
     });
 });
 
@@ -541,8 +541,8 @@ describe('Settings repositories page', () => {
             env: { loading: false, error: 'The environment request failed' },
         });
         expect(html).toContain('The environment request failed');
-        expect(html).not.toContain('No variables or secrets configured yet.');
-        expect(html).not.toContain('Add variable');
+        expect(html).not.toContain('env-editor');
+        expect(html).not.toContain('No variables yet.');
     });
 
     it('renders no configuration detail before a repository is chosen', () => {
@@ -563,8 +563,8 @@ describe('Settings repositories page', () => {
 });
 
 describe('settings scope context (issue 182 invariants)', () => {
-    // Scope context stays BEFORE the controls: each page's own sentence names the scope, and the
-    // editor mounts under it. The guard dialog copy never appears in a clean render — it exists
+    // Each page's editor is titled by its scope ("Organization variables", "Workspace variables").
+    // The guard dialog copy never appears in a clean render — it exists
     // only when the coordinator has something pending, which a static render cannot be.
     const envData = {
         org: [{ name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' }],
@@ -572,16 +572,15 @@ describe('settings scope context (issue 182 invariants)', () => {
         repos: [{ owner: 'octo', name: 'hooks', vars: [] }],
     };
 
-    it('renders the org summary under its scope sentence, counting the stored rows', () => {
+    it('renders the org editor under its scope title, counting the stored rows on the tabs', () => {
         const html = render('/settings/organization', { env: { loading: false, data: envData } });
-        const text = html.replace(/<[^>]*>/g, '');
-        expect(text).toContain('Applies to every member\u2019s tasks in the organization.');
-        expect(text).toContain('0 variables');
-        expect(text).toContain('1 secret');
+        expect(html).toContain('>Organization variables</h2>');
+        expect(html).toMatch(/>Variables<span class="env-tab-count">0<\/span>/);
+        expect(html).toMatch(/>Secrets<span class="env-tab-count">1<\/span>/);
         expect(html).not.toContain('Discard unsaved changes?');
     });
 
-    it('renders the workspace editor under its scope sentence', () => {
+    it('renders the workspace editor under its scope title', () => {
         const html = render('/settings/workspace', {
             workspace: {
                 loading: false,
@@ -593,8 +592,8 @@ describe('settings scope context (issue 182 invariants)', () => {
             },
             env: { loading: false, data: envData },
         });
-        expect(html).toContain('Applies to tasks you start.');
-        expect(html).toContain('No variables or secrets configured yet.');
+        expect(html).toContain('>Workspace variables</h2>');
+        expect(html).toContain('No variables yet.');
         expect(html).not.toContain('Discard unsaved changes?');
     });
 

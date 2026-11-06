@@ -58,12 +58,11 @@ export function SettingsOrganizationPage() {
                 <StateNote state="loading">Loading environment…</StateNote>
             ) : env.data ? (
                 <EnvVarsSection
-                    title="Core (organization)"
-                    scope={{ scope: 'organization' }}
+                    title="Organization variables"
                     vars={env.data.org}
                     onSave={env.saveOrg}
                     draftId="org"
-                    draftLabel="Core (organization)"
+                    draftLabel="Organization variables"
                 />
             ) : null}
         </>

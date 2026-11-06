@@ -141,7 +141,7 @@ describe('the raw .env editor parser — refusals', () => {
     it('refuses a name that collides with a secret in the scope', () => {
         expect(parseEnvRaw('A=1\nS=new', ['S'])).toEqual({
             ok: false,
-            errors: ['line 2: "S" is already a secret in this scope — edit it in the list view'],
+            errors: ['line 2: "S" is already a secret in this scope — edit it in the Secrets tab'],
         });
     });
 
