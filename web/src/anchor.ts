@@ -1,4 +1,13 @@
-import { autoUpdate, offset, shift, size, useFloating, type Middleware, type SizeOptions } from '@floating-ui/react';
+import {
+    autoUpdate,
+    flip,
+    offset,
+    shift,
+    size,
+    useFloating,
+    type Middleware,
+    type SizeOptions,
+} from '@floating-ui/react';
 
 /**
  * Anchors a dropdown panel directly below its trigger, never above it (issue 224).
@@ -39,6 +48,30 @@ export function useDownwardAnchor(align: 'start' | 'end') {
         strategy: 'fixed',
         whileElementsMounted: autoUpdate,
         middleware: downwardMiddleware(),
+    });
+    return { setReference: refs.setReference, setFloating: refs.setFloating, floatingStyles };
+}
+
+/**
+ * The middleware stack behind `useUpwardAnchor`: above the trigger, flipped below only when the
+ * space above cannot hold the panel, then capped to whichever side it took.
+ */
+export function upwardMiddleware(): Middleware[] {
+    return [
+        offset(ANCHOR_GAP_PX),
+        flip({ padding: VIEWPORT_PADDING_PX }),
+        shift({ padding: VIEWPORT_PADDING_PX }),
+        size({ padding: VIEWPORT_PADDING_PX, apply: capToAvailableHeight }),
+    ];
+}
+
+/** A panel that opens above a field typed into near the page's foot — the prompt's `/` menu. */
+export function useUpwardAnchor(align: 'start' | 'end') {
+    const { refs, floatingStyles } = useFloating({
+        placement: `top-${align}`,
+        strategy: 'fixed',
+        whileElementsMounted: autoUpdate,
+        middleware: upwardMiddleware(),
     });
     return { setReference: refs.setReference, setFloating: refs.setFloating, floatingStyles };
 }

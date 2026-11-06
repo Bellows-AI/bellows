@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { ANCHOR_GAP_PX, VIEWPORT_PADDING_PX, capToAvailableHeight, downwardMiddleware } from '../src/anchor.js';
+import {
+    ANCHOR_GAP_PX,
+    VIEWPORT_PADDING_PX,
+    capToAvailableHeight,
+    downwardMiddleware,
+    upwardMiddleware,
+} from '../src/anchor.js';
 
 /**
  * `useDownwardAnchor` wraps `useFloating`, which needs real DOM elements to measure — out of
@@ -25,5 +31,12 @@ describe('the downward anchor (#224)', () => {
     it('names the gap and padding instead of repeating magic numbers at each call site', () => {
         expect(ANCHOR_GAP_PX).toBeGreaterThan(0);
         expect(VIEWPORT_PADDING_PX).toBeGreaterThan(0);
+    });
+});
+
+describe('the upward anchor', () => {
+    it('flips below only when the space above cannot hold the panel, then caps it to that side', () => {
+        const names = upwardMiddleware().map((middleware) => middleware.name);
+        expect(names).toEqual(['offset', 'flip', 'shift', 'size']);
     });
 });
