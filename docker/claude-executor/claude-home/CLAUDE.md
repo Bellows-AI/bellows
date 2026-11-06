@@ -114,9 +114,9 @@ expectation — ask first.**
 
 ## Tooling
 
-GitHub and Jira are covered by the `github` and `jira` skills, which load on demand. Reach for
-them rather than improvising: `gh` for pull requests, reviews and checks; the jira skill's helper,
-`node /usr/local/share/factory-skills/jira/jira.cjs`, for work items. Do not use an Atlassian MCP
+GitHub and Jira are covered by the `factory-github` and `factory-jira` skills, which load on demand. Reach for
+them rather than improvising: `gh` for pull requests, reviews and checks; the factory-jira skill's helper,
+`node /usr/local/share/factory-skills/factory-jira/jira.cjs`, for work items. Do not use an Atlassian MCP
 server or `acli`.
 
 ## Infrastructure access

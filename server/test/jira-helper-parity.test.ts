@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
  * operations: for each operation and a table of inputs, the same method, path and body, and the same next page.
  */
 
-const HELPER = join(fileURLToPath(import.meta.url), '..', '..', '..', 'docker', 'skills', 'jira', 'jira.cjs');
+const HELPER = join(fileURLToPath(import.meta.url), '..', '..', '..', 'docker', 'skills', 'factory-jira', 'jira.cjs');
 const helper = createRequire(import.meta.url)(HELPER) as {
     requestFor: (op: string, input: unknown, cloudId: string) => { method: string; path: string; body?: unknown };
     nextPath: (op: string, json: unknown, previousPath: string) => string | null;

@@ -199,7 +199,7 @@ describe('jira scopes', () => {
     it('the definition maps capabilities to scopes and the api base is origin plus cloud', () => {
         expect(def.capabilities.write).toEqual(['write:jira-work']);
         expect(def.capabilities.read).not.toContain('offline_access');
-        expect(def.skills).toEqual(['jira']);
+        expect(def.skills).toEqual(['factory-jira']);
         expect(jiraApiBase(ORIGIN, 'cloud-a')).toBe(`${ORIGIN}${BASE}`);
     });
 });

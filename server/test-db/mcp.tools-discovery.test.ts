@@ -156,7 +156,7 @@ describe.skipIf(!enabled)('discovery tools over real stores, two organizations',
     it('asks a member without a Jira connection to connect, and not the one who has it', async () => {
         const { url, people } = await boot();
         await oauthConnection(sql, ORG, people.alice.user.id);
-        const selection = { repo: 'acme/web', skills: ['jira'] };
+        const selection = { repo: 'acme/web', skills: ['factory-jira'] };
         expect(await call(url, 'carol', 'preflight_task', selection)).toMatchObject({
             verdict: 'integration_required',
             integrationRequired: [{ provider: 'jira', reason: 'missing' }],

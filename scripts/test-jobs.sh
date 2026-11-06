@@ -3842,10 +3842,10 @@ connection_roundtrip_lane() {
     # The helper reaches the board from inside the container, where the driver's loopback URL is not the host's.
     RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
 
-    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/jira/jira.cjs issue ABC-1 && node /usr/local/share/factory-skills/task-title/task-title.cjs \"Lane Jira subject\"; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/factory-jira/jira.cjs issue ABC-1 && node /usr/local/share/factory-skills/factory-task-title/task-title.cjs \"Lane Jira subject\"; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
     # BEL-252: the image's Jira skill carries the title hook (the scripted model cannot read prose, so the
     # chained command below stands for an agent that follows it: the title call runs only after a read exit 0).
-    docker run --rm --entrypoint cat "$image" /usr/local/share/factory-skills/jira/SKILL.md 2>/dev/null | grep 'Naming the task after a ticket' >/dev/null &&
+    docker run --rm --entrypoint cat "$image" /usr/local/share/factory-skills/factory-jira/SKILL.md 2>/dev/null | grep 'Naming the task after a ticket' >/dev/null &&
         ok 'the image ships the Jira skill title hook' || bad 'the image ships the Jira skill title hook' 'SKILL.md in the image lacks the section; make runners'
     ask_pid=$!
     lane_endpoint_started "$ask_pid"
@@ -3926,7 +3926,7 @@ task_title_lane() { # task_title_lane <claude|opencode>
     stop_driver
     RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
 
-    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"'"$tool"'","input":{"command":"node /usr/local/share/factory-skills/task-title/task-title.cjs \"Lane agent title\"; echo helper-exit=$?"}}]' >"$work/fake-title-$cli.port" &
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"'"$tool"'","input":{"command":"node /usr/local/share/factory-skills/factory-task-title/task-title.cjs \"Lane agent title\"; echo helper-exit=$?"}}]' >"$work/fake-title-$cli.port" &
     fake_pid=$!
     lane_endpoint_started "$fake_pid"
     for _ in $(seq 1 20); do

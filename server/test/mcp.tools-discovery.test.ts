@@ -351,14 +351,14 @@ describe('list_skills', () => {
         const url = await boot({ rows: { alice: [view('a1')], carol: [view('c1', { needsReconnect: true })] } });
         const states = async (who: Who) => {
             const { data } = await call(url, who, 'list_skills');
-            const skill = data.skills.find((s: { name: string }) => s.name === 'jira');
+            const skill = data.skills.find((s: { name: string }) => s.name === 'factory-jira');
             return skill?.connections.map((c: { provider: string; state: string }) => [c.provider, c.state]);
         };
         expect(await states('alice')).toEqual([['jira', 'connected']]);
         expect(await states('carol')).toEqual([['jira', 'needs_reconnect']]);
         expect(await states('bob')).toEqual([['jira', 'connected']]);
         const none = await call(await boot(), 'alice', 'list_skills');
-        const jira = none.data.skills.find((skill: { name: string }) => skill.name === 'jira');
+        const jira = none.data.skills.find((skill: { name: string }) => skill.name === 'factory-jira');
         expect(jira.connections).toMatchObject([{ provider: 'jira', state: 'missing' }]);
     });
 
@@ -453,7 +453,7 @@ describe('preflight_task', () => {
             bindings: [],
             requirements: [{ provider: 'jira', reason }],
         });
-        const withJira = { ...selection, skills: ['jira'] };
+        const withJira = { ...selection, skills: ['factory-jira'] };
         const missing = await call(await boot({ resolution: open('missing') }), 'alice', 'preflight_task', withJira);
         expect(missing.data).toMatchObject({
             verdict: 'integration_required',
@@ -484,7 +484,7 @@ describe('preflight_task', () => {
         };
         const { data } = await call(await boot({ resolution, connectionsThrow: true }), 'alice', 'preflight_task', {
             ...selection,
-            skills: ['jira'],
+            skills: ['factory-jira'],
         });
         expect(data).toMatchObject({
             verdict: 'integration_required',
@@ -501,7 +501,7 @@ describe('preflight_task', () => {
         const { data } = await call(await boot({ resolution }), 'alice', 'preflight_task', {
             ...selection,
             repo: 'acme/other',
-            skills: ['jira'],
+            skills: ['factory-jira'],
         });
         expect(data.verdict).toBe('blocked');
     });

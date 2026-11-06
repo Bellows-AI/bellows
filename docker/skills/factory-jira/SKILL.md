@@ -1,5 +1,5 @@
 ---
-name: jira
+name: factory-jira
 description: Read, search and comment on Jira work items through the jira helper, which uses the Jira connection the task was started with. Use whenever a Jira issue key (ABC-1234), a *.atlassian.net/browse/ URL, or a request to look up or comment on a ticket appears. Also covers Jira authorization failures. Do not use an Atlassian MCP server or `acli` — the helper is the supported path here.
 metadata:
   requires-connections: jira
@@ -7,7 +7,7 @@ metadata:
 
 # Jira through the jira helper
 
-Reach Jira with `node /usr/local/share/factory-skills/jira/jira.cjs`, which talks to the Jira site of
+Reach Jira with `node /usr/local/share/factory-skills/factory-jira/jira.cjs`, which talks to the Jira site of
 the connection this task is bound to. You hold no Jira credential and never see one: the helper asks
 the board for a short-lived token with the lease this attempt holds now, and only while this attempt
 is running. The Atlassian MCP server is deliberately not configured, and `acli` cannot use this
@@ -23,16 +23,16 @@ state does not carry between them.
 
 ```bash
 # Full detail, including the comment thread
-node /usr/local/share/factory-skills/jira/jira.cjs issue <KEY> --fields summary,description,status,issuetype,parent,fixVersions,components,labels,comment
+node /usr/local/share/factory-skills/factory-jira/jira.cjs issue <KEY> --fields summary,description,status,issuetype,parent,fixVersions,components,labels,comment
 
 # Search by JQL
-node /usr/local/share/factory-skills/jira/jira.cjs search "project = ABC AND status = 'In Progress' ORDER BY updated DESC" --fields summary,status,issuetype,parent,fixVersions,components,labels
+node /usr/local/share/factory-skills/factory-jira/jira.cjs search "project = ABC AND status = 'In Progress' ORDER BY updated DESC" --fields summary,status,issuetype,parent,fixVersions,components,labels
 
 # The comment thread alone
-node /usr/local/share/factory-skills/jira/jira.cjs comments <KEY>
+node /usr/local/share/factory-skills/factory-jira/jira.cjs comments <KEY>
 
 # Comment — plain text; the helper converts it to Atlassian Document Format
-node /usr/local/share/factory-skills/jira/jira.cjs comment <KEY> --body-file /tmp/comment.txt
+node /usr/local/share/factory-skills/factory-jira/jira.cjs comment <KEY> --body-file /tmp/comment.txt
 ```
 
 If several Jira sites are bound to the task, add `--site HOST` (the site's host name) to choose one.
@@ -58,7 +58,7 @@ the ticket's work, give the task a title with the task-title helper: the ticket'
 in a few words (up to 120 characters), not its description and not the key alone.
 
 ```bash
-node /usr/local/share/factory-skills/task-title/task-title.cjs "Fix redirect loop after login"
+node /usr/local/share/factory-skills/factory-task-title/task-title.cjs "Fix redirect loop after login"
 ```
 
 If the read failed, was refused or returned nothing usable, never invent a subject: do not call the

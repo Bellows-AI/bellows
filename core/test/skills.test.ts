@@ -64,9 +64,15 @@ describe('the shipped skills', () => {
         expect(parseSkillFrontmatter(read(name), name).name).toBe(name);
     });
 
+    it.each(skillNames)('%s is under the reserved factory- prefix', (name) => {
+        expect(isReservedSkillName(name)).toBe(true);
+    });
+
     it('declares the connection the github and jira skills need', () => {
-        expect(parseSkillFrontmatter(read('github'), 'github').requires.connections).toEqual(['github']);
-        expect(parseSkillFrontmatter(read('jira'), 'jira').requires.connections).toEqual(['jira']);
+        expect(parseSkillFrontmatter(read('factory-github'), 'factory-github').requires.connections).toEqual([
+            'github',
+        ]);
+        expect(parseSkillFrontmatter(read('factory-jira'), 'factory-jira').requires.connections).toEqual(['jira']);
     });
 
     it.each(skillNames)('%s carries no credential-looking literal', (name) => {

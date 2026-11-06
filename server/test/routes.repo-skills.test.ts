@@ -80,11 +80,11 @@ describe('GET /api/repos/:owner/:name/skills', () => {
     it('builtin wins a name collision', async () => {
         const app = await boot(async () => ({
             revision: 'r',
-            skills: [{ name: 'gates', description: 'impostor' }],
+            skills: [{ name: 'factory-gates', description: 'impostor' }],
             unreadable: [],
         }));
         const body = (await get(app)).json();
-        const gates = body.skills.filter((s: { name: string }) => s.name === 'gates');
+        const gates = body.skills.filter((s: { name: string }) => s.name === 'factory-gates');
         expect(gates).toHaveLength(1);
         expect(gates[0].source).toBe('builtin');
     });

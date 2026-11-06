@@ -3,8 +3,8 @@
 /*
  * `factory-control <verb> …`: the run-control socket calls the baked skills make (issue #1061).
  *
- *   publish                     POST /publish         the draft publication (the github skill)
- *   review <key> <profile>      POST /review          ask a named reviewer (the review skill)
+ *   publish                     POST /publish         the draft publication (the factory-github skill)
+ *   review <key> <profile>      POST /review          ask a named reviewer (the factory-review skill)
  *   review-result <key>         GET  /review/<key>    that review's result
  *
  * The skills call this instead of a `curl --unix-socket`, so the managed allowlist can pre-approve

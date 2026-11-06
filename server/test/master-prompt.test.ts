@@ -83,7 +83,7 @@ Rules for this turn
 - You may push the task branch and open or update a pull request. Before every push, run the declared gates that cover your change, filtered to your tests when the gate accepts a filter, and fix a red one before you push. An unavailable gate (no BELLOWS_GATE_URL, or an environment failure) is reported, not a blocker. Never say a gate passed that did not.
 - Do not merge or close a pull request, enable auto-merge, or start the next workflow step.
 - You may wait for CI checks and reviews on the pull request you published, fix what they find and push again, and reply to each review comment you addressed saying what changed.
-- After you push and open or update a pull request, load the pr-land skill and follow it to wait for CI and review before you finish.
+- After you push and open or update a pull request, load the factory-pr-land skill and follow it to wait for CI and review before you finish.
 - You may edit files, run tests and other local verification, and commit, as the current task requires.
 - If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop. Never print that line when you are not blocked.`
@@ -114,24 +114,24 @@ Rules for this turn
         });
         expect(prompt).toContain('poll or wait for GitHub activity');
         expect(prompt).not.toContain('You may wait for CI');
-        expect(prompt).not.toContain('pr-land');
+        expect(prompt).not.toContain('factory-pr-land');
     });
 
     it('names a skill the runner images ship', () => {
-        expect(resolveMasterPrompt(OBJECTIVE)).toContain('load the pr-land skill');
-        expect(readSkillCatalog().map((skill) => skill.name)).toContain('pr-land');
+        expect(resolveMasterPrompt(OBJECTIVE)).toContain('load the factory-pr-land skill');
+        expect(readSkillCatalog().map((skill) => skill.name)).toContain('factory-pr-land');
     });
 
     it('never contains a brace — the opencode template-substitution vector', () => {
         expect(resolveMasterPrompt(OBJECTIVE)).not.toMatch(/[{}]/);
-        expect(resolveMasterPrompt({ ...OBJECTIVE, skills: ['github', 'jira'] })).not.toMatch(/[{}]/);
+        expect(resolveMasterPrompt({ ...OBJECTIVE, skills: ['factory-github', 'factory-jira'] })).not.toMatch(/[{}]/);
     });
 });
 
 describe('resolveMasterPrompt: selected skills', () => {
     it('names the selection and says a skill grants nothing', () => {
-        const prompt = resolveMasterPrompt({ ...OBJECTIVE, skills: ['github', 'jira'] });
-        expect(prompt).toContain('- Selected skills: github, jira');
+        const prompt = resolveMasterPrompt({ ...OBJECTIVE, skills: ['factory-github', 'factory-jira'] });
+        expect(prompt).toContain('- Selected skills: factory-github, factory-jira');
         expect(prompt).toContain('a skill grants no access beyond what this task already has');
     });
 
@@ -141,14 +141,21 @@ describe('resolveMasterPrompt: selected skills', () => {
     });
 
     it('is byte-identical on every claim of a thread', () => {
-        const input = { ...OBJECTIVE, skills: ['gates'] };
+        const input = { ...OBJECTIVE, skills: ['factory-gates'] };
         expect(resolveMasterPrompt({ ...input })).toBe(resolveMasterPrompt({ ...input }));
     });
 
     it('stays inside the character cap with every shipped skill selected', () => {
         const prompt = resolveMasterPrompt({
             ...OBJECTIVE,
-            skills: ['backend-fix', 'gates', 'github', 'jira', 'pr-land', 'review'],
+            skills: [
+                'factory-fix',
+                'factory-gates',
+                'factory-github',
+                'factory-jira',
+                'factory-pr-land',
+                'factory-review',
+            ],
         });
         expect(prompt).not.toBeNull();
     });
@@ -486,7 +493,7 @@ describe('resolveMasterPrompt: a /name token in the task', () => {
     const LINE = 'A `/name` in the task names a skill: load it with your skill tool and follow it.';
 
     it('a /name token adds the load-skill line', () => {
-        for (const command of ['/fix the login bug', 'please run /pr-land now', 'a\n/review_2 it']) {
+        for (const command of ['/fix the login bug', 'please run /factory-pr-land now', 'a\n/review_2 it']) {
             expect(resolveMasterPrompt({ ...OBJECTIVE, command })).toContain(LINE);
         }
     });

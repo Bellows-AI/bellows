@@ -528,7 +528,7 @@ describe.skipIf(!enabled)('the task write tools — database', () => {
 
     it('a task created with a missing integration parks on a requirement; the same user connecting resumes that task, no new one', async () => {
         const { url, userOf, bind } = await boot();
-        const id = await created(url, 'alice', { skills: ['jira'] });
+        const id = await created(url, 'alice', { skills: ['factory-jira'] });
         const before = await countJobs();
         const requirement = () =>
             sql<{ source: string; satisfied_at: Date | null }[]>`

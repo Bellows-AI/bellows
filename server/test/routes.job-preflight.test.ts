@@ -255,19 +255,24 @@ describe('POST /api/jobs/preflight skills', () => {
     });
 
     it('is ok for an installed skill that needs no connection', async () => {
-        const { check } = await verdict(await boot(), { ...base, skills: ['review'] }, 'skill');
+        const { check } = await verdict(await boot(), { ...base, skills: ['factory-review'] }, 'skill');
         expect(check?.status).toBe('ok');
     });
 
     it('is unverified for a requirement the task never selects', async () => {
-        const { check } = await verdict(await boot(), { ...base, skills: ['github'] }, 'skill', 'github');
+        const { check } = await verdict(
+            await boot(),
+            { ...base, skills: ['factory-github'] },
+            'skill',
+            'factory-github'
+        );
         expect(check).toMatchObject({ status: 'unverified' });
     });
 
     it('selects the one personal connection as the default', async () => {
         const resolution: Resolution = { ok: true, bindings: [binding(CONN_A, 'default')], requirements: [] };
         const booted = await boot({ resolution, listed: [view(CONN_A)] });
-        const { check } = await verdict(booted, { ...base, skills: ['jira'] }, 'skill', 'jira');
+        const { check } = await verdict(booted, { ...base, skills: ['factory-jira'] }, 'skill', 'factory-jira');
         expect(check).toMatchObject({ status: 'ok' });
         expect(check?.detail).toContain('jira');
         expect(booted.asked.at(-1)?.userId).toBe(booted.member.user.id);
@@ -281,9 +286,9 @@ describe('POST /api/jobs/preflight skills', () => {
         };
         const { check } = await verdict(
             await boot({ resolution, listed: [view(CONN_A), view(CONN_B)] }),
-            { ...base, skills: ['jira'] },
+            { ...base, skills: ['factory-jira'] },
             'skill',
-            'jira'
+            'factory-jira'
         );
         expect(check).toMatchObject({ status: 'blocked' });
         expect(check?.detail).toMatch(/several/);
@@ -295,7 +300,12 @@ describe('POST /api/jobs/preflight skills', () => {
             bindings: [],
             requirements: [{ provider: 'jira', reason: 'missing' }],
         };
-        const { check } = await verdict(await boot({ resolution }), { ...base, skills: ['jira'] }, 'skill', 'jira');
+        const { check } = await verdict(
+            await boot({ resolution }),
+            { ...base, skills: ['factory-jira'] },
+            'skill',
+            'factory-jira'
+        );
         expect(check).toMatchObject({ status: 'blocked' });
         expect(check?.detail).toMatch(/no jira connection/);
     });
@@ -308,9 +318,9 @@ describe('POST /api/jobs/preflight skills', () => {
         };
         const { check } = await verdict(
             await boot({ resolution, listed: [view(CONN_A, { needsReconnect: true })] }),
-            { ...base, skills: ['jira'] },
+            { ...base, skills: ['factory-jira'] },
             'skill',
-            'jira'
+            'factory-jira'
         );
         expect(check).toMatchObject({ status: 'blocked' });
         expect(check?.detail).toMatch(/reconnect/);
@@ -320,9 +330,9 @@ describe('POST /api/jobs/preflight skills', () => {
         const resolution: Resolution = { ok: true, bindings: [binding(CONN_A, 'explicit')], requirements: [] };
         const { check } = await verdict(
             await boot({ resolution, allowed: [CONN_A], listed: [view(CONN_A)] }),
-            { ...base, skills: ['jira'], connections: [CONN_A] },
+            { ...base, skills: ['factory-jira'], connections: [CONN_A] },
             'skill',
-            'jira'
+            'factory-jira'
         );
         expect(check).toMatchObject({ status: 'ok' });
     });
@@ -335,9 +345,9 @@ describe('POST /api/jobs/preflight skills', () => {
         };
         const { check } = await verdict(
             await boot({ resolution, allowed: [CONN_A], listed: [view(CONN_A, { provider: 'other' })] }),
-            { ...base, skills: ['jira'], connections: [CONN_A] },
+            { ...base, skills: ['factory-jira'], connections: [CONN_A] },
             'skill',
-            'jira'
+            'factory-jira'
         );
         expect(check).toMatchObject({ status: 'blocked' });
     });
@@ -345,9 +355,9 @@ describe('POST /api/jobs/preflight skills', () => {
     it('is unverified, never blocked, when the resolver cannot be read', async () => {
         const { check, body } = await verdict(
             await boot({ resolution: new Error('db down') }),
-            { ...base, skills: ['jira'] },
+            { ...base, skills: ['factory-jira'] },
             'skill',
-            'jira'
+            'factory-jira'
         );
         expect(check).toMatchObject({ status: 'unverified' });
         expect(body.ready).toBe(true);
@@ -406,9 +416,9 @@ describe('POST /api/jobs/preflight connections', () => {
                 resolution,
                 listed: [view(CONN_A), view(CONN_B)],
             }),
-            { ...base, skills: ['jira'], connections: [CONN_A] },
+            { ...base, skills: ['factory-jira'], connections: [CONN_A] },
             'skill',
-            'jira'
+            'factory-jira'
         );
         expect(body.checks.find((c) => c.subject === 'skill')).toMatchObject({ status: 'unverified' });
         expect(body.checks.find((c) => c.subject === 'connection')).toMatchObject({ status: 'unverified' });
@@ -416,7 +426,7 @@ describe('POST /api/jobs/preflight connections', () => {
     });
 
     it('is ready when the only non-ok checks are unverified', async () => {
-        const { body } = await verdict(await boot(), { ...base, skills: ['github'] }, 'skill');
+        const { body } = await verdict(await boot(), { ...base, skills: ['factory-github'] }, 'skill');
         expect(body.checks.some((c) => c.status === 'unverified')).toBe(true);
         expect(body.ready).toBe(true);
     });
@@ -450,7 +460,7 @@ describe('POST /api/jobs/preflight body', () => {
 });
 
 describe('POST /api/jobs/preflight typed integration requirements', () => {
-    const base = { repo: 'acme/web', executor: 'main', skills: ['jira'] };
+    const base = { repo: 'acme/web', executor: 'main', skills: ['factory-jira'] };
     const open = (reason: 'missing' | 'ambiguous'): Resolution => ({
         ok: true,
         bindings: [],
@@ -465,13 +475,18 @@ describe('POST /api/jobs/preflight typed integration requirements', () => {
         ['missing', 'missing'],
         ['ambiguous', 'ambiguous'],
     ] as const)('types a %s requirement on the blocked skill check', async (reason, expected) => {
-        const check = await integrationOf(await boot({ resolution: open(reason) }), base, 'skill', 'jira');
+        const check = await integrationOf(await boot({ resolution: open(reason) }), base, 'skill', 'factory-jira');
         expect(check).toMatchObject({ status: 'blocked', integration: { provider: 'jira', reason: expected } });
     });
 
     it('types a lapsed grant as reconnect, on the skill check and on a named connection', async () => {
         const listed = [view(CONN_A, { needsReconnect: true })];
-        const skill = await integrationOf(await boot({ resolution: open('missing'), listed }), base, 'skill', 'jira');
+        const skill = await integrationOf(
+            await boot({ resolution: open('missing'), listed }),
+            base,
+            'skill',
+            'factory-jira'
+        );
         expect(skill).toMatchObject({ integration: { provider: 'jira', reason: 'reconnect' } });
         const named = await integrationOf(
             await boot({ allowed: [], listed }),
@@ -482,7 +497,12 @@ describe('POST /api/jobs/preflight typed integration requirements', () => {
     });
 
     it('types nothing on an ok, unverified or plainly blocked check', async () => {
-        const unreadable = await integrationOf(await boot({ resolution: new Error('db down') }), base, 'skill', 'jira');
+        const unreadable = await integrationOf(
+            await boot({ resolution: new Error('db down') }),
+            base,
+            'skill',
+            'factory-jira'
+        );
         expect(unreadable).toMatchObject({ status: 'unverified' });
         expect(unreadable).not.toHaveProperty('integration');
         const absent = await integrationOf(

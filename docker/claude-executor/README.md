@@ -26,6 +26,8 @@ precedence and `OTEL_LOG_*`: [docs/security.md](../../docs/security.md).
 - Whatever is dropped in `claude-home/` ships at `/home/node/.claude` with no Dockerfile change;
   skills live in `docker/skills/` so both executor images bake the same set. Guidance for a subset of
   tasks belongs in a skill: `claude-home/CLAUDE.md` is read in full every session.
+- Every built-in skill is named `factory-<name>`, the prefix `isReservedSkillName` reserves
+  (`core/test/skills.test.ts`, `test.sh`).
 - No credential is baked in; `test.sh` asserts a tokenless run reaches the login prompt. `WORKDIR`
   (default `/workspace`) must exist or the wrapper exits `2`.
 - The driver sets `FACTORY_TRANSCRIPT_DIR` per thread on the workspaces volume; the entrypoint makes
