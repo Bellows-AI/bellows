@@ -295,6 +295,22 @@ const survey = (target) => {
     return { dir, owned: dir.kind === 'dir' ? manifestOf(target) : {} };
 };
 
+/** The digest of a name that is claimed but not yet installed: never equals a bundle's sha256, so it is reinstalled. */
+const UNVERIFIED = '0000000000000000000000000000000000000000000000000000000000000000';
+
+/** Writes the manifest atomically (temp file, fsync, rename): a crash leaves the old manifest or the new, never a torn one. */
+const commit = (target, owned) => {
+    const pending = path.join(target, MANIFEST_NAME + '.tmp');
+    fs.writeFileSync(pending, JSON.stringify({ owned }) + '\n', { mode: FILE_MODE, flush: true });
+    fs.chmodSync(pending, FILE_MODE);
+    fs.renameSync(pending, path.join(target, MANIFEST_NAME));
+};
+
+/** Test seam: a runner lost at the named step boundary (SIGKILL, nothing after it runs). */
+const crashAt = (point) => {
+    if (process.env.SKILL_INSTALL_CRASH_AT === point) process.kill(process.pid, 'SIGKILL');
+};
+
 async function main() {
     const target = process.env.TARGET_DIR;
     if (!target) throw new Error('TARGET_DIR is not set');
@@ -324,20 +340,26 @@ async function main() {
         const entries = untar(await readBundle(entry, source), entry.name);
         write(path.join(staging, entry.name), entries, checkSkill(entries, entry.name));
     }
+    // Intent first: every name about to be published is owned BEFORE its directory appears, under a digest no bundle
+    // has, so a runner lost mid-install leaves nothing untracked: the next delivery prunes it or reinstalls it.
+    if (missing.length > 0) {
+        commit(target, { ...owned, ...Object.fromEntries(missing.map((entry) => [entry.name, UNVERIFIED])) });
+    }
+    crashAt('intent');
     for (const entry of missing) {
         fs.rmSync(path.join(target, entry.name), { recursive: true, force: true });
         fs.renameSync(path.join(staging, entry.name), path.join(target, entry.name));
+        crashAt('rename:' + entry.name);
     }
 
     // Only names of the validated manifest are ever pruned.
     const names = new Set(pin.map((entry) => entry.name));
     const stale = Object.keys(owned).filter((name) => !names.has(name));
     for (const name of stale) fs.rmSync(path.join(target, name), { recursive: true, force: true });
+    crashAt('prune');
 
-    const pending = path.join(target, MANIFEST_NAME + '.tmp');
-    fs.writeFileSync(pending, JSON.stringify({ owned: Object.fromEntries(pin.map((e) => [e.name, e.sha256])) }) + '\n');
-    fs.chmodSync(pending, FILE_MODE);
-    fs.renameSync(pending, path.join(target, MANIFEST_NAME));
+    crashAt('final');
+    commit(target, Object.fromEntries(pin.map((e) => [e.name, e.sha256])));
     fs.rmSync(staging, { recursive: true, force: true });
     return { ok: true, skills: pin.length, fetched: missing.length, pruned: stale.length };
 }

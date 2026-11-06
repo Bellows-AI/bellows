@@ -161,6 +161,59 @@ describe('the skill install script', () => {
         expect(ledger().owned).toEqual({ 'org-style': a.sha256, later: later.sha256 });
     });
 
+    describe('a runner lost at any step of an install', () => {
+        const POINTS = ['intent', 'rename:old', 'rename:x', 'rename:y', 'prune', 'final'];
+        // The pins a later delivery brings: all new, and one that keeps a half-installed name and rewrites another.
+        const FOLLOW_UPS = ['all new', 'keeps y, rewrites old'] as const;
+
+        it.each(POINTS.flatMap((point) => FOLLOW_UPS.map((follow) => [point, follow] as const)))(
+            'is reconciled by the next delivery: crash at %s, then a pin that %s',
+            async (point, follow) => {
+                const old1 = publish('old', V1, { 'SKILL.md': 'old v1\n' });
+                await install([old1]);
+                mkdirSync(join(target, 'agent-made'));
+                writeFileSync(join(target, 'agent-made', 'SKILL.md'), 'mine');
+                const old2 = publish('old', V2, { 'SKILL.md': 'old v2\n' });
+                const x = publish('x', V3);
+                const y = publish('y', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+                const z = publish('z', 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+
+                // The lost runner delivers a pin that drops nothing and adds x and y; `prune` needs something to prune.
+                const crashed = await install([old2, x, y], { SKILL_INSTALL_CRASH_AT: point }).then(
+                    () => 'finished',
+                    (e: { signal?: string }) => e.signal
+                );
+                expect(crashed).toBe('SIGKILL');
+
+                const next = follow === 'all new' ? [z] : [old2, y];
+                expect((await install(next)).ok).toBe(true);
+
+                const dirs = readdirSync(target).filter((n) => !n.startsWith('.factory-skills'));
+                expect(dirs.sort()).toEqual([...next.map((e) => e.name), 'agent-made'].sort());
+                for (const entry of next) {
+                    const bytes = readFileSync(join(target, entry.name, 'SKILL.md'), 'utf8');
+                    expect(bytes).toBe(entry.name === 'old' ? 'old v2\n' : bytes);
+                    expect(bytes).not.toBe('');
+                }
+                expect(readFileSync(join(target, 'agent-made', 'SKILL.md'), 'utf8')).toBe('mine');
+                expect(ledger().owned).toEqual(Object.fromEntries(next.map((e) => [e.name, e.sha256])));
+                expect(readdirSync(target).filter((n) => n.startsWith('.staging-'))).toEqual([]);
+            }
+        );
+
+        it('never leaves a manifest the strict parser refuses, whatever step it was lost at', async () => {
+            const x = publish('x', V3);
+            for (const point of POINTS.filter((p) => p !== 'rename:old' && p !== 'rename:y')) {
+                rmSync(target, { recursive: true, force: true });
+                await install([x], { SKILL_INSTALL_CRASH_AT: point }).catch(() => undefined);
+                const found = JSON.parse(readFileSync(join(target, '.factory-skills.json'), 'utf8')) as {
+                    owned: object;
+                };
+                expect(Object.keys(found.owned)).toEqual(['x']);
+            }
+        });
+    });
+
     it('prunes every owned skill for an empty pin', async () => {
         const a = publish('org-style', V1);
         await install([a]);
