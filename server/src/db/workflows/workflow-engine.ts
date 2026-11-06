@@ -74,6 +74,8 @@ export interface CompletedRun {
  *                       so no edge is followed; a fresh manual retry stays available.
  * - `attachment_unavailable`  an attached file the board can no longer deliver: a retry fails the same way, so no edge
  *                       is followed; a fresh manual retry stays available.
+ * - `skill_unavailable`  a pinned org or workspace skill the board can no longer deliver: a retry fails the same way, so no
+ *                       edge is followed; a fresh manual retry stays available.
  * - `no_progress`       the matched rule is `gate-failed` and the run left the tree unchanged:
  *                       a gate-fix round over the same tree can only fail the same way.
  * - `thread_busy`       an off-graph follow-up completed while a graph row of the thread is still
@@ -93,6 +95,7 @@ export type RestReason =
     | 'policy'
     | 'checkpoint_unrestorable'
     | 'attachment_unavailable'
+    | 'skill_unavailable'
     | 'no_progress'
     | 'thread_busy';
 
@@ -105,6 +108,7 @@ const REST_BY_KIND: Partial<Record<FailureKind, RestReason>> = {
     policy: 'policy',
     checkpoint_unrestorable: 'checkpoint_unrestorable',
     attachment_unavailable: 'attachment_unavailable',
+    skill_unavailable: 'skill_unavailable',
 };
 
 export type Transition =
