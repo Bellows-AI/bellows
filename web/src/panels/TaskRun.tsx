@@ -1,9 +1,9 @@
 import { type ReactNode, type Ref, useEffect, useRef, useState } from 'react';
-import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
+import { isTerminal, type GateCheck, type Job } from '../api/useJobs.js';
 import type { AnswerOutcome } from '../api/answer-question.js';
 import { Icon } from '../components/Icon.js';
 import { elapsedSeconds } from '../format.js';
-import { closePhase, FAILURE_KIND_LABEL, GATE_PILL, gateCounts, gateStatusLabel } from '../task-outcome.js';
+import { FAILURE_KIND_LABEL, GATE_PILL, gateCounts, gateStatusLabel, inClosePhase } from '../task-outcome.js';
 import type { FollowUpViewer } from '../task-outcome.js';
 import { AttachmentHistory } from './AttachmentList.js';
 import { TaskConnect } from './TaskConnect.js';
@@ -34,28 +34,6 @@ function OutputWell({
                 {text}
             </pre>
         </section>
-    );
-}
-
-/**
- * The running attempt's sampled container vitals — CPU and memory — rendered while the run goes
- * only. A finished run's last sample is a post-mortem detail; the verdict and the exit code are
- * what the reader wants there, and a stale "cpu 167%" beside them lies about a run that is no
- * longer going. Null — or absent — numbers mean the sample could not read them this round: no
- * pills rather than pills that lie with zeros.
- */
-function Runtime({ runtime }: { runtime: RuntimeVitals }) {
-    if (runtime.cpuPercent == null && runtime.memUsedMb == null) return null;
-    return (
-        <p className="chat-runtime">
-            {runtime.cpuPercent != null ? <span className="pill">cpu {Math.round(runtime.cpuPercent)}%</span> : null}
-            {runtime.memUsedMb != null ? (
-                <span className="pill">
-                    mem {Math.round(runtime.memUsedMb)} MiB
-                    {runtime.memPercent != null ? ` (${Math.round(runtime.memPercent)}%)` : ''}
-                </span>
-            ) : null}
-        </p>
     );
 }
 
@@ -136,36 +114,25 @@ function RunQuestions({
 }
 
 /**
- * The close phase of a live run: the agent has finished and the declared gates are walking. The
- * running gate counts its seconds from the driver's stamp; the 2 s thread poll is the ticker, and
- * the count sits outside the `role="status"` line so it is not re-announced on every poll.
+ * The live run's one-line pulse: once the agent has finished and the declared gates are walking,
+ * a spinner and "Running checks" (the gates themselves are the Verification tile's); before that,
+ * the agent's own activity line. Nothing when neither is known.
  */
-function ClosePhase({ job }: { job: Job }) {
-    const phase = closePhase(job);
-    if (phase === null) return null;
-    return (
-        <section className="run-close-phase" aria-label="Close-phase progress">
-            <p role="status">
-                {phase.label} · {phase.passed}/{phase.total} gates passed
+function LiveActivity({ job }: { job: Job }) {
+    if (inClosePhase(job)) {
+        return (
+            <p className="chat-activity run-checking" role="status">
+                <span className="run-spinner" aria-hidden="true" />
+                Running checks
             </p>
-            <ul className="run-close-gates">
-                {phase.gates.map((gate) => {
-                    const elapsed = gate.status === 'running' ? elapsedSeconds(gate.startedAt) : null;
-                    return (
-                        <li key={gate.name}>
-                            <span>{gate.name}</span>
-                            <span className={GATE_PILL[gate.status]}>{gateStatusLabel(gate.status, false)}</span>
-                            {elapsed !== null ? <span className="chat-activity">{elapsed}</span> : null}
-                        </li>
-                    );
-                })}
-            </ul>
-        </section>
-    );
+        );
+    }
+    if (job.status !== 'running' || job.runtime?.activity == null) return null;
+    return <p className="chat-activity">{job.runtime.activity}</p>;
 }
 
 /**
- * The agent response/activity body: a terminal run's summary, or a live run's vitals and activity
+ * The agent response/activity body: a terminal run's summary, or a live run's activity
  * line, then the run's questions, then the run's raw-output disclosure. Split out of `TaskRun` — the nested "which branch of
  * the run's life is this" choice was the bulk of its cognitive complexity.
  */
@@ -188,17 +155,13 @@ function RunResponseBody({
     if (!terminal) {
         return (
             <>
-                {job.status === 'running' && job.runtime ? <Runtime runtime={job.runtime} /> : null}
-                {job.status === 'running' && job.runtime?.activity != null ? (
-                    <p className="chat-activity">{job.runtime.activity}</p>
-                ) : null}
+                <LiveActivity job={job} />
                 {questions}
                 {hasOutput ? (
                     <RawOutput text={job.output!} open={open} live onOpenChange={onOpenChange} liveRef={liveRef} />
                 ) : (
                     <p className="muted">Waiting for the executor…</p>
                 )}
-                <ClosePhase job={job} />
             </>
         );
     }
@@ -270,8 +233,9 @@ function RunNotes({ job }: { job: Job }) {
 }
 
 /**
- * One run of the conversation, as one article with a fixed reading order: the request, the
- * agent's response (or its live activity), and a quiet metadata footer last. The stored `summary`
+ * One run of the conversation, as one article named `Run N` with a fixed reading order and no
+ * section labels: the member's bubble, the agent's response (or its live activity), and a quiet
+ * metadata footer last. The stored `summary`
  * is the terminal response; raw output is untrusted text in a labelled, keyboard-scrollable well,
  * behind one `View raw output` disclosure per run — never a fabricated response. `liveRef` lands on the newest non-terminal run's output pre, so the page
  * can follow the tail — the ref and its effect live in the page's panel, not here. Verification
@@ -300,12 +264,10 @@ export function TaskRun({
     // `TaskDetail`), so polling, appended follow-ups and the live-to-finished transition keep it.
     const [open, setOpen] = useState(!terminal || job.summary === null);
     return (
-        <article className="chat-exchange">
-            <p className="run-label">{index === 1 ? 'Request' : 'Follow-up'}</p>
-            {/* The member's words are prose, not code: normal text with its line breaks kept. */}
+        <article className="chat-exchange" aria-label={`Run ${index}`}>
+            {/* The member's words are a chat bubble on the right: prose, not code, line breaks kept. */}
             <p className="msg-user">{job.command}</p>
             <AttachmentHistory attachments={job.attachments} />
-            <p className="run-label">{terminal ? `Agent response · Run ${index}` : 'Agent activity'}</p>
             <RunResponseBody
                 terminal={terminal}
                 job={job}
@@ -389,33 +351,45 @@ export function GateCountPills({
  * mono well with its own scroll and a copy button.
  */
 export function Verification({ gates, terminal }: { gates: GateCheck[]; terminal: boolean }) {
+    const counts = gateCounts(gates);
+    const walking = !terminal && counts.running + counts.pending > 0;
     return (
         <TaskSection
             title="Verification"
             className="task-verification"
-            defaultOpen={gateCounts(gates).failed > 0}
+            defaultOpen={counts.failed > 0 || walking}
             aside={<GateCountPills gates={gates} terminal={terminal} />}
         >
             <ul className="chat-gate-list">
-                {gates.map((gate) => (
-                    <li key={gate.name}>
-                        <details open={gate.status === 'failed'}>
-                            <summary>
-                                <span>{gate.name}</span>
-                                <span className={GATE_PILL[gate.status]}>{gateStatusLabel(gate.status, terminal)}</span>
-                                {gate.exitCode !== null ? (
-                                    <span className="chat-exit">exit {gate.exitCode}</span>
+                {gates.map((gate) => {
+                    // The running gate counts its seconds from the driver's stamp; the 2 s thread
+                    // poll is the ticker.
+                    const running = !terminal && gate.status === 'running';
+                    const elapsed = running ? elapsedSeconds(gate.startedAt) : null;
+                    return (
+                        <li key={gate.name}>
+                            <details open={gate.status === 'failed'}>
+                                <summary>
+                                    <span>{gate.name}</span>
+                                    {elapsed !== null ? <span className="chat-activity">{elapsed}</span> : null}
+                                    <span className={GATE_PILL[gate.status]}>
+                                        {running ? <span className="run-spinner" aria-hidden="true" /> : null}
+                                        {gateStatusLabel(gate.status, terminal)}
+                                    </span>
+                                    {gate.exitCode !== null ? (
+                                        <span className="chat-exit">exit {gate.exitCode}</span>
+                                    ) : null}
+                                </summary>
+                                {gate.output !== null ? (
+                                    <div className="gate-output-wrap">
+                                        <CopyButton text={gate.output} label={`Copy output of ${gate.name}`} />
+                                        <OutputWell text={gate.output} label={`Output of ${gate.name}`} gate />
+                                    </div>
                                 ) : null}
-                            </summary>
-                            {gate.output !== null ? (
-                                <div className="gate-output-wrap">
-                                    <CopyButton text={gate.output} label={`Copy output of ${gate.name}`} />
-                                    <OutputWell text={gate.output} label={`Output of ${gate.name}`} gate />
-                                </div>
-                            ) : null}
-                        </details>
-                    </li>
-                ))}
+                            </details>
+                        </li>
+                    );
+                })}
             </ul>
         </TaskSection>
     );

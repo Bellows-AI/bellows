@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import {
-    closePhase,
+    inClosePhase,
     closureOf,
     endedOnQuestion,
     FAILURE_KIND_LABEL,
@@ -470,52 +470,16 @@ describe('task outcome derivations — gates, issues and closure', () => {
         });
     });
 
-    describe('closePhase', () => {
-        const gate = (name: string, status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped') => ({
-            name,
-            status,
-            exitCode: null,
-            output: null,
-        });
-        const running = (gates: ReturnType<typeof gate>[] | null) => closePhase(job({ status: 'running', gates }));
+    describe('inClosePhase', () => {
+        const gates = [{ name: 'test', status: 'running' as const, exitCode: null, output: null }];
 
-        it('is null for a terminal or queued run, and for gates null, undefined or empty', () => {
-            const gates = [gate('test', 'running')];
-            expect(closePhase(job({ status: 'succeeded', gates }))).toBeNull();
-            expect(closePhase(job({ status: 'queued', gates }))).toBeNull();
-            expect(running(null)).toBeNull();
-            expect(closePhase(job({ status: 'running' }))).toBeNull();
-            expect(running([])).toBeNull();
-        });
-
-        it('3 passed, 1 running, 1 pending reads 3/5 and names the running gate', () => {
-            const phase = running([
-                gate('build', 'passed'),
-                gate('test', 'passed'),
-                gate('typecheck', 'passed'),
-                gate('lint', 'running'),
-                gate('prettier', 'pending'),
-            ])!;
-            expect(phase).toMatchObject({ passed: 3, total: 5, label: 'Agent finished — running checks' });
-            expect(phase.running?.name).toBe('lint');
-        });
-
-        it('all skipped while running reads "no changes, checks skipped", never "checks passed"', () => {
-            const phase = running([gate('test', 'skipped'), gate('lint', 'skipped')])!;
-            expect(phase.label).toBe('Agent finished — no changes, checks skipped');
-            expect(phase.passed).toBe(0);
-            expect(phase.running).toBeNull();
-        });
-
-        it('all passed while running reads "checks passed, finishing up"', () => {
-            const phase = running([gate('test', 'passed'), gate('lint', 'passed')])!;
-            expect(phase.label).toBe('Agent finished — checks passed, finishing up');
-            expect(phase.running).toBeNull();
-        });
-
-        it('a failed gate with pending after it reads "a check failed"', () => {
-            const phase = running([gate('test', 'failed'), gate('lint', 'pending')])!;
-            expect(phase.label).toBe('Agent finished — a check failed');
+        it('holds only for a running run with a non-empty gate list', () => {
+            expect(inClosePhase(job({ status: 'running', gates }))).toBe(true);
+            expect(inClosePhase(job({ status: 'succeeded', gates }))).toBe(false);
+            expect(inClosePhase(job({ status: 'queued', gates }))).toBe(false);
+            expect(inClosePhase(job({ status: 'running', gates: null }))).toBe(false);
+            expect(inClosePhase(job({ status: 'running' }))).toBe(false);
+            expect(inClosePhase(job({ status: 'running', gates: [] }))).toBe(false);
         });
     });
 

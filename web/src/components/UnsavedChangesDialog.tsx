@@ -18,12 +18,13 @@ export interface UnsavedDraft {
 
 /**
  * The coordinator API the layout publishes. `registerDraft` returns the unregister call;
- * `confirmDiscard` runs the dialog contract for one draft — e.g. before a repository switch —
- * and resolves true only when the reader chose Discard changes (the caller then performs the
- * switch it was guarding).
+ * `dirtyDraft` finds a registered draft by id while it is dirty; `confirmDiscard` runs the dialog
+ * contract for one draft — e.g. before a repository switch — and resolves true only when the
+ * reader chose Discard changes (the caller then performs the switch it was guarding).
  */
 export interface GuardApi {
     registerDraft: (draft: UnsavedDraft) => () => void;
+    dirtyDraft: (id: string) => UnsavedDraft | null;
     confirmDiscard: (draft: UnsavedDraft) => Promise<boolean>;
 }
 

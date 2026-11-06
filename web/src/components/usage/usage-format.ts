@@ -1,7 +1,16 @@
-import type { TokenType, UnassignedReason, UsagePrecision, UsageRow } from '@factory-ai/core';
-import { UNKNOWN_BUCKET } from '@factory-ai/core';
+import type { TokenType, Tokens, UnassignedReason, UsagePrecision, UsageRow } from '@factory-ai/core';
+import { UNKNOWN_BUCKET, inputTokens } from '@factory-ai/core';
 
-/** Display order of the four token types; none of them is ever combined with another. */
+/**
+ * The dashboard's headline sum: total input plus output, always shown beside its two parts.
+ * Null when either side is unmeasured — a partial sum would read as a complete one.
+ */
+export function totalTokens(tokens: Tokens): number | null {
+    const input = inputTokens(tokens).total;
+    return input === null || tokens.output === null ? null : input + tokens.output;
+}
+
+/** Display order of the four token types; only the labelled totals in this file combine them. */
 export const USAGE_TOKEN_TYPES: readonly TokenType[] = ['input', 'cacheRead', 'cacheCreation', 'output'];
 
 export const TOKEN_TYPE_LABELS: Record<TokenType, string> = {
@@ -11,7 +20,7 @@ export const TOKEN_TYPE_LABELS: Record<TokenType, string> = {
     output: 'Output',
 };
 
-/** The one sanctioned sum: uncached input + cache read + cache write, never with output. */
+/** The input-side sum: uncached input + cache read + cache write. `totalTokens` adds output. */
 export const TOTAL_INPUT_LABEL = 'Total input';
 export const TOTAL_INPUT_CAPTION = 'uncached input + cache read + cache write';
 

@@ -241,7 +241,7 @@ test('the overview, the catalog and the Jira page hold at mobile and desktop in 
 test('a member sees no Jira panel on the Organization or Workspace pages', async ({ page }) => {
     await setRole(MEMBER_ROLE);
     await page.goto('/settings/organization');
-    await expect(page.getByRole('heading', { name: 'Core (organization)' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Organization variables' })).toBeVisible();
     await expect(page.getByRole('region', { name: /Jira/ })).toHaveCount(0);
     await expect(page.getByText(/Jira connection/)).toHaveCount(0);
     await page.screenshot({ path: `${SHOTS}/settings-organization-no-jira.png`, fullPage: true });

@@ -186,14 +186,11 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
     'styles/regions/inbox.css': [
         '.inbox-tab',
         '.inbox-search input',
-        '.inbox-search select',
-        '.inbox-search button',
         '.inbox-new',
         '.inbox-chip-remove',
         '.inbox-clear',
         '.inbox-footer button',
         '.inbox-error button',
-        '.inbox-counts a',
     ],
     'styles/regions/composer.css': [
         '.chat-input-bar button',
@@ -219,8 +216,12 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.repo-table button',
         '.settings-actions button',
         '.unsaved-actions button',
-        '.env-add',
-        '.env-edit',
+        '.env-quiet',
+        '.env-box-head .env-new',
+        '.env-search input',
+        '.env-icon-button',
+        '.env-row-actions button',
+        '.env-savebar-actions button',
         '.env-raw input',
         '.env-raw select',
         '.env-raw button',
@@ -652,7 +653,10 @@ describe('the stylesheet — sizing and motion (#189)', () => {
 
     it('paints the repos table sticky column on the canvas it sits on, not a raised tier', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
-        const sticky = rules(css).filter(([, text]) => /position\s*:\s*sticky/.test(text));
+        // The env editor's save bar floats over the list on purpose: raised, with its shadow.
+        const sticky = rules(css).filter(
+            ([prelude, text]) => /position\s*:\s*sticky/.test(text) && prelude.trim() !== '.env-savebar'
+        );
         expect(sticky.length).toBeGreaterThan(0);
         for (const [prelude, text] of sticky) {
             expect(text, prelude).toMatch(/background\s*:\s*var\(--surface\)/);
@@ -714,12 +718,15 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(focus?.[1]).not.toMatch(/outline:\s*none/);
     });
 
-    it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {
+    it('frames the inbox list once, on the soft tier, with no card per count or per row', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/inbox.css'), 'utf8'));
         const all = rules(css);
         const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
-        expect(all.some(([prelude]) => /\.inbox-card/.test(prelude))).toBe(false);
-        expect(body('.inbox-list')).not.toMatch(/surface-raised|border\s*:/);
+        expect(all.some(([prelude]) => /\.inbox-card|\.inbox-counts/.test(prelude))).toBe(false);
+        // One frame around the day groups; the rows themselves sit on dividers, never raised at rest.
+        expect(body('.inbox-list')).toMatch(/background:\s*var\(--surface-soft\)/);
+        expect(body('.inbox-list')).toMatch(/border:\s*1px solid var\(--line\)/);
+        expect(body('.inbox-row')).not.toMatch(/surface-raised|border\s*:/);
         expect(body('.inbox-empty')).not.toMatch(/surface-raised|border\s*:/);
         // The age is a quiet label, never the mono identifier face.
         expect(css).not.toMatch(/\.inbox-when[^{]*\{[^}]*font-family/);
@@ -789,7 +796,8 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.chat-exit',
             '.chat-activity',
             '.task-summary',
-            '.env-raw .env-dialog-text',
+            '.env-raw .env-raw-text',
+            '.inbox-repo-name',
         ]);
         const offenders = rules(css)
             .filter(([, body]) => /font-family\s*:\s*var\(--font-mono\)/.test(body))
@@ -1017,23 +1025,32 @@ describe('the design-system inventory', () => {
     });
 });
 
-describe('the variables editor modal (BEL-262)', () => {
+describe('the inline variables editor (BEL-262)', () => {
     const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
     const all = rules(css);
     const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
 
-    it('scrolls its body only: the panel is a clipped column, the footer stays outside the scroll region', () => {
-        expect(body('.env-dialog')).toMatch(/display:\s*flex/);
-        expect(body('.env-dialog')).toMatch(/flex-direction:\s*column/);
-        expect(body('.env-dialog')).toMatch(/overflow:\s*hidden/);
-        expect(body('.env-dialog-body')).toMatch(/overflow-y:\s*auto/);
-        expect(body('.env-dialog-body')).toMatch(/min-height:\s*0/);
-        expect(body('.env-dialog-footer')).toMatch(/flex:\s*none/);
-        expect(body('.env-dialog-footer')).not.toMatch(/overflow/);
-        expect(body('.env-dialog-head')).toMatch(/flex:\s*none/);
+    it('keeps the save bar in view while a long list scrolls: sticky to the bottom, above the rows', () => {
+        expect(body('.env-savebar')).toMatch(/position:\s*sticky/);
+        expect(body('.env-savebar')).toMatch(/bottom:\s*0/);
+        expect(body('.env-savebar')).toMatch(/z-index:\s*1/);
+    });
+
+    it('lays a row out as a grid of name, value, updated and actions', () => {
+        expect(body('.env-row')).toMatch(/display:\s*grid/);
+        expect(body('.env-row')).toMatch(/grid-template-columns:/);
+    });
+
+    it('strikes a pending removal through', () => {
+        const struck = all.find(([prelude]) => prelude.includes('.env-row-removed .env-value'));
+        expect(struck?.[1]).toMatch(/text-decoration:\s*line-through/);
     });
 
     it('sets the .env text in the mono font token', () => {
-        expect(body('.env-raw .env-dialog-text')).toMatch(/font-family:\s*var\(--font-mono\)/);
+        expect(body('.env-raw .env-raw-text')).toMatch(/font-family:\s*var\(--font-mono\)/);
+    });
+
+    it('no longer carries the modal rules', () => {
+        expect(css).not.toMatch(/\.env-dialog/);
     });
 });

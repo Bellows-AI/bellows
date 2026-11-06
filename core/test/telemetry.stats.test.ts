@@ -282,17 +282,6 @@ describe('caller scope', () => {
     it("counts only the caller's sessions, recomputed by hand", () => {
         expect(mine.totals.sessions).toBe(aliceSessions.length);
         expect(mine.usage.totals.tokens.input).toBe(fixturePointSum(idsOf(aliceSessions), 'input'));
-        expect(mine.usage.byUser.map((row) => row.userId)).toEqual([ALICE.id]);
-        expect(mine.byUser.map((row) => row.user.login)).toEqual(['alice']);
-        // The other members' sessions are simply out of "mine" — not a new bucket to conflate.
-        expect(mine.byUser.find((row) => row.user.login === 'bob')).toBeUndefined();
-    });
-
-    it('keeps naming the unattributed sessions it scoped out', () => {
-        const UNATTRIBUTED_SESSION_COUNT = 4;
-        expect(mine.unattributedSessions).toBe(UNATTRIBUTED_SESSION_COUNT);
-        // And they contribute no total: the caller's figures cover only the caller's sessions.
-        expect(mine.totals.sessions).toBe(aliceSessions.length);
     });
 
     it('leaves coverage and the setup-failure counters describing the store', () => {
@@ -405,43 +394,8 @@ describe('series granularity', () => {
 
 describe('user attribution', () => {
     // The fixture carries the user each session's board task was queued by, resolved server-side
-    // from the job audit rows. s07/s08/s11/s14 have no matching task and stay unattributed;
-    // s09 carries a user but sits out of repo scope.
+    // from the job audit rows.
     const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: 'https://example.com/alice.png' };
-    const BOB = { id: 'u-bob', login: 'bob', name: null, avatarUrl: null };
-
-    it('groups in-scope sessions by user with hand-checked token sums', () => {
-        const byLogin = new Map(stats.byUser.map((row) => [row.user.login, row]));
-        const mine = (login: string) => inScope.filter((s) => s.user?.login === login);
-
-        expect(stats.byUser.map((row) => row.user.login)).toEqual(['alice', 'bob']);
-        for (const login of ['alice', 'bob']) {
-            const row = byLogin.get(login) as (typeof stats.byUser)[number];
-            const sessions = mine(login);
-            expect(row.sessions).toBe(sessions.length);
-            const usage = stats.usage.byUser.find((u) => u.userId === row.user.id)?.usage.tokens;
-            expect(billable(usage as { input: number | null; output: number | null })).toBe(
-                fixturePointSum(idsOf(sessions), 'input') + fixturePointSum(idsOf(sessions), 'output')
-            );
-        }
-        expect(byLogin.get('alice')?.user).toEqual(ALICE);
-        expect(byLogin.get('bob')?.user).toEqual(BOB);
-    });
-
-    it('counts in-scope sessions with no user as unattributed, not hidden', () => {
-        const UNATTRIBUTED_SESSION_COUNT = 4;
-        expect(stats.unattributedSessions).toBe(inScope.filter((s) => s.user === null).length);
-        expect(stats.unattributedSessions).toBe(UNATTRIBUTED_SESSION_COUNT);
-        expect(stats.byUser.reduce((sum, row) => sum + row.sessions, 0) + stats.unattributedSessions).toBe(
-            stats.totals.sessions
-        );
-    });
-
-    it('keeps out-of-repo-scope sessions out of byUser even when attributed', () => {
-        // s09 is bob's and is the other-repo session: a leak would put bob at 7.
-        const BOB_SESSION_COUNT = 6;
-        expect(stats.byUser.find((row) => row.user.login === 'bob')?.sessions).toBe(BOB_SESSION_COUNT);
-    });
 
     it('reports sessions whose usage carries no token points as unmeasured, never zero', () => {
         const quiet = telemetryStats(
@@ -451,17 +405,14 @@ describe('user attribution', () => {
             },
             { now: FIXTURE_NOW, usage: EMPTY_REPORT }
         );
-        expect(quiet.byUser).toEqual([{ user: ALICE, sessions: 2 }]);
-        expect(quiet.usage.byUser).toEqual([]);
         expect(quiet.usage.totals.tokens).toEqual({ input: null, output: null, cacheRead: null, cacheCreation: null });
     });
 });
 
 describe('the payload carries tokens only inside usage', () => {
-    it('has no token field on the totals, the session series or the per-user session rows', () => {
+    it('has no token field on the totals or the session series', () => {
         expect(stats.totals).not.toHaveProperty('tokens');
         expect(stats.series.points.every((p) => !('tokens' in p))).toBe(true);
-        expect(stats.byUser.every((row) => !('tokens' in row))).toBe(true);
         expect(input.sessions.every((s) => !('tokens' in s))).toBe(true);
     });
 

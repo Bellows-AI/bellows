@@ -65,7 +65,6 @@ describe('degradation states', () => {
         expect(body.telemetry.totals.sessions).toBe(0);
         expect(body.telemetry.usage.totals.tokens.input).toBeNull();
         expect(body.telemetry.usage.totals.state).toBe('unmeasured');
-        expect(body.telemetry.usage.byUser).toEqual([]);
         expect(body.telemetry.totals.editAcceptance).toEqual({
             accepted: null,
             rejected: null,

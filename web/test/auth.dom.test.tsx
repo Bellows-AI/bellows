@@ -131,7 +131,6 @@ const stats = (scope: 'org' | 'mine'): StatsPayload => ({
             repoFilter: ['test-org/repo'],
             otherRepoSessions: 0,
             sessionsWithoutHook: 0,
-            unattributedSessions: 0,
         },
     },
 });

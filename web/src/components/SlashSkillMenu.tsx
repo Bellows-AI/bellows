@@ -1,5 +1,6 @@
+import { autoUpdate, flip, offset, shift, useFloating } from '@floating-ui/react';
 import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useDownwardAnchor } from '../anchor.js';
+import { ANCHOR_GAP_PX, VIEWPORT_PADDING_PX, useUpwardAnchor } from '../anchor.js';
 import type { UseRepoSkills } from '../api/useRepoSkills.js';
 import {
     activeSlashToken,
@@ -11,6 +12,7 @@ import {
 } from '../slash-skills.js';
 
 const MENU_ID = 'composer-skill-menu';
+const TIP_ID = `${MENU_ID}-tip`;
 const optionId = (name: string): string => `${MENU_ID}-${name}`;
 
 /**
@@ -29,7 +31,7 @@ export function useSlashMenu({
     repoSkills: UseRepoSkills;
     disabled: boolean;
 }) {
-    const anchor = useDownwardAnchor('start');
+    const anchor = useUpwardAnchor('start');
     const field = useRef<HTMLTextAreaElement | null>(null);
     const [caret, setCaret] = useState(0);
     const [focused, setFocused] = useState(false);
@@ -65,11 +67,8 @@ export function useSlashMenu({
     const pickActive = () => {
         if (active !== undefined) pick(active);
     };
-    const move = (step: number) =>
-        setHighlight({
-            prefix: token?.prefix ?? '',
-            index: (index + step + items.length) % items.length,
-        });
+    const highlightAt = (next: number) => setHighlight({ prefix: token?.prefix ?? '', index: next });
+    const move = (step: number) => highlightAt((index + step + items.length) % items.length);
 
     const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
         if (!open || token === null) return;
@@ -108,80 +107,128 @@ export function useSlashMenu({
         menu: open
             ? {
                   items,
+                  prefix: token?.prefix ?? '',
                   activeName: active?.name ?? null,
                   repoSkills,
                   anchor,
                   onPick: pick,
+                  onHover: (skill: SlashSkill) => highlightAt(items.indexOf(skill)),
               }
             : null,
     };
 }
 
-/** The `/` menu's list, under the prompt. Mouse picks keep the textarea focused. */
+/**
+ * The `/` menu over the prompt: one compact row per skill name, the typed prefix marked. The
+ * highlighted row's description sits in a tooltip beside the menu, outside it so the menu's
+ * scroll never clips it, and is that row's `aria-describedby`. Mouse picks keep the textarea
+ * focused.
+ */
 export function SlashSkillMenu({
     items,
+    prefix,
     activeName,
     repoSkills,
     anchor,
     onPick,
+    onHover,
 }: {
     items: readonly SlashSkill[];
+    prefix: string;
     activeName: string | null;
     repoSkills: UseRepoSkills;
-    anchor: ReturnType<typeof useDownwardAnchor>;
+    anchor: ReturnType<typeof useUpwardAnchor>;
     onPick: (skill: SlashSkill) => void;
+    onHover: (skill: SlashSkill) => void;
 }) {
     const { status, repoError, unreadable, error } = repoSkills;
+    const tip = useFloating({
+        placement: 'right-start',
+        strategy: 'fixed',
+        whileElementsMounted: autoUpdate,
+        middleware: [
+            offset(ANCHOR_GAP_PX),
+            flip({ padding: VIEWPORT_PADDING_PX }),
+            shift({ padding: VIEWPORT_PADDING_PX }),
+        ],
+    });
+    const active = items.find((skill) => skill.name === activeName);
+    const listbox = useRef<HTMLDivElement | null>(null);
+    // Keyboard moves keep the highlighted row in view inside the menu's own scroll.
+    useLayoutEffect(() => {
+        if (activeName === null) return;
+        listbox.current?.ownerDocument.getElementById(optionId(activeName))?.scrollIntoView?.({ block: 'nearest' });
+    }, [activeName]);
     return (
-        <div ref={anchor.setFloating} style={anchor.floatingStyles} className="popover composer-skill-menu">
-            <div id={MENU_ID} role="listbox" aria-label="Skills">
-                {items.map((skill) => (
-                    <div
-                        key={skill.name}
-                        id={optionId(skill.name)}
-                        role="option"
-                        tabIndex={-1}
-                        aria-selected={skill.name === activeName}
-                        data-focus={skill.name === activeName ? '' : undefined}
-                        className="popover-option composer-skill-option"
-                        onMouseDown={(e) => {
-                            e.preventDefault();
-                            onPick(skill);
-                        }}
-                    >
-                        <span className="composer-skill-name">/{skill.name}</span>
-                        <span className="composer-skill-description">{skill.description}</span>
-                        <span className="composer-skill-source">
-                            {skill.source === 'repo' ? 'Repository' : 'Built-in'}
-                        </span>
-                    </div>
-                ))}
+        <>
+            <div ref={anchor.setFloating} style={anchor.floatingStyles} className="popover composer-skill-menu">
+                <div id={MENU_ID} ref={listbox} role="listbox" aria-label="Skills" className="composer-skill-list">
+                    {items.map((skill) => {
+                        const isActive = skill.name === activeName;
+                        const typed = skill.name.slice(0, prefix.length);
+                        return (
+                            <div
+                                key={skill.name}
+                                id={optionId(skill.name)}
+                                ref={isActive ? tip.refs.setReference : undefined}
+                                role="option"
+                                tabIndex={-1}
+                                aria-selected={isActive}
+                                aria-describedby={isActive && skill.description !== '' ? TIP_ID : undefined}
+                                data-focus={isActive ? '' : undefined}
+                                className="popover-option composer-skill-option"
+                                onMouseEnter={() => onHover(skill)}
+                                onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    onPick(skill);
+                                }}
+                            >
+                                <span className="composer-skill-name">
+                                    /{typed === '' ? null : <span className="composer-skill-match">{typed}</span>}
+                                    {skill.name.slice(prefix.length)}
+                                </span>
+                                {skill.source === 'repo' ? <span className="composer-skill-source">repo</span> : null}
+                            </div>
+                        );
+                    })}
+                </div>
+                {status === 'loading' ? (
+                    <p className="composer-note" role="status">
+                        Loading skills…
+                    </p>
+                ) : null}
+                {status === 'ready' && items.length === 0 ? (
+                    <p className="composer-note" role="status">
+                        No matching skills
+                    </p>
+                ) : null}
+                {error !== null ? (
+                    <p className="composer-note composer-branch-error" role="alert">
+                        {error}
+                    </p>
+                ) : null}
+                {repoError !== null ? (
+                    <p className="composer-note" role="status">
+                        Repository skills unavailable: {repoError}
+                    </p>
+                ) : null}
+                {unreadable.length > 0 ? (
+                    <p className="composer-note" role="status">
+                        {unreadable.length} {unreadable.length === 1 ? 'skill' : 'skills'} could not be read
+                    </p>
+                ) : null}
             </div>
-            {status === 'loading' ? (
-                <p className="composer-note" role="status">
-                    Loading skills…
-                </p>
-            ) : null}
-            {status === 'ready' && items.length === 0 ? (
-                <p className="composer-note" role="status">
-                    No matching skills
-                </p>
-            ) : null}
-            {error !== null ? (
-                <p className="composer-note composer-branch-error" role="alert">
-                    {error}
-                </p>
-            ) : null}
-            {repoError !== null ? (
-                <p className="composer-note" role="status">
-                    Repository skills unavailable: {repoError}
-                </p>
-            ) : null}
-            {unreadable.length > 0 ? (
-                <p className="composer-note" role="status">
-                    {unreadable.length} {unreadable.length === 1 ? 'skill' : 'skills'} could not be read
-                </p>
-            ) : null}
-        </div>
+            {active === undefined || active.description === '' ? null : (
+                <div
+                    id={TIP_ID}
+                    ref={tip.refs.setFloating}
+                    style={tip.floatingStyles}
+                    role="tooltip"
+                    className="composer-skill-tip"
+                >
+                    {active.description}
+                </div>
+            )}
+        </>
     );
 }

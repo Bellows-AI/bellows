@@ -113,11 +113,6 @@ export interface TaskUsage {
     runs: RunUsage[];
     taskOwned: UsageBlock | null;
 }
-export interface UserUsage {
-    /** Null: unknown author. */
-    userId: string | null;
-    usage: UsageBlock;
-}
 
 export interface UsageInput {
     orgId: string;
@@ -145,7 +140,6 @@ export interface DiagnosticBucket {
 export interface UsageReport {
     eligible: UsageBlock;
     tasks: TaskUsage[];
-    byUser: UserUsage[];
     series: { start: string; partial: boolean; usage: UsageBlock }[];
     diagnostics: {
         sessionsWithoutHook: number;

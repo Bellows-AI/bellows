@@ -19,8 +19,6 @@ export interface TelemetryMeta {
     repoFilter: string[];
     otherRepoSessions: number;
     sessionsWithoutHook: number;
-    /** Sessions no board task matches — the third exclusion, beside the two setup failures. */
-    unattributedSessions: number;
 }
 
 export interface StatsPayload {

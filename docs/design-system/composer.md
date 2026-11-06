@@ -16,7 +16,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 | One wrapping tile per file: in a draft a square (spinner while uploading, then the preview; a failure is a ⚠ that retries; name in the tooltip; remove), in history a tile with name, size and download | `web/src/panels/AttachmentList.tsx` | `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | The follow-up composer's files and draft | `web/src/panels/TaskDetail.tsx` | `web/test/task-detail-follow-up.dom.test.tsx`, `e2e/task-detail.spec.ts` |
 | The base-branch chip: a pick-only combobox, debounced server-side search, "Load more" by cursor, an error row (never "no branches") | `web/src/components/BranchCombobox.tsx`, `web/src/api/useBranches.ts` | `web/test/branch-combobox.dom.test.tsx`, `e2e/composer.spec.ts` |
-| The prompt's `/` skill menu: built-ins and the repository's at the chosen branch; the picked `/name` stays in the text | `web/src/components/SlashSkillMenu.tsx`, `web/src/slash-skills.ts`, `web/src/api/useRepoSkills.ts` | `web/test/slash-skills.test.ts`, `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
+| The prompt's `/` skill menu: a small list of names opening above the prompt, the highlighted skill's description in a tooltip beside it; built-ins and the repository's at the chosen branch; the picked `/name` stays in the text | `web/src/components/SlashSkillMenu.tsx`, `web/src/slash-skills.ts`, `web/src/api/useRepoSkills.ts` | `web/test/slash-skills.test.ts`, `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | A workflow's declared parameter fields | `web/src/components/WorkflowParameterFields.tsx` | `web/test/task-composer.render.test.tsx` |
 | The no-tracked-repository banner | `web/src/panels/TaskComposer.tsx` | `web/test/task-composer.dom.test.tsx` |
 
@@ -37,8 +37,8 @@ Classes defined here: `chat-input`, `chat-input-field`, `chat-input-box`, `chat-
 `composer-heading`, `composer-visually-hidden`, `composer-blocker`, `composer-note`, `composer-counter`, `is-over`,
 `composer-context-item`, `composer-context-value`, `composer-branch`, `composer-branch-toggle`,
 `composer-branch-input`, `composer-branch-options`, `composer-branch-action`, `composer-branch-error`,
-`composer-skill-menu`, `composer-skill-option`, `composer-skill-name`, `composer-skill-description`,
-`composer-skill-source`, `composer-trigger-missing`,
+`composer-skill-menu`, `composer-skill-list`, `composer-skill-option`, `composer-skill-name`, `composer-skill-match`,
+`composer-skill-source`, `composer-skill-tip`, `composer-trigger-missing`,
 `composer-notices-body`, `composer-notices-dismiss`, `composer-skeleton-block`,
 `composer-skeleton-line`, `task-compose`, `task-compose-body`, `attachment-add`, `attachment-list`, `attachment-chip`,
 `attachment-tile`, `attachment-spinner`,

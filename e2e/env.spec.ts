@@ -4,85 +4,77 @@ import { FORBIDDEN, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
 
-/** The variables summary on each settings page and the dialog it opens (BEL-262): one interaction
- * per state, a screenshot per state. `npm test` renders the summary with react-dom/server and
- * drives the dialog under jsdom; only a browser proves the keyboard path, the `.env` round trip
- * through real textarea input, and that the footer stays on screen with many rows (jsdom has no
- * layout). The three scopes live in the settings tree: Core at /settings/organization, My
- * workspace at /settings/workspace, Per repository at /settings/repos. */
+/** The inline variables editor on each settings page (BEL-262): one interaction per state, a
+ * screenshot per state. `npm test` renders the editor with react-dom/server and drives it under
+ * jsdom; only a browser proves the keyboard path, the `.env` round trip through real textarea
+ * input, the unsaved-changes guard on in-app navigation, and that the save bar stays reachable with
+ * many rows (jsdom has no layout). The three scopes live in the settings tree: Organization at
+ * /settings/organization, Workspace at /settings/workspace, Per repository at /settings/repos. */
 
-/** The Core (organization) scope's summary — the section on the Organization page. */
-function corePanel(page: Page) {
-    return page.locator('section.panel', { has: page.getByRole('heading', { name: 'Core (organization)' }) });
-}
-
-/** The dialog's panel: the `role=dialog` layer around it is a zero-size fixed wrapper, which
- * Playwright reports as hidden, so the visible surface is the panel itself. */
-function dialogOf(page: Page) {
-    return page.locator('.env-dialog');
+/** The Organization scope's editor — the section on the Organization page. */
+function editorOf(page: Page) {
+    return page.locator('section.env-editor', { has: page.getByRole('heading', { name: 'Organization variables' }) });
 }
 
 async function open(page: Page) {
     await page.goto('/settings/organization');
-    await expect(page.getByRole('heading', { name: 'Core (organization)' })).toBeVisible({ timeout: 60_000 });
-}
-
-async function openDialog(page: Page) {
-    await corePanel(page).getByRole('button', { name: 'Edit variables' }).click();
-    const dialog = dialogOf(page);
-    await expect(dialog).toBeVisible();
-    return dialog;
+    await expect(page.getByRole('heading', { name: 'Organization variables' })).toBeVisible({ timeout: 60_000 });
 }
 
 /**
  * Clears the scope through the page's own contract, so every run starts from an empty scope no
  * matter what earlier runs stored (the seed leaves env_var alone): removal is pending per row and
- * the whole-list save commits the deletions. A scope that is already empty needs no dialog.
+ * the whole-list save commits the deletions. A scope that is already empty needs no save.
  */
 async function clearScope(page: Page) {
-    const empty = corePanel(page).getByText('No variables or secrets configured yet.');
-    if (await empty.count()) return;
-    const dialog = await openDialog(page);
-    const removeButtons = dialog.getByRole('button', { name: /^Remove/ });
-    // No iteration cap: the test timeout bounds a runaway sweep, and a cap below the row count
-    // would only move the failure to a more confusing assertion.
-    while ((await removeButtons.count()) > 0) {
-        await removeButtons.first().click();
+    const editor = editorOf(page);
+    for (const kind of ['Variables', 'Secrets']) {
+        await editor.getByRole('tab', { name: new RegExp(`^${kind}`) }).click();
+        const removeButtons = editor.getByRole('button', { name: /^Remove / });
+        // No iteration cap: the test timeout bounds a runaway sweep, and a cap below the row count
+        // would only move the failure to a more confusing assertion.
+        while ((await removeButtons.count()) > 0) {
+            await removeButtons.first().click();
+        }
     }
-    await dialog.getByRole('button', { name: 'Save changes' }).click();
-    await expect(dialog).toBeHidden({ timeout: 15_000 });
-    await expect(empty).toBeVisible();
+    const save = editor.getByRole('button', { name: 'Save changes' });
+    if (await save.count()) {
+        await save.click();
+        await expect(editor.getByRole('status')).toHaveText('Changes saved.', { timeout: 15_000 });
+    }
+    await editor.getByRole('tab', { name: /^Variables/ }).click();
+    await expect(editor.getByText('No variables yet.')).toBeVisible();
 }
 
-/** The footer's Save sits inside the viewport and the dialog never outgrows it. */
-async function expectFooterOnScreen(page: Page, dialog: Locator) {
-    const save = dialog.getByRole('button', { name: 'Save changes' });
+/** The save bar's Save sits inside the viewport once scrolled to, and the editor never outgrows the width. */
+async function expectSaveReachable(page: Page, editor: Locator) {
+    const save = editor.getByRole('button', { name: 'Save changes' });
+    await save.scrollIntoViewIfNeeded();
     await expect(save).toBeInViewport({ ratio: 1 });
-    const box = await dialog.boundingBox();
-    const viewport = page.viewportSize();
+    const box = await editor.boundingBox();
     expect(box).not.toBeNull();
-    expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
 }
 
-test.describe('variables summary and dialog', () => {
-    test('renders each scope summary on its own settings section, cleanly', async ({ page }) => {
+test.describe('inline variables editor', () => {
+    test('renders each scope editor on its own settings section, cleanly', async ({ page }) => {
         const problems = watchConsole(page);
 
         await open(page);
         // The Organization section answers who and what scope before any editor (#180).
         await expect(page.getByText('Your role')).toBeVisible();
-        await expect(page.getByText('Any member can edit.')).toBeVisible();
-        await expect(corePanel(page).getByRole('button', { name: 'Edit variables' })).toBeVisible();
-        // The summary is compact: no inline editing surface on the page.
-        await expect(page.getByRole('tab')).toHaveCount(0);
+        const editor = editorOf(page);
+        await expect(editor.getByRole('tab', { name: /^Variables/ })).toHaveAttribute('aria-selected', 'true');
+        await expect(editor.getByRole('tab', { name: /^Secrets/ })).toBeVisible();
+        // Clean means no save bar: it exists only while the draft differs from what is stored.
         await expect(page.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
         const text = await page.locator('main').innerText();
         for (const token of FORBIDDEN) expect(text, `organization section contains ${token}`).not.toContain(token);
         await page.screenshot({ path: `${SHOTS}/settings-organization.png`, fullPage: true });
 
         await page.goto('/settings/workspace');
-        await expect(page.getByRole('heading', { name: 'My workspace' })).toBeVisible({ timeout: 60_000 });
-        await expect(page.getByRole('button', { name: 'Edit variables' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Workspace variables' })).toBeVisible({ timeout: 60_000 });
+        await expect(page.getByRole('button', { name: 'New variable' })).toBeVisible();
         const workspaceText = await page.locator('main').innerText();
         for (const token of FORBIDDEN)
             expect(workspaceText, `workspace section contains ${token}`).not.toContain(token);
@@ -98,103 +90,102 @@ test.describe('variables summary and dialog', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('add, edit and delete a variable by keyboard, with the summary following each save', async ({ page }) => {
+    test('add, edit and delete a variable by keyboard, with the row following each save', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
         await clearScope(page);
 
-        const core = corePanel(page);
-        const edit = core.getByRole('button', { name: 'Edit variables' });
+        const editor = editorOf(page);
+        const saveBar = editor.getByRole('button', { name: 'Save changes' });
 
-        // Add: Enter on the focused Add button, then the name field holds focus.
-        await edit.focus();
+        // Add: Enter on the focused New button, then the name field holds focus.
+        await editor.getByRole('button', { name: 'New variable' }).focus();
         await page.keyboard.press('Enter');
-        let dialog = dialogOf(page);
-        await expect(dialog).toBeVisible();
-        const add = dialog.getByRole('button', { name: 'Add variable' });
-        await add.focus();
-        await page.keyboard.press('Enter');
-        await expect(dialog.getByLabel('Variable 1 name')).toBeFocused();
+        await expect(editor.getByLabel('Variable name')).toBeFocused();
         await page.keyboard.type('E2E_KB_VAR');
         await page.keyboard.press('Tab');
         await page.keyboard.type('first');
-        await expect(dialog.getByLabel('Variable 1 value')).toHaveValue('first');
-        await page.screenshot({ path: `${SHOTS}/env-dialog-edit.png`, fullPage: true });
-        await dialog.getByRole('button', { name: 'Save changes' }).focus();
+        await expect(editor.getByLabel('Variable value')).toHaveValue('first');
+        await page.screenshot({ path: `${SHOTS}/env-editor-edit.png`, fullPage: true });
+        // Enter commits the row (Done); the save bar is there because the draft is dirty.
         await page.keyboard.press('Enter');
-        await expect(dialog).toBeHidden({ timeout: 15_000 });
-        await expect(core.getByText('E2E_KB_VAR')).toBeVisible();
-        await expect(core.getByText('1 variable')).toBeVisible();
-        await expect(core.getByRole('status')).toHaveText('Changes saved.');
-        // The dialog closed onto the button that opened it.
-        await expect(edit).toBeFocused();
-        // Values never reach the summary.
-        await expect(core).not.toContainText('first');
-        await page.screenshot({ path: `${SHOTS}/env-summary-saved.png`, fullPage: true });
+        await expect(editor.getByLabel('Variable name')).toHaveCount(0);
+        await expect(editor.getByText('E2E_KB_VAR')).toBeVisible();
+        await expect(editor.getByText('Not saved yet')).toBeVisible();
+        await saveBar.focus();
+        await page.keyboard.press('Enter');
+        await expect(editor.getByRole('status')).toHaveText('Changes saved.', { timeout: 15_000 });
+        await expect(saveBar).toHaveCount(0);
+        await expect(editor.getByText('Updated', { exact: false })).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/env-editor-saved.png`, fullPage: true });
 
-        // Edit: reopen from the keyboard, replace the value, save.
+        // Edit: open the row from the keyboard, replace the value, Done, save.
+        await editor.getByRole('button', { name: 'Edit E2E_KB_VAR' }).focus();
         await page.keyboard.press('Enter');
-        dialog = dialogOf(page);
-        await expect(dialog).toBeVisible();
-        const value = dialog.getByLabel('Variable 1 value');
+        const value = editor.getByLabel('Variable value');
         await expect(value).toHaveValue('first');
         await value.focus();
         await page.keyboard.press('ControlOrMeta+A');
         await page.keyboard.type('second');
-        await dialog.getByRole('button', { name: 'Save changes' }).focus();
         await page.keyboard.press('Enter');
-        await expect(dialog).toBeHidden({ timeout: 15_000 });
-        await edit.focus();
+        await saveBar.focus();
         await page.keyboard.press('Enter');
-        await expect(dialogOf(page).getByLabel('Variable 1 value')).toHaveValue('second');
+        await expect(saveBar).toHaveCount(0, { timeout: 15_000 });
+        await editor.getByRole('button', { name: 'Edit E2E_KB_VAR' }).click();
+        await expect(editor.getByLabel('Variable value')).toHaveValue('second');
+        // Escape cancels the open row; the stored value stays.
+        await page.keyboard.press('Escape');
+        await expect(editor.getByLabel('Variable value')).toHaveCount(0);
 
         // Delete: Enter on Remove stages it with an Undo; Save commits the deletion.
-        const remove = dialogOf(page).getByRole('button', { name: 'Remove E2E_KB_VAR' });
-        await remove.focus();
+        await editor.getByRole('button', { name: 'Remove E2E_KB_VAR' }).focus();
         await page.keyboard.press('Enter');
-        await expect(dialogOf(page).getByText('E2E_KB_VAR will be removed when you save.')).toBeVisible();
-        await dialogOf(page).getByRole('button', { name: 'Save changes' }).focus();
+        await expect(editor.getByText('Removed when you save')).toBeVisible();
+        await expect(editor.getByRole('button', { name: 'Undo' })).toBeFocused();
+        await saveBar.focus();
         await page.keyboard.press('Enter');
-        await expect(dialogOf(page)).toBeHidden({ timeout: 15_000 });
-        await expect(core.getByText('No variables or secrets configured yet.')).toBeVisible();
+        await expect(editor.getByText('No variables yet.')).toBeVisible({ timeout: 15_000 });
         expect(problems.join('\n')).toBe('');
     });
 
-    test('switching to .env and back keeps the content, including an empty and a quoted value', async ({ page }) => {
+    test('switching to raw and back keeps the content, including an empty and a quoted value', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
         await clearScope(page);
 
-        const dialog = await openDialog(page);
-        await dialog.getByRole('button', { name: '.env' }).click();
-        const text = dialog.getByLabel('Variables as .env text');
+        const editor = editorOf(page);
+        await editor.getByRole('button', { name: 'Raw editor' }).click();
+        const text = editor.getByLabel('Variables as .env text');
         const source = ['E2E_PLAIN=plain', 'E2E_EMPTY=', 'E2E_QUOTED="  padded  "'].join('\n');
         await text.fill(source);
-        await expect(dialog.getByRole('alert')).toHaveCount(0);
-        await page.screenshot({ path: `${SHOTS}/env-dialog-text.png`, fullPage: true });
+        await expect(editor.getByRole('alert')).toHaveCount(0);
+        await page.screenshot({ path: `${SHOTS}/env-editor-raw.png`, fullPage: true });
 
-        await dialog.getByRole('button', { name: 'List' }).click();
-        await expect(dialog.getByLabel('Variable 1 name')).toHaveValue('E2E_PLAIN');
-        await expect(dialog.getByLabel('Variable 2 name')).toHaveValue('E2E_EMPTY');
-        await expect(dialog.getByLabel('Variable 2 value')).toHaveValue('');
-        await expect(dialog.getByLabel('Variable 3 name')).toHaveValue('E2E_QUOTED');
-        // The quotes are syntax, not content: the list holds the padded value itself.
-        await expect(dialog.getByLabel('Variable 3 value')).toHaveValue('  padded  ');
+        await editor.getByRole('button', { name: 'List view' }).click();
+        const rows = editor.locator('li.env-row');
+        await expect(rows).toHaveCount(3);
+        // Rows list by name, so the draft already reads in the order the store returns.
+        await expect(rows.nth(0)).toContainText('E2E_EMPTY');
+        await expect(rows.nth(0)).toContainText('empty');
+        await expect(rows.nth(1)).toContainText('E2E_PLAIN');
+        await expect(rows.nth(2)).toContainText('E2E_QUOTED');
+        // The quotes are syntax, not content: the row holds the padded value itself.
+        await editor.getByRole('button', { name: 'Edit E2E_QUOTED' }).click();
+        await expect(editor.getByLabel('Variable value')).toHaveValue('  padded  ');
+        await page.keyboard.press('Escape');
 
-        await dialog.getByRole('button', { name: '.env' }).click();
-        await expect(dialog.getByLabel('Variables as .env text')).toHaveValue(source);
+        await editor.getByRole('button', { name: 'Raw editor' }).click();
+        await expect(editor.getByLabel('Variables as .env text')).toHaveValue(source);
 
         // Persisted, it reads back the same.
-        await dialog.getByRole('button', { name: 'Save changes' }).click();
-        await expect(dialog).toBeHidden({ timeout: 15_000 });
+        await editor.getByRole('button', { name: 'Save changes' }).click();
+        await expect(editor.getByRole('status')).toHaveText('Changes saved.', { timeout: 15_000 });
+        await page.reload();
+        await expect(editorOf(page).getByRole('tab', { name: /^Variables 3/ })).toBeVisible({ timeout: 60_000 });
         // The store reads back ordered by name, so the same three lines return sorted.
         const sorted = ['E2E_EMPTY=', 'E2E_PLAIN=plain', 'E2E_QUOTED="  padded  "'].join('\n');
-        const reopened = await openDialog(page);
-        await expect(reopened.getByLabel('Variable 1 name')).toHaveValue('E2E_EMPTY');
-        await expect(reopened.getByLabel('Variable 1 value')).toHaveValue('');
-        await expect(reopened.getByLabel('Variable 3 value')).toHaveValue('  padded  ');
-        await reopened.getByRole('button', { name: '.env' }).click();
-        await expect(reopened.getByLabel('Variables as .env text')).toHaveValue(sorted);
+        await editorOf(page).getByRole('button', { name: 'Raw editor' }).click();
+        await expect(editorOf(page).getByLabel('Variables as .env text')).toHaveValue(sorted);
         expect(problems.join('\n')).toBe('');
     });
 
@@ -203,131 +194,122 @@ test.describe('variables summary and dialog', () => {
         await open(page);
         await clearScope(page);
 
-        const dialog = await openDialog(page);
-        await dialog.getByRole('button', { name: '.env' }).click();
-        await dialog.getByLabel('Variables as .env text').fill('E2E_OK=1\nTHIS HAS SPACES=yes');
-        await expect(dialog.getByRole('alert')).toContainText('line 2');
-        await expect(dialog.getByRole('button', { name: 'Save changes' })).toBeDisabled();
-        await page.screenshot({ path: `${SHOTS}/env-dialog-errors.png`, fullPage: true });
+        const editor = editorOf(page);
+        await editor.getByRole('button', { name: 'Raw editor' }).click();
+        await editor.getByLabel('Variables as .env text').fill('E2E_OK=1\nTHIS HAS SPACES=yes');
+        await expect(editor.getByRole('alert')).toContainText('line 2');
+        await expect(editor.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+        await page.screenshot({ path: `${SHOTS}/env-editor-errors.png`, fullPage: true });
 
         // The list view refuses to open over text that does not parse: nothing is overwritten.
         // The control stays focusable (aria-disabled), so the click is forced past Playwright's
         // actionability check, which treats aria-disabled as not enabled.
-        await dialog.getByRole('button', { name: 'List' }).click({ force: true });
-        await expect(dialog.getByLabel('Variables as .env text')).toBeVisible();
+        await editor.getByRole('button', { name: 'List view' }).click({ force: true });
+        await expect(editor.getByLabel('Variables as .env text')).toBeVisible();
 
-        await dialog.getByLabel('Variables as .env text').fill('E2E_OK=1');
-        await expect(dialog.getByRole('alert')).toHaveCount(0);
-        await expect(dialog.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+        await editor.getByLabel('Variables as .env text').fill('E2E_OK=1');
+        await expect(editor.getByRole('alert')).toHaveCount(0);
+        await expect(editor.getByRole('button', { name: 'Save changes' })).toBeEnabled();
         expect(problems.join('\n')).toBe('');
     });
 
-    test('Escape on a dirty dialog asks before it discards, and a clean one closes at once', async ({ page }) => {
+    test('Escape cancels a fresh row, and Discard resets a dirty draft without asking', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
         await clearScope(page);
 
-        const edit = corePanel(page).getByRole('button', { name: 'Edit variables' });
-        let dialog = await openDialog(page);
+        const editor = editorOf(page);
+        const add = editor.getByRole('button', { name: 'New variable' });
+        await add.click();
+        await expect(editor.getByLabel('Variable name')).toBeFocused();
         await page.keyboard.press('Escape');
-        await expect(dialog).toBeHidden();
-        await expect(page.getByText('Discard unsaved changes?')).toHaveCount(0);
-        await expect(edit).toBeFocused();
+        await expect(editor.getByLabel('Variable name')).toHaveCount(0);
+        await expect(editor.getByText('No variables yet.')).toBeVisible();
+        await expect(add).toBeFocused();
+        await expect(editor.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
 
-        dialog = await openDialog(page);
-        await dialog.getByRole('button', { name: 'Add variable' }).click();
-        await dialog.getByLabel('Variable 1 name').fill('E2E_ESC_VAR');
-        await page.keyboard.press('Escape');
+        await add.click();
+        await editor.getByLabel('Variable name').fill('E2E_ESC_VAR');
+        await page.keyboard.press('Enter');
+        await expect(editor.getByText('Unsaved changes', { exact: true })).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/env-editor-dirty.png`, fullPage: true });
+
+        await editor.getByRole('button', { name: 'Discard' }).click();
+        await expect(page.getByText('Discard unsaved changes?')).toHaveCount(0);
+        await expect(editor.getByText('E2E_ESC_VAR')).toHaveCount(0);
+        await expect(editor.getByText('No variables yet.')).toBeVisible();
+        await expect(editor.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('leaving the page with a dirty draft asks via the unsaved-changes dialog', async ({ page }) => {
+        const problems = watchConsole(page);
+        await open(page);
+        await clearScope(page);
+
+        const editor = editorOf(page);
+        await editor.getByRole('button', { name: 'New variable' }).click();
+        await editor.getByLabel('Variable name').fill('E2E_GUARD_VAR');
+        await page.keyboard.press('Enter');
+
+        await page.getByRole('link', { name: 'Workspace', exact: true }).first().click();
         await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
-        await expect(page.getByText('Your changes to Core (organization) have not been saved.')).toBeVisible();
+        await expect(page.getByText('Your changes to Organization variables have not been saved.')).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/env-unsaved-dialog.png`, fullPage: true });
 
         // The safe answer keeps the draft exactly as it was.
         await page.getByRole('button', { name: 'Continue editing' }).click();
         await expect(page.getByText('Discard unsaved changes?')).toBeHidden();
-        await expect(dialogOf(page).getByLabel('Variable 1 name')).toHaveValue('E2E_ESC_VAR');
-
-        await page.keyboard.press('Escape');
-        await page.getByRole('button', { name: 'Discard changes' }).click();
-        await expect(dialogOf(page)).toBeHidden();
-        await expect(corePanel(page).getByText('No variables or secrets configured yet.')).toBeVisible();
-        await expect(edit).toBeFocused();
-        expect(problems.join('\n')).toBe('');
-    });
-
-    test('a dirty dialog guards in-app navigation with the one confirmation', async ({ page }) => {
-        const problems = watchConsole(page);
-        await open(page);
-        await clearScope(page);
-
-        // Build in-app history first: the page behind a modal cannot be clicked, so the browser's
-        // back button is the way out that exists while the dialog is open.
-        await page.getByRole('link', { name: 'Workspace', exact: true }).first().click();
-        await expect(page).toHaveURL(/\/settings\/workspace$/);
-        await page.goBack();
         await expect(page).toHaveURL(/\/settings\/organization$/);
-        await expect(page.getByRole('heading', { name: 'Core (organization)' })).toBeVisible();
-        await clearScope(page);
+        await expect(editor.getByText('E2E_GUARD_VAR')).toBeVisible();
 
-        const dialog = await openDialog(page);
-        await dialog.getByRole('button', { name: 'Add variable' }).click();
-        await dialog.getByLabel('Variable 1 name').fill('E2E_GUARD_VAR');
-        await page.goForward();
-        await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
-        await page.getByRole('button', { name: 'Continue editing' }).click();
-        await expect(dialogOf(page).getByLabel('Variable 1 name')).toHaveValue('E2E_GUARD_VAR');
+        await page.getByRole('link', { name: 'Workspace', exact: true }).first().click();
+        await page.getByRole('button', { name: 'Discard changes' }).click();
+        await expect(page).toHaveURL(/\/settings\/workspace$/);
         expect(problems.join('\n')).toBe('');
     });
 
-    test('60 variables keep the footer on screen with Save reachable', async ({ page }) => {
+    test('60 variables keep the save bar reachable', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
         await clearScope(page);
 
-        const dialog = await openDialog(page);
-        await dialog.getByRole('button', { name: '.env' }).click();
+        const editor = editorOf(page);
+        await editor.getByRole('button', { name: 'Raw editor' }).click();
         const lines = Array.from({ length: 60 }, (_, i) => `E2E_MANY_${String(i).padStart(2, '0')}=value-${i}`);
-        await dialog.getByLabel('Variables as .env text').fill(lines.join('\n'));
-        await dialog.getByRole('button', { name: 'List' }).click();
-        await expect(dialog.getByLabel('Variable 60 name')).toHaveValue('E2E_MANY_59');
+        await editor.getByLabel('Variables as .env text').fill(lines.join('\n'));
+        await editor.getByRole('button', { name: 'List view' }).click();
+        await expect(editor.locator('li.env-row')).toHaveCount(60);
+        await expect(editor.getByRole('tab', { name: /^Variables 60/ })).toBeVisible();
 
-        // The rows scroll inside the body; the footer never leaves the viewport.
-        await expectFooterOnScreen(page, dialog);
-        const body = dialog.locator('.env-dialog-body');
-        const scrolls = await body.evaluate((el) => el.scrollHeight > el.clientHeight);
-        expect(scrolls).toBe(true);
-        await body.evaluate((el) => el.scrollTo(0, el.scrollHeight));
-        await expectFooterOnScreen(page, dialog);
-        await page.screenshot({ path: `${SHOTS}/env-dialog-60.png`, fullPage: true });
+        await expectSaveReachable(page, editor);
+        await page.screenshot({ path: `${SHOTS}/env-editor-60.png`, fullPage: true });
 
-        await dialog.getByRole('button', { name: 'Save changes' }).click();
-        await expect(dialog).toBeHidden({ timeout: 15_000 });
-        const core = corePanel(page);
-        await expect(core.getByText('60 variables')).toBeVisible();
-        // Only the first few names list; the rest are counted.
-        await expect(core.getByText('and 55 more')).toBeVisible();
+        await editor.getByRole('button', { name: 'Save changes' }).click();
+        await expect(editor.getByRole('status')).toHaveText('Changes saved.', { timeout: 15_000 });
+        await expect(editor.getByRole('tab', { name: /^Variables 60/ })).toBeVisible();
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the dialog stays usable and overflow-free at a 390px phone width', async ({ page }) => {
+    test('the editor stays usable and overflow-free at a 390px phone width', async ({ page }) => {
         const problems = watchConsole(page);
         await page.setViewportSize({ width: 390, height: 844 });
         await open(page);
         await clearScope(page);
 
-        const dialog = await openDialog(page);
-        await dialog.getByRole('button', { name: 'Add variable' }).click();
-        await dialog.getByLabel('Variable 1 name').fill('E2E_NARROW');
-        await dialog.getByLabel('Variable 1 value').fill('fits');
+        const editor = editorOf(page);
+        await editor.getByRole('button', { name: 'New variable' }).click();
+        await editor.getByLabel('Variable name').fill('E2E_NARROW');
+        await editor.getByLabel('Variable value').fill('fits');
 
-        // No page-level overflow at 390x844 and no horizontal scroll inside the dialog.
+        // No page-level overflow at 390x844 and no horizontal scroll inside the box.
         const overflow = await page.evaluate(
             () => document.documentElement.scrollWidth - document.documentElement.clientWidth
         );
         expect(overflow).toBeLessThanOrEqual(0);
-        const body = dialog.locator('.env-dialog-body');
-        expect(await body.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
-        await expectFooterOnScreen(page, dialog);
+        const box = editor.locator('.env-box');
+        expect(await box.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+        await expectSaveReachable(page, editor);
         await page.screenshot({ path: `${SHOTS}/env-narrow.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });

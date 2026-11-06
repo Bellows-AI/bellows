@@ -26,17 +26,21 @@ describe('TaskRun', () => {
         ...over,
     });
 
-    it('labels the root run Request and every later run Follow-up, oldest first', () => {
+    it('names each run Run N, oldest first, with no section labels — the member\u2019s words as a bubble', () => {
         const html = renderDetail({ jobs: [root, child()] });
-        expect(html.indexOf('>Request<')).toBeGreaterThan(-1);
-        expect(html.indexOf('>Request<')).toBeLessThan(html.indexOf('>Follow-up<'));
+        expect(html.indexOf('aria-label="Run 1"')).toBeGreaterThan(-1);
+        expect(html.indexOf('aria-label="Run 1"')).toBeLessThan(html.indexOf('aria-label="Run 2"'));
         expect(html.match(/<article/g)?.length).toBe(2);
+        expect(html.match(/<p class="msg-user">/g)?.length).toBe(2);
+        for (const label of ['>Request<', '>Follow-up<', 'Agent response', 'Agent activity', 'run-label']) {
+            expect(html).not.toContain(label);
+        }
         expect(html.indexOf('first command')).toBeLessThan(html.indexOf('second command'));
         // One conversation: the newest run carries the composer.
         expect(html).toContain('<textarea');
     });
 
-    it('names each finished run’s response and keeps its raw output behind one disclosure per run', () => {
+    it('shows each finished run’s response and keeps its raw output behind one disclosure per run', () => {
         const html = renderDetail({
             jobs: [
                 { ...root, summary: 'first answer', output: 'first log' },
@@ -45,8 +49,7 @@ describe('TaskRun', () => {
         });
         expect(html.match(/<details class="run-output"(?! open)/g)?.length).toBe(2);
         expect(html.match(/View raw output/g)?.length).toBe(2);
-        expect(html).toContain('Agent response · Run 1');
-        expect(html).toContain('Agent response · Run 2');
+        expect(html).toContain('first answer');
         expect(html).toContain('second answer');
     });
 
@@ -55,7 +58,7 @@ describe('TaskRun', () => {
             renderDetail({
                 jobs: [job({ status: 'running', output: 'tail', runtime: runtime({ activity: '→ Bash npm test' }) })],
             }),
-            'Agent activity'
+            '<article'
         );
         expect(live).toMatch(/<details class="run-output" open="">/);
         expect(live).toContain('View raw output');
@@ -75,7 +78,7 @@ describe('TaskRun', () => {
     });
 
     it('a live run without output keeps the waiting message and offers no disclosure', () => {
-        const html = articleOf(renderDetail({ jobs: [job({ status: 'queued', output: null })] }), 'Agent activity');
+        const html = articleOf(renderDetail({ jobs: [job({ status: 'queued', output: null })] }), '<article');
         expect(html).toContain('Waiting for the executor…');
         expect(html).not.toContain('View raw output');
     });
@@ -94,7 +97,7 @@ describe('TaskRun', () => {
     it('a running run with activity reads the activity sentence, not a verdict', () => {
         const html = articleOf(
             renderDetail({ jobs: [job({ status: 'running', runtime: runtime({ activity: '→ Bash npm test' }) })] }),
-            'Agent activity'
+            '<article'
         );
         expect(html).toContain('→ Bash npm test');
     });
@@ -110,7 +113,7 @@ describe('TaskRun', () => {
                     }),
                 ],
             }),
-            'Agent activity'
+            '<article'
         );
         expect(html).toContain('<pre class="chat-output"');
         expect(html).toContain('newer tail line');
@@ -127,7 +130,7 @@ describe('TaskRun', () => {
     });
 
     it('a terminal run renders its stored summary as flowing prose, the primary response', () => {
-        const html = articleOf(renderDetail({ jobs: [job({ summary: 'Fixed the login retry.' })] }), 'Agent response');
+        const html = articleOf(renderDetail({ jobs: [job({ summary: 'Fixed the login retry.' })] }), '<article');
         expect(html).toContain('run-summary');
         expect(html).toContain('Fixed the login retry.');
         expect(html).not.toContain('<pre');
@@ -136,7 +139,7 @@ describe('TaskRun', () => {
     it('a terminal run with summary and output shows the summary first, output collapsed', () => {
         const html = articleOf(
             renderDetail({ jobs: [job({ summary: 'Fixed the login retry.', output: 'raw lines' })] }),
-            'Agent response'
+            '<article'
         );
         expect(html.indexOf('Fixed the login retry.')).toBeLessThan(html.indexOf('View raw output'));
         const output = html.slice(html.indexOf('<details'));
@@ -145,7 +148,7 @@ describe('TaskRun', () => {
     });
 
     it('a terminal run without a summary says so, and shows its output expanded', () => {
-        const html = articleOf(renderDetail({ jobs: [job({ output: 'raw lines' })] }), 'Agent response');
+        const html = articleOf(renderDetail({ jobs: [job({ output: 'raw lines' })] }), '<article');
         expect(html).toContain('No agent summary was captured.');
         expect(html.slice(html.indexOf('No agent summary'))).toMatch(/<details[^>]*open/);
         expect(html).toContain('raw lines');
@@ -208,7 +211,7 @@ describe('TaskRun — gates, publication and metadata', () => {
             ],
         });
         const article = articleOf(html, 'fix the flaky login test');
-        const responseAt = article.indexOf('Agent response');
+        const responseAt = article.indexOf('This run finished without a captured agent response');
         const metaAt = article.indexOf('msg-meta', responseAt);
         expect(responseAt).toBeGreaterThan(-1);
         expect(metaAt).toBeGreaterThan(responseAt);
@@ -307,7 +310,7 @@ describe('TaskRun — footer attribution, prompt and output wells', () => {
                     }),
                 ],
             }),
-            'Agent response'
+            '<article'
         );
         // The run's own raw output well; the gate's well is Verification's, outside the article.
         expect(finished.match(/tabindex="0"/g)?.length).toBe(1);
@@ -422,7 +425,7 @@ describe('follow-up composer', () => {
     });
 });
 
-describe('TaskRun close-phase strip', () => {
+describe('TaskRun close phase', () => {
     const STARTED = '2026-09-01T12:00:00.000Z';
     const gate = (
         name: string,
@@ -444,31 +447,53 @@ describe('TaskRun close-phase strip', () => {
     ];
     const liveJob = (gates: ReturnType<typeof closing> | null, over: Partial<Job> = {}) =>
         job({ status: 'running', output: 'agent log', gates, ...over });
-    const strip = (html: string): string => {
-        const start = html.indexOf('run-close-phase');
-        return html.slice(start, html.indexOf('</section>', start));
+    const turn = (html: string): string => {
+        const start = html.indexOf('<article');
+        return html.slice(start, html.indexOf('</article>', start));
+    };
+    const tile = (html: string): string => html.slice(html.indexOf('task-verification'));
+    const liveRuntime = {
+        cpuPercent: null,
+        memUsedMb: null,
+        memPercent: null,
+        activity: null,
+        sampledAt: '2026-09-01T12:02:00.000Z',
     };
     const at = (iso: string) => vi.useFakeTimers({ now: new Date(iso), toFake: ['Date'] });
 
     afterEach(() => vi.useRealTimers());
 
-    it('a running run with gates shows the close-phase strip after its raw output', () => {
-        at('2026-09-01T12:02:14.000Z');
-        const html = renderDetail({ jobs: [liveJob(closing())] });
-        expect(html.indexOf('run-close-phase')).toBeGreaterThan(html.indexOf('View raw output'));
-        const text = strip(html);
-        expect(text).toContain('Agent finished — running checks');
-        expect(text).toContain('3/5 gates passed');
-        expect(text).toContain('lint');
-        expect(text).toContain('>pending<');
+    it('a running run with gates says Running checks with a spinner in the turn, and leaves the gates to the tile', () => {
+        const html = renderDetail({
+            jobs: [liveJob(closing(), { runtime: { ...liveRuntime, activity: '→ Bash npm test' } })],
+        });
+        const article = turn(html);
+        expect(article).toMatch(
+            /<p class="chat-activity run-checking" role="status"><span class="run-spinner"[^>]*><\/span>Running checks<\/p>/
+        );
+        expect(article.indexOf('Running checks')).toBeLessThan(article.indexOf('View raw output'));
+        // The checks line replaces the agent's activity; no gate, pill or count is drawn in the turn.
+        expect(article).not.toContain('→ Bash npm test');
+        for (const gateText of ['lint', 'prettier', 'gates passed', '>pending<', 'Agent finished']) {
+            expect(article).not.toContain(gateText);
+        }
+        expect(tile(html)).toContain('lint');
     });
 
-    it('the running gate shows elapsed seconds from startedAt', () => {
+    it('the tile opens while gates walk, and the running gate shows a spinner and elapsed seconds', () => {
         at('2026-09-01T12:02:14.000Z');
-        expect(strip(renderDetail({ jobs: [liveJob(closing())] }))).toContain('2m 14s');
+        const html = renderDetail({ jobs: [liveJob(closing())] });
+        expect(html).toMatch(/<details class="panel task-section task-verification" open="">/);
+        expect(tile(html)).toContain('2m 14s');
+        expect(tile(html)).toMatch(
+            /<span class="pill pill-done"><span class="run-spinner"[^>]*><\/span>running<\/span>/
+        );
         for (const startedAt of ['garbage', null]) {
-            expect(strip(renderDetail({ jobs: [liveJob(closing(startedAt))] }))).not.toMatch(/\d+s</);
+            expect(tile(renderDetail({ jobs: [liveJob(closing(startedAt))] }))).not.toMatch(/\d+s</);
         }
+        const passed = [gate('test', 'passed')];
+        expect(renderDetail({ jobs: [job({ gates: passed })] })).not.toMatch(/task-verification" open/);
+        expect(renderDetail({ jobs: [job({ gates: passed })] })).not.toContain('run-spinner');
     });
 
     it('a skipped gate renders a skipped pill and its "no changes" output', () => {
@@ -480,10 +505,10 @@ describe('TaskRun close-phase strip', () => {
         expect(panel).toContain('no changes');
     });
 
-    it('a running run with no gates, and a finished run with gates, show no strip', () => {
-        expect(renderDetail({ jobs: [liveJob(null)] })).not.toContain('run-close-phase');
-        expect(renderDetail({ jobs: [liveJob([])] })).not.toContain('run-close-phase');
-        expect(renderDetail({ jobs: [job({ gates: closing() })] })).not.toContain('run-close-phase');
+    it('a running run with no gates, and a finished run with gates, say nothing about checks', () => {
+        expect(renderDetail({ jobs: [liveJob(null)] })).not.toContain('Running checks');
+        expect(renderDetail({ jobs: [liveJob([])] })).not.toContain('Running checks');
+        expect(renderDetail({ jobs: [job({ gates: closing() })] })).not.toContain('Running checks');
     });
 
     it('the Verification panel of a finished run reads "not run" for a pending gate, "pending" while running', () => {

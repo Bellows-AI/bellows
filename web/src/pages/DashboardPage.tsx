@@ -6,8 +6,7 @@ import { AnalyticsToolbar } from '../components/AnalyticsToolbar.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { StatusBanner } from '../components/StatusBanner.js';
 import { describeRepos } from '../format.js';
-import { UsageSummaryPanel } from '../panels/UsageSummaryPanel.js';
-import { ByUserPanel } from '../panels/ByUserPanel.js';
+import { UsageByModel, UsageSummaryPanel } from '../panels/UsageSummaryPanel.js';
 import { RecentTasksPanel } from '../panels/RecentTasksPanel.js';
 import { TaskUsagePanel } from '../panels/TaskUsagePanel.js';
 import { TokenUsagePanel } from '../panels/TokenUsagePanel.js';
@@ -43,7 +42,8 @@ function dashboardSummary(
  * The telemetry panels, by the page-level analytics state: the full summary, the one empty
  * state (with per-task usage kept when the board measured tasks the telemetry window cannot
  * see), or nothing while telemetry itself is down. Split out of `DashboardPage` for the same
- * reason as `dashboardSummary`. Usage by user is not here: it pairs with Recent tasks below.
+ * reason as `dashboardSummary`. The usage chart sits directly under the summary strip; By model
+ * follows it, collapsed.
  */
 function AnalyticsPanels({ data, state }: { data: StatsPayload; state: AnalyticsState }) {
     if (!data.telemetry) return null;
@@ -52,6 +52,7 @@ function AnalyticsPanels({ data, state }: { data: StatsPayload; state: Analytics
             <>
                 <UsageSummaryPanel telemetry={data.telemetry} meta={data.meta} />
                 <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                <UsageByModel telemetry={data.telemetry} />
                 <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
             </>
         );
@@ -132,10 +133,6 @@ export function DashboardPage() {
                 now={now}
             />
             {data && state !== null ? <AnalyticsPanels data={data} state={state} /> : null}
-            {/* The by-user table spans the row: its type columns scroll off in half a row. */}
-            {data?.telemetry && state === 'ready' ? (
-                <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} scope={data.meta.scope} />
-            ) : null}
             {/* Recent tasks sits outside the stats branch on purpose: completed jobs poll their own
                 endpoint, so it is exactly the degraded-mode surface when the statistics read is cold
                 or failing — hiding it behind `data` would hide it in the one state it exists for. */}

@@ -109,32 +109,6 @@ describe('GET /api/stats: payload and attribution', () => {
         expect(diagnostics.unresolvedOwnership).toMatchObject({ sessions: 1, tokens: { input: 6000 } });
         expect(diagnostics.excludedRepo).toMatchObject({ sessions: 1, tokens: { input: 90000 } });
     });
-
-    it('serves per-user attribution beside the totals', async () => {
-        const h = await harness();
-        const app = track(h.app);
-        await app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-
-        const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
-        const EXPECTED_ALICE_SESSIONS = 9;
-        const EXPECTED_UNATTRIBUTED_SESSIONS = 4;
-        // The fixture's in-scope sessions carry two users and four unattributed sessions — the
-        // board-task join resolved server-side, never a client guess.
-        expect(body.telemetry.byUser.map((row: { user: { login: string } }) => row.user.login)).toEqual([
-            'alice',
-            'bob',
-        ]);
-        expect(body.telemetry.byUser[0]).toMatchObject({
-            user: { login: 'alice', name: 'Alice Doe' },
-            sessions: EXPECTED_ALICE_SESSIONS,
-        });
-        expect(body.telemetry.byUser[0].tokens).toBeUndefined();
-        const alice = body.telemetry.usage.byUser.find((row: { userId: string }) => row.userId === 'u-alice');
-        expect(alice.user).toMatchObject({ login: 'alice' });
-        expect(alice.usage.tokens.input).toBeGreaterThan(0);
-        expect(body.telemetry.unattributedSessions).toBe(EXPECTED_UNATTRIBUTED_SESSIONS);
-    });
 });
 
 describe('GET /api/stats: range filtering and TTL', () => {

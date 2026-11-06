@@ -1,16 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { emptyBlock, inputTokens, telemetryStats } from '@factory-ai/core';
-import type { TelemetryStats, TokenTotals, UserRef } from '@factory-ai/core';
+import type { TelemetryStats, TokenTotals } from '@factory-ai/core';
 import type { TelemetryMeta } from '../src/api/useStats.js';
 import type { StatsPayload } from '../src/api/useStats.js';
-import { UsageSummaryPanel } from '../src/panels/UsageSummaryPanel.js';
-import { ByUserPanel, byUserRows } from '../src/panels/ByUserPanel.js';
+import { UsageByModel, UsageSummaryPanel } from '../src/panels/UsageSummaryPanel.js';
 import { TokenUsagePanel, chartPoints } from '../src/panels/TokenUsagePanel.js';
 import { emptyUsage, fixtureRollups, fixtureStats } from './telemetry-fixture.js';
 import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
-import { pct, tokens } from '../src/format.js';
-import { figure } from '../src/components/usage/usage-format.js';
+import { duration, pct, tokens } from '../src/format.js';
+import { figure, totalTokens } from '../src/components/usage/usage-format.js';
 import { PAD } from '../src/charts/scale.js';
 import type { TaskUsageStats } from '@factory-ai/core';
 
@@ -43,7 +42,6 @@ const telemetryMeta = (over: Partial<TelemetryMeta> = {}): TelemetryMeta => ({
     repoFilter: [REPO],
     otherRepoSessions: 1,
     sessionsWithoutHook: 1,
-    unattributedSessions: 4,
     ...over,
 });
 
@@ -62,20 +60,6 @@ const meta = (over: Partial<TelemetryMeta> = {}, metaOver: Partial<StatsPayload[
         ...metaOver,
     }) as StatsPayload['meta'];
 
-/** A stats payload with hand-built per-user rows (session counts joined to token figures by id). */
-const withByUser = (rows: { user: UserRef; sessions: number; tokens: TokenTotals }[]): TelemetryStats => ({
-    ...empty,
-    byUser: rows.map(({ user, sessions }) => ({ user, sessions })),
-    usage: {
-        ...empty.usage,
-        byUser: rows.map(({ user, tokens }) => ({
-            user,
-            userId: user.id,
-            usage: { ...emptyBlock('measured'), tokens },
-        })),
-    },
-});
-
 const render = (t: TelemetryStats, m: StatsPayload['meta']) =>
     [
         renderToStaticMarkup(<UsageSummaryPanel telemetry={t} meta={m} />),
@@ -90,256 +74,59 @@ describe('telemetry panels render', () => {
         expect(html).not.toContain('Infinity');
         expect(html).not.toContain('undefined');
     });
-
-    it('renders the by-user table with the attributed users', () => {
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={telemetry} meta={telemetryMeta()} scope="org" />);
-        expect(html).toContain('Usage by user');
-        expect(html).toContain('alice');
-        expect(html).toContain('Alice Doe');
-        expect(html).toContain('bob');
-        // The avatar renders only when the account carries one; bob's has none.
-        expect(html).toContain('https://example.com/alice.png');
-        // The per-user split: sortable headers, the four token figures as four columns, never
-        // summed into one — the ranking column is named after the selected metric (Total input by default).
-        for (const label of ['Sessions', 'Total input', 'Uncached input', 'Output', 'Cache read', 'Cache write']) {
-            expect(html).toContain(`>${label}</button>`);
-        }
-        // Off-board usage is not surfaced at all (#109): the payload keeps the count, the page
-        // does not speak it.
-        expect(html).not.toContain('no matching board task');
-        expect(html).not.toContain('NaN');
-    });
-
-    it('renders token usage that has no session row: an unknown author and an author without sessions', () => {
-        const measured = { input: 700, output: 300, cacheRead: null, cacheCreation: null };
-        const base = withByUser([
-            {
-                user: { id: 'u1', login: 'carol', name: 'Carol', avatarUrl: null },
-                sessions: 2,
-                tokens: { input: 1_000, output: 1_000, cacheRead: null, cacheCreation: null },
-            },
-        ]);
-        const UNATTRIBUTED = 3;
-        const stats: TelemetryStats = {
-            ...base,
-            unattributedSessions: UNATTRIBUTED,
-            usage: {
-                ...base.usage,
-                byUser: [
-                    ...base.usage.byUser,
-                    { user: null, userId: null, usage: { ...emptyBlock('measured'), tokens: measured } },
-                    {
-                        user: { id: 'u-nosession', login: 'erin', name: null, avatarUrl: null },
-                        userId: 'u-nosession',
-                        usage: { ...emptyBlock('measured'), tokens: measured },
-                    },
-                ],
-            },
-        };
-        const rows = byUserRows(stats);
-        expect(rows.map((r) => r.name)).toEqual(['Carol', 'erin', 'No user']);
-        // The "No user" row carries the organization's unattributed sessions; the caller's own scope has none.
-        expect(rows.map((r) => r.sessions)).toEqual([2, null, UNATTRIBUTED]);
-        expect(byUserRows(stats, 'inputSide', 'mine').map((r) => r.sessions)).toEqual([2, null, null]);
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} scope="org" />);
-        expect(html).toContain('No user');
-        expect(html).toContain('erin');
-        expect(html).toContain('aria-label="1,000 Total input"');
-    });
-
-    it('labels an author the roster does not know "Unknown user" and keeps the raw id in the tooltip only', () => {
-        const base = withByUser([]);
-        const stats: TelemetryStats = {
-            ...base,
-            usage: {
-                ...base.usage,
-                byUser: [
-                    {
-                        user: null,
-                        userId: 'raw-author-id',
-                        usage: {
-                            ...emptyBlock('measured'),
-                            tokens: { input: 5, output: 1, cacheRead: null, cacheCreation: null },
-                        },
-                    },
-                ],
-            },
-        };
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} scope="org" />);
-        expect(html).toContain('Unknown user');
-        expect(html).toContain('title="raw-author-id"');
-        expect(html).not.toContain('>raw-author-id<');
-    });
-
-    it('shows a proportional Total input bar whose accessible name is the exact total', () => {
-        const stats = withByUser([
-            {
-                user: { id: 'u1', login: 'carol', name: 'Carol', avatarUrl: null },
-                sessions: 2,
-                tokens: { input: 3_000, output: 1_000, cacheRead: null, cacheCreation: null },
-            },
-            {
-                user: { id: 'u2', login: 'dave', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: 1_000, output: null, cacheRead: null, cacheCreation: null },
-            },
-        ]);
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} scope="org" />);
-        // Total input is the null-aware sum of the three input parts: carol 3,000, dave 1,000 (his
-        // output is not part of it).
-        expect(html).toContain('3k');
-        expect(html).toContain('1k');
-        // The bar's width is decorative (aria-hidden); the exact figure is the cell's name.
-        expect(html).toContain('<span class="usage-track" aria-hidden="true">');
-        expect(html).toContain('width:100%');
-        expect(html).toContain('width:33%');
-        expect(html).toContain('aria-label="3,000 Total input"');
-        expect(html).toContain('aria-label="1,000 Total input"');
-    });
-
-    it('sorts by raw Total input descending and sinks the unmeasured last', () => {
-        const stats = withByUser([
-            {
-                user: { id: 'u1', login: 'small', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: 1_000, output: null, cacheRead: null, cacheCreation: null },
-            },
-            {
-                user: { id: 'u2', login: 'big', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: 400_000, output: null, cacheRead: null, cacheCreation: null },
-            },
-            {
-                user: { id: 'u3', login: 'unmeasured', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: null, output: null, cacheRead: null, cacheCreation: null },
-            },
-        ]);
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} scope="org" />);
-        expect(html.indexOf('big')).toBeLessThan(html.indexOf('small'));
-        expect(html.indexOf('small')).toBeLessThan(html.indexOf('unmeasured'));
-        expect(html).toMatch(/aria-sort="descending"/);
-    });
-
-    it('ranks by the selected metric: Output reorders, null sorts last, measured zero has no bar', () => {
-        const stats = withByUser([
-            {
-                user: { id: 'u1', login: 'in-heavy', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: 900, output: 10, cacheRead: null, cacheCreation: null },
-            },
-            {
-                user: { id: 'u2', login: 'out-heavy', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: 100, output: 500, cacheRead: null, cacheCreation: null },
-            },
-            {
-                user: { id: 'u3', login: 'zero-out', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: 50, output: 0, cacheRead: null, cacheCreation: null },
-            },
-            {
-                user: { id: 'u4', login: 'no-output', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: 70, output: null, cacheRead: null, cacheCreation: null },
-            },
-        ]);
-        const byId = (metric: Parameters<typeof byUserRows>[1]) =>
-            Object.fromEntries(byUserRows(stats, metric).map((r) => [r.name, r]));
-        // Total input (default): 900, 100, 50, 70 -> bar is share of 900.
-        expect(byId('inputSide')['in-heavy']?.barPct).toBe(100);
-        // Output: 10, 500, 0, null -> out-heavy leads; a measured 0 is an empty bar (0, its track
-        // renders); null has no bar at all.
-        const out = byId('output');
-        expect(out['out-heavy']?.barPct).toBe(100);
-        expect(out['in-heavy']?.barPct).toBe(2);
-        expect(out['zero-out']?.selected).toBe(0);
-        expect(out['zero-out']?.barPct).toBe(0);
-        expect(out['no-output']?.selected).toBeNull();
-        expect(out['no-output']?.barPct).toBeNull();
-    });
-
-    it('counts cache reads and writes in Total input but never output', () => {
-        const stats = withByUser([
-            {
-                user: { id: 'u1', login: 'carol', name: null, avatarUrl: null },
-                sessions: 1,
-                tokens: { input: 500, output: 500, cacheRead: 4_500_000_000, cacheCreation: 1_000 },
-            },
-        ]);
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} scope="org" />);
-        // Total input = 500 + 4,500,000,000 + 1,000 (output excluded); the cache figures also keep their own columns.
-        expect(html).toContain('width:100%');
-        expect(html).toContain('aria-label="4,500,001,500 Total input"');
-        expect(html).toContain('4.5B');
-    });
-
-    it('renders an all-null token group as an em dash, never a fabricated zero', () => {
-        const unmeasured = telemetryStats(
-            {
-                sessions: [input.sessions.find((s) => s.sessionId === 's01-token-heavy')!],
-                coverage: { from: null, to: null },
-            },
-            { repos: [REPO], now: NOW, usage: emptyUsage(NOW) }
-        );
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={unmeasured} meta={telemetryMeta()} scope="org" />);
-        expect(html).toMatch(/<td[^>]*>—<\/td>/);
-        expect(html).not.toContain('<td>0</td>');
-    });
-
-    it('says so when nothing can be attributed', () => {
-        // 'attributed', not just 'sessions': the by-user rollup carries only attributed
-        // sessions, while unattributed ones are counted separately — the window can hold
-        // sessions and still render this empty state.
-        const html = renderToStaticMarkup(<ByUserPanel telemetry={empty} meta={telemetryMeta()} scope="org" />);
-        expect(html).toContain('No attributed sessions in the coverage window yet.');
-    });
 });
 
 describe('telemetry panels render — usage summary panel', () => {
-    /** One metric card's markup, from its disc to the next card. */
+    /** One metric card's markup, from its label to the next card. */
     const card = (html: string, label: string): string => {
-        const at = html.indexOf(`>${label}</span>`);
+        const at = html.indexOf(`<span class="usage-label">${label}`);
         const start = html.lastIndexOf('class="usage-group"', at);
         const end = html.indexOf('class="usage-group"', at);
         return html.slice(start, end === -1 ? undefined : end);
     };
 
-    it('renders four metrics in order: Sessions, Tokens, Active time, Edit acceptance', () => {
+    it('renders four metrics in order: Sessions, Total tokens, Active time, Edit acceptance', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
         // DOM order IS the reading order at every width.
         expect(html.match(/class="usage-group"/g)).toHaveLength(4);
-        expect(html).not.toContain('usage-disc');
-        expect(html).not.toContain('<svg');
-        const labels = ['Sessions', 'Total input tokens', 'Active time', 'Edit acceptance'].map((label) =>
-            html.indexOf(`>${label}</span>`)
+        const labels = ['Sessions', 'Total tokens', 'Active time', 'Edit acceptance'].map((label) =>
+            html.indexOf(`>${label}`)
         );
         expect(labels.every((at) => at !== -1)).toBe(true);
         expect([...labels].sort((x, y) => x - y)).toEqual(labels);
     });
 
-    it('draws no glyph disc: the strip is figures, labels and captions only', () => {
+    it('puts the label above the figure: the figure is the only bold text in a card', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
-        for (const label of ['Sessions', 'Total input tokens', 'Active time', 'Edit acceptance']) {
-            expect(card(html, label)).not.toMatch(/usage-disc|<svg/);
-        }
+        const sessions = card(html, 'Sessions');
+        expect(sessions.indexOf('usage-label')).toBeLessThan(sessions.indexOf('<strong'));
+        expect(sessions.match(/<strong/g)).toHaveLength(1);
     });
 
-    it('headlines total input, with output, cache hit rate and the three input parts beneath', () => {
+    it('headlines Total tokens beside its Input and Output parts, with the cache rate as caption', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
         const t = telemetry.usage.totals.tokens;
         const { total, cacheHitRatio } = inputTokens(t);
-        // Total input is every prompt token — uncached + cache read + cache write — never output:
-        // the four token types are never summed into one figure (docs/metrics.md).
+        // Total input is every prompt token — uncached + cache read + cache write; Total tokens adds
+        // output, and both parts always render beside the sum (docs/metrics.md).
         expect(total).toBe((t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheCreation ?? 0));
-        const tokensCard = card(html, 'Total input tokens');
-        expect(tokensCard).toContain(`<strong>${tokens(total)}</strong>`);
-        expect(tokensCard).toContain(`${pct(cacheHitRatio)} cache hit rate`);
-        // The four types are separately labelled figures; no unlabelled four-type sum exists.
-        for (const label of ['Uncached input', 'Cache read', 'Cache write', 'Output']) {
-            expect(tokensCard).toContain(`>${label}</dt>`);
+        expect(totalTokens(t)).toBe((total ?? 0) + (t.output ?? 0));
+        const tokensCard = card(html, 'Total tokens');
+        expect(tokensCard).toContain(`<strong>${tokens(totalTokens(t))}</strong>`);
+        expect(tokensCard).toContain(`<dt>Input</dt><dd>${tokens(total)}</dd>`);
+        expect(tokensCard).toContain(`<dt>Output</dt><dd>${tokens(t.output)}</dd>`);
+        expect(tokensCard).toContain(`Cache rate ${pct(cacheHitRatio)}`);
+    });
+
+    it('keeps the exact four types and Total input in the info popover', () => {
+        const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
+        const t = telemetry.usage.totals.tokens;
+        const pop = card(html, 'Total tokens');
+        expect(pop).toContain('aria-label="Token breakdown"');
+        for (const label of ['Uncached input', 'Cache read', 'Cache write', 'Output', 'Total input']) {
+            expect(pop).toContain(`>${label}</dt>`);
         }
-        expect(tokensCard).toContain(figure(t.output));
+        expect(pop).toContain(figure(t.cacheRead));
     });
 
     it('names each unmeasured token part rather than zeroing it', () => {
@@ -349,12 +136,40 @@ describe('telemetry panels render — usage summary panel', () => {
         };
         const tokensCard = card(
             renderToStaticMarkup(<UsageSummaryPanel telemetry={unmeasured} meta={meta()} />),
-            'Total input tokens'
+            'Total tokens'
         );
-        expect(tokensCard).toContain('<strong>—</strong>');
-        expect(tokensCard).toContain('Cache hit rate not measured');
-        // Each unmeasured type is a dash under its own label, never a zero.
-        expect(tokensCard.match(/<dd>—<\/dd>/g)).toHaveLength(4);
+        expect(tokensCard).toContain('<strong class="usage-unmeasured">—</strong>');
+        expect(tokensCard).toContain('Cache rate not measured');
+        expect(tokensCard).toContain('<dt>Input</dt><dd>—</dd>');
+        expect(tokensCard).toContain('<dt>Output</dt><dd>—</dd>');
+    });
+
+    it('never renders a partial Total: an unmeasured output dashes the sum', () => {
+        const noOutput: TelemetryStats = {
+            ...telemetry,
+            usage: {
+                ...telemetry.usage,
+                totals: {
+                    ...telemetry.usage.totals,
+                    tokens: { ...telemetry.usage.totals.tokens, output: null },
+                },
+            },
+        };
+        const tokensCard = card(
+            renderToStaticMarkup(<UsageSummaryPanel telemetry={noOutput} meta={meta()} />),
+            'Total tokens'
+        );
+        expect(tokensCard).toContain('<strong class="usage-unmeasured">—</strong>');
+        expect(tokensCard).toContain('<dt>Output</dt><dd>—</dd>');
+    });
+
+    it('draws the sessions series as a decorative sparkline captioned by its peak bucket', () => {
+        const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
+        const sessions = card(html, 'Sessions');
+        expect(sessions).toContain('class="sparkline"');
+        expect(sessions).toContain('aria-hidden="true"');
+        const peak = Math.max(...telemetry.series.points.map((p) => p.sessions));
+        expect(sessions).toMatch(new RegExp(`Peak ${peak} in the week of [A-Z][a-z]{2} \\d{1,2}`));
     });
 
     it('carries no trend, comparison or cost', () => {
@@ -364,11 +179,27 @@ describe('telemetry panels render — usage summary panel', () => {
 
     it('carries the required supporting copy for every group', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
-        // Sessions: the rendered selection, no repository names repeated here.
-        expect(html).toContain('Aug 14–21 · Organization');
+        // Sessions: the scope line above the page already names the selection and the repos.
+        expect(html).not.toContain('Aug 14–21 · Organization');
         expect(html).not.toContain(REPO);
-        // Active time: across how many sessions, idle excluded.
-        expect(html).toContain('Across 19 sessions · idle time excluded');
+        // Active time: the per-session average, nothing more.
+        const { activeHours, sessions } = telemetry.totals;
+        expect(html).toContain(`≈ ${duration((activeHours ?? 0) / sessions)} per session`);
+        expect(html).not.toContain('idle time excluded');
+    });
+
+    it('offers By model as a collapsed disclosure with Total, Input, Output and Cache rate per model', () => {
+        const html = renderToStaticMarkup(<UsageByModel telemetry={telemetry} />);
+        expect(html).toMatch(/^<details class="usage-by-model chart-disclosure"><summary>By model<\/summary>/);
+        expect(html).not.toContain('<details open');
+        for (const header of ['Model', 'Share of total', 'Total', 'Input', 'Output', 'Cache rate']) {
+            expect(html).toContain(`>${header}</th>`);
+        }
+        expect(html).toContain('>All models</th>');
+        // The exact four types ride on the Total cell's hover.
+        expect(html).toMatch(/title="Uncached input [\d,—]+\nCache read [\d,—]+\nCache write [\d,—]+\nOutput [\d,—]+"/);
+        // Share bars are decoration beside the percent.
+        expect(html).toMatch(/<span class="usage-track" aria-hidden="true">/);
     });
 
     it('renders em dashes, never zeros, on an empty store', () => {
@@ -390,7 +221,7 @@ describe('telemetry panels render — usage summary panel', () => {
 
     it('renders a reason and no numbers when unreachable', () => {
         const html = render(empty, meta({ status: 'unreachable', reason: 'connection refused' }));
-        expect(html).toContain('panel bad');
+        expect(html).toMatch(/class="panel[^"]* bad"/);
         expect(html).toContain('connection refused');
         expect(html).not.toContain('NaN');
     });
@@ -400,8 +231,6 @@ describe('telemetry panels render — usage summary panel', () => {
         expect(html).not.toMatch(/pull request/i);
         expect(html).not.toContain('merged');
         expect(html).not.toMatch(/revert rate/i);
-        const byUser = renderToStaticMarkup(<ByUserPanel telemetry={telemetry} meta={telemetryMeta()} scope="org" />);
-        expect(byUser).not.toMatch(/pull request|revert rate|merged/i);
     });
 });
 
@@ -424,17 +253,19 @@ describe('edit acceptance rendering', () => {
     const summary = (accepted: number | null, rejected: number | null) =>
         renderToStaticMarkup(<UsageSummaryPanel telemetry={withEdits(accepted, rejected)} meta={meta()} />);
 
-    it('shows the measured denominator: A of D measured edit decisions accepted', () => {
+    it('shows the measured denominator beside a decorative meter: A of D edits accepted', () => {
         const ACCEPTED = 2;
         const REJECTED = 1;
         const html = summary(ACCEPTED, REJECTED);
         expect(html).toContain('67%');
-        expect(html).toContain('2 of 3 measured edit decisions accepted');
+        expect(html).toContain('2 of 3 edits accepted');
+        expect(html).toMatch(/<span class="usage-meter" aria-hidden="true"><span style="width:66\.6+\d*%"><\/span>/);
     });
 
     it('says Not measured instead of a ratio when no decision was recorded', () => {
         const html = summary(null, null);
         expect(html).toContain('Not measured');
+        expect(html).not.toContain('usage-meter');
         expect(html).not.toContain('NaN');
     });
 
@@ -486,59 +317,56 @@ describe('per-task usage panel', () => {
         wallClockPerTask: dist(0, 0, 0, 0),
     };
 
-    it('renders the four distributions as one table with percentile headers', () => {
+    it('renders four cards, median first: Output, Runs, Agent turns, Wall clock per task', () => {
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
-        // Four rows, each named — the terminology rule: never a bare "turns".
-        for (const label of ['Uncached input', 'Cache read', 'Cache write', 'Output']) {
-            expect(html).toContain(`${label} per task`);
+        // Each card named — the terminology rule: never a bare "turns".
+        const labels = ['Output per task', 'Runs per task', 'Agent turns per task', 'Wall clock per task'].map(
+            (label) => html.indexOf(`>${label}</span>`)
+        );
+        expect(labels.every((at) => at !== -1)).toBe(true);
+        expect([...labels].sort((x, y) => x - y)).toEqual(labels);
+        // Token types are distributed apart and medians do not add: no input or summed card.
+        for (const label of ['Uncached input per task', 'Cache read per task', 'Tokens per task', 'Input per task']) {
+            expect(html).not.toContain(label);
         }
-        expect(html).not.toContain('Tokens per task');
-        expect(html).toContain('Runs per task');
-        expect(html).toContain('Agent turns per task');
-        expect(html).toContain('Wall clock per task');
         expect(html).not.toMatch(/>\s*turns\s*</);
-        // Percentile headers: Median is the UI word, even though the field is p50.
-        for (const header of ['Average', 'Median', 'P95', 'Measured tasks']) {
-            expect(html).toContain(`>${header}</button>`);
-        }
+        // The median is the figure; average and P95 sit beneath it, beside the task count.
+        expect(html).toContain('<strong>43k</strong>');
+        expect(html).toContain('avg 51.2k · P95 96k · 7 tasks');
         expect(html).not.toContain('p50');
-        // Every distribution renders beside its N — seven in each of the seven rows here.
-        const DISTRIBUTION_ROW_COUNT = 7;
-        expect(html.match(/>7</g)?.length).toBe(DISTRIBUTION_ROW_COUNT);
-        // Nulls and averages format, never NaN.
+        expect(html).not.toContain('<table');
         expect(html).not.toContain('NaN');
-        expect(html).toContain('51.2k');
-        // Sorting is available but not pre-applied: no column starts active.
-        expect(html).not.toContain('aria-sort');
     });
 
     it('renders an explicit empty state, never zero figures, when no task is in range', () => {
         const html = renderToStaticMarkup(
             <TaskUsagePanel tasks={emptyStats} meta={telemetryMeta({ status: 'empty' })} />
         );
-        // ONE table-region empty state, not four zero/dash rows.
+        // ONE empty state, not four zero/dash cards.
         expect(html).toContain('No attributed tasks in this range yet.');
-        expect(html).not.toContain('<table');
+        expect(html).not.toContain('usage-group');
         expect(html).not.toContain('NaN');
         // And it renders nothing at all when there is no snapshot yet.
         expect(renderToStaticMarkup(<TaskUsagePanel tasks={null} meta={telemetryMeta()} />)).toBe('');
     });
 
-    it('carries the unmeasured-run caveat in a disclosure below the table', () => {
+    it('carries the unmeasured-run caveat in the info popover', () => {
         // Failed close-time reads store null; a task holding one is
         // excluded. The panel says so instead of rendering a quietly small number.
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
+        expect(html).toContain('aria-label="How per-task usage is calculated"');
         expect(html).toContain('a task with any unmeasured run is left out, never counted as zero');
     });
 
     it('formats the wall clock distribution as a duration, not a raw millisecond count', () => {
         // avg 4_212_000ms renders as "1.2h" — a millisecond figure beside tokens would be noise.
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
-        expect(html).toContain('1.2h');
+        expect(html).toContain('<strong>1h</strong>');
+        expect(html).toContain('avg 1.2h');
         expect(html).not.toContain('4212000');
     });
 
-    it('shows contributors with the partial count and the standing sentence only when a type is partial', () => {
+    it('shows the partial count and the standing sentence only when output is partial', () => {
         const PARTIAL_TASKS = 2;
         const partialOutput = { avg: 10, p50: 10, p95: 10, tasks: 7, partial: PARTIAL_TASKS, tasksInScope: 9 };
         const tasks: TaskUsageStats = {
@@ -546,10 +374,10 @@ describe('per-task usage panel', () => {
             tokens: { ...populated.tokens, all: { ...populated.tokens.all, output: partialOutput } },
         };
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={tasks} meta={telemetryMeta()} />);
-        expect(html).toContain('7 · 2 partial');
+        expect(html).toContain('7 tasks (2 partial)');
         expect(html).toContain('Figures describe observed usage, not guaranteed complete consumption');
         const clean = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
-        expect(clean).not.toContain('partial');
+        expect(clean).not.toContain('partial)');
         expect(clean).not.toContain('observed usage');
     });
 
@@ -586,25 +414,25 @@ describe('per-task usage panel', () => {
             agentTurnsPerTask: dist(AGENT_TURNS_AVG, AGENT_TURNS_P50, AGENT_TURNS_P95, FEWER_MEASURED_TASKS),
         };
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={mixed} meta={telemetryMeta()} />);
-        // Six rows carry the four token types, runs and wall clock; only five measured agent turns.
-        const REMAINING_SEVEN_COUNT = 6;
-        expect(html.match(/>7</g)?.length).toBe(REMAINING_SEVEN_COUNT);
-        expect(html).toContain('>5<');
+        // Output, runs and wall clock carry seven tasks; only five measured agent turns.
+        const REMAINING_SEVEN_COUNT = 3;
+        expect(html.match(/ · 7 tasks/g)?.length).toBe(REMAINING_SEVEN_COUNT);
+        expect(html).toContain(' · 5 tasks');
     });
 });
 
 describe('token usage series granularity', () => {
-    it('renders a caption naming the buckets, chart first, no leading paragraph', () => {
+    it('names the buckets beside the legend, with no paragraph before the chart', () => {
         expect(telemetry.series.granularity).toBe('week');
         const weeklyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
-        expect(weeklyHtml).toContain('Input and output tokens by ISO week; sessions use the right axis.');
-        // The chart precedes its caption and explanation; nothing narrates before the marks.
+        expect(weeklyHtml).toContain('>By ISO week</span>');
+        expect(weeklyHtml).toContain('panel panel-compact');
+        expect(weeklyHtml).not.toContain('<p class="muted">');
         expect(weeklyHtml.indexOf('<svg')).toBeGreaterThan(-1);
         // Each bucket's readout lists the four types, an unmeasured one as a dash.
         for (const label of ['Uncached input', 'Cache read', 'Cache write', 'Output']) {
             expect(weeklyHtml).toMatch(new RegExp(`${label} [\\d,—]+`));
         }
-        expect(weeklyHtml.indexOf('<svg')).toBeLessThan(weeklyHtml.indexOf('Input and output tokens by ISO week;'));
 
         // The month preset spans 30 days: day buckets, named as days.
         const daily = fixtureStats({
@@ -614,9 +442,8 @@ describe('token usage series granularity', () => {
         });
         expect(daily.series.granularity).toBe('day');
         const dailyHtml = renderToStaticMarkup(<TokenUsagePanel telemetry={daily} meta={telemetryMeta()} />);
-        expect(dailyHtml).toContain('Input and output tokens by day; sessions use the right axis.');
-        expect(dailyHtml).toContain('The hatched bucket is a partial period.');
-        // The caption keys a real fill: the hatch pattern the partial bucket is painted with.
+        expect(dailyHtml).toContain('>By day</span>');
+        // The popover's "hatched bucket" keys a real fill: the pattern the partial bucket is painted with.
         expect(dailyHtml.match(/<pattern[^>]*id="partial-hatch"/g)).toHaveLength(1);
         expect(dailyHtml).not.toContain('NaN');
     });
@@ -675,13 +502,15 @@ describe('token usage series granularity', () => {
         expect(html).toMatch(/aria-label="[^"]*Output —/);
     });
 
-    it('toggles series from accessible legend buttons', () => {
+    it('toggles Input and Output from accessible legend buttons, with no sessions series', () => {
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
-        const PRESSED_LEGEND_COUNT = 3;
+        const PRESSED_LEGEND_COUNT = 2;
         expect(html.match(/aria-pressed="true"/g)).toHaveLength(PRESSED_LEGEND_COUNT);
-        for (const name of ['Total input', 'Output', 'Sessions']) {
+        for (const name of ['Input', 'Output']) {
             expect(html).toContain(`>${name}</button>`);
         }
+        expect(html).not.toContain('>Sessions</button>');
+        expect(html).not.toContain('class="line"');
     });
 
     it('plots total input — uncached plus cache read and write — in each bucket', () => {
@@ -690,17 +519,16 @@ describe('token usage series granularity', () => {
         const tokensOfPoint = point?.tokens as TokenTotals;
         const total = inputTokens(tokensOfPoint).total as number;
         expect(total).toBeGreaterThan(tokensOfPoint.input ?? 0);
-        expect(html).toContain(`Total input ${total.toLocaleString('en-US')}`);
+        expect(html).toContain(`Input ${total.toLocaleString('en-US')}`);
     });
 
-    it('explains the calculation after the chart', () => {
+    it('explains the calculation in the "?" popover', () => {
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
-        expect(html).toContain('<details');
-        expect(html).toContain('<summary>How this is calculated</summary>');
-        expect(html).toContain('Total input counts uncached input plus cache reads and writes');
+        expect(html).toContain('aria-label="How this is calculated"');
+        expect(html).toContain('Input counts uncached input plus cache reads and writes');
         expect(html).toContain('92');
         expect(html).toContain('Quiet buckets are kept');
-        expect(html.indexOf('<svg')).toBeLessThan(html.indexOf('How this is calculated'));
+        expect(html).not.toContain('<details');
     });
 
     it('exposes full bucket dates and exact un-abbreviated values in the bucket labels', () => {
@@ -725,8 +553,6 @@ describe('token usage series granularity', () => {
             },
             otherRepoSessions: 0,
             sessionsWithoutHook: 0,
-            byUser: [],
-            unattributedSessions: 0,
             series: {
                 granularity: 'day',
                 points: [{ start: '2026-08-21', sessions: 3, linesAdded: 0, linesRemoved: 0, partial: true }],
@@ -735,7 +561,6 @@ describe('token usage series granularity', () => {
             usage: {
                 totals: block,
                 series: { granularity: 'day', points: [{ start: '2026-08-21', partial: true, usage: block }] },
-                byUser: [],
                 diagnostics: {
                     unresolvedOwnership: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
                     excludedRepo: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
@@ -758,14 +583,14 @@ describe('token usage series granularity', () => {
         expect(widths.length).toBeGreaterThan(0);
         const QUARTER_PLOT_DIVISOR = 4;
         expect(Math.max(...widths)).toBeLessThanOrEqual((width! - PAD.left - PAD.right) / QUARTER_PLOT_DIVISOR);
-        expect(html).toMatch(/aria-label="[^"]*Total input 12,345/);
-        expect(html).toContain('The hatched bucket is a partial period.');
+        expect(html).toMatch(/aria-label="[^"]*Input 12,345/);
+        expect(html).toMatch(/aria-label="[^"]*partial period/);
     });
 
-    it('draws the multi-bucket chart with a 360px plot', () => {
+    it('draws the multi-bucket chart as a 110px band', () => {
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
         const [, , height] = html.match(/viewBox="0 0 (\d+) (\d+)"/)!.map(Number);
-        const MAIN_PLOT_HEIGHT = 360;
+        const MAIN_PLOT_HEIGHT = 110;
         expect(height! - PAD.top - PAD.bottom).toBe(MAIN_PLOT_HEIGHT);
     });
 
@@ -787,10 +612,10 @@ describe('token usage series granularity', () => {
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={wide} meta={telemetryMeta()} />);
         const LABEL_TARGET_COUNT = 12;
         const every = Math.ceil(points / LABEL_TARGET_COUNT);
-        // X ticks: every `every`-th point plus the last. The bars' left axis and the line's
-        // right axis render 5 ticks each, so ten of the rendered ticks are never x labels.
+        // X ticks: every `every`-th point plus the last. The bars' left axis renders 5 ticks, so
+        // five of the rendered ticks are never x labels (there is no right axis without a line).
         const xTicks = Math.floor((points - 1) / every) + 1 + (points % every === 0 ? 0 : 1);
         const ticks = html.match(/class="tick"/g)?.length ?? 0;
-        expect(ticks).toBe(xTicks + 10);
+        expect(ticks).toBe(xTicks + 5);
     });
 });

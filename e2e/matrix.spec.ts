@@ -293,7 +293,7 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
         test(`every dialog contains focus and returns it at ${width}`, async ({ page }) => {
             describeCheck(
                 'dialog focus containment and return',
-                `range, remove, leave guard, add executor at ${width}`
+                `range, remove, add executor, variables editor leave guard at ${width}`
             );
             test.setTimeout(4 * SLOW);
             await page.setViewportSize({ width, height: 900 });
@@ -325,28 +325,28 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
                 },
             });
 
-            // The variables dialog fits the viewport whole and traps focus; a dirty draft asks
-            // through the one unsaved-changes dialog before it closes.
+            // The inline variables editor keeps its row editor and save bar inside the viewport; leaving
+            // the page with a dirty draft asks through the one unsaved-changes dialog.
             await page.goto('/settings/organization');
-            const core = page.locator('section.panel', {
-                has: page.getByRole('heading', { name: 'Core (organization)' }),
+            const editor = page.locator('section.env-editor', {
+                has: page.getByRole('heading', { name: 'Organization variables' }),
             });
-            await expect(core).toBeVisible(SETTLED);
-            const edit = core.getByRole('button', { name: 'Edit variables' });
-            await containsAndReturns(page, {
-                name: 'settings: variables dialog',
-                trigger: edit,
-                panel: page.locator('.env-dialog'),
-                open: () => edit.click(),
-            });
-            await edit.click();
-            await page.locator('.env-dialog').getByRole('button', { name: 'Add variable' }).click();
-            await page
-                .locator('.env-dialog')
-                .getByLabel(/^Variable \d+ name$/)
-                .last()
-                .fill('E2E_MATRIX_GUARD');
-            await page.keyboard.press('Escape');
+            await expect(editor).toBeVisible(SETTLED);
+            await editor.getByRole('button', { name: 'New variable' }).click();
+            await editor.getByLabel('Variable name').fill('E2E_MATRIX_GUARD');
+            const save = editor.getByRole('button', { name: 'Save changes' });
+            await expect(save).toBeInViewport({ ratio: 1 });
+            const editorBox = (await editor.boundingBox())!;
+            const viewWidth = page.viewportSize()!.width;
+            expect
+                .soft(editorBox.x, 'settings: variables editor: left edge inside the viewport')
+                .toBeGreaterThanOrEqual(0);
+            expect
+                .soft(editorBox.x + editorBox.width, 'settings: variables editor: right edge inside the viewport')
+                .toBeLessThanOrEqual(viewWidth + 1);
+            await page.screenshot({ path: `${SHOTS}/settings-variables-editor-${width}.png`, fullPage: true });
+            // The side nav is collapsed at phone width, so the click is dispatched past visibility.
+            await page.locator('a[href="/settings/workspace"]').first().dispatchEvent('click');
             await expect(page.locator('.unsaved')).toBeVisible();
             const guardBox = (await page.locator('.unsaved').boundingBox())!;
             const view = page.viewportSize()!;
@@ -355,7 +355,7 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
                 .soft(guardBox.x + guardBox.width, 'settings: leave guard: right edge inside the viewport')
                 .toBeLessThanOrEqual(view.width + 1);
             await page.getByRole('button', { name: 'Discard changes' }).click();
-            await expect(page.locator('.env-dialog')).toBeHidden();
+            await expect(page.locator('.unsaved')).toBeHidden();
 
             await page.unrouteAll({ behavior: 'ignoreErrors' });
             await mockExecutors(page, []);
@@ -538,13 +538,13 @@ const POLLED = [
     '.sidenav-section',
     '.sidenav-count',
     '.mobile-nav-count',
-    '.inbox-counts-strip',
+    '.inbox-tab-count',
     '.inbox-footer',
     '.updated-at',
     '.usage-groups',
     '.toolbar-coverage',
     '.task-section-aside',
-    '.chat-runtime',
+    '.task-activity',
     '.task-clock',
 ].join(', ');
 

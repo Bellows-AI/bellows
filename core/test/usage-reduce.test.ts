@@ -243,14 +243,12 @@ describe('ownership in the report', () => {
     it('hides an unowned session from every tenant, single-org installs included', () => {
         const r = reduceUsage(world({ contributions: [delta(5, 8)] }), ALL);
         expect(r.eligible.state).toBe('unmeasured');
-        expect(r.byUser).toEqual([]);
     });
 
-    it('a branch-only session is resolved, no-task, in the unknown-user bucket and outside scope=mine', () => {
+    it('a branch-only session is resolved, no-task, with no author and outside scope=mine', () => {
         const input = world({ branch: [branch()], contributions: [delta(5, 6)] });
         const r = reduceUsage(input, ALL);
         expect(r.eligible.unassigned).toEqual([{ reason: 'no-task', tokens: out(6) }]);
-        expect(r.byUser).toEqual([{ userId: null, usage: expect.objectContaining({ tokens: out(6) }) }]);
         expect(reduceUsage(input, { ...ALL, userId: 'u1' }).eligible.state).toBe('unmeasured');
     });
 
@@ -296,12 +294,7 @@ describe('ownership in the report', () => {
         });
         expect(reduceUsage(input, { ...ALL, userId: 'u1' }).eligible.tokens).toEqual(out(1));
         expect(reduceUsage(input, { ...ALL, userId: 'u2' }).eligible.tokens).toEqual(out(10));
-        const all = reduceUsage(input, ALL);
-        expect(all.byUser.map((u) => [u.userId, u.usage.tokens.output])).toEqual([
-            ['u1', 1],
-            ['u2', 10],
-            [null, 1100],
-        ]);
+        expect(reduceUsage(input, ALL).eligible.tokens).toEqual(out(1111));
     });
 
     it('a repo filter moves other repos to excludedRepo only; a repo-less session cannot pass a filter and is not counted there', () => {
@@ -507,7 +500,7 @@ describe('range, series, unlocated and unresolved', () => {
 });
 
 describe('amounts without timed usage are never dropped', () => {
-    it('lists a task and an author that only have unlocated or unresolved-temporality usage', () => {
+    it('lists a task that only have unlocated or unresolved-temporality usage', () => {
         const input = world({
             board: [ev({ jobId: 'tA', rootJobId: 'tA', sessionId: 'sA', authorId: 'uA' })],
             contributions: [unlocated(4, { session: 'sA' }), unresolvedPoint(5, 6, { session: 'sA' })],
@@ -516,10 +509,7 @@ describe('amounts without timed usage are never dropped', () => {
         expect(r.tasks.map((t) => t.taskId)).toEqual(['tA']);
         expect(r.tasks[0]!.usage.unlocated).toEqual(out(4));
         expect(r.tasks[0]!.usage.unresolvedTemporality).toEqual({ observations: 1 });
-        expect(r.byUser.map((u) => u.userId)).toEqual(['uA']);
-        expect(r.byUser[0]!.usage.unlocated).toEqual(out(4));
         expect(r.tasks[0]!.usage.state).toBe('measured');
-        expect(r.byUser[0]!.usage.state).toBe('measured');
     });
 
     it('keeps unlocated and unresolved amounts of unresolved-owner and excluded-repo sessions in the diagnostics', () => {
@@ -663,18 +653,12 @@ describe('conservation over seeded random worlds', () => {
             ];
             for (const opts of scopes) {
                 const r = reduceUsage(input, opts);
-                const blocks = [
-                    r.eligible,
-                    ...r.tasks.map((t) => t.usage),
-                    ...r.byUser.map((u) => u.usage),
-                    ...r.series.map((s) => s.usage),
-                ];
+                const blocks = [r.eligible, ...r.tasks.map((t) => t.usage), ...r.series.map((s) => s.usage)];
                 for (const b of blocks) {
                     expectConserved(b);
                     for (const row of b.rows) expect(sumTypes(row.children!.map((c) => c.tokens))).toEqual(row.tokens);
                     expect(sumTypes(b.rows.map((x) => x.tokens))).toEqual(b.tokens);
                 }
-                expect(sumTypes(r.byUser.map((u) => u.usage.tokens))).toEqual(r.eligible.tokens);
                 expect(sumTypes(r.series.map((s) => s.usage.tokens))).toEqual(r.eligible.tokens);
                 const noTask = r.eligible.unassigned.find((u) => u.reason === 'no-task')?.tokens ?? none();
                 expect(sumTypes([...r.tasks.map((t) => t.usage.tokens), noTask])).toEqual(r.eligible.tokens);
@@ -804,7 +788,6 @@ describe('one scope meaning on every dimension', () => {
         const none_ = reduceUsage(input, { ...ALL, repos: [] });
         expect(none_.eligible.tokens).toEqual(none());
         expect(none_.tasks).toEqual([]);
-        expect(none_.byUser).toEqual([]);
         expect(reduceUsage(input, ALL).eligible.tokens).toEqual(out(101));
     });
 

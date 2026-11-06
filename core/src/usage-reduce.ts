@@ -27,7 +27,6 @@ import {
     type UsagePrecision,
     type UsageReport,
     type UsageRow,
-    type UserUsage,
     TOKEN_TYPE_LIST,
     UNASSIGNED_REASONS,
     addTokens,
@@ -395,19 +394,6 @@ export function reduceUsage(input: UsageInput, opts: UsageOptions): UsageReport 
     const taskIds = [
         ...new Set([...acc.items, ...acc.extras].map((i) => i.taskId).filter((t): t is string => t !== null)),
     ].sort(compareText);
-    const authorOf = (keyId: string): string | null =>
-        (acc.owners.get(keyId) as Extract<Owner, { status: 'resolved' }>).authorId;
-    const authors = [
-        ...new Set([...acc.items.map((i) => i.authorId), ...acc.extras.map((e) => authorOf(e.keyId))]),
-    ].sort((a, b) => (a === null ? 1 : b === null ? -1 : compareText(a, b)));
-    const byUser: UserUsage[] = authors.map((userId) => ({
-        userId,
-        usage: buildBlock(
-            acc.items.filter((i) => i.authorId === userId),
-            acc.extras.filter((e) => authorOf(e.keyId) === userId),
-            rangeEndsAfterNow
-        ),
-    }));
     const withoutHook = new Set(
         acc.items
             .filter((i) => {
@@ -419,7 +405,6 @@ export function reduceUsage(input: UsageInput, opts: UsageOptions): UsageReport 
     return {
         eligible: buildBlock(acc.items, acc.extras, rangeEndsAfterNow),
         tasks: taskIds.map((id) => taskView(acc, id, false, rangeEndsAfterNow)),
-        byUser,
         series: series(acc.items, opts.granularity ?? 'day', opts.now),
         diagnostics: {
             sessionsWithoutHook: withoutHook.size,
