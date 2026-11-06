@@ -26,6 +26,7 @@ export const SKILL_BUNDLE_REASONS = [
     'symlink',
     'non_regular',
     'duplicate_path',
+    'path_conflict',
     'path_too_long',
     'too_many_files',
     'too_large',
@@ -185,24 +186,43 @@ function readZip(zip: Buffer): BundleFile[] {
     const entries = readCentralDirectory(zip);
     const files: { path: string; entry: CentralEntry }[] = [];
     for (const entry of entries) {
-        if (entry.path.endsWith('/')) {
-            checkPath(entry.path.slice(0, -1));
+        const named = withoutDotPrefix(entry.path);
+        if (named.endsWith('/') || named === '') {
+            if (named !== '') checkPath(named.slice(0, -1));
             continue;
         }
-        files.push({ path: checkPath(entry.path), entry });
+        files.push({ path: checkPath(named), entry });
     }
     if (files.length > MAX_SKILL_FILES) refuse('too_many_files', `The zip has more than ${MAX_SKILL_FILES} files`);
     const stripped = stripWrapper(files.map((file) => file.path));
     const seen = new Set<string>();
-    let total = 0;
-    return files.map((file, index) => {
+    for (const [index, file] of files.entries()) {
         const path = stripped[index] ?? file.path;
         if (seen.has(path)) refuse('duplicate_path', `${path} appears twice in the zip`);
         seen.add(path);
+    }
+    for (const path of seen) checkNoFileAncestor(path, seen);
+    let total = 0;
+    return files.map((file, index) => {
+        const path = stripped[index] ?? file.path;
         const bytes = inflateEntry(zip, file.entry, path, MAX_SKILL_BYTES - total);
         total += bytes.length;
         return { path, bytes };
     });
+}
+
+/** Some producers write `./SKILL.md`; a leading "./" is the same path. */
+function withoutDotPrefix(path: string): string {
+    let rest = path;
+    while (rest.startsWith('./')) rest = rest.slice(2);
+    return rest;
+}
+
+/** A file cannot also be a directory: `scripts` next to `scripts/run.sh` has no tar that extracts. */
+function checkNoFileAncestor(path: string, seen: ReadonlySet<string>): void {
+    for (let at = path.indexOf('/'); at !== -1; at = path.indexOf('/', at + 1)) {
+        if (seen.has(path.slice(0, at))) refuse('path_conflict', `${path.slice(0, at)} is both a file and a directory`);
+    }
 }
 
 function notZip(): never {
@@ -257,8 +277,10 @@ function readCentralEntry(zip: Buffer, at: number, limit: number): { entry: Cent
 
 /** Unix hosts carry the file type in the high attribute bits; only regular files and directories pass. */
 function checkFileType(path: string, host: number, mode: number): void {
-    if (host !== UNIX_HOST || mode === 0) return;
+    if (host !== UNIX_HOST) return;
     const type = mode & S_IFMT;
+    // Some producers (Python's ZipFile.writestr) set permission bits without a file type: a regular file.
+    if (type === 0) return;
     if (type === S_IFLNK) refuse('symlink', `${path} is a symlink`);
     if (type !== S_IFREG && type !== S_IFDIR) refuse('non_regular', `${path} is not a regular file`);
 }
@@ -306,6 +328,7 @@ function inflateEntry(zip: Buffer, entry: CentralEntry, path: string, remaining:
             : refuse('file_too_large', `${path} exceeds ${MAX_SKILL_FILE_BYTES} bytes`);
     let out: Buffer;
     if (entry.method === METHOD_STORED) {
+        if (data.length > perFile) return tooBig();
         out = Buffer.from(data);
     } else if (entry.method === METHOD_DEFLATE) {
         try {
@@ -317,7 +340,6 @@ function inflateEntry(zip: Buffer, entry: CentralEntry, path: string, remaining:
     } else {
         return refuse('unsupported', `${path} uses an unsupported compression method`);
     }
-    if (out.length > perFile) tooBig();
     if (out.length !== entry.declaredSize) refuse('not_zip', `${path} does not match its declared size`);
     return out;
 }

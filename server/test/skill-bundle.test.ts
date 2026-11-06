@@ -11,6 +11,10 @@ interface ZipEntry {
     method?: 0 | 8;
     /** Unix mode in the high 16 bits of the external attributes. */
     mode?: number;
+    /** Version-made-by host: 3 unix (default), 0 DOS/Windows. */
+    host?: number;
+    /** General-purpose flags; bit 3 (8) = data descriptor, so the local header carries zero sizes. */
+    flags?: number;
     declaredSize?: number;
     raw?: Buffer;
 }
@@ -39,13 +43,13 @@ function zip(entries: ZipEntry[]): Buffer {
         const local = Buffer.concat([
             u32(0x04034b50),
             u16(20),
-            u16(0),
+            u16(e.flags ?? 0),
             u16(method),
             u16(0),
             u16(0),
             u32(0),
-            u32(body.length),
-            u32(usize),
+            u32((e.flags ?? 0) & 8 ? 0 : body.length),
+            u32((e.flags ?? 0) & 8 ? 0 : usize),
             u16(name.length),
             u16(0),
             name,
@@ -55,9 +59,9 @@ function zip(entries: ZipEntry[]): Buffer {
         central.push(
             Buffer.concat([
                 u32(0x02014b50),
-                u16((3 << 8) | 20),
+                u16(((e.host ?? 3) << 8) | 20),
                 u16(20),
-                u16(0),
+                u16(e.flags ?? 0),
                 u16(method),
                 u16(0),
                 u16(0),
@@ -189,6 +193,59 @@ describe('skill bundle from zip', () => {
         ).toBe('no_skill_md');
     });
 
+    it('accepts what standard producers write', () => {
+        const expected = bundleFromZip('my-skill', zip([md, { name: 'ref.md', data: 'r' }])).sha256;
+        // Python ZipFile.writestr: unix host, permission bits without a file type.
+        const python = zip([
+            { name: 'SKILL.md', data: SKILL_MD('my-skill'), mode: 0o600 },
+            { name: 'ref.md', data: 'r', mode: 0o600 },
+        ]);
+        expect(bundleFromZip('my-skill', python).sha256).toBe(expected);
+        // Windows-made: DOS host, attribute bits mean nothing.
+        const dos = zip([
+            { name: 'SKILL.md', data: SKILL_MD('my-skill'), host: 0, mode: 0o120000 },
+            { name: 'ref.md', data: 'r', host: 0, mode: 0 },
+        ]);
+        expect(bundleFromZip('my-skill', dos).sha256).toBe(expected);
+        // Streamed zips: data descriptor flag, zero sizes in the local header.
+        const streamed = zip([
+            { name: 'SKILL.md', data: SKILL_MD('my-skill'), flags: 8 },
+            { name: 'ref.md', data: 'r', flags: 8 },
+        ]);
+        expect(bundleFromZip('my-skill', streamed).sha256).toBe(expected);
+        // "./" prefixed names.
+        const dotted = zip([
+            { name: './', data: '' },
+            { name: './SKILL.md', data: SKILL_MD('my-skill') },
+            { name: './ref.md', data: 'r' },
+        ]);
+        expect(bundleFromZip('my-skill', dotted).sha256).toBe(expected);
+    });
+
+    it('refuses a path that is both a file and a directory', () => {
+        expect(
+            reason(() =>
+                bundleFromZip(
+                    'my-skill',
+                    zip([md, { name: 'scripts', data: 'x' }, { name: 'scripts/run.sh', data: 'y' }])
+                )
+            )
+        ).toBe('path_conflict');
+        expect(
+            reason(() =>
+                bundleFromZip(
+                    'my-skill',
+                    zip([md, { name: 'scripts/run.sh', data: 'y' }, { name: 'scripts', data: 'x' }])
+                )
+            )
+        ).toBe('path_conflict');
+    });
+
+    it('refuses a stored entry over the file limit', () => {
+        const big = { name: 'big.bin', data: Buffer.alloc(MAX_SKILL_FILE_BYTES + 1), method: 0 as const };
+        expect(reason(() => bundleFromZip('my-skill', zip([md, big])))).toBe('file_too_large');
+    });
+
     it('refuses unsafe paths and non-regular entries', () => {
         expect(reason(() => bundleFromZip('my-skill', zip([md, { name: '../x', data: 'x' }])))).toBe('traversal');
         expect(reason(() => bundleFromZip('my-skill', zip([md, { name: 'a/../../x', data: 'x' }])))).toBe('traversal');
@@ -203,7 +260,8 @@ describe('skill bundle from zip', () => {
         );
         expect(
             reason(() => bundleFromZip('my-skill', zip([md, { name: 'x', data: 'a' }, { name: './x', data: 'b' }])))
-        ).toBe('traversal');
+        ).toBe('duplicate_path');
+        expect(reason(() => bundleFromZip('my-skill', zip([md, { name: 'a/./x', data: 'x' }])))).toBe('traversal');
         expect(
             reason(() => bundleFromZip('my-skill', zip([md, { name: 'x', data: 'a' }, { name: 'x', data: 'b' }])))
         ).toBe('duplicate_path');
