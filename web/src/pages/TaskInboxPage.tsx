@@ -1,6 +1,16 @@
-import { useEffect, useId, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import {
+    Listbox,
+    ListboxButton,
+    ListboxOption,
+    ListboxOptions,
+    Popover,
+    PopoverButton,
+    PopoverPanel,
+} from '@headlessui/react';
+import { useEffect, useRef, useState } from 'react';
+import type { FormEvent, RefObject } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { useDownwardAnchor } from '../anchor.js';
 import { Avatar } from '../components/Avatar.js';
 import { Icon } from '../components/Icon.js';
 import type { IconName } from '../components/Icon.js';
@@ -9,9 +19,9 @@ import { RelativeTime } from '../components/RelativeTime.js';
 import { StateNote } from '../components/StateNote.js';
 import { useTasksPage } from './TasksLayout.js';
 import { trackedRepos } from '../api/useRepos.js';
-import { DEFAULT_FILTERS, inboxQueryString, QUERY_MAX } from '../api/useTasks.js';
+import { inboxQueryString, QUERY_MAX } from '../api/useTasks.js';
 import type { InboxFilters, TaskNavigation, TaskSummary, UseTasks } from '../api/useTasks.js';
-import { countLabel } from '../nav-model.js';
+import { groupByDay } from '../inbox-groups.js';
 import { taskTitleText } from '../task-title.js';
 import { taskDotClass, taskStatusLabel, taskTone } from '../task-tree.js';
 import type { TaskStatus, TaskTone } from '../task-tree.js';
@@ -22,41 +32,39 @@ import type { TaskStatus, TaskTone } from '../task-tree.js';
  * in `useTasks.ts`. The filters are URL state (see `inboxFiltersFromSearch`): linkable, and
  * Back/Forward moves them — this page only writes back what its controls change.
  *
- * Top to bottom (issue 279): the header, organization count strip (it ignores the
- * filters), the state tabs / search form / sort links, one chip per applied filter, the rows and
- * a footer that counts only what is loaded. The row grammar: the title (the row's ONE link) over
- * its one-line summary, the state as a toned pill with a VISIBLE label, repository, author and
- * the relative last activity backed by a precise `<time>`. The grid in `styles/regions/inbox.css`
- * owns the layout, and stacks each row into a card at ≤900px.
+ * Top to bottom: the header (title and New task), the state tabs carrying the organization
+ * counts, one quiet toolbar — search, then the repository, author and sort triggers in the
+ * composer's borderless `select-trigger` skin, each applied the moment it is picked — one chip per
+ * applied filter, the rows grouped by local day, and a footer that counts only what is loaded.
+ * The row grammar: a status mark, the title (the row's ONE link, stretched over the row) over its
+ * one-line summary, the state as a toned pill with a VISIBLE label, repository over executor,
+ * author, and the relative last activity backed by a precise `<time>`.
  */
 
+/** The tabs. `review` is still a URL state (the sidenav's "more need review" link opens it), but
+ * it is a subset of Needs attention, so it has no tab: it shows as a removable chip instead. */
 const STATES: readonly { value: InboxFilters['state']; label: string }[] = [
     { value: 'attention', label: 'Needs attention' },
     { value: 'running', label: 'Running' },
-    { value: 'review', label: 'Needs review' },
     { value: 'past', label: 'Past' },
 ];
 
-const SORTS: readonly { value: InboxFilters['sort']; label: string }[] = [
-    { value: 'newest', label: 'Newest' },
-    { value: 'oldest', label: 'Oldest' },
+const SORTS: readonly { value: InboxFilters['sort']; label: string; short: string }[] = [
+    { value: 'newest', label: 'Newest first', short: 'Newest' },
+    { value: 'oldest', label: 'Oldest first', short: 'Oldest' },
 ];
 
-type CountKind = keyof TaskNavigation['counts'];
-
-/** The three organization counts, in the order the strip reads; the state each one opens. */
-const COUNT_LINKS: readonly { kind: CountKind; label: string }[] = [
-    { kind: 'review', label: 'Needs review' },
-    { kind: 'running', label: 'Running' },
-    { kind: 'past', label: 'Past' },
-];
-
-/** The filters a chip stands for — state has its tab and sort its segmented control. */
+/** The filters a chip stands for — state has its tab and sort its trigger. */
 const CHIPS: readonly { key: 'q' | 'repo' | 'author'; label: string }[] = [
     { key: 'q', label: 'Search' },
     { key: 'repo', label: 'Repository' },
     { key: 'author', label: 'Author' },
 ];
+
+/** A tab's organization-wide count. Needs attention is every unclosed task — running plus
+ * review, the server's own `attention` predicate — so it adds the two counts the poll carries. */
+const tabCount = (state: InboxFilters['state'], counts: TaskNavigation['counts']): number =>
+    state === 'attention' ? counts.running + counts.review : state === 'running' ? counts.running : counts.past;
 
 /**
  * Each tone's pill, per the status table in `docs/design-system.md`: the pill class, then the
@@ -76,6 +84,14 @@ const STATE_PILL: Record<TaskTone, { className: string; mark: IconName | 'lamp' 
     done: { className: 'pill pill-done inbox-state-done', mark: 'check-circle' },
 };
 
+/** The rows whose turn it is: a question or a result waiting on a person wears the accent edge, a
+ * failure the stop lamp's. Every other row has no edge. */
+const ROW_EDGE: Partial<Record<TaskTone, string>> = {
+    answer: ' inbox-row-turn',
+    review: ' inbox-row-turn',
+    failed: ' inbox-row-failed',
+};
+
 /** The URL for a filter set: `inboxQueryString` decides what a filter set serializes to — one
  * home, so a new filter key cannot be added to the poll and forgotten in the shareable link. */
 const filtersUrl = (filters: InboxFilters): string => {
@@ -88,13 +104,46 @@ const filtersUrl = (filters: InboxFilters): string => {
 function repoOptionsFor(
     workspaceRepos: readonly { owner: string; name: string }[],
     filterRepo: string | null
-): { owner: string; name: string }[] {
-    const options = workspaceRepos.map((repo) => ({ owner: repo.owner, name: repo.name }));
-    if (filterRepo !== null && !options.some((r) => `${r.owner}/${r.name}` === filterRepo)) {
-        const [owner, name] = filterRepo.split('/');
-        options.push({ owner: owner ?? filterRepo, name: name ?? '' });
-    }
+): string[] {
+    const options = workspaceRepos.map((repo) => `${repo.owner}/${repo.name}`);
+    if (filterRepo !== null && !options.includes(filterRepo)) options.push(filterRepo);
     return options;
+}
+
+/** The authors the loaded rows name, plus the filtered one if no loaded row carries it. */
+function authorOptionsFor(items: readonly TaskSummary[] | null, filterAuthor: string | null): string[] {
+    const logins = new Set<string>();
+    for (const task of items ?? []) if (task.author !== null) logins.add(task.author.login);
+    if (filterAuthor !== null) logins.add(filterAuthor);
+    return [...logins].sort((a, b) => a.localeCompare(b));
+}
+
+/** The last segment of `owner/name`: the trigger is narrow, the option list and title carry the full name. */
+const shortRepo = (repo: string): string => repo.slice(repo.indexOf('/') + 1);
+
+/** The state tabs, each with its organization count once the poll has landed. The count never
+ * reads the filters: the number is the organization's, whatever the list below is narrowed to. */
+function InboxTabs({ filters, counts }: { filters: InboxFilters; counts: TaskNavigation['counts'] | null }) {
+    return (
+        <nav className="tabs inbox-tabs" aria-label="Task state">
+            {STATES.map((state) => {
+                const active = filters.state === state.value;
+                const count = counts === null ? null : tabCount(state.value, counts);
+                return (
+                    <Link
+                        key={state.value}
+                        to={filtersUrl({ ...filters, state: state.value })}
+                        className={active ? 'inbox-tab is-active' : 'inbox-tab'}
+                        aria-current={active ? 'page' : undefined}
+                        aria-label={count === null ? undefined : `${state.label}, ${count} across the organization`}
+                    >
+                        {state.label}
+                        {count === null ? null : <span className="inbox-tab-count">{count}</span>}
+                    </Link>
+                );
+            })}
+        </nav>
+    );
 }
 
 /**
@@ -108,135 +157,256 @@ function useFilterDraft(value: string | null): [string, (next: string) => void] 
     return [draft, setDraft];
 }
 
-/** The organization-wide counts as one quiet strip of three links into their state tab. They never
- * read the filters: the number is the organization's, whatever the list below is narrowed to. */
-function InboxCountStrip({ counts }: { counts: TaskNavigation['counts'] }) {
+/** `/` focuses the search from anywhere on the page that is not already taking text. */
+function useSlashFocus(target: RefObject<HTMLInputElement | null>) {
+    useEffect(() => {
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
+            const active = document.activeElement;
+            if (
+                active instanceof HTMLElement &&
+                (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))
+            )
+                return;
+            event.preventDefault();
+            target.current?.focus();
+        };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    }, [target]);
+}
+
+/** One composer-style listbox: a quiet trigger with its icon and current value, options in the shared popover. */
+function QuietListbox({
+    label,
+    icon,
+    value,
+    display,
+    title = display,
+    applied,
+    options,
+    onChange,
+}: {
+    label: string;
+    icon: IconName;
+    value: string;
+    display: string;
+    /** The full value, when `display` is a shortened one. */
+    title?: string;
+    applied: boolean;
+    options: readonly { value: string; label: string }[];
+    onChange: (next: string) => void;
+}) {
+    // Headless UI's own `anchor` flips the panel above the trigger near the viewport's bottom
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor` (as the composer does).
+    const anchor = useDownwardAnchor('start');
     return (
-        <div className="inbox-counts-strip">
-            <span className="inbox-counts-caption">Organization total</span>
-            <ul className="inbox-counts">
-                {COUNT_LINKS.map((count) => (
-                    <li key={count.kind} className="inbox-count">
-                        <Link
-                            to={filtersUrl({ ...DEFAULT_FILTERS, state: count.kind })}
-                            aria-label={`${countLabel(count.kind, counts[count.kind])} across the organization`}
-                        >
-                            <span className="inbox-count-value">{counts[count.kind]}</span>
-                            <span className="inbox-count-label">{count.label}</span>
-                        </Link>
-                    </li>
+        <Listbox value={value} onChange={onChange}>
+            <ListboxButton
+                ref={anchor.setReference}
+                className={applied ? 'select-trigger inbox-trigger is-applied' : 'select-trigger inbox-trigger'}
+                aria-label={`${label}: ${display}`}
+                title={title}
+            >
+                <Icon name={icon} />
+                <span className="inbox-trigger-value">{display}</span>
+            </ListboxButton>
+            <ListboxOptions ref={anchor.setFloating} style={anchor.floatingStyles} portal className="popover">
+                {options.map((option) => (
+                    <ListboxOption key={option.value} value={option.value} className="popover-option">
+                        {option.label}
+                    </ListboxOption>
                 ))}
-            </ul>
-        </div>
+            </ListboxOptions>
+        </Listbox>
+    );
+}
+
+/** The author trigger: the loaded rows' authors to pick from, and a login field for anyone else —
+ * the filter matches any login, so a picker of only the loaded page would lose reach. */
+function AuthorPicker({
+    author,
+    options,
+    onChange,
+}: {
+    author: string | null;
+    options: readonly string[];
+    onChange: (next: string | null) => void;
+}) {
+    const anchor = useDownwardAnchor('start');
+    const [draft, setDraft] = useFilterDraft(author);
+    const display = author ?? 'Anyone';
+    return (
+        <Popover>
+            <PopoverButton
+                ref={anchor.setReference}
+                className={author !== null ? 'select-trigger inbox-trigger is-applied' : 'select-trigger inbox-trigger'}
+                aria-label={`Author: ${display}`}
+                title={display}
+            >
+                <Icon name="user" />
+                <span className="inbox-trigger-value">{display}</span>
+            </PopoverButton>
+            <PopoverPanel
+                ref={anchor.setFloating}
+                style={anchor.floatingStyles}
+                portal
+                className="popover inbox-author-panel"
+            >
+                {({ close }) => {
+                    const pick = (next: string | null) => {
+                        onChange(next);
+                        close();
+                    };
+                    return (
+                        <>
+                            <input
+                                className="inbox-author-field"
+                                aria-label="Author login"
+                                placeholder="Type a login, Enter to apply"
+                                value={draft}
+                                onChange={(event) => setDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key !== 'Enter') return;
+                                    event.preventDefault();
+                                    const login = draft.trim();
+                                    pick(login === '' ? null : login);
+                                }}
+                            />
+                            <button
+                                type="button"
+                                className="popover-option"
+                                data-selected={author === null ? '' : undefined}
+                                onClick={() => pick(null)}
+                            >
+                                Anyone
+                            </button>
+                            {options.map((login) => (
+                                <button
+                                    key={login}
+                                    type="button"
+                                    className="popover-option"
+                                    data-selected={author === login ? '' : undefined}
+                                    onClick={() => pick(login)}
+                                >
+                                    {login}
+                                </button>
+                            ))}
+                        </>
+                    );
+                }}
+            </PopoverPanel>
+        </Popover>
     );
 }
 
 /**
- * The state tabs, search form and sort links. Split out of `TaskInboxPage` so its own render
- * tree does not add to the page's cognitive complexity.
+ * The quiet toolbar: search (applied on Enter) and the repository, author and sort triggers
+ * (applied on pick). Split out of `TaskInboxPage` so its own render tree does not add to the
+ * page's cognitive complexity.
  */
-function InboxFilterBar({
+function InboxToolbar({
     filters,
     repoOptions,
+    authorOptions,
     repoRead,
-    onSubmit,
+    onApply,
 }: {
     filters: InboxFilters;
-    repoOptions: readonly { owner: string; name: string }[];
+    repoOptions: readonly string[];
+    authorOptions: readonly string[];
     repoRead: { loading: boolean; error: string | null; onRetry: () => void };
-    onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+    onApply: (next: InboxFilters) => void;
 }) {
-    // Minted, not literal: a component owns no id, and three hard-coded ones become three
-    // DUPLICATE ids the moment this bar is rendered twice on a page — a duplicate id points every
-    // `<label for>` at the first match, so the second bar's labels focus the first bar's fields.
-    const fieldId = useId();
     const [q, setQ] = useFilterDraft(filters.q);
-    const [repo, setRepo] = useFilterDraft(filters.repo);
-    const [author, setAuthor] = useFilterDraft(filters.author);
+    const searchRef = useRef<HTMLInputElement>(null);
+    useSlashFocus(searchRef);
+    const submit = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        const next = q.trim().slice(0, QUERY_MAX);
+        onApply({ ...filters, q: next === '' ? null : next });
+    };
+    const sort = SORTS.find((option) => option.value === filters.sort) ?? SORTS[0]!;
     return (
-        <div className="inbox-filters">
-            <nav className="tabs inbox-tabs" aria-label="Task state">
-                {STATES.map((state) => (
-                    <Link
-                        key={state.value}
-                        to={filtersUrl({ ...filters, state: state.value })}
-                        className={filters.state === state.value ? 'inbox-tab is-active' : 'inbox-tab'}
-                        aria-current={filters.state === state.value ? 'page' : undefined}
-                    >
-                        {state.label}
-                    </Link>
-                ))}
-            </nav>
-            <form className="inbox-search" onSubmit={onSubmit}>
-                <label htmlFor={`${fieldId}-q`}>Search</label>
+        <div className="inbox-toolbar">
+            <form className="inbox-search" onSubmit={submit}>
+                <Icon name="search" />
                 <input
-                    className="field"
-                    id={`${fieldId}-q`}
+                    ref={searchRef}
                     name="q"
+                    aria-label="Search"
                     value={q}
                     onChange={(event) => setQ(event.target.value)}
                     placeholder="Search task requests"
                     type="text"
+                    autoComplete="off"
                 />
-                <label htmlFor={`${fieldId}-repo`}>Repository</label>
-                <select
-                    className="field"
-                    id={`${fieldId}-repo`}
-                    name="repo"
-                    value={repo}
-                    onChange={(event) => setRepo(event.target.value)}
-                >
-                    <option value="">All repositories</option>
-                    {repoOptions.map((option) => (
-                        <option key={`${option.owner}/${option.name}`} value={`${option.owner}/${option.name}`}>
-                            {option.owner}/{option.name}
-                        </option>
-                    ))}
-                </select>
-                {repoRead.error !== null && (
-                    <span className="status error" role="alert">
-                        Repositories unavailable: {repoRead.error}{' '}
-                        <button type="button" onClick={repoRead.onRetry}>
-                            Retry
-                        </button>
-                    </span>
-                )}
-                {repoRead.error === null && repoRead.loading && <span className="muted">Loading repositories…</span>}
-                <label htmlFor={`${fieldId}-author`}>Author</label>
-                <input
-                    className="field"
-                    id={`${fieldId}-author`}
-                    name="author"
-                    value={author}
-                    onChange={(event) => setAuthor(event.target.value)}
-                    type="text"
-                />
-                <button type="submit">Filter</button>
+                <span aria-hidden="true">
+                    <kbd>/</kbd>
+                </span>
             </form>
-            <nav className="inbox-sort" aria-label="Sort">
-                <span className="muted">Sort</span>
-                {SORTS.map((sort) => (
-                    <Link
-                        key={sort.value}
-                        to={filtersUrl({ ...filters, sort: sort.value })}
-                        className={filters.sort === sort.value ? 'inbox-tab is-active' : 'inbox-tab'}
-                        aria-current={filters.sort === sort.value ? 'page' : undefined}
-                    >
-                        {sort.label}
-                    </Link>
-                ))}
-            </nav>
+            <span className="inbox-toolbar-divider" aria-hidden="true" />
+            <QuietListbox
+                label="Repository"
+                icon="repo"
+                value={filters.repo ?? ''}
+                display={filters.repo === null ? 'All repositories' : shortRepo(filters.repo)}
+                title={filters.repo ?? 'All repositories'}
+                applied={filters.repo !== null}
+                options={[
+                    { value: '', label: 'All repositories' },
+                    ...repoOptions.map((repo) => ({ value: repo, label: repo })),
+                ]}
+                onChange={(repo) => onApply({ ...filters, repo: repo === '' ? null : repo })}
+            />
+            <AuthorPicker
+                author={filters.author}
+                options={authorOptions}
+                onChange={(author) => onApply({ ...filters, author })}
+            />
+            <QuietListbox
+                label="Sort"
+                icon="sliders"
+                value={filters.sort}
+                display={sort.short}
+                applied={false}
+                options={SORTS}
+                onChange={(next) => onApply({ ...filters, sort: next as InboxFilters['sort'] })}
+            />
+            {repoRead.error !== null && (
+                <span className="status error" role="alert">
+                    Repositories unavailable: {repoRead.error}{' '}
+                    <button type="button" onClick={repoRead.onRetry}>
+                        Retry
+                    </button>
+                </span>
+            )}
+            {repoRead.error === null && repoRead.loading && <span className="muted">Loading repositories…</span>}
         </div>
     );
 }
 
-/** One chip per applied search/repository/author filter; each × is a link to the same URL with
- * that one param gone, and Clear filters is the bare inbox. Nothing renders at the defaults. */
+/** One chip per applied search/repository/author filter — plus the tab-less Needs review state;
+ * each × is a link to the same URL with that one param gone, and Clear filters is the bare inbox.
+ * Nothing renders at the defaults. */
 function InboxChips({ filters }: { filters: InboxFilters }) {
     const applied = CHIPS.filter((chip) => filters[chip.key] !== null);
-    if (applied.length === 0) return null;
+    const review = filters.state === 'review';
+    if (applied.length === 0 && !review) return null;
     return (
         <div className="inbox-chips">
+            {review ? (
+                <span className="inbox-chip">
+                    State: Needs review
+                    <Link
+                        to={filtersUrl({ ...filters, state: 'attention' })}
+                        className="inbox-chip-remove"
+                        aria-label="Remove filter: State"
+                    >
+                        <Icon name="x" size={14} />
+                    </Link>
+                </span>
+            ) : null}
             {applied.map((chip) => (
                 <span key={chip.key} className="inbox-chip">
                     {chip.label}: {filters[chip.key]}
@@ -284,7 +454,9 @@ function Author({ author }: { author: TaskSummary['author'] }) {
     return (
         <span className="inbox-author">
             <Avatar author={author} size={28} />
-            <span className="inbox-cell-text">{author.login}</span>
+            <span className="inbox-cell-text" title={author.login}>
+                {author.login}
+            </span>
         </span>
     );
 }
@@ -296,6 +468,12 @@ function rowSummary(task: TaskSummary): string | null {
     return line !== null && line.trim() !== '' ? line : null;
 }
 
+/** The row's leading mark: a question's speech bubble, else the status dot, else nothing. */
+function RowMark({ tone, dot }: { tone: TaskTone; dot: string }) {
+    if (tone === 'answer') return <Icon name="message-square" />;
+    return dot !== '' ? <span className={`sidenav-dot ${dot}`} /> : null;
+}
+
 function Row({ task }: { task: TaskSummary }) {
     const status: TaskStatus = {
         status: task.status,
@@ -305,18 +483,21 @@ function Row({ task }: { task: TaskSummary }) {
         waitTerminalReason: task.waitTerminalReason,
         needsAnswer: task.needsAnswer,
     };
-    const dot = taskDotClass(status);
+    const tone = taskTone(status);
     const summary = rowSummary(task);
     const name = taskTitleText(task);
+    const live = task.status === 'running' && summary !== null;
     return (
-        <li className="inbox-row">
+        <li className={`inbox-row${ROW_EDGE[tone] ?? ''}`}>
+            <span className="inbox-mark" aria-hidden="true">
+                <RowMark tone={tone} dot={taskDotClass(status)} />
+            </span>
             <span className="inbox-title">
-                {dot !== '' ? <span className={`sidenav-dot ${dot}`} aria-hidden="true" /> : null}
                 <Link to={`/tasks/${task.id}`} title={name}>
                     {name}
                 </Link>
                 {summary !== null ? (
-                    <span className="inbox-summary" title={summary}>
+                    <span className={live ? 'inbox-summary is-live' : 'inbox-summary'} title={summary}>
                         {summary}
                     </span>
                 ) : null}
@@ -325,8 +506,11 @@ function Row({ task }: { task: TaskSummary }) {
                 <StatePill status={status} />
             </span>
             <span className="inbox-repo">
-                <Icon name="repo" />
-                <span className="inbox-cell-text">{task.repo ?? '—'}</span>
+                <span className="inbox-repo-name">
+                    <Icon name="repo" size={14} />
+                    <span className="inbox-cell-text">{task.repo ?? '—'}</span>
+                </span>
+                {task.executor !== null ? <span className="inbox-executor">{task.executor}</span> : null}
             </span>
             <Author author={task.author} />
             {/* The shared stamp component: relative label, precise UTC stamp as its title. */}
@@ -371,21 +555,24 @@ function InboxTaskListBody({
         );
     }
     const loaded = tasks.items.length;
+    const groups = groupByDay(tasks.items, (task) => task.activityAt, new Date());
     return (
         <>
             <div className="inbox-list">
-                <div className="inbox-columns" aria-hidden="true">
-                    <span>Task</span>
-                    <span>State</span>
-                    <span>Repository</span>
-                    <span>Author</span>
-                    <span>Updated</span>
-                </div>
-                <ul className="inbox-rows">
-                    {tasks.items.map((task) => (
-                        <Row key={task.id} task={task} />
-                    ))}
-                </ul>
+                {groups.map((group) => (
+                    // A day can recur in the list, so its first row's id keeps the key unique.
+                    <section key={`${group.day}-${group.items[0]?.id}`} className="inbox-group" aria-label={group.day}>
+                        <h2 className="inbox-group-head">
+                            {group.day}
+                            <span className="inbox-group-count">{group.items.length}</span>
+                        </h2>
+                        <ul className="inbox-rows">
+                            {group.items.map((task) => (
+                                <Row key={task.id} task={task} />
+                            ))}
+                        </ul>
+                    </section>
+                ))}
             </div>
             {tasks.loadMoreError !== null ? (
                 <div className="inbox-error">
@@ -485,37 +672,19 @@ export function TaskInboxPage() {
         );
     };
 
-    const submit = (event: FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        const fields = new FormData(event.currentTarget);
-        const q = String(fields.get('q') ?? '')
-            .trim()
-            .slice(0, QUERY_MAX);
-        const repo = String(fields.get('repo') ?? '');
-        const author = String(fields.get('author') ?? '').trim();
-        applyFilters({
-            state: filters.state,
-            q: q === '' ? null : q,
-            repo: repo === '' ? null : repo,
-            author: author === '' ? null : author,
-            sort: filters.sort,
-        });
-    };
-
     const tracked = trackedRepos(repos);
     const repoOptions = repoOptionsFor(tracked.repos ?? [], filters.repo);
+    const authorOptions = authorOptionsFor(tasks.items, filters.author);
     const counts = tasks.navigation?.counts ?? null;
     const noTasksAtAll =
         tasks.items !== null && counts !== null && counts.running === 0 && counts.review === 0 && counts.past === 0;
 
     return (
         <section className="inbox">
-            {/* The page's one heading lives in the shared PageHeader (issue 159): no eyebrow —
-                "Tasks" over "Tasks" says the same thing twice — and New task as the page's one
-                action. The org-wide counts are the strip below, not a meta line. */}
+            {/* The page's one heading lives in the shared PageHeader (issue 159): no eyebrow and no
+                description, New task as the page's one action. The org-wide counts ride the tabs. */}
             <PageHeader
                 title="Tasks"
-                description="Delegate software work to AI agents and review their changes."
                 actions={
                     <Link to="/tasks/new" className="inbox-new">
                         <Icon name="plus" size={20} />
@@ -524,13 +693,14 @@ export function TaskInboxPage() {
                 }
             />
 
-            {counts !== null ? <InboxCountStrip counts={counts} /> : null}
+            <InboxTabs filters={filters} counts={counts} />
 
-            <InboxFilterBar
+            <InboxToolbar
                 filters={filters}
                 repoOptions={repoOptions}
+                authorOptions={authorOptions}
                 repoRead={{ loading: repos.loading, error: tracked.error, onRetry: repos.refresh }}
-                onSubmit={submit}
+                onApply={applyFilters}
             />
 
             <InboxChips filters={filters} />

@@ -225,12 +225,11 @@ async function assertRing(target: Locator, label: string) {
 }
 
 /**
- * The inbox filter fields, by their label rather than by a literal id: the page mints its ids with
- * useId so two mounted copies cannot collide, which means no id here survives a render. Going
- * through the label exercises the htmlFor wiring that replaced them instead of routing around it.
+ * The inbox toolbar's controls, by their accessible names rather than by a literal id: the search
+ * field's aria-label, and the repository trigger whose name carries its current value.
  */
 const inboxSearch = (page: Page): Locator => page.locator('.inbox-search').getByLabel('Search');
-const inboxRepo = (page: Page): Locator => page.locator('.inbox-search').getByLabel('Repository');
+const inboxRepo = (page: Page): Locator => page.locator('.inbox-toolbar').getByRole('button', { name: /^Repository:/ });
 
 test.describe('polish (issue 189)', () => {
     for (const theme of ['dark', 'light'] as const) {
@@ -283,7 +282,7 @@ test.describe('polish (issue 189)', () => {
             await page.goto('/tasks');
             await setTheme(page, theme);
             await assertRing(inboxSearch(page), 'inbox search input');
-            await assertRing(inboxRepo(page), 'inbox repository select');
+            await assertRing(inboxRepo(page), 'inbox repository trigger');
             await assertRing(page.locator('.inbox-tab').first(), 'inbox tab');
         });
     }
@@ -304,7 +303,7 @@ test.describe('polish (issue 189)', () => {
         // it survives, and the control kinds the shared rule serves keep an outline.
         await assertRing(page.locator('#range-select'), 'range dropdown trigger');
         await page.goto('/tasks');
-        await assertRing(inboxRepo(page), 'inbox repository select');
+        await assertRing(inboxRepo(page), 'inbox repository trigger');
     });
 });
 

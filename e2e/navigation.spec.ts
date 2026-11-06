@@ -310,7 +310,7 @@ test.describe('the responsive shell', () => {
 
         await page.goto('/tasks');
         await settle(page, '/tasks');
-        const filters = page.locator('.inbox-filters');
+        const filters = page.locator('.inbox-toolbar');
         await expect(filters).toBeVisible();
         await expect(filters).toHaveCSS('flex-wrap', 'wrap');
     });

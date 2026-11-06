@@ -186,14 +186,11 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
     'styles/regions/inbox.css': [
         '.inbox-tab',
         '.inbox-search input',
-        '.inbox-search select',
-        '.inbox-search button',
         '.inbox-new',
         '.inbox-chip-remove',
         '.inbox-clear',
         '.inbox-footer button',
         '.inbox-error button',
-        '.inbox-counts a',
     ],
     'styles/regions/composer.css': [
         '.chat-input-bar button',
@@ -721,12 +718,15 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(focus?.[1]).not.toMatch(/outline:\s*none/);
     });
 
-    it('flattens the inbox: a quiet count strip and divider rows, no raised card or frame', () => {
+    it('frames the inbox list once, on the soft tier, with no card per count or per row', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/inbox.css'), 'utf8'));
         const all = rules(css);
         const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
-        expect(all.some(([prelude]) => /\.inbox-card/.test(prelude))).toBe(false);
-        expect(body('.inbox-list')).not.toMatch(/surface-raised|border\s*:/);
+        expect(all.some(([prelude]) => /\.inbox-card|\.inbox-counts/.test(prelude))).toBe(false);
+        // One frame around the day groups; the rows themselves sit on dividers, never raised at rest.
+        expect(body('.inbox-list')).toMatch(/background:\s*var\(--surface-soft\)/);
+        expect(body('.inbox-list')).toMatch(/border:\s*1px solid var\(--line\)/);
+        expect(body('.inbox-row')).not.toMatch(/surface-raised|border\s*:/);
         expect(body('.inbox-empty')).not.toMatch(/surface-raised|border\s*:/);
         // The age is a quiet label, never the mono identifier face.
         expect(css).not.toMatch(/\.inbox-when[^{]*\{[^}]*font-family/);
@@ -797,6 +797,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.chat-activity',
             '.task-summary',
             '.env-raw .env-raw-text',
+            '.inbox-repo-name',
         ]);
         const offenders = rules(css)
             .filter(([, body]) => /font-family\s*:\s*var\(--font-mono\)/.test(body))
