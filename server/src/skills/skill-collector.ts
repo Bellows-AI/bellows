@@ -13,7 +13,6 @@ import { lockObjectKey, skillKeyNamespace } from '../db/skill-store.js';
  */
 
 export const SKILL_COLLECT_INTERVAL_MS = 3_600_000;
-export const DEFAULT_SKILL_RETENTION_DAYS = 30;
 /** Beyond any single skill upload (<= 5 MiB) plus the writer's retry; an older `pending` row is abandoned. */
 export const SKILL_PENDING_GRACE_MS = 3_600_000;
 const BATCH = 100;
@@ -53,14 +52,14 @@ export function createSkillCollector({
     sql,
     objects,
     prefix,
-    retentionDays = DEFAULT_SKILL_RETENTION_DAYS,
+    retentionDays,
     pendingGraceMs = SKILL_PENDING_GRACE_MS,
     referenced = (ids) => findReferencedVersions(sql, ids),
 }: {
     sql: Sql;
     objects: ObjectStore;
     prefix: string;
-    retentionDays?: number;
+    retentionDays: number;
     pendingGraceMs?: number;
     /** Tests only: replaces the job-reference query. */
     referenced?: (versionIds: string[]) => Promise<Set<string>>;
@@ -150,15 +149,23 @@ export function startSkillSweep({
     ready,
     artifacts,
     metrics,
+    retentionDays,
     intervalMs = SKILL_COLLECT_INTERVAL_MS,
 }: {
     sql: Sql;
     ready: Promise<unknown>;
     artifacts: ArtifactBackend;
     metrics: Pick<ServerMetrics, 'timedPass'>;
+    /** `ArtifactsConfig.retentionDays`: how long a deleted skill's versions stay. */
+    retentionDays: number;
     intervalMs?: number;
 }): () => void {
-    const collector = createSkillCollector({ sql, objects: artifacts.objects, prefix: artifacts.prefix });
+    const collector = createSkillCollector({
+        sql,
+        objects: artifacts.objects,
+        prefix: artifacts.prefix,
+        retentionDays,
+    });
     const controller = new AbortController();
     let running = false;
     const tick = async () => {

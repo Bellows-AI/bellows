@@ -163,12 +163,47 @@ const recordOf = (row: RecordRow): SkillRecord => ({
     },
 });
 
+const effectiveOf = (row: RecordRow): EffectiveSkill => ({
+    id: row.id,
+    name: row.name,
+    source: row.user_id === null ? 'org' : 'workspace',
+    description: row.v_description,
+    versionId: row.v_id,
+    sha256: row.v_sha256,
+    objectKey: row.v_object_key,
+});
+
 /** An object-store call whose failure is an unconfirmed answer, never a verdict about the object. */
 async function confirmed<T>(what: string, run: () => Promise<T>): Promise<T> {
     try {
         return await run();
     } catch (error) {
         throw new SkillUnavailableError(what, error);
+    }
+}
+
+/**
+ * Writers to one skill, and creators of one name, run one at a time across replicas: a session advisory lock on a
+ * reserved connection (the work itself runs on the pool). A create in flight is therefore never adopted by a second
+ * create, a version write never interleaves with another, and enable/delete/promote wait for a version write.
+ */
+async function withAdvisoryLocks<T>(sql: Sql, keys: string[], work: () => Promise<T>): Promise<T> {
+    const held = await sql.reserve();
+    const ordered = [...new Set(keys)].sort();
+    let taken = 0;
+    try {
+        for (const key of ordered) {
+            await held`select pg_advisory_lock(hashtextextended(${key}, 0))`;
+            taken++;
+        }
+        return await work();
+    } finally {
+        try {
+            for (const key of ordered.slice(0, taken).reverse())
+                await held`select pg_advisory_unlock(hashtextextended(${key}, 0))`;
+        } finally {
+            held.release();
+        }
     }
 }
 
@@ -282,57 +317,70 @@ export function createSkillStore({
         return existed ? 'exists' : 'added';
     }
 
+    const locked = <T>(keys: string[], work: () => Promise<T>): Promise<T> => withAdvisoryLocks(sql, keys, work);
+    const nameLock = (owner: SkillOwner, name: string): string => `skill-name:${orgId}:${owner ?? 'org'}:${name}`;
+    const idLock = (id: string): string => `skill:${orgId}:${id}`;
+
     return {
-        async create(owner, { name, bundle, createdBy }) {
-            if (isReservedSkillName(name)) return { result: 'reserved' };
-            if (!NAME_PATTERN_OK(name)) return { result: 'invalid_name' };
-            const id = await insertOrAdopt(owner, name, createdBy);
-            if (id === null) return { result: 'name_taken' };
-            const written = await writeVersion(owner, id, bundle);
-            const skill = written === 'missing' ? null : await getOwned(owner, id);
-            return skill ? { result: 'created', skill } : { result: 'name_taken' };
+        create: (owner, { name, bundle, createdBy }) => {
+            if (isReservedSkillName(name)) return Promise.resolve({ result: 'reserved' });
+            if (!NAME_PATTERN_OK(name)) return Promise.resolve({ result: 'invalid_name' });
+            return locked([nameLock(owner, name)], async (): Promise<CreateResult> => {
+                const id = await insertOrAdopt(owner, name, createdBy);
+                if (id === null) return { result: 'name_taken' };
+                const written = await writeVersion(owner, id, bundle);
+                const skill = written === 'missing' ? null : await getOwned(owner, id);
+                return skill ? { result: 'created', skill } : { result: 'name_taken' };
+            });
         },
 
-        async addVersion(owner, id, bundle) {
-            const written = await writeVersion(owner, id, bundle);
-            if (written === 'missing') return { result: 'missing' };
-            const skill = await getOwned(owner, id);
-            return skill ? { result: written, skill } : { result: 'missing' };
-        },
+        addVersion: (owner, id, bundle) =>
+            locked([idLock(id)], async (): Promise<AddVersionResult> => {
+                const written = await writeVersion(owner, id, bundle);
+                if (written === 'missing') return { result: 'missing' };
+                const skill = await getOwned(owner, id);
+                return skill ? { result: written, skill } : { result: 'missing' };
+            }),
 
-        async setEnabled(owner, id, enabled) {
-            const rows = await sql`
+        setEnabled: (owner, id, enabled) =>
+            locked([idLock(id)], async () => {
+                const rows = await sql`
                 update skill set enabled = ${enabled}, updated_at = now()
                 where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id is not distinct from ${owner}
                 returning id
             `;
-            return rows.length > 0 ? 'ok' : 'missing';
-        },
+                return rows.length > 0 ? ('ok' as const) : ('missing' as const);
+            }),
 
-        async remove(owner, id) {
-            const rows = await sql`
+        remove: (owner, id) =>
+            locked([idLock(id)], async () => {
+                const rows = await sql`
                 update skill set deleted_at = now(), updated_at = now()
                 where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id is not distinct from ${owner}
                 returning id
             `;
-            return rows.length > 0 ? 'deleted' : 'missing';
-        },
+                return rows.length > 0 ? ('deleted' as const) : ('missing' as const);
+            }),
 
-        async promote(userId, id) {
-            try {
-                const rows = await sql`
-                    update skill set user_id = null, updated_at = now()
-                    where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id = ${userId}
-                      and current_version_id is not null
-                    returning id
-                `;
-                if (rows.length === 0) return { result: 'missing' };
-            } catch (error) {
-                if (isUniqueViolation(error)) return { result: 'name_taken' };
-                throw error;
-            }
-            const skill = await getOwned(null, id);
-            return skill ? { result: 'promoted', skill } : { result: 'missing' };
+        promote: async (userId, id) => {
+            const named = await getOwned(userId, id);
+            if (!named) return { result: 'missing' };
+            return locked([idLock(id), nameLock(null, named.name)], async (): Promise<PromoteResult> => {
+                try {
+                    const rows = await sql`
+                        update skill set user_id = null, updated_at = now()
+                        where id = ${id} and org_id = ${orgId} and deleted_at is null and user_id = ${userId}
+                          and current_version_id is not null
+                        returning id
+                    `;
+                    if (rows.length === 0) return { result: 'missing' };
+                } catch (error) {
+                    if (isUniqueViolation(error)) return { result: 'name_taken' };
+                    throw error;
+                }
+                const skill = await getOwned(null, id);
+                return skill ? { result: 'promoted', skill } : { result: 'missing' };
+            });
         },
 
         async listOrg() {
@@ -347,15 +395,7 @@ export function createSkillStore({
 
         async effective(userId) {
             const rows = await select({ effectiveFor: userId });
-            return rows.map((row) => ({
-                id: row.id,
-                name: row.name,
-                source: row.user_id === null ? ('org' as const) : ('workspace' as const),
-                description: row.v_description,
-                versionId: row.v_id,
-                sha256: row.v_sha256,
-                objectKey: row.v_object_key,
-            }));
+            return rows.map(effectiveOf);
         },
 
         async readVersion(versionId, access) {

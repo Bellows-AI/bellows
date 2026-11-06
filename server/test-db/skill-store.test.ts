@@ -256,6 +256,84 @@ describe.skipIf(!enabled)('the skill store', () => {
     });
 });
 
+/** A put that parks until released, so a second writer can run while the first is mid-write. */
+const gatedPut = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const started = new Promise<void>((r) => (entered = r));
+    const put: ObjectStore['put'] = async (key, body, options) => {
+        entered();
+        await gate;
+        return objects.put(key, body, options);
+    };
+    return { put, release, started };
+};
+
+describe.skipIf(!enabled)('concurrent writers to one skill', () => {
+    it.each<[string, () => string | null]>([
+        ['org', () => null],
+        ['workspace', () => ALICE.id],
+    ])('lets exactly one of two creates of an %s name win, with its own bundle current', async (_scope, owner) => {
+        const gated = gatedPut();
+        const first = storeOf(ORG, { put: gated.put });
+        const a = md('race', 'first body');
+        const b = md('race', 'second body');
+        const firstCreate = first.create(owner(), { name: 'race', bundle: a, createdBy: ALICE.id });
+        await gated.started;
+        const secondCreate = storeOf().create(owner(), { name: 'race', bundle: b, createdBy: ALICE.id });
+        // Let the second writer reach (and wait at) the lock before the first resumes.
+        await new Promise((r) => setTimeout(r, 100));
+        gated.release();
+        const results = await Promise.all([firstCreate, secondCreate]);
+
+        expect(results.map((r) => r.result).sort()).toEqual(['created', 'name_taken']);
+        const winner = results.find((r) => r.result === 'created');
+        const stored = (await storeOf().get(owner(), winner!.result === 'created' ? winner!.skill.id : ''))!;
+        expect(stored.current.sha256).toBe(winner!.result === 'created' ? winner!.skill.current.sha256 : '');
+        expect([a.sha256, b.sha256]).toContain(stored.current.sha256);
+        const rows = await sql`select 1 from skill where name = 'race' and deleted_at is null`;
+        expect(rows).toHaveLength(1);
+    });
+
+    it('serializes version writes, and a delete waits for a version write in flight', async () => {
+        const store = storeOf();
+        const skill = await created(store, null, 'busy', 'v1');
+        const gated = gatedPut();
+        const writing = storeOf(ORG, { put: gated.put }).addVersion(null, skill.id, md('busy', 'v2'));
+        await gated.started;
+        const removing = storeOf().remove(null, skill.id);
+        const second = storeOf().addVersion(null, skill.id, md('busy', 'v3'));
+        await new Promise((r) => setTimeout(r, 100));
+        gated.release();
+
+        expect((await writing).result).toBe('added');
+        expect(await removing).toBe('deleted');
+        // Whichever queued first, the other saw a settled skill: v3 either landed before the delete or found it gone.
+        expect(['added', 'missing']).toContain((await second).result);
+        expect(await store.get(null, skill.id)).toBeNull();
+    });
+
+    it('promote waits for a same-name org create in flight and then clashes', async () => {
+        const store = storeOf();
+        const mine = await created(store, ALICE.id, 'moving');
+        const gated = gatedPut();
+        const orgCreate = storeOf(ORG, { put: gated.put }).create(null, {
+            name: 'moving',
+            bundle: md('moving', 'org'),
+            createdBy: BOB.id,
+        });
+        await gated.started;
+        const promoting = storeOf().promote(ALICE.id, mine.id);
+        await new Promise((r) => setTimeout(r, 100));
+        gated.release();
+
+        expect((await orgCreate).result).toBe('created');
+        expect(await promoting).toEqual({ result: 'name_taken' });
+        expect(await store.get(ALICE.id, mine.id)).toMatchObject({ scope: 'workspace' });
+    });
+});
+
 describe.skipIf(!enabled)('the skill retention sweep', () => {
     const objectOf = (key: string) => objects.get(key);
 

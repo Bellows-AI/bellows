@@ -96,7 +96,9 @@ function startCollectors({
     const { sweepTemps } = artifacts;
     if (sweepTemps) startTempSweep(sweepTemps, { log: (m) => console.log(`[artifacts] ${m}`) });
     void ready.then(() => startAttachmentSweep({ sql, ready, artifacts, config: config.artifacts, metrics }));
-    void ready.then(() => startSkillSweep({ sql, ready, artifacts, metrics }));
+    void ready.then(() =>
+        startSkillSweep({ sql, ready, artifacts, metrics, retentionDays: config.artifacts.retentionDays })
+    );
     // Expired codes, consent transactions and grant families; only a board that serves MCP ever writes them.
     if (config.mcp.enabled)
         void ready.then(() =>
