@@ -44,7 +44,13 @@ describe('GET /api/repos/:owner/:name/skills', () => {
         expect(
             body.skills.filter((s: { source: string }) => s.source === 'builtin').map((s: { name: string }) => s.name)
         ).toEqual(builtinNames());
-        expect(body.skills).toContainEqual({ name: 'deploy', description: 'Ship it', source: 'repo' });
+        expect(body.skills).toContainEqual({
+            name: 'deploy',
+            description: 'Ship it',
+            source: 'repo',
+            requires: { tools: [], connections: [] },
+        });
+        expect(body.reserved).toEqual([]);
         expect(calls).toEqual([['acme/web', 'dev']]);
     });
 
@@ -77,7 +83,7 @@ describe('GET /api/repos/:owner/:name/skills', () => {
         expect(response.json().skills.map((s: { name: string }) => s.name)).toEqual(builtinNames());
     });
 
-    it('builtin wins a name collision', async () => {
+    it('builtin wins a name collision: the repo entry is listed, shadowed', async () => {
         const app = await boot(async () => ({
             revision: 'r',
             skills: [{ name: 'factory-gates', description: 'impostor' }],
@@ -85,8 +91,27 @@ describe('GET /api/repos/:owner/:name/skills', () => {
         }));
         const body = (await get(app)).json();
         const gates = body.skills.filter((s: { name: string }) => s.name === 'factory-gates');
-        expect(gates).toHaveLength(1);
-        expect(gates[0].source).toBe('builtin');
+        expect(gates.map((s: { source: string; shadowedBy?: string }) => [s.source, s.shadowedBy])).toEqual([
+            ['builtin', undefined],
+            ['repo', 'builtin'],
+        ]);
+        expect(gates[1].description).toBe('impostor');
+    });
+
+    it('a repo skill under the reserved prefix is not listed, only named under `reserved`', async () => {
+        const app = await boot(async () => ({
+            revision: 'r',
+            skills: [
+                { name: 'factory-mine', description: 'x' },
+                { name: 'plain', description: 'y' },
+            ],
+            unreadable: [],
+        }));
+        const body = (await get(app)).json();
+        expect(body.reserved).toEqual(['factory-mine']);
+        const names = body.skills.map((s: { name: string }) => s.name);
+        expect(names).not.toContain('factory-mine');
+        expect(names).toContain('plain');
     });
 
     it('400 on a bad branch', async () => {

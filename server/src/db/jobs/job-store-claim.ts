@@ -4,7 +4,7 @@
  * claim/ack pair. See docs/jobs.md for the lease protocol and docs/workflows.md for the publish flag.
  */
 
-import { OBJECTIVE_MODE, type JobMode, skillSelectionProblems } from '@factory-ai/core';
+import { isReservedSkillName, OBJECTIVE_MODE, type JobMode, skillSelectionProblems } from '@factory-ai/core';
 import { type ClaimConnections, claimConnectionsInTx, recordUnboundRequirements } from './job-store-connections.js';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
@@ -575,7 +575,7 @@ async function assembleClaim(
     // The thread root's selection checked against what this claim's env authorizes: names
     // only, so selecting a skill never adds to the env and the sentence never carries a value.
     const managed = [...row.live_providers, ...connections.dismissed, ...(githubApp ? ['github'] : [])];
-    const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv, managed);
+    const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv, managed, row.repo);
     const claim = buildClaimResult({ ...row, command }, rootJobId, {
         ...executor,
         ...gates,
@@ -687,9 +687,16 @@ export async function claimJob(
 export function resolveClaimSkills(
     skills: readonly string[],
     claimEnv: Readonly<Record<string, string>> | undefined,
-    managed: readonly string[] = []
+    managed: readonly string[] = [],
+    repo: string | null = null
 ): string | null {
-    const problems = skillSelectionProblems(skillCatalog(), skills, claimEnv ?? {}, managed);
+    const catalog = skillCatalog();
+    // The claim cannot read GitHub inside its transaction, and create already checked the name: on a repo job a name
+    // the board does not hold is the checkout's own skill, which declares no requirements. A reserved-prefix name is
+    // never a repo skill, so it stays refused.
+    const held = (name: string) => isReservedSkillName(name) || catalog.some((skill) => skill.name === name);
+    const checked = repo === null ? skills : skills.filter(held);
+    const problems = skillSelectionProblems(catalog, checked, claimEnv ?? {}, managed);
     return problems.length === 0 ? null : `[skills unavailable] ${problems.join('; ')}. Fix this, then retry the task.`;
 }
 

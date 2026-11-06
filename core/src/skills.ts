@@ -64,6 +64,77 @@ export interface Skill {
     requires: SkillRequirements;
 }
 
+/** Where a selectable skill comes from, highest precedence first (a name held by two sources keeps the first). */
+export const SKILL_SOURCES = ['builtin', 'org', 'workspace', 'repo'] as const;
+export type SkillSource = (typeof SKILL_SOURCES)[number];
+
+/** A selectable skill and where it came from; `shadowedBy` names the higher source that holds the same name. */
+export interface CatalogEntry extends Skill {
+    source: SkillSource;
+    shadowedBy?: SkillSource;
+}
+
+/** A skill a source holds; `requires` is absent for a source that declares none (a repository's). */
+export interface SourceSkill {
+    name: string;
+    description: string;
+    requires?: SkillRequirements;
+}
+
+/** The skills each source holds. Only built-ins and org/workspace skills carry requirements; a repo skill declares none. */
+export interface SkillSources {
+    builtin: readonly SourceSkill[];
+    org?: readonly SourceSkill[];
+    workspace?: readonly SourceSkill[];
+    repo?: readonly SourceSkill[];
+}
+
+export interface ResolvedCatalog {
+    /** In precedence order: the first entry of a name is the one that wins. */
+    entries: CatalogEntry[];
+    /** Names a non-built-in source offered under the reserved prefix without a built-in of that name: not selectable. */
+    reserved: string[];
+}
+
+/**
+ * One catalog from every source. A name held by several sources keeps the highest (`SKILL_SOURCES` order) and lists
+ * the lower ones marked `shadowedBy`; a non-built-in `factory-*` name no built-in holds is dropped into `reserved`.
+ * Pure: no source is read here, so an unread source is simply absent.
+ */
+export function resolveSkillCatalog(sources: SkillSources): ResolvedCatalog {
+    const entries: CatalogEntry[] = [];
+    const reserved: string[] = [];
+    const winners = new Map<string, SkillSource>();
+    for (const source of SKILL_SOURCES) {
+        for (const held of distinctByName(sources[source] ?? [])) {
+            const winner = winners.get(held.name);
+            if (winner === undefined && source !== 'builtin' && isReservedSkillName(held.name)) {
+                reserved.push(held.name);
+                continue;
+            }
+            entries.push(entryOf(held, source, winner));
+            if (winner === undefined) winners.set(held.name, source);
+        }
+    }
+    return { entries, reserved };
+}
+
+/** A source's first skill of each name: two directories of one repository may declare the same name. */
+function distinctByName(held: readonly SourceSkill[]): SourceSkill[] {
+    return held.filter((skill, index) => held.findIndex((other) => other.name === skill.name) === index);
+}
+
+function entryOf(held: SourceSkill, source: SkillSource, shadowedBy: SkillSource | undefined): CatalogEntry {
+    const requires: SkillRequirements = held.requires ?? { tools: [], connections: [] };
+    return {
+        name: held.name,
+        description: held.description,
+        source,
+        requires,
+        ...(shadowedBy === undefined ? {} : { shadowedBy }),
+    };
+}
+
 const TOOLS_KEY = 'requires-tools';
 const CONNECTIONS_KEY = 'requires-connections';
 

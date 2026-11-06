@@ -242,12 +242,21 @@ export {
 } from './executors.js';
 export { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, JSON_HEADERS, OCTET_STREAM_CONTENT_TYPE } from './http.js';
 export { COMMAND_LIMIT } from './limits.js';
-export type { Skill, SkillRequirements } from './skills.js';
+export type {
+    CatalogEntry,
+    ResolvedCatalog,
+    Skill,
+    SkillRequirements,
+    SkillSource,
+    SkillSources,
+    SourceSkill,
+} from './skills.js';
 export {
     connectionEnvNames,
     INTEGRATION_PROVIDERS,
     isReservedSkillName,
     requiredProviders,
+    resolveSkillCatalog,
     selectedBy,
     MAX_TASK_SKILLS,
     parseSkillFrontmatter,
@@ -256,6 +265,7 @@ export {
     SKILL_CONNECTIONS,
     SKILL_NAME,
     SKILL_NAME_LIMIT,
+    SKILL_SOURCES,
     skillSelectionProblems,
 } from './skills.js';
 export type { Role } from './roles.js';

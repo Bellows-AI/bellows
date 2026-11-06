@@ -43,9 +43,14 @@ async function jiraConnection(): Promise<string> {
     return (await oauthConnection(sql, ORG, USER.id, { account: 'agent@example.com' })).id;
 }
 
-async function queue(store: JobStore, skills?: string[], connectionId?: string): Promise<string> {
+async function queue(
+    store: JobStore,
+    skills?: string[],
+    connectionId?: string,
+    repo: string | null = null
+): Promise<string> {
     const created = await store.create('do the work', connectionId ? USER.id : null, {
-        repo: null,
+        repo,
         executor: null,
         ...(skills ? { skills } : {}),
         ...(connectionId ? { connectionIds: [connectionId] } : {}),
@@ -129,6 +134,25 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         const refusal = (await claim(plain)).skillRefusal;
         expect(refusal).toContain('skill "retired-skill" is not installed');
         expect(refusal).toContain('installed: ');
+    });
+
+    it('a repo job whose root selected a name outside the board catalog claims with no refusal: the checkout holds it', async () => {
+        await queue(plain, ['repo-only-skill'], undefined, 'acme/web');
+        const claimed = await claim(plain);
+        expect(claimed.skillRefusal).toBeNull();
+        expect(claimed.masterPrompt).toContain('- Selected skills: repo-only-skill');
+    });
+
+    it('a repo job still refuses a built-in whose connection is missing, beside a repo name', async () => {
+        await queue(plain, ['repo-only-skill', 'factory-github'], undefined, 'acme/web');
+        const refusal = (await claim(plain)).skillRefusal;
+        expect(refusal).toContain('factory-github');
+        expect(refusal).not.toContain('repo-only-skill');
+    });
+
+    it('a repo-less job naming the same outside name is refused', async () => {
+        await queue(plain, ['repo-only-skill']);
+        expect((await claim(plain)).skillRefusal).toContain('skill "repo-only-skill" is not installed');
     });
 
     it('a retry keeps the root selection and sees the same refusal until the App is installed', async () => {

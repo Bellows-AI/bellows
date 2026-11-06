@@ -62,6 +62,12 @@ describe('resolveClaimSkills', () => {
         expect(resolveClaimSkills(['factory-github'], undefined, ['github'])).toBeNull();
     });
 
+    it('on a repo job a name the board lacks is the checkout skill; a reserved name never is', () => {
+        expect(resolveClaimSkills(['repo-only'], undefined, [], 'acme/web')).toBeNull();
+        expect(resolveClaimSkills(['repo-only'], undefined, [], null)).toContain('skill "repo-only" is not installed');
+        expect(resolveClaimSkills(['factory-nope'], undefined, [], 'acme/web')).toContain('"factory-nope"');
+    });
+
     it('asks for the App, never a member token, when the org holds no installation', () => {
         const sentence = resolveClaimSkills(['factory-github'], { GITHUB_TOKEN: 'x' });
         expect(sentence).toBe(
@@ -77,7 +83,8 @@ describe('GET /api/skills', () => {
         const response = await app.inject({ method: 'GET', url: '/api/skills' });
 
         expect(response.statusCode).toBe(200);
-        const { skills } = response.json() as { skills: { name: string; requires: unknown }[] };
+        const { skills } = response.json() as { skills: { name: string; source: string; requires: unknown }[] };
+        expect(skills.every((skill) => skill.source === 'builtin')).toBe(true);
         const jira = skills.find((skill) => skill.name === 'factory-jira');
         expect(jira?.requires).toEqual({
             tools: [],
