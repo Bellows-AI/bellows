@@ -1,6 +1,6 @@
 import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { callerOf } from '../../auth/plugin.js';
+import { callerOf, orgOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { usableSelection } from './executor-usable.js';
 import {
@@ -27,6 +27,7 @@ import {
     validateVerdictBody,
 } from './job-field-validation.js';
 import { validateGates } from './job-gate-validation.js';
+import { abortOnClose, effectiveCatalog, installedNames, standingOf } from '../../skill-catalog.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body, checkReposVisible, guard } from '../helpers.js';
 import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
@@ -165,29 +166,39 @@ async function checkedTarget(
 }
 
 /**
- * The create body's `skills` (issue #545): a well-formed list of installed catalog names, or null
- * once a refusal — `400 BAD_SKILLS` for the shape, `404 UNKNOWN_SKILL` naming each missing name —
- * has landed on `reply`.
+ * The create body's `skills` names, resolved through the one catalog at the task's base branch (BEL-270). Refuses
+ * with `404 UNKNOWN_SKILL` only a name the catalog and a CONFIRMED repository read both lack; a read that failed,
+ * timed out or could not parse that name's directory accepts it (the claim and the runner are the backstops). True
+ * once the refusal has landed on `reply`.
  */
-function selectedSkillsOf(reply: FastifyReply, raw: unknown): string[] | null {
-    const result = validateSkillsField(raw);
-    if (!result.ok) {
-        bad(reply, ERROR_CODES.BAD_SKILLS, result.message);
-        return null;
-    }
-    const installed = skillCatalog().map((skill) => skill.name);
-    const unknown = result.value.filter((name) => !installed.includes(name));
-    if (unknown.length > 0) {
-        const named = unknown.map((name) => `"${name}"`).join(', ');
-        bad(
-            reply,
-            ERROR_CODES.UNKNOWN_SKILL,
-            `unknown skill ${named} (installed: ${installed.join(', ')})`,
-            HTTP_NOT_FOUND
-        );
-        return null;
-    }
-    return result.value;
+async function refusedAsUnknownSkill(
+    orgs: OrgRegistry,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    opts: { names: readonly string[]; repo: string | null; baseBranch: string | null }
+): Promise<boolean> {
+    const { names, repo, baseBranch } = opts;
+    if (names.length === 0) return false;
+    const rt = await orgs.for(orgOf(request));
+    const catalog = await effectiveCatalog({
+        builtin: skillCatalog(),
+        read: rt?.repoSkills,
+        repo,
+        branch: baseBranch,
+        signal: abortOnClose(reply),
+        need: names,
+        onUnconfirmed: (err) => request.log.warn({ err }, 'repo skills read inconclusive; accepting'),
+    });
+    const unknown = names.filter((name) => standingOf(catalog, name) === 'absent');
+    if (unknown.length === 0) return false;
+    const named = unknown.map((name) => `"${name}"`).join(', ');
+    bad(
+        reply,
+        ERROR_CODES.UNKNOWN_SKILL,
+        `unknown skill ${named} (installed: ${installedNames(catalog).join(', ')})`,
+        HTTP_NOT_FOUND
+    );
+    return true;
 }
 
 /**
@@ -219,9 +230,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const simple = checkedFields(reply, fields);
     if (!simple) return reply;
     const { title, repo } = simple;
-    const selectedSkills = selectedSkillsOf(reply, fields.skills);
-    if (selectedSkills === null) return reply;
-    const skills = selectedSkills;
+    const skillsField = validateSkillsField(fields.skills);
+    if (!skillsField.ok) return bad(reply, ERROR_CODES.BAD_SKILLS, skillsField.message);
+    const skills = skillsField.value;
     // What the create asks for, as the client spelled it: the key's fingerprint, so the same key
     // with a changed body is refused rather than replayed (issue #589).
     const idempotency = createIdempotencyOf(request, reply, fields);
@@ -249,6 +260,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const { executor, scope: executorScope } = selection;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;
+    if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch })) return reply;
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
         fields,

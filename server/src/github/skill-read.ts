@@ -16,9 +16,16 @@ export interface RepoSkillRead {
     readonly skills: readonly RepoSkill[];
     /** Skill directories whose SKILL.md is absent or unparseable: named, never silently dropped. */
     readonly unreadable: readonly string[];
+    /**
+     * False when the directory listing was cut (more than `MAX_REPO_SKILLS` skill directories) or held a directory
+     * entry that could not be named: a name missing from `skills` is then not known to be absent.
+     */
+    readonly complete: boolean;
 }
 
 export const MAX_REPO_SKILLS = 50;
+/** The contents API lists at most this many entries of a directory; a listing that reaches it may be cut. */
+export const CONTENTS_LISTING_LIMIT = 1000;
 const CONCURRENCY = 5;
 /** The whole call: tip, directory and every file. */
 const DEADLINE_MS = 10_000;
@@ -90,20 +97,48 @@ async function tipOf(ctx: ReadContext, branch: string | null): Promise<string> {
     return commit.sha;
 }
 
-async function listSkillDirs(ctx: ReadContext, revision: string): Promise<string[]> {
+/** One element of the directory listing, kept only when it names itself and says what it is. */
+interface Listed {
+    readonly name: string;
+    readonly type: string;
+}
+
+const isListed = (entry: unknown): entry is Listed =>
+    typeof entry === 'object' &&
+    entry !== null &&
+    typeof (entry as Listed).name === 'string' &&
+    typeof (entry as Listed).type === 'string';
+
+/** Entries that cannot hold a skill and say so; any other `type` is an unknown shape, never skipped as harmless. */
+const NON_SKILL_TYPES: readonly string[] = ['file', 'symlink', 'submodule'];
+
+/**
+ * The listing's skill directories and whether they are ALL of them. Completeness is proven, never assumed: every
+ * element must validate (an object with a string `name` and `type`), only a well-formed file, symlink or submodule
+ * may be skipped, the directories must fit `MAX_REPO_SKILLS`, and the listing must stay below the contents API's
+ * `CONTENTS_LISTING_LIMIT`. A body that is not a listing throws.
+ */
+async function listSkillDirs(ctx: ReadContext, revision: string): Promise<{ dirs: string[]; complete: boolean }> {
     let body: unknown;
     try {
         body = await ctx.call(`/repos/${ctx.repo}/contents/${SKILLS_DIR}?ref=${revision}`, ctx.signal);
     } catch (e) {
         // Only a 404 on the directory, after the tip resolved, means the repository ships no skills.
-        if (e instanceof GitHubReadError && e.kind === READ_NOT_FOUND) return [];
+        if (e instanceof GitHubReadError && e.kind === READ_NOT_FOUND) return { dirs: [], complete: true };
         throw e;
     }
     if (!Array.isArray(body)) throw new GitHubReadError(`${SKILLS_DIR} is not a directory`, READ_BINDING);
-    return (body as { type?: string; name?: string }[])
-        .filter((entry) => entry.type === 'dir' && typeof entry.name === 'string')
-        .map((entry) => entry.name as string)
-        .slice(0, MAX_REPO_SKILLS);
+    const valid = body.filter(isListed);
+    const dirs = valid.filter((entry) => entry.type === 'dir').map((entry) => entry.name);
+    const understood = valid.every((entry) => entry.type === 'dir' || NON_SKILL_TYPES.includes(entry.type));
+    return {
+        dirs: dirs.slice(0, MAX_REPO_SKILLS),
+        complete:
+            body.length < CONTENTS_LISTING_LIMIT &&
+            valid.length === body.length &&
+            understood &&
+            dirs.length <= MAX_REPO_SKILLS,
+    };
 }
 
 /** The parsed skill, null when SKILL.md is absent or unparseable; any other failed read is thrown. */
@@ -122,7 +157,12 @@ async function readSkill(ctx: ReadContext, revision: string, dir: string): Promi
     return parseRepoSkillFrontmatter(Buffer.from(body.content, BASE64).toString('utf8'));
 }
 
-async function readAll(ctx: ReadContext, revision: string, dirs: string[]): Promise<Omit<RepoSkillRead, 'revision'>> {
+async function readAll(
+    ctx: ReadContext,
+    revision: string,
+    listing: { dirs: string[]; complete: boolean }
+): Promise<Omit<RepoSkillRead, 'revision'>> {
+    const { dirs } = listing;
     const parsed: (RepoSkill | null)[] = Array.from({ length: dirs.length }, () => null);
     const queue = dirs.map((dir, index) => ({ dir, index }));
     const worker = async () => {
@@ -133,7 +173,8 @@ async function readAll(ctx: ReadContext, revision: string, dirs: string[]): Prom
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, dirs.length) }, worker));
     const skills = parsed.filter((skill): skill is RepoSkill => skill !== null);
     const unreadable = dirs.filter((_dir, index) => parsed[index] === null);
-    return { skills, unreadable };
+    // A directory whose SKILL.md could not be read may declare any name: the listing proves nothing then.
+    return { skills, unreadable, complete: listing.complete && unreadable.length === 0 };
 }
 
 /**

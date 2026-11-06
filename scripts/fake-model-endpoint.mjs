@@ -1,6 +1,6 @@
 // A scripted, Anthropic-compatible model endpoint for the real agent CLIs (issue #442).
 //
-//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools] [--probe-files a,b,…] [--steps '<json>']
+//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools] [--probe-files a,b,…] [--steps '<json>'] [--skill-sentinel TEXT]
 //
 // Offline and deterministic, no credential: `claude` and `opencode` point their Anthropic base URL
 // at it and run a real agent loop against canned answers. The first `--tool-steps` model requests
@@ -45,6 +45,10 @@
 // "Base directory for this skill" line of each skill the Skill tool loaded; like --kill-tools it
 // never raises a Stop.
 //
+// `--skill-sentinel TEXT` is the repo-skill mode (BEL-270): whatever else the run does, `GET /skills-seen` returns
+// `{seen, agentRequests}` — `seen` is true once any agent request's body (system prompt, tool descriptions,
+// messages) carried TEXT, i.e. once the CLI told the model about a skill whose description holds it.
+//
 // In every mode it plays the driver's step channel too (driver/src/step-control.ts), as much as a
 // lane group needs: `GET /step` hands out `go` on the first poll and `finish` once `POST /report`
 // arrives, and holds any other poll up to its `wait`; `POST /step/<id>` is acknowledged.
@@ -62,6 +66,7 @@ const ASKS_PATH = '/asks';
 const ASK_TOOL_USE_ID = 'toolu_ask';
 const TOOL_RESULTS_PATH = '/tool-results';
 const STEPS_PATH = '/steps';
+const SKILLS_SEEN_PATH = '/skills-seen';
 const TOOL_OK = 'FACTORY_TOOL_OK';
 const STEP_PATH = '/step';
 const REPORT_PATH = '/report';
@@ -140,8 +145,9 @@ export function probeCommand(paths) {
     );
 }
 
-export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [] } = {}) {
+export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [], skillSentinel = '' } = {}) {
     let agentRequests = 0;
+    let sentinelSeen = false;
     /** The tool calls whose result carried TOOL_OK, by id: a resent history counts each once. */
     const reportedOk = new Set();
     /** The text of every tool result that carried TOOL_OK, by id. */
@@ -310,6 +316,10 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 const results = [...stepResults.values()].sort((a, b) => Number(a.id.split('_')[1]) - Number(b.id.split('_')[1]));
                 return reply.end(JSON.stringify({ results, agentRequests, skillBases: [...skillBases] }));
             }
+            if (url === SKILLS_SEEN_PATH) {
+                reply.setHeader('content-type', 'application/json');
+                return reply.end(JSON.stringify({ seen: sentinelSeen, agentRequests }));
+            }
             if (url === ASKS_PATH) {
                 reply.setHeader('content-type', 'application/json');
                 return reply.end(JSON.stringify({ asks: askRequests }));
@@ -360,6 +370,7 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 firstInFlight = true;
                 if (firstDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, firstDelayMs));
             }
+            if (isAgentStep && skillSentinel !== '' && JSON.stringify(body).includes(skillSentinel)) sentinelSeen = true;
             const hookAnswer = () => {
                 hookRequests += 1;
                 const verdict = hookRequests === 1 ? STOP_HOOK_BLOCK : { ok: true };
@@ -404,6 +415,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         askProse: process.argv.includes('--ask-prose'),
         killTools: process.argv.includes('--kill-tools'),
         probeFiles: flagList('--probe-files'),
+        skillSentinel: process.argv.includes('--skill-sentinel') ? process.argv[process.argv.indexOf('--skill-sentinel') + 1] : '',
         steps: process.argv.includes('--steps') ? JSON.parse(process.argv[process.argv.indexOf('--steps') + 1]) : [],
     });
     const port = await endpoint.listen(flag('--port', 0));

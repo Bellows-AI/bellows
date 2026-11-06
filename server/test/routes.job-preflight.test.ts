@@ -63,6 +63,8 @@ interface Scenario {
     staleRepos?: boolean;
     /** Connection ids whose single-id preview read throws. */
     unreadable?: string[];
+    /** The board's repo skills reader; absent means the board cannot read them. */
+    repoSkills?: NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -102,7 +104,7 @@ async function boot(scenario: Scenario = {}) {
     const config = testConfig({ auth: githubAuth() });
     const app = await buildApp({
         config,
-        orgs: staticRegistry({ config, repos, connections, userExecutors: executors }),
+        orgs: staticRegistry({ config, repos, connections, userExecutors: executors, repoSkills: scenario.repoSkills }),
         auth,
     });
     track(app);
@@ -249,9 +251,74 @@ describe('POST /api/jobs/preflight executor', () => {
 describe('POST /api/jobs/preflight skills', () => {
     const base = { repo: 'acme/web', executor: 'main' };
 
-    it('is blocked for a skill the board does not have', async () => {
-        const { check } = await verdict(await boot(), { ...base, skills: ['no-such-skill'] }, 'skill');
+    const reads =
+        (...names: string[]) =>
+        async () => ({
+            revision: 'sha',
+            skills: names.map((name) => ({ name, description: 'd' })),
+            unreadable: [] as string[],
+            complete: true,
+        });
+
+    it('is blocked for a name a successful repository read lacks', async () => {
+        const booted = await boot({ repoSkills: reads('another') });
+        const { check } = await verdict(booted, { ...base, skills: ['no-such-skill'] }, 'skill');
         expect(check).toMatchObject({ name: 'no-such-skill', status: 'blocked' });
+    });
+
+    it('is blocked for a name no source holds when the task has no repository', async () => {
+        const { check } = await verdict(await boot(), { executor: 'main', skills: ['no-such-skill'] }, 'skill');
+        expect(check).toMatchObject({ name: 'no-such-skill', status: 'blocked' });
+    });
+
+    it('is ok for a name the repository ships, read at the base branch', async () => {
+        const seen: unknown[] = [];
+        const booted = await boot({
+            repoSkills: async (repo, branch) => {
+                seen.push([repo, branch]);
+                return reads('repo-only')();
+            },
+        });
+        const { check } = await verdict(booted, { ...base, baseBranch: 'dev', skills: ['repo-only'] }, 'skill');
+        expect(check).toMatchObject({ name: 'repo-only', status: 'ok' });
+        expect(seen).toEqual([['acme/web', 'dev']]);
+    });
+
+    it('is unverified, never blocked, when the repository read fails', async () => {
+        const booted = await boot({
+            repoSkills: async () => {
+                throw new Error('github is down');
+            },
+        });
+        const { check, body } = await verdict(booted, { ...base, skills: ['repo-only'] }, 'skill');
+        expect(check).toMatchObject({ name: 'repo-only', status: 'unverified' });
+        expect(body.ready).toBe(true);
+    });
+
+    it('is unverified when the board cannot read repository skills at all', async () => {
+        const { check } = await verdict(await boot(), { ...base, skills: ['repo-only'] }, 'skill');
+        expect(check).toMatchObject({ status: 'unverified' });
+    });
+
+    it('is unverified, not blocked, for a name missing from a cut listing', async () => {
+        const booted = await boot({
+            repoSkills: async () => ({
+                revision: 'sha',
+                skills: [{ name: 'another', description: 'd' }],
+                unreadable: [],
+                complete: false,
+            }),
+        });
+        const { check } = await verdict(booted, { ...base, skills: ['repo-only'] }, 'skill');
+        expect(check).toMatchObject({ name: 'repo-only', status: 'unverified' });
+    });
+
+    it('is unverified for a name whose directory could not be parsed', async () => {
+        const booted = await boot({
+            repoSkills: async () => ({ revision: 'sha', skills: [], unreadable: ['repo-only'], complete: true }),
+        });
+        const { check } = await verdict(booted, { ...base, skills: ['repo-only'] }, 'skill');
+        expect(check).toMatchObject({ status: 'unverified' });
     });
 
     it('is ok for an installed skill that needs no connection', async () => {

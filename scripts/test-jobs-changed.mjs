@@ -33,6 +33,7 @@ export const PHASES = [
     'cooperative-stop',
     'tool-isolation',
     'image-checks',
+    'repo-skills',
     'ask-user-question',
     'question-round-trip',
     'mcp',
@@ -43,7 +44,7 @@ export const FULL = 'full';
 export const NONE = 'none';
 
 // The phases that boot a real agent CLI image (make runners) against the scripted model endpoint.
-const REAL = ['cooperative-stop', 'tool-isolation', 'ask-user-question', 'question-round-trip'];
+const REAL = ['cooperative-stop', 'tool-isolation', 'ask-user-question', 'question-round-trip', 'repo-skills'];
 const RECOVERY = ['node-disruption', 'driver-kill'];
 
 // [pattern, phases | FULL | NONE, reason]. First match wins, so a specific file precedes its directory.
@@ -94,7 +95,7 @@ export const RULES = [
     [/^docker\/(claude-executor|opencode-executor)\/(stop-hook\.cjs|stop-plugin\/.*)$/, ['cooperative-stop'], 'cooperative stop'],
     [/^docker\/(claude|opencode)-executor\/test\.sh$/, ['image-checks'], 'executor image checks'],
     [/^docker\/claude-executor\/(Dockerfile|entrypoint\.sh|claude-bridge\.cjs|claude-progress\.cjs|turn-context-hook\.cjs|managed-settings\.json|claude-home\/.*)$/, [...REAL, 'image-checks'], 'claude-executor image'],
-    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|rate-limit-watch\.cjs|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks'], 'opencode-executor image'],
+    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|rate-limit-watch\.cjs|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills'], 'opencode-executor image'],
     [/^docker\/executor-common\//, [...REAL, 'image-checks'], 'files both executor images copy in'],
     [/^docker\/tool-isolation-checks\.sh$/, ['tool-isolation'], 'tool isolation'],
     [/^docker\/skills\/factory-task-title\//, ['tool-isolation', 'question-round-trip'], 'task title helper and skill'],
