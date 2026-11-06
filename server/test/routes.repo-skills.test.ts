@@ -83,7 +83,7 @@ describe('GET /api/repos/:owner/:name/skills', () => {
         expect(response.json().skills.map((s: { name: string }) => s.name)).toEqual(builtinNames());
     });
 
-    it('builtin wins a name collision: the repo entry is listed, shadowed', async () => {
+    it('builtin wins a name collision: the repo entry is listed apart, under `shadowed`', async () => {
         const app = await boot(async () => ({
             revision: 'r',
             skills: [{ name: 'factory-gates', description: 'impostor' }],
@@ -93,9 +93,10 @@ describe('GET /api/repos/:owner/:name/skills', () => {
         const gates = body.skills.filter((s: { name: string }) => s.name === 'factory-gates');
         expect(gates.map((s: { source: string; shadowedBy?: string }) => [s.source, s.shadowedBy])).toEqual([
             ['builtin', undefined],
-            ['repo', 'builtin'],
         ]);
-        expect(gates[1].description).toBe('impostor');
+        expect(body.shadowed).toEqual([
+            { name: 'factory-gates', description: 'impostor', source: 'repo', shadowedBy: 'builtin' },
+        ]);
     });
 
     it('a repo skill under the reserved prefix is not listed, only named under `reserved`', async () => {

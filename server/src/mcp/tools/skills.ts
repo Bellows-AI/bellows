@@ -7,6 +7,17 @@ const SOURCES = ['builtin', 'org', 'workspace', 'repo'] as const;
 
 const SkillsSchema = z.object({
     repoError: z.string().nullable().optional(),
+    // The repo route lists overridden entries apart (declared requirements are not read for them).
+    shadowed: z
+        .array(
+            z.object({
+                name: z.string(),
+                description: z.string(),
+                source: z.enum(SOURCES),
+                shadowedBy: z.enum(SOURCES),
+            })
+        )
+        .optional(),
     skills: z.array(
         z.object({
             name: z.string(),
@@ -100,6 +111,13 @@ export const listSkills = defineTool({
                     : standingOf(rows, connection.name)) satisfies RequirementState,
             })),
         }));
+        const overridden = (skills.data.shadowed ?? []).map((skill) => ({
+            ...skill,
+            kind: 'manual' as const,
+            tools: [] as string[],
+            connections: [] as (typeof out)[number]['connections'],
+        }));
+        out.push(...overridden);
         return {
             outcome: 'ok',
             result: success({ skills: out, repoError: skills.data.repoError ?? null }, `${out.length} skills`),

@@ -137,6 +137,16 @@ describe('test-jobs --changed path-to-phase map', () => {
         }
     });
 
+    it('runs the repo-skills phase for either executor image and for the scripted model endpoint', () => {
+        for (const file of [
+            'docker/claude-executor/entrypoint.sh',
+            'docker/opencode-executor/Dockerfile',
+            'scripts/fake-model-endpoint.mjs',
+        ]) {
+            expect(classify([file]).selected).toContain('repo-skills');
+        }
+    });
+
     it('maps the GitHub credential helpers to its phase and to both images’ phases', () => {
         for (const file of ['github-credential.cjs', 'credential-broker.cjs']) {
             expect(classify([`docker/executor-common/${file}`]).selected).toEqual(

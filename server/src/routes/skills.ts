@@ -41,7 +41,20 @@ function repoMenuOf(result: EffectiveCatalog, canRead: boolean) {
         repoError = canRead ? `Repository skills could not be read: ${repo.error}` : repo.error;
     }
     return {
-        skills: result.entries.map(wireOf),
+        // The menu lists a name once: a name held by a higher source keeps its lower entries out of `skills`.
+        skills: result.entries.filter((entry) => entry.shadowedBy === undefined).map(wireOf),
+        shadowed: result.entries.flatMap((entry) =>
+            entry.shadowedBy === undefined
+                ? []
+                : [
+                      {
+                          name: entry.name,
+                          description: entry.description,
+                          source: entry.source,
+                          shadowedBy: entry.shadowedBy,
+                      },
+                  ]
+        ),
         repoError,
         unreadable: repo.state === 'read' ? [...repo.unreadable] : [],
         reserved: result.reserved,
@@ -79,7 +92,7 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
  * catalog at registration means a broken catalog fails boot rather than the first request.
  *
  * `GET /api/repos/:owner/:name/skills`: the slash menu's list — the same catalog plus the repository's
- * own `.claude/skills` at a branch tip (`reserved`: its names under the built-ins' prefix, not selectable). A repo read that did not confirm is `repoError`, never
+ * own `.claude/skills` at a branch tip (`shadowed`: entries a higher source overrides, kept out of `skills`; `reserved`: names under the built-ins' prefix, not selectable). A repo read that did not confirm is `repoError`, never
  * "the repo has no skills".
  */
 export const skillRoutes =

@@ -22,7 +22,7 @@ PARALLEL_SLOTS=2
 WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 valid_phase() {
     case "$1" in
-    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|mcp) return 0 ;;
+    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|repo-skills|mcp) return 0 ;;
     esac
     return 1
 }
@@ -62,7 +62,7 @@ while [ "$#" -gt 0 ]; do
         echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls] [--parallel [--slots 2|3|4]]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, acceptance, compose-driver, auth, cooperative-stop,'
-        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, driver-kill, capacity, mcp'
+        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, repo-skills, driver-kill, capacity, mcp'
         echo 'A comma list (--phase driver,services) runs those phases, in lane order, on one board fixture.'
         echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only` since the merge base with BASE'
         echo '        (uncommitted and untracked files included), prints why, and falls back to the full lane for'
@@ -103,7 +103,7 @@ selected_phase() {
 needs_board() {
     [ "$PHASE" = all ] && return 0
     for phase in ${PHASE//,/ }; do
-        case "$phase" in cooperative-stop|tool-isolation|image-checks|ask-user-question) ;; *) return 0 ;; esac
+        case "$phase" in cooperative-stop|tool-isolation|image-checks|ask-user-question|repo-skills) ;; *) return 0 ;; esac
     done
     return 1
 }
@@ -178,7 +178,7 @@ for tool in docker node timeout; do
 done
 docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable'; exit 1; }
 images=''
-if selected_phase cooperative-stop || selected_phase tool-isolation || selected_phase image-checks; then
+if selected_phase cooperative-stop || selected_phase tool-isolation || selected_phase image-checks || selected_phase repo-skills; then
     images='claude-executor opencode-executor'
 elif selected_phase question-round-trip; then
     images='claude-executor opencode-executor'
@@ -3655,6 +3655,83 @@ for cli in claude opencode; do
         bad "$cli-executor image checks" "${failed_checks:0:380}"
     fi
 done
+
+fi
+
+if selected_phase repo-skills; then
+begin_phase repo-skills
+# --- A repo's own skill reaches the agent on both runtimes (BEL-270) ---------------------------------
+#
+# The board accepts a skill the checkout ships (<checkout>/.claude/skills/<name>/SKILL.md); only the
+# real CLIs can say whether they then offer it to the model. The endpoint's `--skill-sentinel` mode
+# reports whether any agent request carried a sentinel that appears only in that skill's description.
+# The control is the same run on a checkout without the skill: a probe that sees the sentinel anyway
+# proves nothing. The image tests pin the same discovery (docker/<executor>/test.sh); kubernetes runs
+# these images unchanged, so this phase is its proof too (docs/jobs.md).
+
+echo
+echo '# repo skills (real agent CLIs on a checkout that ships .claude/skills/lane-repo-skill)'
+
+REPO_SKILL_SENTINEL=LANE_REPO_SKILL_SENTINEL_4c1d
+
+repo_skill_lane() { # repo_skill_lane <claude|opencode> <with|without>
+    local cli="$1" mode="$2" image="$1-executor" name="reposkill-$1-$2" fake_pid port status seen
+    local ws="lane-$RUN_ID-$name-ws"
+    local flags=(--user 0:0 --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges)
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad "$cli sees a repo skill ($mode)" "the $image image is missing — run make runners"
+        return
+    fi
+    docker volume create "$ws" >/dev/null
+    if [ "$mode" = with ]; then
+        docker run --rm -v "$ws:/workspace" --entrypoint sh "$image" -c \
+            "mkdir -p /workspace/.claude/skills/lane-repo-skill && printf '%s\n' '---' 'name: lane-repo-skill' \
+'description: Lane fixture skill $REPO_SKILL_SENTINEL — use it never.' '---' 'Nothing to do.' \
+>/workspace/.claude/skills/lane-repo-skill/SKILL.md && chmod -R a+rX /workspace/.claude" >/dev/null
+    fi
+    node scripts/fake-model-endpoint.mjs --skill-sentinel "$REPO_SKILL_SENTINEL" --tool-steps 1 >"$work/fake-$name.port" &
+    fake_pid=$!
+    lane_endpoint_started "$fake_pid"
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-$name.port" ] && break
+        sleep 0.25
+    done
+    port="$(cat "$work/fake-$name.port")"
+    local host="http://host.docker.internal:$port" run=(docker run --rm --name "lane-agent-$RUN_ID-$name" --add-host host.docker.internal:host-gateway)
+    run+=("${flags[@]}")
+    lane_timed "$name" setup lane_group_up "$name" "$image" "$host"
+    run+=(-v "$ws:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
+    while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "$name")
+    if [ "$cli" = claude ]; then
+        run+=(-e FACTORY_TRANSCRIPT_DIR=/workspace/.factory/t -e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions
+            --model fake-model -p 'list your skills')
+    else
+        run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe
+            -e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            "$image" --print-logs --log-level DEBUG run 'list your skills')
+    fi
+    lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
+    status=$?
+    lane_group_down "$name"
+    seen="$(node -e 'fetch(process.argv[1] + "/skills-seen").then((r) => r.json()).then((a) => console.log(a.agentRequests > 0 ? a.seen : "no-requests"))' "http://127.0.0.1:$port")"
+    lane_endpoint_stop "$fake_pid"
+    docker volume rm "$ws" >/dev/null
+    if [ "$mode" = with ]; then
+        if [ "$status" = 0 ] && [ "$seen" = true ]; then
+            ok "$cli: a skill under the checkout's .claude/skills reaches the model"
+        else
+            bad "$cli: a skill under the checkout's .claude/skills reaches the model" "exit $status, sentinel seen '$seen': $(tail -5 "$work/$name.log")"
+        fi
+    elif [ "$status" = 0 ] && [ "$seen" = false ]; then
+        ok "the control: $cli on a checkout without the skill never carries its sentinel"
+    else
+        bad "the control: $cli on a checkout without the skill never carries its sentinel" "exit $status, sentinel seen '$seen' — a probe that always sees it proves nothing"
+    fi
+}
+
+claude_repo_skill_lanes() { repo_skill_lane claude with; repo_skill_lane claude without; }
+opencode_repo_skill_lanes() { repo_skill_lane opencode with; repo_skill_lane opencode without; }
+lane_pair claude_repo_skill_lanes opencode_repo_skill_lanes
 
 fi
 
