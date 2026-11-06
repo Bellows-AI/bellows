@@ -161,12 +161,67 @@ describe('the skill install script', () => {
         expect(ledger().owned).toEqual({ 'org-style': a.sha256, later: later.sha256 });
     });
 
-    it('prunes nothing when the ledger cannot be read: a read that confirmed nothing licenses no delete', async () => {
+    it('prunes every owned skill for an empty pin', async () => {
         const a = publish('org-style', V1);
         await install([a]);
-        writeFileSync(join(target, '.factory-skills.json'), '{ not json');
+        expect(await install([])).toEqual({ ok: true, skills: 0, fetched: 0, pruned: 1 });
+        expect(existsSync(join(target, 'org-style'))).toBe(false);
+        expect(ledger().owned).toEqual({});
+    });
+
+    it('has nothing to prune for an empty pin when no skills directory exists, and creates none', async () => {
+        rmSync(target, { recursive: true, force: true });
         expect(await install([])).toEqual({ ok: true, skills: 0, fetched: 0, pruned: 0 });
+        expect(existsSync(target)).toBe(false);
+    });
+
+    it.each<[string, (ledgerPath: string) => void]>([
+        ['malformed JSON', (p) => writeFileSync(p, '{ not json')],
+        ['an empty file', (p) => writeFileSync(p, '')],
+        ['a ledger without an owned map', (p) => writeFileSync(p, '{"owned":[1]}')],
+        ['a ledger that cannot be read (a directory in its place: EISDIR)', (p) => mkdirSync(p)],
+    ])('is inconclusive and keeps the ledger and the skills when the ledger is %s', async (_what, damage) => {
+        const a = publish('org-style', V1);
+        const b = publish('other', V2);
+        await install([a, b]);
+        const path = join(target, '.factory-skills.json');
+        const before = readFileSync(path, 'utf8');
+        rmSync(path);
+        damage(path);
+        const damaged = existsSync(path) && statSync(path).isFile() ? readFileSync(path, 'utf8') : null;
+        asked = [];
+
+        for (const pin of [[], [a]]) {
+            expect(await install(pin)).toMatchObject({ ok: false, transient: true });
+        }
+
+        expect(asked).toEqual([]);
         expect(existsSync(join(target, 'org-style', 'SKILL.md'))).toBe(true);
+        expect(existsSync(join(target, 'other', 'SKILL.md'))).toBe(true);
+        expect(existsSync(path) && statSync(path).isFile() ? readFileSync(path, 'utf8') : null).toBe(damaged);
+        expect(before).toContain('org-style');
+    });
+
+    it.skipIf(process.getuid?.() === 0)(
+        'is inconclusive, not a refetch, when the installed skill cannot be inspected (EACCES, not absence)',
+        async () => {
+            const a = publish('org-style', V1);
+            await install([a]);
+            asked = [];
+            chmodSync(join(target, 'org-style'), 0o000);
+            try {
+                expect(await install([a])).toMatchObject({ ok: false, transient: true });
+                expect(asked).toEqual([]);
+            } finally {
+                chmodSync(join(target, 'org-style'), 0o755);
+            }
+        }
+    );
+
+    it('owns nothing on a confirmed absence of the ledger: a skills directory without one installs normally', async () => {
+        const a = publish('org-style', V1);
+        mkdirSync(target, { recursive: true });
+        expect(await install([a])).toEqual({ ok: true, skills: 1, fetched: 1, pruned: 0 });
     });
 
     it('discards the staging directory a killed install left, and installs over it', async () => {

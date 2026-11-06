@@ -461,6 +461,17 @@ describe('the docker runner restoring a task volume', () => {
             expect(JSON.parse(only.submitted[0]?.step.env.PIN ?? '')).toEqual(PIN);
         });
 
+        it('runs the installer for an explicit empty pin on a repo-free first claim, so a disabled last skill is pruned', async () => {
+            const empty = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            await runner([], empty, NONE).runner.syncCheckout(
+                repoFree({ followUp: false, skillPin: [] }),
+                undefined,
+                null
+            );
+            expect(names(empty)).toEqual(['skills']);
+            expect(JSON.parse(empty.submitted[0]?.step.env.PIN ?? '')).toEqual([]);
+        });
+
         it('ends skill_unavailable on a definitive refusal and throws on a transient one or an unreadable pin', async () => {
             const refused = fakeSteps((step) =>
                 ok(

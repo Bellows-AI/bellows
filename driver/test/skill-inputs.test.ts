@@ -48,12 +48,15 @@ describe('hasSkills and hasClaimInputs', () => {
         expect(hasSkills({ skillPin: [PIN] })).toBe(true);
         expect(hasSkills({ skillPinUnreadable: 'bad' })).toBe(true);
         expect(hasSkills({})).toBe(false);
-        expect(hasSkills({ skillPin: [] })).toBe(false);
+    });
+    it('is true for an empty pin too: the install step is what prunes the skills a run left on the volume', () => {
+        expect(hasSkills({ skillPin: [] })).toBe(true);
+        expect(hasClaimInputs({ attachments: [], skillPin: [] })).toBe(true);
     });
     it('is true for files or skills', () => {
         expect(hasClaimInputs({ skillPin: [PIN] })).toBe(true);
         expect(hasClaimInputs({ attachments: [{} as never] })).toBe(true);
-        expect(hasClaimInputs({ attachments: [], skillPin: [] })).toBe(false);
+        expect(hasClaimInputs({ attachments: [] })).toBe(false);
     });
 });
 
@@ -161,10 +164,20 @@ describe('deliverSkills', () => {
         expect(reads.sort()).toEqual([V1, V2]);
     });
 
-    it('submits no step for no pin', async () => {
+    it('submits no step for a row that carries no pin field at all', async () => {
         expect(await deliver({})).toEqual({ ok: true, reason: null });
-        expect(await deliver({ skillPin: [] })).toEqual({ ok: true, reason: null });
         expect(steps).toEqual([]);
+    });
+
+    it('runs the installer for an explicit empty pin, which prunes every skill an earlier run installed', async () => {
+        const pin = [hold('org-style', V1), hold('mine', V2)];
+        await deliver({ skillPin: pin });
+        expect(existsSync(join(skillsDir(), 'org-style', 'SKILL.md'))).toBe(true);
+        steps = [];
+        expect(await deliver({ skillPin: [] }, 5)).toEqual({ ok: true, reason: null });
+        expect(steps).toHaveLength(1);
+        expect(existsSync(join(skillsDir(), 'org-style'))).toBe(false);
+        expect(existsSync(join(skillsDir(), 'mine'))).toBe(false);
     });
 
     it('refuses with skill_unavailable and the reason when the served bytes are not the pinned ones', async () => {

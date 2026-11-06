@@ -21,7 +21,7 @@ export class SkillCorrupt extends Error {}
 
 /**
  * What a claim carries of its pin (BEL-273): every enabled org and workspace skill the row was pinned to, each a version
- * the board serves under the lease; absent means none. A pin the claim carried but this client cannot read is
+ * the board serves under the lease; an empty list means none. A pin the claim carried but this client cannot read is
  * `skillPinUnreadable`, never an empty pin: the run is left to its lease instead of starting without its skills.
  */
 export interface ClaimSkills {
@@ -35,12 +35,12 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const SOURCES: readonly string[] = ['org', 'workspace'];
 
 /**
- * A claim's `skillPin`: the list when every entry is well formed and no name repeats, `null` when it is absent
- * (a row with no pin), and a reason string when anything else arrives. A malformed pin is never read as "no
- * skills": the caller leaves the claim to its lease.
+ * A claim's `skillPin`: the list when every entry is well formed and no name repeats, else a reason string. The
+ * board always sends the field (an empty list for no skills), so an absent or null one is as unreadable as a
+ * malformed one, never "no skills": the caller leaves the claim to its lease.
  */
 export function skillPinOf(value: unknown): { pin: ClaimSkill[] } | { unreadable: string } {
-    if (value === undefined || value === null) return { pin: [] };
+    if (value === undefined || value === null) return { unreadable: 'the claim carries no skillPin' };
     if (!Array.isArray(value)) return { unreadable: 'the claim carries a skillPin that is not a list' };
     const names = new Set<string>();
     for (const entry of value as unknown[]) {

@@ -7,9 +7,12 @@ import { detailOf, stepRequest, submitStep, type StepHost } from './supervised-s
 import { deliverTaskInputs, hasInputs, INPUTS_DEADLINE_MS, InputsUnconfirmed } from './task-inputs.js';
 import { SKILLS_DIR } from './task-volume.js';
 
-/** Whether the claim pins skills to install, or carries a pin this client could not read (which is owed an answer, not skipped). */
+/**
+ * Whether the claim carries a pin: a list (an empty one included, which prunes what an earlier run installed) or one
+ * this client could not read (owed an answer, not skipped). Only a row with no pin field at all is skipped.
+ */
 export const hasSkills = (job: Pick<BoardJob, 'skillPin' | 'skillPinUnreadable'>): boolean =>
-    (job.skillPin?.length ?? 0) > 0 || job.skillPinUnreadable !== undefined;
+    job.skillPin !== undefined || job.skillPinUnreadable !== undefined;
 
 /** Whether the claim owes the attempt anything delivered before the agent is released. */
 export const hasClaimInputs = (job: Pick<BoardJob, 'attachments' | 'skillPin' | 'skillPinUnreadable'>): boolean =>
@@ -24,7 +27,7 @@ interface SkillsVerdict {
 
 /**
  * Installs the claim's pinned org and workspace skills into `SKILLS_DIR` as one supervised `skills` step, before the
- * agent is released. Resolves ok when nothing is pinned or the skills are in place, refuses with `skill_unavailable`
+ * agent is released. Resolves ok when the skills are in place (an empty pin prunes the ones an earlier run installed), refuses with `skill_unavailable`
  * when the board will never deliver one (its bytes gone, corrupt or not a safe skill), and THROWS on everything else:
  * a transient board failure, a timeout, an unreadable answer, a pin this client could not read. The loop then leaves
  * the claim to its lease, because an unconfirmed install is never a verdict.
@@ -35,8 +38,8 @@ export async function deliverSkills(
     options: { signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
     if (job.skillPinUnreadable !== undefined) throw new InputsUnconfirmed(job.skillPinUnreadable);
-    const pin = job.skillPin ?? [];
-    if (pin.length === 0) return { ok: true, reason: null };
+    if (job.skillPin === undefined) return { ok: true, reason: null };
+    const pin = job.skillPin;
     const result = await submitStep(
         host,
         job,

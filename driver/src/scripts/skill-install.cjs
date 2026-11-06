@@ -11,8 +11,9 @@
 //
 // The script owns what it installed: `.factory-skills.json` ({owned:{name:sha256}}), written last and atomically.
 //   - a name whose recorded sha256 equals the pin's and whose directory holds SKILL.md is kept, not fetched again;
-//   - a name the ledger owns that the pin no longer lists is removed (an unreadable ledger owns nothing: never a delete
-//     on a read nothing confirmed);
+//   - a name the ledger owns that the pin no longer lists is removed, so an empty pin prunes everything the script
+//     installed; a ledger that is absent (ENOENT) owns nothing, but one that cannot be read or parsed is a transient
+//     failure and is left untouched: never a delete or an overwrite on a read nothing confirmed;
 //   - a directory the ledger does not own is kept, unless the pin names it: delivery overwrites a same-name directory.
 //
 // One JSON verdict on the last line, exit 0:
@@ -232,19 +233,38 @@ const write = (dir, entries, dirs) => {
     }
 };
 
-/** The ledger's owned names, or none when it is absent or unreadable: nothing is pruned on a read that confirmed nothing. */
+/** Whether a read failed because the path is confirmed absent: the only failure that is an answer. */
+const absent = (e) => Boolean(e) && (e.code === 'ENOENT' || e.code === 'ENOTDIR');
+
+/**
+ * The ledger's owned names: none only on a confirmed absence (ENOENT). A ledger that cannot be read, is not JSON or
+ * has no owned map is a read that confirmed nothing: it THROWS (a transient failure), and the ledger is left as it
+ * is, because replacing it would forget what this script owns for good.
+ */
 const ownedBy = (target) => {
+    let text;
     try {
-        const ledger = JSON.parse(fs.readFileSync(path.join(target, LEDGER_NAME), 'utf8'));
-        return ledger && typeof ledger.owned === 'object' && ledger.owned !== null && !Array.isArray(ledger.owned)
-            ? ledger.owned
-            : {};
-    } catch {
-        return {};
+        text = fs.readFileSync(path.join(target, LEDGER_NAME), 'utf8');
+    } catch (e) {
+        if (absent(e)) return {};
+        throw e;
     }
+    const ledger = JSON.parse(text);
+    if (!ledger || typeof ledger.owned !== 'object' || ledger.owned === null || Array.isArray(ledger.owned)) {
+        throw new Error(`${LEDGER_NAME} does not hold an owned map`);
+    }
+    return ledger.owned;
 };
 
-const installed = (target, name) => fs.existsSync(path.join(target, name, SKILL_MD));
+/** Whether the skill's SKILL.md is in place: false only on a confirmed absence, any other failure throws. */
+const installed = (target, name) => {
+    try {
+        return fs.statSync(path.join(target, name, SKILL_MD)).isFile();
+    } catch (e) {
+        if (absent(e)) return false;
+        throw e;
+    }
+};
 
 async function main() {
     const target = process.env.TARGET_DIR;
@@ -256,6 +276,8 @@ async function main() {
         delivery: process.env.INPUT_DELIVERY || 'skills',
         timeoutMs: Number(process.env.FETCH_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
     };
+    // Nothing is pinned and no skills directory exists: nothing was ever installed, so there is nothing to prune.
+    if (pin.length === 0 && !fs.existsSync(target)) return { ok: true, skills: 0, fetched: 0, pruned: 0 };
     fs.mkdirSync(target, { recursive: true, mode: DIR_MODE });
     fs.chmodSync(target, DIR_MODE);
     // A staging directory is only ever an uncommitted install: whatever a killed run left is discarded.

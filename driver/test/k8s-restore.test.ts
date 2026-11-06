@@ -218,6 +218,15 @@ describe('the kubernetes runner restoring a task volume', () => {
             expect(JSON.parse(only.steps[0]?.env.PIN ?? '')).toEqual(PIN);
         });
 
+        it('runs the installer for an explicit empty pin on a repo-free first claim, so a disabled last skill is pruned', async () => {
+            const empty = await k8sSyncRun(repoFree({ followUp: false, skillPin: [] }), {
+                checkpoints: board({ state: 'none' }),
+                answer: () => OK,
+            });
+            expect(stepNames(empty.steps)).toEqual(['skills']);
+            expect(JSON.parse(empty.steps[0]?.env.PIN ?? '')).toEqual([]);
+        });
+
         it('ends the attempt skill_unavailable on a definitive refusal and throws on a transient one or an unreadable pin', async () => {
             const refused = await k8sSyncRun(job({ skillPin: PIN }), {
                 checkpoints: board(FOUND),

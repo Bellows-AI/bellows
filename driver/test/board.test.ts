@@ -282,11 +282,23 @@ describe('the claim’s skill pin (BEL-273)', () => {
         expect(job).not.toHaveProperty('skillPinUnreadable');
     });
 
-    it.each([[undefined], [null], [[]]])('reads an absent or empty pin (%j) as no skills', async (skillPin) => {
-        const job = await claimWith(skillPin === undefined ? {} : { skillPin });
+    it('reads an explicit empty pin as no skills', async () => {
+        const job = await claimWith({ skillPin: [] });
         expect(job?.skillPin).toEqual([]);
         expect(job).not.toHaveProperty('skillPinUnreadable');
     });
+
+    it.each<[string, Record<string, unknown>]>([
+        ['an absent pin', {}],
+        ['a null pin', { skillPin: null }],
+    ])(
+        'marks %s unreadable: the board always sends the field, so nothing licenses starting without skills',
+        async (_n, extra) => {
+            const job = await claimWith(extra);
+            expect(typeof job?.skillPinUnreadable).toBe('string');
+            expect(job).not.toHaveProperty('skillPin');
+        }
+    );
 
     it.each<[string, unknown]>([
         ['a pin that is not a list', { name: 'x' }],

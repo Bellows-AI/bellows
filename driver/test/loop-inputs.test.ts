@@ -83,10 +83,23 @@ describe('attaching the pinned skills to a control token', () => {
         expect(attach.mock.calls.map((call) => call[1])).toEqual(['task', SKILLS_DELIVERY]);
     });
 
-    it('registers nothing for an empty pin', () => {
+    it('registers an empty skills delivery for an empty pin, because the install step still runs to prune', () => {
         const attach = vi.fn();
         attachTaskInputs(
             { rt: { gates: { server: { attachInputs: attach } }, board: {} } as never, job: pinned({ skillPin: [] }) },
+            'token'
+        );
+        expect(attach).toHaveBeenCalledTimes(1);
+        expect(attach).toHaveBeenCalledWith('token', SKILLS_DELIVERY, expect.objectContaining({ manifest: [] }));
+    });
+
+    it('registers nothing for a row with no pin field', () => {
+        const attach = vi.fn();
+        attachTaskInputs(
+            {
+                rt: { gates: { server: { attachInputs: attach } }, board: {} } as never,
+                job: pinned({ skillPin: undefined }),
+            },
             'token'
         );
         expect(attach).not.toHaveBeenCalled();
