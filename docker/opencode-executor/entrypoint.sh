@@ -149,18 +149,21 @@ if [ -n "$MEMBER_ROOT" ] || [ -n "${FACTORY_SKILLS_PATH:-}" ]; then
             console.error("opencode-executor: OPENCODE_CONFIG_CONTENT is not a JSON object");
             process.exit(1);
         }
-        c.permission ??= {};
+        // A bare action ("allow") is opencode shorthand for a block whose `*` rule is that action: widened, the allows
+        // below can be added without changing what the config already permits.
+        const rules = (v) => (typeof v === "string" ? { "*": v } : v && typeof v === "object" && !Array.isArray(v) ? v : {});
+        c.permission = rules(c.permission);
+        const allow = (dir) => {
+            c.permission.external_directory = rules(c.permission.external_directory);
+            c.permission.external_directory[dir + "/**"] = "allow";
+        };
         const root = process.env.MEMBER_ROOT;
-        if (root) {
-            c.permission.external_directory ??= {};
-            c.permission.external_directory[root + "/**"] = "allow";
-        }
+        if (root) allow(root);
         const skills = process.env.FACTORY_SKILLS_PATH;
         if (skills) {
-            c.skills ??= {};
+            if (!c.skills || typeof c.skills !== "object" || Array.isArray(c.skills)) c.skills = {};
             c.skills.paths = [...(Array.isArray(c.skills.paths) ? c.skills.paths : []), skills];
-            c.permission.external_directory ??= {};
-            c.permission.external_directory[skills + "/**"] = "allow";
+            allow(skills);
         }
         process.stdout.write(JSON.stringify(c));
     ')"; then

@@ -1537,6 +1537,40 @@ describe('the opencode-executor permission policy', () => {
         CASE_TIMEOUT_MS
     );
 
+    // opencode accepts a bare action for the whole permission block and for one permission: the merge widens either
+    // into its `*` rule so the allows still land, instead of throwing and starting the agent without its skills.
+    it.each([
+        [
+            'a scalar permission',
+            { permission: 'allow' },
+            { '*': 'allow', external_directory: { '/s/**': 'allow' } },
+            { paths: ['/s'] },
+        ],
+        [
+            'a scalar external_directory',
+            { permission: { external_directory: 'deny' } },
+            { external_directory: { '*': 'deny', '/s/**': 'allow' } },
+            { paths: ['/s'] },
+        ],
+        [
+            'a non-object skills value',
+            { skills: true },
+            { external_directory: { '/s/**': 'allow' } },
+            { paths: ['/s'] },
+        ],
+    ])(
+        'adds the pinned skills directory over %s',
+        async (_label, config, permission, skills) => {
+            const got = JSON.parse(
+                await runEntrypoint({
+                    env: { FACTORY_SKILLS_PATH: '/s', OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
+                })
+            );
+            expect(got).toEqual({ skills, permission });
+        },
+        CASE_TIMEOUT_MS
+    );
+
     // A value the merge cannot extend is passed through untouched, with a warning — never an abort
     // of the run under set -eu, and never the allows silently dropped onto an array.
     it.each([
