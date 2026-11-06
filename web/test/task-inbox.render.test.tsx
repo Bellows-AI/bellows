@@ -79,7 +79,7 @@ const renderInbox = (tasks: InboxTasks, path = '/tasks', repos: typeof emptyRepo
 };
 
 /** Every `<li>` row of the list, as its own markup slice. */
-const rowsOf = (html: string): string[] => html.match(/<li class="inbox-row">.*?<\/li>/g) ?? [];
+const rowsOf = (html: string): string[] => html.match(/<li class="inbox-row[^"]*">.*?<\/li>/g) ?? [];
 
 /** The href of the one `<a>` whose opening tag carries `attribute`, whatever the attribute order. */
 const linkHref = (html: string, attribute: string): string | undefined =>
@@ -105,7 +105,7 @@ describe('TaskInboxPage rows — the display title (BEL-252)', () => {
 });
 
 describe('TaskInboxPage header', () => {
-    it('names the page, describes it, and offers New task as its one action', () => {
+    it('names the page with no description, and offers New task as its one action', () => {
         const html = renderInbox({
             navigation: navigation({ running: 1, review: 2 }),
             items: [taskSummary()],
@@ -113,36 +113,32 @@ describe('TaskInboxPage header', () => {
             initial: false,
         });
         expect(html).toContain('<h1>Tasks</h1>');
-        expect(html).toContain('Delegate software work to AI agents and review their changes.');
+        expect(html).not.toContain('page-header-description');
         expect(html).toContain('href="/tasks/new"');
         expect(html).toContain('New task');
-        // The org-wide counts moved into the count cards; the header carries no meta line.
+        // The org-wide counts ride the tabs; the header carries no meta line.
         expect(html).not.toContain('page-header-meta');
     });
 });
 
-describe('TaskInboxPage count strip', () => {
-    it('links each organization count to its state tab, named as a sentence', () => {
+describe('TaskInboxPage tab counts', () => {
+    it('puts each organization count on its tab, Needs attention as running plus review', () => {
         const html = renderInbox({
             navigation: navigation({ review: 12, running: 3, past: 86 }),
             items: [taskSummary()],
             nextCursor: null,
             initial: false,
         });
-        expect(html).toContain('href="/tasks?state=review"');
-        expect(html).toContain('href="/tasks?state=running"');
-        expect(html).toContain('href="/tasks?state=past"');
-        expect(html).toContain('aria-label="12 tasks need review across the organization"');
-        expect(html).toContain('aria-label="3 running tasks across the organization"');
-        expect(html).toContain('aria-label="86 past tasks across the organization"');
-        // One quiet strip: a single list of three links under one caption, no per-count card.
-        expect((html.match(/Organization total/g) ?? []).length).toBe(1);
-        expect((html.match(/<ul class="inbox-counts"/g) ?? []).length).toBe(1);
-        expect((html.match(/<li class="inbox-count"/g) ?? []).length).toBe(3);
-        expect(html).not.toContain('inbox-card');
+        expect(html).toContain('aria-label="Needs attention, 15 across the organization"');
+        expect(html).toContain('aria-label="Running, 3 across the organization"');
+        expect(html).toContain('aria-label="Past, 86 across the organization"');
+        expect((html.match(/class="inbox-tab-count"/g) ?? []).length).toBe(3);
+        // The old strip is gone: the tabs are the one place the counts live.
+        expect(html).not.toContain('Organization total');
+        expect(html).not.toContain('inbox-counts');
     });
 
-    it('reads the same counts, and the same bare links, whatever the filters', () => {
+    it('reads the same counts whatever the filters', () => {
         const html = renderInbox(
             {
                 navigation: navigation({ review: 12, running: 3, past: 86 }),
@@ -153,14 +149,14 @@ describe('TaskInboxPage count strip', () => {
             },
             '/tasks?state=past&q=login&repo=acme%2Fwidgets&author=octocat&sort=oldest'
         );
-        expect(html).toContain('aria-label="12 tasks need review across the organization"');
-        expect(html).toContain('aria-label="86 past tasks across the organization"');
-        expect(html).toContain('href="/tasks?state=review"');
+        expect(html).toContain('aria-label="Needs attention, 15 across the organization"');
+        expect(html).toContain('aria-label="Past, 86 across the organization"');
     });
 
-    it('renders no card before the organization counts have landed', () => {
+    it('draws no count before the organization counts have landed', () => {
         const html = renderInbox({ navigation: null, items: null, nextCursor: null, initial: true });
-        expect(html).not.toContain('Organization total');
+        expect(html).not.toContain('inbox-tab-count');
+        expect(html).not.toContain('across the organization');
     });
 });
 
@@ -177,9 +173,10 @@ describe('TaskInboxPage filter chips', () => {
             '/tasks?state=review&q=login&repo=acme%2Fwidgets&author=octocat&sort=oldest'
         );
 
-    it('shows one chip per applied search, repository and author filter', () => {
+    it('shows one chip per applied search, repository and author filter, and one for Needs review', () => {
         const html = filtered();
-        expect((html.match(/class="inbox-chip"/g) ?? []).length).toBe(3);
+        expect((html.match(/class="inbox-chip"/g) ?? []).length).toBe(4);
+        expect(html).toContain('State: Needs review');
         expect(html).toContain('Search: login');
         expect(html).toContain('Repository: acme/widgets');
         expect(html).toContain('Author: octocat');
@@ -195,6 +192,10 @@ describe('TaskInboxPage filter chips', () => {
         );
         expect(linkHref(html, 'aria-label="Remove filter: Author"')).toBe(
             '/tasks?state=review&amp;q=login&amp;repo=acme%2Fwidgets&amp;sort=oldest'
+        );
+        // Needs review has no tab: its chip goes back to Needs attention, the default state.
+        expect(linkHref(html, 'aria-label="Remove filter: State"')).toBe(
+            '/tasks?q=login&amp;repo=acme%2Fwidgets&amp;author=octocat&amp;sort=oldest'
         );
     });
 
@@ -255,6 +256,8 @@ describe('TaskInboxPage rows', () => {
         const [row] = rowsOf(html);
         expect(row).toMatch(/<span class="pill pill-accent"><svg[\s\S]*?<\/svg>Needs answer<\/span>/);
         expect(row).not.toContain('Running');
+        // Its turn: the accent edge.
+        expect(row).toMatch(/^<li class="inbox-row inbox-row-turn">/);
     });
 
     it('makes the title the one link to the detail view, with repo, author and a precise age', () => {
@@ -339,7 +342,9 @@ describe('TaskInboxPage rows', () => {
         const { html } = everyState();
         for (const row of rowsOf(html)) {
             expect((row.match(/<a /g) ?? []).length).toBe(1);
-            expect(row).toMatch(/^<li class="inbox-row"><span class="inbox-title">(<span[^>]*><\/span>)?<a /);
+            expect(row).toMatch(
+                /^<li class="inbox-row[^"]*"><span class="inbox-mark"[^>]*>.*?<\/span><span class="inbox-title"><a /
+            );
         }
     });
 
@@ -364,6 +369,82 @@ describe('TaskInboxPage rows', () => {
         expect(withInitial).toContain('>H<');
         expect(unknown).toContain('>?<');
         expect(unknown).toContain('Unknown author');
+    });
+});
+
+describe('TaskInboxPage rows — grouping, executor, live line, edges', () => {
+    it('groups the rows under a day heading with its count, in the list order', () => {
+        const now = Date.now();
+        const html = renderInbox({
+            navigation: navigation({ review: 3 }),
+            items: [
+                taskSummary({ activityAt: new Date(now).toISOString() }),
+                taskSummary({ id: '22222222-2222-4222-8222-222222222222', activityAt: new Date(now).toISOString() }),
+                taskSummary({ id: '33333333-3333-4333-8333-333333333333', activityAt: '2020-01-01T00:00:00.000Z' }),
+            ],
+            nextCursor: null,
+            initial: false,
+        });
+        const heads = [
+            ...html.matchAll(
+                /<h2 class="inbox-group-head">([^<]*)<span class="inbox-group-count">(\d+)<\/span><\/h2>/g
+            ),
+        ];
+        expect(heads.map((m) => [m[1], m[2]])).toEqual([
+            ['Today', '2'],
+            ['Older', '1'],
+        ]);
+        // The column header is gone: the day headings label the list.
+        expect(html).not.toContain('inbox-columns');
+    });
+
+    it('shows the executor under the repository when the task names one', () => {
+        const html = renderInbox({
+            navigation: navigation({ review: 2 }),
+            items: [
+                taskSummary({ executor: 'claude-k8s' }),
+                taskSummary({ id: '22222222-2222-4222-8222-222222222222', executor: null }),
+            ],
+            nextCursor: null,
+            initial: false,
+        });
+        const [withExecutor, without] = rowsOf(html);
+        expect(withExecutor).toContain('<span class="inbox-executor">claude-k8s</span>');
+        expect(without).not.toContain('inbox-executor');
+    });
+
+    it("marks a running task's activity as live, and a finished summary as not", () => {
+        const html = renderInbox({
+            navigation: navigation({ running: 1, review: 1 }),
+            items: [
+                taskSummary({ status: 'running', activity: '→ Bash npm test' }),
+                taskSummary({ id: '22222222-2222-4222-8222-222222222222', summary: 'Opened a PR' }),
+            ],
+            nextCursor: null,
+            initial: false,
+        });
+        const [running, finished] = rowsOf(html);
+        expect(running).toContain('class="inbox-summary is-live"');
+        expect(finished).toContain('class="inbox-summary" title="Opened a PR"');
+    });
+
+    it('edges the rows whose turn it is — review in accent, failure in red — and no other', () => {
+        const html = renderInbox({
+            navigation: navigation({ running: 1, review: 2, past: 1 }),
+            items: [
+                taskSummary(),
+                taskSummary({ id: '22222222-2222-4222-8222-222222222222', status: 'failed' }),
+                taskSummary({ id: '33333333-3333-4333-8333-333333333333', status: 'running' }),
+                taskSummary({
+                    id: '44444444-4444-4444-8444-444444444444',
+                    doneAt: '2026-09-01T13:00:00.000Z',
+                }),
+            ],
+            nextCursor: null,
+            initial: false,
+        });
+        const classes = rowsOf(html).map((row) => row.match(/^<li class="([^"]*)"/)?.[1]);
+        expect(classes).toEqual(['inbox-row inbox-row-turn', 'inbox-row inbox-row-failed', 'inbox-row', 'inbox-row']);
     });
 });
 
@@ -524,26 +605,43 @@ describe('TaskInboxPage pagination', () => {
 });
 
 describe('TaskInboxPage filters', () => {
-    it('renders the four state tabs with the active one marked', () => {
+    it('renders three state tabs — Needs review is part of Needs attention — with the active one marked', () => {
         const html = renderInbox({ navigation: null, items: null, nextCursor: null, initial: true });
-        expect(html).toContain('Needs attention');
-        expect(html).toContain('Running');
-        expect(html).toContain('Needs review');
-        expect(html).toContain('Past');
-        // The state tab and the sort toggle both re-use the tab classes: exactly one active each.
-        expect((html.match(/inbox-tab is-active/g) ?? []).length).toBe(2);
+        const tabs = html.match(/<nav class="tabs inbox-tabs"[^>]*>.*?<\/nav>/)?.[0] ?? '';
+        expect(tabs).toContain('Needs attention');
+        expect(tabs).toContain('Running');
+        expect(tabs).toContain('Past');
+        expect(tabs).not.toContain('Needs review');
+        expect((tabs.match(/<a /g) ?? []).length).toBe(3);
+        expect((html.match(/inbox-tab is-active/g) ?? []).length).toBe(1);
     });
 
-    it('keeps the labeled search form with its Filter button, and sorts by links, not a dropdown', () => {
+    it('marks no tab current on the tab-less Needs review state', () => {
+        const html = renderInbox(
+            {
+                navigation: null,
+                items: null,
+                nextCursor: null,
+                initial: true,
+                filters: { state: 'review', q: null, repo: null, author: null, sort: 'newest' },
+            },
+            '/tasks?state=review'
+        );
+        expect(html).not.toContain('inbox-tab is-active');
+    });
+
+    it('draws one quiet toolbar: a labeled search and three triggers, no Filter button or framed field', () => {
         const html = renderInbox({ navigation: null, items: null, nextCursor: null, initial: true });
+        const toolbar = html.match(/<div class="inbox-toolbar">.*?<\/form>.*?<\/div>/)?.[0] ?? '';
+        expect(html).toContain('<form class="inbox-search">');
         expect(html).toContain('placeholder="Search task requests"');
-        expect(html).toMatch(/<label[^>]*>Author<\/label><input class="field"[^>]*type="text"/);
-        expect(html).toContain('<button type="submit">Filter</button>');
-        const sort = html.match(/<nav class="inbox-sort"[^>]*>.*?<\/nav>/)?.[0] ?? '';
-        expect(sort).toContain('aria-label="Sort"');
-        expect(sort).toContain('href="/tasks?sort=oldest"');
-        expect(sort).toContain('href="/tasks"');
-        expect(sort).not.toContain('<select');
+        expect(html).toMatch(/<input[^>]*aria-label="Search"/);
+        expect(html).not.toContain('>Filter</button>');
+        expect(html).not.toContain('<select');
+        expect(toolbar).not.toContain('class="field"');
+        for (const name of ['Repository: All repositories', 'Author: Anyone', 'Sort: Newest']) {
+            expect(html).toMatch(new RegExp(`class="select-trigger inbox-trigger"[^>]*aria-label="${name}"`));
+        }
     });
 
     it('carries the current filters into the labeled search form', () => {
@@ -558,11 +656,12 @@ describe('TaskInboxPage filters', () => {
             '/tasks?state=review&q=login&repo=acme%2Fwidgets&author=octocat&sort=oldest'
         );
         expect(html).toContain('value="login"');
-        expect(html).toContain('value="octocat"');
-        // The repo select marks the currently filtered repository even though the workspace
-        // poll answered nothing.
-        expect(html).toContain('acme/widgets');
-        expect(html).toContain('Oldest');
+        // Each applied trigger shows its value, accented; the repository by its short name with
+        // the full one as its title, even though the workspace poll answered nothing.
+        expect(html).toMatch(/class="select-trigger inbox-trigger is-applied"[^>]*aria-label="Author: octocat"/);
+        expect(html).toMatch(/class="select-trigger inbox-trigger is-applied"[^>]*aria-label="Repository: widgets"/);
+        expect(html).toContain('title="acme/widgets"');
+        expect(html).toContain('aria-label="Sort: Oldest"');
     });
 
     describe('the repo select reads the tracked list', () => {
@@ -594,10 +693,11 @@ describe('TaskInboxPage filters', () => {
             meta: { fetchedAt: null, error },
         });
 
-        it('offers the tracked repositories, and keeps a vanished filter selectable', () => {
+        // The open list (tracked repositories plus a vanished filter) is driven in task-inbox.dom.test.tsx;
+        // closed, the trigger still names the vanished filter.
+        it('keeps a vanished filter on the trigger', () => {
             const html = renderWith(reposRead({ data: tracked(null) }));
-            expect(html).toContain('acme/web');
-            expect(html).toContain('acme/gone');
+            expect(html).toContain('title="acme/gone"');
         });
 
         it('offers only the active filter after a failed read, and claims nothing about the list', () => {

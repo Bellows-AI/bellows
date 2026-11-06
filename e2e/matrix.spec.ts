@@ -538,7 +538,7 @@ const POLLED = [
     '.sidenav-section',
     '.sidenav-count',
     '.mobile-nav-count',
-    '.inbox-counts-strip',
+    '.inbox-tab-count',
     '.inbox-footer',
     '.updated-at',
     '.usage-groups',
