@@ -5,10 +5,10 @@ import {
     MAX_SKILL_BYTES,
     MAX_SKILL_FILE_BYTES,
     MAX_SKILL_FILES,
-    parseSkillFrontmatter,
     SKILL_NAME,
     SKILL_NAME_LIMIT,
 } from '@factory-ai/core';
+import { parseRepoSkillFrontmatter } from '../github/skill-read.js';
 
 /**
  * A skill bundle: the validated files of one skill (SKILL.md at the root plus supporting files)
@@ -158,7 +158,7 @@ function checkName(name: string): void {
         refuse('reserved_name', `Skill names starting with "factory-" are reserved for built-in skills`);
 }
 
-/** The strict core parser: the same rules the catalog applies, so an accepted bundle is loadable. */
+/** The repo-skill reader's lenient parser: name and description, whatever other keys the tool supports. */
 function readDescription(name: string, bytes: Buffer): string {
     let text: string;
     try {
@@ -166,15 +166,11 @@ function readDescription(name: string, bytes: Buffer): string {
     } catch {
         return refuse('bad_frontmatter', 'SKILL.md is not valid UTF-8');
     }
-    const declared = /^name:[ \t]*(.*?)[ \t]*$/m.exec(text.split(/\r?\n---\r?\n/)[0] ?? '')?.[1];
-    if (text.startsWith('---') && declared !== undefined && declared !== name) {
-        refuse('name_mismatch', `SKILL.md name "${declared}" must equal the skill name "${name}"`);
-    }
-    try {
-        return parseSkillFrontmatter(text, name).description;
-    } catch (error) {
-        return refuse('bad_frontmatter', error instanceof Error ? error.message : 'SKILL.md frontmatter is unreadable');
-    }
+    const parsed = parseRepoSkillFrontmatter(text);
+    if (!parsed) refuse('bad_frontmatter', 'SKILL.md needs frontmatter with a name and a description');
+    if (parsed.name !== name)
+        refuse('name_mismatch', `SKILL.md name "${parsed.name}" must equal the skill name "${name}"`);
+    return parsed.description;
 }
 
 interface CentralEntry {

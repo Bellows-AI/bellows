@@ -226,6 +226,17 @@ describe('skill bundle from zip', () => {
         expect(reason(() => bundleFromZip('my-skill', zip([md, honest])))).toBe('file_too_large');
     });
 
+    it('accepts real-world frontmatter keys but still needs a description', () => {
+        const text =
+            '---\nname: my-skill\ndescription: Does a thing.\nallowed-tools: Bash, Read\nmodel: sonnet\nlicense: MIT\n---\nBody\n';
+        expect(bundleFromZip('my-skill', zip([{ name: 'SKILL.md', data: text }])).description).toBe('Does a thing.');
+        expect(bundleFromSkillMd('my-skill', text).description).toBe('Does a thing.');
+        const bare = '---\nname: my-skill\nmodel: sonnet\n---\n';
+        expect(reason(() => bundleFromZip('my-skill', zip([{ name: 'SKILL.md', data: bare }])))).toBe(
+            'bad_frontmatter'
+        );
+    });
+
     it('refuses a missing SKILL.md, a bad one, and a non-zip', () => {
         expect(reason(() => bundleFromZip('my-skill', zip([{ name: 'README.md', data: 'x' }])))).toBe('no_skill_md');
         expect(reason(() => bundleFromZip('my-skill', zip([{ name: 'SKILL.md', data: 'plain' }])))).toBe(
