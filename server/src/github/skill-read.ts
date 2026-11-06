@@ -24,6 +24,8 @@ export interface RepoSkillRead {
 }
 
 export const MAX_REPO_SKILLS = 50;
+/** The contents API lists at most this many entries of a directory; a listing that reaches it may be cut. */
+export const CONTENTS_LISTING_LIMIT = 1000;
 const CONCURRENCY = 5;
 /** The whole call: tip, directory and every file. */
 const DEADLINE_MS = 10_000;
@@ -113,7 +115,8 @@ const NON_SKILL_TYPES: readonly string[] = ['file', 'symlink', 'submodule'];
 /**
  * The listing's skill directories and whether they are ALL of them. Completeness is proven, never assumed: every
  * element must validate (an object with a string `name` and `type`), only a well-formed file, symlink or submodule
- * may be skipped, and the directories must fit `MAX_REPO_SKILLS`. A body that is not a listing throws.
+ * may be skipped, the directories must fit `MAX_REPO_SKILLS`, and the listing must stay below the contents API's
+ * `CONTENTS_LISTING_LIMIT`. A body that is not a listing throws.
  */
 async function listSkillDirs(ctx: ReadContext, revision: string): Promise<{ dirs: string[]; complete: boolean }> {
     let body: unknown;
@@ -130,7 +133,11 @@ async function listSkillDirs(ctx: ReadContext, revision: string): Promise<{ dirs
     const understood = valid.every((entry) => entry.type === 'dir' || NON_SKILL_TYPES.includes(entry.type));
     return {
         dirs: dirs.slice(0, MAX_REPO_SKILLS),
-        complete: valid.length === body.length && understood && dirs.length <= MAX_REPO_SKILLS,
+        complete:
+            body.length < CONTENTS_LISTING_LIMIT &&
+            valid.length === body.length &&
+            understood &&
+            dirs.length <= MAX_REPO_SKILLS,
     };
 }
 

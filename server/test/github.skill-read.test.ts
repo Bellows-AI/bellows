@@ -1,7 +1,12 @@
 import { READ_BINDING, READ_FORBIDDEN, READ_NOT_FOUND } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { GitHubReadError } from '../src/github/pr-read.js';
-import { MAX_REPO_SKILLS, parseRepoSkillFrontmatter, readRepoSkills } from '../src/github/skill-read.js';
+import {
+    CONTENTS_LISTING_LIMIT,
+    MAX_REPO_SKILLS,
+    parseRepoSkillFrontmatter,
+    readRepoSkills,
+} from '../src/github/skill-read.js';
 
 const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 let counter = 0;
@@ -188,6 +193,17 @@ describe('readRepoSkills', () => {
             'main'
         );
         expect(read.complete).toBe(true);
+    });
+
+    it('a listing at the contents API entry limit is incomplete: entries past it are not listed', async () => {
+        const repo = freshRepo();
+        const files = Array.from({ length: CONTENTS_LISTING_LIMIT }, (_, i) => ({ type: 'file', name: `f${i}.md` }));
+        const read = await readRepoSkills(
+            fakeCall(repoWith(repo, {}, files as ReturnType<typeof dirs>)).call,
+            repo,
+            'main'
+        );
+        expect(read.complete).toBe(false);
     });
 
     it('a listing that is not an array throws, and an unreadable SKILL.md makes the read incomplete', async () => {
