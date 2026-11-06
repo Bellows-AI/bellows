@@ -1,5 +1,5 @@
 ---
-name: task-title
+name: factory-task-title
 description: Give this task a short, specific title through the task-title helper. Use once you have understood what the task is really about, and again only if the work turns out to be about something else. The title is what the user sees in the task list and header. Never replaces a title the user set.
 ---
 
@@ -11,7 +11,7 @@ characters, saying what is being done ("Fix redirect loop after login"), not rep
 or a ticket key alone. Set it again only if the work turns out to be about something else.
 
 ```bash
-node /usr/local/share/factory-skills/task-title/task-title.cjs "Fix redirect loop after login"
+node /usr/local/share/factory-skills/factory-task-title/task-title.cjs "Fix redirect loop after login"
 ```
 
 Pass the title as the one argument, never through an environment variable. The helper uses the lease

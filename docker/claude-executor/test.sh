@@ -39,7 +39,8 @@ check 'gh installed'           'gh version'       run --entrypoint gh "$IMAGE" -
 # No plugin (issue #841): context-mode's executions cannot run as the tool uid yet.
 check 'no plugin installed'    'No plugins installed' run --entrypoint claude "$IMAGE" plugin list
 check 'CLAUDE.md present'      'Agent guide'      run --entrypoint head "$IMAGE" -1 /home/node/.claude/CLAUDE.md
-check 'skills present'         'backend-fix'      run --entrypoint ls "$IMAGE" /etc/claude-code/.claude/skills
+check 'skills present'         'factory-fix'      run --entrypoint ls "$IMAGE" /etc/claude-code/.claude/skills
+check 'every built-in skill is under factory-' 'ok' run --entrypoint sh "$IMAGE" -c 'for s in /etc/claude-code/.claude/skills/*/; do case "$(basename "$s")" in factory-*) ;; *) echo "bad:$s"; exit 1;; esac; done; echo ok'
 
 # The entrypoint's own contract: land in $WORKDIR, refuse a missing one.
 check 'defaults to /workspace' '/workspace'       run --entrypoint sh "$IMAGE" -c 'pwd'
@@ -112,7 +113,7 @@ check 'seeds an empty volume' 'CLAUDE.md' docker run --rm -v "$VOL:/cfg" -e CLAU
 # The skills are managed (issue #1024): read from the one path the tool uid can read, never copied
 # into the seeded volume, where the CLI would load the private-dir copy first.
 check 'the seeded volume carries no copy of the baked skills' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
-    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; test ! -e "$CLAUDE_CONFIG_DIR"/skills/backend-fix && ls /etc/claude-code/.claude/skills | grep backend-fix >/dev/null && echo ok'
+    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; test ! -e "$CLAUDE_CONFIG_DIR"/skills/factory-fix && ls /etc/claude-code/.claude/skills | grep factory-fix >/dev/null && echo ok'
 check 'seeding is idempotent' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; echo marker > "$CLAUDE_CONFIG_DIR"/keep; claude-executor -p seed >/dev/null 2>&1; [ -f "$CLAUDE_CONFIG_DIR"/keep ] && echo ok'
 # The seed runs once; the hooks block is re-laid on every start, so an agent that emptied it in the
@@ -206,6 +207,73 @@ else
     printf 'FAIL %s\n' 'python3, ps, pgrep and pkill are on PATH'
     fail=$((fail + 1))
 fi
+
+# Repo skills (BEL-270), measured with the real CLI against the scripted model endpoint: the Skill tool's
+# "Base directory" line says which file the CLI loaded. With the managed settings and
+# CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1 in place, a checkout's .claude/skills/<name> is loaded; on a name
+# clash the MANAGED (baked) skill is the one that loads, so a repo cannot shadow a built-in at runtime.
+skill_ws="$(mktemp -d)"
+for s in probe-repo factory-fix; do
+    mkdir -p "$skill_ws/.claude/skills/$s"
+    printf -- '---\nname: %s\ndescription: repo copy of %s\n---\nrepo body\n' "$s" "$s" >"$skill_ws/.claude/skills/$s/SKILL.md"
+done
+chmod -R a+rX "$skill_ws"
+skill_mounts=() # extra `docker run` args and CLI args of skill_base, set by the delivery check below
+skill_args=()
+skill_base() { # skill_base <skill>: where the CLI loaded <skill> from, with the checkout mounted at /workspace
+    local out port pid base
+    out="$(mktemp)"
+    node "$REPO/scripts/fake-model-endpoint.mjs" --steps "[{\"tool\":\"Skill\",\"input\":{\"skill\":\"$1\"}}]" >"$out" &
+    pid=$!
+    for _ in $(seq 1 40); do [ -s "$out" ] && break; sleep 0.25; done
+    port="$(cat "$out")"
+    env -u CLAUDE_CODE_OAUTH_TOKEN docker run --rm --add-host host.docker.internal:host-gateway -v "$skill_ws:/workspace" \
+        ${skill_mounts[@]+"${skill_mounts[@]}"} \
+        -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=http://host.docker.internal:$port" \
+        "$IMAGE" --dangerously-skip-permissions --model fake-model ${skill_args[@]+"${skill_args[@]}"} -p probe >/dev/null 2>&1
+    base="$(node -e 'fetch(process.argv[1] + "/steps").then((r) => r.json()).then((j) => console.log(j.skillBases.join(" ")))' "http://127.0.0.1:$port")"
+    kill "$pid" 2>/dev/null
+    rm -f "$out"
+    printf '%s' "$base"
+}
+got="$(skill_base probe-repo)"
+if [ "$got" = /workspace/.claude/skills/probe-repo ]; then
+    printf 'ok   %s\n' "a checkout's .claude/skills skill is loaded with the managed settings in place"
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     got: %s\n' "a checkout's .claude/skills skill is loaded with the managed settings in place" "$got"
+    fail=$((fail + 1))
+fi
+got="$(skill_base factory-fix)"
+if [ "$got" = /etc/claude-code/.claude/skills/factory-fix ]; then
+    printf 'ok   %s\n' 'a repo skill named like a built-in loses to the managed built-in'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     got: %s\n' 'a repo skill named like a built-in loses to the managed built-in' "$got"
+    fail=$((fail + 1))
+fi
+# Pinned org and workspace skills (BEL-273): the driver installs them root-owned (0755/0644) under the task volume at
+# /task/.factory/skills-root/.claude/skills and starts the CLI with `--add-dir /task/.factory/skills-root` (the plan
+# in driver/src/runner-plan.ts). The CLI loads the skill from there, through the image's real entrypoint and bridge.
+# It ranks below a checkout's own skill of the same name: a stated limit in docs/skills.md.
+task_vol="$(mktemp -d)"
+mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-org"
+printf -- '---\nname: probe-org\ndescription: pinned org skill\n---\norg body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-org/SKILL.md"
+chmod -R a+rX "$task_vol"
+skill_mounts=(-v "$task_vol:/task:ro")
+skill_args=(--add-dir /task/.factory/skills-root)
+got="$(skill_base probe-org)"
+if [ "$got" = /task/.factory/skills-root/.claude/skills/probe-org ]; then
+    printf 'ok   %s\n' 'a pinned skill installed under the task volume is loaded through --add-dir'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     got: %s\n' 'a pinned skill installed under the task volume is loaded through --add-dir' "$got"
+    fail=$((fail + 1))
+fi
+skill_mounts=()
+skill_args=()
+rm -rf "$task_vol"
+rm -rf "$skill_ws"
 
 # The agent's tool isolation (issue #814), the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh

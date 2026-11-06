@@ -21,6 +21,7 @@ import {
     opencodeTurnPrompt,
 } from './master-prompt.js';
 import { baseBranchOf, checkoutDir } from './publish/publish.js';
+import { SKILLS_DIR, SKILLS_ROOT } from './task-volume.js';
 import { randomUUID } from 'node:crypto';
 import type { RunSession } from './runner.js';
 
@@ -78,6 +79,16 @@ const baseBranchEnv = (job: BoardJob): [string, string][] => {
 };
 
 /**
+ * BEL-273: where the pinned org and workspace skills were installed (`deliverSkills`), when the claim pins any. The
+ * runner is told by one env name the opencode entrypoint merges into `skills.paths` (and its `external_directory`
+ * allow); claude is given the base directory with `--add-dir` (`claudeSkillArgs`). Never a path under `/etc/claude-code`.
+ */
+export const SKILLS_PATH_ENV = 'FACTORY_SKILLS_PATH';
+const hasPinnedSkills = (job: BoardJob): boolean => (job.skillPin?.length ?? 0) > 0;
+const skillsEnv = (job: BoardJob): [string, string][] => (hasPinnedSkills(job) ? [[SKILLS_PATH_ENV, SKILLS_DIR]] : []);
+const claudeSkillArgs = (job: BoardJob): string[] => (hasPinnedSkills(job) ? ['--add-dir', SKILLS_ROOT] : []);
+
+/**
  * Issue #822: a takeover or handover of a session the row minted itself (`ownSession` — a root's,
  * a sessionless follow-up's) may have nothing behind it, its driver lost before the CLI's first
  * write — the runner may start that one anew (the claude bridge's `startUnwrittenResume`, the
@@ -108,6 +119,7 @@ function opencodePlan(job: BoardJob, session: RunSession | null, attachmentsPath
         ...npmQuietEnv(job),
         ...repoCacheEnv(job),
         ...baseBranchEnv(job),
+        ...skillsEnv(job),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
     if (session) {
@@ -158,7 +170,7 @@ function claudePlan(
         ...repoCacheEnv(job),
         ...baseBranchEnv(job),
     ];
-    const cliArgs = [session.resume ? '--resume' : '--session-id', session.id];
+    const cliArgs = [session.resume ? '--resume' : '--session-id', session.id, ...claudeSkillArgs(job)];
     // Auto mode is pinned on the command line as well as in managed settings: a resumed session
     // otherwise restores the mode it recorded, and default mode denies every unlisted command.
     cliArgs.push(...(config.skipPermissions ? ['--dangerously-skip-permissions'] : ['--permission-mode', 'auto']));

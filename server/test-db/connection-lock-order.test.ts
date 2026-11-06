@@ -131,7 +131,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
 
     it('T3: a claim of a follow-up skips a thread whose lock is held, records the requirement next poll, and a bind satisfies it', async () => {
         const first = await connect();
-        const root = await create({ skills: ['jira'] });
+        const root = await create({ skills: ['factory-jira'] });
         const running = (await plain.claim(WORKER, LEASE_SECONDS)) as Claim;
         await plain.complete(running.id, running.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
         await connections.disconnect(first, { userId: ALICE.id });
@@ -211,7 +211,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
 
     it('T7: the real acquire records a requirement for an unbound root, then the waiting bind satisfies it', async () => {
         const first = await connect();
-        const root = await create({ skills: ['jira'] });
+        const root = await create({ skills: ['factory-jira'] });
         await connections.disconnect(first, { userId: ALICE.id });
         const second = await connect();
         const { claim, share } = await claimWaitingOnRoot(root);

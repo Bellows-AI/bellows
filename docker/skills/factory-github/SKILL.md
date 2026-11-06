@@ -1,5 +1,5 @@
 ---
-name: github
+name: factory-github
 description: Work with GitHub through the gh CLI — reading PR reviews and line comments, checking CI status, reading issues, and replying to review feedback. Use whenever a GitHub URL, PR number or issue is mentioned, or when asked to address review comments. Covers the reply-with-what-changed convention.
 metadata:
   requires-tools: gh
@@ -22,7 +22,7 @@ gh pr diff <N>
 ## Opening and updating pull requests
 
 Opening and updating the pull request is yours, whenever your work is worth showing — before the
-task is done too. Run the declared gates that cover your change first (see the gates skill), fix a red one
+task is done too. Run the declared gates that cover your change first (see the factory-gates skill), fix a red one
 before you push, and say in the pull request which did not run (an unavailable gate is reported,
 not a blocker). Commit on the task branch, push it, and open the pull request with `gh pr create`
 (`gh pr edit` updates it). Never state in a title or description that a gate passed unless it did.

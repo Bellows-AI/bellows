@@ -12,6 +12,7 @@ import { callerOf, orgOf } from '../../auth/plugin.js';
 import { BINDABLE_PROVIDERS, type Resolution, type ResolveRefusal } from '../../db/connection-bindings.js';
 import type { ConnectionView } from '../../db/connection-store.js';
 import type { OrgRegistry } from '../../orgs.js';
+import { abortOnClose, effectiveCatalog, standingOf, type EffectiveCatalog } from '../../skill-catalog.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body } from '../helpers.js';
 import { parseConnectionIds } from '../connections.js';
@@ -60,6 +61,7 @@ async function attempt<T>(log: FastifyBaseLogger, what: string, read: () => Prom
 
 interface Selection {
     repo: string | null;
+    baseBranch: string | null;
     executor: string | null;
     scope: ExecutorScope;
     skills: string[];
@@ -89,6 +91,7 @@ function selectionOf(reply: FastifyReply, raw: unknown): Selection | null {
     if (typeof connections === 'string') return refuse(ERROR_CODES.BAD_CONNECTION, connections);
     return {
         repo: repo.value,
+        baseBranch: branch.value,
         executor: executor.value,
         scope: scope.value,
         skills: skills.value,
@@ -229,10 +232,11 @@ function explicitCheck(
 async function connectionStanding(
     log: FastifyBaseLogger,
     selection: Selection,
-    userId: string,
-    rt: Runtime
+    caller: { userId: string; rt: Runtime },
+    catalog: EffectiveCatalog
 ): Promise<Standing> {
-    const required = requiredProviders(skillCatalog(), selection.skills);
+    const { userId, rt } = caller;
+    const required = requiredProviders(catalog.entries, selection.skills);
     const store = rt.connections;
     if (!store) {
         const checks = selection.connections.map(
@@ -262,11 +266,28 @@ async function connectionStanding(
     return { checks, resolution: resolved.ok && resolved.value.ok ? resolved.value : null, listed };
 }
 
-function skillChecks(selection: Selection, standing: Standing): Check[] {
-    const catalog = skillCatalog();
+function skillChecks(selection: Selection, standing: Standing, catalog: EffectiveCatalog): Check[] {
     return selection.skills.flatMap((name): Check[] => {
-        const skill = catalog.find((candidate) => candidate.name === name);
-        if (!skill) return [{ subject: 'skill', name, status: 'blocked', detail: 'not installed on this board' }];
+        const skill = catalog.entries.find((candidate) => candidate.name === name);
+        if (!skill) {
+            return standingOf(catalog, name) === 'unverified'
+                ? [
+                      {
+                          subject: 'skill',
+                          name,
+                          status: 'unverified',
+                          detail: "the repository's skills could not be read; the board checks them at create",
+                      },
+                  ]
+                : [
+                      {
+                          subject: 'skill',
+                          name,
+                          status: 'blocked',
+                          detail: 'not installed on this board or in the repository',
+                      },
+                  ];
+        }
         const needs = skill.requires.connections.map((provider): Check => {
             if (selectedBy(provider) === null) {
                 return {
@@ -303,7 +324,16 @@ function skillChecks(selection: Selection, standing: Standing): Check[] {
                 detail: bound ? `${provider} connection selected (${bound.source})` : `${provider} connection selected`,
             };
         });
-        return needs.length > 0 ? needs : [{ subject: 'skill', name, status: 'ok', detail: 'installed' }];
+        return needs.length > 0
+            ? needs
+            : [
+                  {
+                      subject: 'skill',
+                      name,
+                      status: 'ok',
+                      detail: skill.source === 'repo' ? 'in the repository' : 'installed',
+                  },
+              ];
     });
 }
 
@@ -332,11 +362,21 @@ async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply
     if (!selection) return reply;
     const userId = caller.user.id;
     const { log } = request;
-    const standing = await connectionStanding(log, selection, userId, rt);
+    const catalog = await effectiveCatalog({
+        builtin: skillCatalog(),
+        read: rt.repoSkills,
+        repo: selection.repo,
+        branch: selection.baseBranch,
+        signal: abortOnClose(reply),
+        need: selection.skills,
+        stored: { store: rt.skills, userId },
+        onUnconfirmed: (err) => log.warn({ err }, 'preflight: repo skills could not be read'),
+    });
+    const standing = await connectionStanding(log, selection, { userId, rt }, catalog);
     const checks = [
         await repoCheck(log, selection.repo, rt),
         await executorCheck(log, selection, userId, rt),
-        ...skillChecks(selection, standing),
+        ...skillChecks(selection, standing, catalog),
         ...standing.checks,
     ];
     return reply.code(HTTP_OK).send({ ready: checks.every((check) => check.status !== 'blocked'), checks });

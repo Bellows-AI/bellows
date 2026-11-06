@@ -89,7 +89,7 @@ describe('the lane stub executor images', () => {
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
         expect(line).toContain(`${ENTRY}"sh","/stub.sh"]`);
         expect(script).toContain(
-            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs docker/skills/task-title/task-title.cjs "$work/"'
+            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-task-title/task-title.cjs "$work/"'
         );
         expect(line).toContain(
             'COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs task-title.cjs /usr/local/bin/\\n'

@@ -1,7 +1,12 @@
 import { READ_BINDING, READ_FORBIDDEN, READ_NOT_FOUND } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { GitHubReadError } from '../src/github/pr-read.js';
-import { MAX_REPO_SKILLS, parseRepoSkillFrontmatter, readRepoSkills } from '../src/github/skill-read.js';
+import {
+    CONTENTS_LISTING_LIMIT,
+    MAX_REPO_SKILLS,
+    parseRepoSkillFrontmatter,
+    readRepoSkills,
+} from '../src/github/skill-read.js';
 
 const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 let counter = 0;
@@ -72,7 +77,7 @@ describe('readRepoSkills', () => {
         const answers = repoWith(repo, {});
         answers[`/repos/${repo}/contents/.claude/skills`] = new GitHubReadError('nf', READ_NOT_FOUND);
         const read = await readRepoSkills(fakeCall(answers).call, repo, 'main');
-        expect(read).toEqual({ revision: SHA, skills: [], unreadable: [] });
+        expect(read).toEqual({ revision: SHA, skills: [], unreadable: [], complete: true });
     });
 
     it('a 404 tip is an error, not an empty list', async () => {
@@ -138,7 +143,81 @@ describe('readRepoSkills', () => {
         const read = await readRepoSkills(call, repo, 'main');
         expect(MAX_REPO_SKILLS).toBe(50);
         expect(read.skills).toHaveLength(MAX_REPO_SKILLS);
+        expect(read.complete).toBe(false);
         expect(paths.filter((p) => p.includes('SKILL.md'))).toHaveLength(MAX_REPO_SKILLS);
+    });
+
+    it('exactly the cap is complete; a directory entry with no usable name is not', async () => {
+        const repo = freshRepo();
+        const entries: Record<string, string> = {};
+        for (let i = 0; i < MAX_REPO_SKILLS; i += 1) entries[`s${i}`] = skillMd(`s${i}`, 'd');
+        const full = await readRepoSkills(fakeCall(repoWith(repo, entries)).call, repo, 'main');
+        expect(full.complete).toBe(true);
+        const other = freshRepo();
+        const listing = [...dirs('fix'), { type: 'dir' }] as ReturnType<typeof dirs>;
+        const odd = await readRepoSkills(
+            fakeCall(repoWith(other, { fix: skillMd('fix', 'd') }, listing)).call,
+            other,
+            'main'
+        );
+        expect(odd.complete).toBe(false);
+    });
+
+    it.each([
+        ['an entry with no type', [{ name: 'repo-only' }]],
+        ['an entry with no name', [{ type: 'dir' }]],
+        ['a non-object element', ['repo-only']],
+        ['a null element', [null]],
+        ['an unknown entry type', [{ name: 'repo-only', type: 'mystery' }]],
+    ])('a listing with %s is incomplete', async (_label, listing) => {
+        const repo = freshRepo();
+        const read = await readRepoSkills(
+            fakeCall(repoWith(repo, {}, listing as unknown as ReturnType<typeof dirs>)).call,
+            repo,
+            'main'
+        );
+        expect(read.complete).toBe(false);
+    });
+
+    it('well-formed files, symlinks and submodules are skipped without losing completeness', async () => {
+        const repo = freshRepo();
+        const listing = [
+            ...dirs('fix'),
+            { type: 'file', name: 'README.md' },
+            { type: 'symlink', name: 'link' },
+            { type: 'submodule', name: 'sub' },
+        ] as ReturnType<typeof dirs>;
+        const read = await readRepoSkills(
+            fakeCall(repoWith(repo, { fix: skillMd('fix', 'd') }, listing)).call,
+            repo,
+            'main'
+        );
+        expect(read.complete).toBe(true);
+    });
+
+    it('a listing at the contents API entry limit is incomplete: entries past it are not listed', async () => {
+        const repo = freshRepo();
+        const files = Array.from({ length: CONTENTS_LISTING_LIMIT }, (_, i) => ({ type: 'file', name: `f${i}.md` }));
+        const read = await readRepoSkills(
+            fakeCall(repoWith(repo, {}, files as ReturnType<typeof dirs>)).call,
+            repo,
+            'main'
+        );
+        expect(read.complete).toBe(false);
+    });
+
+    it('a listing that is not an array throws, and an unreadable SKILL.md makes the read incomplete', async () => {
+        const repo = freshRepo();
+        const notList = repoWith(repo, {}, { type: 'file' } as unknown as ReturnType<typeof dirs>);
+        await expect(readRepoSkills(fakeCall(notList).call, repo, 'main')).rejects.toThrow();
+        const other = freshRepo();
+        const read = await readRepoSkills(
+            fakeCall(repoWith(other, { fix: skillMd('fix', 'd') }, dirs('fix', 'broken'))).call,
+            other,
+            'main'
+        );
+        expect(read.unreadable).toEqual(['broken']);
+        expect(read.complete).toBe(false);
     });
 
     it('the deadline aborts in-flight reads and throws', async () => {

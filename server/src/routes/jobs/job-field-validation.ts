@@ -256,6 +256,7 @@ export const FAILURE_KINDS: readonly FailureKind[] = [
     'policy',
     'checkpoint_unrestorable',
     'attachment_unavailable',
+    'skill_unavailable',
     'runner_error',
 ];
 

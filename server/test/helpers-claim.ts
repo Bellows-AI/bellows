@@ -11,6 +11,7 @@ export const makeClaim = (overrides: Partial<Claim> & Pick<Claim, 'id' | 'comman
     executorType: null,
     executorRefusal: null,
     skillRefusal: null,
+    skillPin: [],
     planRefusal: null,
     userId: null,
     masterPrompt: null,

@@ -7,8 +7,8 @@
  * driver holds the run (issue #829). This proxy, started by the entrypoint only where that socket
  * exists, lets the tools reach it, and the routes the baked skills call are all that cross:
  *
- *   POST /publish        the draft publication (the github skill)
- *   POST /review         a named reviewer (the review skill)
+ *   POST /publish        the draft publication (the factory-github skill)
+ *   POST /review         a named reviewer (the factory-review skill)
  *   POST /connection     a connection the task lacks (the helpers; connection-ask.cjs)
  *   GET  /review/<key>   that review's result
  *

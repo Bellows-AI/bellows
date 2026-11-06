@@ -2,8 +2,9 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AttachmentCorrupt, AttachmentGone } from '../src/board/board-attachments.js';
+import { SkillCorrupt, SkillGone } from '../src/board/board-skills.js';
 import { createControlChannel, type ControlChannel } from '../src/control-channel.js';
-import { inputDelivery } from '../src/input-control.js';
+import { inputDelivery, SKILLS_DELIVERY, skillDelivery } from '../src/input-control.js';
 
 /**
  * The control channel's input route: the task supervisor's fetch step reads a task input's bytes here and the
@@ -155,5 +156,59 @@ describe('the input route', () => {
         };
 
         expect((await call(`/input/task/${FILE}`)).status).toBe(401);
+    });
+});
+
+describe('the input route for pinned skills', () => {
+    const VERSION = '77777777-7777-4777-8777-777777777777';
+    const PIN = [{ name: 'org-style', source: 'org' as const, versionId: VERSION, sha256: SHA }];
+    const skillReads: { row: { id: string; leaseToken: string }; versionId: string }[] = [];
+    let skillAnswer: () => Promise<{ bytes: Uint8Array; sha256: string } | null>;
+    const skills = {
+        skillContent: (row: { id: string; leaseToken: string }, versionId: string) => {
+            skillReads.push({ row, versionId });
+            return skillAnswer();
+        },
+    };
+    const openSkills = () => {
+        skillReads.length = 0;
+        skillAnswer = async () => ({ bytes, sha256: SHA });
+        channel.open(TOKEN);
+        channel.attachInputs(TOKEN, SKILLS_DELIVERY, skillDelivery(skills, TASK, PIN));
+    };
+
+    it('serves a pinned version’s bytes under the task lease, to the supervisor token alone', async () => {
+        openSkills();
+        const reply = await call(`/input/skills/${VERSION}`);
+        expect(reply.status).toBe(200);
+        expect(reply.headers.get('x-content-sha256')).toBe(SHA);
+        expect(new Uint8Array(await reply.arrayBuffer())).toEqual(bytes);
+        expect(skillReads).toEqual([{ row: TASK, versionId: VERSION }]);
+        expect((await call(`/input/skills/${VERSION}`, AGENT)).status).toBe(401);
+    });
+
+    it('refuses a version outside the pin, and a task file id under the skills delivery', async () => {
+        openSkills();
+        expect((await call(`/input/skills/${OTHER}`)).status).toBe(404);
+        expect((await call(`/input/skills/${FILE}`)).status).toBe(404);
+        expect(skillReads).toEqual([]);
+    });
+
+    it('answers 410 for a gone bundle, 422 for a corrupt one, 502 for an unconfirmed read, 404 for the board’s 404', async () => {
+        openSkills();
+        skillAnswer = async () => {
+            throw new SkillGone('gone');
+        };
+        expect((await call(`/input/skills/${VERSION}`)).status).toBe(410);
+        skillAnswer = async () => {
+            throw new SkillCorrupt('corrupt');
+        };
+        expect((await call(`/input/skills/${VERSION}`)).status).toBe(422);
+        skillAnswer = async () => {
+            throw new Error('board 503');
+        };
+        expect((await call(`/input/skills/${VERSION}`)).status).toBe(502);
+        skillAnswer = async () => null;
+        expect((await call(`/input/skills/${VERSION}`)).status).toBe(404);
     });
 });

@@ -4,13 +4,14 @@
  * claim/ack pair. See docs/jobs.md for the lease protocol and docs/workflows.md for the publish flag.
  */
 
-import { OBJECTIVE_MODE, type JobMode, skillSelectionProblems } from '@factory-ai/core';
+import { OBJECTIVE_MODE, type JobMode } from '@factory-ai/core';
 import { type ClaimConnections, claimConnectionsInTx, recordUnboundRequirements } from './job-store-connections.js';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from '../evidence-policy.js';
 import { interruptionsSpent, LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { resolveClaimSkills } from './job-store-claim-skills.js';
 import {
     admitInTx,
     awaitingTakeover,
@@ -40,7 +41,6 @@ import type {
 import { type ClaimCandidateRow, rootRowFree, withClaimAttachments } from './job-store-claim-row.js';
 import { claimCommand } from '../follow-up-recap.js';
 import { claimPromptInput, resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
-import { skillCatalog } from '../../skills.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from '../workflows/workflow-blocks/runtime.js';
 import {
     type WorkflowDefinition,
@@ -489,6 +489,7 @@ async function acquireCandidate(
                        where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
                       (select r.skills from job r
                        where r.org_id = job.org_id and r.id = job.root_job_id) as skills,
+                      skill_pin,
                       (select coalesce(array_agg(distinct b.provider), '{}'::text[])
                        from job_connection_binding b
                        join connector_connection c on c.org_id = b.org_id and c.id = b.connection_id
@@ -575,7 +576,11 @@ async function assembleClaim(
     // The thread root's selection checked against what this claim's env authorizes: names
     // only, so selecting a skill never adds to the env and the sentence never carries a value.
     const managed = [...row.live_providers, ...connections.dismissed, ...(githubApp ? ['github'] : [])];
-    const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv, managed);
+    const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv, {
+        managed,
+        repo: row.repo,
+        pin: row.skill_pin,
+    });
     const claim = buildClaimResult({ ...row, command }, rootJobId, {
         ...executor,
         ...gates,
@@ -676,21 +681,6 @@ export async function claimJob(
         refusal: options.refusal ?? { global: false },
         takeoverOnly: options.takeoverOnly ?? false,
     });
-}
-
-/**
- * The sentence that stops a claim whose selected skills cannot run, or null (issue #545): a
- * selection the catalog lacks, a skill whose connection has no env names in the claim's resolved
- * env, or a managed connection the task never selected (`managed`; whether it is still authorized
- * is the broker's per-call check, docs/connections.md). Config-kind and recoverable — the member fixes the settings and retries.
- */
-export function resolveClaimSkills(
-    skills: readonly string[],
-    claimEnv: Readonly<Record<string, string>> | undefined,
-    managed: readonly string[] = []
-): string | null {
-    const problems = skillSelectionProblems(skillCatalog(), skills, claimEnv ?? {}, managed);
-    return problems.length === 0 ? null : `[skills unavailable] ${problems.join('; ')}. Fix this, then retry the task.`;
 }
 
 export interface ResolvedClaimGates {
@@ -953,6 +943,7 @@ export function buildClaimResult(
         executorType,
         executorRefusal,
         skillRefusal,
+        skillPin: row.skill_pin,
         planRefusal,
         userId: row.run_as,
         masterPrompt,

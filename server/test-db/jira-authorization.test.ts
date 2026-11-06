@@ -363,7 +363,11 @@ describe.skipIf(!enabled)('jira authorization', () => {
     it('a queued root with an open jira requirement is bound by the existing bind route, not by the callback', async () => {
         const tag = newTag();
         const jobs = createJobStore({ sql: db.sql, orgId: ORG });
-        const created = await jobs.create('do the work', CAROL.id, { repo: null, executor: null, skills: ['jira'] });
+        const created = await jobs.create('do the work', CAROL.id, {
+            repo: null,
+            executor: null,
+            skills: ['factory-jira'],
+        });
         if (typeof created === 'string') throw new Error(created);
         const drain = async (): Promise<string[]> => {
             const ids: string[] = [];

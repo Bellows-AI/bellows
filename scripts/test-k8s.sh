@@ -1666,7 +1666,7 @@ begin_phase images
 # entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
     docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs docker/skills/task-title/task-title.cjs "$work/"
+cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-task-title/task-title.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
 printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
@@ -2927,6 +2927,7 @@ if selected_phase recovery; then
 # runner Job deleted together — a replacement runner redoes the attempt in the lost session, on the
 # restored tree. e: the driver lost after its agent exited, while the supervisor still finalizes —
 # the surviving replica's claim takes the group over, never sweeps it or waits it out (issues #824, #829).
+# f: pinned org and workspace skills reach the runner pod and survive its deletion at the pinned sha set (BEL-273).
 # Each job refunds its interrupted attempt and records exactly one interruption; an expired lease
 # is that interruption (issue #822). Only this release's objects are touched, by label.
 
@@ -3218,7 +3219,72 @@ expect_contains 'the failure names the image the registry does not have' "$(job_
 kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" "CLAUDE_EXECUTOR_IMAGE=$image_was" >/dev/null 2>&1
 kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
 
-for job in $hard $drained $evicted $lost $final $unpullable; do
+# f. Pinned org and workspace skills (BEL-273), on the real kubelet. An admin publishes an org skill and the member a
+#    workspace skill; the task's runner pod holds both, installed by the same script and read from the same task volume
+#    as the docker executor (the scripted model, the two real CLIs and the cross-member check are scripts/test-jobs.sh's
+#    pinned-skills phase). The member then publishes a new version and the runner pod is deleted mid-run: the resumed run
+#    reports the sha set the task was made with, not the live one.
+begin_phase recovery-skills
+skills_release="/task/.lane-skills"
+skills_admin_token="fat_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+skills_admin_hash="$(printf '%s' "$skills_admin_token" | openssl dgst -sha256 -hex | sed 's/^.* //')"
+skills_admin="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    psql -qtA -v ON_ERROR_STOP=1 -v "org=$member" -v "login=$member-admin" -v "hash=$skills_admin_hash" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+with u as (
+    insert into app_user (github_user_id, github_login)
+    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
+), m as (
+    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
+    select :'org', :'login', u.id, 'admin', now() from u
+), t as (
+    insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+    select :'org', 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from u
+)
+select count(*) from u;
+SQL
+)"
+[ "$skills_admin" = 1 ] && ok 'an org admin is minted' || bad 'an org admin is minted' "$skills_admin"
+skills_org="$(node "$REPO/scripts/lane-skills.mjs" "$BASE" "$skills_admin_token" /api/org/skills lane-org-skill 'Lane org skill - use it never.' 'ref/helper.txt=org helper')"
+skills_ws="$(node "$REPO/scripts/lane-skills.mjs" "$BASE" "$FACTORY_TOKEN" /api/workspace/skills lane-ws-skill 'Lane workspace skill v1 - use it never.' 'ref/helper.txt=workspace helper')"
+skills_org_sha="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sha256))' "$skills_org")"
+skills_ws_sha="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sha256))' "$skills_ws")"
+skills_ws_id="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).id))' "$skills_ws")"
+case "$skills_org$skills_ws" in
+*'"status":201'*'"status":201'*) ok 'the org skill and the workspace skill are published' ;;
+*) bad 'the org skill and the workspace skill are published' "org: $skills_org workspace: $skills_ws" ;;
+esac
+skills_job="$(queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
+skills_pod="$(await_runner_pod "$skills_job")"
+if [ -z "$skills_job" ] || [ -z "$skills_pod" ]; then
+    bad 'the skills runner pod is running' "job '$skills_job': $(job_brief "$skills_job")"
+else
+    ok 'the skills runner pod is running'
+    await_blocked "$skills_pod" "$skills_release" && ok 'the skills agent is blocked at its barrier' || give_up
+    # The pin was taken when the task was made: a version published now is not the task's.
+    skills_edit="$(node "$REPO/scripts/lane-skills.mjs" "$BASE" "$FACTORY_TOKEN" /api/workspace/skills lane-ws-skill 'Lane workspace skill v2 - use it never.' --id "$skills_ws_id" 'ref/helper.txt=workspace helper')"
+    skills_ws_sha2="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sha256))' "$skills_edit")"
+    { [ -n "$skills_ws_sha2" ] && [ "$skills_ws_sha2" != "$skills_ws_sha" ]; } && ok 'the member publishes a new version of the workspace skill' ||
+        bad 'the member publishes a new version of the workspace skill' "$skills_edit"
+    kubectl delete pod "$skills_pod" -n "$NAMESPACE" --grace-period=5 --wait=false >/dev/null 2>&1
+    skills_mid="$(await_brief "$skills_job" "*|1|1|$POD_LOST*" 45)" &&
+        ok 'a deleted runner pod is an interruption for a task with pinned skills' ||
+        bad 'a deleted runner pod is an interruption for a task with pinned skills' "status|attempts|count|claimSeq|reason: $skills_mid"
+    release_stub "$skills_release"
+    skills_end="$(await_brief "$skills_job" 'succeeded*' 120)"
+    case "$skills_end" in
+    "succeeded|1|1|1|$POD_LOST"*) ok 'the resumed run succeeds: one attempt, one interruption' ;;
+    *) bad 'the resumed run succeeds: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $skills_end" ;;
+    esac
+    skills_out="$(job_output "$skills_job")"
+    expect_contains 'the resumed run holds the org skill at the pinned sha' "$skills_out" "skills lane-org-skill $skills_org_sha"
+    expect_contains 'the resumed run holds the workspace skill at the sha it was made with' "$skills_out" "skills lane-ws-skill $skills_ws_sha"
+    expect_not_contains 'the resumed run does not hold the version published after the task was made' "$skills_out" "$skills_ws_sha2"
+    expect_contains "the org skill's helper file opens for the agent" "$skills_out" 'helper lane-org-skill/ref/helper.txt open'
+    expect_contains "the workspace skill's helper file opens for the agent" "$skills_out" 'helper lane-ws-skill/ref/helper.txt open'
+fi
+
+for job in $hard $drained $evicted $lost $final $unpullable $skills_job; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

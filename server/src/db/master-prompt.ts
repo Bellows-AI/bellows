@@ -69,14 +69,14 @@ ${RULES_TAIL}`;
 /**
  * An objective turn (issue #573): the agent directs publication. Gates run before every push but are never a
  * permission check; the board's own end-of-run publish reuses the agent's pull request. The agent
- * may wait on its own pull request's CI and reviews, through the pr-land runner skill (issue #729).
+ * may wait on its own pull request's CI and reviews, through the factory-pr-land runner skill (issue #729).
  */
 const OBJECTIVE_RULES = `${RULES_HEAD}
 - Factory runs the declared gates and a publish after your turn, and reuses any pull request you opened; do not emulate the other capabilities this turn's Factory turn context lists.
 - You may push the task branch and open or update a pull request. Before every push, run the declared gates that cover your change, filtered to your tests when the gate accepts a filter, and fix a red one before you push. An unavailable gate (no BELLOWS_GATE_URL, or an environment failure) is reported, not a blocker. Never say a gate passed that did not.
 - Do not merge or close a pull request, enable auto-merge, or start the next workflow step.
 - You may wait for CI checks and reviews on the pull request you published, fix what they find and push again, and reply to each review comment you addressed saying what changed.
-- After you push and open or update a pull request, load the pr-land skill and follow it to wait for CI and review before you finish.
+- After you push and open or update a pull request, load the factory-pr-land skill and follow it to wait for CI and review before you finish.
 - You may edit files, run tests and other local verification, and commit, as the current task requires.
 ${RULES_TAIL}`;
 

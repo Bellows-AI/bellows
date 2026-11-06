@@ -12,6 +12,7 @@ import type { RestoreScope } from '../../db/restore-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { artifactsFor } from './job-context.js';
 import { registerAttachmentContentRoute } from './job-handlers-attachment-content.js';
+import { registerSkillContentRoute } from './job-handlers-skill-content.js';
 import { CONTROL_BODY_LIMIT, HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAVAILABLE, leaseLost, notFoundJob } from './job-limits.js';
 import { bad, guard } from '../helpers.js';
 import { resolveLeasedRoute } from '../route-guards.js';
@@ -263,4 +264,5 @@ export function registerRestoreRoutes(app: FastifyInstance, orgs: OrgRegistry) {
     app.post('/api/jobs/:id/transcripts', limit, (request, reply) => handleTranscripts(orgs, request, reply));
     app.post('/api/jobs/:id/transcripts/chunk', limit, (request, reply) => handleTranscriptChunk(orgs, request, reply));
     registerAttachmentContentRoute(app, orgs);
+    registerSkillContentRoute(app, orgs);
 }

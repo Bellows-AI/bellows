@@ -49,7 +49,7 @@ export function createJiraIntegration(options: { apiOrigin?: string } = {}): Int
             write: [...JIRA_SCOPES.write],
         },
         api: { origin: () => apiOrigin, pathPrefix: PATH_PREFIX },
-        skills: ['jira'],
+        skills: ['factory-jira'],
     });
 }
 

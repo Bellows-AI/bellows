@@ -55,7 +55,7 @@ commit message needs a force-push to fix.
 | `core/src/telemetry.ts`, `metrics.ts`, cache/TTL constants | [docs/metrics.md](docs/metrics.md) |
 | `org_id`, `005_organizations.sql`, the org selector | [docs/organizations.md](docs/organizations.md) |
 | `server/src/auth/*`, `010_auth.sql`, session cookie, worker token, route credentials | [docs/auth.md](docs/auth.md) |
-| `server/src/db/connection-store.ts`, `routes/connections.ts`, `054_connections.sql`, `100_legacy_jira_tokens.sql`, `docker/skills/jira/`, `web/src/panels/JiraConnections*` | [docs/connections.md](docs/connections.md), [docs/jira-app-runbook.md](docs/jira-app-runbook.md) |
+| `server/src/db/connection-store.ts`, `routes/connections.ts`, `054_connections.sql`, `100_legacy_jira_tokens.sql`, `docker/skills/factory-jira/`, `web/src/panels/JiraConnections*` | [docs/connections.md](docs/connections.md), [docs/jira-app-runbook.md](docs/jira-app-runbook.md) |
 | `config.ts`, `.env.example`, compose env blocks, `server/src/github/app-*`, `offline.ts` | [docs/configuration.md](docs/configuration.md) |
 | The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping | [docs/repos.md](docs/repos.md) |
 | `server/src/workspace/*`, `server/src/routes/workspace.ts`, executor profiles, task volumes | [docs/workspace.md](docs/workspace.md) |
@@ -72,6 +72,7 @@ commit message needs a force-push to fix.
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | `server/src/secrets/*`, secret storage, `AppDeps.secrets` | [docs/secrets.md](docs/secrets.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
+| `core/src/skills.ts`, `server/src/skills/*`, `server/src/db/skill-store.ts`, `128_skills.sql`, `routes/skills*.ts`, `server/src/skill-catalog.ts`, `docker/skills/` | [docs/skills.md](docs/skills.md) |
 | `server/src/mcp/*`, `POST /api/mcp`, MCP tools, `route-class.ts` | [docs/mcp.md](docs/mcp.md) |
 | `.github/workflows/*`, CI triggers, the release image build | [docs/ci.md](docs/ci.md) |
 | `server/src/commerce/*`, `server/src/db/commerce-*.ts`, `095_commerce.sql`, `routes/commerce.ts`, `COMMERCE_*` | [docs/commerce.md](docs/commerce.md) |

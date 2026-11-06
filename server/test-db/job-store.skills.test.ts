@@ -43,9 +43,14 @@ async function jiraConnection(): Promise<string> {
     return (await oauthConnection(sql, ORG, USER.id, { account: 'agent@example.com' })).id;
 }
 
-async function queue(store: JobStore, skills?: string[], connectionId?: string): Promise<string> {
+async function queue(
+    store: JobStore,
+    skills?: string[],
+    connectionId?: string,
+    repo: string | null = null
+): Promise<string> {
     const created = await store.create('do the work', connectionId ? USER.id : null, {
-        repo: null,
+        repo,
         executor: null,
         ...(skills ? { skills } : {}),
         ...(connectionId ? { connectionIds: [connectionId] } : {}),
@@ -63,13 +68,13 @@ async function claim(store: JobStore): Promise<Claim> {
 describe.skipIf(!enabled)('skill selection — database', () => {
     it('stores the selection on the root and hands the claim a prompt naming it', async () => {
         const store = storeWithEnv(PLAIN_ENV);
-        const id = await queue(store, ['jira', 'gates'], await jiraConnection());
+        const id = await queue(store, ['factory-jira', 'factory-gates'], await jiraConnection());
         const [row] = await sql<{ skills: string[] }[]>`select skills from job where id = ${id}`;
-        expect(row?.skills).toEqual(['jira', 'gates']);
+        expect(row?.skills).toEqual(['factory-jira', 'factory-gates']);
 
         const claimed = await claim(store);
         expect(claimed.skillRefusal).toBeNull();
-        expect(claimed.masterPrompt).toContain('- Selected skills: jira, gates');
+        expect(claimed.masterPrompt).toContain('- Selected skills: factory-jira, factory-gates');
     });
 
     it('a task with no skills renders no line and has no refusal', async () => {
@@ -81,7 +86,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
 
     it('a Jira skill with a live binding has no refusal', async () => {
         const store = storeWithEnv({ ATLASSIAN_SITE: 'site-sentinel' });
-        await queue(store, ['jira'], await jiraConnection());
+        await queue(store, ['factory-jira'], await jiraConnection());
         const claimed = await claim(store);
         expect(claimed.skillRefusal).toBeNull();
     });
@@ -89,7 +94,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
     it('a Jira skill on a task with no connection is not claimed: a missing requirement, no refusal text', async () => {
         // ATLASSIAN_* env never stands in for a connection (BEL-59: the claim excludes it, spending no attempt).
         const store = storeWithEnv({ ATLASSIAN_SITE: 'site-sentinel' });
-        const id = await queue(store, ['jira']);
+        const id = await queue(store, ['factory-jira']);
         expect(await store.claim(WORKER, LEASE_SECONDS)).toBeNull();
         expect((await requirementsOf(sql, ORG, id)).map((r) => [r.provider, r.reason])).toEqual([['jira', 'missing']]);
         const [row] = await sql<{ attempts: number }[]>`select attempts from job where id = ${id}`;
@@ -99,7 +104,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
     it('refuses the github connection on an org with no App installation, naming no value', async () => {
         // A member token cannot stand in: GitHub is the App's (docs/connections.md).
         const store = storeWithEnv({ OTHER: 'other-sentinel', GITHUB_TOKEN: 'pat-sentinel' }, false);
-        await queue(store, ['github']);
+        await queue(store, ['factory-github']);
 
         const claimed = await claim(store);
         expect(claimed.skillRefusal).toContain('install the GitHub App on this organization');
@@ -108,7 +113,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
     });
 
     it('refuses the github connection on a board that resolves no environment and holds no App', async () => {
-        await queue(plain, ['github']);
+        await queue(plain, ['factory-github']);
         expect((await claim(plain)).skillRefusal).toContain('install the GitHub App');
     });
 
@@ -117,7 +122,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         await queue(store);
         const without = (await claim(store)).env;
         await sql`delete from job`;
-        await queue(store, ['jira', 'github', 'gates'], await jiraConnection());
+        await queue(store, ['factory-jira', 'factory-github', 'factory-gates'], await jiraConnection());
         const withSkills = (await claim(store)).env;
         expect(withSkills).toEqual(without);
         expect(withSkills).toEqual(PLAIN_ENV);
@@ -131,9 +136,28 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         expect(refusal).toContain('installed: ');
     });
 
+    it('a repo job whose root selected a name outside the board catalog claims with no refusal: the checkout holds it', async () => {
+        await queue(plain, ['repo-only-skill'], undefined, 'acme/web');
+        const claimed = await claim(plain);
+        expect(claimed.skillRefusal).toBeNull();
+        expect(claimed.masterPrompt).toContain('- Selected skills: repo-only-skill');
+    });
+
+    it('a repo job still refuses a built-in whose connection is missing, beside a repo name', async () => {
+        await queue(plain, ['repo-only-skill', 'factory-github'], undefined, 'acme/web');
+        const refusal = (await claim(plain)).skillRefusal;
+        expect(refusal).toContain('factory-github');
+        expect(refusal).not.toContain('repo-only-skill');
+    });
+
+    it('a repo-less job naming the same outside name is refused', async () => {
+        await queue(plain, ['repo-only-skill']);
+        expect((await claim(plain)).skillRefusal).toContain('skill "repo-only-skill" is not installed');
+    });
+
     it('a retry keeps the root selection and sees the same refusal until the App is installed', async () => {
         const broken = storeWithEnv({}, false);
-        const root = await queue(broken, ['github']);
+        const root = await queue(broken, ['factory-github']);
         const first = await claim(broken);
         expect(first.skillRefusal).not.toBeNull();
         await broken.complete(first.id, first.leaseToken, {
@@ -152,7 +176,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         const stillBroken = await claim(broken);
         expect(stillBroken.id).toBe(retry.id);
         expect(stillBroken.skillRefusal).toContain('install the GitHub App');
-        expect(stillBroken.masterPrompt).toContain('- Selected skills: github');
+        expect(stillBroken.masterPrompt).toContain('- Selected skills: factory-github');
 
         // The App is installed: a fresh retry now runs, with the same prompt.
         await broken.complete(stillBroken.id, stillBroken.leaseToken, {
@@ -171,7 +195,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
 
     it('a retry of a Jira task still sees the root’s connection, so its claim passes', async () => {
         const store = plain;
-        const root = await queue(store, ['jira'], await jiraConnection());
+        const root = await queue(store, ['factory-jira'], await jiraConnection());
         const first = await claim(store);
         expect(first.skillRefusal).toBeNull();
         await store.complete(first.id, first.leaseToken, { status: 'failed', exitCode: 1, output: 'red' });
@@ -187,7 +211,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
 
     it('a follow-up claims with the root selection', async () => {
         const store = storeWithEnv(PLAIN_ENV);
-        const root = await queue(store, ['gates']);
+        const root = await queue(store, ['factory-gates']);
         const first = await claim(store);
         await store.session(first.id, first.leaseToken, randomUUID());
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
@@ -197,12 +221,12 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         const claimed = await claim(store);
         expect(claimed.id).toBe(followUp.id);
         expect(claimed.masterPrompt).toBe(first.masterPrompt);
-        expect(claimed.masterPrompt).toContain('- Selected skills: gates');
+        expect(claimed.masterPrompt).toContain('- Selected skills: factory-gates');
     });
 
     it('an expired-lease reclaim of the same row still carries the selection', async () => {
         const store = storeWithEnv(PLAIN_ENV);
-        const id = await queue(store, ['github']);
+        const id = await queue(store, ['factory-github']);
         const first = await claim(store);
         await expireLease(sql, id);
 
@@ -210,7 +234,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         expect(second.id).toBe(id);
         expect(second.claimSeq).toBe(first.claimSeq + 1);
         expect(second.masterPrompt).toBe(first.masterPrompt);
-        expect(second.masterPrompt).toContain('- Selected skills: github');
+        expect(second.masterPrompt).toContain('- Selected skills: factory-github');
     });
 
     it('a claimed job whose command holds a /name token gets the load-skill line, one without does not', async () => {

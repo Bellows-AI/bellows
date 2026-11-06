@@ -1,5 +1,5 @@
 ---
-name: backend-fix
+name: factory-fix
 description: Optional playbook for fixing a backend bug end to end under TDD — pull the ticket, locate the module, build a test harness if the module has none, reproduce the bug with a failing test at the right layer, fix it, generalize the repro into the permanent suite, and publish the pull request through the driver. Use when asked to "fix the backend bug", "work ticket ABC-1234", "take this bug end to end", or when handed a bug ticket with no further instructions. Stack-agnostic: it discovers the test runner and commands from the repo. Not for frontend/browser bugs.
 metadata:
   requires-tools: git
@@ -72,7 +72,7 @@ skill, the repo wins** — say so and follow the repo.
 
 ## Step 1 — Get the ticket
 
-Use the **jira** skill. In short: find the in-progress ticket assigned to the current user, or take
+Use the **factory-jira** skill. In short: find the in-progress ticket assigned to the current user, or take
 the key the user gave. One match, use it; several, list them and ask; none, ask for a key.
 
 Read the description **and the comments** — clarifications and reversals live in comments. If it is
@@ -205,7 +205,7 @@ a commit already on the remote.
 ### 5.13 Publish the pull request
 
 Push the task branch and open (or update) the pull request yourself with `git push` and `gh pr
-create`, or ask the driver to do it (see the github skill) —
+create`, or ask the driver to do it (see the factory-github skill) —
 either lands on the same pull request. Run the declared gates that cover your change first and fix a red one before you push;
 report any that were unavailable. Finish with the work committed on the task
 branch.

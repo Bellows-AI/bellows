@@ -65,6 +65,10 @@ listed="$(docker run --rm --entrypoint sh "$IMAGE" -c \
     'opencode debug skill >/tmp/skills.json 2>/dev/null; grep -o "/home/node/.config/opencode/skills/[^/]*/SKILL.md" /tmp/skills.json')"
 for skill in "$HERE"/../skills/*/; do
     name="$(basename "$skill")"
+    case "$name" in
+    factory-*) ok "built-in skill $name is under the reserved factory- prefix" ;;
+    *) bad "built-in skill $name is under the reserved factory- prefix" "name does not start with factory-" ;;
+    esac
     case "$listed" in
     *"/skills/$name/SKILL.md"*) ok "opencode discovers the $name skill" ;;
     *) bad "opencode discovers the $name skill" "listed: $listed" ;;
@@ -352,6 +356,63 @@ if docker run --rm --entrypoint sh "$IMAGE" -c 'command -v python3 && command -v
 else
     bad 'python3, ps, pgrep, pkill and rg are on PATH' 'one is missing'
 fi
+
+# Repo skills (BEL-270): opencode scans a checkout's .claude/skills (what claude-executor reads) as well
+# as .opencode/skills, .opencode/skill and .agents/skills, with no config of ours. On a name clash across sources
+# (a repo copy, a baked global skill, a skills.paths directory) opencode lists ONE copy, but which source wins is
+# not deterministic: measured under contention, skills.paths won 7 of 12 runs, the repo 4 and the global 1, so the
+# clash checks assert exactly one copy from an expected source, never a winner (docs/skills.md).
+skill_ws="$(mktemp -d)"
+for d in .claude/skills/probe-claude .opencode/skills/probe-ocskills .opencode/skill/probe-ocskill .agents/skills/probe-agents .claude/skills/factory-fix extra/factory-fix; do
+    mkdir -p "$skill_ws/$d"
+    printf -- '---\nname: %s\ndescription: repo copy\n---\nrepo body\n' "${d##*/}" >"$skill_ws/$d/SKILL.md"
+done
+chmod -R a+rX "$skill_ws"
+located="$(docker run --rm -v "$skill_ws:/workspace" -w /workspace --entrypoint sh "$IMAGE" -c \
+    'opencode debug skill >/tmp/s.json 2>/dev/null; grep -o "/[^\"]*SKILL.md" /tmp/s.json')"
+for want in /workspace/.claude/skills/probe-claude/SKILL.md /workspace/.opencode/skills/probe-ocskills/SKILL.md \
+    /workspace/.opencode/skill/probe-ocskill/SKILL.md /workspace/.agents/skills/probe-agents/SKILL.md; do
+    case "$located" in
+    *"$want"*) ok "opencode discovers ${want#/workspace/}" ;;
+    *) bad "opencode discovers ${want#/workspace/}" "listed: $located" ;;
+    esac
+done
+# Exactly one copy of a clashing skill is listed, and it comes from one of the sources that hold it.
+clash_listing() { # clash_listing <name> <listing> <allowed path regex> -> ok / bad on the clash checks' behalf
+    local name="$1" listing="$2" allowed="$3" count
+    count="$(printf '%s\n' "$listing" | grep -c "/$name/SKILL.md")"
+    [ "$count" = 1 ] && [ -n "$(printf '%s\n' "$listing" | grep -E "^($allowed)\$")" ]
+}
+if clash_listing factory-fix "$located" '/workspace/.claude/skills/factory-fix/SKILL.md|/home/node/.config/opencode/skills/factory-fix/SKILL.md'; then
+    ok 'a repo skill named like a built-in is listed once, from the repo or the global copy'
+else
+    bad 'a repo skill named like a built-in is listed once, from the repo or the global copy' "listed: $located"
+fi
+located="$(docker run --rm -v "$skill_ws:/workspace" -w /workspace -e 'OPENCODE_CONFIG_CONTENT={"skills":{"paths":["/workspace/extra"]}}' \
+    --entrypoint sh "$IMAGE" -c 'opencode debug skill >/tmp/s.json 2>/dev/null; grep -o "/[^\"]*factory-fix/SKILL.md" /tmp/s.json')"
+if clash_listing factory-fix "$located" '/workspace/extra/factory-fix/SKILL.md|/workspace/.claude/skills/factory-fix/SKILL.md|/home/node/.config/opencode/skills/factory-fix/SKILL.md'; then
+    ok 'a skills.paths directory, a project and a global skill of the same name list once, from one of them'
+else
+    bad 'a skills.paths directory, a project and a global skill of the same name list once, from one of them' "listed: $located"
+fi
+rm -rf "$skill_ws"
+
+# Pinned org and workspace skills (BEL-273): the driver installs them root-owned (0755/0644) under the task volume at
+# /task/.factory/skills-root/.claude/skills, and the entrypoint adds that directory to skills.paths (merged into
+# OPENCODE_CONFIG_CONTENT from FACTORY_SKILLS_PATH, pinned offline in driver/test/executor-images.test.ts). Here the
+# merged config is given as the entrypoint produces it, and the real CLI must list the installed skill.
+task_vol="$(mktemp -d)"
+mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-org"
+printf -- '---\nname: probe-org\ndescription: pinned org skill\n---\norg body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-org/SKILL.md"
+chmod -R a+rX "$task_vol"
+located="$(docker run --rm -v "$task_vol:/task:ro" -w /tmp -e 'OPENCODE_CONFIG_CONTENT={"skills":{"paths":["/task/.factory/skills-root/.claude/skills"]}}' \
+    --entrypoint sh "$IMAGE" -c 'opencode debug skill >/tmp/s.json 2>/dev/null; grep -o "/[^\"]*probe-org/SKILL.md" /tmp/s.json')"
+if [ "$located" = /task/.factory/skills-root/.claude/skills/probe-org/SKILL.md ]; then
+    ok 'a pinned skill installed under the task volume is listed through skills.paths'
+else
+    bad 'a pinned skill installed under the task volume is listed through skills.paths' "listed: $located"
+fi
+rm -rf "$task_vol"
 
 # The agent's tool isolation (issue #814), the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh

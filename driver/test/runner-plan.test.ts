@@ -96,7 +96,7 @@ describe('the claude-code runner plan', () => {
 
     // Issue #545: a skill selection rides the master prompt verbatim.
     it('delivers a master prompt naming the selected skills verbatim', () => {
-        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
+        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: factory-github, factory-jira`;
         expect(plan({ ...job, masterPrompt }, { id: SESSION, resume: false }).cliArgs).toContain(masterPrompt);
     });
 
@@ -339,5 +339,47 @@ describe('the reviewer plan with the reviewed request’s files', () => {
         );
         expect(names).not.toContain('RESTORE_URL');
         expect(names).not.toContain('RESTORE_TOKEN');
+    });
+});
+
+/**
+ * BEL-273: a claim that pins skills tells each agent where the installed bundles are. claude-code gets the base
+ * directory with `--add-dir`; opencode gets the skills directory in an env name its entrypoint merges into
+ * `skills.paths`. Nothing is passed without a pin, and nothing is ever under `/etc/claude-code`.
+ */
+describe('the pinned skills in the runner plan', () => {
+    const PIN = [
+        {
+            name: 'org-style',
+            source: 'org' as const,
+            versionId: '77777777-7777-4777-8777-777777777777',
+            sha256: 'b'.repeat(64),
+        },
+    ];
+    const SESSION_FRESH = { id: SESSION, resume: false };
+
+    it('adds --add-dir <skills root> for claude-code, once, right after the session flag', () => {
+        const p = plan({ ...job, skillPin: PIN }, SESSION_FRESH);
+        expect(p.cliArgs.slice(0, 4)).toEqual(['--session-id', SESSION, '--add-dir', '/task/.factory/skills-root']);
+        expect(p.cliArgs.filter((a) => a === '--add-dir')).toHaveLength(1);
+        expect(p.cliArgs.join(' ')).not.toContain('/etc/claude-code');
+    });
+
+    it('names the skills directory for opencode, whose entrypoint adds it to skills.paths', () => {
+        const p = plan({ ...opencodeJob, skillPin: PIN }, null);
+        expect(p.envPairs).toContainEqual(['FACTORY_SKILLS_PATH', '/task/.factory/skills-root/.claude/skills']);
+        expect(p.cliArgs).not.toContain('--add-dir');
+    });
+
+    it.each([[undefined], [[]]])('passes nothing for a claim with no pin (%j)', (skillPin) => {
+        const claude = plan({ ...job, ...(skillPin ? { skillPin } : {}) }, SESSION_FRESH);
+        const opencode = plan({ ...opencodeJob, ...(skillPin ? { skillPin } : {}) }, null);
+        expect(claude.cliArgs).not.toContain('--add-dir');
+        expect(opencode.envPairs.map(([name]) => name)).not.toContain('FACTORY_SKILLS_PATH');
+    });
+
+    it('keeps a resume’s session id where the bridge reads it', () => {
+        const p = plan({ ...job, skillPin: PIN, resumeSessionId: SESSION }, { id: SESSION, resume: true });
+        expect(p.cliArgs.slice(0, 2)).toEqual(['--resume', SESSION]);
     });
 });

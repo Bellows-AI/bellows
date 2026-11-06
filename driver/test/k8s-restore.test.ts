@@ -194,6 +194,59 @@ describe('the kubernetes runner restoring a task volume', () => {
             expect(stepNames(run.steps)).toEqual(['restore']);
         });
 
+        const PIN = [
+            {
+                name: 'org-style',
+                source: 'org' as const,
+                versionId: '77777777-7777-4777-8777-777777777777',
+                sha256: 'b'.repeat(64),
+            },
+        ];
+
+        it('installs the pinned skills after the inputs, and for a first repo-free claim that has only a pin', async () => {
+            const both = await k8sSyncRun(repoFree({ followUp: false, attachments: [FILE], skillPin: PIN }), {
+                checkpoints: board({ state: 'none' }),
+                answer: () => OK,
+            });
+            expect(stepNames(both.steps)).toEqual(['inputs', 'skills']);
+            const only = await k8sSyncRun(repoFree({ followUp: false, skillPin: PIN }), {
+                checkpoints: board({ state: 'none' }),
+                answer: () => OK,
+            });
+            expect(stepNames(only.steps)).toEqual(['skills']);
+            expect(only.steps[0]?.env).toMatchObject({ INPUT_FEED: '1', INPUT_DELIVERY: 'skills' });
+            expect(JSON.parse(only.steps[0]?.env.PIN ?? '')).toEqual(PIN);
+        });
+
+        it('runs the installer for an explicit empty pin on a repo-free first claim, so a disabled last skill is pruned', async () => {
+            const empty = await k8sSyncRun(repoFree({ followUp: false, skillPin: [] }), {
+                checkpoints: board({ state: 'none' }),
+                answer: () => OK,
+            });
+            expect(stepNames(empty.steps)).toEqual(['skills']);
+            expect(JSON.parse(empty.steps[0]?.env.PIN ?? '')).toEqual([]);
+        });
+
+        it('ends the attempt skill_unavailable on a definitive refusal and throws on a transient one or an unreadable pin', async () => {
+            const refused = await k8sSyncRun(job({ skillPin: PIN }), {
+                checkpoints: board(FOUND),
+                answer: (step) =>
+                    step.id.endsWith('-skills') ? '{"ok":false,"reason":"gone","kind":"skill_unavailable"}' : OK,
+            });
+            expect(refused).toMatchObject({ value: { ok: false, kind: 'skill_unavailable' } });
+            const transient = await k8sSyncRun(job({ skillPin: PIN }), {
+                checkpoints: board(FOUND),
+                answer: (step) => (step.id.endsWith('-skills') ? '{"ok":false,"reason":"503","transient":true}' : OK),
+            });
+            expect(transient).toHaveProperty('error');
+            const unreadable = await k8sSyncRun(job({ skillPinUnreadable: 'bad pin' }), {
+                checkpoints: board(FOUND),
+                answer: () => OK,
+            });
+            expect(unreadable).toHaveProperty('error');
+            expect(stepNames(unreadable.steps)).not.toContain('skills');
+        });
+
         it('ends the attempt attachment_unavailable on a definitive refusal and throws on a transient one', async () => {
             const refused = await k8sSyncRun(job({ attachments: [FILE] }), {
                 checkpoints: board(FOUND),

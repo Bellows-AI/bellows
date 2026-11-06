@@ -445,6 +445,10 @@ function stubStore(
             boom();
             return { result: 'missing' };
         },
+        async skillPin() {
+            boom();
+            return { result: 'missing' };
+        },
         async session(id, _token, sessionId, evidence) {
             boom();
             stub.sessions.push({ id, sessionId });
@@ -984,11 +988,11 @@ describe('POST /api/jobs skill selection', () => {
         const response = await post(instance, '/api/jobs', {
             repo: 'acme/web',
             command: 'echo hi',
-            skills: ['github', 'jira'],
+            skills: ['factory-github', 'factory-jira'],
         });
 
         expect(response.statusCode).toBe(201);
-        expect(jobs.skillSelections).toEqual([['github', 'jira']]);
+        expect(jobs.skillSelections).toEqual([['factory-github', 'factory-jira']]);
     });
 
     it('forwards no skills when the body names none', async () => {
@@ -1001,14 +1005,113 @@ describe('POST /api/jobs skill selection', () => {
         expect(jobs.skillSelections).toEqual([[], []]);
     });
 
-    it('refuses an unknown skill with a named, actionable error and queues nothing', async () => {
+    const readOf =
+        (...names: string[]) =>
+        async () => ({
+            revision: 'sha',
+            skills: names.map((name) => ({ name, description: 'd' })),
+            unreadable: [] as string[],
+            complete: true,
+        });
+    const harnessReading = async (jobs: StoreStub, repoSkills: ReturnType<typeof readOf>) => {
+        const config = testConfig();
+        const instance = await buildApp({
+            config,
+            orgs: staticRegistry({
+                config,
+                jobs,
+                workflows: stubWorkflows(),
+                telemetry: stubTelemetryClient(),
+                repos: staticRepoSource([TRACKED]),
+                repoSkills,
+            }),
+        });
+        track(instance);
+        return instance;
+    };
+    const createWith = (instance: FastifyInstance, extra: object = {}) =>
+        post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', skills: ['repo-only'], ...extra });
+
+    it('accepts a name the repository ships, read at the task base branch', async () => {
+        const jobs = stubStore();
+        const reads: unknown[] = [];
+        const instance = await harnessReading(jobs, async (...args) => {
+            reads.push(args.slice(0, 2));
+            return readOf('repo-only')();
+        });
+        const response = await createWith(instance, { baseBranch: 'dev' });
+        expect(response.statusCode).toBe(201);
+        expect(jobs.skillSelections).toEqual([['repo-only']]);
+        expect(reads).toEqual([['acme/web', 'dev']]);
+    });
+
+    it('accepts when the repository read fails: an unconfirmed read is no verdict', async () => {
+        const jobs = stubStore();
+        const instance = await harnessReading(jobs, async () => {
+            throw new Error('github is down');
+        });
+        expect((await createWith(instance)).statusCode).toBe(201);
+        expect(jobs.skillSelections).toEqual([['repo-only']]);
+    });
+
+    it('accepts when the board cannot read repository skills at all', async () => {
         const jobs = stubStore();
         const instance = await harnessWith(jobs, stubWorkflows());
+        expect((await createWith(instance)).statusCode).toBe(201);
+    });
+
+    it('accepts a name whose directory the repository read could not parse', async () => {
+        const jobs = stubStore();
+        const instance = await harnessReading(jobs, async () => ({
+            revision: 'sha',
+            skills: [],
+            unreadable: ['repo-only'],
+            complete: true,
+        }));
+        expect((await createWith(instance)).statusCode).toBe(201);
+    });
+
+    it('accepts a name missing from a cut listing: a truncated read is no verdict', async () => {
+        const jobs = stubStore();
+        const instance = await harnessReading(jobs, async () => ({
+            revision: 'sha',
+            skills: [{ name: 'another', description: 'd' }],
+            unreadable: [],
+            complete: false,
+        }));
+        expect((await createWith(instance)).statusCode).toBe(201);
+        expect(jobs.skillSelections).toEqual([['repo-only']]);
+    });
+
+    it('refuses a name a successful repository read lacks, queueing nothing', async () => {
+        const jobs = stubStore();
+        const instance = await harnessReading(jobs, readOf('another'));
+        const response = await createWith(instance);
+        expect(response.statusCode).toBe(404);
+        expect(response.json().code).toBe('UNKNOWN_SKILL');
+        expect(response.json().error).toContain('"repo-only"');
+        expect(jobs.created).toEqual([]);
+    });
+
+    it('does not read the repository when every name is a built-in', async () => {
+        const jobs = stubStore();
+        let reads = 0;
+        const instance = await harnessReading(jobs, async () => {
+            reads += 1;
+            return readOf()();
+        });
+        expect((await createWith(instance, { skills: ['factory-jira'] })).statusCode).toBe(201);
+        expect(reads).toBe(0);
+    });
+
+    it('refuses an unknown skill with a named, actionable error and queues nothing', async () => {
+        const jobs = stubStore();
+        const instance = await harnessReading(jobs, readOf());
 
         const response = await post(instance, '/api/jobs', {
             repo: 'acme/web',
             command: 'echo hi',
-            skills: ['github', 'ghost'],
+            skills: ['factory-github', 'ghost'],
         });
 
         expect(response.statusCode).toBe(404);

@@ -221,6 +221,9 @@ export function stubBoard(
         async attachmentContent() {
             return null;
         },
+        async skillContent() {
+            return null;
+        },
         async transcripts() {
             return [];
         },

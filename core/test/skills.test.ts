@@ -2,13 +2,16 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
     INTEGRATION_PROVIDERS,
+    isReservedSkillName,
     parseSkillFrontmatter,
     requiredProviders,
+    resolveSkillCatalog,
     RUNNER_TOOLS,
     selectedBy,
     SKILL_CONNECTIONS,
     skillSelectionProblems,
     type Skill,
+    type SkillSource,
 } from '../src/skills.js';
 
 const SKILLS_DIR = new URL('../../docker/skills/', import.meta.url);
@@ -16,6 +19,16 @@ const skillNames = readdirSync(SKILLS_DIR);
 const read = (name: string) => readFileSync(new URL(`${name}/SKILL.md`, SKILLS_DIR), 'utf8');
 
 const head = (extra = '') => `---\nname: demo\ndescription: Does a thing.\n${extra}---\n\n# Body\n`;
+
+describe('reserved prefix', () => {
+    it.each(['factory-x', 'factory-fix', 'factory-a-b'])('%s is reserved for built-ins', (name) => {
+        expect(isReservedSkillName(name)).toBe(true);
+    });
+
+    it.each(['factory', 'factoryx', 'my-factory-x', 'fix'])('%s is free for other sources', (name) => {
+        expect(isReservedSkillName(name)).toBe(false);
+    });
+});
 
 describe('parseSkillFrontmatter', () => {
     it('reads name, description and the metadata requirement lists', () => {
@@ -53,9 +66,15 @@ describe('the shipped skills', () => {
         expect(parseSkillFrontmatter(read(name), name).name).toBe(name);
     });
 
+    it.each(skillNames)('%s is under the reserved factory- prefix', (name) => {
+        expect(isReservedSkillName(name)).toBe(true);
+    });
+
     it('declares the connection the github and jira skills need', () => {
-        expect(parseSkillFrontmatter(read('github'), 'github').requires.connections).toEqual(['github']);
-        expect(parseSkillFrontmatter(read('jira'), 'jira').requires.connections).toEqual(['jira']);
+        expect(parseSkillFrontmatter(read('factory-github'), 'factory-github').requires.connections).toEqual([
+            'github',
+        ]);
+        expect(parseSkillFrontmatter(read('factory-jira'), 'factory-jira').requires.connections).toEqual(['jira']);
     });
 
     it.each(skillNames)('%s carries no credential-looking literal', (name) => {
@@ -154,5 +173,82 @@ describe('integration providers', () => {
         expect(requiredProviders(catalog, ['jira', 'github', 'gates'])).toEqual(['jira']);
         expect(requiredProviders(catalog, ['github', 'gates'])).toEqual([]);
         expect(requiredProviders(catalog, ['jira', 'jira', 'unknown'])).toEqual(['jira']);
+    });
+});
+
+describe('resolveSkillCatalog', () => {
+    const make = (description: string): Skill => ({
+        name: 'deploy',
+        description,
+        requires: { tools: [], connections: [] },
+    });
+    const sourcesWith = (held: readonly SkillSource[]) => ({
+        builtin: held.includes('builtin') ? [make('builtin')] : [],
+        org: held.includes('org') ? [make('org')] : [],
+        workspace: held.includes('workspace') ? [make('workspace')] : [],
+        repo: held.includes('repo') ? [{ name: 'deploy', description: 'repo' }] : [],
+    });
+
+    it.each([
+        ['builtin', 'org'],
+        ['builtin', 'workspace'],
+        ['builtin', 'repo'],
+        ['org', 'workspace'],
+        ['org', 'repo'],
+        ['workspace', 'repo'],
+    ] as const)('%s outranks %s: the lower one stays listed, marked shadowed', (high, low) => {
+        const { entries } = resolveSkillCatalog(sourcesWith([low, high]));
+        expect(entries.map((entry) => [entry.source, entry.shadowedBy])).toEqual([
+            [high, undefined],
+            [low, high],
+        ]);
+        // The first entry of a name is the one that wins, so `find` by name resolves precedence.
+        expect(entries.find((entry) => entry.name === 'deploy')?.description).toBe(high);
+    });
+
+    it('marks every lower source against the highest holder', () => {
+        const { entries } = resolveSkillCatalog(sourcesWith(['repo', 'workspace', 'org']));
+        expect(entries.map((entry) => entry.shadowedBy)).toEqual([undefined, 'org', 'org']);
+    });
+
+    it('keeps a repo skill with an unclaimed name, with no requirements', () => {
+        const { entries } = resolveSkillCatalog({ builtin: [], repo: [{ name: 'lane-repo-skill', description: 'x' }] });
+        expect(entries).toEqual([
+            { name: 'lane-repo-skill', description: 'x', source: 'repo', requires: { tools: [], connections: [] } },
+        ]);
+    });
+
+    it('drops a non-built-in factory-* name into `reserved`, unless it clashes with a built-in', () => {
+        const builtin = [{ ...make('b'), name: 'factory-fix' }];
+        const { entries, reserved } = resolveSkillCatalog({
+            builtin,
+            org: [{ ...make('o'), name: 'factory-mine' }],
+            repo: [
+                { name: 'factory-fix', description: 'impostor' },
+                { name: 'factory-other', description: 'x' },
+            ],
+        });
+        expect(reserved).toEqual(['factory-mine', 'factory-other']);
+        expect(entries.map((entry) => [entry.name, entry.source, entry.shadowedBy])).toEqual([
+            ['factory-fix', 'builtin', undefined],
+            ['factory-fix', 'repo', 'builtin'],
+        ]);
+    });
+
+    it('feeds skillSelectionProblems: a repo name is installed, an unlisted one is not', () => {
+        const { entries } = resolveSkillCatalog({ builtin: [], repo: [{ name: 'deploy', description: 'x' }] });
+        expect(skillSelectionProblems(entries, ['deploy'], {})).toEqual([]);
+        expect(skillSelectionProblems(entries, ['ghost'], {})).toHaveLength(1);
+    });
+});
+
+describe('requiredProviders over a resolved catalog', () => {
+    it('a repo skill requires no provider, and an unlisted name none either', () => {
+        const { entries } = resolveSkillCatalog({
+            builtin: [{ name: 'factory-jira', description: 'j', requires: { tools: [], connections: ['jira'] } }],
+            repo: [{ name: 'deploy', description: 'x' }],
+        });
+        expect(requiredProviders(entries, ['deploy', 'ghost'])).toEqual([]);
+        expect(requiredProviders(entries, ['deploy', 'factory-jira'])).toEqual(['jira']);
     });
 });

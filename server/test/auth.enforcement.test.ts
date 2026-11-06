@@ -284,6 +284,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/transcripts/chunk', 'worker'],
     // The task's input files, fetched by the runner under the live lease.
     ['/api/jobs/:id/attachments/:attachmentId/content', 'worker'],
+    // A task's pinned skill bundles, fetched by the runner under the live lease (BEL-273).
+    ['/api/jobs/:id/skills/:versionId/content', 'worker'],
     // The thread read is a person's again: it carries commands, output and session ids of the
     // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
     // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
@@ -384,6 +386,15 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
         '/api/org/executors/:id',
         '/api/org/executors/:id/suspension',
         '/api/org/executors/:id/scope',
+        '/api/org/skills',
+        '/api/org/skills/:id',
+        '/api/org/skills/:id/versions',
+        '/api/org/skills/:id/enabled',
+        '/api/workspace/skills',
+        '/api/workspace/skills/:id',
+        '/api/workspace/skills/:id/versions',
+        '/api/workspace/skills/:id/enabled',
+        '/api/workspace/skills/:id/scope',
         '/api/workspace/notification-subscriptions/:id',
         '/api/workspace/notification-subscriptions/:id/test',
         '/api/org/notification-subscriptions/:id',
@@ -1270,6 +1281,9 @@ describe('a bridged caller carries scopes the route class is checked against', (
             'PUT /api/workspace/executors/default',
             'DELETE /api/workspace/executors/:id',
             'POST /api/workspace/executors/:id/suspension',
+            'POST /api/org/skills',
+            'DELETE /api/org/skills/:id',
+            'POST /api/workspace/skills/:id/scope',
         ]) {
             expect(none).toContain(mustBeNone);
         }

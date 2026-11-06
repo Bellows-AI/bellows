@@ -71,6 +71,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['checkpoint-restore.cjs', 'node'],
     ['attachment-fetch.cjs', 'node'],
     ['attachment-extract.cjs', 'node'],
+    ['skill-install.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['gate-shell.sh', 'sh'],

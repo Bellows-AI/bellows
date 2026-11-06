@@ -74,6 +74,8 @@ interface Scenario {
     withFlow?: boolean;
     /** Boot org A with no executor store at all. */
     noExecutorStore?: boolean;
+    /** The board's repo skills reader. */
+    repoSkills?: NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -138,6 +140,7 @@ async function boot(scenario: Scenario = {}) {
         telemetry: stubTelemetryClient(),
         repos,
         connections,
+        repoSkills: scenario.repoSkills,
         ...(scenario.noExecutorStore ? {} : { userExecutors: executors }),
     });
     const orgB = staticRegistry({
@@ -351,15 +354,60 @@ describe('list_skills', () => {
         const url = await boot({ rows: { alice: [view('a1')], carol: [view('c1', { needsReconnect: true })] } });
         const states = async (who: Who) => {
             const { data } = await call(url, who, 'list_skills');
-            const skill = data.skills.find((s: { name: string }) => s.name === 'jira');
+            const skill = data.skills.find((s: { name: string }) => s.name === 'factory-jira');
             return skill?.connections.map((c: { provider: string; state: string }) => [c.provider, c.state]);
         };
         expect(await states('alice')).toEqual([['jira', 'connected']]);
         expect(await states('carol')).toEqual([['jira', 'needs_reconnect']]);
         expect(await states('bob')).toEqual([['jira', 'connected']]);
         const none = await call(await boot(), 'alice', 'list_skills');
-        const jira = none.data.skills.find((skill: { name: string }) => skill.name === 'jira');
+        const jira = none.data.skills.find((skill: { name: string }) => skill.name === 'factory-jira');
         expect(jira.connections).toMatchObject([{ provider: 'jira', state: 'missing' }]);
+    });
+
+    it('names each skill source, built-ins first', async () => {
+        const { data } = await call(await boot(), 'alice', 'list_skills');
+        expect(data.skills.length).toBeGreaterThan(0);
+        expect(data.skills.every((s: { source: string }) => s.source === 'builtin')).toBe(true);
+    });
+
+    it('with a repo lists its skills too, shadowed ones marked, and says when the repo read failed', async () => {
+        const repoSkills = async () => ({
+            revision: 'sha',
+            skills: [
+                { name: 'deploy', description: 'Ship it' },
+                { name: 'factory-fix', description: 'impostor' },
+            ],
+            unreadable: [] as string[],
+            complete: true,
+        });
+        const { data } = await call(await boot({ repoSkills }), 'alice', 'list_skills', {
+            repo: 'acme/web',
+            branch: 'dev',
+        });
+        const by = (name: string) => data.skills.filter((s: { name: string }) => s.name === name);
+        expect(by('deploy')).toMatchObject([{ source: 'repo', kind: 'manual' }]);
+        expect(by('factory-fix')).toMatchObject([{ source: 'builtin' }, { source: 'repo', shadowedBy: 'builtin' }]);
+        expect(data.repoError).toBeNull();
+        expect(data.repoComplete).toBe(true);
+
+        const failing = await boot({
+            repoSkills: async () => {
+                throw new Error('github down');
+            },
+        });
+        const failed = await call(failing, 'alice', 'list_skills', { repo: 'acme/web' });
+        expect(failed.data.repoError).toEqual(expect.stringContaining('github down'));
+        expect(failed.data.repoComplete).toBe(false);
+        expect(failed.data.skills.every((s: { source: string }) => s.source === 'builtin')).toBe(true);
+    });
+
+    it('says a cut repo listing is not complete, and a call with no repo is', async () => {
+        const cut = await boot({
+            repoSkills: async () => ({ revision: 'sha', skills: [], unreadable: [], complete: false }),
+        });
+        expect((await call(cut, 'alice', 'list_skills', { repo: 'acme/web' })).data.repoComplete).toBe(false);
+        expect((await call(cut, 'alice', 'list_skills')).data.repoComplete).toBe(true);
     });
 
     it('is inconclusive when the standing cannot be read: no guessed state', async () => {
@@ -453,7 +501,7 @@ describe('preflight_task', () => {
             bindings: [],
             requirements: [{ provider: 'jira', reason }],
         });
-        const withJira = { ...selection, skills: ['jira'] };
+        const withJira = { ...selection, skills: ['factory-jira'] };
         const missing = await call(await boot({ resolution: open('missing') }), 'alice', 'preflight_task', withJira);
         expect(missing.data).toMatchObject({
             verdict: 'integration_required',
@@ -484,7 +532,7 @@ describe('preflight_task', () => {
         };
         const { data } = await call(await boot({ resolution, connectionsThrow: true }), 'alice', 'preflight_task', {
             ...selection,
-            skills: ['jira'],
+            skills: ['factory-jira'],
         });
         expect(data).toMatchObject({
             verdict: 'integration_required',
@@ -501,7 +549,7 @@ describe('preflight_task', () => {
         const { data } = await call(await boot({ resolution }), 'alice', 'preflight_task', {
             ...selection,
             repo: 'acme/other',
-            skills: ['jira'],
+            skills: ['factory-jira'],
         });
         expect(data.verdict).toBe('blocked');
     });

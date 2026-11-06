@@ -55,6 +55,7 @@ export function staticRegistry(
         /** The org's installation mint, behind the runner GitHub credential route. */
         githubToken?: OrgRuntime['githubToken'];
         userExecutors?: OrgRuntime['userExecutors'];
+        skills?: OrgRuntime['skills'];
         /** When set, `for()` answers null for every id not in it. */
         orgsFor?: readonly string[];
     } = {}
@@ -81,6 +82,7 @@ export function staticRegistry(
         connections: parts.connections,
         githubToken: parts.githubToken,
         userExecutors: parts.userExecutors,
+        skills: parts.skills,
     };
     return {
         for: async (orgId) => {

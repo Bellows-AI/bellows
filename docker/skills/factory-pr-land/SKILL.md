@@ -1,5 +1,5 @@
 ---
-name: pr-land
+name: factory-pr-land
 description: Take a pull request you pushed to landable in one bounded loop — wait for its CI checks to settle, fix red checks at the root cause, address and reply to review feedback, and repeat until CI is green and no review comment is left unanswered. Use right after you push and open or update a pull request, or when asked to "wait for CI", "fix the failing checks", "address the review" or "land this PR".
 metadata:
   requires-tools: gh
@@ -12,7 +12,7 @@ One loop takes the pull request on the task branch from "just pushed" to "nothin
 merge". Merging stays a person's call.
 
 The helper `pr-status.sh` is installed at a fixed path outside the skills directory, where your shell
-can read it. Run it as `sh /usr/local/share/factory-skills/pr-land/pr-status.sh`. It waits for the checks, then prints `key=value`
+can read it. Run it as `sh /usr/local/share/factory-skills/factory-pr-land/pr-status.sh`. It waits for the checks, then prints `key=value`
 lines: `pr`, `state`, `head`, `review_decision`, `ci` (`green`, `red`, `pending` or `none`), one
 `failing=<check> <link>` per failed or cancelled check, and `unanswered_threads` — unresolved
 review threads whose last comment is not yours. Exit 2 means it could not read the pull request;
@@ -35,9 +35,9 @@ the reason is on stderr.
 
 ## The loop
 
-1. **Find the pull request.** `sh /usr/local/share/factory-skills/pr-land/pr-status.sh --no-wait` resolves the
+1. **Find the pull request.** `sh /usr/local/share/factory-skills/factory-pr-land/pr-status.sh --no-wait` resolves the
    current branch's pull request and samples it once. Pass a number or URL to name another.
-2. **Wait for CI.** `sh /usr/local/share/factory-skills/pr-land/pr-status.sh <N>`. If `head` is not your
+2. **Wait for CI.** `sh /usr/local/share/factory-skills/factory-pr-land/pr-status.sh <N>`. If `head` is not your
    `git rev-parse HEAD`: your push has not landed, so push again — or, when the remote is ahead
    because someone else pushed, report it and stop. Then act on `ci`:
    - `pending` — run it again while the waiting budget lasts.
@@ -55,7 +55,7 @@ the reason is on stderr.
      `.bellows.yaml`, one per call:
      `factory-gate <name>`. The answer's `exitCode` 0 is a
      pass; otherwise its `output` tail says what to fix (a gate that sets `filter: true` also takes
-     `--filter <tests>`, see the gates skill). With `BELLOWS_GATE_URL` unset, run the
+     `--filter <tests>`, see the factory-gates skill). With `BELLOWS_GATE_URL` unset, run the
      failing check's own command instead. Commit, push, back to step 2.
    - A flake the log proves (a network timeout, a runner lost mid-job): `gh run rerun <run-id>
      --failed` once per run, back to step 2.

@@ -54,6 +54,19 @@ case "$*" in
     echo "transcript $session_file records $have"
     ;;
 esac
+# `factory-stub-skills` (BEL-273): what the pinned-skill installer left under the task volume, as this agent reads it:
+# one `skills <name> <sha256>` line per skill the manifest owns and one `helper <path> open|denied` line per helper
+# file. A resumed run prints the same set only if the pin, not the live skill, decided what it holds.
+case "$*" in
+*factory-stub-skills*)
+    skills_dir=/task/.factory/skills-root/.claude/skills
+    node -e 'const owned = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).owned;
+for (const name of Object.keys(owned).sort()) console.log(`skills ${name} ${owned[name]}`);' "$skills_dir/.factory-skills.json"
+    for helper in "$skills_dir"/*/ref/helper.txt; do
+        if cat "$helper" >/dev/null 2>&1; then echo "helper ${helper#"$skills_dir"/} open"; else echo "helper ${helper#"$skills_dir"/} denied"; fi
+    done
+    ;;
+esac
 # `factory-stub-services` (issue #773): the names a task pod's hosts file puts on its loopback, then
 # a TCP connect to each declared service of the services lane, retried while one still boots.
 reach() { # reach <host> <port>
