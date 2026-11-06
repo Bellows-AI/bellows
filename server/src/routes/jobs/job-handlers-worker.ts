@@ -27,7 +27,7 @@ import {
     validateVerdictBody,
 } from './job-field-validation.js';
 import { validateGates } from './job-gate-validation.js';
-import { abortOnClose, effectiveCatalog, installedNames, standingOf } from '../../skill-catalog.js';
+import { abortOnClose, effectiveCatalog, installedNames, standingOf, storedOf } from '../../skill-catalog.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body, checkReposVisible, guard } from '../helpers.js';
 import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
@@ -187,6 +187,7 @@ async function refusedAsUnknownSkill(
         branch: baseBranch,
         signal: abortOnClose(reply),
         need: names,
+        stored: storedOf(rt, request),
         onUnconfirmed: (err) => request.log.warn({ err }, 'repo skills read inconclusive; accepting'),
     });
     const unknown = names.filter((name) => standingOf(catalog, name) === 'absent');

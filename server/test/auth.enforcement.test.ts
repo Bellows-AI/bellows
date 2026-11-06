@@ -384,6 +384,15 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
         '/api/org/executors/:id',
         '/api/org/executors/:id/suspension',
         '/api/org/executors/:id/scope',
+        '/api/org/skills',
+        '/api/org/skills/:id',
+        '/api/org/skills/:id/versions',
+        '/api/org/skills/:id/enabled',
+        '/api/workspace/skills',
+        '/api/workspace/skills/:id',
+        '/api/workspace/skills/:id/versions',
+        '/api/workspace/skills/:id/enabled',
+        '/api/workspace/skills/:id/scope',
         '/api/workspace/notification-subscriptions/:id',
         '/api/workspace/notification-subscriptions/:id/test',
         '/api/org/notification-subscriptions/:id',
@@ -1270,6 +1279,9 @@ describe('a bridged caller carries scopes the route class is checked against', (
             'PUT /api/workspace/executors/default',
             'DELETE /api/workspace/executors/:id',
             'POST /api/workspace/executors/:id/suspension',
+            'POST /api/org/skills',
+            'DELETE /api/org/skills/:id',
+            'POST /api/workspace/skills/:id/scope',
         ]) {
             expect(none).toContain(mustBeNone);
         }

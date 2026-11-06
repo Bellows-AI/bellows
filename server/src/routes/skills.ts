@@ -9,8 +9,14 @@ import {
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import { abortOnClose, effectiveCatalog, type EffectiveCatalog } from '../skill-catalog.js';
+import { abortOnClose, effectiveCatalog, type EffectiveCatalog, storedOf } from '../skill-catalog.js';
 import { bad, checkReposVisible } from './helpers.js';
+
+const HTTP_UNAVAILABLE = 503;
+
+/** Org and workspace skills that could not be read: a 503, never a list that silently lacks them. */
+const storedUnavailable = (reply: FastifyReply, catalog: EffectiveCatalog) =>
+    bad(reply, ERROR_CODES.UNAVAILABLE, `Stored skills could not be read: ${catalog.storedError}`, HTTP_UNAVAILABLE);
 
 const BRANCH_LIMIT = 255;
 
@@ -82,8 +88,10 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
             repo: `${owner}/${name}`,
             branch: branch ?? null,
             signal: abortOnClose(reply),
+            stored: storedOf(rt, request),
             onUnconfirmed: (err) => request.log.warn({ err }, 'repo skills read failed'),
         });
+        if (result.storedError !== null) return storedUnavailable(reply, result);
         return repoMenuOf(result, rt?.repoSkills !== undefined);
     };
 }
@@ -101,9 +109,20 @@ export const skillRoutes =
     (catalog: () => Skill[], orgs: OrgRegistry): FastifyPluginAsync =>
     async (app) => {
         const builtin = catalog();
-        const listed = await effectiveCatalog({ builtin, read: undefined, repo: null, branch: null });
-        const builtins = listed.entries.map(wireOf);
-        app.get('/api/skills', async () => ({ skills: builtins }));
+        await effectiveCatalog({ builtin, read: undefined, repo: null, branch: null });
+        app.get('/api/skills', async (request, reply) => {
+            const rt = await orgs.for(orgOf(request));
+            const result = await effectiveCatalog({
+                builtin,
+                read: undefined,
+                repo: null,
+                branch: null,
+                stored: storedOf(rt, request),
+                onUnconfirmed: (err) => request.log.warn({ err }, 'stored skills read failed'),
+            });
+            if (result.storedError !== null) return storedUnavailable(reply, result);
+            return { skills: result.entries.map(wireOf) };
+        });
 
         app.get<RepoSkillsRoute>('/api/repos/:owner/:name/skills', repoSkillsHandler(builtin, orgs));
     };

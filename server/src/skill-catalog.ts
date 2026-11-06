@@ -5,8 +5,11 @@ import {
     type Skill,
     type SourceSkill,
 } from '@factory-ai/core';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { callerOf } from './auth/plugin.js';
+import type { SkillStore } from './db/skill-store.js';
 import type { RepoSkillRead } from './github/skill-read.js';
+import type { OrgRuntime } from './orgs.js';
 
 /** The org's repo skills read (`OrgRuntime.repoSkills`): rejects when the read did not confirm. */
 export type RepoSkillReader = (repo: string, branch: string | null, signal?: AbortSignal) => Promise<RepoSkillRead>;
@@ -26,6 +29,8 @@ export interface EffectiveCatalog {
     /** Non-built-in names under the reserved prefix: neither selectable nor listed. */
     reserved: string[];
     repo: RepoReadState;
+    /** Why the org and workspace skills could not be read, or null: then their names prove nothing absent. */
+    storedError: string | null;
 }
 
 export interface CatalogRequest {
@@ -42,11 +47,13 @@ export interface CatalogRequest {
      * not asked, so selecting built-ins costs no GitHub call.
      */
     need?: readonly string[];
+    /** The org's skill store and the caller's member id (null for a caller with no member): the org and workspace sources. */
+    stored?: { store: SkillStore | undefined; userId: string | null };
 }
 
 /**
- * The catalog a task selects from: built-ins, then (BEL-271) org and workspace skills, then the repository's own at
- * `branch`. Org and workspace are empty until their stores exist; they join here, so every consumer sees them at once.
+ * The catalog a task selects from: built-ins, then the org's enabled skills and the caller's workspace skills, then the
+ * repository's own at `branch`. A stored-skill read that fails is `storedError`, never "no skills".
  */
 export async function effectiveCatalog(request: CatalogRequest): Promise<EffectiveCatalog> {
     const builtinNames = new Set(request.builtin.map((skill) => skill.name));
@@ -72,8 +79,33 @@ export async function effectiveCatalog(request: CatalogRequest): Promise<Effecti
             repo = { state: 'unconfirmed', error: cause instanceof Error ? cause.message : String(cause) };
         }
     }
-    const { entries, reserved } = resolveSkillCatalog({ builtin: request.builtin, org: [], workspace: [], repo: held });
-    return { entries, reserved, repo };
+    const stored = await readStored(request);
+    const { entries, reserved } = resolveSkillCatalog({
+        builtin: request.builtin,
+        org: stored.org,
+        workspace: stored.workspace,
+        repo: held,
+    });
+    return { entries, reserved, repo, storedError: stored.error };
+}
+
+/** The org and workspace sources; a read that fails is `error` with both empty, never a verdict. */
+async function readStored(request: CatalogRequest) {
+    const result: { org: SourceSkill[]; workspace: SourceSkill[]; error: string | null } = {
+        org: [],
+        workspace: [],
+        error: null,
+    };
+    if (!request.stored?.store) return result;
+    try {
+        const held = await request.stored.store.effective(request.stored.userId);
+        result.org = held.filter((skill) => skill.source === 'org');
+        result.workspace = held.filter((skill) => skill.source === 'workspace');
+    } catch (cause) {
+        request.onUnconfirmed?.(cause);
+        result.error = cause instanceof Error ? cause.message : String(cause);
+    }
+    return result;
 }
 
 export type SkillStanding = 'known' | 'absent' | 'unverified';
@@ -86,6 +118,8 @@ export type SkillStanding = 'known' | 'absent' | 'unverified';
 export function standingOf(catalog: EffectiveCatalog, name: string): SkillStanding {
     if (catalog.entries.some((entry) => entry.name === name)) return 'known';
     if (isReservedSkillName(name)) return 'absent';
+    // A name the unread org/workspace skills may hold is not provably absent.
+    if (catalog.storedError !== null) return 'unverified';
     const { repo } = catalog;
     // A cut or partly unnameable listing cannot say a name is missing.
     if (repo.state === 'read') return repo.complete && !repo.unreadable.includes(name) ? 'absent' : 'unverified';
@@ -105,3 +139,9 @@ export function abortOnClose(reply: FastifyReply): AbortSignal {
     });
     return controller.signal;
 }
+
+/** The stored-skill source of a request: the caller's org store and their member id (none for a token or local caller). */
+export const storedOf = (
+    rt: Pick<OrgRuntime, 'skills'> | null,
+    request: FastifyRequest
+): NonNullable<CatalogRequest['stored']> => ({ store: rt?.skills, userId: callerOf(request)?.user.id ?? null });

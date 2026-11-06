@@ -369,6 +369,7 @@ async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply
         branch: selection.baseBranch,
         signal: abortOnClose(reply),
         need: selection.skills,
+        stored: { store: rt.skills, userId },
         onUnconfirmed: (err) => log.warn({ err }, 'preflight: repo skills could not be read'),
     });
     const standing = await connectionStanding(log, selection, { userId, rt }, catalog);

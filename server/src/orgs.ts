@@ -1,6 +1,7 @@
 import type { Sql } from 'postgres';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import { createAttachmentRows } from './attachments/attachment-rows.js';
+import { createSkillStore, type SkillStore } from './db/skill-store.js';
 import { createAttachmentStore, type AttachmentStore } from './attachments/attachment-store.js';
 import type { ArtifactBackend } from './artifacts/backend.js';
 import type { AppConfig } from './config.js';
@@ -81,6 +82,8 @@ export interface OrgRuntime {
     artifacts?: ArtifactStore | undefined;
     /** The member uploads (115) over the same object store; present with the artifact index. */
     attachments?: AttachmentStore | undefined;
+    /** The org and workspace skills (128) over the same object store; present with the artifact index. */
+    skills?: SkillStore | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
     /** The integration grants (094) connections hang off: the refresh lineage store; present with the other stores. */
@@ -346,6 +349,20 @@ function attachmentStoreOf({
     });
 }
 
+/** The org's skill store over the process's object store, or undefined when none was configured. */
+function skillStoreOf({
+    sql,
+    orgId,
+    backend,
+}: {
+    sql: Sql;
+    orgId: string;
+    backend: ArtifactBackend | undefined;
+}): SkillStore | undefined {
+    if (!backend) return undefined;
+    return createSkillStore({ sql, objects: backend.objects, orgId, prefix: backend.prefix });
+}
+
 export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
     const { sql, ready, config, artifacts, claimMetrics } = deps;
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
@@ -416,6 +433,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
             runtime.attachments = attachmentStoreOf({ sql, orgId, ready, backend: artifacts });
+            runtime.skills = skillStoreOf({ sql, orgId, backend: artifacts });
         }
 
         return runtime;

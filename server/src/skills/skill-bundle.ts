@@ -394,3 +394,32 @@ function splitPath(path: string): { name: string; prefix: string } {
     }
     return refuse('path_too_long', `${path} does not fit a tar header`);
 }
+
+/**
+ * The files of a tar this module wrote (`SkillBundle.tar`), in archive order. The reader of the stored body, so it
+ * trusts only what the writer emits: regular entries, ustar name/prefix, an octal size. A body that does not parse
+ * (a short or overrunning entry) throws instead of listing fewer files.
+ */
+export function filesOfTar(tar: Uint8Array): BundleFile[] {
+    const buffer = Buffer.from(tar.buffer, tar.byteOffset, tar.byteLength);
+    const files: BundleFile[] = [];
+    let at = 0;
+    while (at + BLOCK <= buffer.length) {
+        const header = buffer.subarray(at, at + BLOCK);
+        if (header.every((byte) => byte === 0)) return files;
+        const text = (from: number, length: number) => {
+            const field = header.subarray(from, from + length);
+            const end = field.indexOf(0);
+            return field.subarray(0, end === -1 ? length : end).toString('utf8');
+        };
+        const size = Number.parseInt(text(TAR.size, SIZE_DIGITS + 1), OCTAL);
+        if (!Number.isInteger(size) || size < 0) throw new Error('tar entry has no size');
+        const prefix = text(TAR.prefix, PREFIX_BYTES);
+        const name = text(0, NAME_BYTES);
+        const start = at + BLOCK;
+        if (start + size > buffer.length) throw new Error('tar entry overruns the body');
+        files.push({ path: prefix === '' ? name : `${prefix}/${name}`, bytes: buffer.subarray(start, start + size) });
+        at = start + Math.ceil(size / BLOCK) * BLOCK;
+    }
+    throw new Error('tar has no end marker');
+}
