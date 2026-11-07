@@ -1,10 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from '../src/adopt-skeleton.js';
 import { AdoptionBlocked, commandMark, Inconclusive, type RunOutcome, type AdoptedRun } from '../src/runner.js';
 import type { EndEvidence } from '../src/termination.js';
 import { boardJob } from './fixtures/board-job.js';
 
 const job = boardJob({ claimSeq: 5 });
+
+// The paced listing is bounded by wall-clock time (`driver/src/poll.ts`). Date is frozen so a host pause
+// cannot eat that window; only a pacing sleep moves it, by exactly the pause it was asked for.
+beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+});
+afterEach(() => {
+    vi.useRealTimers();
+});
+const elapse = async (ms: number): Promise<void> => {
+    vi.setSystemTime(Date.now() + ms);
+};
 const MARK = commandMark(job.command);
 
 interface Earlier extends EarlierRun {
@@ -244,7 +256,8 @@ describe('adoptEarlierRun', () => {
                 pacing: {
                     attempts: 3,
                     retryMs: 5,
-                    sleep: async () => {
+                    sleep: async (ms) => {
+                        await elapse(ms);
                         abort.abort();
                     },
                 },
@@ -347,6 +360,7 @@ describe('adoptEarlierRun', () => {
                     retryMs: 2000,
                     sleep: async (ms) => {
                         pauses.push(ms);
+                        await elapse(ms);
                     },
                 },
                 list: async () => {
@@ -362,7 +376,7 @@ describe('adoptEarlierRun', () => {
         it('adopts when a retry is answered', async () => {
             let tries = 0;
             const { p } = fake([], {
-                pacing: { attempts: 3, retryMs: 1, sleep: async () => undefined },
+                pacing: { attempts: 3, retryMs: 1, sleep: elapse },
                 list: async () => {
                     tries += 1;
                     if (tries < 2) throw new Error('daemon refused');
@@ -370,6 +384,25 @@ describe('adoptEarlierRun', () => {
                 },
             });
             expect((await adoptEarlierRun(p, new Map(), job))?.claimSeq).toBe(2);
+        });
+
+        it('a slow first listing still gets its paced retries', async () => {
+            let tries = 0;
+            const { p } = fake([], {
+                pacing: { attempts: 3, retryMs: 1, sleep: elapse },
+                list: async () => {
+                    tries += 1;
+                    // Stalls on the monotonic clock: a busy-wait on the faked Date would never end.
+                    const from = performance.now();
+                    while (performance.now() - from < 10) {
+                        // a host pause longer than the whole 3 ms pacing window
+                    }
+                    if (tries < 2) throw new Error('daemon refused');
+                    return [earlier(2)];
+                },
+            });
+            expect((await adoptEarlierRun(p, new Map(), job))?.claimSeq).toBe(2);
+            expect(tries).toBe(2);
         });
     });
 });
