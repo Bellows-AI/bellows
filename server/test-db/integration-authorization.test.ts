@@ -1174,19 +1174,23 @@ describe.skipIf(!enabled)('redaction', () => {
     });
 });
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-/** Waits, on the database's clock and for at most five seconds, until the authorization's deadline has passed. */
-async function pastDeadline(id: string): Promise<void> {
-    const until = Date.now() + 5_000;
-    for (;;) {
-        const [row] = await db.sql<{ past: boolean }[]>`
-            select deadline_at < now() as past from integration_authorization where id = ${id}
-        `;
-        if (row?.past) return;
-        if (Date.now() > until) throw new Error('the authorization deadline never passed');
-        await sleep(10);
-    }
+/**
+ * Ends the authorization's window without waiting for it. First the property under test: the grant's claim ends exactly
+ * at the authorization's `deadline_at`. Then both timestamps move an hour into the past together, so recovery sees an
+ * expired claim and an overdue authorization however loaded the host is.
+ */
+async function expireWindow(grantId: string, id: string): Promise<void> {
+    const [row] = await db.sql<{ same: boolean }[]>`
+        select g.lineage_claim_expires_at = au.deadline_at as same
+        from integration_grant g join integration_authorization au on au.grant_claim = g.lineage_claim
+        where au.id = ${id} and g.id = ${grantId}
+    `;
+    expect(row).toEqual({ same: true });
+    await db.sql.begin(async (tx) => {
+        await tx`update integration_authorization set deadline_at = deadline_at - interval '2 days' where id = ${id}`;
+        await tx`update integration_grant set lineage_claim_expires_at = lineage_claim_expires_at - interval '2 days'
+            where id = ${grantId}`;
+    });
 }
 
 /** The store call lands, then the caller is held: the write is durable and its holder cannot continue. */
@@ -1203,27 +1207,52 @@ const parkAfterReplace = (store: SecretStore, gate: ReturnType<typeof parked>): 
     },
 });
 
-/** The flow's claim is held before its UPDATE is issued, so its `now()` (and a lease from it) starts late. */
-const delayedClaim =
-    (gate: ReturnType<typeof parked>) =>
+// The cases whose subject is recovery after a parked claim: the authorization's window is hours wide, so no host stall
+// can spend it, and the process clock is faked (`freezeClock`), so the flow's own fence fires only when `passFence`
+// advances it, after the case's barrier has been entered. The test never writes the claim's end or the deadline before
+// `expireWindow` has asserted the production-written pair is equal. Window 8 h, lease 6 h: a claim taken for the lease
+// instead of the deadline differs from `deadline_at`.
+const HOUR_MS = 3_600_000;
+const PARKED: Partial<LineageTiming> = {
+    exchangeDeadlineMs: 3 * HOUR_MS,
+    readDeadlineMs: HOUR_MS,
+    persistBudgetMs: HOUR_MS,
+    marginMs: HOUR_MS,
+};
+const PARKED_WINDOW_MS = 8 * HOUR_MS;
+
+/** Injects a host stall (a database sleep, which the fake timers do not touch) before and/or after the claim. */
+const stalledClaims =
+    ({ beforeMs = 0, afterMs = 0 } = {}) =>
     (lineage: GrantLineage): GrantLineage => ({
         ...lineage,
         claimLineage: async (...args) => {
-            await gate.hold();
-            return lineage.claimLineage(...args);
+            if (beforeMs > 0) await db.sql`select pg_sleep(${beforeMs / 1000})`;
+            const claimed = await lineage.claimLineage(...args);
+            if (afterMs > 0) await db.sql`select pg_sleep(${afterMs / 1000})`;
+            return claimed;
         },
     });
 
-// Window 800 ms, lease 700 ms, fence at the claim's end minus 100 ms. Orderings the tests rely on:
-// deadline < recovery < store gate release < (before the fix) the delayed claim's fence.
-const TIGHT: Partial<LineageTiming> = {
-    exchangeDeadlineMs: 200,
-    readDeadlineMs: 100,
-    persistBudgetMs: 300,
-    marginMs: 100,
+/** Fakes the process clock (Date, and the timers the fence is set with), frozen, before the flow starts. */
+const freezeClock = () => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+
+// The cases that hold the holder BEFORE its store call never move the fake clock: the order they rely on is deadline,
+// then recovery, then the holder's release, and the holder's own fence must not fire before recovery. Freezing the
+// clock until the barrier is entered holds the fence back however slow the host is; the clock is given back before
+// recovery runs.
+
+/** Moves the frozen clock past the unchanged fence, which fires it, and gives the real clock back. */
+const passFence = (ms: number) => {
+    vi.advanceTimersByTime(ms);
+    vi.useRealTimers();
 };
 
 describe.skipIf(!enabled)('complete: the claim runs on the authorization deadline', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
     const reconnectOf = async (r: Rig) => {
         const seeded = await seedConnected(r);
         const started = await begin(r, { provider: 'jira', connectionId: seeded.connectionId });
@@ -1232,40 +1261,57 @@ describe.skipIf(!enabled)('complete: the claim runs on the authorization deadlin
     /** A reconnect whose replace landed in the store and whose holder is then held; recovery finds the claim at its end. */
     const heldAfterReplace = async () => {
         const gate = parked();
-        const a = rig({ timing: TIGHT, store: (h) => parkAfterReplace(h.open(), gate) });
+        const a = rig({
+            timing: PARKED,
+            store: (h) => parkAfterReplace(h.open(), gate),
+            flowLineage: stalledClaims(),
+        });
         const { seeded, started, before } = await reconnectOf(a);
+        freezeClock();
         const completing = complete(a, { state: started.state, code: CODE });
         await gate.entered;
-        await pastDeadline(started.authorizationId);
+        await expireWindow(seeded.grantId, started.authorizationId);
+        passFence(PARKED_WINDOW_MS);
         return { a, gate, seeded, started, before, completing };
     };
 
-    it('a reconnect whose delayed claim is parked before the store: recovery on another instance fences it, the authorization fails and the grant is not finalized', async () => {
-        const claimGate = parked();
-        const storeGate = parked();
-        const a = rig({
-            timing: TIGHT,
-            store: (h) => parkBeforeStore(h.open(), 'replace', storeGate),
-            flowLineage: delayedClaim(claimGate),
-        });
-        const { seeded, started, before } = await reconnectOf(a);
-        const completing = complete(a, { state: started.state, code: CODE });
-        await claimGate.entered;
-        await sleep(600);
-        claimGate.release();
-        await storeGate.entered;
-        await pastDeadline(started.authorizationId);
+    it.each([
+        ['', {}],
+        [', after a host stall before the claim', { beforeMs: 900 }],
+        [', after a host stall after the claim', { afterMs: 900 }],
+    ])(
+        'a reconnect parked before the store%s: recovery on another instance fences it, the authorization fails and the grant is not finalized',
+        async (_name, stall) => {
+            const storeGate = parked();
+            const a = rig({
+                timing: PARKED,
+                store: (h) => parkBeforeStore(h.open(), 'replace', storeGate),
+                flowLineage: stalledClaims(stall),
+            });
+            const { seeded, started, before } = await reconnectOf(a);
+            freezeClock();
+            const completing = complete(a, { state: started.state, code: CODE });
+            // A flow that ended before the store call lost its window to the stall: fail here, not at the case timeout.
+            await Promise.race([
+                storeGate.entered,
+                completing.then((result) => {
+                    throw new Error(`the flow ended before the store call: ${JSON.stringify(result)}`);
+                }),
+            ]);
+            await expireWindow(seeded.grantId, started.authorizationId);
+            vi.useRealTimers();
 
-        expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('interrupted');
-        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'interrupted' });
-        storeGate.release();
-        expect(await completing).toMatchObject({ ok: false });
-        expect(await grantOf(seeded.grantId)).toMatchObject({
-            version: before.version,
-            secret_version: before.secret_version,
-            lineage_finalized_claim: null,
-        });
-    });
+            expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('interrupted');
+            expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'interrupted' });
+            storeGate.release();
+            expect(await completing).toMatchObject({ ok: false });
+            expect(await grantOf(seeded.grantId)).toMatchObject({
+                version: before.version,
+                secret_version: before.secret_version,
+                lineage_finalized_claim: null,
+            });
+        }
+    );
 
     it('a reconnect parked after its replace landed: recovery finalizes from the store and completes the authorization', async () => {
         const { a, gate, seeded, started, before, completing } = await heldAfterReplace();
@@ -1286,22 +1332,20 @@ describe.skipIf(!enabled)('complete: the claim runs on the authorization deadlin
     });
 
     it('the same race on a connect that finds the caller’s existing grant', async () => {
-        const claimGate = parked();
         const storeGate = parked();
         const a = rig({
-            timing: TIGHT,
+            timing: PARKED,
             store: (h) => parkBeforeStore(h.open(), 'replace', storeGate),
-            flowLineage: delayedClaim(claimGate),
+            flowLineage: stalledClaims(),
         });
         const seeded = await seedConnected(a);
         const started = await begin(a);
         const before = await grantOf(seeded.grantId);
+        freezeClock();
         const completing = complete(a, { state: started.state, code: CODE });
-        await claimGate.entered;
-        await sleep(600);
-        claimGate.release();
         await storeGate.entered;
-        await pastDeadline(started.authorizationId);
+        await expireWindow(seeded.grantId, started.authorizationId);
+        vi.useRealTimers();
 
         expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('interrupted');
         storeGate.release();
@@ -1456,13 +1500,12 @@ describe.skipIf(!enabled)('complete: the claim runs on the authorization deadlin
         const seeded = await seedConnected(r);
         const claimed = await r.lineage.claimLineage(seeded.grantId, 'refresh', { rotates: false });
         expect(claimed.ok).toBe(true);
-        const [row] = await db.sql<{ left_ms: string }[]>`
-            select extract(epoch from (lineage_claim_expires_at - now())) * 1000 as left_ms
+        // Both timestamps come from the claim's own statement, so the span is exact whatever the host's load.
+        const [row] = await db.sql<{ lease_ms: string }[]>`
+            select extract(epoch from (lineage_claim_expires_at - updated_at)) * 1000 as lease_ms
             from integration_grant where id = ${seeded.grantId}
         `;
-        const leftMs = Number(row!.left_ms);
-        expect(leftMs).toBeGreaterThan(r.lineage.leaseMs - 2_000);
-        expect(leftMs).toBeLessThanOrEqual(r.lineage.leaseMs);
+        expect(Number(row!.lease_ms)).toBe(r.lineage.leaseMs);
         if (claimed.ok) expect(claimed.claim.deadlineAt - Date.now()).toBeLessThanOrEqual(r.lineage.leaseMs);
     });
 });
