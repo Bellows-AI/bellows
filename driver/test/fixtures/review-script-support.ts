@@ -128,3 +128,18 @@ export const writeFixture = (body: Record<string, unknown>): string => {
     writeFileSync(file, JSON.stringify(body));
     return file;
 };
+
+/** Call the stub `gh` directly with `args` (credentialed, canned fixture): its exit code and stdout, never a throw. */
+export async function runStubGh(args: string[]): Promise<{ code: number; stdout: string }> {
+    const dir = mkdtempSync(join(tmpdir(), 'review-direct-'));
+    tempDirs.add(dir);
+    writePayloads(fixture('gh-responses.json'), join(dir, 'responses'));
+    const env = { ...process.env, PATH: `${stubBin()}:${process.env.PATH}`, GITHUB_TOKEN: TEST_TOKEN };
+    try {
+        const { stdout } = await execFile('gh', args, { env: { ...env, GH_RESP_DIR: join(dir, 'responses') } });
+        return { code: 0, stdout };
+    } catch (error) {
+        const failure = error as { code: number; stdout: string };
+        return { code: failure.code, stdout: failure.stdout };
+    }
+}

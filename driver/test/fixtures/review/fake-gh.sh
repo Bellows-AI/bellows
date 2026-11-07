@@ -36,7 +36,9 @@ if [ -n "$GH_HTTP_STATUS" ]; then
     exit 1
 fi
 
-# Later matches win, as the REST path (the second argument, after `api`) is checked last.
+# The old stub's regexes, kept as strict: numeric ids only, a 40-hex sha, and `/reviews` or a
+# comments path ending at whitespace/end. Newlines (graphql queries) count as whitespace.
+# Later matches win: requested < general < reviews < reply < inline < checks.
 key=
 joined="$*"
 query=
@@ -54,14 +56,20 @@ case $joined in *graphql*)
     esac
     ;;
 esac
-case ${2-} in
-    *requested_reviewers*) key=requested ;;
-    */issues/[0-9]*/comments*) key=general ;;
-    */reviews) key=reviews ;;
-    */comments/[0-9]*/replies*) key=reply ;;
-    */pulls/[0-9]*/comments) key=inline ;;
-    */commits/*/check-runs*) key=checks ;;
-esac
+case $joined in *requested_reviewers*) key=requested ;; esac
+hits=$(printf '%s' "$joined" | tr '\n' ' ' |
+    grep -Eo 'issues/[0-9]+/comments|/reviews( |$)|comments/[0-9]+/replies|pulls/[0-9]+/comments( |$)|commits/[0-9a-f]{40}/check-runs')
+for rank in general reviews reply inline checks; do
+    case $rank in
+        general) pat='issues/[0-9]*/comments' ;;
+        reviews) pat='/reviews*' ;;
+        reply) pat='comments/[0-9]*/replies' ;;
+        inline) pat='pulls/[0-9]*/comments*' ;;
+        checks) pat='commits/*/check-runs' ;;
+    esac
+    # shellcheck disable=SC2254
+    case $hits in *$pat*) key=$rank ;; esac
+done
 
 if [ -z "$key" ]; then
     echo "gh: no fixture for $joined" >&2
