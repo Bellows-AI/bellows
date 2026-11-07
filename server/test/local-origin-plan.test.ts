@@ -1,10 +1,22 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    chmodSync,
+    closeSync,
+    createReadStream,
+    mkdirSync,
+    mkdtempSync,
+    openSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    constants as fsConstants,
+    writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { READ_TRANSPORT } from '@factory-ai/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOriginPlanReader } from '../src/github/local-origin-plan.js';
 
 /*
@@ -15,7 +27,11 @@ import { createOriginPlanReader } from '../src/github/local-origin-plan.js';
  */
 const roots: string[] = [];
 const servers: Server[] = [];
+const fifos: string[] = [];
 afterEach(() => {
+    vi.restoreAllMocks();
+    // A reader still blocked in open(2) on a FIFO nobody wrote to is released by a read-write open.
+    for (const path of fifos.splice(0)) closeSync(openSync(path, fsConstants.O_RDWR));
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
     for (const server of servers.splice(0)) server.close();
 });
@@ -60,38 +76,83 @@ function readerOver(base: string, options: { timeoutMs?: number; gitBin?: string
 }
 
 /** An origin that accepts a connection and never answers: the shape of a hung network path. */
-async function silentOrigin(): Promise<string> {
-    const server = createServer(() => {});
+async function silentOrigin(): Promise<{ url: string; connected: Promise<void> }> {
+    let connect!: () => void;
+    const connected = new Promise<void>((resolve) => {
+        connect = resolve;
+    });
+    const server = createServer(() => connect());
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    return `git://127.0.0.1:${(server.address() as { port: number }).port}`;
+    return { url: `git://127.0.0.1:${(server.address() as { port: number }).port}`, connected };
 }
 
-/** A `git` that stalls on `stallOn`'s subcommand and runs everything else for real. */
-function slowGit(stallOn: string): string {
+/**
+ * A named pipe the test reads. `drain()` resolves with everything written once every writer has closed
+ * it, and is the test's event for "the stub reached this step" (or, for a held descriptor, "it died").
+ */
+function fifo() {
+    const path = join(tempDir('fifo-'), 'pipe');
+    execFileSync('mkfifo', [path]);
+    fifos.push(path);
+    return {
+        path,
+        drain: () =>
+            new Promise<string>((resolve, reject) => {
+                const chunks: string[] = [];
+                createReadStream(path, { encoding: 'utf8' })
+                    .on('data', (chunk) => chunks.push(String(chunk)))
+                    .on('end', () => resolve(chunks.join('')))
+                    .on('error', reject);
+            }),
+    };
+}
+
+/** The read deadline, handed to the reader as a signal the test aborts; any other timeout stays real. */
+const DEADLINE_MS = 424_242;
+function controlledDeadline() {
+    const controller = new AbortController();
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi
+        .spyOn(AbortSignal, 'timeout')
+        .mockImplementation((ms) => (ms === DEADLINE_MS ? controller.signal : real(ms)));
+    return { spy, expire: () => controller.abort(new DOMException('deadline', 'TimeoutError')) };
+}
+
+/** A `git` that stalls on `stallOn`'s subcommand, writing to `startedPipe` first, and runs everything else for real. */
+function slowGit(stallOn: string, startedPipe: string): string {
     const bin = join(tempDir('slow-git-'), 'git');
-    writeFileSync(bin, `#!/bin/sh\nfor a in "$@"; do [ "$a" = ${stallOn} ] && exec sleep 30; done\nexec git "$@"\n`);
-    chmodSync(bin, 0o755);
-    return bin;
-}
-
-/** A `git` that, on `stallOn`, forks a stalled child (a transport helper's shape) and records its pid. */
-function forkingGit(stallOn: string, pidFile: string): string {
-    const bin = join(tempDir('fork-git-'), 'git');
     writeFileSync(
         bin,
-        `#!/bin/sh\nfor a in "$@"; do if [ "$a" = ${stallOn} ]; then sleep 30 & echo $! > ${pidFile}; wait; fi; done\nexec git "$@"\n`
+        `#!/bin/sh\nfor a in "$@"; do if [ "$a" = ${stallOn} ]; then echo started > ${startedPipe}; exec sleep 30; fi; done\nexec git "$@"\n`
     );
     chmodSync(bin, 0o755);
     return bin;
 }
 
-const alive = (pid: number) => {
+/**
+ * A `git` that, on `stallOn`, forks a stalled child (a transport helper's shape). The child announces its
+ * pid on `pidPipe` only after it holds `lifelinePipe` open for writing, and `sleep` keeps that descriptor
+ * until it dies, so the lifeline's EOF is the death of the child.
+ */
+function forkingGit(stallOn: string, pidPipe: string, lifelinePipe: string): string {
+    const bin = join(tempDir('fork-git-'), 'git');
+    writeFileSync(
+        bin,
+        `#!/bin/sh\nfor a in "$@"; do if [ "$a" = ${stallOn} ]; then sh -c 'exec 3>${lifelinePipe}; echo $$ > ${pidPipe}; exec sleep 30' & wait; fi; done\nexec git "$@"\n`
+    );
+    chmodSync(bin, 0o755);
+    return bin;
+}
+
+/** Gone from the process table; an exited orphan awaiting its new parent's wait(2) is a zombie and has ended. */
+const gone = (pid: number) => {
     try {
-        process.kill(pid, 0);
-        return true;
+        return execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' })
+            .trim()
+            .startsWith('Z');
     } catch {
-        return false;
+        return true;
     }
 };
 
@@ -173,39 +234,69 @@ describe('the origin plan reader', () => {
     });
 
     it('rejects as an outage when the origin accepts and never answers, within the deadline', async () => {
-        const { reader } = readerOver(await silentOrigin(), { timeoutMs: 700 });
+        const { expire, spy } = controlledDeadline();
+        const origin = await silentOrigin();
+        const { reader } = readerOver(origin.url, { timeoutMs: DEADLINE_MS });
 
-        const started = Date.now();
-        await expect(reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+        const settled = reader.read('acme/web', 'main').then(
+            () => null,
+            (e: unknown) => e
+        );
+        await origin.connected;
+        expire();
 
-        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(await settled).toMatchObject({ kind: READ_TRANSPORT });
+        expect(spy).toHaveBeenCalledWith(DEADLINE_MS);
     });
 
     it('carries the same deadline through the reads after the fetch', async () => {
         const { base } = mirror('acme/web', [SERVICE]);
-        const { reader, leftovers } = readerOver(base, { timeoutMs: 1_500, gitBin: slowGit('for-each-ref') });
+        const { expire, spy } = controlledDeadline();
+        const stalled = fifo();
+        const { reader, leftovers } = readerOver(base, {
+            timeoutMs: DEADLINE_MS,
+            gitBin: slowGit('for-each-ref', stalled.path),
+        });
 
-        const started = Date.now();
-        await expect(reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+        const settled = reader.read('acme/web', 'main').then(
+            () => null,
+            (e: unknown) => e
+        );
+        // The earlier git calls (init, ls-remote, fetch) ran for real: the deadline is still open at the stall.
+        await stalled.drain();
+        expire();
 
-        expect(Date.now() - started).toBeLessThan(10_000);
+        expect(await settled).toMatchObject({ kind: READ_TRANSPORT });
+        expect(spy).toHaveBeenCalledWith(DEADLINE_MS);
         expect(leftovers()).toEqual([]);
     });
 
     it('kills the whole git process group at the deadline, so no transport child outlives the read', async () => {
         const { base } = mirror('acme/web', [SERVICE]);
-        const pidFile = join(tempDir('pid-'), 'child');
-        // `init` is the read's first git call, so the child exists long before the deadline even on a loaded host.
-        const { reader } = readerOver(base, { timeoutMs: 5_000, gitBin: forkingGit('init', pidFile) });
+        const { expire, spy } = controlledDeadline();
+        const pidPipe = fifo();
+        const lifeline = fifo();
+        // `init` is the read's first git call. The deadline is the test's to fire, after the child is running.
+        const { reader } = readerOver(base, {
+            timeoutMs: DEADLINE_MS,
+            gitBin: forkingGit('init', pidPipe.path, lifeline.path),
+        });
+        const childGone = lifeline.drain(); // listening before the abort, so the EOF cannot be missed
 
-        const settled = reader.read('acme/web', 'main').catch((e: unknown) => e);
-        await expect
-            .poll(() => readFileSync(pidFile, { encoding: 'utf8', flag: 'a+' }).trim(), { timeout: 5_000 })
-            .not.toBe('');
+        const settled = reader.read('acme/web', 'main').then(
+            () => null,
+            (e: unknown) => e
+        );
+        const child = Number((await pidPipe.drain()).trim());
+        expect(child).toBeGreaterThan(0);
+        expect(gone(child)).toBe(false);
+        expire();
+
         expect(await settled).toMatchObject({ kind: READ_TRANSPORT });
-
-        const child = Number(readFileSync(pidFile, 'utf8').trim());
-        await expect.poll(() => alive(child), { timeout: 2_000 }).toBe(false);
+        expect(spy).toHaveBeenCalledWith(DEADLINE_MS);
+        await childGone;
+        // EOF is the child closing its descriptors on exit; the process table catches up within the exit itself.
+        await expect.poll(() => gone(child)).toBe(true);
     }, 15_000);
 
     it('leaves no scratch directory behind: success, missing branch, outage and timeout', async () => {
@@ -216,7 +307,7 @@ describe('the origin plan reader', () => {
         await expect(reader.read('acme/other', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
         expect(leftovers()).toEqual([]);
 
-        const hung = readerOver(await silentOrigin(), { timeoutMs: 500 });
+        const hung = readerOver((await silentOrigin()).url, { timeoutMs: 500 });
         await expect(hung.reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
         expect(hung.leftovers()).toEqual([]);
     });
