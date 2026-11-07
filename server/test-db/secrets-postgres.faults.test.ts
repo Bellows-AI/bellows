@@ -8,6 +8,7 @@ import {
     createSecret,
     dbError,
     externalPayloads,
+    roomyStatements,
     testIdentity,
     utf8,
     wrappedPayloads,
@@ -143,7 +144,9 @@ describe.skipIf(!enabled)('payload store faults', () => {
         });
         // Setup runs at the harness deadline; the case's tight one bounds only the collect pass under test.
         const setup = h.openSetup(external.factory);
-        const plain = h.openWith(h.faultyRepo, external.factory);
+        // The tight store's repo calls keep the tight client-side deadline but get a roomy server-side
+        // statement_timeout, so retiring the row is not a real-time bound inside the pass.
+        const plain = h.openWith(roomyStatements(h.faultyRepo), external.factory);
         const seeded = await createSecret(setup, identity, utf8('one'));
         h.faults.providerDelete = 'fail';
         await setup.delete({
@@ -166,7 +169,14 @@ describe.skipIf(!enabled)('payload store faults', () => {
             const pass = store.collect().finally(() => {
                 finished = true;
             });
-            await entered;
+            const reached = await Promise.race([
+                entered.then(() => true),
+                pass.then(
+                    () => false,
+                    () => false
+                ),
+            ]);
+            expect(reached, 'collect settled before the external removal was entered').toBe(true);
             await vi.advanceTimersByTimeAsync(149);
             expect(finished).toBe(false);
             await vi.advanceTimersByTimeAsync(1);
@@ -309,18 +319,35 @@ describe.skipIf(!enabled)('database faults', () => {
     it('a persistent one is unavailable within deadlineMs + 500 ms of wall clock', async () => {
         const h = createPostgresHarness(db.sql, { deadlineMs: 300 });
         const identity = testIdentity();
-        const seeded = await createSecret(h.open(), identity, utf8('one'));
+        const seeded = await createSecret(h.openSetup(), identity, utf8('one'));
+        const operationId = await h.openSetup().issueOperationId();
         const { repo } = scripted(h.realRepo, () => dbError('53300'));
-        const started = Date.now();
-        const result = await h.openWith(repo).replace({
-            identity,
-            ref: seeded.ref,
-            operationId: await h.open().issueOperationId(),
-            expectedVersion: seeded.version,
-            payload: utf8('two'),
-        });
-        expect(Date.now() - started).toBeLessThan(300 + 500);
-        expect(result).toEqual({ ok: false, error: { code: 'unavailable', reason: 'provider-unavailable' } });
+        // The retry loop's budget and backoff run on Date and timers, which are faked for the call: the elapsed
+        // time is the clock the test advances, so the bound measures the deadline, not the host's load.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            const started = Date.now();
+            let settled = false;
+            const call = h
+                .openWith(repo)
+                .replace({
+                    identity,
+                    ref: seeded.ref,
+                    operationId,
+                    expectedVersion: seeded.version,
+                    payload: utf8('two'),
+                })
+                .finally(() => {
+                    settled = true;
+                });
+            while (!settled && Date.now() - started <= 300 + 500) {
+                await vi.advanceTimersByTimeAsync(5);
+            }
+            expect(settled, 'the call outlasted deadlineMs + 500 ms').toBe(true);
+            expect(await call).toEqual({ ok: false, error: { code: 'unavailable', reason: 'provider-unavailable' } });
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('a SQLSTATE outside the transient classes is unavailable without a retry', async () => {

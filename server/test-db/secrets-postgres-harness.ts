@@ -157,6 +157,28 @@ export async function databaseSnapshot(sql: Sql): Promise<Record<string, unknown
     return db;
 }
 
+/**
+ * `repo` with every call keeping its caller's (tight) deadline but running its statements under at least 3 s of
+ * server-side budget, so a case that tests a deadline does not also race PostgreSQL's real statement_timeout.
+ */
+export function roomyStatements(real: SecretRepo): SecretRepo {
+    return new Proxy(real, {
+        get(target, key, receiver) {
+            const value = Reflect.get(target, key, receiver);
+            if (typeof value !== 'function') {
+                return value;
+            }
+            return (...args: unknown[]) => {
+                const last = args.length - 1;
+                if (typeof args[last] === 'number') {
+                    args[last] = Math.max(args[last] as number, HELD_CALL_DEADLINE_MS);
+                }
+                return value.apply(target, args);
+            };
+        },
+    });
+}
+
 export interface PostgresHarness extends SecretStoreHarness {
     keys: MutableKeys;
     /**

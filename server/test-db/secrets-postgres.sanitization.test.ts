@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useTestDb } from './harness.js';
-import { createPostgresHarness, createSecret, testIdentity, utf8 } from './secrets-postgres-harness.js';
+import {
+    createPostgresHarness,
+    createSecret,
+    roomyStatements,
+    testIdentity,
+    utf8,
+} from './secrets-postgres-harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 const db = useTestDb({ max: 8 });
@@ -31,7 +37,7 @@ describe.skipIf(!enabled)('sanitization', () => {
         const payloadSentinel = `SENTINEL-${crypto.randomUUID()}-payload`;
         const bodySentinel = `SENTINEL-${crypto.randomUUID()}-body`;
         const identity = testIdentity();
-        const store = h.open();
+        const store = h.openWith(roomyStatements(h.faultyRepo));
         const seen: unknown[] = [];
 
         const s = await createSecret(h.openSetup(), identity, utf8(payloadSentinel));
