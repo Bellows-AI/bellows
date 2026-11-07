@@ -1175,23 +1175,6 @@ describe.skipIf(!enabled)('redaction', () => {
 });
 
 /**
- * Waits, on the database's clock and for at most five seconds, until the authorization's deadline has passed. Only for
- * a flow that must itself reach its in-process fence (`heldAfterReplace`): that fence runs on the process clock, which
- * the stored timestamps cannot move.
- */
-async function pastDeadline(id: string): Promise<void> {
-    const until = Date.now() + 5_000;
-    for (;;) {
-        const [row] = await db.sql<{ past: boolean }[]>`
-            select deadline_at < now() as past from integration_authorization where id = ${id}
-        `;
-        if (row?.past) return;
-        if (Date.now() > until) throw new Error('the authorization deadline never passed');
-        await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
-}
-
-/**
  * Ends the authorization's window without waiting for it. First the property under test: the grant's claim ends exactly
  * at the authorization's `deadline_at`. Then both timestamps move an hour into the past together, so recovery sees an
  * expired claim and an overdue authorization however loaded the host is.
@@ -1224,17 +1207,18 @@ const parkAfterReplace = (store: SecretStore, gate: ReturnType<typeof parked>): 
     },
 });
 
-// Window 800 ms, lease 700 ms, fence at the claim's end minus 100 ms: for the holder that must reach its fence in
-// real time (`heldAfterReplace`).
-const TIGHT: Partial<LineageTiming> = {
-    exchangeDeadlineMs: 200,
-    readDeadlineMs: 100,
-    persistBudgetMs: 300,
-    marginMs: 100,
+// For the holder that must reach its in-process fence: a window so wide that real time never reaches it, then the
+// fake clock is advanced past it (`heldAfterReplace`).
+const HELD: Partial<LineageTiming> = {
+    exchangeDeadlineMs: 60_000,
+    readDeadlineMs: 10_000,
+    persistBudgetMs: 120_000,
+    marginMs: 10_000,
 };
 
 // A window wide enough that the flow reaches its store gate however loaded the host is; the tests end the window by
-// moving the stored timestamps (`expireWindow`), never by waiting. Window 8 s, lease 7 s: a claim taken for the lease
+// moving the stored timestamps (`expireWindow`) and, where the flow's own fence matters, the process Date, never by
+// waiting. Window 8 s, lease 7 s: a claim taken for the lease
 // instead of the deadline ends a second early, so the equality `expireWindow` asserts tells the two apart.
 const WIDE: Partial<LineageTiming> = {
     exchangeDeadlineMs: 2_000,
@@ -1244,6 +1228,10 @@ const WIDE: Partial<LineageTiming> = {
 };
 
 describe.skipIf(!enabled)('complete: the claim runs on the authorization deadline', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
     const reconnectOf = async (r: Rig) => {
         const seeded = await seedConnected(r);
         const started = await begin(r, { provider: 'jira', connectionId: seeded.connectionId });
@@ -1252,11 +1240,16 @@ describe.skipIf(!enabled)('complete: the claim runs on the authorization deadlin
     /** A reconnect whose replace landed in the store and whose holder is then held; recovery finds the claim at its end. */
     const heldAfterReplace = async () => {
         const gate = parked();
-        const a = rig({ timing: TIGHT, store: (h) => parkAfterReplace(h.open(), gate) });
+        const a = rig({ timing: HELD, store: (h) => parkAfterReplace(h.open(), gate) });
         const { seeded, started, before } = await reconnectOf(a);
+        // The flow's fence is a timer on the process clock, set when its store call starts. Fake that timer and the
+        // Date before the flow runs (the clock keeps ticking, so everything else the flow awaits still progresses),
+        // and the window is minutes wide so the fence cannot fire until the test advances it past the barrier.
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
         const completing = complete(a, { state: started.state, code: CODE });
         await gate.entered;
-        await pastDeadline(started.authorizationId);
+        await expireWindow(seeded.grantId, started.authorizationId);
+        vi.advanceTimersByTime(250_000); // HELD window: 2 * 60 s + 120 s + 10 s
         return { a, gate, seeded, started, before, completing };
     };
 
