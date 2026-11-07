@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SecretRepo } from '../src/secrets/postgres-secret-repo.js';
 import { ProviderFault } from '../src/secrets/secret-payloads.js';
 import { useTestDb } from './harness.js';
@@ -131,7 +131,16 @@ describe.skipIf(!enabled)('payload store faults', () => {
         const h = createPostgresHarness(db.sql, { deadlineMs: 150 });
         const identity = testIdentity();
         let hang = true;
-        const external = externalPayloads({ remove: () => (hang ? new Promise<void>(() => {}) : Promise.resolve()) });
+        let removalEntered = () => {};
+        const entered = new Promise<void>((resolve) => {
+            removalEntered = resolve;
+        });
+        const external = externalPayloads({
+            remove: () => {
+                removalEntered();
+                return hang ? new Promise<void>(() => {}) : Promise.resolve();
+            },
+        });
         // Setup runs at the harness deadline; the case's tight one bounds only the collect pass under test.
         const setup = h.openSetup(external.factory);
         const plain = h.openWith(h.faultyRepo, external.factory);
@@ -147,9 +156,24 @@ describe.skipIf(!enabled)('payload store faults', () => {
         expect((await versionStates(seeded.ref)).map((v) => v.state)).toEqual(['cleanup-pending']);
 
         const store = plain;
-        // The removal never settles, so collect() returning at all is the deadline cutting the hang; a
-        // wall-clock bound on top would only measure host load.
-        expect((await store.collect()).removed).toBe(0);
+        // The deadline is a Date.now()-based budget raced against a setTimeout. Both are faked for this pass only:
+        // Date stays frozen, so the pass's database work spends none of the 150 ms, and the timer fires only when
+        // the test advances it, after the external removal is observed pending. 149 ms leaves the pass waiting
+        // and the 150th settles it, which pins the deadline's value without the wall clock.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            let finished = false;
+            const pass = store.collect().finally(() => {
+                finished = true;
+            });
+            await entered;
+            await vi.advanceTimersByTimeAsync(149);
+            expect(finished).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect((await pass).removed).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
         expect((await versionStates(seeded.ref)).map((v) => v.state)).toEqual(['deleting']);
 
         // The pass after the hang lifts has its own budget: on a loaded runner its database work alone
