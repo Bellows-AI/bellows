@@ -429,7 +429,7 @@ describe('cleanup.sh', () => {
             const sleeps = join(dir, 'sleeps');
             const sentinel = fakeSleep(
                 dir,
-                `while kill -0 ${named.pid} ${inside.pid} 2>/dev/null; do /bin/sleep 0.05; done`
+                `for p in ${named.pid} ${inside.pid}; do while kill -0 $p 2>/dev/null; do /bin/sleep 0.05; done; done`
             );
 
             // Async, so the children's exits are reaped while the script still waits on them.
