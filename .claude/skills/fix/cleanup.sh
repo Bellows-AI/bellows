@@ -90,7 +90,22 @@ if [ -n "$victims" ]; then
     echo "cleanup: kill -TERM$victims"
     # shellcheck disable=SC2086
     kill -TERM $victims 2>/dev/null
-    sleep 5
+    # Grace: up to 5 s (50 polls), ending as soon as every victim is gone. A victim counts as gone only when
+    # kill -0 fails with ESRCH ("No such process"); sh cannot read errno, so the message is matched under
+    # LC_ALL=C. Any other failure (EPERM) or success is not gone, so it falls through to the KILL below.
+    gone() {
+        err="$(LC_ALL=C kill -0 "$1" 2>&1)" && return 1
+        case "$err" in *'No such process'*) return 0 ;; esac
+        return 1
+    }
+    i=0
+    while [ "$i" -lt 50 ]; do
+        alive=''
+        for pid in $victims; do gone "$pid" || alive="$alive $pid"; done
+        [ -z "$alive" ] && break
+        sleep 0.1
+        i=$((i + 1))
+    done
     for pid in $victims; do
         kill -0 "$pid" 2>/dev/null && run kill -KILL "$pid"
     done

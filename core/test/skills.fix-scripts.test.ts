@@ -51,6 +51,7 @@ const startHeavy = (env: NodeJS.ProcessEnv, args: string[]) => {
     const done = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
     return { child, done };
 };
+const spawned = (child: ChildProcess) => new Promise((resolve) => child.once('spawn', resolve));
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (check: () => boolean) => {
     for (let i = 0; i < 100 && !check(); i++) await sleep(50);
@@ -386,7 +387,18 @@ describe('cleanup.sh', () => {
             children.push(named, inside, sibling);
             const exited = (child: ChildProcess) => new Promise((resolve) => child.on('exit', resolve));
             const killed = Promise.all([exited(named), exited(inside)]);
-            await sleep(200);
+            await Promise.all([spawned(named), spawned(inside), spawned(sibling)]);
+            // The script's wait calls `sleep`; this one logs the call and returns only once both victims are gone,
+            // so the wait ends after at most one poll however loaded the host is. A fixed `sleep 5` is visible
+            // in the log whatever the timing.
+            const sleeps = join(dir, 'sleeps');
+            const victims = join(dir, 'victims');
+            writeFileSync(victims, `${named.pid} ${inside.pid}`);
+            writeFileSync(
+                join(dir, 'bin', 'sleep'),
+                `#!/bin/sh\necho "$*" >> ${sleeps}\nwhile kill -0 $(cat ${victims}) 2>/dev/null; do /bin/sleep 0.05; done\n`
+            );
+            chmodSync(join(dir, 'bin', 'sleep'), 0o755);
 
             // Async, so the children's exits are reaped while the script still waits on them.
             const run = spawn('sh', [CLEANUP, tag], { env, stdio: ['ignore', 'ignore', 'pipe'] });
@@ -397,6 +409,10 @@ describe('cleanup.sh', () => {
             expect(await exited(run), stderr).toBe(0);
             await killed;
             expect(sibling.exitCode).toBeNull();
+            // Early exit: the grace wait polled at most once (a poll is a sub-second sleep), never a fixed 5 s.
+            const polls = existsSync(sleeps) ? readFileSync(sleeps, 'utf8').trim().split('\n') : [];
+            expect(polls.length, polls.join(',')).toBeLessThanOrEqual(1);
+            for (const poll of polls) expect(Number(poll), poll).toBeLessThan(1);
 
             const calls = readFileSync(log, 'utf8');
             for (const call of [
@@ -431,7 +447,7 @@ describe('cleanup.sh', () => {
             const inside = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { cwd: worktree, stdio: 'ignore' });
             children.push(inside);
             const killed = new Promise((resolve) => inside.on('exit', resolve));
-            await sleep(200);
+            await spawned(inside);
 
             // Only the kill is asserted: the stripped PATH fails the cluster teardown, not under test here.
             const run = spawnSync('/bin/sh', [CLEANUP, '4242'], {
