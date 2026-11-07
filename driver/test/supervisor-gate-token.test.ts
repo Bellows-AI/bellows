@@ -334,8 +334,8 @@ function startGate(
 
 /** A token granted already past its expiry: the next call must renew it, with no waiting for the clock. */
 const EXPIRED = -1;
-/** The supervisor's per-ask budget in this file, longer than any wait here: its clock is moved past it, never waited out. */
-const ASK_BUDGET_MS = 60_000;
+/** The supervisor's per-ask budget in this file; its clock is moved past it, never waited out. */
+const ASK_BUDGET_MS = 300;
 const GITHUB_FILL = "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill";
 
 describe('a gate asks for its GitHub token through its mailbox', () => {
@@ -383,21 +383,20 @@ describe('a gate asks for its GitHub token through its mailbox', () => {
     });
 
     it('gives the run no verdict when an ask goes unanswered', async () => {
-        // The supervisor's clock, which the driver moves past the ask's budget when it declines to confirm.
-        const clock = { skew: 0 };
+        // The supervisor's clock is frozen; the driver moves it just past the ask's budget (300 ms), far below the
+        // step's own 20 s deadline, so only the ask-budget expiry can end the ask.
+        const clock = { at: Date.now() };
         const driver = await startDriver({
             lifeMs: EXPIRED,
-            unconfirmedMint: () => (clock.skew += ASK_BUDGET_MS + 1),
+            unconfirmedMint: () => (clock.at += ASK_BUDGET_MS + 1),
         });
-        const gate = startGate(
-            driver,
-            { SUPERVISOR_GATE_ASK_MS: String(ASK_BUDGET_MS), SUPERVISOR_GATE_LOST_MS: '600000' },
-            () => Date.now() + clock.skew
-        );
+        const gate = startGate(driver, { SUPERVISOR_GATE_ASK_MS: String(ASK_BUDGET_MS) }, () => clock.at);
         gate.order('gate-1', 'gh; exit 0');
         const answer = await gate.answerOf('gate-1');
         expect(answer.exitCode).toBeNull();
         expect(answer.tokenAskUnanswered).toBe(true);
+        // The helper was told `none unanswered` by the supervisor (its own wait is 60 s, never reached).
+        expect(`${answer.stdout}${answer.stderr}`).toContain('no GitHub token (unanswered)');
         expect(gate.recorded()).toEqual([]);
     });
 
