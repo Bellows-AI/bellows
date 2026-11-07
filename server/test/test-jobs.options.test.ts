@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,13 +28,19 @@ case "$1 $2" in
             case "$arg" in claude-executor|opencode-executor) image="$arg" ;; esac
         done
         if [ "$EXPECT_PAIR" = 1 ]; then
-            touch "$HARNESS_GATE/$image.started"
-            attempts=0
-            while ! { [ -f "$HARNESS_GATE/claude-executor.started" ] && [ -f "$HARNESS_GATE/opencode-executor.started" ]; }; do
-                attempts=$((attempts + 1))
-                [ "$attempts" -lt 6000 ] || exit 99
-                sleep 0.01
-            done
+            # A rendezvous on two FIFOs: claude's write returns only once opencode has started and read it,
+            # opencode's write only once claude has reached its read. The 60s watchdog is a hang bound
+            # (stdio detached so it never holds the script's pipes open), not a speed bound.
+            ( sleep 60; kill -TERM "$$" ) >/dev/null 2>&1 &
+            watchdog=$!
+            if [ "$image" = claude-executor ]; then
+                echo started >"$HARNESS_GATE/claude.fifo"
+                read -r _ <"$HARNESS_GATE/opencode.fifo"
+            else
+                read -r _ <"$HARNESS_GATE/claude.fifo"
+                echo started >"$HARNESS_GATE/opencode.fifo"
+            fi
+            kill "$watchdog" 2>/dev/null
         fi
         if [ -n "$ABORT_WORKER" ] && [ "$ABORT_WORKER" = "$image" ]; then
             kill -KILL "$PPID"
@@ -87,6 +93,9 @@ function fixture() {
         // under load the runner reports `Timeout calling "onTaskUpdate"` for a test that passed.
         run: (args: string[], env: NodeJS.ProcessEnv = {}) =>
             new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+                if (env.EXPECT_PAIR === '1') {
+                    for (const name of ['claude', 'opencode']) execFileSync('mkfifo', [join(dir, `${name}.fifo`)]);
+                }
                 const child = spawn('/bin/bash', [SCRIPT, ...args], {
                     cwd: ROOT,
                     env: {
@@ -149,22 +158,26 @@ describe('test-jobs phase options', () => {
     });
 
     // Issue #829: the phase that kills a real driver at each step of a run.
-    it('lists the driver-kill phase and accepts it as a phase', async () => {
+    it('lists the driver-kill phase in --help', async () => {
         const help = await fixture().run(['--help']);
         expect(help.stdout).toContain('driver-kill');
-        const lane = fixture();
-        const result = await lane.run(['--phase', 'driver-kill'], { JOBS_TEST_DB: 'factory_dev' });
+    });
+
+    it('accepts driver-kill as a phase', async () => {
+        const result = await fixture().run(['--phase', 'driver-kill'], { JOBS_TEST_DB: 'factory_dev' });
         expect(result.status).toBe(2);
         expect(result.stdout).toContain('ending _test');
         expect(result.stdout).not.toContain('invalid --phase');
     });
 
     // Issue #831: competing drivers under one shared admission budget.
-    it('lists the capacity phase and accepts it as a phase', async () => {
+    it('lists the capacity phase in --help', async () => {
         const help = await fixture().run(['--help']);
         expect(help.stdout).toContain('capacity');
-        const lane = fixture();
-        const result = await lane.run(['--phase', 'capacity'], { JOBS_TEST_DB: 'factory_dev' });
+    });
+
+    it('accepts capacity as a phase', async () => {
+        const result = await fixture().run(['--phase', 'capacity'], { JOBS_TEST_DB: 'factory_dev' });
         expect(result.status).toBe(2);
         expect(result.stdout).toContain('ending _test');
         expect(result.stdout).not.toContain('invalid --phase');
@@ -257,11 +270,11 @@ describe('test-jobs phase options', () => {
     });
 
     it('gives separate runs distinct disposable databases and image cleanup targets', async () => {
-        const traces: string[] = [];
-        for (const lane of [fixture(), fixture()]) {
-            expect((await lane.run(['--phase', 'board'], { JOBS_TEST_DB: '' })).status).toBe(1);
-            traces.push(lane.trace());
-        }
+        const lanes = [fixture(), fixture()];
+        // Concurrent: the two runs share nothing, and the ids must differ even when started together.
+        const results = await Promise.all(lanes.map((lane) => lane.run(['--phase', 'board'], { JOBS_TEST_DB: '' })));
+        for (const result of results) expect(result.status).toBe(1);
+        const traces = lanes.map((lane) => lane.trace());
         const databases = traces.map((trace) => /create database (factory_jobs_\w+_test)/.exec(trace)?.[1]);
         expect(databases[0]).toBeTruthy();
         expect(databases[1]).toBeTruthy();
@@ -310,23 +323,23 @@ describe('test-jobs phase options', () => {
         expect(lane.trace()).toMatch(/rm -f lane-agent-.* lane-sup-/);
     });
     // Issue #950: phases that share one board fixture are named as a comma list.
-    it('accepts a comma list of phases and rejects an unknown, empty or mixed-in one', async () => {
-        for (const list of [
-            'board,driver',
-            'driver-kill,capacity,services',
-            'services,node-disruption',
-            'board,board',
-        ]) {
+    it.each(['board,driver', 'driver-kill,capacity,services', 'services,node-disruption', 'board,board'])(
+        'accepts the comma list %j of phases',
+        async (list) => {
             const result = await fixture().run(['--phase', list], { JOBS_TEST_DB: 'factory_dev' });
             expect(result.status, list).toBe(2);
             expect(result.stdout, list).toContain('ending _test');
         }
-        for (const list of ['board,bogus', 'board,,driver', 'board,', ',board', 'all,board']) {
+    );
+
+    it.each(['board,bogus', 'board,,driver', 'board,', ',board', 'all,board'])(
+        'rejects the unknown, empty or mixed-in list %j',
+        async (list) => {
             const result = await fixture().run(['--phase', list]);
             expect(result.status, list).toBe(2);
             expect(result.stdout, list).toContain('invalid --phase');
         }
-    });
+    );
 
     it('requires the real executor images a listed standalone phase needs, before any board setup', async () => {
         const lane = fixture();
@@ -341,11 +354,14 @@ describe('test-jobs phase options', () => {
         ]);
     });
 
-    it('boots no board for a list of standalone phases and one for a list that mixes in a board phase', async () => {
-        const alone = await fixture().run(['--phase', 'tool-isolation,cooperative-stop'], {
+    it('boots no board for a list of standalone phases', async () => {
+        const alone = await fixture().run(['--phase', 'ask-user-question,cooperative-stop'], {
             JOBS_TEST_DB: 'factory_dev',
         });
         expect(alone.stdout).not.toContain('ending _test');
+    });
+
+    it('boots a board for a list that mixes in a board phase', async () => {
         const mixed = await fixture().run(['--phase', 'tool-isolation,auth'], { JOBS_TEST_DB: 'factory_dev' });
         expect(mixed.status).toBe(2);
         expect(mixed.stdout).toContain('ending _test');
@@ -396,19 +412,25 @@ describe('test-jobs phase options', () => {
         expect(lane.trace().trim().split('\n')).toEqual(['info', 'image inspect claude-executor']);
     });
 
-    it('refuses --changed together with --phase, and --changed without a base', async () => {
+    it('refuses --changed together with --phase', async () => {
         const both = await fixture().run(['--changed', 'origin/main', '--phase', 'board']);
         expect(both.status).toBe(2);
         expect(both.stdout).toContain('exclusive');
+    });
+
+    it('refuses --changed without a base', async () => {
         const bare = await fixture().run(['--changed']);
         expect(bare.status).toBe(2);
         expect(bare.stdout).toContain('needs a base ref');
     });
 
     // Issue #887: --parallel fans the selected phases out as groups; serial stays the default.
-    it('documents --parallel and --slots in --help, and refuses a slot count outside 2-4', async () => {
+    it('documents --parallel and --slots in --help', async () => {
         const help = await fixture().run(['--help']);
         expect(help.stdout).toContain('--parallel [--slots 2|3|4]');
+    });
+
+    it('refuses a slot count outside 2-4', async () => {
         const bad = await fixture().run(['--parallel', '--slots', '5']);
         expect(bad.status).toBe(2);
         expect(bad.stdout).toContain('--slots must be 2, 3 or 4');
