@@ -51,6 +51,43 @@ const startHeavy = (env: NodeJS.ProcessEnv, args: string[]) => {
     const done = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
     return { child, done };
 };
+const spawned = (child: ChildProcess) => new Promise((resolve) => child.once('spawn', resolve));
+// A stand-in for `sleep` on the script's PATH. `sleep 5` is cleanup.sh's grace deadline: it runs until the
+// script stops it (a bounded loop, so a script that waits on it still ends), logging when it starts and
+// when it runs out unstopped. Any other call is a poll: its argument goes to <dir>/sleeps and `onPoll` decides when it returns.
+const fakeSleep = (dir: string, onPoll: string) => {
+    const log = join(dir, 'sentinel');
+    const pidFile = join(dir, 'sentinel.pid');
+    const path = join(dir, 'bin', 'sleep');
+    writeFileSync(
+        path,
+        `#!/bin/sh
+if [ "$1" = 5 ]; then
+    echo started >> ${log}
+    echo $$ > ${pidFile}
+    i=0
+    while [ $i -lt 200 ]; do /bin/sleep 0.05; i=$((i + 1)); done
+    echo expired >> ${log}
+    exit 0
+fi
+echo "$*" >> ${join(dir, 'sleeps')}
+${onPoll}
+`
+    );
+    chmodSync(path, 0o755);
+    return {
+        log,
+        pidFile,
+        alive: () => {
+            try {
+                process.kill(Number(readFileSync(pidFile, 'utf8')), 0);
+                return true;
+            } catch {
+                return false;
+            }
+        },
+    };
+};
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (check: () => boolean) => {
     for (let i = 0; i < 100 && !check(); i++) await sleep(50);
@@ -386,7 +423,14 @@ describe('cleanup.sh', () => {
             children.push(named, inside, sibling);
             const exited = (child: ChildProcess) => new Promise((resolve) => child.on('exit', resolve));
             const killed = Promise.all([exited(named), exited(inside)]);
-            await sleep(200);
+            await Promise.all([spawned(named), spawned(inside), spawned(sibling)]);
+            // Poll sleeps return only once both victims are gone, so the wait ends after at most one poll
+            // however loaded the host is; the deadline sentinel (`sleep 5`) is logged and must be stopped early.
+            const sleeps = join(dir, 'sleeps');
+            const sentinel = fakeSleep(
+                dir,
+                `for p in ${named.pid} ${inside.pid}; do while kill -0 $p 2>/dev/null; do /bin/sleep 0.05; done; done`
+            );
 
             // Async, so the children's exits are reaped while the script still waits on them.
             const run = spawn('sh', [CLEANUP, tag], { env, stdio: ['ignore', 'ignore', 'pipe'] });
@@ -397,6 +441,13 @@ describe('cleanup.sh', () => {
             expect(await exited(run), stderr).toBe(0);
             await killed;
             expect(sibling.exitCode).toBeNull();
+            // Early exit: at most one poll (a sub-second sleep), and the 5 s deadline sentinel was stopped by the
+            // script, not left to run out.
+            const polls = existsSync(sleeps) ? readFileSync(sleeps, 'utf8').trim().split('\n') : [];
+            expect(existsSync(sentinel.log) ? readFileSync(sentinel.log, 'utf8') : '').not.toContain('expired');
+            expect(sentinel.alive(), 'a stray deadline sleep').toBe(false);
+            expect(polls.length, polls.join(',')).toBeLessThanOrEqual(1);
+            for (const poll of polls) expect(Number(poll), poll).toBeLessThan(1);
 
             const calls = readFileSync(log, 'utf8');
             for (const call of [
@@ -413,6 +464,40 @@ describe('cleanup.sh', () => {
         },
         30_000
     );
+
+    it('spends probe overhead from the 5 s grace instead of extending it', async () => {
+        const dir = scratch();
+        const worktree = join(dir, 'repo-fix-4242');
+        mkdirSync(worktree);
+        const { env } = fakes(dir, worktree, '4242');
+        // A victim that ignores TERM: only the KILL ends it.
+        const stubborn = spawn(
+            'node',
+            ['-e', "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)"],
+            { cwd: worktree, stdio: ['ignore', 'pipe', 'ignore'] }
+        );
+        children.push(stubborn);
+        const killed = new Promise((resolve) => stubborn.on('exit', resolve));
+        await new Promise((resolve) => stubborn.stdout?.once('data', resolve));
+        // The first poll is where the 5 s run out: the fake ends the deadline sentinel and waits until it is gone.
+        const sentinel = fakeSleep(
+            dir,
+            `while [ ! -s ${join(dir, 'sentinel.pid')} ]; do /bin/sleep 0.05; done; kill -TERM $(cat ${join(dir, 'sentinel.pid')}); while kill -0 $(cat ${join(dir, 'sentinel.pid')}) 2>/dev/null; do /bin/sleep 0.05; done`
+        );
+        const run = spawn('sh', [CLEANUP, '4242'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '';
+        run.stdout.on('data', (chunk: Buffer) => {
+            stdout += chunk.toString();
+        });
+        const code = await new Promise((resolve) => run.on('exit', resolve));
+        expect(code).toBe(0);
+        await killed;
+        expect(stdout).toMatch(new RegExp(`cleanup: kill -KILL ${stubborn.pid}$`, 'm'));
+        // Exactly one poll ran: once the deadline was gone the script went straight to the KILL, however many
+        // polls the budget would have allowed.
+        expect(readFileSync(join(dir, 'sleeps'), 'utf8').trim().split('\n')).toHaveLength(1);
+        expect(sentinel.alive(), 'a stray deadline sleep').toBe(false);
+    }, 30_000);
 
     it.skipIf(!existsSync('/proc/self'))(
         'finds a process by its working directory through /proc on a host without lsof',
@@ -431,7 +516,7 @@ describe('cleanup.sh', () => {
             const inside = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { cwd: worktree, stdio: 'ignore' });
             children.push(inside);
             const killed = new Promise((resolve) => inside.on('exit', resolve));
-            await sleep(200);
+            await spawned(inside);
 
             // Only the kill is asserted: the stripped PATH fails the cluster teardown, not under test here.
             const run = spawnSync('/bin/sh', [CLEANUP, '4242'], {

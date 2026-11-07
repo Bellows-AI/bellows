@@ -90,7 +90,32 @@ if [ -n "$victims" ]; then
     echo "cleanup: kill -TERM$victims"
     # shellcheck disable=SC2086
     kill -TERM $victims 2>/dev/null
-    sleep 5
+    # Grace: 5 s of elapsed time, ending as soon as every victim is gone. A victim counts as gone only when
+    # kill -0 fails with ESRCH ("No such process"); sh cannot read errno, so the message is matched under
+    # LC_ALL=C. Any other failure (EPERM) or success is not gone, so it falls through to the KILL below.
+    # The deadline is a background `sleep 5`, not a poll count: sh has no clock finer than `date +%s`, and
+    # the per-victim probes would stretch a count on a loaded host.
+    gone() {
+        err="$(LC_ALL=C kill -0 "$1" 2>&1)" && return 1
+        case "$err" in *'No such process'*) return 0 ;; esac
+        return 1
+    }
+    sleep 5 &
+    deadline=$!
+    stop_deadline() {
+        kill "$deadline" 2>/dev/null
+        wait "$deadline" 2>/dev/null
+    }
+    trap 'stop_deadline' EXIT
+    trap 'stop_deadline; exit 130' INT TERM HUP
+    while kill -0 "$deadline" 2>/dev/null; do
+        alive=''
+        for pid in $victims; do gone "$pid" || alive="$alive $pid"; done
+        [ -z "$alive" ] && break
+        sleep 0.1
+    done
+    stop_deadline
+    trap - EXIT INT TERM HUP
     for pid in $victims; do
         kill -0 "$pid" 2>/dev/null && run kill -KILL "$pid"
     done
