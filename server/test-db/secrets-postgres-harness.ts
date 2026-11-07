@@ -164,6 +164,11 @@ export interface PostgresHarness extends SecretStoreHarness {
      * optionally over a payload store that wraps the database one.
      */
     openWith(repo: SecretRepo, payloads?: (database: DatabasePayloads) => PayloadStore): PostgresSecretStore;
+    /**
+     * A store over the same repo, keys and clock at the default deadline, for a case's setup writes: the case's
+     * own tight `deadlineMs` bounds only the phase under test, never the seeding before it.
+     */
+    openSetup(payloads?: (database: DatabasePayloads) => PayloadStore): PostgresSecretStore;
     realRepo: SecretRepo;
     faultyRepo: SecretRepo;
     now(): number;
@@ -205,11 +210,22 @@ export function createPostgresHarness(sql: Sql, options: PostgresHarnessOptions 
             ready: options.ready,
         });
     const open = () => openWith(wrapped);
+    const openSetup = (payloads?: (database: DatabasePayloads) => PayloadStore) =>
+        createDatabaseSecretStoreOver({
+            repo: wrapped,
+            keys,
+            payloads,
+            clock,
+            log,
+            deadlineMs: HELD_CALL_DEADLINE_MS,
+            ready: options.ready,
+        });
     return {
         keys,
         realRepo,
         faultyRepo: wrapped,
         openWith,
+        openSetup,
         now: () => now,
         open,
         // A restart over a database loses nothing: a new store over the same tables is the whole story.

@@ -34,7 +34,7 @@ describe.skipIf(!enabled)('sanitization', () => {
         const store = h.open();
         const seen: unknown[] = [];
 
-        const s = await createSecret(store, identity, utf8(payloadSentinel));
+        const s = await createSecret(h.openSetup(), identity, utf8(payloadSentinel));
         seen.push(s);
         const replaceOp = await store.issueOperationId();
         h.faults.providerWrite = 'unavailable-with-body';
