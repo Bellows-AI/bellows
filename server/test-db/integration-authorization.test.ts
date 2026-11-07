@@ -1207,24 +1207,29 @@ const parkAfterReplace = (store: SecretStore, gate: ReturnType<typeof parked>): 
     },
 });
 
-// For the holder that must reach its in-process fence: a window so wide that real time never reaches it, then the
-// fake clock is advanced past it (`heldAfterReplace`).
-const HELD: Partial<LineageTiming> = {
-    exchangeDeadlineMs: 60_000,
-    readDeadlineMs: 10_000,
-    persistBudgetMs: 120_000,
-    marginMs: 10_000,
+// Window 800 ms, lease 700 ms, fence at the claim's end minus 100 ms. The cases that reach the flow's own fence run on
+// a fake process clock (`freezeClock`), so the window's size is not a race: the fence fires only when `passFence`
+// advances it, after the case's barrier has been entered.
+const TIGHT: Partial<LineageTiming> = {
+    exchangeDeadlineMs: 200,
+    readDeadlineMs: 100,
+    persistBudgetMs: 300,
+    marginMs: 100,
 };
+const TIGHT_WINDOW_MS = 800;
 
-// A window wide enough that the flow reaches its store gate however loaded the host is; the tests end the window by
-// moving the stored timestamps (`expireWindow`) and, where the flow's own fence matters, the process Date, never by
-// waiting. Window 8 s, lease 7 s: a claim taken for the lease
-// instead of the deadline ends a second early, so the equality `expireWindow` asserts tells the two apart.
-const WIDE: Partial<LineageTiming> = {
-    exchangeDeadlineMs: 2_000,
-    readDeadlineMs: 1_000,
-    persistBudgetMs: 3_000,
-    marginMs: 1_000,
+/** Fakes the process clock (Date, and the timers the fence is set with), frozen, before the flow starts. */
+const freezeClock = () => vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+
+// The cases that hold the holder BEFORE its store call never move the fake clock: the order they rely on is deadline,
+// then recovery, then the holder's release, and the holder's own fence must not fire before recovery. Freezing the
+// clock until the barrier is entered holds the fence back however slow the host is; the clock is given back before
+// recovery runs.
+
+/** Moves the frozen clock past the unchanged fence, which fires it, and gives the real clock back. */
+const passFence = (ms: number) => {
+    vi.advanceTimersByTime(ms);
+    vi.useRealTimers();
 };
 
 describe.skipIf(!enabled)('complete: the claim runs on the authorization deadline', () => {
@@ -1240,29 +1245,28 @@ describe.skipIf(!enabled)('complete: the claim runs on the authorization deadlin
     /** A reconnect whose replace landed in the store and whose holder is then held; recovery finds the claim at its end. */
     const heldAfterReplace = async () => {
         const gate = parked();
-        const a = rig({ timing: HELD, store: (h) => parkAfterReplace(h.open(), gate) });
+        const a = rig({ timing: TIGHT, store: (h) => parkAfterReplace(h.open(), gate) });
         const { seeded, started, before } = await reconnectOf(a);
-        // The flow's fence is a timer on the process clock, set when its store call starts. Fake that timer and the
-        // Date before the flow runs (the clock keeps ticking, so everything else the flow awaits still progresses),
-        // and the window is minutes wide so the fence cannot fire until the test advances it past the barrier.
-        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+        freezeClock();
         const completing = complete(a, { state: started.state, code: CODE });
         await gate.entered;
         await expireWindow(seeded.grantId, started.authorizationId);
-        vi.advanceTimersByTime(250_000); // HELD window: 2 * 60 s + 120 s + 10 s
+        passFence(TIGHT_WINDOW_MS);
         return { a, gate, seeded, started, before, completing };
     };
 
     it('a reconnect parked before the store: recovery on another instance fences it, the authorization fails and the grant is not finalized', async () => {
         const storeGate = parked();
         const a = rig({
-            timing: WIDE,
+            timing: TIGHT,
             store: (h) => parkBeforeStore(h.open(), 'replace', storeGate),
         });
         const { seeded, started, before } = await reconnectOf(a);
+        freezeClock();
         const completing = complete(a, { state: started.state, code: CODE });
         await storeGate.entered;
         await expireWindow(seeded.grantId, started.authorizationId);
+        vi.useRealTimers();
 
         expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('interrupted');
         expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'interrupted' });
@@ -1296,15 +1300,17 @@ describe.skipIf(!enabled)('complete: the claim runs on the authorization deadlin
     it('the same race on a connect that finds the caller’s existing grant', async () => {
         const storeGate = parked();
         const a = rig({
-            timing: WIDE,
+            timing: TIGHT,
             store: (h) => parkBeforeStore(h.open(), 'replace', storeGate),
         });
         const seeded = await seedConnected(a);
         const started = await begin(a);
         const before = await grantOf(seeded.grantId);
+        freezeClock();
         const completing = complete(a, { state: started.state, code: CODE });
         await storeGate.entered;
         await expireWindow(seeded.grantId, started.authorizationId);
+        vi.useRealTimers();
 
         expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('interrupted');
         storeGate.release();
@@ -1459,13 +1465,12 @@ describe.skipIf(!enabled)('complete: the claim runs on the authorization deadlin
         const seeded = await seedConnected(r);
         const claimed = await r.lineage.claimLineage(seeded.grantId, 'refresh', { rotates: false });
         expect(claimed.ok).toBe(true);
-        const [row] = await db.sql<{ left_ms: string }[]>`
-            select extract(epoch from (lineage_claim_expires_at - now())) * 1000 as left_ms
+        // Both timestamps come from the claim's own statement, so the span is exact whatever the host's load.
+        const [row] = await db.sql<{ lease_ms: string }[]>`
+            select extract(epoch from (lineage_claim_expires_at - updated_at)) * 1000 as lease_ms
             from integration_grant where id = ${seeded.grantId}
         `;
-        const leftMs = Number(row!.left_ms);
-        expect(leftMs).toBeGreaterThan(r.lineage.leaseMs - 2_000);
-        expect(leftMs).toBeLessThanOrEqual(r.lineage.leaseMs);
+        expect(Number(row!.lease_ms)).toBe(r.lineage.leaseMs);
         if (claimed.ok) expect(claimed.claim.deadlineAt - Date.now()).toBeLessThanOrEqual(r.lineage.leaseMs);
     });
 });
