@@ -706,19 +706,39 @@ describe.skipIf(!enabled)('notification outbox — credential', () => {
             expect(await store.credentialOf(target, live()), label).toBeNull();
         }
 
-        // The read is cut by the signal, aborted once the hung read has begun: nothing here runs on a clock.
+        // The read really hangs until the signal cuts it: pending after the hung read is entered, null once aborted.
         const cut = new AbortController();
+        let entered!: () => void;
+        const readEntered = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
         const hanging = createNotificationOutboxStore({
             sql,
             orgId: ORG,
             secrets: faultySecrets(secrets, {
                 readActive: () => {
-                    cut.abort();
+                    entered();
                     return new Promise(() => {});
                 },
             }),
         });
-        expect(await hanging.credentialOf(item, cut.signal)).toBeNull();
+        const pending = hanging.credentialOf(item, cut.signal);
+        let settled = false;
+        void pending.then(() => {
+            settled = true;
+        });
+        await readEntered;
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(settled, 'the read returned before the signal was aborted').toBe(false);
+        cut.abort();
+        let guard: NodeJS.Timeout | undefined;
+        const result = await Promise.race([
+            pending,
+            new Promise<never>((_resolve, reject) => {
+                guard = setTimeout(() => reject(new Error('hanging read was not cut by the signal')), 15_000);
+            }),
+        ]).finally(() => clearTimeout(guard));
+        expect(result).toBeNull();
 
         // not-found: the record is deleted behind the row's back.
         const deleted = await secrets.delete({
