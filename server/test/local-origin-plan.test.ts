@@ -294,9 +294,10 @@ describe('the origin plan reader', () => {
 
         expect(await settled).toMatchObject({ kind: READ_TRANSPORT });
         expect(spy).toHaveBeenCalledWith(DEADLINE_MS);
+        // The child alone holds the lifeline's write end, so its EOF is the child's exit: a group kill that missed it
+        // leaves `sleep 30` holding the pipe and the 15 s hang guard fails the test. The process table is not polled,
+        // since reaping an exited child is the reparenting init's to do, on no schedule the test owns.
         await childGone;
-        // EOF is the child closing its descriptors on exit; the process table catches up within the exit itself.
-        await expect.poll(() => gone(child)).toBe(true);
     }, 15_000);
 
     it('leaves no scratch directory behind: success, missing branch, outage and timeout', async () => {
