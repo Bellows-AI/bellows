@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SecretRepo } from '../src/secrets/postgres-secret-repo.js';
+import { inTx } from '../src/secrets/postgres-secret-sql.js';
 import { ProviderFault } from '../src/secrets/secret-payloads.js';
 import { useTestDb } from './harness.js';
 import {
     createPostgresHarness,
     createSecret,
     dbError,
+    exhaustRetries,
     externalPayloads,
     testIdentity,
     utf8,
@@ -131,23 +133,57 @@ describe.skipIf(!enabled)('payload store faults', () => {
         const h = createPostgresHarness(db.sql, { deadlineMs: 150 });
         const identity = testIdentity();
         let hang = true;
-        const external = externalPayloads({ remove: () => (hang ? new Promise<void>(() => {}) : Promise.resolve()) });
-        const plain = h.openWith(h.faultyRepo, external.factory);
-        const seeded = await createSecret(plain, identity, utf8('one'));
+        let removalEntered = () => {};
+        const entered = new Promise<void>((resolve) => {
+            removalEntered = resolve;
+        });
+        const external = externalPayloads({
+            remove: () => {
+                removalEntered();
+                return hang ? new Promise<void>(() => {}) : Promise.resolve();
+            },
+        });
+        // Setup runs at the harness deadline; the case's tight one bounds only the collect pass under test.
+        const setup = h.openSetup(external.factory);
+        // The tight store keeps the 150 ms deadline, whose clock the test owns below (no server-side timer races it).
+        const plain = h.openControlled(external.factory);
+        const seeded = await createSecret(setup, identity, utf8('one'));
         h.faults.providerDelete = 'fail';
-        await plain.delete({
+        await setup.delete({
             identity,
             ref: seeded.ref,
-            operationId: await plain.issueOperationId(),
+            operationId: await setup.issueOperationId(),
             expectedVersion: seeded.version,
         });
         h.faults.providerDelete = 'ok';
         expect((await versionStates(seeded.ref)).map((v) => v.state)).toEqual(['cleanup-pending']);
 
         const store = plain;
-        const started = Date.now();
-        expect((await store.collect()).removed).toBe(0);
-        expect(Date.now() - started).toBeLessThan(150 + 500);
+        // The deadline is a Date.now()-based budget raced against a setTimeout. Both are faked for this pass only:
+        // Date stays frozen, so the pass's database work spends none of the 150 ms, and the timer fires only when
+        // the test advances it, after the external removal is observed pending. 149 ms leaves the pass waiting
+        // and the 150th settles it, which pins the deadline's value without the wall clock.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            let finished = false;
+            const pass = store.collect().finally(() => {
+                finished = true;
+            });
+            const reached = await Promise.race([
+                entered.then(() => true),
+                pass.then(
+                    () => false,
+                    () => false
+                ),
+            ]);
+            expect(reached, 'collect settled before the external removal was entered').toBe(true);
+            await vi.advanceTimersByTimeAsync(149);
+            expect(finished).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect((await pass).removed).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
         expect((await versionStates(seeded.ref)).map((v) => v.state)).toEqual(['deleting']);
 
         // The pass after the hang lifts has its own budget: on a loaded runner its database work alone
@@ -280,21 +316,60 @@ describe.skipIf(!enabled)('database faults', () => {
         expect(ops).toHaveLength(1);
     });
 
-    it('a persistent one is unavailable within deadlineMs + 500 ms of wall clock', async () => {
+    it('a persistent one is retried until deadlineMs of the call clock is spent, then unavailable', async () => {
         const h = createPostgresHarness(db.sql, { deadlineMs: 300 });
         const identity = testIdentity();
-        const seeded = await createSecret(h.open(), identity, utf8('one'));
-        const { repo } = scripted(h.realRepo, () => dbError('53300'));
-        const started = Date.now();
-        const result = await h.openWith(repo).replace({
-            identity,
-            ref: seeded.ref,
-            operationId: await h.open().issueOperationId(),
-            expectedVersion: seeded.version,
-            payload: utf8('two'),
-        });
-        expect(Date.now() - started).toBeLessThan(300 + 500);
-        expect(result).toEqual({ ok: false, error: { code: 'unavailable', reason: 'provider-unavailable' } });
+        const seeded = await createSecret(h.openSetup(), identity, utf8('one'));
+        const operationId = await h.openSetup().issueOperationId();
+        h.faults.providerWrite = 'unavailable-with-body';
+        // Date and the retry timers are faked for the call and move only when exhaustRetries says nothing of the call
+        // is pending, so the database work spends none of the 300 ms and the injection is reached before it ends.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            const started = Date.now();
+            const call = h.openControlled().replace({
+                identity,
+                ref: seeded.ref,
+                operationId,
+                expectedVersion: seeded.version,
+                payload: utf8('two'),
+            });
+            const injected = await exhaustRetries(h, call);
+            expect(injected, 'the persistent 53300 was reached on several attempts').toBeGreaterThanOrEqual(3);
+            expect(await call).toEqual({ ok: false, error: { code: 'unavailable', reason: 'provider-unavailable' } });
+            expect(Date.now() - started).toBe(300);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a call applies its remaining budget as the transaction statement_timeout, floored, at least 1 ms', async () => {
+        const h = createPostgresHarness(db.sql, { deadlineMs: 3000 });
+        const identity = testIdentity();
+        const seeded = await createSecret(h.openSetup(), identity, utf8('one'));
+        const budget = async (ms: number) => {
+            h.statementTimeouts.length = 0;
+            await h.controlledRepo.readActive(seeded.ref, ms);
+            return h.statementTimeouts;
+        };
+        expect(await budget(1234.9)).toEqual(['1234']);
+        expect(await budget(0.4)).toEqual(['1']);
+
+        // Through the store, the budget is what is left of deadlineMs on the call's clock.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            const store = h.openControlled();
+            h.statementTimeouts.length = 0;
+            expect((await store.readActive({ identity, ref: seeded.ref })).ok).toBe(true);
+            expect(h.statementTimeouts[0]).toBe('3000');
+        } finally {
+            vi.useRealTimers();
+        }
+
+        // The mapping is asserted on the captured value; the 1 ms case never reaches a real timer.
+        // And PostgreSQL really holds it for the transaction.
+        const held = await inTx(db.sql, 61000, async (tx) => tx`show statement_timeout`);
+        expect(held[0]?.statement_timeout).toBe('61s');
     });
 
     it('a SQLSTATE outside the transient classes is unavailable without a retry', async () => {
