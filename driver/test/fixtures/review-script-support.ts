@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 /**
  * Shared support for running the review scripts against a stub `gh` (split out of
  * `review-scripts.test.ts` for the line-count cap, into `review-collect-script.test.ts` and
- * `review-reply-script.test.ts`): a fake gh executable copied to a throwaway bin dir on PATH
+ * `review-reply-script.test.ts`): a fake gh (a POSIX sh stub, `review/fake-gh.sh`) in a bin dir on PATH
  * that records every argv (the spawn-shape pins), refuses to answer without a credential, and
  * dishes canned payloads from the fixtures. The ambient board credentials are stripped so the
  * only token the child can ever see is the test's own.
@@ -27,7 +27,43 @@ const EXECUTABLE_MODE = 0o755;
 
 const FIXTURES_DIR = join(fileURLToPath(import.meta.url), '..', 'review');
 export const fixture = (name: string): string => join(FIXTURES_DIR, name);
-const FAKE_GH = readFileSync(fixture('fake-gh.cjs'), 'utf8');
+const FAKE_GH = readFileSync(fixture('fake-gh.sh'), 'utf8');
+const CHECK_RUNS_DEFAULT = { total_count: 0, check_runs: [] };
+
+/**
+ * The stub's bin dir, written once per process: the first exec of a freshly written file is the
+ * dominant cost under load, so it is paid once, not once per run. It is not a `tempDirs` entry
+ * (those go after every test); it goes with the process.
+ */
+let sharedBin: string | null = null;
+function stubBin(): string {
+    if (sharedBin !== null) return sharedBin;
+    const bin = join(mkdtempSync(join(tmpdir(), 'review-bin-')), 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'gh'), FAKE_GH);
+    chmodSync(join(bin, 'gh'), EXECUTABLE_MODE);
+    const root = join(bin, '..');
+    process.once('exit', () => rmSync(root, { recursive: true, force: true }));
+    sharedBin = bin;
+    return bin;
+}
+
+/** One payload file per fixture key, the exact bytes the stub prints; a fixture predating the check-runs read answers "no check runs". */
+function writePayloads(fixtureFile: string, dir: string): void {
+    const fixtures = JSON.parse(readFileSync(fixtureFile, 'utf8')) as Record<string, unknown>;
+    mkdirSync(dir, { recursive: true });
+    for (const [key, value] of Object.entries({ checks: CHECK_RUNS_DEFAULT, ...fixtures })) {
+        writeFileSync(join(dir, `${key}.json`), JSON.stringify(value));
+    }
+}
+
+/** The stub logs NUL after each argument and \u0001 after each call. */
+function parseArgvLog(raw: string): string[][] {
+    return raw
+        .split('\u0001')
+        .slice(0, -1)
+        .map((call) => call.split('\u0000').slice(0, -1));
+}
 
 export const tempDirs = new Set<string>();
 export function cleanupTempDirs(): void {
@@ -67,10 +103,7 @@ async function runNodeScript(
 ): Promise<ScriptRun> {
     const dir = mkdtempSync(join(tmpdir(), 'review-'));
     tempDirs.add(dir);
-    const bin = join(dir, 'bin');
-    mkdirSync(bin, { recursive: true });
-    writeFileSync(join(bin, 'gh'), FAKE_GH);
-    chmodSync(join(bin, 'gh'), EXECUTABLE_MODE);
+    const bin = stubBin();
     const argvLog = join(dir, 'argv.log');
     const childEnv: Record<string, string> = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
     delete childEnv.GH_TOKEN;
@@ -79,12 +112,11 @@ async function runNodeScript(
     Object.assign(childEnv, { GH_FIXTURES: fixture('gh-responses.json'), GH_ARGV_LOG: argvLog });
     if (token) childEnv.GITHUB_TOKEN = TEST_TOKEN;
     Object.assign(childEnv, env);
+    const responses = join(dir, 'responses');
+    childEnv.GH_RESP_DIR = responses;
+    writePayloads(childEnv.GH_FIXTURES ?? '', responses);
     const { stdout, stderr } = await execFile('node', [path], { env: childEnv, cwd: opts.cwd });
-    let args: string[][] = [];
-    if (existsSync(argvLog)) {
-        const raw = readFileSync(argvLog, 'utf8').trim();
-        args = raw ? raw.split('\n').map((l) => JSON.parse(l) as string[]) : [];
-    }
+    const args = existsSync(argvLog) ? parseArgvLog(readFileSync(argvLog, 'utf8')) : [];
     return { stdout, stderr, args };
 }
 
