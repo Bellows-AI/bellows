@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { deflateRawSync } from 'node:zlib';
+import { crc32, deflateRawSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 /**
@@ -20,15 +20,6 @@ const SENTENCE = 'The quick brown fox jumps over the lazy dog';
 const ID = (n: number) =>
     `${String(n).repeat(8)}-${String(n).repeat(4)}-4${String(n).repeat(3)}-8${String(n).repeat(3)}-${String(n).repeat(12)}`;
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-
-const crc32 = (data: Buffer): number => {
-    let crc = 0xffffffff;
-    for (const byte of data) {
-        crc ^= byte;
-        for (let k = 0; k < 8; k++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
-    }
-    return (crc ^ 0xffffffff) >>> 0;
-};
 
 /** A zip of `parts`, deflated; `flags` sets the general-purpose bit flag of the part named in it. */
 const zipOf = (parts: Record<string, Buffer>, flags: Record<string, number> = {}): Buffer => {
