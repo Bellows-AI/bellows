@@ -15,6 +15,13 @@ test.beforeEach(async ({ page }) => {
     });
 });
 
+// The SPA re-reads `/api/auth/me` on its own schedule, so a read can still be in flight when the test
+// ends. Dropping the handler and letting that read settle is what keeps its `route.fetch()` from
+// throwing "Test ended" / "Response has been disposed" into the finished test.
+test.afterEach(async ({ page }) => {
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
 test('lists no Batches link and never asks the batch API', async ({ page }) => {
     const batchReads: string[] = [];
     page.on('request', (request) => {
@@ -22,7 +29,9 @@ test('lists no Batches link and never asks the batch API', async ({ page }) => {
     });
     await page.goto('/tasks');
     const nav = page.getByRole('navigation', { name: 'Primary' });
-    await expect(nav.getByRole('link', { name: 'Tasks' })).toBeVisible();
+    // The item's name is "Tasks" until the task poll lands, then "Tasks, N tasks need review"; the
+    // preview's "View all tasks" link also contains "tasks", so a bare substring name matches both.
+    await expect(nav.getByRole('link', { name: /^Tasks(,|$)/ })).toBeVisible();
     await expect(nav.getByRole('link', { name: /Batches/ })).toHaveCount(0);
     expect(batchReads).toEqual([]);
 });
