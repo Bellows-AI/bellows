@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CredentialError } from '../src/artifacts/s3-credentials.js';
 import { classifyAnswer, createAwsObjectClient } from '../src/secrets/aws-secrets-manager.js';
 import { ProviderFault } from '../src/secrets/secret-payloads.js';
@@ -45,6 +45,42 @@ function client(script: Script, options: Partial<Parameters<typeof createAwsObje
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 const awsErrorBody = (status: number, body: unknown) => json(status, body);
 const awsError = (status: number, type: string) => json(status, { __type: type, message: SENTINEL });
+
+/**
+ * A fake clock for the deadline cases: `setTimeout`, `clearTimeout` and `Date` follow it, and so does
+ * `AbortSignal.timeout`, which Node drives from a native timer the fake cannot see. A bound is then exact
+ * and cannot be missed because the host was busy.
+ */
+function useFakeClock() {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms);
+            return controller.signal;
+        });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+}
+
+/** Runs `call` on the fake clock and reports how much fake time passed before it settled. */
+async function settledAfter(call: Promise<unknown>, limitMs: number) {
+    const started = Date.now();
+    let elapsed: number | undefined;
+    void call.then(
+        () => {
+            elapsed = Date.now() - started;
+        },
+        () => {
+            elapsed = Date.now() - started;
+        }
+    );
+    await vi.advanceTimersByTimeAsync(limitMs);
+    return elapsed;
+}
 
 async function faultOf(promise: Promise<unknown>): Promise<ProviderFault> {
     const error = await promise.then(
@@ -266,17 +302,21 @@ describe('the AWS Secrets Manager adapter: transport', () => {
         expect((await faultOf(aws.get(NAME, VERSION_ID, 5000, undefined))).verdict).toBe('ambiguous');
     });
 
-    it('bounds a request by the budget it was given', async () => {
-        const { aws } = client(
-            (_seen, init) =>
-                new Promise<Response>((_resolve, reject) => {
-                    init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
-                }),
-            { requestMs: 60_000 }
-        );
-        const started = Date.now();
-        expect((await faultOf(aws.get(NAME, VERSION_ID, 40, undefined))).verdict).toBe('ambiguous');
-        expect(Date.now() - started).toBeLessThan(2000);
+    describe('on a fake clock', () => {
+        useFakeClock();
+
+        it('bounds a request by the budget it was given', async () => {
+            const { aws } = client(
+                (_seen, init) =>
+                    new Promise<Response>((_resolve, reject) => {
+                        init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+                    }),
+                { requestMs: 60_000 }
+            );
+            const call = faultOf(aws.get(NAME, VERSION_ID, 40, undefined));
+            expect(await settledAfter(call, 2000)).toBe(40);
+            expect((await call).verdict).toBe('ambiguous');
+        });
     });
 
     it('treats the caller aborting mid-flight as ambiguous', async () => {
@@ -387,7 +427,6 @@ const created = () => json(200, { Name: NAME, VersionId: VERSION_ID });
 const PUT = { name: NAME, versionId: VERSION_ID, payload: utf8('x') };
 const targetOf = (seen: Seen) => seen.headers['x-amz-target'];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const SLACK_MS = 60;
 
 describe('the AWS Secrets Manager adapter: a mutation answer is validated, never assumed', () => {
     it.each([
@@ -456,6 +495,7 @@ describe('the AWS Secrets Manager adapter: a mutation answer is validated, never
 });
 
 describe('the AWS Secrets Manager adapter: one absolute deadline across nested exchanges', () => {
+    useFakeClock();
     const DEADLINE_MS = 40;
     const LATE_MS = 90;
 
@@ -466,10 +506,10 @@ describe('the AWS Secrets Manager adapter: one absolute deadline across nested e
                 return KEYS;
             },
         });
-        const started = Date.now();
-        expect((await faultOf(aws.put(PUT, DEADLINE_MS, undefined))).verdict).toBe('retry');
-        expect(Date.now() - started).toBeLessThan(DEADLINE_MS + SLACK_MS);
-        await sleep(LATE_MS + SLACK_MS);
+        const call = faultOf(aws.put(PUT, DEADLINE_MS, undefined));
+        expect(await settledAfter(call, DEADLINE_MS)).toBe(DEADLINE_MS);
+        expect((await call).verdict).toBe('retry');
+        await vi.advanceTimersByTimeAsync(LATE_MS);
         expect(seen).toHaveLength(0);
     });
 
@@ -482,10 +522,10 @@ describe('the AWS Secrets Manager adapter: one absolute deadline across nested e
             },
         });
         setTimeout(() => abort.abort(), 10);
-        const started = Date.now();
-        await faultOf(aws.put(PUT, 5000, abort.signal));
-        expect(Date.now() - started).toBeLessThan(LATE_MS);
-        await sleep(LATE_MS + SLACK_MS);
+        const call = faultOf(aws.put(PUT, 5000, abort.signal));
+        expect(await settledAfter(call, LATE_MS)).toBe(10);
+        await call;
+        await vi.advanceTimersByTimeAsync(LATE_MS);
         expect(seen).toHaveLength(0);
     });
 
@@ -498,10 +538,10 @@ describe('the AWS Secrets Manager adapter: one absolute deadline across nested e
                 return KEYS;
             },
         });
-        const started = Date.now();
-        expect((await faultOf(aws.get(NAME, VERSION_ID, 80, undefined))).verdict).toBe('retry');
-        expect(Date.now() - started).toBeLessThan(80 + SLACK_MS);
-        await sleep(LATE_MS + SLACK_MS);
+        const call = faultOf(aws.get(NAME, VERSION_ID, 80, undefined));
+        expect(await settledAfter(call, 80)).toBe(80);
+        expect((await call).verdict).toBe('retry');
+        await vi.advanceTimersByTimeAsync(LATE_MS);
         expect(seen).toHaveLength(1);
     });
 
@@ -512,10 +552,10 @@ describe('the AWS Secrets Manager adapter: one absolute deadline across nested e
                 ? awsError(400, 'InvalidRequestException')
                 : awsError(400, 'ResourceNotFoundException');
         });
-        const started = Date.now();
-        await faultOf(aws.remove(NAME, 60, undefined));
-        expect(Date.now() - started).toBeLessThan(60 + SLACK_MS);
-        await sleep(LATE_MS);
+        const call = faultOf(aws.remove(NAME, 60, undefined));
+        expect(await settledAfter(call, 60)).toBe(45);
+        await call;
+        await vi.advanceTimersByTimeAsync(LATE_MS);
         expect(seen.map(targetOf)).toEqual(['secretsmanager.DeleteSecret']);
     });
 
@@ -530,10 +570,10 @@ describe('the AWS Secrets Manager adapter: one absolute deadline across nested e
                 return KEYS;
             },
         });
-        const started = Date.now();
-        await faultOf(aws.remove(NAME, 80, undefined));
-        expect(Date.now() - started).toBeLessThan(80 + SLACK_MS);
-        await sleep(LATE_MS + SLACK_MS);
+        const call = faultOf(aws.remove(NAME, 80, undefined));
+        expect(await settledAfter(call, 80)).toBe(80);
+        await call;
+        await vi.advanceTimersByTimeAsync(LATE_MS);
         expect(seen).toHaveLength(1);
     });
 });
