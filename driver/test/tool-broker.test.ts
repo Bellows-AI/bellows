@@ -67,9 +67,22 @@ const broker = createRequire(import.meta.url)(BROKER) as {
 const servers: Server[] = [];
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
-afterEach(() => {
+const closed: Promise<void>[] = [];
+// A child is gone once `close` fires: its pipes are shut, so nothing of it still writes under a dir
+// this file removes. Killing is only the request; a spawn that failed never closes.
+const track = (child: ChildProcess): ChildProcess => {
+    closed.push(
+        new Promise((resolve) => {
+            child.once('close', () => resolve());
+            child.once('error', () => resolve());
+        })
+    );
+    return child;
+};
+afterEach(async () => {
     for (const child of children.splice(0)) child.kill('SIGKILL');
     for (const server of servers.splice(0)) server.close();
+    await Promise.all(closed.splice(0));
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -78,6 +91,36 @@ const scratch = (): string => {
     dirs.push(dir);
     return dir;
 };
+
+/** The broker's SWEEP_TIMEOUT_MS: the budget the shipped code hands every one of its short scripts. */
+const SWEEP_TIMEOUT_MS = 5000;
+
+/**
+ * The broker's helper with the deadline under the test's control. The shipped code hands spawn a
+ * `timeout`; spawn would arm a real timer for it, and a loaded host can spend 5 s on a shell script's
+ * few spawns. Here that timer is replaced by `expire()`, which does what the timer does (SIGTERM) when
+ * the test says so, and `timeouts` records the budget each script was given.
+ */
+function controlledHelper(shim?: string) {
+    const timeouts: (number | undefined)[] = [];
+    const scripts: { child: ChildProcess; expire: () => void }[] = [];
+    const waiting: (() => void)[] = [];
+    const helper = ((file: string, args: string[], opts: { env?: Record<string, string>; timeout?: number }) => {
+        const { timeout, ...rest } = opts;
+        timeouts.push(timeout);
+        const env = shim ? { ...opts.env, PATH: `${shim}:${opts.env?.PATH ?? ''}` } : opts.env;
+        const child = track(spawn(file, args, { ...rest, env }));
+        scripts.push({ child, expire: () => child.kill('SIGTERM') });
+        for (const wake of waiting.splice(0)) wake();
+        return child;
+    }) as unknown as typeof spawn;
+    /** Resolves with the `n`th script (from 0) once the broker has started it. */
+    const script = async (n: number) => {
+        while (scripts.length <= n) await new Promise<void>((resolve) => waiting.push(resolve));
+        return scripts[n]!;
+    };
+    return { helper, timeouts, scripts, script };
+}
 
 /** A broker on a scratch socket; `spawned` collects what it asked spawn for. */
 async function startBroker(options: Partial<BrokerDeps> = {}) {
@@ -91,7 +134,7 @@ async function startBroker(options: Partial<BrokerDeps> = {}) {
     const server = await broker.serve({
         fs,
         spawn: recording,
-        helper: spawn,
+        helper: controlledHelper().helper,
         socket,
         mailbox: join(dir, 'out'),
         sharedTmp: join(dir, 'factory-tmp'),
@@ -112,7 +155,7 @@ function client(socket: string, argv: string[], cwd = process.cwd()): ChildProce
     })`;
     const child = spawn(process.execPath, ['-e', script], { stdio: ['pipe', 'pipe', 'pipe'] });
     children.push(child);
-    return child;
+    return track(child);
 }
 
 function settled(child: ChildProcess): Promise<{ stdout: Buffer; stderr: string; status: Status }> {
@@ -219,7 +262,7 @@ describe('the tool broker', () => {
         const { socket } = await startBroker({
             spawn: ((file: string, args: string[], options: object) => {
                 command = spawn(file, args, options);
-                children.push(command);
+                children.push(track(command));
                 return command;
             }) as unknown as typeof spawn,
         });
@@ -240,7 +283,7 @@ describe('the tool broker', () => {
         const { socket } = await startBroker({
             spawn: ((file: string, args: string[], options: object) => {
                 command = spawn(file, args, options);
-                children.push(command);
+                children.push(track(command));
                 return command;
             }) as unknown as typeof spawn,
         });
@@ -405,13 +448,39 @@ describe('the tool broker', () => {
                 '#!/bin/sh\n/bin/mkdir "$@" || exit\nfor last; do :; done\nchmod u-s,g-s,o-t "$last"\n',
                 { mode: 0o755 }
             );
-            const helper = ((file: string, args: string[], opts: { env?: Record<string, string> }) =>
-                spawn(file, args, {
-                    ...opts,
-                    env: { ...opts.env, PATH: `${shim}:${opts.env?.PATH ?? ''}` },
-                })) as unknown as typeof spawn;
+            const { helper } = controlledHelper(shim);
             const { socket, sharedTmp } = await startBroker({ helper });
             expect((await settled(client(socket, ['-c', 'rm -rf "$TMPDIR"']))).status.code).toBe(0);
+            expect(modeOf(sharedTmp)).toBe(0o2770);
+        });
+
+        it('bounds every script the broker runs as the tool by the sweep budget', async () => {
+            const controlled = controlledHelper();
+            const { socket } = await startBroker({ helper: controlled.helper });
+            expect((await settled(client(socket, ['-c', 'true']))).status.code).toBe(0);
+            // The startup script and the command's sweep.
+            expect(controlled.timeouts).toEqual([SWEEP_TIMEOUT_MS, SWEEP_TIMEOUT_MS]);
+        });
+
+        it('reports the exit when the sweep hits its deadline, and the next command’s sweep finishes the job', async () => {
+            // A mkdir that hangs once armed: the sweep recreating the removed directory never finishes.
+            const shim = scratch();
+            const armed = join(shim, 'armed');
+            fs.writeFileSync(
+                join(shim, 'mkdir'),
+                `#!/bin/sh\n[ -e '${armed}' ] && exec sleep 30\nexec /bin/mkdir "$@"\n`,
+                { mode: 0o755 }
+            );
+            const controlled = controlledHelper(shim);
+            const { socket, sharedTmp } = await startBroker({ helper: controlled.helper });
+            fs.writeFileSync(armed, '');
+            const first = settled(client(socket, ['-c', 'rm -rf "$TMPDIR"']));
+            // Script 0 was the startup one; 1 is this command's sweep. The deadline is the test's to fire.
+            (await controlled.script(1)).expire();
+            expect((await first).status.code).toBe(0);
+            expect(existsSync(sharedTmp)).toBe(false);
+            fs.rmSync(armed);
+            expect((await settled(client(socket, ['-c', 'true']))).status.code).toBe(0);
             expect(modeOf(sharedTmp)).toBe(0o2770);
         });
 
