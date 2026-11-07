@@ -29,10 +29,24 @@ const STOP_PROMPT = [
 ].join('\n');
 
 const dirs: string[] = [];
+const closed: Promise<void>[] = [];
+// A child's stdout is a pipe its stand-in entrypoint hands on to the agent, so `close` fires only once
+// every holder of the pipe is dead: the group kill is complete when it does, never merely signalled.
+const track = (child: ReturnType<typeof spawn>): ReturnType<typeof spawn> => {
+    child.stdout?.resume();
+    closed.push(
+        new Promise((resolve) => {
+            child.once('close', () => resolve());
+            // A spawn that failed never closes.
+            child.once('error', () => resolve());
+        })
+    );
+    return child;
+};
+// Each child leads its own process group, so the group kill reaps the agent it spawned as well, even
+// once its stand-in entrypoint is gone. Never a pid this test did not spawn.
 const children: ReturnType<typeof spawn>[] = [];
-afterEach(() => {
-    // Each child leads its own process group, so the group kill reaps the agent it spawned as well, even
-    // once its stand-in entrypoint is gone. Never a pid this test did not spawn.
+const teardown = async (): Promise<void> => {
     for (const child of children.splice(0)) {
         try {
             if (child.pid) process.kill(-child.pid, 'SIGKILL');
@@ -40,8 +54,10 @@ afterEach(() => {
             // The whole group already ended.
         }
     }
+    await Promise.all(closed.splice(0));
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+};
+afterEach(teardown);
 const scratch = (): string => {
     const dir = mkdtempSync(join(tmpdir(), 'run-control-'));
     dirs.push(dir);
@@ -73,7 +89,7 @@ function mailbox(script: string, env: Record<string, string> = {}) {
         const { spawn } = require('node:child_process');
         const fs = require('node:fs');
         process.on('SIGTERM', () => { fs.appendFileSync(${JSON.stringify(termed)}, 'TERM\\n'); });
-        const child = spawn(process.execPath, [${JSON.stringify(path(script))}], { stdio: 'ignore', env: process.env });
+        const child = spawn(process.execPath, [${JSON.stringify(path(script))}], { stdio: ['ignore', 'inherit', 'ignore'], env: process.env });
         child.on('exit', (code) => process.exit(code ?? 0));
         setInterval(() => {}, 1000);
     `;
@@ -88,10 +104,10 @@ function mailbox(script: string, env: Record<string, string> = {}) {
                 ...env,
                 ...extra,
             },
-            stdio: 'ignore',
+            stdio: ['ignore', 'pipe', 'ignore'],
             detached: true,
         });
-        children.push(child);
+        children.push(track(child));
         return child;
     };
     return {
@@ -177,7 +193,7 @@ describe('the agent’s mailbox helper', () => {
         const pidFile = join(box.root, 'agent.pid');
         const parent = `
             const { spawn } = require('node:child_process');
-            const child = spawn(process.execPath, ['--require', ${JSON.stringify(preload)}, ${JSON.stringify(path(CLAUDE_AGENT))}], { stdio: 'ignore', env: process.env });
+            const child = spawn(process.execPath, ['--require', ${JSON.stringify(preload)}, ${JSON.stringify(path(CLAUDE_AGENT))}], { stdio: ['ignore', 'inherit', 'ignore'], env: process.env });
             require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
             // Gone only once the agent runs, so it recorded this process as its parent first.
             setInterval(() => {
@@ -191,10 +207,10 @@ describe('the agent’s mailbox helper', () => {
                 FACTORY_CTL_OUT: box.outDir,
                 FACTORY_CTL_TICK_MS: '20',
             },
-            stdio: 'ignore',
+            stdio: ['ignore', 'pipe', 'ignore'],
             detached: true,
         });
-        children.push(launcher);
+        children.push(track(launcher));
         await new Promise((resolve) => launcher.on('exit', resolve));
         await until('the agent pid', () => existsSync(pidFile));
         const agent = Number.parseInt(readFileSync(pidFile, 'utf8'), 10);
@@ -210,6 +226,23 @@ describe('the agent’s mailbox helper', () => {
         };
         await until('the orphan to exit', () => !alive());
         expect(existsSync(recorded) ? readFileSync(recorded, 'utf8') : '').toBe('');
+    });
+
+    // The teardown pin: a group still creating files in its scratch dir when it is killed must be dead,
+    // not merely signalled, before the dir is removed (an immediate rmSync saw ENOTEMPTY).
+    it('removes the scratch dir only once the killed group has closed its pipe', async () => {
+        const dir = scratch();
+        const child = spawn('sh', ['-c', `i=0; while :; do : > "$1/f$i"; i=$((i+1)); done`, 'sh', dir], {
+            stdio: ['ignore', 'pipe', 'ignore'],
+            detached: true,
+        });
+        children.push(track(child));
+        await until('the writer', () => existsSync(join(dir, 'f5')));
+        await teardown();
+        // Dead, not merely signalled: the child reported its end before the dir was touched.
+        expect(child.signalCode).toBe('SIGKILL');
+        expect(child.stdout?.destroyed).toBe(true);
+        expect(existsSync(dir)).toBe(false);
     });
 
     it('does nothing without a mailbox, as an image run by hand', async () => {
