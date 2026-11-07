@@ -16,7 +16,8 @@ import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { fakeConnector, type FakeScript } from '../test/notifications-fake-connector.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { subscriptionSecretIdentity } from '../src/notifications/subscription-credential.js';
-import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
+import { faultySecrets } from './env-secrets-harness.js';
+import { createPostgresHarness } from './secrets-postgres-harness.js';
 import { ORG_OWNER } from '../src/notifications/subscription-store.js';
 import { useTestDb } from './harness.js';
 import { startRow, testOrg, testUser } from './fixtures.js';
@@ -51,7 +52,7 @@ beforeAll(() => {
     sql = db.sql;
     jobs = createJobStore({ sql, orgId: ORG });
     otherJobs = createJobStore({ sql, orgId: OTHER });
-    secrets = testSecretStore(sql);
+    secrets = onFakeStoreClock(createPostgresHarness(sql).openControlled());
     subs = createNotificationSubscriptionStore({ sql, orgId: ORG, secrets, secretLog: () => {} });
     otherSubs = createNotificationSubscriptionStore({ sql, orgId: OTHER, secrets, secretLog: () => {} });
 });
@@ -63,6 +64,37 @@ beforeEach(() => {
 afterEach(() => {
     vi.restoreAllMocks();
 });
+
+/**
+ * The real store at its 3 s deadline with nothing real bounding it: the store's deadline timers and Date are faked
+ * for exactly the span of each call (so a slow read cannot hit it), and the harness's repo withholds the
+ * server-side statement_timeout (`statementBoundary`). Code outside a store call keeps its real timers.
+ */
+function onFakeStoreClock(store: SecretStore): SecretStore {
+    let active = 0;
+    const scoped =
+        <A extends unknown[], R>(call: (...args: A) => Promise<R>) =>
+        async (...args: A): Promise<R> => {
+            if (active++ === 0) vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            try {
+                return await call(...args);
+            } finally {
+                if (--active === 0) vi.useRealTimers();
+            }
+        };
+    return {
+        issueOperationId: scoped((...args: Parameters<SecretStore['issueOperationId']>) =>
+            store.issueOperationId(...args)
+        ),
+        create: scoped((...args: Parameters<SecretStore['create']>) => store.create(...args)),
+        readActive: scoped((...args: Parameters<SecretStore['readActive']>) => store.readActive(...args)),
+        replace: scoped((...args: Parameters<SecretStore['replace']>) => store.replace(...args)),
+        delete: scoped((...args: Parameters<SecretStore['delete']>) => store.delete(...args)),
+        reconcileOperation: scoped((...args: Parameters<SecretStore['reconcileOperation']>) =>
+            store.reconcileOperation(...args)
+        ),
+    };
+}
 
 const outboxFor = (org = ORG): NotificationOutboxStore =>
     createNotificationOutboxStore({ sql, orgId: org, secrets, now: () => new Date(clock.t) });
