@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import {
     SUPERVISOR_ORPHAN_MIN_MS,
     SUPERVISOR_REBIND_GRACE_MS,
@@ -99,7 +99,7 @@ echo "docker $*" >>"$STUB_LOG"
 case "$1" in
 inspect)
     [ -n "$STUB_REGISTRY" ] || exit 1
-    case "$*" in *State.Running*) echo "$STUB_REGISTRY" ;; *Networks*) echo "$STUB_NETWORK" ;; esac
+    echo "$STUB_REGISTRY $STUB_NETWORK"
     ;;
 port) [ -n "$STUB_PORT" ] || exit 1; echo "$STUB_PORT" ;;
 ps) [ -z "$STUB_PS_FAIL" ] || exit 1; [ -z "$STUB_REGISTRY" ] || echo 0123abcd ;;
@@ -134,12 +134,18 @@ const WIRED = {
 };
 
 const stubDirs: string[] = [];
+// The stubs are read-only and identical for every case, so they are written once: the first exec of a freshly
+// written script is the slow one on a loaded host. A case owns only its call log.
+const stubBin = mkdtempSync(join(tmpdir(), 'kind-cluster-stubs-'));
+writeFileSync(join(stubBin, 'docker'), DOCKER_STUB, { mode: 0o755 });
+writeFileSync(join(stubBin, 'kind'), KIND_STUB, { mode: 0o755 });
 // One teardown: kill and await live children first, then remove the dirs they run from (nested afterEach
 // hooks run before this one, so the nested suites keep their dirs in stubDirs too).
 afterEach(async () => {
     await killLiveChildren();
     for (const dir of stubDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+afterAll(() => rmSync(stubBin, { recursive: true, force: true }));
 
 const run = promisify(execFile);
 
@@ -147,13 +153,9 @@ const run = promisify(execFile);
 const kindCluster = async (verb: string, host: Record<string, string>) => {
     const dir = mkdtempSync(join(tmpdir(), 'kind-cluster-'));
     stubDirs.push(dir);
-    writeFileSync(join(dir, 'docker'), DOCKER_STUB);
-    writeFileSync(join(dir, 'kind'), KIND_STUB);
-    chmodSync(join(dir, 'docker'), 0o755);
-    chmodSync(join(dir, 'kind'), 0o755);
     const log = join(dir, 'calls.log');
     writeFileSync(log, '');
-    const env = { ...process.env, ...host, STUB_LOG: log, PATH: `${dir}:${process.env.PATH ?? ''}` };
+    const env = { ...process.env, ...host, STUB_LOG: log, PATH: `${stubBin}:${process.env.PATH ?? ''}` };
     const result = await run('sh', ['scripts/kind-cluster.sh', verb, 'lane'], { cwd: REPO_ROOT, env }).then(
         ({ stdout, stderr }) => ({ status: 0, stdout, stderr }),
         (error: { code?: number; stdout?: string; stderr?: string }) => ({
