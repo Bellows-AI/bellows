@@ -125,22 +125,20 @@ describe('the review reply script: preflight failures and idempotence', () => {
         });
     });
 
-    it('keeps auth, permission and rate failures actionable refusals', async () => {
-        for (const [status, reason] of [
-            [HTTP_UNAUTHORIZED, 'auth'],
-            ['403', 'permission'],
-            ['429', 'rate'],
-        ] as const) {
-            const plan = replyPlan([replyTarget({ id: '401', kind: 'general', reply: 'hi' })]);
-            const { stdout } = await runScript('review-reply.cjs', {
-                ...base,
-                REPLY_PLAN: plan,
-                GH_HTTP_STATUS: status,
-            });
-            expect(JSON.parse(stdout.trim()), `HTTP ${status}`).toMatchObject({
-                results: [{ id: '401', kind: 'general', status: 'refused', reason }],
-            });
-        }
+    it.each([
+        [HTTP_UNAUTHORIZED, 'auth'],
+        ['403', 'permission'],
+        ['429', 'rate'],
+    ])('keeps HTTP %s an actionable %s refusal', async (status, reason) => {
+        const plan = replyPlan([replyTarget({ id: '401', kind: 'general', reply: 'hi' })]);
+        const { stdout } = await runScript('review-reply.cjs', {
+            ...base,
+            REPLY_PLAN: plan,
+            GH_HTTP_STATUS: status,
+        });
+        expect(JSON.parse(stdout.trim()), `HTTP ${status}`).toMatchObject({
+            results: [{ id: '401', kind: 'general', status: 'refused', reason }],
+        });
     });
 
     it('passes a plan-refused target through without executing it', async () => {
@@ -184,45 +182,42 @@ describe('the review reply script: preflight failures and idempotence', () => {
 describe('the review reply script: malformed plans and credentials', () => {
     const base = { REPO: 'octo/factory', PR: '7' };
 
-    it('refuses a malformed plan in one terminal verdict', async () => {
-        const cases: Array<[string, Record<string, string>, string]> = [
-            ['not JSON', { REPLY_PLAN: 'nope' }, 'not JSON'],
-            [
-                'wrong schema',
-                { REPLY_PLAN: JSON.stringify({ version: 1, schema: 'other/v1', targets: [] }) },
-                'expected review-reply/plan/v1',
-            ],
-            [
-                'ref mismatch',
-                {
-                    REPLY_PLAN: JSON.stringify({
-                        version: 1,
-                        schema: 'review-reply/plan/v1',
-                        ref: { owner: 'x', repo: 'y', number: 1 },
-                        targets: [],
-                    }),
-                },
-                'does not match REPO/PR',
-            ],
-            [
-                'no targets',
-                { REPLY_PLAN: JSON.stringify({ version: 1, schema: 'review-reply/plan/v1', ref: collectRef }) },
-                'no targets',
-            ],
-            [
-                'missing reply body',
-                { REPLY_PLAN: replyPlan([replyTarget({ id: '401', kind: 'general' })]) },
-                'no reply body',
-            ],
-        ];
-        for (const [name, env, fragment] of cases) {
-            const { stdout, args } = await runScript('review-reply.cjs', { ...base, ...env });
-            expect(JSON.parse(stdout.trim()), name).toMatchObject({
-                ok: false,
-                error: expect.stringContaining(fragment),
-            });
-            expect(args, name).toEqual([]);
-        }
+    it.each<[string, Record<string, string>, string]>([
+        ['not JSON', { REPLY_PLAN: 'nope' }, 'not JSON'],
+        [
+            'wrong schema',
+            { REPLY_PLAN: JSON.stringify({ version: 1, schema: 'other/v1', targets: [] }) },
+            'expected review-reply/plan/v1',
+        ],
+        [
+            'ref mismatch',
+            {
+                REPLY_PLAN: JSON.stringify({
+                    version: 1,
+                    schema: 'review-reply/plan/v1',
+                    ref: { owner: 'x', repo: 'y', number: 1 },
+                    targets: [],
+                }),
+            },
+            'does not match REPO/PR',
+        ],
+        [
+            'no targets',
+            { REPLY_PLAN: JSON.stringify({ version: 1, schema: 'review-reply/plan/v1', ref: collectRef }) },
+            'no targets',
+        ],
+        [
+            'missing reply body',
+            { REPLY_PLAN: replyPlan([replyTarget({ id: '401', kind: 'general' })]) },
+            'no reply body',
+        ],
+    ])('refuses a malformed plan (%s) in one terminal verdict', async (name, env, fragment) => {
+        const { stdout, args } = await runScript('review-reply.cjs', { ...base, ...env });
+        expect(JSON.parse(stdout.trim()), name).toMatchObject({
+            ok: false,
+            error: expect.stringContaining(fragment),
+        });
+        expect(args, name).toEqual([]);
     });
 
     it('refuses an oversized plan', async () => {
