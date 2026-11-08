@@ -19,8 +19,8 @@ interface PinRow {
 }
 
 /**
- * Every enabled, live org skill and `ownerId`'s enabled workspace skills, at their current version; an org skill wins
- * a name the workspace also holds (core `resolveSkillCatalog`), the shadowed one is not pinned. A null `ownerId` (a job
+ * Every enabled, live org skill and `ownerId`'s enabled workspace skills, at their current version; a workspace
+ * skill wins a name the org also holds (core `resolveSkillCatalog`), the shadowed one is not pinned. A null `ownerId` (a job
  * with no member principal) pins the org skills only. Sorted by name so equal inputs pin equal arrays.
  */
 export async function resolveSkillPinInTx(
@@ -33,7 +33,7 @@ export async function resolveSkillPinInTx(
         from skill s join skill_version v on v.id = s.current_version_id
         where s.org_id = ${orgId} and s.deleted_at is null and s.enabled
           and (s.user_id is null or s.user_id = ${ownerId}::uuid)
-        order by s.name, (s.user_id is null) desc
+        order by s.name, (s.user_id is null) asc
     `;
     const pin: PinnedSkill[] = [];
     for (const row of rows) {

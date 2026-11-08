@@ -190,11 +190,11 @@ describe('resolveSkillCatalog', () => {
     });
 
     it.each([
-        ['builtin', 'org'],
-        ['builtin', 'workspace'],
-        ['builtin', 'repo'],
-        ['org', 'workspace'],
-        ['org', 'repo'],
+        ['org', 'builtin'],
+        ['repo', 'builtin'],
+        ['workspace', 'builtin'],
+        ['repo', 'org'],
+        ['workspace', 'org'],
         ['workspace', 'repo'],
     ] as const)('%s outranks %s: the lower one stays listed, marked shadowed', (high, low) => {
         const { entries } = resolveSkillCatalog(sourcesWith([low, high]));
@@ -208,7 +208,53 @@ describe('resolveSkillCatalog', () => {
 
     it('marks every lower source against the highest holder', () => {
         const { entries } = resolveSkillCatalog(sourcesWith(['repo', 'workspace', 'org']));
-        expect(entries.map((entry) => entry.shadowedBy)).toEqual([undefined, 'org', 'org']);
+        expect(entries.map((entry) => entry.shadowedBy)).toEqual([undefined, 'workspace', 'workspace']);
+    });
+
+    it('workspace beats org on a name clash', () => {
+        const { entries } = resolveSkillCatalog(sourcesWith(['org', 'workspace']));
+        expect(entries.map((entry) => [entry.source, entry.shadowedBy])).toEqual([
+            ['workspace', undefined],
+            ['org', 'workspace'],
+        ]);
+    });
+
+    it('repo beats org', () => {
+        const { entries } = resolveSkillCatalog(sourcesWith(['org', 'repo']));
+        expect(entries.map((entry) => [entry.source, entry.shadowedBy])).toEqual([
+            ['repo', undefined],
+            ['org', 'repo'],
+        ]);
+    });
+
+    it('workspace beats repo', () => {
+        const { entries } = resolveSkillCatalog(sourcesWith(['repo', 'workspace']));
+        expect(entries.map((entry) => [entry.source, entry.shadowedBy])).toEqual([
+            ['workspace', undefined],
+            ['repo', 'workspace'],
+        ]);
+    });
+
+    it('a repo factory-* name never beats the built-in', () => {
+        const { entries } = resolveSkillCatalog({
+            builtin: [{ ...make('b'), name: 'factory-fix' }],
+            workspace: [{ ...make('w'), name: 'factory-fix' }],
+            repo: [{ name: 'factory-fix', description: 'impostor' }],
+        });
+        expect(entries.map((entry) => [entry.source, entry.shadowedBy])).toEqual([
+            ['builtin', undefined],
+            ['workspace', 'builtin'],
+            ['repo', 'builtin'],
+        ]);
+    });
+
+    it('a factory-* name no built-in holds stays reserved', () => {
+        const { entries, reserved } = resolveSkillCatalog({
+            builtin: [],
+            workspace: [{ ...make('w'), name: 'factory-mine' }],
+        });
+        expect(entries).toEqual([]);
+        expect(reserved).toEqual(['factory-mine']);
     });
 
     it('keeps a repo skill with an unclaimed name, with no requirements', () => {
@@ -228,7 +274,7 @@ describe('resolveSkillCatalog', () => {
                 { name: 'factory-other', description: 'x' },
             ],
         });
-        expect(reserved).toEqual(['factory-mine', 'factory-other']);
+        expect(reserved).toEqual(['factory-other', 'factory-mine']);
         expect(entries.map((entry) => [entry.name, entry.source, entry.shadowedBy])).toEqual([
             ['factory-fix', 'builtin', undefined],
             ['factory-fix', 'repo', 'builtin'],

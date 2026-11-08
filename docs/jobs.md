@@ -115,7 +115,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - Attachments have no OCR: a scanned PDF yields no text (`unreadable`, `no_text`) and an image is read only by the model. OpenCode reads image attachments only with a vision-capable model; the prompt marks image entries so an agent that cannot see one says so.
 - No priority; no per-job authorization ([repos.md](repos.md)); no service volumes, health checks,
   `depends_on` or restart policies in `.bellows.yaml`.
-- Skill precedence differs by layer: listings and the board use builtin > org > workspace > repo, but opencode loads a repo skill over a same-name built-in at run time (claude keeps the built-in); a repo skill missing from the checkout at run time is not detectable by the board (`docker/opencode-executor/test.sh`, `scripts/test-jobs.sh` phase `repo-skills`).
+- Skill precedence differs by layer: listings and the board use built-in < org < repo < workspace (a non-built-in `factory-*` name never wins over the built-in), but opencode loads a repo skill over a same-name built-in at run time (claude keeps the built-in); a repo skill missing from the checkout at run time is not detectable by the board (`docker/opencode-executor/test.sh`, `scripts/test-jobs.sh` phase `repo-skills`).
 - No abort for an in-flight publish; the next lease holder reads the ledger and the remote first. A custom
   `RUNNER_IMAGE` missing a skill's declared tool is not detected.
 - Only the tail-kept log and the opencode transcript upload whole-or-cut (`ARTIFACT_LIMIT`); no sweeper

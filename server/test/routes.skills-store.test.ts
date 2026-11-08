@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { createRepoSource } from '../src/github/repo-source.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import {
     HTTP_BAD_REQUEST,
@@ -13,6 +14,7 @@ import {
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
+import { listingClient } from './helpers-app-client.js';
 import { memorySkillStore, type MemorySkillStore } from './helpers-skill-store.js';
 
 /**
@@ -100,7 +102,10 @@ function zip(entries: { name: string; data: string }[]): Buffer {
     ]);
 }
 
-async function boot(skills: MemorySkillStore = memorySkillStore()) {
+async function boot(
+    skills: MemorySkillStore = memorySkillStore(),
+    extra: Pick<NonNullable<Parameters<typeof staticRegistry>[0]>, 'repos' | 'repoSkills'> = {}
+) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
@@ -108,7 +113,7 @@ async function boot(skills: MemorySkillStore = memorySkillStore()) {
     const config = testConfig({ auth: githubAuth() });
     const instance = await buildApp({
         config,
-        orgs: staticRegistry({ config, skills, telemetry: stubTelemetryClient() }),
+        orgs: staticRegistry({ config, skills, telemetry: stubTelemetryClient(), ...extra }),
         auth,
     });
     track(instance);
@@ -453,7 +458,7 @@ describe('skill writes', () => {
 });
 
 describe('/api/skills catalog', () => {
-    it('lists org and workspace skills with their source, the workspace one shadowed by an org one', async () => {
+    it('lists org and workspace skills with their source, the org one shadowed by a workspace one', async () => {
         const booted = await boot();
         const { instance, admin, member, other } = booted;
         await publish(booted, '/api/org/skills', admin, 'team-skill');
@@ -466,12 +471,38 @@ describe('/api/skills catalog', () => {
             mine.find((entry: { name: string; source: string }) => entry.name === name && entry.source === source);
         expect(by('team-skill', 'org')).toEqual(expect.objectContaining({ description: 'Does a thing.' }));
         expect(by('personal', 'workspace')).toBeDefined();
-        expect(by('clash', 'org')).toBeDefined();
-        expect(by('clash', 'workspace')).toEqual(expect.objectContaining({ shadowedBy: 'org' }));
+        expect(by('clash', 'workspace')).toBeDefined();
+        expect(by('clash', 'org')).toEqual(expect.objectContaining({ shadowedBy: 'workspace' }));
 
         const theirs = (await instance.inject({ method: 'GET', url: '/api/skills', headers: other })).json().skills;
         expect(theirs.some((entry: { name: string }) => entry.name === 'personal')).toBe(false);
         expect(theirs.some((entry: { name: string }) => entry.name === 'team-skill')).toBe(true);
+    });
+
+    it('the repo menu lists the org copy as shadowed by a repo skill of the same name', async () => {
+        const client = listingClient(async () => ({
+            repos: [{ owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: null }],
+            installation: { id: '1', account: 'acme', repositorySelection: 'selected' },
+        }));
+        const booted = await boot(memorySkillStore(), {
+            repos: createRepoSource({ client }),
+            repoSkills: async () => ({
+                revision: 'r',
+                skills: [{ name: 'clash', description: 'from the repo' }],
+                unreadable: [],
+                complete: true,
+            }),
+        });
+        await publish(booted, '/api/org/skills', booted.admin, 'clash');
+
+        const response = await booted.instance.inject({
+            method: 'GET',
+            url: '/api/repos/acme/web/skills',
+            headers: booted.member,
+        });
+        const body = response.json();
+        expect(body.skills.find((s: { name: string }) => s.name === 'clash')).toMatchObject({ source: 'repo' });
+        expect(body.shadowed).toEqual([expect.objectContaining({ name: 'clash', source: 'org', shadowedBy: 'repo' })]);
     });
 
     it('leaves out a disabled or deleted skill', async () => {
