@@ -38,8 +38,6 @@ interface Harden {
     parseList(buffer: Buffer): { scope: string; key: string; value: string }[];
 }
 
-const CASE_TIMEOUT_MS = 180_000;
-
 describe.skipIf(!hasGit())('the driver git over agent-written checkout config', () => {
     const supervisor = createRequire(import.meta.url)('../src/scripts/supervisor.cjs') as Supervisor;
     const harden = createRequire(import.meta.url)('../src/scripts/git-harden.cjs') as Harden;
@@ -78,7 +76,7 @@ describe.skipIf(!hasGit())('the driver git over agent-written checkout config', 
         await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
         buildFixture(join(root, 'template'));
         serverUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/r.git`;
-    }, CASE_TIMEOUT_MS);
+    });
     afterAll(async () => {
         for (const name of OVERRIDES) {
             if (saved[name] === undefined) delete process.env[name];
@@ -384,9 +382,7 @@ describe.skipIf(!hasGit())('the driver git over agent-written checkout config', 
     ];
 
     for (const vector of vectors) {
-        it.concurrent(`${vector.name}: run by the unhardened control, not by the driver's git`, {
-            timeout: CASE_TIMEOUT_MS,
-        }, async () => {
+        it(`${vector.name}: run by the unhardened control, not by the driver's git`, async () => {
             const c = makeCase();
             vector.plant(c);
 
