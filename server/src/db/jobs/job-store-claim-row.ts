@@ -1,7 +1,7 @@
 import type { JobMode } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
 import { effectiveAttachments } from './job-store-attachments.js';
-import type { PinnedSkill } from './job-store-skill-pin.js';
+import type { HiddenSkill, PinnedSkill } from './job-store-skill-pin.js';
 import type { Claim } from './job-store-types.js';
 
 /** The claimed row as the acquisition's RETURNING reads it (`job-store-claim.ts`): what `buildClaimResult` turns into a `Claim`. */
@@ -28,6 +28,8 @@ export interface ClaimCandidateRow {
     skills: string[];
     /** This row's own pin of the org and workspace skills (129): resolved when the row was made, never the root's. */
     skill_pin: PinnedSkill[];
+    /** This row's own visibility decision (132), read in the same RETURNING: what its CLI must not list. */
+    skill_hidden: HiddenSkill[];
     /** The providers the thread ROOT holds a live binding for (094), read in the same RETURNING. */
     live_providers: string[];
     /** The frozen target branch of the batch task the thread works (059), read in the same RETURNING; null outside a batch. */

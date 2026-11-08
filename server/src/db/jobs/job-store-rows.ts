@@ -108,6 +108,8 @@ export interface JobRow {
     publication_base_branch?: string | null;
     /** Only the detail reads (get/thread) select the thread's effective base branch. */
     base_branch?: string | null;
+    /** Only `get` selects the row's own visibility decision (132). */
+    skill_hidden?: { name: string; reason: 'switched_off' | 'needs_connection' }[];
     /** The thread root's title columns (122); absent on a read that does not project them. */
     title?: string | null;
     title_origin?: TaskTitleOrigin | null;
@@ -200,6 +202,10 @@ const titleOf = (row: JobRow) => ({
 
 const baseBranchOf = (row: JobRow): string | null => row.base_branch ?? null;
 
+/** The detail reads' hidden skills, name and reason only; absent from a read that does not select them. */
+const hiddenSkillsOf = (row: JobRow) =>
+    row.skill_hidden ? { hiddenSkills: row.skill_hidden.map(({ name, reason }) => ({ name, reason })) } : {};
+
 export function toJob(orgId: string, row: JobRow): Job {
     return {
         id: row.id,
@@ -214,6 +220,7 @@ export function toJob(orgId: string, row: JobRow): Job {
         stoppedBy: userRef(row.stopper_id, row.stopper_login, row.stopper_name, row.stopper_avatar_url),
         doneBy: userRef(row.doner_id, row.doner_login, row.doner_name, row.doner_avatar_url),
         baseBranch: baseBranchOf(row),
+        ...hiddenSkillsOf(row),
         sessionId: row.session_id,
         exitCode: row.exit_code,
         output: row.output ?? null,
@@ -320,12 +327,14 @@ export interface WorkflowSuccessorInput {
 
 export async function insertWorkflowSuccessor(tx: TransactionSql, input: WorkflowSuccessorInput): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-        insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode, skill_pin)
+        insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode, skill_pin, skill_hidden)
         select ${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
                ${input.executor}, ${input.executorScope}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode}, ${WORKFLOW_MODE},
                -- The predecessor's pin (BEL-273): a successor continues the same run with the same skill versions.
-               coalesce((select p.skill_pin from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb)
+               coalesce((select p.skill_pin from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb),
+               -- And its visibility decision (BEL-286), for the same reason.
+               coalesce((select p.skill_hidden from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb)
         returning id
     `;
     return rows[0]!.id;

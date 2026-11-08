@@ -98,6 +98,7 @@ export async function repairInTx(
         batchId: string;
         task: { key: string; root_job_id: string | null; acceptance: string; verification: string };
         startedBy: string | null;
+        githubApp?: boolean | undefined;
     }
 ) {
     const { orgId, task, startedBy } = run;
@@ -117,6 +118,7 @@ export async function repairInTx(
         parentId: head.id,
         command: batchRepairCommand(task, evidence),
         createdBy: startedBy,
+        githubApp: run.githubApp,
     });
 }
 
