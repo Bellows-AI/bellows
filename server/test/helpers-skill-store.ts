@@ -31,6 +31,7 @@ interface Row {
 export function memorySkillStore(): MemorySkillStore {
     const rows = new Map<string, Row>();
     const bodies = new Map<string, Uint8Array>();
+    const off = new Set<string>();
     let lost = false;
     let broken = false;
     const check = () => {
@@ -156,6 +157,15 @@ export function memorySkillStore(): MemorySkillStore {
                         objectKey: version.objectKey,
                     };
                 });
+        },
+        async switchedOff() {
+            check();
+            return [...off];
+        },
+        async setBuiltinEnabled(name, enabled) {
+            check();
+            if (enabled) off.delete(name);
+            else off.add(name);
         },
         async readVersion(versionId, access) {
             check();

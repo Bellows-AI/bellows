@@ -463,3 +463,25 @@ describe.skipIf(!enabled)('the skill retention sweep', () => {
         expect(await objectOf('test/_attachments/x/y')).not.toBeNull();
     });
 });
+
+describe.skipIf(!enabled)('built-in skill switch', () => {
+    it("switchedOff lists only this org's names", async () => {
+        const mine = storeOf(ORG);
+        const theirs = storeOf(OTHER_ORG);
+        expect(await mine.switchedOff()).toEqual([]);
+        await mine.setBuiltinEnabled('factory-jira', false, ALICE.id);
+        await theirs.setBuiltinEnabled('factory-ask', false, null);
+        expect(await mine.switchedOff()).toEqual(['factory-jira']);
+        expect(await theirs.switchedOff()).toEqual(['factory-ask']);
+    });
+
+    it('switch off then on is idempotent', async () => {
+        const store = storeOf(ORG);
+        await store.setBuiltinEnabled('factory-idem', false, ALICE.id);
+        await store.setBuiltinEnabled('factory-idem', false, ALICE.id);
+        expect(await store.switchedOff()).toContain('factory-idem');
+        await store.setBuiltinEnabled('factory-idem', true, ALICE.id);
+        await store.setBuiltinEnabled('factory-idem', true, ALICE.id);
+        expect(await store.switchedOff()).not.toContain('factory-idem');
+    });
+});

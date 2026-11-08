@@ -523,3 +523,76 @@ describe('/api/skills catalog', () => {
         expect(names).not.toContain('gone-skill');
     });
 });
+
+describe('built-in skill switch', () => {
+    const switchTo = (booted: Booted, name: string, headers: { cookie: string }, enabled: unknown = false) =>
+        booted.instance.inject({
+            method: 'PUT',
+            url: `/api/org/skills/builtin/${name}/enabled`,
+            headers,
+            payload: { enabled },
+        });
+    const catalog = async (booted: Booted) =>
+        (await booted.instance.inject({ method: 'GET', url: '/api/skills', headers: booted.member })).json();
+
+    it('a member gets 403 switching a built-in', async () => {
+        const booted = await boot();
+        expect((await switchTo(booted, 'factory-jira', booted.member)).statusCode).toBe(HTTP_FORBIDDEN);
+        expect(await booted.skills.switchedOff()).toEqual([]);
+    });
+
+    it('an unknown built-in is 404 SKILL_NOT_FOUND', async () => {
+        const booted = await boot();
+        const response = await switchTo(booted, 'no-such-builtin', booted.admin);
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(response.json().code).toBe('SKILL_NOT_FOUND');
+    });
+
+    it('a non-boolean enabled is 400', async () => {
+        const booted = await boot();
+        expect((await switchTo(booted, 'factory-jira', booted.admin, 'no')).statusCode).toBe(HTTP_BAD_REQUEST);
+    });
+
+    it('GET /api/skills marks a switched-off built-in and switching back on clears it', async () => {
+        const booted = await boot();
+        expect((await switchTo(booted, 'factory-jira', booted.admin)).statusCode).toBe(HTTP_OK);
+        expect((await switchTo(booted, 'factory-jira', booted.admin)).statusCode).toBe(HTTP_OK);
+        const off = (await catalog(booted)).skills.find((s: { name: string }) => s.name === 'factory-jira');
+        expect(off).toMatchObject({ source: 'builtin', switchedOff: true });
+        expect(
+            (await catalog(booted)).skills.find((s: { name: string }) => s.name === 'factory-fix')
+        ).not.toHaveProperty('switchedOff');
+        await switchTo(booted, 'factory-jira', booted.admin, true);
+        const on = (await catalog(booted)).skills.find((s: { name: string }) => s.name === 'factory-jira');
+        expect(on).not.toHaveProperty('switchedOff');
+    });
+
+    it('the repo menu omits a switched-off built-in', async () => {
+        const client = listingClient(async () => ({
+            repos: [{ owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: null }],
+            installation: { id: '1', account: 'acme', repositorySelection: 'selected' },
+        }));
+        const booted = await boot(memorySkillStore(), {
+            repos: createRepoSource({ client }),
+            repoSkills: async () => ({ revision: 'r', skills: [], unreadable: [], complete: true }),
+        });
+        await switchTo(booted, 'factory-jira', booted.admin);
+        const menu = (
+            await booted.instance.inject({ method: 'GET', url: '/api/repos/acme/web/skills', headers: booted.member })
+        ).json();
+        expect(menu.skills.some((s: { name: string }) => s.name === 'factory-jira')).toBe(false);
+        expect(menu.skills.some((s: { name: string }) => s.name === 'factory-fix')).toBe(true);
+    });
+
+    it('a switched-off read that throws is 503, never a full list', async () => {
+        const skills = memorySkillStore();
+        const booted = await boot({
+            ...skills,
+            switchedOff: async () => {
+                throw new Error('read failed');
+            },
+        });
+        const response = await booted.instance.inject({ method: 'GET', url: '/api/skills', headers: booted.member });
+        expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+    });
+});

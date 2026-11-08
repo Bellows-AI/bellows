@@ -31,6 +31,8 @@ export interface EffectiveCatalog {
     repo: RepoReadState;
     /** Why the org and workspace skills could not be read, or null: then their names prove nothing absent. */
     storedError: string | null;
+    /** The built-in names the org switched off: out of `entries`, so selecting one is "not installed". */
+    switchedOff: string[];
 }
 
 export interface CatalogRequest {
@@ -80,25 +82,37 @@ export async function effectiveCatalog(request: CatalogRequest): Promise<Effecti
         }
     }
     const stored = await readStored(request);
+    const off = new Set(stored.switchedOff);
     const { entries, reserved } = resolveSkillCatalog({
-        builtin: request.builtin,
+        builtin: request.builtin.filter((skill) => !off.has(skill.name)),
         org: stored.org,
         workspace: stored.workspace,
         repo: held,
     });
-    return { entries, reserved, repo, storedError: stored.error };
+    return {
+        entries,
+        reserved,
+        repo,
+        storedError: stored.error,
+        switchedOff: request.builtin.map((skill) => skill.name).filter((name) => off.has(name)),
+    };
 }
 
-/** The org and workspace sources; a read that fails is `error` with both empty, never a verdict. */
+/** The org and workspace sources and the switched-off built-ins; a read that fails is `error` with both empty, never a verdict. */
 async function readStored(request: CatalogRequest) {
-    const result: { org: SourceSkill[]; workspace: SourceSkill[]; error: string | null } = {
+    const result: { org: SourceSkill[]; workspace: SourceSkill[]; switchedOff: string[]; error: string | null } = {
         org: [],
         workspace: [],
+        switchedOff: [],
         error: null,
     };
     if (!request.stored?.store) return result;
     try {
-        const held = await request.stored.store.effective(request.stored.userId);
+        const [held, off] = await Promise.all([
+            request.stored.store.effective(request.stored.userId),
+            request.stored.store.switchedOff(),
+        ]);
+        result.switchedOff = off;
         result.org = held.filter((skill) => skill.source === 'org');
         result.workspace = held.filter((skill) => skill.source === 'workspace');
     } catch (cause) {
@@ -116,7 +130,9 @@ export type SkillStanding = 'known' | 'absent' | 'unverified';
  * directory of that name the read could not parse, is `unverified`.
  */
 export function standingOf(catalog: EffectiveCatalog, name: string): SkillStanding {
-    if (catalog.entries.some((entry) => entry.name === name)) return 'known';
+    const held = catalog.entries.find((entry) => entry.name === name);
+    // A built-in is known only while the switched-off list was read: a failed read cannot say it is still on.
+    if (held) return held.source === 'builtin' && catalog.storedError !== null ? 'unverified' : 'known';
     if (isReservedSkillName(name)) return 'absent';
     // A name the unread org/workspace skills may hold is not provably absent.
     if (catalog.storedError !== null) return 'unverified';

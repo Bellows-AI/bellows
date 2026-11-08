@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { noExecutorMessage } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView } from '../src/db/connection-store.js';
+import type { SkillStore } from '../src/db/skill-store.js';
 import type { Resolution, ResolveRefusal } from '../src/db/connection-bindings.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import {
@@ -13,6 +14,7 @@ import {
     testConfig,
 } from './helpers.js';
 import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
+import { memorySkillStore } from './helpers-skill-store.js';
 
 /**
  * Offline: `POST /api/jobs/preflight` answers the advisory checks the CLI used to make from four GETs.
@@ -65,6 +67,8 @@ interface Scenario {
     unreadable?: string[];
     /** The board's repo skills reader; absent means the board cannot read them. */
     repoSkills?: NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
+    /** The org's skill store; absent means the org holds none. */
+    skills?: SkillStore;
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -104,7 +108,14 @@ async function boot(scenario: Scenario = {}) {
     const config = testConfig({ auth: githubAuth() });
     const app = await buildApp({
         config,
-        orgs: staticRegistry({ config, repos, connections, userExecutors: executors, repoSkills: scenario.repoSkills }),
+        orgs: staticRegistry({
+            config,
+            repos,
+            connections,
+            userExecutors: executors,
+            repoSkills: scenario.repoSkills,
+            skills: scenario.skills,
+        }),
         auth,
     });
     track(app);
@@ -259,6 +270,33 @@ describe('POST /api/jobs/preflight skills', () => {
             unreadable: [] as string[],
             complete: true,
         });
+
+    it('is blocked for a switched-off built-in, with the not-installed wording', async () => {
+        const skills = memorySkillStore();
+        await skills.setBuiltinEnabled('factory-jira', false, null);
+        const { check } = await verdict(
+            await boot({ skills }),
+            { executor: 'main', skills: ['factory-jira'] },
+            'skill'
+        );
+        expect(check).toMatchObject({ name: 'factory-jira', status: 'blocked' });
+        expect(JSON.stringify(check)).toContain('not installed');
+    });
+
+    it('is unverified, not absent, when the switched-off read fails', async () => {
+        const skills: SkillStore = {
+            ...memorySkillStore(),
+            switchedOff: async () => {
+                throw new Error('read failed');
+            },
+        };
+        const { check } = await verdict(
+            await boot({ skills }),
+            { executor: 'main', skills: ['factory-jira'] },
+            'skill'
+        );
+        expect(check).toMatchObject({ name: 'factory-jira', status: 'unverified' });
+    });
 
     it('is blocked for a name a successful repository read lacks', async () => {
         const booted = await boot({ repoSkills: reads('another') });

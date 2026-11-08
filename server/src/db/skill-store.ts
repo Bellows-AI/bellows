@@ -116,6 +116,10 @@ export interface SkillStore {
     get(owner: SkillOwner, id: string): Promise<SkillRecord | null>;
     /** Org skills plus the member's workspace skills; a caller with no member sees the org's alone. */
     effective(userId: string | null): Promise<EffectiveSkill[]>;
+    /** The built-in skill names this org switched off; a read that fails rejects, never answers none. */
+    switchedOff(): Promise<string[]>;
+    /** Switches a built-in on or off for the org; idempotent. `by` is the admin's member id. */
+    setBuiltinEnabled(name: string, enabled: boolean, by: string | null): Promise<void>;
     /**
      * A version's tar bytes verified against its sha256. Null when no such ready version is visible to `access`;
      * `SkillGoneError` when the store answers that the object is absent; an unconfirmed read throws
@@ -356,6 +360,22 @@ export function createSkillStore({
         async effective(userId) {
             const rows = await select({ effectiveFor: userId });
             return rows.map(effectiveOf);
+        },
+
+        async switchedOff() {
+            const rows = await sql<{ name: string }[]>`select name from builtin_skill_off where org_id = ${orgId}`;
+            return rows.map((row) => row.name);
+        },
+
+        async setBuiltinEnabled(name, enabled, by) {
+            if (enabled) {
+                await sql`delete from builtin_skill_off where org_id = ${orgId} and name = ${name}`;
+                return;
+            }
+            await sql`
+                insert into builtin_skill_off (org_id, name, switched_by) values (${orgId}, ${name}, ${by})
+                on conflict (org_id, name) do nothing
+            `;
         },
 
         async readVersion(versionId, access) {
