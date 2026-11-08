@@ -3254,6 +3254,20 @@ case "$skills_org$skills_ws" in
 *'"status":201'*'"status":201'*) ok 'the org skill and the workspace skill are published' ;;
 *) bad 'the org skill and the workspace skill are published' "org: $skills_org workspace: $skills_ws" ;;
 esac
+# BEL-286: the org switches a built-in off before the task is made, so the row carries a hidden built-in whatever the
+# earlier phases bound (the connection phase leaves the member a Jira connection, which un-hides factory-jira).
+skills_switch() { # skills_switch <true|false> — as the org admin minted above: only an admin manages org skills
+    FACTORY_TOKEN="$skills_admin_token" node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "PUT", headers, body: JSON.stringify({ enabled: process.argv[2] === "true" }) })
+    .then(async (r) => process.stdout.write(r.status + " " + (await r.text()).slice(0, 160)))
+    .catch((e) => process.stdout.write("000 " + e.message));
+' "$BASE/api/org/skills/builtin/factory-task-title/enabled" "$1"
+}
+skills_off="$(skills_switch false)"
+case "$skills_off" in
+200*) ok 'the org switches a built-in off before the skills task is made' ;;
+*) bad 'the org switches a built-in off before the skills task is made' "status and body: $skills_off" ;;
+esac
 skills_job="$(queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
 skills_pod="$(await_runner_pod "$skills_job")"
 if [ -z "$skills_job" ] || [ -z "$skills_pod" ]; then
@@ -3280,10 +3294,13 @@ else
     expect_contains 'the resumed run holds the org skill at the pinned sha' "$skills_out" "skills lane-org-skill $skills_org_sha"
     expect_contains 'the resumed run holds the workspace skill at the sha it was made with' "$skills_out" "skills lane-ws-skill $skills_ws_sha"
     expect_not_contains 'the resumed run does not hold the version published after the task was made' "$skills_out" "$skills_ws_sha2"
+    # BEL-286: this output is the resumed run's (a new pod, the same row), so the hidden set survives the pod loss.
+    expect_contains 'the resumed runner is told to hide the built-in the org switched off' "$skills_out" 'hidden factory-task-title'
     expect_contains "the org skill's helper file opens for the agent" "$skills_out" 'helper lane-org-skill/ref/helper.txt open'
     expect_contains "the workspace skill's helper file opens for the agent" "$skills_out" 'helper lane-ws-skill/ref/helper.txt open'
 fi
 
+skills_switch true >/dev/null
 for job in $hard $drained $evicted $lost $final $unpullable $skills_job; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1

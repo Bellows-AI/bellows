@@ -76,6 +76,7 @@ describe('the claude-code runner plan', () => {
                 ['BELLOWS_SESSION_ID', SESSION],
                 ...unwritten,
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
+                ['FACTORY_HIDDEN_SKILLS', ''],
             ],
             cliArgs: [flag, SESSION, '--permission-mode', 'auto', ...SYSTEM_PROMPT, '-p', 'fix the failing build'],
         });
@@ -174,6 +175,7 @@ describe('the opencode runner plan', () => {
             envPairs: [
                 ['XDG_DATA_HOME', `/task/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
+                ['FACTORY_HIDDEN_SKILLS', ''],
             ],
             cliArgs: ['run', '--agent', 'factory', 'fix the failing build'],
         });
@@ -203,6 +205,7 @@ describe('the opencode runner plan', () => {
             envPairs: [
                 ['XDG_DATA_HOME', `/task/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
+                ['FACTORY_HIDDEN_SKILLS', ''],
                 ['BELLOWS_SESSION_ID', session.id],
                 ...unwritten,
             ],
@@ -381,5 +384,46 @@ describe('the pinned skills in the runner plan', () => {
     it('keeps a resume’s session id where the bridge reads it', () => {
         const p = plan({ ...job, skillPin: PIN, resumeSessionId: SESSION }, { id: SESSION, resume: true });
         expect(p.cliArgs.slice(0, 2)).toEqual(['--resume', SESSION]);
+    });
+});
+
+describe('the hidden built-in skills in the runner plan (BEL-286)', () => {
+    const SESSION_FRESH = { id: SESSION, resume: false };
+    const hiddenEnv = (env: [string, string][]) => env.find(([name]) => name === 'FACTORY_HIDDEN_SKILLS')?.[1];
+
+    it('claude-code always sets FACTORY_HIDDEN_SKILLS, and denies Skill(<name>) in --settings only when non-empty', () => {
+        const none = plan({ ...job, skillHidden: [] }, SESSION_FRESH);
+        expect(hiddenEnv(none.envPairs)).toBe('');
+        expect(none.cliArgs).not.toContain('--settings');
+        const p = plan({ ...job, skillHidden: ['factory-jira', 'factory-github'] }, SESSION_FRESH);
+        expect(hiddenEnv(p.envPairs)).toBe('factory-jira,factory-github');
+        const settings = p.cliArgs[p.cliArgs.indexOf('--settings') + 1] ?? '';
+        expect(JSON.parse(settings)).toEqual({
+            permissions: { deny: ['Skill(factory-jira)', 'Skill(factory-github)'] },
+        });
+        expect(p.cliArgs.join(' ')).not.toContain('/etc/claude-code');
+    });
+
+    it('opencode always sets FACTORY_HIDDEN_SKILLS and passes no --settings', () => {
+        expect(hiddenEnv(plan({ ...opencodeJob, skillHidden: [] }, null).envPairs)).toBe('');
+        const p = plan({ ...opencodeJob, skillHidden: ['factory-jira'] }, null);
+        expect(hiddenEnv(p.envPairs)).toBe('factory-jira');
+        expect(p.cliArgs).not.toContain('--settings');
+    });
+
+    it('refuses to build a plan from a skillHidden it could not read, on both executors', () => {
+        const unreadable = { skillHiddenUnreadable: 'the claim carries no skillHidden' };
+        expect(() => plan({ ...job, ...unreadable }, SESSION_FRESH)).toThrow(/no skillHidden/);
+        expect(() => plan({ ...opencodeJob, ...unreadable }, null)).toThrow(/no skillHidden/);
+    });
+
+    it.each([
+        ['claude', job, SESSION_FRESH],
+        ['opencode', opencodeJob, null],
+    ] as const)('reviewerPlan for a review row carries the same hide on %s', (_cli, base, session) => {
+        const review = { ...base, skillHidden: ['factory-jira'] } as BoardJob;
+        const out = reviewerPlan(loadDriverConfig({}), review, session);
+        expect(out.env.find(([name]) => name === 'FACTORY_HIDDEN_SKILLS')?.[1]).toBe('factory-jira');
+        if (_cli === 'claude') expect(out.argv).toContain('--settings');
     });
 });

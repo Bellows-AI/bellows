@@ -11,12 +11,13 @@ import { SKILLS_DIR } from './task-volume.js';
  * Whether the claim carries a pin: a list (an empty one included, which prunes what an earlier run installed) or one
  * this client could not read (owed an answer, not skipped). Only a row with no pin field at all is skipped.
  */
-export const hasSkills = (job: Pick<BoardJob, 'skillPin' | 'skillPinUnreadable'>): boolean =>
-    job.skillPin !== undefined || job.skillPinUnreadable !== undefined;
+export const hasSkills = (job: Pick<BoardJob, 'skillPin' | 'skillPinUnreadable' | 'skillHiddenUnreadable'>): boolean =>
+    job.skillPin !== undefined || job.skillPinUnreadable !== undefined || job.skillHiddenUnreadable !== undefined;
 
 /** Whether the claim owes the attempt anything delivered before the agent is released. */
-export const hasClaimInputs = (job: Pick<BoardJob, 'attachments' | 'skillPin' | 'skillPinUnreadable'>): boolean =>
-    hasInputs(job) || hasSkills(job);
+export const hasClaimInputs = (
+    job: Pick<BoardJob, 'attachments' | 'skillPin' | 'skillPinUnreadable' | 'skillHiddenUnreadable'>
+): boolean => hasInputs(job) || hasSkills(job);
 
 /** What the install script's last stdout line says (`scripts/skill-install.cjs`). */
 interface SkillsVerdict {
@@ -38,6 +39,7 @@ export async function deliverSkills(
     options: { signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
     if (job.skillPinUnreadable !== undefined) throw new InputsUnconfirmed(job.skillPinUnreadable);
+    if (job.skillHiddenUnreadable !== undefined) throw new InputsUnconfirmed(job.skillHiddenUnreadable);
     if (job.skillPin === undefined) return { ok: true, reason: null };
     const pin = job.skillPin;
     const result = await submitStep(

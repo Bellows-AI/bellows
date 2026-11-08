@@ -4071,6 +4071,14 @@ ps_admin=''
 ps_a=''
 ps_b=''
 
+# Text that appears only in one built-in's description, so the scripted model can tell whether the CLI offered it.
+PS_JIRA_DESC='Read, search and comment on Jira work items'
+PS_FIX_DESC='Optional playbook for fixing a backend bug'
+
+ps_switch() { # ps_switch <built-in name> <true|false> -> the org admin's per-org switch for that built-in
+    AUTH_HEADER="Bearer $ps_admin" expect_status "pinned skills: the admin sets $1 enabled=$2" 200 PUT "/api/org/skills/builtin/$1/enabled" "{\"enabled\":$2}"
+}
+
 ps_ws_sentinel() { printf 'LANE_PIN_WS_SENTINEL_%s_5d2c' "$1"; }
 
 ps_mint() { # ps_mint <login> <admin|member> -> the member's personal token; non-zero with psql's answer
@@ -4186,7 +4194,7 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     lane_endpoint_stop "$ps_pid"
 
     # B is a member of the same org: the org skill, never A's workspace skill (its helper path does not exist for B).
-    ps_endpoint "pins-$cli-b" "$PS_ORG_SENTINEL,$v1,$v2" "$PS_DIR/$PS_ORG_SKILL/ref/helper.txt,$PS_DIR/$PS_WS_SKILL/ref/helper.txt,/etc/shadow"
+    ps_endpoint "pins-$cli-b" "$PS_ORG_SENTINEL,$v1,$v2,$PS_JIRA_DESC,$PS_FIX_DESC" "$PS_DIR/$PS_ORG_SKILL/ref/helper.txt,$PS_DIR/$PS_WS_SKILL/ref/helper.txt,/etc/shadow"
     ps_point "$cli" "$ps_b" "$ps_port"
     id="$(ps_job "$cli" "$ps_b")"
     expect_contains "$cli: B's task succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
@@ -4196,6 +4204,27 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     ps_expect "$cli: B's task does not see A's workspace skill" "$(ps_seen "$seen" "$v1")$(ps_seen "$seen" "$v2")" nono
     ps_expect "$cli: the org skill's helper file opens for B's tool uid" "$(ps_probe "$results" 1)" open
     case "$(ps_probe "$results" 2)" in open | missing) bad "$cli: A's workspace skill is not installed for B" "probe 2: $(ps_probe "$results" 2)" ;; *) ok "$cli: A's workspace skill is not installed for B" ;; esac
+    # BEL-286: B's task has no Jira binding, so factory-jira is not in what the model is offered; a built-in with no
+    # requirement is (the control: a probe that sees neither proves nothing).
+    ps_expect "$cli: a task with no Jira binding is not offered factory-jira" "$(ps_seen "$seen" "$PS_JIRA_DESC")" no
+    ps_expect "the control: $cli's task is offered an unrestricted built-in" "$(ps_seen "$seen" "$PS_FIX_DESC")" yes
+    lane_endpoint_stop "$ps_pid"
+
+    # BEL-286: an org admin's switch hides a built-in from the next task of every member, and switching it back on
+    # lists it again; the pin is taken when the task is made, so only a task made after the flip sees the change.
+    ps_switch factory-fix false
+    ps_endpoint "pins-$cli-off" "$PS_FIX_DESC" "/etc/shadow"
+    ps_point "$cli" "$ps_b" "$ps_port"
+    id="$(ps_job "$cli" "$ps_b")"
+    expect_contains "$cli: a task made with a built-in switched off succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
+    ps_expect "$cli: a switched-off built-in is not offered" "$(ps_seen "$(ps_get "http://127.0.0.1:$ps_port/skills-seen")" "$PS_FIX_DESC")" no
+    lane_endpoint_stop "$ps_pid"
+    ps_switch factory-fix true
+    ps_endpoint "pins-$cli-on" "$PS_FIX_DESC" "/etc/shadow"
+    ps_point "$cli" "$ps_b" "$ps_port"
+    id="$(ps_job "$cli" "$ps_b")"
+    expect_contains "$cli: a task made after the switch is back on succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
+    ps_expect "$cli: the built-in is offered again after the switch is back on" "$(ps_seen "$(ps_get "http://127.0.0.1:$ps_port/skills-seen")" "$PS_FIX_DESC")" yes
     lane_endpoint_stop "$ps_pid"
     stop_driver
 }

@@ -39,8 +39,8 @@ check 'gh installed'           'gh version'       run --entrypoint gh "$IMAGE" -
 # No plugin (issue #841): context-mode's executions cannot run as the tool uid yet.
 check 'no plugin installed'    'No plugins installed' run --entrypoint claude "$IMAGE" plugin list
 check 'CLAUDE.md present'      'Agent guide'      run --entrypoint head "$IMAGE" -1 /home/node/.claude/CLAUDE.md
-check 'skills present'         'factory-fix'      run --entrypoint ls "$IMAGE" /etc/claude-code/.claude/skills
-check 'every built-in skill is under factory-' 'ok' run --entrypoint sh "$IMAGE" -c 'for s in /etc/claude-code/.claude/skills/*/; do case "$(basename "$s")" in factory-*) ;; *) echo "bad:$s"; exit 1;; esac; done; echo ok'
+check 'skills present'         'factory-fix'      run --entrypoint ls "$IMAGE" /usr/local/share/factory-skills
+check 'every built-in skill is under factory-' 'ok' run --entrypoint sh "$IMAGE" -c 'for s in /usr/local/share/factory-skills/*/; do case "$(basename "$s")" in factory-*) ;; *) echo "bad:$s"; exit 1;; esac; done; echo ok'
 
 # The entrypoint's own contract: land in $WORKDIR, refuse a missing one.
 check 'defaults to /workspace' '/workspace'       run --entrypoint sh "$IMAGE" -c 'pwd'
@@ -110,6 +110,19 @@ VOL="$(mktemp -d)"
 chmod 777 "$VOL"
 check 'seeds an empty volume' 'CLAUDE.md' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; ls "$CLAUDE_CONFIG_DIR"'
+# The listing view (BEL-286): the managed skills path links to /tmp/.factory-skills, which every start rebuilds from
+# FACTORY_HIDDEN_SKILLS. A hidden skill has no entry there, so the CLI never lists it (a Skill() deny only refuses the call).
+check 'the managed skills path lists every baked skill when nothing is hidden' 'factory-jira' docker run --rm --entrypoint sh "$IMAGE" -c \
+    'claude-executor --version >/dev/null 2>&1; ls /etc/claude-code/.claude/skills'
+check 'a hidden built-in has no entry in the view, the others keep theirs' 'ok' docker run --rm -e FACTORY_HIDDEN_SKILLS=factory-jira --entrypoint sh "$IMAGE" -c \
+    'claude-executor --version >/dev/null 2>&1; ls /etc/claude-code/.claude/skills | grep factory-fix >/dev/null && ! ls /etc/claude-code/.claude/skills | grep factory-jira >/dev/null && echo ok'
+check 'the view is not writable by the tool uid, nor movable' 'ok' docker run --rm --user 0:0 -e FACTORY_HIDDEN_SKILLS=factory-jira --entrypoint sh "$IMAGE" -c \
+    'claude-executor --version >/dev/null 2>&1; as_tool() { setpriv --reuid=1001 --regid=1000 --clear-groups "$@"; }; ! as_tool touch /tmp/.factory-skills/x 2>/dev/null && ! as_tool mv /tmp/.factory-skills /tmp/.fs2 2>/dev/null && echo ok'
+check 'a malformed hidden list ends the run before the CLI (exit 78)' 'exit 78' docker run --rm -e 'FACTORY_HIDDEN_SKILLS=bad name' --entrypoint sh "$IMAGE" -c \
+    'claude-executor --version >/dev/null 2>&1; echo "exit $?"'
+check 'a view that is a symlink is refused (exit 78)' 'exit 78' docker run --rm -e FACTORY_HIDDEN_SKILLS= --entrypoint sh "$IMAGE" -c \
+    'ln -s /etc /tmp/.factory-skills; claude-executor --version >/dev/null 2>&1; echo "exit $?"'
+
 # The skills are managed (issue #1024): read from the one path the tool uid can read, never copied
 # into the seeded volume, where the CLI would load the private-dir copy first.
 check 'the seeded volume carries no copy of the baked skills' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \

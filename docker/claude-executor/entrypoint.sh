@@ -61,6 +61,47 @@ for skill in /usr/local/share/factory-skills/*/; do
 done
 rmdir "$CLAUDE_CONFIG_DIR/skills" 2>/dev/null || true
 
+# The listing the CLI offers the model (BEL-286): the managed skills path is a symlink to this
+# per-run view, rebuilt on every start with a link to each baked skill the task does not hide. A deny
+# rule only refuses the call; a skill missing from this directory is not listed at all. The driver
+# always sets FACTORY_HIDDEN_SKILLS (empty = nothing hidden); unset is an image run by hand and links
+# everything. An unreadable list, or a view that is not ours, ends the run before the CLI starts.
+HIDDEN_VIEW=/tmp/.factory-skills
+hidden_refused() {
+    echo "claude-executor: hidden skill list unreadable: $1" >&2
+    exit 78
+}
+HIDDEN_LIST="${FACTORY_HIDDEN_SKILLS:-}"
+if [ -n "$HIDDEN_LIST" ]; then
+    case ",$HIDDEN_LIST," in
+        *,,*) hidden_refused "empty name in '$HIDDEN_LIST'" ;;
+    esac
+    OLD_IFS="$IFS"
+    IFS=,
+    for name in $HIDDEN_LIST; do
+        case "$name" in
+            factory-*[!a-z0-9-]* | factory-) hidden_refused "bad name '$name'" ;;
+            factory-*) ;;
+            *) hidden_refused "bad name '$name'" ;;
+        esac
+    done
+    IFS="$OLD_IFS"
+fi
+if [ -L "$HIDDEN_VIEW" ] || { [ -e "$HIDDEN_VIEW" ] && { [ ! -d "$HIDDEN_VIEW" ] || [ ! -O "$HIDDEN_VIEW" ]; }; }; then
+    hidden_refused "$HIDDEN_VIEW is not a directory of ours"
+fi
+rm -rf "$HIDDEN_VIEW" || hidden_refused "cannot reset $HIDDEN_VIEW"
+mkdir "$HIDDEN_VIEW" || hidden_refused "cannot create $HIDDEN_VIEW"
+for skill in /usr/local/share/factory-skills/*/; do
+    [ -d "$skill" ] || continue
+    skill="${skill%/}"
+    case ",$HIDDEN_LIST," in
+        *",${skill##*/},"*) continue ;;
+    esac
+    ln -s "$skill" "$HIDDEN_VIEW/${skill##*/}" || hidden_refused "cannot link ${skill##*/}"
+done
+chmod 0755 "$HIDDEN_VIEW"
+
 # The seed above runs once, but the directory outlives the container and the agent can edit its
 # settings.json — stripping a baked hook there would disarm it for every later run of the
 # thread. So the baked `hooks` block (the fence) is laid over the persisted file on EVERY start;

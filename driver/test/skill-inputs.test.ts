@@ -225,6 +225,14 @@ describe('deliverSkills', () => {
         expect(steps).toEqual([]);
     });
 
+    it('throws InputsUnconfirmed before any step for a skillHidden the claim carried but nothing could read', async () => {
+        await expect(
+            deliverSkills(host(), job({ skillHiddenUnreadable: 'the claim carries no skillHidden' }))
+        ).rejects.toBeInstanceOf(InputsUnconfirmed);
+        expect(steps).toEqual([]);
+        expect(hasSkills({ skillHiddenUnreadable: 'bad' })).toBe(true);
+    });
+
     it('resumes after a kill mid-install: the half-written staging is discarded and nothing partial is installed', async () => {
         const a = hold('org-style', V1);
         const b = hold('mine', V2);

@@ -27,6 +27,10 @@ export class SkillCorrupt extends Error {}
 export interface ClaimSkills {
     skillPin?: ClaimSkill[];
     skillPinUnreadable?: string;
+    /** The built-in skill names this task does not list (BEL-286); empty means none hidden. */
+    skillHidden?: string[];
+    /** A `skillHidden` the claim carried but this client cannot read: never "nothing hidden" (BEL-286). */
+    skillHiddenUnreadable?: string;
 }
 
 const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -69,6 +73,46 @@ export function skillPinOf(value: unknown): { pin: ClaimSkill[] } | { unreadable
 export const skillPinFields = (value: unknown): ClaimSkills => {
     const read = skillPinOf(value);
     return 'pin' in read ? { skillPin: read.pin } : { skillPinUnreadable: read.unreadable };
+};
+
+const HIDDEN_SOURCES: readonly string[] = ['builtin', 'org', 'workspace'];
+const HIDDEN_REASONS: readonly string[] = ['switched_off', 'needs_connection'];
+
+/**
+ * A claim's `skillHidden` (BEL-286), the board's list of skills this task does not see: the built-in names the runner
+ * must not list, or a reason string. The board always sends the field, so an absent one is as unreadable as a malformed
+ * one, never "nothing hidden". Hidden org and workspace skills are simply not pinned, so only built-ins matter here.
+ */
+export function skillHiddenOf(value: unknown): { hidden: string[] } | { unreadable: string } {
+    if (value === undefined || value === null) return { unreadable: 'the claim carries no skillHidden' };
+    if (!Array.isArray(value)) return { unreadable: 'the claim carries a skillHidden that is not a list' };
+    const names = new Set<string>();
+    const builtin: string[] = [];
+    for (const entry of value as unknown[]) {
+        const e = entry as { name?: unknown; source?: unknown; reason?: unknown } | null;
+        if (
+            typeof e !== 'object' ||
+            e === null ||
+            typeof e.name !== 'string' ||
+            !SKILL_NAME.test(e.name) ||
+            typeof e.source !== 'string' ||
+            !HIDDEN_SOURCES.includes(e.source) ||
+            typeof e.reason !== 'string' ||
+            !HIDDEN_REASONS.includes(e.reason)
+        ) {
+            return { unreadable: 'the claim carries a skillHidden entry that is not a hidden skill' };
+        }
+        if (names.has(e.name)) return { unreadable: `the claim's skillHidden names ${e.name} twice` };
+        names.add(e.name);
+        if (e.source === 'builtin') builtin.push(e.name);
+    }
+    return { hidden: builtin };
+}
+
+/** The claim's hidden-skill fields: the built-in names, or the reason the list could not be read. */
+export const skillHiddenFields = (value: unknown): ClaimSkills => {
+    const read = skillHiddenOf(value);
+    return 'hidden' in read ? { skillHidden: read.hidden } : { skillHiddenUnreadable: read.unreadable };
 };
 
 export function skillCalls(post: Post): Pick<Board, 'skillContent'> {

@@ -1184,7 +1184,11 @@ describe('the shared executor skills', () => {
     // plain run. The managed tree is the only place the CLI finds them, so the path is one.
     it('gives claude its skills as managed skills at one path, with no copy in the config home', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
-        expect(dockerfile).toContain('ln -s /usr/local/share/factory-skills /etc/claude-code/.claude/skills');
+        // BEL-286: the managed path is a link to the per-run view the entrypoint fills with the visible built-ins.
+        expect(dockerfile).toContain('ln -s /tmp/.factory-skills /etc/claude-code/.claude/skills');
+        const entrypoint = read('docker/claude-executor/entrypoint.sh');
+        expect(entrypoint).toContain('HIDDEN_VIEW=/tmp/.factory-skills');
+        expect(entrypoint).toContain('exit 78');
         expect(dockerfile).not.toMatch(/^COPY[^\n]*\/home\/node\/\.claude\/skills/m);
     });
 
@@ -1439,7 +1443,7 @@ describe('the opencode-executor permission policy', () => {
     });
 
     /** What the entrypoint hands opencode as OPENCODE_CONFIG_CONTENT; `unset` when it exports none. */
-    const runEntrypoint = async (opts: { defaultBranch?: string | null; env?: NodeJS.ProcessEnv }) => {
+    const runEntrypoint = async (opts: { defaultBranch?: string | null; env?: NodeJS.ProcessEnv; exit?: number }) => {
         const sandbox = makeSandbox();
         try {
             const git = (...args: string[]) => execFileSync('git', args, { cwd: sandbox.work, stdio: 'ignore' });
@@ -1449,7 +1453,8 @@ describe('the opencode-executor permission policy', () => {
             }
             const env = { ...sandbox.env, GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig'), ...opts.env };
             const child = spawnDetached([stagedEntrypoint('docker/opencode-executor'), 'run'], env);
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(opts.exit ?? 0);
+            if (opts.exit) return '';
             return readFileSync(join(sandbox.bin, 'opencode-config-content'), 'utf8');
         } finally {
             sandbox.cleanup();
@@ -1533,6 +1538,37 @@ describe('the opencode-executor permission policy', () => {
                 skills: { paths: [skills] },
                 permission: { external_directory: { [`${skills}/**`]: 'allow' } },
             });
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // BEL-286: the built-ins the task does not list are denied by name, written last so a member config that allows the
+    // name cannot win; a list that is not a list of built-in names ends the run before the CLI starts.
+    it(
+        'denies each hidden built-in skill last, over a member config that allows it',
+        async () => {
+            const config = { permission: { skill: { 'factory-jira': 'allow', '*': 'allow' } } };
+            const got = JSON.parse(
+                await runEntrypoint({
+                    env: {
+                        FACTORY_HIDDEN_SKILLS: 'factory-jira,factory-github',
+                        OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+                    },
+                })
+            );
+            expect(Object.entries(got.permission.skill)).toEqual([
+                ['*', 'allow'],
+                ['factory-jira', 'deny'],
+                ['factory-github', 'deny'],
+            ]);
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'refuses a hidden skill list that is not built-in names (exit 78)',
+        async () => {
+            await runEntrypoint({ env: { FACTORY_HIDDEN_SKILLS: 'bad name' }, exit: 78 });
         },
         CASE_TIMEOUT_MS
     );
