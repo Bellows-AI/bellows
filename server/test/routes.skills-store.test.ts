@@ -458,6 +458,43 @@ describe('skill writes', () => {
 });
 
 describe('/api/skills catalog', () => {
+    it('POST /api/org/skills with an unknown connection is 422 with reason unknown_connection', async () => {
+        const { instance, admin } = await boot();
+        const res = await instance.inject({
+            method: 'POST',
+            url: '/api/org/skills',
+            headers: admin,
+            payload: {
+                name: 'needs-nosuch',
+                skillMd: skillMd('needs-nosuch').replace(
+                    '---\n\nBody',
+                    'metadata:\n  requires-connections: nosuch\n---\n\nBody'
+                ),
+            },
+        });
+        expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+        expect(res.json()).toEqual(
+            expect.objectContaining({ code: 'SKILL_BUNDLE_INVALID', reason: 'unknown_connection' })
+        );
+        const listed = await instance.inject({ method: 'GET', url: '/api/org/skills', headers: admin });
+        expect(listed.json().skills ?? []).toHaveLength(0);
+    });
+
+    it("GET /api/skills lists a stored skill's connections", async () => {
+        const { instance, admin, member } = await boot();
+        const md = skillMd('needs-jira').replace('---\n\nBody', 'metadata:\n  requires-connections: jira\n---\n\nBody');
+        const made = await instance.inject({
+            method: 'POST',
+            url: '/api/org/skills',
+            headers: admin,
+            payload: { name: 'needs-jira', skillMd: md },
+        });
+        expect(made.statusCode).toBe(HTTP_CREATED);
+        const skills = (await instance.inject({ method: 'GET', url: '/api/skills', headers: member })).json().skills;
+        const entry = skills.find((e: { name: string }) => e.name === 'needs-jira');
+        expect(entry.requires.connections.map((c: { name: string }) => c.name)).toEqual(['jira']);
+    });
+
     it('lists org and workspace skills with their source, the org one shadowed by a workspace one', async () => {
         const booted = await boot();
         const { instance, admin, member, other } = booted;

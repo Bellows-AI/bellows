@@ -14,6 +14,7 @@ import {
     testConfig,
 } from './helpers.js';
 import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
+import { bundleFromSkillMd } from '../src/skills/skill-bundle.js';
 import { memorySkillStore } from './helpers-skill-store.js';
 
 /**
@@ -410,6 +411,28 @@ describe('POST /api/jobs/preflight skills', () => {
             { ...base, skills: ['factory-jira'] },
             'skill',
             'factory-jira'
+        );
+        expect(check).toMatchObject({ status: 'blocked' });
+        expect(check?.detail).toMatch(/no jira connection/);
+    });
+
+    it('selecting an org skill that needs Jira without a Jira connection is blocked with the same wording', async () => {
+        const skills = memorySkillStore();
+        const bundle = bundleFromSkillMd(
+            'org-jira',
+            '---\nname: org-jira\ndescription: d\nmetadata:\n  requires-connections: jira\n---\nBody\n'
+        );
+        await skills.create(null, { name: 'org-jira', bundle, createdBy: null });
+        const resolution: Resolution = {
+            ok: true,
+            bindings: [],
+            requirements: [{ provider: 'jira', reason: 'missing' }],
+        };
+        const { check } = await verdict(
+            await boot({ resolution, skills }),
+            { ...base, skills: ['org-jira'] },
+            'skill',
+            'org-jira'
         );
         expect(check).toMatchObject({ status: 'blocked' });
         expect(check?.detail).toMatch(/no jira connection/);

@@ -227,15 +227,50 @@ function applyTopLevel(entries: Entries, key: string, value: string, dirName: st
     else if (key !== 'metadata') throw new Error(`${dirName}: unknown frontmatter key "${key}"`);
 }
 
-function checkRequirements(requires: SkillRequirements, dirName: string): void {
+/** Why a declared requirement is refused: the first tool or connection the board has no name for. */
+export type SkillRequirementsRefusal =
+    | { reason: 'unknown_tool'; value: string }
+    | { reason: 'unknown_connection'; value: string };
+
+function unknownRequirement(requires: SkillRequirements): SkillRequirementsRefusal | null {
     for (const tool of requires.tools) {
-        if (!(RUNNER_TOOLS as readonly string[]).includes(tool)) throw new Error(`${dirName}: unknown tool "${tool}"`);
+        if (!(RUNNER_TOOLS as readonly string[]).includes(tool)) return { reason: 'unknown_tool', value: tool };
     }
     for (const connection of requires.connections) {
-        if (!Object.hasOwn(SKILL_CONNECTIONS, connection)) {
-            throw new Error(`${dirName}: unknown connection "${connection}"`);
-        }
+        if (!Object.hasOwn(SKILL_CONNECTIONS, connection)) return { reason: 'unknown_connection', value: connection };
     }
+    return null;
+}
+
+function checkRequirements(requires: SkillRequirements, dirName: string): void {
+    const refusal = unknownRequirement(requires);
+    if (refusal)
+        throw new Error(
+            `${dirName}: unknown ${refusal.reason === 'unknown_tool' ? 'tool' : 'connection'} "${refusal.value}"`
+        );
+}
+
+/**
+ * The requirements a stored SKILL.md declares in its `metadata:` block, or the first name the board does not know.
+ * Never throws: stored skills are written by members, so other frontmatter and metadata keys are tolerated (only
+ * the two requirement keys are read) and a bad name is a reason the upload reports.
+ */
+export function parseSkillRequirements(text: string): { requires: SkillRequirements } | SkillRequirementsRefusal {
+    const requires: SkillRequirements = { tools: [], connections: [] };
+    const lines = text.split(/\r?\n/);
+    const end = lines.indexOf('---', 1);
+    let inMetadata = false;
+    for (const line of lines.slice(1, end === -1 ? lines.length : end)) {
+        const indented = /^ {2}(\S[^:]*):\s*(.*)$/.exec(line);
+        if (inMetadata && indented) readRequirement(requires, indented[1] ?? '', indented[2] ?? '');
+        else inMetadata = /^metadata:\s*$/.test(line);
+    }
+    return unknownRequirement(requires) ?? { requires };
+}
+
+function readRequirement(requires: SkillRequirements, key: string, value: string): void {
+    if (key === TOOLS_KEY) requires.tools = list(value);
+    else if (key === CONNECTIONS_KEY) requires.connections = list(value);
 }
 
 /** The env names a connection needs, or [] for a name the catalog does not know. */

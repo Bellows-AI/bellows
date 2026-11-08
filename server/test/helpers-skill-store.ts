@@ -32,6 +32,7 @@ export function memorySkillStore(): MemorySkillStore {
     const rows = new Map<string, Row>();
     const bodies = new Map<string, Uint8Array>();
     const off = new Set<string>();
+    const requirements = new Map<string, SkillBundle['requires']>();
     let lost = false;
     let broken = false;
     const check = () => {
@@ -55,6 +56,7 @@ export function memorySkillStore(): MemorySkillStore {
     const versionOf = (bundle: SkillBundle): SkillVersionInfo => {
         const id = randomUUID();
         bodies.set(id, bundle.tar);
+        requirements.set(id, bundle.requires);
         return {
             id,
             sha256: bundle.sha256,
@@ -98,6 +100,7 @@ export function memorySkillStore(): MemorySkillStore {
             if (!row) return { result: 'missing' };
             const same = row.versions.find((v) => v.sha256 === bundle.sha256);
             if (same) {
+                requirements.set(same.id, bundle.requires);
                 row.current = same.id;
                 return { result: 'exists', skill: recordOf(row) };
             }
@@ -152,6 +155,7 @@ export function memorySkillStore(): MemorySkillStore {
                         name: row.name,
                         source: row.userId === null ? ('org' as const) : ('workspace' as const),
                         description: version.description,
+                        requires: requirements.get(version.id) ?? { tools: [], connections: [] },
                         versionId: version.id,
                         sha256: version.sha256,
                         objectKey: version.objectKey,

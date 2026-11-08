@@ -4,6 +4,7 @@ import {
     INTEGRATION_PROVIDERS,
     isReservedSkillName,
     parseSkillFrontmatter,
+    parseSkillRequirements,
     requiredProviders,
     resolveSkillCatalog,
     RUNNER_TOOLS,
@@ -58,6 +59,31 @@ describe('parseSkillFrontmatter', () => {
         ['an unclosed frontmatter', '---\nname: demo\n'],
     ])('refuses %s', (_label, text) => {
         expect(() => parseSkillFrontmatter(text, 'demo')).toThrow();
+    });
+});
+
+describe('parseSkillRequirements', () => {
+    it('reads requires-connections and requires-tools', () => {
+        const text = head('metadata:\n  requires-tools: curl\n  requires-connections: jira\n');
+        expect(parseSkillRequirements(text)).toEqual({ requires: { tools: ['curl'], connections: ['jira'] } });
+    });
+
+    it('tolerates other keys and declares nothing without metadata', () => {
+        expect(parseSkillRequirements(head('allowed-tools: Bash\nmetadata:\n  author: me\n'))).toEqual({
+            requires: { tools: [], connections: [] },
+        });
+        expect(parseSkillRequirements(head())).toEqual({ requires: { tools: [], connections: [] } });
+    });
+
+    it('an unknown connection or tool is a reason, not a throw', () => {
+        expect(parseSkillRequirements(head('metadata:\n  requires-connections: slack\n'))).toEqual({
+            reason: 'unknown_connection',
+            value: 'slack',
+        });
+        expect(parseSkillRequirements(head('metadata:\n  requires-tools: hammer\n'))).toEqual({
+            reason: 'unknown_tool',
+            value: 'hammer',
+        });
     });
 });
 
