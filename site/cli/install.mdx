@@ -35,7 +35,7 @@ The CLI has no login command. You give it a server URL and a token.
     mkdir -p ~/.bellows
     cat > ~/.bellows/settings.json <<'JSON'
     {
-      "url": "https://bellows.example.com",
+      "url": "https://bellows.cloud",
       "token": "fat_..."
     }
     JSON
@@ -58,7 +58,7 @@ The CLI refuses a settings file that holds a token and is readable by anyone but
 
 Set `url` to the base URL of your server. There is no default URL, so a missing one is an error (exit code 2). The URL must be `http` or `https` and must not contain credentials.
 
-- Bellows Cloud: the address you sign in at.
+- Bellows Cloud: `https://bellows.cloud`.
 - Self-hosted: your own server's base URL. A server running with authentication off (`AUTH_MODE=none`) needs no token. Leave `token` out.
 
 ## Settings
@@ -83,7 +83,7 @@ With no settings file, the CLI reads the environment alone.
 Store the token in your scheduler's secret store and pass it as `FACTORY_TOKEN`.
 
 ```bash Terminal
-export FACTORY_URL="https://bellows.example.com"
+export FACTORY_URL="https://bellows.cloud"
 export FACTORY_TOKEN="$BELLOWS_TOKEN"   # from your secret store
 bellows auth status
 ```

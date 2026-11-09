@@ -11,7 +11,7 @@ Bellows has no published OpenAPI spec. This page lists the routes you are most l
 
 ## Base URL
 
-All routes live under `/api` on your Bellows address, the one you open the web app at. The examples use `https://bellows.example.com`; replace it with yours. Bodies and answers are JSON unless a route says otherwise.
+All routes live under `/api`. On Bellows Cloud that is `https://bellows.cloud/api`; self-hosted, use your server's URL. Bodies and answers are JSON unless a route says otherwise.
 
 ## Authenticate
 
@@ -119,7 +119,7 @@ This script creates a task, waits for the run to settle, and prints the pull req
 set -euo pipefail
 
 : "${BELLOWS_TOKEN:?set a personal access token (fat_...)}"
-API="https://bellows.example.com/api"
+API="https://bellows.cloud/api"
 AUTH="Authorization: Bearer $BELLOWS_TOKEN"
 
 # 1. Create the task.

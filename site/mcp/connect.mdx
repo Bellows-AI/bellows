@@ -6,16 +6,18 @@ description: "Drive Bellows from Claude Code, Claude.ai or any MCP client, actin
 The Bellows MCP server lets an AI assistant work your task board for you. Ask it to start a task, check on a run, answer an agent's question or read the result. It does what you could do in the web app, and nothing more.
 
 <Note>
-  MCP is switched on per Bellows installation. If the endpoint answers `404`, your administrator has not enabled it yet.
+  MCP is on for Bellows Cloud. On a self-hosted install it is switched on by the administrator; if the endpoint answers `404`, it is off there.
 </Note>
 
 ## Endpoint
 
-The MCP endpoint is your Bellows URL plus `/api/mcp`:
+On Bellows Cloud the endpoint is:
 
 ```text
-https://<your Bellows URL>/api/mcp
+https://bellows.cloud/api/mcp
 ```
+
+Self-hosted: your server's URL plus `/api/mcp`.
 
 It uses Streamable HTTP and needs `https`. Older HTTP+SSE clients (protocol `2024-11-05`) are refused.
 
@@ -47,7 +49,7 @@ The access you grant has two parts:
 <Tabs>
   <Tab title="Claude Code">
     ```bash
-    claude mcp add --transport http bellows https://<your Bellows URL>/api/mcp
+    claude mcp add --transport http bellows https://bellows.cloud/api/mcp
     ```
 
     Start Claude Code, run `/mcp`, choose **bellows**, then **Authenticate**. Approve the request in the browser. Check it with a prompt like "call whoami on the bellows server".
