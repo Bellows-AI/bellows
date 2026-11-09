@@ -1,0 +1,104 @@
+---
+title: "Services"
+description: "Run sidecar containers such as Postgres or Redis next to the agent so integration tests have something to talk to."
+---
+
+A service is a container that starts with the task and runs beside the agent and your gates. Use it for a database, a cache or a queue that your integration tests need.
+
+Services are a top-level `services:` list in `.bellows.yaml`. It is separate from `environment:`, and one file can have both.
+
+## Full example: Go with Postgres
+
+```yaml .bellows.yaml
+services:
+    - name: db
+      image: postgres:17
+      user: "999:999"
+      ports: [5432]
+      environment:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app_test
+
+environment:
+    image: golang:1.25
+    cache:
+        - GOCACHE
+        - GOMODCACHE
+    setup: "go mod download"
+    gates:
+        - name: integration
+          command: 'DATABASE_URL="postgres://app:app@db:5432/app_test?sslmode=disable" go test -count=1 ./...'
+          timeout: 10
+```
+
+The service is reachable by its `name`. Here the tests connect to host `db`, port `5432`.
+
+## Keys
+
+| Key           | Required | Description                                                                                         |
+| ------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `name`        | yes      | Becomes the hostname. Lowercase letters, digits and hyphens, 1 to 30 chars, no hyphen at either end. `localhost` is reserved |
+| `image`       | yes      | A plain image reference, such as `redis:7` or `postgres:17`. No spaces, `$`, `=`, quotes or leading `-` |
+| `user`        | no       | Numeric `"uid:gid"` the container runs as. The uid cannot be 0                                      |
+| `ports`       | no       | Inline list of TCP ports the service listens on, for example `[5432]`. Up to 16, each 1 to 65535, no repeats |
+| `environment` | no       | Map of `KEY: value`. Names match `[A-Za-z_][A-Za-z0-9_]*`, up to 256 chars. Values up to 8192 chars |
+
+Other keys are errors. A block list for `ports` is also an error: write `ports: [5432]`.
+
+<Warning>
+  Environment values sit in your repo in plain text. Use throwaway credentials for test databases. Never put real secrets here.
+</Warning>
+
+## How you reach a service
+
+Each service name resolves to `127.0.0.1` for the agent, `setup` and your gates. Use the name (`db`) or `localhost`. Both work.
+
+Services share one network namespace, so two services cannot listen on the same port. Bellows refuses a file where two services declare the same port. Nothing is published outside the task.
+
+## Limits
+
+- At most 10 services per file.
+- Service names must be unique.
+- Every service runs hardened: all Linux capabilities dropped, no privilege escalation, and no way to turn that off. Declaring `unhardened` is an error.
+- There are no volumes, health checks, `depends_on` or restart policies.
+
+## Why Postgres needs `user`
+
+Stock Postgres starts as root, changes ownership of its data directory, then drops to its own user. A hardened container can't do that, so it crash-loops. Set `user: "999:999"` so the image starts as the `postgres` user from the start. This is the uid of the Debian-based images. Check the uid your image uses if you pick another one. Redis and similar images that don't need root usually need no `user`.
+
+## Startup and readiness
+
+Services start before `setup`, so `setup` can migrate or seed a database. Bellows waits for each service container to be running. It does not check that the service accepts connections, because `.bellows.yaml` has no health checks.
+
+A database can take a few seconds to accept connections after its container is running. `setup` is retried while it fails, so a migration step there rides out a slow start:
+
+```yaml .bellows.yaml (excerpt)
+environment:
+    setup: "go run ./cmd/migrate"
+```
+
+Your gates get no such retry. Have the tests retry the first connection, or run a migration in `setup` first.
+
+## When a service fails
+
+- If a service is dead before the gates run, Bellows restarts it and waits up to 5 minutes for it to be running again.
+- If it does not come back, or never started, the task fails with the badge <span className="status status-failed">service failed</span>.
+- If a service dies while the agent is running a gate, the gate's answer carries a note with the service's exit code, reason and last log lines. The agent is told to stop and report it rather than install the service itself.
+
+On the task page, the **Services** panel lists each service with its state. For a dead one it shows the exit code, the reason and the last lines of its log. Read the log first. A Postgres that exits right away usually needs `user: "999:999"` or a missing `POSTGRES_PASSWORD`.
+
+<Note>
+  The panel is a record of the last attempt. Services are torn down when it ends.
+</Note>
+
+## Common errors
+
+<AccordionGroup>
+  <Accordion title="Task fails with “config error”">
+    The plan was refused before anything launched. The message names the problem: a bad name or image, a port declared twice, more than 10 services, or the name `localhost`.
+  </Accordion>
+  <Accordion title="Connection refused or “no such host”">
+    The service is still starting, or it died. Check the **Services** panel. Check that the host in your connection string is the service `name` and the port is the one the image listens on.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,45 @@
+---
+title: "Writing good tasks"
+description: "The agent knows your code only through the repo and your words. Be specific about the outcome and how to verify it."
+---
+
+## Principles
+
+- **Say what “done” looks like.** An endpoint, a behaviour or a failing test that should pass.
+- **Point at the place.** File, package or function names save the agent's exploration time.
+- **One change per task.** Split unrelated work; follow-ups are cheap.
+- **Let gates verify.** Don't ask for “make sure tests pass”; gates already enforce that.
+
+## Good vs bad
+
+<CardGroup cols={2}>
+  <Card title="Vague" icon="xmark">
+    `Improve the notes API.`
+
+    No outcome, no scope. The agent will guess.
+  </Card>
+  <Card title="Specific" icon="check">
+    `POST /api/notes should return 400 when title is empty or over 200 chars. Add cases to server_test.go.`
+
+    Clear behaviour, location, verification.
+  </Card>
+  <Card title="Bundled" icon="xmark">
+    `Add pagination, fix the lint warnings and rename lorem to text.`
+
+    Three reviews in one PR.
+  </Card>
+  <Card title="Focused" icon="check">
+    `Add ?limit and ?offset to GET /api/notes (default 20, max 100).`
+
+    One PR, easy to review.
+  </Card>
+</CardGroup>
+
+## Checklist
+
+- [ ] Outcome stated in one sentence
+- [ ] Files or packages named
+- [ ] Edge cases or limits spelled out
+- [ ] Screenshot or spec attached, if the change is visual
+
+**Worked example:** [Fix a bug from a Jira ticket](/use-cases/fix-jira-bug), [Add tests to a package](/use-cases/add-tests), [Upgrade a dependency](/use-cases/upgrade-dependencies).

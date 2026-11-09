@@ -62,6 +62,8 @@ case "$*" in
     skills_dir=/task/.factory/skills-root/.claude/skills
     node -e 'const owned = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).owned;
 for (const name of Object.keys(owned).sort()) console.log(`skills ${name} ${owned[name]}`);' "$skills_dir/.factory-skills.json"
+    # BEL-286: one `hidden <name>` line per built-in the plan told this runner not to list, from its env.
+    printf '%s\n' "${FACTORY_HIDDEN_SKILLS:-}" | tr ',' '\n' | while IFS= read -r hidden; do [ -n "$hidden" ] && echo "hidden $hidden"; done
     for helper in "$skills_dir"/*/ref/helper.txt; do
         if cat "$helper" >/dev/null 2>&1; then echo "helper ${helper#"$skills_dir"/} open"; else echo "helper ${helper#"$skills_dir"/} denied"; fi
     done

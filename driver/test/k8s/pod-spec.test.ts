@@ -123,6 +123,7 @@ describe('the runner job spec', () => {
             '/home/factory-tool/.cache/node-compile-cache',
             '/etc/gitconfig',
             '/etc/claude-code/.claude/skills',
+            '/tmp/.factory-skills', // BEL-286: the per-run listing view the claude entrypoint builds
             '/usr/local/share/factory-skills',
         ];
         for (const pod of [spec(), runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null)]) {
@@ -240,6 +241,7 @@ describe('the runner job spec', () => {
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+            { name: 'FACTORY_HIDDEN_SKILLS', value: '' },
             // The two mailbox paths the agent finds its supervisor through — paths, no credential.
             { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
             { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
@@ -304,6 +306,7 @@ describe('the runner job spec', () => {
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+            { name: 'FACTORY_HIDDEN_SKILLS', value: '' },
             { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
             { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
             { name: 'FACTORY_CTL_GO', value: GO_MARKER },
@@ -370,6 +373,7 @@ describe('the runner job spec', () => {
             },
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
+            { name: 'FACTORY_HIDDEN_SKILLS', value: '' },
             { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
             { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
             { name: 'FACTORY_CTL_GO', value: GO_MARKER },

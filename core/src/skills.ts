@@ -72,8 +72,12 @@ export interface Skill {
     requires: SkillRequirements;
 }
 
-/** Where a selectable skill comes from, highest precedence first (a name held by two sources keeps the first). */
-export const SKILL_SOURCES = ['builtin', 'org', 'workspace', 'repo'] as const;
+/**
+ * Where a selectable skill comes from, highest precedence first (a name held by two sources keeps the first):
+ * built-in < org < repo < workspace, the more personal source winning. The reserved `factory-` prefix overrides this
+ * order: a non-built-in name under it never wins over a built-in that holds it.
+ */
+export const SKILL_SOURCES = ['workspace', 'repo', 'org', 'builtin'] as const;
 export type SkillSource = (typeof SKILL_SOURCES)[number];
 
 /** A selectable skill and where it came from; `shadowedBy` names the higher source that holds the same name. */
@@ -106,25 +110,36 @@ export interface ResolvedCatalog {
 
 /**
  * One catalog from every source. A name held by several sources keeps the highest (`SKILL_SOURCES` order) and lists
- * the lower ones marked `shadowedBy`; a non-built-in `factory-*` name no built-in holds is dropped into `reserved`.
+ * the lower ones marked `shadowedBy`; a non-built-in `factory-*` name is
+ * `shadowedBy: 'builtin'` when a built-in holds it, else dropped into `reserved`.
  * Pure: no source is read here, so an unread source is simply absent.
  */
 export function resolveSkillCatalog(sources: SkillSources): ResolvedCatalog {
     const entries: CatalogEntry[] = [];
     const reserved: string[] = [];
+    const impostors: CatalogEntry[] = [];
+    const builtinNames = new Set((sources.builtin ?? []).map((held) => held.name));
     const winners = new Map<string, SkillSource>();
     for (const source of SKILL_SOURCES) {
         for (const held of distinctByName(sources[source] ?? [])) {
-            const winner = winners.get(held.name);
-            if (winner === undefined && source !== 'builtin' && isReservedSkillName(held.name)) {
-                reserved.push(held.name);
+            if (source !== 'builtin' && isReservedSkillName(held.name)) {
+                // The reserved prefix beats precedence: the built-in (listed last) is the winner, so the copy trails it.
+                if (builtinNames.has(held.name)) impostors.push(entryOf(held, source, 'builtin'));
+                else reserved.push(held.name);
                 continue;
             }
-            entries.push(entryOf(held, source, winner));
-            if (winner === undefined) winners.set(held.name, source);
+            entries.push(entryOf(held, source, rememberWinner(winners, held.name, source)));
         }
     }
-    return { entries, reserved };
+    // A built-in reserved name has no other winner, so its built-in entry precedes its shadowed copies.
+    return { entries: [...entries, ...impostors], reserved };
+}
+
+/** The source already holding `name` (or undefined, when `source` is the first and now holds it). */
+function rememberWinner(winners: Map<string, SkillSource>, name: string, source: SkillSource): SkillSource | undefined {
+    const winner = winners.get(name);
+    if (winner === undefined) winners.set(name, source);
+    return winner;
 }
 
 /** A source's first skill of each name: two directories of one repository may declare the same name. */
@@ -212,15 +227,50 @@ function applyTopLevel(entries: Entries, key: string, value: string, dirName: st
     else if (key !== 'metadata') throw new Error(`${dirName}: unknown frontmatter key "${key}"`);
 }
 
-function checkRequirements(requires: SkillRequirements, dirName: string): void {
+/** Why a declared requirement is refused: the first tool or connection the board has no name for. */
+export type SkillRequirementsRefusal =
+    | { reason: 'unknown_tool'; value: string }
+    | { reason: 'unknown_connection'; value: string };
+
+function unknownRequirement(requires: SkillRequirements): SkillRequirementsRefusal | null {
     for (const tool of requires.tools) {
-        if (!(RUNNER_TOOLS as readonly string[]).includes(tool)) throw new Error(`${dirName}: unknown tool "${tool}"`);
+        if (!(RUNNER_TOOLS as readonly string[]).includes(tool)) return { reason: 'unknown_tool', value: tool };
     }
     for (const connection of requires.connections) {
-        if (!Object.hasOwn(SKILL_CONNECTIONS, connection)) {
-            throw new Error(`${dirName}: unknown connection "${connection}"`);
-        }
+        if (!Object.hasOwn(SKILL_CONNECTIONS, connection)) return { reason: 'unknown_connection', value: connection };
     }
+    return null;
+}
+
+function checkRequirements(requires: SkillRequirements, dirName: string): void {
+    const refusal = unknownRequirement(requires);
+    if (refusal)
+        throw new Error(
+            `${dirName}: unknown ${refusal.reason === 'unknown_tool' ? 'tool' : 'connection'} "${refusal.value}"`
+        );
+}
+
+/**
+ * The requirements a stored SKILL.md declares in its `metadata:` block, or the first name the board does not know.
+ * Never throws: stored skills are written by members, so other frontmatter and metadata keys are tolerated (only
+ * the two requirement keys are read) and a bad name is a reason the upload reports.
+ */
+export function parseSkillRequirements(text: string): { requires: SkillRequirements } | SkillRequirementsRefusal {
+    const requires: SkillRequirements = { tools: [], connections: [] };
+    const lines = text.split(/\r?\n/);
+    const end = lines.indexOf('---', 1);
+    let inMetadata = false;
+    for (const line of lines.slice(1, end === -1 ? lines.length : end)) {
+        const indented = /^ {2}(\S[^:]*):\s*(.*)$/.exec(line);
+        if (inMetadata && indented) readRequirement(requires, indented[1] ?? '', indented[2] ?? '');
+        else inMetadata = /^metadata:\s*$/.test(line);
+    }
+    return unknownRequirement(requires) ?? { requires };
+}
+
+function readRequirement(requires: SkillRequirements, key: string, value: string): void {
+    if (key === TOOLS_KEY) requires.tools = list(value);
+    else if (key === CONNECTIONS_KEY) requires.connections = list(value);
 }
 
 /** The env names a connection needs, or [] for a name the catalog does not know. */

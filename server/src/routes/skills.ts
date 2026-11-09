@@ -97,7 +97,7 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
 }
 
 /**
- * `GET /api/skills`: what a task may select, from every source (`source`; a name held twice lists the lower one with `shadowedBy`). Name, description and the declared requirements —
+ * `GET /api/skills`: what a task may select, from every source (`source`; a name held twice lists the lower one with `shadowedBy`; a built-in the org switched off is listed with `switchedOff: true` and is not selectable). Name, description and the declared requirements —
  * with each connection's env NAMES — and never the SKILL.md body or any env value. Reading the
  * catalog at registration means a broken catalog fails boot rather than the first request.
  *
@@ -121,7 +121,11 @@ export const skillRoutes =
                 onUnconfirmed: (err) => request.log.warn({ err }, 'stored skills read failed'),
             });
             if (result.storedError !== null) return storedUnavailable(reply, result);
-            return { skills: result.entries.map(wireOf) };
+            // A switched-off built-in is listed so an admin can switch it back on, marked so no client offers it.
+            const off = builtin
+                .filter((skill) => result.switchedOff.includes(skill.name))
+                .map((skill) => ({ ...wireOf({ ...skill, source: 'builtin' }), switchedOff: true }));
+            return { skills: [...result.entries.map(wireOf), ...off] };
         });
 
         app.get<RepoSkillsRoute>('/api/repos/:owner/:name/skills', repoSkillsHandler(builtin, orgs));

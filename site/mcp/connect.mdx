@@ -1,0 +1,87 @@
+---
+title: "Connect an MCP client"
+description: "Drive Bellows from Claude Code, Claude.ai or any MCP client, acting as you."
+---
+
+The Bellows MCP server lets an AI assistant work your task board for you. Ask it to start a task, check on a run, answer an agent's question or read the result. It does what you could do in the web app, and nothing more.
+
+<Note>
+  MCP is on for Bellows Cloud. On a self-hosted install it is switched on by the administrator; if the endpoint answers `404`, it is off there.
+</Note>
+
+## Endpoint
+
+On Bellows Cloud the endpoint is:
+
+```text
+https://bellows.cloud/api/mcp
+```
+
+Self-hosted: your server's URL plus `/api/mcp`.
+
+It uses Streamable HTTP and needs `https`. Older HTTP+SSE clients (protocol `2024-11-05`) are refused.
+
+## Sign in
+
+You do not create or paste a token. The first time a client connects, it opens a Bellows consent screen in your browser.
+
+<Steps>
+  <Step title="Sign in to Bellows">
+    If you are not signed in, Bellows asks you to sign in first.
+  </Step>
+  <Step title="Review the request">
+    The consent screen shows the app, the access it asks for, and the organization it gets access to. Pick the organization if you belong to more than one.
+  </Step>
+  <Step title="Allow or Deny">
+    Click **Allow**. The client now holds a token that works only on `/api/mcp`.
+  </Step>
+</Steps>
+
+The access you grant has two parts:
+
+| Access                                  | Lets the client                                             |
+| --------------------------------------- | ----------------------------------------------------------- |
+| Read tasks, repositories and settings   | List and read tasks, runs, logs, executors, skills, connections |
+| Create and change tasks                 | Create, follow up, answer, stop, retry, edit, close and remove tasks |
+
+## Connect
+
+<Tabs>
+  <Tab title="Claude Code">
+    ```bash
+    claude mcp add --transport http bellows https://bellows.cloud/api/mcp
+    ```
+
+    Start Claude Code, run `/mcp`, choose **bellows**, then **Authenticate**. Approve the request in the browser. Check it with a prompt like "call whoami on the bellows server".
+  </Tab>
+  <Tab title="Claude.ai">
+    Add a custom connector in your Claude.ai settings. Give it the endpoint URL above and finish the sign-in in the browser.
+
+    <Tip>
+      After you connect, ask Claude to call `whoami` to check the connector signs in as you.
+    </Tip>
+  </Tab>
+  <Tab title="Other clients">
+    Any client that speaks Streamable HTTP MCP with OAuth works. Point it at the endpoint. The client finds the sign-in details from the server's `401` response and the standard `/.well-known/oauth-*` documents, then registers itself.
+
+    Cursor and VS Code Copilot have not been verified against Bellows.
+  </Tab>
+</Tabs>
+
+## What the session can do
+
+The client acts as you, in the organization you chose. It sees your tasks and your personal executors and connections, plus your organization's. It cannot touch credentials, secrets, connection setup or membership; those are refused whatever you granted.
+
+Tools only call the same Bellows routes the web app uses, so repository [policy](/guides/policy-and-reviewers) and your role still apply. See [MCP tools](/mcp/tools) for the full list.
+
+## Limits
+
+- A tool call ends after 55 seconds. For long runs, use `wait_task` repeatedly.
+- A client can run up to 8 tool calls at once.
+- No file bytes pass through MCP. To attach a file, the client gets an upload link. See [Attachments](/guides/attachments).
+
+## Disconnect
+
+Open **Account** in the web app. **Connected apps** lists every app you allowed. Click **Disconnect** to end its access at once. The app can ask again later.
+
+**Worked example:** [Drive Bellows from Claude Code](/use-cases/drive-from-claude-code).

@@ -162,13 +162,13 @@ describe.skipIf(!enabled)('the skill pin on a job row', () => {
         expect(await pinOf(ref.id)).toEqual([pinned(org)]);
     });
 
-    it('lets the org skill win a name the workspace also holds', async () => {
+    it('pins the workspace skill over an org skill of the same name', async () => {
         const c = freshCase();
-        const org = await skillOf(c, null, 'shared');
-        await skillOf(c, ALICE.id, 'shared', 'my own take');
+        await skillOf(c, null, 'shared');
+        const mine = await skillOf(c, ALICE.id, 'shared', 'my own take');
 
-        expect(await pinOf(await createJob(c, ALICE.id, ['shared']))).toEqual([pinned(org)]);
-        expect(await pinOf(await createJob(c, ALICE.id, []))).toEqual([pinned(org)]);
+        expect(await pinOf(await createJob(c, ALICE.id, ['shared']))).toEqual([pinned(mine)]);
+        expect(await pinOf(await createJob(c, ALICE.id, []))).toEqual([pinned(mine)]);
     });
 
     it('leaves the pin alone when a new version lands, and the claim carries the row’s own pin', async () => {

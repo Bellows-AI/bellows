@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
-import { SkillCorrupt, SkillGone, skillCalls } from '../src/board/board-skills.js';
+import { SkillCorrupt, SkillGone, skillCalls, skillHiddenOf } from '../src/board/board-skills.js';
 
 /**
  * The board's worker read of one pinned skill bundle (`POST /api/jobs/:id/skills/:versionId/content`): under the live
@@ -62,5 +62,37 @@ describe('the board skill content read', () => {
         expect(error).toMatchObject({ status });
         expect(error).not.toBeInstanceOf(SkillGone);
         expect(error).not.toBeInstanceOf(SkillCorrupt);
+    });
+});
+
+describe('skillHiddenOf (BEL-286)', () => {
+    const entry = (over: Record<string, unknown> = {}) => ({
+        name: 'factory-jira',
+        source: 'builtin',
+        reason: 'needs_connection',
+        connection: 'jira',
+        ...over,
+    });
+
+    it('reads a well-formed list as its built-in names; org and workspace entries need no install-side handling', () => {
+        expect(skillHiddenOf([entry(), entry({ name: 'org-style', source: 'org', reason: 'switched_off' })])).toEqual({
+            hidden: ['factory-jira'],
+        });
+        expect(skillHiddenOf([])).toEqual({ hidden: [] });
+    });
+
+    it.each([
+        ['absent', undefined],
+        ['null', null],
+        ['not a list', { name: 'factory-jira' }],
+        ['an entry missing its reason', [entry({ reason: undefined })]],
+        ['an entry missing its name', [entry({ name: undefined })]],
+        ['an unknown reason', [entry({ reason: 'because' })]],
+        ['an unknown source', [entry({ source: 'repo' })]],
+        ['a duplicate name', [entry(), entry({ reason: 'switched_off' })]],
+    ])('is unreadable for %s, never "nothing hidden"', (_name, value) => {
+        const read = skillHiddenOf(value);
+        expect(read).toHaveProperty('unreadable');
+        expect(read).not.toHaveProperty('hidden');
     });
 });

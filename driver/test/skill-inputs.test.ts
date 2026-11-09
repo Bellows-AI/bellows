@@ -98,6 +98,9 @@ describe('deliverSkills', () => {
                             PATH: process.env.PATH ?? '',
                             ...step.env,
                             TARGET_DIR: step.env.TARGET_DIR!.replace('/task', root),
+                            ...(step.env.CHECKOUT_DIR
+                                ? { CHECKOUT_DIR: step.env.CHECKOUT_DIR.replace('/task', root) }
+                                : {}),
                             RESTORE_URL: base,
                             RESTORE_TOKEN: TOKEN,
                         },
@@ -164,6 +167,37 @@ describe('deliverSkills', () => {
         expect(reads.sort()).toEqual([V1, V2]);
     });
 
+    it('leaves a pinned org skill to the checkout that holds it, and still installs a workspace skill (BEL-286)', async () => {
+        mkdirSync(join(root, 'widgets', '.claude', 'skills', 'org-style'), { recursive: true });
+        writeFileSync(join(root, 'widgets', '.claude', 'skills', 'org-style', 'SKILL.md'), 'repo copy\n');
+        const { tar, pin: mine } = skillOf('mine', V2, undefined, 'workspace');
+        board.set(V2, tar);
+        const pin = [hold('org-style', V1), mine];
+        expect(await deliver({ skillPin: pin, repo: 'acme/widgets' })).toEqual({ ok: true, reason: null });
+        expect(steps[0]?.env).toMatchObject({ CHECKOUT_DIR: '/task/widgets' });
+        expect(existsSync(join(skillsDir(), 'org-style'))).toBe(false);
+        expect(existsSync(join(skillsDir(), 'mine', 'SKILL.md'))).toBe(true);
+        expect(reads).toEqual([V2]);
+    });
+
+    it.each([
+        ['claude-code', '.claude/skills', true],
+        [null, '.claude/skills', true],
+        ['opencode', '.claude/skills,.opencode/skills,.opencode/skill,.agents/skills', false],
+    ] as const)(
+        'tells the install step the %s CLI, so an org skill only under .opencode/skills is skipped only where it is listed',
+        async (executorType, dirs, installed) => {
+            mkdirSync(join(root, 'widgets', '.opencode', 'skills', 'org-style'), { recursive: true });
+            writeFileSync(join(root, 'widgets', '.opencode', 'skills', 'org-style', 'SKILL.md'), 'repo copy\n');
+            expect(await deliver({ skillPin: [hold('org-style', V1)], repo: 'acme/widgets', executorType })).toEqual({
+                ok: true,
+                reason: null,
+            });
+            expect(steps[0]?.env).toMatchObject({ CHECKOUT_DIR: '/task/widgets', CHECKOUT_SKILL_DIRS: dirs });
+            expect(existsSync(join(skillsDir(), 'org-style', 'SKILL.md'))).toBe(installed);
+        }
+    );
+
     it('submits no step for a row that carries no pin field at all', async () => {
         expect(await deliver({})).toEqual({ ok: true, reason: null });
         expect(steps).toEqual([]);
@@ -223,6 +257,14 @@ describe('deliverSkills', () => {
             deliverSkills(host(), job({ skillPinUnreadable: 'the claim carries a skillPin that is not a list' }))
         ).rejects.toThrow(/not a list/);
         expect(steps).toEqual([]);
+    });
+
+    it('throws InputsUnconfirmed before any step for a skillHidden the claim carried but nothing could read', async () => {
+        await expect(
+            deliverSkills(host(), job({ skillHiddenUnreadable: 'the claim carries no skillHidden' }))
+        ).rejects.toBeInstanceOf(InputsUnconfirmed);
+        expect(steps).toEqual([]);
+        expect(hasSkills({ skillHiddenUnreadable: 'bad' })).toBe(true);
     });
 
     it('resumes after a kill mid-install: the half-written staging is discarded and nothing partial is installed', async () => {

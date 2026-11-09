@@ -1,4 +1,4 @@
-import { ADMIN_ROLE, CONTENT_TYPE_HEADER, ERROR_CODES, MAX_SKILL_BYTES } from '@factory-ai/core';
+import { ADMIN_ROLE, CONTENT_TYPE_HEADER, ERROR_CODES, MAX_SKILL_BYTES, type Skill } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
@@ -260,6 +260,26 @@ async function handleEnabled(orgs: OrgRegistry, door: Door, request: FastifyRequ
     return reply.code(HTTP_OK).send({ skill: wireOf(set.value) });
 }
 
+/** Admin only: switches one of the board's built-in skills on or off for this organization. Idempotent. */
+async function handleBuiltinEnabled(
+    orgs: OrgRegistry,
+    builtin: readonly Skill[],
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
+    const context = await contextOf(orgs, request, reply, { door: 'org', write: true });
+    if (!context) return reply;
+    const { name } = request.params as { name: string };
+    if (!builtin.some((skill) => skill.name === name)) return notFound(reply);
+    const { enabled } = jsonBody(request.body);
+    if (typeof enabled !== 'boolean') return bad(reply, ERROR_CODES.BAD_BODY, 'enabled must be a boolean');
+    const set = await attempt(request, reply, () =>
+        context.store.setBuiltinEnabled(name, enabled, context.caller?.user.id ?? null)
+    );
+    if (!set) return reply;
+    return reply.code(HTTP_OK).send({ name, enabled });
+}
+
 async function handleDelete(orgs: OrgRegistry, door: Door, request: FastifyRequest, reply: FastifyReply) {
     const context = await contextOf(orgs, request, reply, { door, write: true });
     if (!context) return reply;
@@ -303,7 +323,7 @@ async function handlePromote(orgs: OrgRegistry, request: FastifyRequest, reply: 
  * the by-id store call names.
  */
 export const skillStoreRoutes =
-    ({ orgs }: { orgs: OrgRegistry }): FastifyPluginAsync =>
+    ({ orgs, builtin }: { orgs: OrgRegistry; builtin: () => Skill[] }): FastifyPluginAsync =>
     async (app) => {
         // A child scope, so the raw-zip parser reaches only these routes.
         await app.register(async (scope) => {
@@ -331,6 +351,9 @@ export const skillStoreRoutes =
                     handleDelete(orgs, door, request, reply)
                 );
             }
+            scope.put('/api/org/skills/builtin/:name/enabled', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+                handleBuiltinEnabled(orgs, builtin(), request, reply)
+            );
             scope.post('/api/workspace/skills/:id/scope', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
                 handlePromote(orgs, request, reply)
             );

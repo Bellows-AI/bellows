@@ -132,11 +132,13 @@ if [ -z "${BELLOWS_SESSION_ID:-}" ]; then
     fi
 fi
 
-if [ -n "$MEMBER_ROOT" ] || [ -n "${FACTORY_SKILLS_PATH:-}" ]; then
+if [ -n "$MEMBER_ROOT" ] || [ -n "${FACTORY_SKILLS_PATH:-}" ] || [ -n "${FACTORY_HIDDEN_SKILLS:-}" ]; then
     # FACTORY_SKILLS_PATH is the directory the driver installed the claim's pinned org and workspace skills in: it joins
     # `skills.paths` and gets its own external_directory allow, so a bundle's helper files open for the tool uid.
     # Single-quoted: the shell expands nothing in the script. A value the merge cannot extend is
-    # named in one line on stderr and passed through untouched.
+    # named in one line on stderr and passed through untouched. FACTORY_HIDDEN_SKILLS (BEL-286) is the exception: the
+    # built-in skills the task does not list get `permission.skill[<name>] = "deny"`, written last so a member
+    # config's allow cannot win, and a list that cannot be applied ends the run (exit 78) instead of listing them.
     if amended="$(MEMBER_ROOT="$MEMBER_ROOT" node -e '
         let c;
         try {
@@ -165,12 +167,28 @@ if [ -n "$MEMBER_ROOT" ] || [ -n "${FACTORY_SKILLS_PATH:-}" ]; then
             c.skills.paths = [...(Array.isArray(c.skills.paths) ? c.skills.paths : []), skills];
             allow(skills);
         }
+        const hidden = (process.env.FACTORY_HIDDEN_SKILLS || "").split(",").filter((name) => name !== "");
+        if (hidden.length > 0) {
+            if (!hidden.every((name) => /^factory-[a-z0-9-]+$/.test(name))) {
+                console.error("opencode-executor: hidden skill list unreadable: " + process.env.FACTORY_HIDDEN_SKILLS);
+                process.exit(78);
+            }
+            c.permission.skill = rules(c.permission.skill);
+            for (const name of hidden) {
+                delete c.permission.skill[name];
+                c.permission.skill[name] = "deny";
+            }
+        }
         process.stdout.write(JSON.stringify(c));
     ')"; then
         OPENCODE_CONFIG_CONTENT="$amended"
         export OPENCODE_CONFIG_CONTENT
     else
         echo "opencode-executor: could not add the per-run allow to OPENCODE_CONFIG_CONTENT" >&2
+        if [ -n "${FACTORY_HIDDEN_SKILLS:-}" ]; then
+            echo "opencode-executor: hidden skill list unreadable: could not apply it" >&2
+            exit 78
+        fi
     fi
 fi
 

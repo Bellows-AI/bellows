@@ -79,6 +79,15 @@ describe('the reviewer’s review step', () => {
         expect(step?.argv.length).toBeGreaterThan(0);
     });
 
+    // BEL-286: the review row decided its own hidden built-ins; the reviewer's argv and env must carry them, since its
+    // container gets neither the main run's plan nor a managed-settings copy.
+    it.each(['claude-code', 'opencode'] as const)('hides the review row’s skillHidden names on %s', (executorType) => {
+        const own = { ...review, executorType, skillHidden: ['factory-jira'] } as unknown as ReviewClaim;
+        const step = reviewStepEnv(host, own, executorType === 'opencode' ? null : { id: 'sess-1', resume: false });
+        expect(step?.env.FACTORY_HIDDEN_SKILLS).toBe('factory-jira');
+        if (executorType === 'claude-code') expect(step?.argv.join(' ')).toContain('Skill(factory-jira)');
+    });
+
     // The existing branch reporter and the usage attribution key on the run's OWN board identity:
     // the review row's id and lease token and the board's URL — never the caller's.
     it.each(['claude-code', 'opencode'] as const)(

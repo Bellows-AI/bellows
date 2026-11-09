@@ -1,7 +1,7 @@
 import type { BoardJob } from './board.js';
 import type { ServiceSpec } from '../services.js';
 import { connectionOutcomesOf } from './board-connection.js';
-import { skillPinFields } from './board-skills.js';
+import { skillHiddenFields, skillPinFields } from './board-skills.js';
 import { isExecutorType } from '../executors.js';
 
 /** The claim off the wire: every optional field read defensively, defaulted or dropped (issue #774 reviewer profiles, #769 plan, BEL-273 skill pin). */
@@ -43,11 +43,21 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
     // must not survive under exactOptionalPropertyTypes, which refuses assigning
     // `undefined` to this optional property directly — the conditional spread below is
     // the only way to represent "absent".
-    const { helperPlans, turnContext, services, reviewerProfiles, connectionOutcomes, skillPin, ...claimed } = wire;
+    const {
+        helperPlans,
+        turnContext,
+        services,
+        reviewerProfiles,
+        connectionOutcomes,
+        skillPin,
+        skillHidden,
+        ...claimed
+    } = wire;
     const plan = servicePlanOf(services);
     return {
         ...(claimed as BoardJob),
         ...skillPinFields(skillPin),
+        ...skillHiddenFields(skillHidden),
         ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
         ...(plan.services ? { services: plan.services } : {}),
         ...reviewerProfilesOf(reviewerProfiles),

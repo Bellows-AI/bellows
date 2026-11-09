@@ -1,0 +1,89 @@
+---
+title: "Set up Jira"
+description: "Register an Atlassian OAuth app so people on your Bellows install can connect Jira."
+---
+
+Jira connections use one Atlassian OAuth 2.0 (3LO) app per Bellows deployment. Until you register it and set its client id and secret, starting a Jira connection fails with `503 INTEGRATION_NOT_CONFIGURED`.
+
+You need your dashboard's public URL first. This page writes it as `https://bellows.example.com`.
+
+## 1. Register the app
+
+<Steps>
+  <Step title="Create the integration">
+    Open the Atlassian developer console at `https://developer.atlassian.com/console/myapps/`. Choose **Create**, then **OAuth 2.0 integration**. Name it after your deployment.
+  </Step>
+  <Step title="Add scopes">
+    Go to **Permissions**, then **Jira API**, then **Add**, then **Configure**. Enable these classic scopes:
+
+    | Scope | Used for |
+    | --- | --- |
+    | `read:jira-work` | Tasks look up issues. |
+    | `read:jira-user` | Reading Jira user information. |
+    | `write:jira-work` | Adding comments. Requested only when a member turns on **Allow adding comments**. |
+
+    `offline_access` is not listed in the console. Bellows asks for it when a member connects, and it is what produces the refresh token.
+  </Step>
+  <Step title="Set the callback URL">
+    Go to **Authorization**, then **OAuth 2.0 (3LO)**, then **Add**. Set the callback URL to:
+
+    ```text
+    https://bellows.example.com/api/integrations/jira/callback
+    ```
+
+    The origin is your `PUBLIC_URL` (Helm `auth.publicUrl`). It must match exactly, or Atlassian refuses the consent screen before Bellows sees anything. A console app takes one callback URL, so a second Bellows deployment on another origin needs its own app.
+  </Step>
+  <Step title="Copy the credentials">
+    Open **Settings** and copy the **Client ID** and the **Secret**.
+  </Step>
+</Steps>
+
+## 2. Choose who can connect
+
+| Situation | What to do |
+| --- | --- |
+| Only the app owner's Atlassian account will connect | Leave the app private. |
+| Other people's Atlassian accounts will connect | Open **Distribution**, then **Edit**. Set the distribution status to **Sharing**, fill in the vendor and privacy-policy fields the console asks for, and save. Without this, a non-owner's consent screen is refused. |
+
+Bellows keeps no per-account list. Sharing is the console's switch.
+
+## 3. Give the values to Bellows
+
+| Value | Environment variable | Helm value |
+| --- | --- | --- |
+| Client ID | `ATLASSIAN_CLIENT_ID` | `integrations.jira.clientId` |
+| Client secret | `ATLASSIAN_CLIENT_SECRET` | `secret.atlassianClientSecret`, or key `atlassian-client-secret` in `secret.existingSecret` |
+
+Set both or neither. One alone makes the server refuse to boot and name the missing one. Restart the dashboard after setting them. With Helm, run `helm upgrade` (see [Kubernetes and Helm](/self-host/kubernetes)).
+
+The client id is public by design. The secret is not. Keep it in a Secret rather than in a values file.
+
+<Warning>
+Never set `ATLASSIAN_AUTHORIZE_URL`, `ATLASSIAN_TOKEN_URL` or `ATLASSIAN_API_URL` on a real deployment. They exist for the end-to-end test stand-in only.
+</Warning>
+
+## 4. Check it
+
+<Steps>
+  <Step title="Connect">
+    Sign in, open **Settings → Integrations**, then **Browse integrations**, choose **Jira** and click **Connect**. Optionally name one site, then click **Continue to Atlassian**.
+  </Step>
+  <Step title="Approve">
+    Approve the consent screen. You return to Integrations with "Jira connected." and one card per site your account can reach, or the one site you named.
+  </Step>
+  <Step title="Comments">
+    On the connection's page, turn on **Allow adding comments**. Atlassian asks again, this time with `write:jira-work`, and the connection then shows `write`.
+  </Step>
+</Steps>
+
+A refusal comes back as one sentence on the page where the consent started.
+
+## How people connect
+
+Each person connects their own Atlassian account. The connection belongs to that person only, and admins cannot use it. The steps for members are in [Connections](/guides/connections#jira).
+
+## Limits
+
+- The token reaches every site the Atlassian account can reach. Naming a site narrows what Bellows records, not what the token can do.
+- One Atlassian account connects to one Bellows organization.
+- Atlassian has no token revocation endpoint. **Disconnect** destroys Bellows' copy of the token. To remove the authorization itself, revoke it in the Atlassian account settings.

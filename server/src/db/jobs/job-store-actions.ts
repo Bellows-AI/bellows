@@ -28,7 +28,7 @@ import { settleIfMergeClosed } from './job-store-merge.js';
 import { fingerprintOf, missedSettle, recordReceipt, settleReplayOf, type SettleKey } from './job-store-receipts.js';
 import { commitStagedForStop } from './job-store-conclusions.js';
 import { stagedFingerprint } from './job-store-staged.js';
-import { resolveSkillPinInTx } from './job-store-skill-pin.js';
+import { recordCreateDecisionInTx, recordFollowUpDecisionInTx } from './job-store-skill-pin.js';
 import { threadRefusalOf } from './job-store-thread-refusal.js';
 import { TERMINAL_STATUSES } from '../task-summary.js';
 import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
@@ -351,7 +351,7 @@ const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(va
  */
 export async function insertJobInTx(
     tx: TransactionSql,
-    ctx: Pick<JobStoreContext, 'sql' | 'orgId'>,
+    ctx: Pick<JobStoreContext, 'sql' | 'orgId'> & { githubApp?: boolean | undefined },
     { command, createdBy, target }: { command: string; createdBy: string | null; target: CreateTarget }
 ): Promise<CreatedRef> {
     const { sql, orgId } = ctx;
@@ -368,13 +368,11 @@ export async function insertJobInTx(
     // validated launch values beside it (030). The mode (051) is decided here, once: no
     // named workflow is objective, and the thread inherits it.
     const mode = target.workflow ? WORKFLOW_MODE : OBJECTIVE_MODE;
-    // Every enabled org skill and the creator's workspace skills, pinned at the versions current now (BEL-273).
-    const pin = await resolveSkillPinInTx(tx, orgId, createdBy);
     const rows = await tx<{ id: string }[]>`
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
-                execution_user_id, skills, base_branch, skill_pin
+                execution_user_id, skills, base_branch, skill_pin, skill_hidden
             )
             select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
@@ -386,12 +384,14 @@ export async function insertJobInTx(
                    ${createdBy},
                    ${sql.array([...(target.skills ?? [])])}::text[],
                    ${target.baseBranch ?? null},
-                   ${tx.json(pin as never)}
+                   '[]'::jsonb, '[]'::jsonb
             from (select gen_random_uuid() as x) s
             returning id
         `;
     await bindOnCreate(tx, { orgId, rootJobId: rows[0]!.id, createdBy, target });
     const jobId = rows[0]!.id;
+    // Pin and hide the row's skills after its bindings, in this transaction (BEL-273, BEL-286).
+    await recordCreateDecisionInTx(tx, { orgId, jobId, createdBy, target, githubApp: ctx.githubApp });
     await bindAttachmentsInTx(tx, { orgId, jobId, rootJobId: jobId, createdBy, ids: target.attachmentIds ?? [] });
     await stampKey(tx, orgId, rows[0]!.id, idem);
     return { id: rows[0]!.id };
@@ -431,6 +431,7 @@ export interface FollowUpRowInput {
     idempotency?: IdempotencyInput | undefined;
     /** The route's org-admin verdict; ignored for a null caller. */
     admin?: boolean | undefined;
+    githubApp?: boolean | undefined; // the `github` connection a skill may require (BEL-286)
 }
 
 /**
@@ -492,12 +493,6 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     // A busy thread is answered here, before the insert: the refusal read after it is a later snapshot, and a verdict
     // committing in between would turn not_finished into forbidden.
     if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
-    // A follow-up re-resolves the pin against the catalog as it is now (BEL-273), for the workspace of the thread's
-    // owner (an admin's turn is still the owner's run).
-    const [thread] = await tx<{ owner: string | null }[]>`
-            select execution_user_id as owner from job where org_id = ${orgId} and id = ${label.root_job_id}
-        `;
-    const pin = await resolveSkillPinInTx(tx, orgId, thread?.owner ?? null);
     const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode
@@ -536,10 +531,10 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                     end as session_id
                 from parent, root
             )
-            insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin)
+            insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
             select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.executor_scope, parent.id,
                    coalesce(primary_session.session_id, parent.session_id),
-                   parent.root_job_id, parent.workflow_name, parent.mode, ${tx.json(pin as never)}
+                   parent.root_job_id, parent.workflow_name, parent.mode, '[]'::jsonb, '[]'::jsonb
             from parent, root, primary_session
             -- Eligibility is the THREAD's, as a retry's is (#698): a finished parent whose thread
             -- still holds unfinished work, or carries a done on any member, refuses — so a repeat
@@ -558,6 +553,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
         `;
     if (rows[0]) {
         await addFollowUpBindings(tx, { orgId, rootJobId: label.root_job_id, createdBy, connectionIds });
+        await recordFollowUpDecisionInTx(tx, input, rows[0].id, label.root_job_id);
         const ref = { orgId, jobId: rows[0].id, rootJobId: label.root_job_id, createdBy };
         await bindAttachmentsInTx(tx, { ...ref, ids: attachmentIds });
         await stampKey(tx, orgId, rows[0].id, idem);
@@ -663,16 +659,16 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
                 for update
             ),
             head as (
-                select command, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin
+                select command, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin, skill_hidden
                 from job
                 where org_id = ${orgId} and root_job_id = (select root_job_id from named)
                 order by created_at desc, id desc
                 limit 1
             )
             -- The pin is the head's, as the command is: a retry re-runs the head with the versions it was locked to.
-            insert into job (org_id, command, created_by, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin)
+            insert into job (org_id, command, created_by, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
             select ${orgId}, head.command, ${createdBy}, head.repo, head.executor, head.executor_scope,
-                   head.root_job_id, head.workflow_name, head.mode, head.skill_pin
+                   head.root_job_id, head.workflow_name, head.mode, head.skill_pin, head.skill_hidden
             from named, head
             where not exists (
                   select 1

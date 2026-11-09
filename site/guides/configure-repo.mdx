@@ -1,0 +1,117 @@
+---
+title: "Configure your repo"
+description: ".bellows.yaml sets where the agent works and what “done” means."
+---
+
+## Minimal file
+
+```yaml .bellows.yaml
+environment:
+    image: golang:1.25
+```
+
+Only `image` is required. Without gates, though, nothing checks the agent's work, so add at least one.
+
+## Full example
+
+<CodeGroup>
+
+```yaml Go
+environment:
+    image: golang:1.25
+    # env vars whose directories persist between runs
+    cache:
+        - GOCACHE
+        - GOMODCACHE
+    setup: "go mod download && make tools"
+    gates:
+        - name: build
+          command: "make build"
+          # timeout is in minutes
+          timeout: 5
+        - name: test
+          command: "make test"
+          timeout: 10
+        - name: lint
+          command: "make lint"
+          timeout: 10
+        - name: test-filter
+          command: 'go test -race -count=1 -run "$GATE_FILTER" ./...'
+          # the agent runs it while working and picks $GATE_FILTER
+          on_demand: true
+          filter: true
+```
+
+```yaml Node
+environment:
+    image: node:22
+    cache:
+        - npm_config_cache
+    setup: "npm ci"
+    gates:
+        - name: typecheck
+          command: "npm run typecheck"
+          timeout: 5
+        - name: test
+          command: "npm test"
+          timeout: 15
+```
+
+```yaml Python
+environment:
+    image: python:3.13
+    cache:
+        - PIP_CACHE_DIR
+    setup: "pip install -e '.[dev]'"
+    gates:
+        - name: test
+          command: "pytest -q"
+          timeout: 15
+```
+
+</CodeGroup>
+
+## Fields
+
+| Field    | Required | Description                                                                         |
+| -------- | -------- | ----------------------------------------------------------------------------------- |
+| `image`  | yes      | Docker image the runner starts from, by tag (`golang:1.25`). Digests (`@sha256:…`) are refused |
+| `setup`  | no       | Shell command run before the agent starts; retried while it fails. Max 4096 chars   |
+| `cache`  | no       | Up to 16 env var names whose directories persist between runs                       |
+| `gates`  | no       | Up to 16 checks; see below                                                          |
+
+<Note>
+  The file can also declare `services` (sidecars such as Postgres), `policy` and `reviewers`. See [Services](/guides/services) and [Policy and reviewers](/guides/policy-and-reviewers).
+</Note>
+
+## Gate options
+
+How gates run, fail and get repaired: [Gates](/guides/gates). Env vars and secrets for `setup` and gates: [Environment variables and secrets](/guides/env-and-secrets).
+
+| Key         | Description                                                                                  |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| `name`      | Up to 64 chars; shown in the task's Verification panel                                       |
+| `command`   | One line, up to 4096 chars                                                                   |
+| `timeout`   | Whole minutes, 1–120                                                                         |
+| `on_demand` | `true`: the agent can run it while working, and the end-of-run gate pass skips it            |
+| `filter`    | `true`: the agent can narrow the run; the value arrives as `$GATE_FILTER`                    |
+
+## Common errors
+
+<Warning>
+  **Strict parser.** Unknown keys and tab characters are errors, and the error names the line. Indent with spaces. Put comments on their own line: a `#` after a value is read as part of the value.
+</Warning>
+
+<AccordionGroup>
+  <Accordion title="Task fails with “config” before the agent starts">
+    The file didn't parse. Open the failed job: the error names the line and the key. Fix it on the default branch, then retry the task.
+  </Accordion>
+  <Accordion title="Setup keeps retrying">
+    `setup` is retried while it fails. Run the same command locally inside the same image, e.g. `docker run --rm -it golang:1.25 sh`.
+  </Accordion>
+  <Accordion title="Gate times out">
+    Raise `timeout` (max 120), or split the gate. Slow suites fit better as an `on_demand` gate plus a fast default gate.
+  </Accordion>
+</AccordionGroup>
+
+Every key, limit and default: [.bellows.yaml reference](/reference/bellows-yaml).

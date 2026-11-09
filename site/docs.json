@@ -1,0 +1,157 @@
+{
+    "$schema": "https://mintlify.com/docs.json",
+    "theme": "mint",
+    "name": "Bellows",
+    "description": "Run a coding agent against your repository, inside guardrails your engineers define.",
+    "colors": {
+        "primary": "#4f6b52",
+        "light": "#8fae92",
+        "dark": "#3e5842"
+    },
+    "background": {
+        "color": {
+            "light": "#f7f6f2",
+            "dark": "#1d211e"
+        }
+    },
+    "appearance": {
+        "default": "light",
+        "strict": true
+    },
+    "logo": {
+        "light": "/logo/light.svg",
+        "dark": "/logo/dark.svg",
+        "href": "https://bellows.cloud"
+    },
+    "favicon": "/favicon.svg",
+    "navbar": {
+        "links": [
+            { "label": "bellows.cloud", "href": "https://bellows.cloud" },
+            { "label": "Open source", "href": "https://github.com/Bellows-AI/bellows" }
+        ],
+        "primary": {
+            "type": "button",
+            "label": "Open Bellows",
+            "href": "https://bellows.cloud"
+        }
+    },
+    "navigation": {
+        "tabs": [
+            {
+                "tab": "Docs",
+                "groups": [
+                    {
+                        "group": "Overview",
+                        "pages": [
+                            "overview/introduction",
+                            "overview/quickstart",
+                            "overview/concepts"
+                        ]
+                    },
+                    {
+                        "group": "Use Bellows",
+                        "pages": [
+                            "guides/run-tasks",
+                            "guides/task-lifecycle",
+                            "guides/writing-good-tasks",
+                            "guides/attachments"
+                        ]
+                    },
+                    {
+                        "group": "Use cases",
+                        "pages": [
+                            "use-cases/fix-jira-bug",
+                            "use-cases/add-tests",
+                            "use-cases/upgrade-dependencies",
+                            "use-cases/drive-from-claude-code"
+                        ]
+                    },
+                    {
+                        "group": "Configure your repo",
+                        "pages": [
+                            "guides/configure-repo",
+                            "guides/gates",
+                            "guides/services",
+                            "guides/policy-and-reviewers"
+                        ]
+                    },
+                    {
+                        "group": "Agents and integrations",
+                        "pages": [
+                            "guides/executors",
+                            "guides/skills",
+                            "guides/env-and-secrets",
+                            "guides/connections"
+                        ]
+                    },
+                    {
+                        "group": "CLI",
+                        "pages": [
+                            "cli/install",
+                            "cli/commands"
+                        ]
+                    },
+                    {
+                        "group": "MCP",
+                        "pages": [
+                            "mcp/connect",
+                            "mcp/tools"
+                        ]
+                    }
+                ]
+            },
+            {
+                "tab": "Self-host",
+                "groups": [
+                    {
+                        "group": "Get started",
+                        "pages": [
+                            "self-host/overview",
+                            "self-host/docker-compose",
+                            "self-host/kubernetes"
+                        ]
+                    },
+                    {
+                        "group": "Integrations",
+                        "pages": [
+                            "self-host/github-app",
+                            "self-host/jira-app"
+                        ]
+                    },
+                    {
+                        "group": "Operate",
+                        "pages": [
+                            "self-host/configuration",
+                            "self-host/security"
+                        ]
+                    }
+                ]
+            },
+            {
+                "tab": "Reference",
+                "groups": [
+                    {
+                        "group": "Reference",
+                        "pages": [
+                            "reference/bellows-yaml",
+                            "reference/limits",
+                            "reference/glossary",
+                            "reference/faq"
+                        ]
+                    },
+                    {
+                        "group": "Updates",
+                        "pages": [
+                            "reference/changelog"
+                        ]
+                    }
+                ]
+            }
+        ]
+    },
+    "footer": {
+        "socials": {
+            "github": "https://github.com/Bellows-AI/bellows"
+        }
+    }
+}

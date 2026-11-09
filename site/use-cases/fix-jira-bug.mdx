@@ -1,0 +1,83 @@
+---
+title: "Fix a bug from a Jira ticket"
+description: "Point a task at a Jira ticket and get a pull request with a failing test, the fix and green gates."
+---
+
+You have a bug filed as `PROJ-123`. Instead of copying the ticket into a prompt, you name it. The agent reads the ticket and its comments, names the task after it, writes a failing test, fixes the bug, and Bellows opens a pull request once your gates pass.
+
+## Before you start
+
+- The repository is set up with gates. See [Configure a repository](/guides/configure-repo) and [Gates](/guides/gates).
+- You can sign in to the Atlassian account that sees the ticket. The Jira connection is yours alone. See [Connections](/guides/connections).
+- The ticket says how to reproduce the bug and what should happen instead.
+
+## Steps
+
+<Steps>
+  <Step title="Connect Jira">
+    Go to **Settings → Integrations**, then **Browse integrations**, and choose **Jira**. Click **Connect**, optionally fill **Jira site (optional)** with `acme.atlassian.net`, then click **Continue to Atlassian** and approve.
+
+    Leave **Allow adding comments** off if the agent should only read tickets. Turn it on if you want it to be able to comment.
+  </Step>
+  <Step title="Create the task">
+    Click **New task**, pick the repository (`acme/notes-api`) and an [executor](/guides/executors). Mention the ticket and the outcome you expect:
+
+    ```text Prompt
+    /factory-fix PROJ-123
+
+    Read the ticket and its comments, including the reproduction steps.
+    Write a failing test in the notes package first, then fix the bug.
+    Do not change the public API.
+    ```
+
+    Press **Start task** or `⌘ + Enter`. Typing `/` opens the **Skills** menu. See [Skills](/guides/skills).
+  </Step>
+  <Step title="Connect on demand, if asked">
+    If you have not connected Jira, the task page shows a block saying the task needs a Jira connection. Choose one:
+
+    - **Connect Jira**, which opens the flow from step 1.
+    - **Use selected connection**, if you have several. Pick the one for this task.
+    - **Continue without it**, and the agent works without the ticket and says which Jira steps it skipped.
+
+    The task waits until you choose. After you connect, it resumes in the same session.
+  </Step>
+  <Step title="Watch the run">
+    The task goes <span className="status status-queued">Queued</span>, then <span className="status status-running">Running</span>. The agent reads the ticket, reading the comments too, since clarifications often land there. It then sets the task title from the ticket's subject, for example "Fix 500 on notes with no title". If you set a title yourself, the agent leaves it.
+
+    It writes the failing test, fixes the code and runs the gates from `.bellows.yaml`. See [Task lifecycle](/guides/task-lifecycle).
+  </Step>
+  <Step title="Review the pull request">
+    When the gates pass, Bellows publishes the pull request and the task shows <span className="status status-review">Waiting for review</span>. Review it on GitHub. To change something, use **Follow up** on the task. **Mark done** closes the task in Bellows only; it does not merge the PR.
+  </Step>
+</Steps>
+
+## What you get
+
+- A pull request on `acme/notes-api` with a test that failed before the fix and passes now.
+- A task named after the ticket's subject, so the inbox is easy to scan.
+- The gate results on the run, so you can see what was verified.
+
+## What the agent can and cannot do in Jira
+
+| It can | It cannot |
+| --- | --- |
+| Read one ticket with its description and comments | Create tickets |
+| Read the parent of a subtask | Move a ticket to another status |
+| Search with JQL | Rename the Jira issue (it only sets the Bellows task title) |
+| Add a comment, only if you turned on **Allow adding comments** | Use your Jira login directly; it never sees a credential |
+
+If you turn on comments after a task started with read-only access, that task is refused. Start it again.
+
+## Tips
+
+- Put the reproduction steps and the expected behaviour in the ticket. The agent turns them into the failing test.
+- Add clarifications as ticket comments. The agent reads them.
+- Name the package or file in your prompt when you know it. See [Writing good tasks](/guides/writing-good-tasks).
+- For a subtask, mention it by key. The agent also reads the parent, where the real requirement usually lives.
+- Keep one ticket per task. A second ticket is a second PR.
+- If Jira answers "not found", check that the connection's site and your account can see the ticket. The agent stops and reports instead of guessing.
+
+## Variations
+
+- Ask the agent to comment the PR link on the ticket, with **Allow adding comments** on.
+- Skip `/factory-fix` for a change that is not a bug. Name the ticket and describe the work.

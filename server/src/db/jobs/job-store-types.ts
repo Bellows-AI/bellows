@@ -9,7 +9,7 @@ import type { AttachmentMeta } from '@factory-ai/core';
 import type { ClaimAttachment } from './job-store-attachments.js';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
-import type { PinnedSkill } from './job-store-skill-pin.js';
+import type { HiddenSkill, PinnedSkill } from './job-store-skill-pin.js';
 import type { JobTitleStore } from './job-store-title.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
@@ -206,6 +206,11 @@ export interface Job {
     /** The agent session this attempt runs as, once its driver has reported it. */
     /** The branch the thread bases on (batch target, else the root's request), or null for the remote default. Filled by the detail reads (get/thread) only. */
     baseBranch: string | null;
+    /**
+     * The skills this row's CLI does not list and why (BEL-286): `switched_off` or `needs_connection`. Filled by `get`
+     * only; absent on a list and on the thread read.
+     */
+    hiddenSkills?: { name: string; reason: 'switched_off' | 'needs_connection' }[];
     sessionId: string | null;
     exitCode: number | null;
     output: string | null;
@@ -574,6 +579,12 @@ export interface Claim {
      * across claims, so a takeover or retry delivers the same versions.
      */
     skillPin: PinnedSkill[];
+    /**
+     * The skills this row's CLI must not list (BEL-286), decided once when the row's skills were pinned and never
+     * re-read by a claim: `{name, source: builtin | org | workspace, reason: switched_off | needs_connection,
+     * connection?}`. `[]` when nothing is hidden; a reviewer row decides with no bindings.
+     */
+    skillHidden: HiddenSkill[];
     /**
      * Why the task's execution plan cannot launch: its `.bellows.yaml` at the claimed revision does
      * not parse, declares an image the pod cannot run, or declares services whose ports collide in
