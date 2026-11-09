@@ -55,6 +55,15 @@
                 ]
             },
             {
+                "group": "Use cases",
+                "pages": [
+                    "use-cases/fix-jira-bug",
+                    "use-cases/add-tests",
+                    "use-cases/upgrade-dependencies",
+                    "use-cases/drive-from-claude-code"
+                ]
+            },
+            {
                 "group": "Configure your repo",
                 "pages": [
                     "guides/configure-repo",

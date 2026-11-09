@@ -112,3 +112,5 @@ Open the task and find the **Verification** panel. Each gate has a pill and, onc
 - Run the same command locally in the same image before you commit it: `docker run --rm -v "$PWD":/w -w /w golang:1.25 sh -c 'go test ./...'`.
 - If a gate needs a database, declare it as a [service](/guides/services).
 - Don't let a gate rewrite tracked files. A formatter that edits the tree voids the reuse of later gates.
+
+**Worked example:** [Add tests to a package](/use-cases/add-tests).
