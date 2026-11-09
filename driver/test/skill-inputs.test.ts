@@ -180,6 +180,24 @@ describe('deliverSkills', () => {
         expect(reads).toEqual([V2]);
     });
 
+    it.each([
+        ['claude-code', '.claude/skills', true],
+        [null, '.claude/skills', true],
+        ['opencode', '.claude/skills,.opencode/skills,.opencode/skill,.agents/skills', false],
+    ] as const)(
+        'tells the install step the %s CLI, so an org skill only under .opencode/skills is skipped only where it is listed',
+        async (executorType, dirs, installed) => {
+            mkdirSync(join(root, 'widgets', '.opencode', 'skills', 'org-style'), { recursive: true });
+            writeFileSync(join(root, 'widgets', '.opencode', 'skills', 'org-style', 'SKILL.md'), 'repo copy\n');
+            expect(await deliver({ skillPin: [hold('org-style', V1)], repo: 'acme/widgets', executorType })).toEqual({
+                ok: true,
+                reason: null,
+            });
+            expect(steps[0]?.env).toMatchObject({ CHECKOUT_DIR: '/task/widgets', CHECKOUT_SKILL_DIRS: dirs });
+            expect(existsSync(join(skillsDir(), 'org-style', 'SKILL.md'))).toBe(installed);
+        }
+    );
+
     it('submits no step for a row that carries no pin field at all', async () => {
         expect(await deliver({})).toEqual({ ok: true, reason: null });
         expect(steps).toEqual([]);

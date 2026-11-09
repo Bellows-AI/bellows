@@ -16,8 +16,8 @@
 //     entry (a skill name and a sha256) is a transient failure, left untouched, with nothing pruned or installed;
 //     every read goes through `probe`, which reports absence only for ENOENT/ENOTDIR and throws on anything else;
 //   - a directory the manifest does not own is kept, unless the pin names it: delivery overwrites a same-name directory;
-//   - a pinned ORG skill the checkout holds (CHECKOUT_DIR/<scanned dir>/<name>/SKILL.md) is not installed: the repo's
-//     own copy wins on every CLI, so it is the only one. It is reported in `skipped`, and an earlier install of it is
+//   - a pinned ORG skill the checkout holds (CHECKOUT_DIR/<a CHECKOUT_SKILL_DIRS dir>/<name>/SKILL.md) is not installed: the
+//     repo's own copy wins on that CLI, so it is the only one. It is reported in `skipped`, and an earlier install of it is
 //     pruned. A pinned workspace skill is installed whatever the checkout holds. The checkout read is `probe`'s: only
 //     a confirmed absence is "not held", anything else that fails is a transient failure.
 //
@@ -32,6 +32,7 @@
 //   TARGET_DIR     — the skills directory;
 //   PIN            — JSON [{name, source, versionId, sha256}]: the claim's pin;
 //   CHECKOUT_DIR   — optional: the task's checkout, read for the repo > org rule above;
+//   CHECKOUT_SKILL_DIRS — with CHECKOUT_DIR: comma-separated checkout-relative dirs the task's CLI scans for skills;
 //   INPUT_DELIVERY — the delivery name on the control route (`skills`);
 //   STAGING_SEQ    — the claim sequence, naming the staging directory;
 //   RESTORE_URL / RESTORE_TOKEN — the control endpoint and its bearer (the supervisor adds them to a step with INPUT_FEED=1);
@@ -52,8 +53,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SOURCES = new Set(['org', 'workspace']);
-// The directories under a checkout that the agent CLIs scan for skills.
-const CHECKOUT_SKILL_DIRS = ['.claude/skills', '.opencode/skills', '.opencode/skill', '.agents/skills'];
+/** The checkout directories the task's CLI scans; a missing or malformed list throws (inconclusive), never "none". */
+const scannedDirsOf = (list) => {
+    const dirs = (list ?? '').split(',');
+    if (dirs.some((dir) => dir === '' || path.isAbsolute(dir) || dir.split('/').includes('..'))) {
+        throw new Error(`CHECKOUT_SKILL_DIRS is not a list of checkout directories: ${list}`);
+    }
+    return dirs;
+};
 
 // Limits copied from core/src/skills.ts (this package imports nothing): 64 files, 5 MiB of files; the tar adds a
 // header block per entry and the end marker.
@@ -297,9 +304,9 @@ const installed = (target, name) => probe(path.join(target, name, SKILL_MD)).kin
 
 const skippedOf = (names) => (names.length > 0 ? { skipped: names } : {});
 
-/** Whether the checkout holds a skill of this name in a directory a CLI scans: false only on a confirmed absence. */
-const heldByCheckout = (checkout, name) =>
-    CHECKOUT_SKILL_DIRS.some((dir) => probe(path.join(checkout, dir, name, SKILL_MD)).kind === 'file');
+/** Whether the checkout holds a skill of this name in a directory the CLI scans: false only on a confirmed absence. */
+const heldByCheckout = (checkout, dirs, name) =>
+    dirs.some((dir) => probe(path.join(checkout, dir, name, SKILL_MD)).kind === 'file');
 
 /** The skills directory and the manifest's owned map, both confirmed: a directory that is absent owns nothing. */
 const survey = (target) => {
@@ -330,8 +337,11 @@ async function main() {
     const claimed = pinOf(process.env.PIN);
     const checkout = process.env.CHECKOUT_DIR;
     // The repo's copy of a pinned org skill is the only one delivered.
+    const dirs = checkout ? scannedDirsOf(process.env.CHECKOUT_SKILL_DIRS) : [];
     const skipped = checkout
-        ? claimed.filter((entry) => entry.source === 'org' && heldByCheckout(checkout, entry.name)).map((e) => e.name)
+        ? claimed
+              .filter((entry) => entry.source === 'org' && heldByCheckout(checkout, dirs, entry.name))
+              .map((e) => e.name)
         : [];
     const pin = claimed.filter((entry) => !skipped.includes(entry.name));
     const source = {
