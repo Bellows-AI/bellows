@@ -62,6 +62,8 @@ export interface SkillVersionInfo {
     description: string;
     objectKey: string;
     createdAt: string;
+    /** Who wrote the version; null for one written before the column existed, or once the user is deleted. */
+    author: { id: string; login: string } | null;
 }
 
 export interface SkillRecord {
@@ -112,6 +114,8 @@ interface LockedSkill {
 
 export interface AddVersionOptions {
     expectedVersionId?: string;
+    /** The writer, recorded on a new version; an identical re-upload keeps its first author. */
+    createdBy?: string | null;
 }
 export type PromoteResult = { result: 'promoted'; skill: SkillRecord } | { result: 'name_taken' | 'missing' };
 
@@ -164,6 +168,8 @@ interface RecordRow {
     v_requires_connections: string[];
     v_object_key: string;
     v_created_at: string;
+    v_author_id: string | null;
+    v_author_login: string | null;
 }
 
 const UNIQUE_VIOLATION = '23505';
@@ -188,6 +194,7 @@ const recordOf = (row: RecordRow): SkillRecord => ({
         description: row.v_description,
         objectKey: row.v_object_key,
         createdAt: String(row.v_created_at),
+        author: row.v_author_id === null ? null : { id: row.v_author_id, login: row.v_author_login ?? '' },
     },
 });
 
@@ -230,8 +237,10 @@ export function createSkillStore({
         select s.id, s.name, s.user_id, s.enabled, s.created_by, s.created_at::text, s.updated_at::text,
                v.id as v_id, v.sha256 as v_sha256, v.size_bytes as v_size, v.description as v_description,
                v.requires_tools as v_requires_tools, v.requires_connections as v_requires_connections,
-               v.object_key as v_object_key, v.created_at::text as v_created_at
+               v.object_key as v_object_key, v.created_at::text as v_created_at,
+               au.id as v_author_id, au.github_login as v_author_login
         from skill s join skill_version v on v.id = s.current_version_id
+        left join app_user au on au.id = v.created_by
         where s.org_id = ${orgId} and s.deleted_at is null
           and ${
               'effectiveFor' in filter
@@ -276,14 +285,13 @@ export function createSkillStore({
     async function publishVersion(
         tx: TransactionSql,
         skillId: string,
-        key: string,
-        bundle: SkillBundle
+        { key, bundle, createdBy }: { key: string; bundle: SkillBundle; createdBy: string | null }
     ): Promise<'added' | 'exists'> {
         await holdObject(tx, key, bundle);
         const [version] = await tx<{ id: string; inserted: boolean }[]>`
-            insert into skill_version (skill_id, sha256, size_bytes, object_key, description, requires_tools, requires_connections)
+            insert into skill_version (skill_id, sha256, size_bytes, object_key, description, requires_tools, requires_connections, created_by)
             values (${skillId}, ${bundle.sha256}, ${bundle.size}, ${key}, ${bundle.description},
-                    ${bundle.requires.tools}, ${bundle.requires.connections})
+                    ${bundle.requires.tools}, ${bundle.requires.connections}, ${createdBy})
             on conflict (skill_id, sha256) do update set
                 requires_tools = excluded.requires_tools, requires_connections = excluded.requires_connections
             returning id, (xmax = 0) as inserted
@@ -315,7 +323,7 @@ export function createSkillStore({
                         insert into skill (org_id, user_id, name, created_by)
                         values (${orgId}, ${owner}, ${name}, ${createdBy}) returning id
                     `;
-                    await publishVersion(tx, row!.id, key, bundle);
+                    await publishVersion(tx, row!.id, { key, bundle, createdBy });
                     return row!.id;
                 });
             } catch (error) {
@@ -333,7 +341,7 @@ export function createSkillStore({
                 if (!locked) return 'missing' as const;
                 const expected = options?.expectedVersionId;
                 if (expected !== undefined && locked.currentVersionId !== expected) return 'stale' as const;
-                return publishVersion(tx, id, key, bundle);
+                return publishVersion(tx, id, { key, bundle, createdBy: options?.createdBy ?? null });
             });
             if (written === 'missing' || written === 'stale') return { result: written };
             const skill = await getOwned(owner, id);

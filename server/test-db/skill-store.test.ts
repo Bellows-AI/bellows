@@ -25,10 +25,11 @@ const ORG = testOrg();
 const OTHER_ORG = testOrg();
 const ALICE = testUser('skill-alice');
 const BOB = testUser('skill-bob');
+const CAROL = testUser('skill-carol');
 const PREFIX = 'test/';
 const RETENTION_DAYS = 30;
 
-const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE, BOB] });
+const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE, BOB, CAROL] });
 let sql: Sql;
 let objects: ObjectStore;
 let root: string;
@@ -148,6 +149,29 @@ describe.skipIf(!enabled)('the skill store', () => {
         expect(back.result).toBe('exists');
         expect((await store.get(null, skill.id))?.current.id).toBe(first.id);
         expect(await versionRows(skill.id)).toHaveLength(2);
+    });
+
+    it("names the version's writer as its author, and null once the user row is deleted", async () => {
+        const store = storeOf();
+        const skill = await store.create(null, { name: 'authored', bundle: md('authored', 'v1'), createdBy: ALICE.id });
+        if (skill.result !== 'created') throw new Error(skill.result);
+        expect(skill.skill.current.author).toEqual({ id: ALICE.id, login: ALICE.login });
+
+        const added = await store.addVersion(null, skill.skill.id, md('authored', 'v2'), { createdBy: CAROL.id });
+        if (added.result !== 'added') throw new Error(added.result);
+        expect(added.skill.current.author).toEqual({ id: CAROL.id, login: CAROL.login });
+        expect((await store.get(null, skill.skill.id))?.current.author?.login).toBe(CAROL.login);
+
+        await sql`delete from app_user where id = ${CAROL.id}`;
+        expect((await store.get(null, skill.skill.id))?.current.author).toBeNull();
+    });
+
+    it('keeps the first author on an identical re-upload', async () => {
+        const store = storeOf();
+        const skill = await created(store, null, 'reuploaded', 'v1');
+        const again = await store.addVersion(null, skill.id, md('reuploaded', 'v1'), { createdBy: BOB.id });
+        if (again.result !== 'exists') throw new Error(again.result);
+        expect(again.skill.current.author).toEqual({ id: ALICE.id, login: ALICE.login });
     });
 
     it('refuses an expectedVersionId that is no longer current and writes no row', async () => {

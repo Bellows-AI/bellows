@@ -332,7 +332,8 @@ async function handleAddVersion(orgs: OrgRegistry, door: Door, request: FastifyR
     const parsed = isZip ? bundleOf(request, reply, skill.name) : await editBundleOf(request, reply, context, skill);
     if (!parsed) return reply;
     const { bundle } = parsed;
-    const options = isZip ? undefined : { expectedVersionId: skill.current.id };
+    const createdBy = context.caller?.user.id ?? null;
+    const options = isZip ? { createdBy } : { expectedVersionId: skill.current.id, createdBy };
     const added = await attempt(request, reply, () => context.store.addVersion(context.owner, id, bundle, options));
     if (!added) return reply;
     const result = added.value;

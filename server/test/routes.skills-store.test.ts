@@ -111,8 +111,10 @@ async function boot(
 ) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
+    const admin2 = auth.seedMember('test-org', 'admin-dog', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
     const other = auth.seedMember('test-org', 'hubot');
+    skills.resolveLogins((id) => [admin, admin2, member, other].find((caller) => caller.user.id === id)?.user.login);
     const config = testConfig({ auth: githubAuth() });
     const instance = await buildApp({
         config,
@@ -126,6 +128,7 @@ async function boot(
         instance,
         skills,
         admin: await as(admin),
+        admin2: await as(admin2),
         member: await as(member),
         other: await as(other),
     };
@@ -340,6 +343,32 @@ describe('skill writes', () => {
             payload: { skillMd: skillMd('zipped', 'Changed.'), baseVersionId: changed.json().skill.current.id },
         });
         expect(same.statusCode).toBe(HTTP_OK);
+    });
+
+    it('names the version author by login on the wire, and a new version by another writer changes it', async () => {
+        const booted = await boot();
+        const { instance, admin, admin2 } = booted;
+        const created = await instance.inject({
+            method: 'POST',
+            url: '/api/org/skills',
+            headers: admin,
+            payload: { name: 'authored', skillMd: skillMd('authored') },
+        });
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        const id = created.json().skill.id;
+        expect(created.json().skill.current.author.login).toBe('admin-cat');
+
+        const read = await instance.inject({ method: 'GET', url: `/api/org/skills/${id}`, headers: booted.member });
+        expect(read.json().skill.current.author.login).toBe('admin-cat');
+
+        const second = await instance.inject({
+            method: 'POST',
+            url: `/api/org/skills/${id}/versions`,
+            headers: admin2,
+            payload: { skillMd: skillMd('authored', 'Changed.'), baseVersionId: read.json().skill.current.id },
+        });
+        expect(second.statusCode).toBe(HTTP_CREATED);
+        expect(second.json().skill.current.author.login).toBe('admin-dog');
     });
 
     it('maps a codec refusal to 422 with its stable reason', async () => {
