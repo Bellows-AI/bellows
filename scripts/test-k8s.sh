@@ -3300,8 +3300,24 @@ else
     expect_contains "the workspace skill's helper file opens for the agent" "$skills_out" 'helper lane-ws-skill/ref/helper.txt open'
 fi
 
+# BEL-286: a task whose owner holds no Jira connection (the org admin minted above has none, so nothing binds by
+# default) is made with factory-jira hidden: the row's skill_hidden is the stored decision the claim carries. The
+# switched-off built-in is the control that the column was read at all.
+skills_admin_exec="$(FACTORY_TOKEN="$skills_admin_token" http_status PUT "$BASE/api/workspace/executors" \
+    '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')"
+[ "$skills_admin_exec" = 200 ] && ok 'the connection-less admin stores the task executor' || bad 'the connection-less admin stores the task executor' "status $skills_admin_exec"
+skills_nojira_job="$(FACTORY_TOKEN="$skills_admin_token" queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
+skills_nojira_hidden="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "job=$skills_nojira_job" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+select coalesce(string_agg(h->>'name', ',' order by h->>'name'), '') from job, jsonb_array_elements(skill_hidden) h where id = :'job';
+SQL
+)"
+expect_contains 'the control: a task with no Jira connection has its stored hidden list read' "$skills_nojira_hidden" 'factory-task-title'
+expect_contains 'a task with no Jira connection hides factory-jira' "$skills_nojira_hidden" 'factory-jira'
+
 skills_switch true >/dev/null
-for job in $hard $drained $evicted $lost $final $unpullable $skills_job; do
+for job in $hard $drained $evicted $lost $final $unpullable $skills_job $skills_nojira_job; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

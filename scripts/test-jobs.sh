@@ -4072,7 +4072,7 @@ ps_a=''
 ps_b=''
 
 # Text that appears only in one built-in's description, so the scripted model can tell whether the CLI offered it.
-PS_JIRA_DESC='Read, search and comment on Jira work items'
+PS_JIRA_DESC='Jira work items through the jira helper' # no comma: --skill-sentinel splits its value on commas
 PS_FIX_DESC='Optional playbook for fixing a backend bug'
 
 ps_switch() { # ps_switch <built-in name> <true|false> -> the org admin's per-org switch for that built-in
@@ -4143,6 +4143,31 @@ ps_job() { # ps_job <claude|opencode> <member token> -> the member's new task id
     printf '%s' "$id"
 }
 
+ps_jira_member() { # ps_jira_member <login> -> a member's token; the member holds one Jira connection, which binds to every task made
+    local token user
+    token="$(ps_mint "$1" member)" || {
+        printf '%s' "$token"
+        return 1
+    }
+    user="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -c "select id from app_user where github_login = '$1'" | tr -d '\r')"
+    DATABASE_URL="$DATABASE_URL" LANE_ORG="$PS_ORG" LANE_USER="$user" node --input-type=module -e '
+import postgres from "postgres";
+import { createConnectionGrants } from "./server/dist/db/connection-grants.js";
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+const made = await createConnectionGrants({ sql, orgId: process.env.LANE_ORG }).attachGrantConnection({
+    principal: { kind: "user", userId: process.env.LANE_USER },
+    provider: "jira",
+    externalAccountId: "lane-account-" + process.env.LANE_USER,
+    authority: { scopes: ["read:jira-work"] },
+    resource: { id: "lane-cloud", label: "example.atlassian.net" },
+    access: "read",
+});
+await sql.end();
+process.exit(made.ok ? 0 : 1);
+' >&2 || return 1
+    printf '%s' "$token"
+}
+
 ps_get() { # ps_get <url> -> the body
     node -e 'fetch(process.argv[1]).then((r) => r.text()).then((t) => process.stdout.write(t))' "$1"
 }
@@ -4208,6 +4233,20 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     # requirement is (the control: a probe that sees neither proves nothing).
     ps_expect "$cli: a task with no Jira binding is not offered factory-jira" "$(ps_seen "$seen" "$PS_JIRA_DESC")" no
     ps_expect "the control: $cli's task is offered an unrestricted built-in" "$(ps_seen "$seen" "$PS_FIX_DESC")" yes
+    lane_endpoint_stop "$ps_pid"
+
+    # BEL-286: a member who holds a Jira connection has it bound to the task when it is made, so factory-jira is listed.
+    local ps_c
+    ps_c="$(ps_jira_member "ps-member-c-$cli")" && ok "$cli: a member holding a Jira connection is minted" || bad "$cli: a member holding a Jira connection is minted" "$ps_c"
+    AUTH_HEADER="Bearer $ps_c" expect_status "$cli: the Jira member stores the task executors" 200 PUT /api/workspace/executors \
+        '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+    ps_endpoint "pins-$cli-jira" "$PS_JIRA_DESC,$PS_FIX_DESC" "/etc/shadow"
+    ps_point "$cli" "$ps_c" "$ps_port"
+    id="$(ps_job "$cli" "$ps_c")"
+    expect_contains "$cli: the Jira member's task succeeds" "$(AUTH_HEADER="Bearer $ps_c" await_settled "$id" 240)" succeeded
+    seen="$(ps_get "http://127.0.0.1:$ps_port/skills-seen")"
+    ps_expect "$cli: a task that holds Jira is offered factory-jira" "$(ps_seen "$seen" "$PS_JIRA_DESC")" yes
+    ps_expect "the control: $cli's Jira task is offered an unrestricted built-in" "$(ps_seen "$seen" "$PS_FIX_DESC")" yes
     lane_endpoint_stop "$ps_pid"
 
     # BEL-286: an org admin's switch hides a built-in from the next task of every member, and switching it back on
