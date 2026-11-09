@@ -1,0 +1,83 @@
+---
+title: "Drive Bellows from Claude Code"
+description: "Start, watch and finish Bellows tasks from your terminal while you keep coding locally."
+---
+
+Connect Claude Code to Bellows over MCP. Then you can ask it to run a task on a repository, wait for it, answer the agent's questions and read the result, without leaving your editor. The task runs in a sandbox on Bellows, so your local checkout stays free.
+
+## Before you start
+
+- A Bellows account with a repository set up. See [Configure a repository](/guides/configure-repo).
+- MCP enabled on your installation. See [Connect an MCP client](/mcp/connect).
+
+## Steps
+
+<Steps>
+  <Step title="Connect">
+    ```bash
+    claude mcp add --transport http bellows https://bellows.cloud/api/mcp
+    ```
+
+    Start Claude Code, run `/mcp`, choose **bellows**, then **Authenticate**, and click **Allow** in the browser. Check it:
+
+    ```text You type
+    call whoami on the bellows server
+    ```
+  </Step>
+  <Step title="Preflight, then create">
+    Ask for a check first. `preflight_task` creates nothing. It tells you whether the task would be accepted.
+
+    ```text You type
+    Use bellows. Preflight a task on acme/notes-api, then create it:
+    "Add ?limit and ?offset to GET /api/notes (default 20, max 100).
+    Add cases to server_test.go."
+    ```
+
+    Claude Code calls `preflight_task`, sees `ready`, then calls `create_task` and gets a task id. If the verdict is `integration_required`, a connection of yours is missing. Connect it in the web app, then ask again. See [Connections](/guides/connections).
+  </Step>
+  <Step title="Wait">
+    ```text You type
+    Wait for the task and tell me when it settles.
+    ```
+
+    `wait_task` returns after at most 55 seconds. A `timeout` is not a failure, so Claude Code calls it again. It ends with `succeeded`, `failed`, `cancelled` or `needs_attention`.
+  </Step>
+  <Step title="Answer a question">
+    If the result is `needs_attention`, the task waits on you: the agent asked something, or it needs a connection such as Jira. Claude Code reads an open question with `list_questions` and shows it to you.
+
+    ```text You type
+    Max is 100. Answer that, and keep waiting.
+    ```
+
+    It calls `answer_question` with your words. The answer starts a new run. See [Run tasks](/guides/run-tasks).
+  </Step>
+  <Step title="Read the result">
+    ```text You type
+    Show me the result and the PR link.
+    ```
+
+    `get_task_result` returns the summary, the pull request and the gate `checks`. If a gate failed, ask Claude Code to use `investigate_job` or `read_job_log`.
+  </Step>
+  <Step title="Follow up">
+    ```text You type
+    Follow up: also return 400 for a negative offset, with a test.
+    ```
+
+    `follow_up_task` runs in the same session and checkout, so the agent keeps its context. When you are happy, ask for `mark_task_done`. That closes the task in Bellows only. It does not merge the PR.
+  </Step>
+</Steps>
+
+## What you get
+
+A task on the board like any other, with its pull request, gates and run history. You can open it in the web app at any time.
+
+## Tips
+
+- Use this when you want several tasks in parallel while you keep coding locally: "start these three tasks on acme/notes-api, then wait for all of them".
+- Use the web app when you need to attach screenshots or read long logs.
+- Be specific. Name the endpoint, the file and the limits, as in [Writing good tasks](/guides/writing-good-tasks).
+- Run `preflight_task` when you pick an executor or skills, to catch a wrong choice before it queues. `list_executors` and `list_skills` show the valid values.
+- `stop_task`, `force_close_task` and `remove_task` do nothing without `confirm: true`. Claude Code asks you first.
+- For a lost reply on `create_task`, the same `idempotencyKey` returns the same task, not a second one.
+
+See [MCP tools](/mcp/tools) for every tool.

@@ -1,0 +1,118 @@
+---
+title: "Upgrade a dependency"
+description: "Bump one Go module or npm package, fix what breaks, and let build, test and lint gates prove the upgrade."
+---
+
+You want to move one dependency to a new version, for example a Go module or an npm major. The agent updates the version, fixes the code that no longer compiles or passes, and the gates prove the result before a pull request is published.
+
+## Before you start
+
+- Your `.bellows.yaml` has build, test and lint [gates](/guides/gates). Without them nothing checks the upgrade.
+- Package caches are set under `cache`, so setup is fast. See [Configure your repo](/guides/configure-repo).
+- If your private modules need a token, see [Environment variables and secrets](/guides/env-and-secrets).
+
+## Steps
+
+<Steps>
+  <Step title="Set up fast, deterministic gates">
+    <CodeGroup>
+
+    ```yaml Go
+    environment:
+        image: golang:1.25
+        cache:
+            - GOCACHE
+            - GOMODCACHE
+        setup: "go mod download"
+        gates:
+            - name: build
+              command: "go build ./..."
+              timeout: 5
+            - name: test
+              command: "go test -race -count=1 ./..."
+              timeout: 10
+            - name: lint
+              command: "go vet ./..."
+              timeout: 5
+    ```
+
+    ```yaml Node
+    environment:
+        image: node:22
+        cache:
+            - npm_config_cache
+        setup: "npm ci"
+        gates:
+            - name: typecheck
+              command: "npm run typecheck"
+              timeout: 5
+            - name: test
+              command: "npm test"
+              timeout: 15
+            - name: lint
+              command: "npm run lint"
+              timeout: 5
+    ```
+
+    </CodeGroup>
+  </Step>
+  <Step title="Write the prompt">
+    Name the dependency and the exact target version. Click **New task**, pick `acme/notes-api` and an [executor](/guides/executors).
+
+    <CodeGroup>
+
+    ```text Go module
+    Upgrade github.com/acme-co/httpkit from v1.8.2 to v2.1.0 in notes-api (PROJ-123).
+
+    - Update go.mod and go.sum to exactly v2.1.0. Do not upgrade other modules.
+    - v2 changes the import path to github.com/acme-co/httpkit/v2. Update all imports.
+    - Fix every compile error and failing test caused by the upgrade.
+    - Do not change behavior or public API of notes-api.
+
+    Run the build, test and lint gates before you finish.
+    In the pull request description, list the breaking changes from the
+    httpkit v2 changelog that affected us and what you changed for each.
+    ```
+
+    ```text npm major
+    Upgrade vitest from 2.1.9 to 3.2.4 in notes-web (PROJ-123).
+
+    - Pin exactly 3.2.4 in package.json and update package-lock.json.
+    - Do not upgrade other packages.
+    - Fix config and test changes the major version requires.
+    - Do not delete or skip tests to make them pass.
+
+    Run the typecheck, test and lint gates before you finish.
+    In the pull request description, list the breaking changes from the
+    vitest 3 migration notes that affected us and what you changed for each.
+    ```
+
+    </CodeGroup>
+  </Step>
+  <Step title="Check the gates and the diff">
+    Open the task and look at the **Verification** panel. Then read the diff: the lock file change should match only the one dependency, and no tests should be removed.
+  </Step>
+</Steps>
+
+## What you get
+
+- A pull request that changes the manifest and lock file, plus the code fixes the new version needs.
+- Green `build`, `test` and `lint` gates, or a clear failing gate with its output.
+- A description with the changelog notes you asked for.
+
+<Note>
+  The agent opens the pull request and writes its description, so asking for changelog notes in the prompt works. Bellows tells the agent never to claim a gate passed when it did not, so check the **Verification** panel rather than the text.
+</Note>
+
+## If your repo requires review
+
+If `.bellows.yaml` sets `policy: review: required` and declares `reviewers`, the agent must get an approving review before the pull request is published. A dependency bump is a good fit for a narrow reviewer, such as "Check that no unrelated dependency changed in the lock file." See [Policy and reviewers](/guides/policy-and-reviewers).
+
+## Tips
+
+- One dependency per task. Mixed upgrades make failures hard to trace and the pull request hard to review.
+- Pin the target version in the prompt. "Latest" changes between when you write the task and when it runs.
+- Ask for changelog notes in the pull request description. Reviewers then see why each code change happened.
+- Say what not to do: no other upgrades, no skipped tests, no behavior changes.
+- If a gate fails, follow up with the failing output and the agent continues in the same checkout.
+- If a gate fails for environment reasons, such as a timeout or out of memory, editing code will not fix it. See [Task lifecycle](/guides/task-lifecycle).
