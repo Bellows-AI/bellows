@@ -6,7 +6,7 @@ description: Validate and update the public user docs in `site/` (Mintlify) agai
 # Validate the user docs
 
 `site/` is the user documentation, published by Mintlify from `main` on every merge
-(<https://bellows.mintlify.app>). `docs/` is the maintainer index and belongs to the
+(<https://docs.bellows.cloud>). `docs/` is the maintainer index and belongs to the
 `doc-maintenance` skill, not this one. The code is the source of truth: a page that disagrees with
 it is wrong, whatever the page says.
 
