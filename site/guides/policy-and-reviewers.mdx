@@ -1,0 +1,99 @@
+---
+title: "Policy and reviewers"
+description: "Require passing gates or an independent review before Bellows publishes a task's work, and define the reviewers the agent can call."
+---
+
+By default a failing gate fails the task, but the work still ships as a draft pull request. A `policy` block changes that. It lists the evidence a task must have before it is published. `reviewers` defines named reviewers the agent can ask for a second opinion.
+
+## Policy
+
+```yaml .bellows.yaml
+policy:
+    gates: required
+    review: required
+```
+
+| Key      | Value      | Effect                                                                                  |
+| -------- | ---------- | --------------------------------------------------------------------------------------- |
+| `gates`  | `required` | The declared gates must have run and passed on the final work before it is published    |
+| `review` | `required` | A review must have approved the final work                                              |
+
+`required` is the only value. Any other value, an unknown key or a repeated key is an error. Leave a key out to require nothing. You can set one or both.
+
+`gates: required` needs at least one gate in `environment`. Without one the file is refused, because a requirement with nothing to check would pass for free.
+
+### What counts as evidence
+
+- Gates: a full, unfiltered pass that passed. Runs the agent made with a `filter` do not count, and neither do runs on a tree that has since changed.
+- Review: the latest review of the task must be clean. A review that is unfinished, failed or cancelled does not approve. One that found blockers rejects.
+- Evidence is tied to the exact revision of the work. If the agent edits anything after a clean review, the review is stale and must be asked for again.
+
+### Policy comes from the base branch
+
+Bellows reads `.bellows.yaml`, including `policy` and `reviewers`, from the tip of the task's base branch, or the default branch if none is set. It reads it through GitHub, never from the agent's working tree. A task can edit the file in its own branch, but that edit changes nothing for that task. It takes effect only after it is merged into the base branch.
+
+So an agent can't weaken its own requirements. To change policy, merge a change to `.bellows.yaml` first.
+
+### When policy blocks
+
+Nothing is pushed. The task fails with the badge <span className="status status-failed">evidence required</span>, and the reason is one of these:
+
+| Reason                                                                                              | What to do                                      |
+| --------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| declared gates are required but none ran over this work                                              | Check that gates exist and are not all `on_demand` |
+| declared gates are required and did not pass                                                         | Open **Verification** and fix the failing gate  |
+| declared gates passed, but the tree they assessed is unknown                                         | Retry the task                                  |
+| a review is required but this task has no reviewer                                                   | Declare `reviewers` (below)                     |
+| a review is required and none has run                                                                | Retry; the agent must ask for a review          |
+| a review is required, and the latest one is unfinished, failed or cancelled                          | Retry the task                                  |
+| a review is required and the latest one found blocking issues                                        | Address the findings in a follow-up             |
+| the required evidence assessed a different revision than the work now being shipped                  | The tree changed after the evidence; retry      |
+
+## Reviewers
+
+A reviewer is a separate agent run with its own instructions and time budget. It reads a frozen copy of the tree and reports findings and a verdict (`clean` or `blockers`). It can't publish anything and is told to change nothing. The main agent calls it by name.
+
+```yaml .bellows.yaml
+reviewers:
+    - name: security
+      instructions: "Look for injection, unsafe deserialization and leaked secrets. Report blockers only."
+      timeout: 10
+      connections: SONAR_TOKEN
+    - name: api-compat
+      instructions: "Check that no public HTTP route or response field was removed or renamed."
+```
+
+| Key            | Required | Description                                                                                         |
+| -------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `name`         | yes      | Lowercase letters, digits and hyphens, up to 64 chars. Unique                                       |
+| `instructions` | yes      | What to review for. One line, up to 4096 chars                                                      |
+| `timeout`      | no       | Whole minutes, 1 to 120. Default 15                                                                 |
+| `connections`  | no       | Comma-separated env var names the reviewer may receive, such as `SONAR_TOKEN`. Upper-case, up to 8. Nothing else from your environment reaches it |
+
+You can declare up to 8 reviewers. The format is a list that starts each item with `- name:`. Indent with spaces, as in the rest of the file.
+
+A reviewer grants a time budget and the connections you name. It is not a tool allowlist.
+
+### How reviews reach the policy
+
+With `review: required`, the agent asks for a review by reviewer name before it finishes. The latest review decides. If the agent changes the tree after a clean verdict, it must ask again. A review that finds blockers must be answered with a fix and a new review.
+
+Declaring `reviewers` without `policy: review: required` makes reviews available, but optional.
+
+<Tip>
+  Start with `gates: required` alone. Add `review: required` once you have a reviewer whose instructions are narrow enough to give clear verdicts.
+</Tip>
+
+## Common errors
+
+<AccordionGroup>
+  <Accordion title="“policy requires gates but no environment declares any”">
+    Add an `environment` block with an `image` and at least one gate, or drop `gates: required`.
+  </Accordion>
+  <Accordion title="My policy change has no effect on the task">
+    Policy is read from the base branch. Merge the change first, then start a new task.
+  </Accordion>
+  <Accordion title="“reviewer ... has no instructions”">
+    Every reviewer needs a non-empty `instructions` line.
+  </Accordion>
+</AccordionGroup>
