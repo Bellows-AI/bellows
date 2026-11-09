@@ -1,0 +1,103 @@
+---
+title: "Install and sign in"
+description: "Install the bellows CLI, point it at your Bellows server with a personal token, and check that it works."
+---
+
+The `bellows` CLI queues tasks, waits on them, follows up and answers questions from your terminal or from CI. It talks to the Bellows server over HTTP.
+
+## Requirements
+
+- Node.js 22 or newer.
+- A Bellows server URL (Bellows Cloud or your own).
+- A personal access token (`fat_...`) for that server.
+
+## Install
+
+The CLI is published on npm as `@bellows-ai/bellows-cli`.
+
+```bash Terminal
+npm install -g @bellows-ai/bellows-cli
+bellows --version
+```
+
+`bellows --version` and `bellows help` do not read any configuration, so they work before you sign in.
+
+## Sign in
+
+The CLI has no login command. You give it a server URL and a token.
+
+<Steps>
+  <Step title="Mint a personal access token">
+    In the web app, open your account page (user menu, **Account**) and find **Personal access tokens**. Create a token. It is shown once, so copy it now. A personal token acts as you until you revoke it or your membership ends.
+  </Step>
+  <Step title="Save the URL and token">
+    ```bash Terminal
+    mkdir -p ~/.bellows
+    cat > ~/.bellows/settings.json <<'JSON'
+    {
+      "url": "https://bellows.example.com",
+      "token": "fat_..."
+    }
+    JSON
+    chmod 600 ~/.bellows/settings.json
+    ```
+  </Step>
+  <Step title="Check it works">
+    ```bash Terminal
+    bellows auth status
+    ```
+    It prints each setting and where the value came from, the server's version, and who the token acts as.
+  </Step>
+</Steps>
+
+<Warning>
+The CLI refuses a settings file that holds a token and is readable by anyone but you. Run `chmod 600 ~/.bellows/settings.json`. Never pass the token as a command-line argument.
+</Warning>
+
+## Bellows Cloud or self-hosted
+
+Set `url` to the base URL of your server. There is no default URL, so a missing one is an error (exit code 2). The URL must be `http` or `https` and must not contain credentials.
+
+- Bellows Cloud: the address you sign in at.
+- Self-hosted: your own server's base URL. A server running with authentication off (`AUTH_MODE=none`) needs no token. Leave `token` out.
+
+## Settings
+
+Settings come from environment variables first, then the settings file. A set variable wins over the file key. A blank value counts as unset.
+
+| Environment variable | File key | Default | Meaning |
+| --- | --- | --- | --- |
+| `FACTORY_URL` | `url` | none (required) | The server's base URL. |
+| `FACTORY_TOKEN` | `token` | none | Personal access token (`fat_...`). |
+| `FACTORY_REQUEST_TIMEOUT_S` | `requestTimeoutS` | `30` | Deadline for one request, 1 to 3600 seconds. |
+| `FACTORY_READ_RETRIES` | `readRetries` | `3` | Retries of a failed read or keyed write, 0 to 10. `0` turns retries off. Writes without an idempotency key are never retried. |
+
+The file must be a JSON object with only these four keys.
+
+To read a different file, add `--config <path>` to any command. That file must exist.
+
+With no settings file, the CLI reads the environment alone.
+
+## Use it in CI
+
+Store the token in your scheduler's secret store and pass it as `FACTORY_TOKEN`.
+
+```bash Terminal
+export FACTORY_URL="https://bellows.example.com"
+export FACTORY_TOKEN="$BELLOWS_TOKEN"   # from your secret store
+bellows auth status
+```
+
+## Token types
+
+| Token | Prefix | What it can do |
+| --- | --- | --- |
+| Personal access token | `fat_` | Acts as you. Can create tasks and do everything the commands below do. |
+| Organization access token | `oat_` | Read-only. It cannot queue a task. Admins mint it for automation that should outlive any member. |
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Command reference" href="/cli/commands">Every command and flag, with examples.</Card>
+  <Card title="Run tasks" href="/guides/run-tasks">What happens after you create a task.</Card>
+</CardGroup>
