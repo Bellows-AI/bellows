@@ -1,6 +1,6 @@
 # Bellows
 
-User documentation: <https://bellows.mintlify.app>.
+User documentation: <https://docs.bellows.cloud>.
 
 **Product teams drive change. Engineers define the guardrails. Bellows does the work.**
 
