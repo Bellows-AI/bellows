@@ -1,0 +1,118 @@
+---
+title: "Glossary"
+description: "Every term you meet in the Bellows app, CLI and docs, in alphabetical order."
+---
+
+For a guided tour of the main ideas, read [Core concepts](/overview/concepts) first.
+
+## A
+
+**Agent.** The coding model that edits your code in a run. In Bellows it is chosen through an [executor](/guides/executors).
+
+**Attachment.** A screenshot, PDF or other file you add to a task or follow-up so the agent can work from it. See [Attachments](/guides/attachments).
+
+## B
+
+**Base branch.** The branch a task starts from and its pull request targets. You can pick it in the task composer. Bellows reads `.bellows.yaml` from its tip. See [Policy and reviewers](/guides/policy-and-reviewers).
+
+## C
+
+**Connection.** A stored third-party credential, such as Jira, that you attach to a task so the agent can use it. See [Connections](/guides/connections).
+
+## D
+
+**Driver.** The part of Bellows that picks up queued jobs and starts a runner for each one. See [Introduction](/overview/introduction).
+
+## E
+
+**Evidence.** What a [policy](/guides/policy-and-reviewers) requires before Bellows publishes work: a passing full gate run, a clean review, or both. Without it the task fails with `evidence required`.
+
+**Executor.** The coding agent that does the work: Claude Code, OpenCode, or a custom profile built on them. See [Executors](/guides/executors).
+
+**Executor profile.** A saved executor setup with a name, an agent, a model and optional configuration. It is personal (only you) or organization-wide (every member). See [Executors](/guides/executors).
+
+## F
+
+**Failure kind.** The reason shown on a failed run, such as `timed out`, `gate failed` or `config error`. Each one is explained in [Task lifecycle](/guides/task-lifecycle#when-a-run-fails).
+
+**Follow-up.** Your next message on a finished task. It starts a new job on the same checkout and session. See [Run tasks](/guides/run-tasks).
+
+## G
+
+**Gate.** A named check command in `.bellows.yaml`, such as build, test or lint. A run succeeds only if its gates pass. See [Gates](/guides/gates).
+
+**Gate filter.** A `filter: true` gate that lets the agent run part of a suite. The value reaches your command as `$GATE_FILTER`. A filtered run never counts as proof. See [Gates](/guides/gates#filters).
+
+**Gate repair.** The automatic rounds in which the agent gets a failing gate's output and tries to fix it. The limit is the executor's **Gate repair rounds** setting. See [Gates](/guides/gates#when-a-gate-fails).
+
+## I
+
+**Inbox.** The **Tasks** page. Its **Needs attention** tab holds everything waiting on you: answers, reviews and failures. See [Run tasks](/guides/run-tasks#the-inbox).
+
+## J
+
+**Job.** One attempt by the agent inside a task. Also called a **run**. Follow-ups, answers, retries and edits each start a new job. See [Task lifecycle](/guides/task-lifecycle).
+
+## M
+
+**Mark done.** Closes a task in Bellows. It does not merge or close the pull request. **Reopen** brings the task back.
+
+**MCP.** Model Context Protocol. The Bellows MCP server lets an assistant such as Claude Code create and follow tasks for you. See [Connect an MCP client](/mcp/connect).
+
+## N
+
+**Needs attention.** The inbox tab for tasks waiting on you. See **Inbox**.
+
+## O
+
+**On-demand gate.** A gate marked `on_demand: true`. The agent can run it while it works. The end-of-run pass skips it, and it never fails the task. See [Gates](/guides/gates#on-demand-gates).
+
+**Organization.** One Bellows GitHub App installation. It owns the repository list and keeps its data apart from other organizations. See [Core concepts](/overview/concepts).
+
+**Organization access token.** A token with the `oat_` prefix. It is read-only and meant for automation that should outlive any member. See [Install and sign in](/cli/install#token-types).
+
+## P
+
+**Personal access token.** A token with the `fat_` prefix that acts as you in the CLI and REST API. You create it on your **Account** page. See [Install and sign in](/cli/install) and [REST API](/api/overview).
+
+**Policy.** The `policy` block in `.bellows.yaml`. It requires passing gates, a review, or both before work is published. See [Policy and reviewers](/guides/policy-and-reviewers).
+
+**Preflight.** An advisory check of a task selection (repository, executor, skills, connections) that creates nothing. Use `bellows job preflight` or the `preflight_task` MCP tool. The server checks again when you create the task.
+
+## Q
+
+**Question.** The agent asking you something mid-run. The task shows **Needs answer** until you answer. See [Run tasks](/guides/run-tasks).
+
+## R
+
+**Repository.** A GitHub repository tracked by Bellows. You choose which ones under **Settings → Repositories**. See [Configure your repo](/guides/configure-repo).
+
+**Reviewer.** A separate agent run, declared under `reviewers` in `.bellows.yaml`, that reviews the work and returns a verdict of `clean` or `blockers`. See [Policy and reviewers](/guides/policy-and-reviewers#reviewers).
+
+**Run.** See **Job**.
+
+**Runner.** The container your `.bellows.yaml` describes. The agent works and the gates run there. See [Introduction](/overview/introduction).
+
+## S
+
+**Secret.** An environment value that is write-only after you save it. The opposite is a **variable**, which stays readable. See [Environment variables and secrets](/guides/env-and-secrets).
+
+**Service.** A sidecar container, such as Postgres or Redis, that runs next to the agent so tests have something to talk to. See [Services](/guides/services).
+
+**Setup.** The `setup` command in `.bellows.yaml`. It runs before the agent starts and is retried while it fails. See [Configure your repo](/guides/configure-repo).
+
+**Skill.** A versioned bundle of instructions (`SKILL.md`) the agent can load. Call one from a task with a `/`. See [Skills](/guides/skills).
+
+## T
+
+**Task.** One thread of work: your request and everything that follows it. A task holds one or more jobs. See [Task lifecycle](/guides/task-lifecycle).
+
+## V
+
+**Variable.** An environment value that stays visible after saving. Set at the organization, workspace or repository level. See [Environment variables and secrets](/guides/env-and-secrets).
+
+**Verification.** The panel on a task page that lists each gate with its result, exit code and output. See [Gates](/guides/gates#where-results-show).
+
+## W
+
+**Workspace.** Your personal scope in Settings, shown as **Workspace** (and **My workspace** for executors). Things set there apply only to you. The task's own checkout is also called its workspace. See [Environment variables and secrets](/guides/env-and-secrets).

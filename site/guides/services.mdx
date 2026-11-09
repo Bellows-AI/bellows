@@ -73,7 +73,7 @@ Services start before `setup`, so `setup` can migrate or seed a database. Bellow
 
 A database can take a few seconds to accept connections after its container is running. `setup` is retried while it fails, so a migration step there rides out a slow start:
 
-```yaml .bellows.yaml
+```yaml .bellows.yaml (excerpt)
 environment:
     setup: "go run ./cmd/migrate"
 ```

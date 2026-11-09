@@ -1,0 +1,154 @@
+---
+title: "Docker Compose"
+description: "Run Bellows on one machine with the Docker executor, from clone to first task."
+---
+
+The repository ships a `docker-compose.yml` that starts the board, the driver, Postgres, an S3-compatible object store (RustFS) and a telemetry collector. The driver runs each task as a container on the same Docker daemon (`EXECUTOR=docker`, the default).
+
+<Warning>
+  This is a single-machine stack for trying Bellows and for small private setups. Every published port is bound to `127.0.0.1`, and the driver mounts `/var/run/docker.sock`, which is root on the host. Read [Security](/self-host/security) first. For a team deployment use [Kubernetes](/self-host/kubernetes).
+</Warning>
+
+<Note>
+  The `dashboard` and `driver` services run the repository's working tree (`npm run dev`), bind-mounted into the container. The first start installs dependencies and builds, so it takes a few minutes. Edits to the checkout take effect without a rebuild.
+</Note>
+
+## Before you start
+
+- Docker with the Compose plugin, `make`, and Node.js 22 or newer.
+- A GitHub App and a GitHub OAuth App. Follow [GitHub App](/self-host/github-app). For local use, set the OAuth callback to `<PUBLIC_URL>/api/auth/github/callback` with `PUBLIC_URL=http://127.0.0.1:5173`.
+- A model credential for the agent, such as `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`.
+
+## Steps
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/Bellows-AI/bellows.git
+    cd bellows
+    ```
+  </Step>
+  <Step title="Create the secret-store keys">
+    The board needs encryption keys on every boot. They live in `secrets.env`, never in `.env`.
+    ```bash
+    npm run secrets:init
+    ```
+    It writes a gitignored `secrets.env` with fresh keys (`SECRETS_BACKEND=database`) and leaves an existing file unchanged. Back this file up: without the keys, stored secrets cannot be read.
+  </Step>
+  <Step title="Create .env">
+    ```bash
+    cp .env.example .env
+    openssl rand -hex 32   # use for JOB_BOARD_TOKEN
+    openssl rand -hex 32   # use for SESSION_SECRET
+    ```
+    Set at least these in `.env`:
+
+    | Variable | Value |
+    | --- | --- |
+    | `GITHUB_APP_ID` | Your GitHub App id. |
+    | `GITHUB_APP_PRIVATE_KEY` | The PEM, or its base64 on one line. Or set `GITHUB_APP_PRIVATE_KEY_FILE`. |
+    | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | From the OAuth App. |
+    | `SESSION_SECRET` | At least 32 characters. |
+    | `JOB_BOARD_TOKEN` | At least 32 characters. Compose refuses to start without it. |
+    | `PUBLIC_URL` | `http://127.0.0.1:5173` for a local trial. |
+    | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | The model credential. The driver passes both names to runners by name. |
+
+    Compose reads `.env` on its own. See [Configuration](/self-host/configuration) for every variable.
+  </Step>
+  <Step title="Build the executor images">
+    ```bash
+    make runners
+    ```
+    This builds `claude-executor` and `opencode-executor` on the local daemon. Rebuild after you change anything under `docker/<executor>/`, or the driver keeps using the old image.
+  </Step>
+  <Step title="Start the stack">
+    ```bash
+    docker compose up -d
+    docker compose logs -f dashboard
+    ```
+    Wait until the board answers:
+    ```bash
+    curl http://127.0.0.1:8080/api/health
+    ```
+  </Step>
+  <Step title="Sign in and run a task">
+    Open `http://127.0.0.1:5173`. This is the Vite dev server, which proxies `/api` to the board. Port 8080 serves the API only in this mode. Sign in with GitHub, add an executor profile, then follow [Run tasks](/guides/run-tasks).
+  </Step>
+</Steps>
+
+<Warning>
+  Compose names its network after the project directory, which defaults to the directory name. The driver joins runners to `RUNNER_NETWORK`, which defaults to `factory-ai_default`. If you cloned into a folder named `bellows`, set `RUNNER_NETWORK=bellows_default` in `.env` (or `COMPOSE_PROJECT_NAME=factory-ai`). Without the right network, the agent still works but its telemetry goes nowhere.
+</Warning>
+
+## Services and ports
+
+| Service | Port on 127.0.0.1 | Purpose |
+| --- | --- | --- |
+| `dashboard` | 8080, 5173 | Board and API on 8080. Vite web app on 5173. |
+| `driver` | none | Claims tasks and starts runners. Mounts the Docker socket. |
+| `postgres` | 5432 | PostgreSQL 17. Database `factory_dev`, user and password `factory`. |
+| `s3` | 9000 | RustFS object store. Bucket `factory-artifacts`, created on boot. |
+| `collector` | 4317, 4318 | OpenTelemetry collector. Forwards to the board. |
+| `moto` | 5099 | Optional AWS emulator. Profile `secrets-aws`. |
+| `vault` | 8200 | Optional Vault in dev mode. Profile `secrets-vault`. |
+
+## Authentication for a local trial
+
+`AUTH_MODE` has two values: `github` and `none`.
+
+| Mode | Behaviour | Where it applies |
+| --- | --- | --- |
+| `github` | Members sign in with GitHub. Requires the OAuth keys, `SESSION_SECRET`, `JOB_BOARD_TOKEN` and a `PUBLIC_URL`. | Pinned by `docker-compose.yml`. Editing `.env` cannot change it. |
+| `none` | No sign-in. Every route is open, including `POST /api/jobs`, which runs shell commands. The server refuses a non-loopback `HOST` unless `AUTH_ALLOW_PUBLIC_BIND=1`. | The default of the server itself, for example `npm run dev` on the host. Not available through this Compose file. |
+
+If you want `none`, run the board on the host with `npm run dev` and keep it on `127.0.0.1`. A GitHub App is still required.
+
+## Where data lives
+
+| Data | Location |
+| --- | --- |
+| Tasks, members, settings, telemetry | Volume `postgres-data` (database `factory_dev`). |
+| Artifacts and attachments | Volume `s3-data`. |
+| Task checkouts | Docker volumes named `factory-task-<root>-<n>`, created by the driver. The driver deletes them after a day (`TASK_VOLUME_TTL_MS`), or a week when a checkpoint is incomplete. |
+| Secret-store keys | `secrets.env` in the checkout. |
+| Dependencies | Named `node-modules` volumes. |
+
+`docker compose down` keeps all volumes. `docker compose down -v` deletes them, including the database.
+
+## Logs
+
+```bash
+docker compose logs -f dashboard driver
+docker compose logs --tail 200 postgres
+```
+
+Task logs are on the task page in the web app.
+
+## Upgrade
+
+<Steps>
+  <Step title="Back up">
+    ```bash
+    docker compose exec postgres pg_dump -U factory factory_dev > backup.sql
+    cp secrets.env secrets.env.bak
+    ```
+  </Step>
+  <Step title="Pull and rebuild">
+    ```bash
+    git pull
+    make runners
+    docker compose up -d --build
+    ```
+    The containers run `npm install` on start, then the board applies new database migrations at boot.
+  </Step>
+</Steps>
+
+Releases only add to the schema, so a rollback to the previous version runs against the newer schema.
+
+## Other Make targets
+
+| Target | What it does |
+| --- | --- |
+| `make runners` | Build both executor images (`claude-executor`, `opencode-executor`). |
+| `make baked` | Build the production `runtime` image and run it against the Compose database on port 8081 (`BAKED_PORT`) with `AUTH_MODE=none`. Uses the offline entry, which does not fetch from GitHub. For checking the image, not for running tasks. |
+| `make start`, `make stop`, `make reset`, `make cleanup` | A local Kubernetes (kind) stack. See [Kubernetes](/self-host/kubernetes). |

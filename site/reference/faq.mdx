@@ -1,0 +1,103 @@
+---
+title: "FAQ and troubleshooting"
+description: "Quick answers to common questions, and a symptom-to-fix guide for the failures you are most likely to see."
+---
+
+## FAQ
+
+<AccordionGroup>
+  <Accordion title="Which model does the agent use?">
+    The one set on the [executor profile](/guides/executors) you pick. **Claude Code** takes a Claude model id or alias such as `sonnet`. **OpenCode** takes `provider/model`. If you leave the model on **Use runner default**, the runner's default applies.
+  </Accordion>
+  <Accordion title="Does the agent push to my main branch?">
+    Not by design. The agent works on a task branch and opens or updates a pull request; it is instructed never to push to your default branch, merge or close a pull request. That is an instruction, not a lock: the run's GitHub token is limited to the one repository, not to one branch. For a hard guarantee, turn on branch protection for your default branch in GitHub. See [Task lifecycle](/guides/task-lifecycle).
+  </Accordion>
+  <Accordion title="Does it merge pull requests?">
+    No. You review and merge. **Mark done** closes the task in Bellows only. See [Run tasks](/guides/run-tasks).
+  </Accordion>
+  <Accordion title="Can it work on private repositories?">
+    Yes. Bellows works through its GitHub App, so any repository you gave the App access to can be tracked, public or private. For each run it issues a short-lived token for that one repository. See [Connections](/guides/connections#github).
+  </Accordion>
+  <Accordion title="Can I use my own API key?">
+    You can store a key as a [secret](/guides/env-and-secrets) under **Settings → Workspace** (only your runs) or **Settings → Organization** (everyone). It is injected into the runner's environment. Keep keys out of the executor's configuration JSON.
+  </Accordion>
+  <Accordion title="How long can a run take, and what does it cost?">
+    Each gate has a `timeout` of 1 to 120 minutes (default 10). The driver also caps a whole run. Its default is 2 hours and a self-hosted admin can change it. A run that hits the cap fails as `timed out`. Bellows records token usage per run: see `bellows job activity <id>`. This page cannot state a price.
+  </Accordion>
+  <Accordion title="Which languages and frameworks does it support?">
+    Any. The agent works inside the Docker image you name in `.bellows.yaml`, so use an image with your toolchain, for example `golang:1.25`. See [Configure your repo](/guides/configure-repo).
+  </Accordion>
+  <Accordion title="How do I stop a run?">
+    Click **Stop** on the task, run `bellows job stop <id>`, or call the `stop_task` MCP tool. The task shows <span className="status status-stopping">Stopping</span>, then **Stopped · Needs review**. See [Task lifecycle](/guides/task-lifecycle).
+  </Accordion>
+  <Accordion title="Can the agent read my Jira tickets?">
+    Yes, once you connect Jira under **Settings → Integrations**. Mention the ticket key in the task. Comments need **Allow adding comments**. See [Connections](/guides/connections#jira).
+  </Accordion>
+  <Accordion title="Can my tests use a database?">
+    Yes. Declare a service such as Postgres in `.bellows.yaml` and it starts next to the agent. See [Services](/guides/services).
+  </Accordion>
+  <Accordion title="Can I start tasks from scripts or CI?">
+    Yes, with the [CLI](/cli/install), the [REST API](/api/overview) or the [MCP server](/mcp/connect). Use a personal access token (`fat_`). Organization tokens (`oat_`) are read-only.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecycle](/guides/task-lifecycle#when-a-run-fails).
+
+<AccordionGroup>
+  <Accordion title="My repository is not in the list">
+    **Cause.** The GitHub App has no access to it, or Bellows is not tracking it.
+    **Fix.** Ask a GitHub admin to add the repository to the App installation, then open **Settings → Repositories**. Also check **Choose organizations and repositories**. Through MCP, `list_repos` returning `stale: true` means the list could not refresh, so a missing repo is not proof it is absent. See [Connections](/guides/connections#github).
+  </Accordion>
+  <Accordion title="Task fails with “config error” before the agent starts">
+    **Cause.** `.bellows.yaml` did not parse, or an executor or service setting was refused. The parser is strict: unknown keys and tab characters are errors.
+    **Fix.** Open the failed run. The error names the line and key. Fix it on the default branch, then **Retry**. A retry without a fix fails again. See [Configure your repo](/guides/configure-repo#common-errors).
+  </Accordion>
+  <Accordion title="Setup keeps retrying">
+    **Cause.** The `setup` command is retried while it fails, so a broken command loops.
+    **Fix.** Run the same command locally in the same image, for example `docker run --rm -it golang:1.25 sh`. Also check that any secret it needs is set. See [Configure your repo](/guides/configure-repo#common-errors).
+  </Accordion>
+  <Accordion title="A gate passes on my machine but fails in Bellows">
+    **Cause.** Gates run in your repo's image on the agent's tree, not on your machine. The image tag, installed tools, environment values and services can differ. A gate that times out or is killed for memory is treated as an environment failure.
+    **Fix.** Open **Verification** and read the failing gate's output. Run the command in the same image. Check [variables and secrets](/guides/env-and-secrets) for values your tests need. Raise `timeout` (max 120) or declare a [service](/guides/services). See [Gates](/guides/gates).
+  </Accordion>
+  <Accordion title="A service crashes or never becomes ready">
+    **Cause.** Wrong image or settings, a port declared twice, or a missing required setting. Postgres exits if it has no `user`.
+    **Fix.** Open the **Services** panel on the task. For a dead service it shows the exit code, reason and last log lines. Bellows restarts a dead service and waits up to 5 minutes before failing the task as `service failed`. See [Services](/guides/services#when-a-service-fails).
+  </Accordion>
+  <Accordion title="Executor refused or suspended">
+    **Cause.** You have no usable executor, or the profile is suspended. Suspended profiles are not listed in the task picker and cannot be a default.
+    **Fix.** Under **Settings → Executors**, **Resume** the profile or add one with **Add executor**. Organization profiles are managed by admins. See [Executors](/guides/executors#defaults-and-suspending).
+  </Accordion>
+  <Accordion title="The task says it needs a Jira connection">
+    **Cause.** The task mentions a ticket, but you have not connected Jira, or the connection needs reconnecting.
+    **Fix.** Choose **Connect Jira**, **Use selected connection** or **Continue without it** on the task page. If you turned on comments after the task started, start a new task. See [Connections](/guides/connections#using-jira-on-a-task).
+  </Accordion>
+  <Accordion title="MCP returns 401 or 404">
+    **Cause.** `401` means the client has no valid token, or you disconnected it. `404` on `/api/mcp` means MCP is switched off on that self-hosted server. Old HTTP+SSE clients and plain `http` are refused.
+    **Fix.** Authenticate again from the client. Check **Account → Connected apps**. Use the `https` endpoint and a Streamable HTTP client. See [Connect an MCP client](/mcp/connect).
+  </Accordion>
+  <Accordion title="CLI exits with a non-zero code">
+    **Cause and fix.** The code tells you which.
+
+    | Code | Meaning | What to do |
+    | --- | --- | --- |
+    | `1` | The server refused the request | Read the message. A `403` often means an `oat_` token tried a write |
+    | `2` | Usage or configuration error | Check the URL, token and flags with `bellows auth status` |
+    | `3` | A wait ran out of budget | Wait again. The task is untouched |
+    | `4` | The run failed or died | Open the run. See [Task lifecycle](/guides/task-lifecycle) |
+    | `5` | The run was stopped | Follow up or retry |
+    | `7` | Server unreachable | Check the URL and network |
+
+    Full list: [Command reference](/cli/commands#exit-codes).
+  </Accordion>
+  <Accordion title="No pull request was opened, or publishing failed">
+    **Cause.** One of three. The run failed with `publish failed` (a conflict with the base branch or a refused push). Or your `policy` blocked it as `evidence required`: nothing is pushed until gates pass or a review approves. Or the run itself failed before it produced a change.
+    **Fix.** Read the reason on the run. For `publish failed`, resolve the conflict, then follow up or retry. For `evidence required`, see the reason table in [Policy and reviewers](/guides/policy-and-reviewers#when-policy-blocks). Without a policy, a task whose gate repair rounds ran out still ships as a draft pull request.
+  </Accordion>
+  <Accordion title="An attachment was rejected">
+    **Cause.** The file is over 20 MiB, has an unsupported type, or its bytes do not match its extension.
+    **Fix.** Use a PNG, JPEG, WebP, PDF, DOCX, TXT, MD or CSV file within the limits. See [Attachments](/guides/attachments#allowed-types-and-limits).
+  </Accordion>
+</AccordionGroup>
