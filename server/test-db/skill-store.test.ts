@@ -150,6 +150,23 @@ describe.skipIf(!enabled)('the skill store', () => {
         expect(await versionRows(skill.id)).toHaveLength(2);
     });
 
+    it('refuses an expectedVersionId that is no longer current and writes no row', async () => {
+        const store = storeOf();
+        const skill = await created(store, null, 'guarded', 'v1');
+        const first = skill.current;
+        const second = await store.addVersion(null, skill.id, md('guarded', 'v2'));
+        expect(second.result).toBe('added');
+
+        const stale = await store.addVersion(null, skill.id, md('guarded', 'v3'), { expectedVersionId: first.id });
+        expect(stale).toEqual({ result: 'stale' });
+        expect(await versionRows(skill.id)).toHaveLength(2);
+
+        const current = (await store.get(null, skill.id))!.current;
+        const fresh = await store.addVersion(null, skill.id, md('guarded', 'v3'), { expectedVersionId: current.id });
+        expect(fresh.result).toBe('added');
+        expect(await versionRows(skill.id)).toHaveLength(3);
+    });
+
     it('leaves no skill or version row when the object store fails, and a retry then succeeds', async () => {
         const failing = storeOf(ORG, { put: () => Promise.reject(new Error('node reclaimed')) });
         const bundle = md('crashy');

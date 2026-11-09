@@ -14,7 +14,9 @@ import type { OrgRegistry } from '../orgs.js';
 import {
     bundleFromSkillMd,
     bundleFromZip,
+    bundleReplacingSkillMd,
     filesOfTar,
+    type BundleFile,
     SkillBundleError,
     type SkillBundle,
 } from '../skills/skill-bundle.js';
@@ -177,26 +179,40 @@ async function handleList(orgs: OrgRegistry, door: Door, request: FastifyRequest
     return reply.code(HTTP_OK).send({ skills: listed.value.map(wireOf) });
 }
 
+/** The files of a skill's current version, or null once the refusal is sent (404 gone row, 410, 503). */
+async function readCurrentFiles(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    context: Context,
+    skill: SkillRecord
+): Promise<BundleFile[] | null> {
+    const read = await attempt(request, reply, () =>
+        context.store.readVersion(skill.current.id, { owner: context.owner })
+    );
+    if (!read) return null;
+    if (read.value === null) {
+        notFound(reply);
+        return null;
+    }
+    try {
+        return filesOfTar(read.value.body);
+    } catch (error) {
+        storeFailure(request, reply, new SkillIntegrityError((error as Error).message));
+        return null;
+    }
+}
+
 async function handleGet(orgs: OrgRegistry, door: Door, request: FastifyRequest, reply: FastifyReply) {
     const context = await contextOf(orgs, request, reply, { door, write: false });
     if (!context) return reply;
     const id = idOf(request);
     if (id === null) return notFound(reply);
-    const found = await attempt(request, reply, async () => {
-        const skill = await context.store.get(context.owner, id);
-        if (!skill) return null;
-        const version = await context.store.readVersion(skill.current.id, { owner: context.owner });
-        return version ? { skill, body: version.body } : null;
-    });
+    const found = await attempt(request, reply, () => context.store.get(context.owner, id));
     if (!found) return reply;
     if (found.value === null) return notFound(reply);
-    const { skill, body } = found.value;
-    let files: { path: string; bytes: Buffer }[];
-    try {
-        files = filesOfTar(body);
-    } catch (error) {
-        return storeFailure(request, reply, new SkillIntegrityError((error as Error).message));
-    }
+    const skill = found.value;
+    const files = await readCurrentFiles(request, reply, context, skill);
+    if (!files) return reply;
     const main = files.find((file) => file.path === 'SKILL.md');
     return reply.code(HTTP_OK).send({
         skill: wireOf(skill),
@@ -226,6 +242,50 @@ async function handleCreate(orgs: OrgRegistry, door: Door, request: FastifyReque
         .send({ error: `"${name}" cannot be a skill name`, code: ERROR_CODES.SKILL_BUNDLE_INVALID, reason });
 }
 
+const staleVersion = (reply: FastifyReply) =>
+    bad(
+        reply,
+        ERROR_CODES.SKILL_VERSION_STALE,
+        'The skill changed since it was read; reload it and edit again',
+        HTTP_CONFLICT
+    );
+
+/**
+ * The bundle of an inline (JSON) edit: the current version's files with SKILL.md replaced, so a helper file survives. The
+ * edit names the version it was made on; any other current version is stale. Null once the refusal is sent.
+ */
+async function editBundleOf(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    context: Context,
+    skill: SkillRecord
+): Promise<{ name: string; bundle: SkillBundle } | null> {
+    const { skillMd, baseVersionId } = jsonBody(request.body);
+    if (typeof skillMd !== 'string') {
+        bad(reply, ERROR_CODES.BAD_BODY, 'skillMd must be a string');
+        return null;
+    }
+    if (typeof baseVersionId !== 'string' || !UUID.test(baseVersionId)) {
+        bad(reply, ERROR_CODES.BAD_BODY, 'baseVersionId must be the uuid of the version the edit was made on');
+        return null;
+    }
+    if (baseVersionId !== skill.current.id) {
+        staleVersion(reply);
+        return null;
+    }
+    const files = await readCurrentFiles(request, reply, context, skill);
+    if (!files) return null;
+    try {
+        return { name: skill.name, bundle: bundleReplacingSkillMd(skill.name, files, skillMd) };
+    } catch (error) {
+        if (error instanceof SkillBundleError) {
+            bundleRefusal(reply, error);
+            return null;
+        }
+        throw error;
+    }
+}
+
 async function handleAddVersion(orgs: OrgRegistry, door: Door, request: FastifyRequest, reply: FastifyReply) {
     const context = await contextOf(orgs, request, reply, { door, write: true });
     if (!context) return reply;
@@ -234,14 +294,18 @@ async function handleAddVersion(orgs: OrgRegistry, door: Door, request: FastifyR
     const existing = await attempt(request, reply, () => context.store.get(context.owner, id));
     if (!existing) return reply;
     if (existing.value === null) return notFound(reply);
-    const parsed = bundleOf(request, reply, existing.value.name);
+    const skill = existing.value;
+    const isZip = request.headers[CONTENT_TYPE_HEADER]?.startsWith(ZIP_CONTENT_TYPE) === true;
+    const parsed = isZip ? bundleOf(request, reply, skill.name) : await editBundleOf(request, reply, context, skill);
     if (!parsed) return reply;
     const { bundle } = parsed;
-    const added = await attempt(request, reply, () => context.store.addVersion(context.owner, id, bundle));
+    const options = isZip ? undefined : { expectedVersionId: skill.current.id };
+    const added = await attempt(request, reply, () => context.store.addVersion(context.owner, id, bundle, options));
     if (!added) return reply;
-    if (added.value.result === 'missing') return notFound(reply);
-    const status = added.value.result === 'added' ? HTTP_CREATED : HTTP_OK;
-    return reply.code(status).send({ skill: wireOf(added.value.skill) });
+    const result = added.value;
+    if (result.result === 'missing') return notFound(reply);
+    if (result.result === 'stale') return staleVersion(reply);
+    return reply.code(result.result === 'added' ? HTTP_CREATED : HTTP_OK).send({ skill: wireOf(result.skill) });
 }
 
 async function handleEnabled(orgs: OrgRegistry, door: Door, request: FastifyRequest, reply: FastifyReply) {

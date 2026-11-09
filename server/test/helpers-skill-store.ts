@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isReservedSkillName, SKILL_NAME, SKILL_NAME_LIMIT } from '@factory-ai/core';
 import {
     SkillGoneError,
+    SkillUnavailableError,
     type SkillOwner,
     type SkillRecord,
     type SkillStore,
@@ -14,6 +15,8 @@ export interface MemorySkillStore extends SkillStore {
     loseObjects(): void;
     /** Makes every call reject, as an unreachable database would. */
     breakAll(): void;
+    /** Makes `readVersion` throw `SkillUnavailableError` while every other call keeps working. */
+    breakVersionReads(broken?: boolean): void;
 }
 
 interface Row {
@@ -35,6 +38,7 @@ export function memorySkillStore(): MemorySkillStore {
     const requirements = new Map<string, SkillBundle['requires']>();
     let lost = false;
     let broken = false;
+    let versionReadsBroken = false;
     const check = () => {
         if (broken) throw new Error('database is down');
     };
@@ -75,6 +79,9 @@ export function memorySkillStore(): MemorySkillStore {
         breakAll: () => {
             broken = true;
         },
+        breakVersionReads: (isBroken = true) => {
+            versionReadsBroken = isBroken;
+        },
         async create(owner, { name, bundle, createdBy }) {
             check();
             if (isReservedSkillName(name)) return { result: 'reserved' };
@@ -94,10 +101,13 @@ export function memorySkillStore(): MemorySkillStore {
             rows.set(row.id, row);
             return { result: 'created', skill: recordOf(row) };
         },
-        async addVersion(owner, id, bundle) {
+        async addVersion(owner, id, bundle, options) {
             check();
             const row = owned(owner, id);
             if (!row) return { result: 'missing' };
+            if (options?.expectedVersionId !== undefined && options.expectedVersionId !== row.current) {
+                return { result: 'stale' };
+            }
             const same = row.versions.find((v) => v.sha256 === bundle.sha256);
             if (same) {
                 requirements.set(same.id, bundle.requires);
@@ -173,6 +183,7 @@ export function memorySkillStore(): MemorySkillStore {
         },
         async readVersion(versionId, access) {
             check();
+            if (versionReadsBroken) throw new SkillUnavailableError('the stored object could not be read');
             const row = [...rows.values()].find((r) => r.versions.some((v) => v.id === versionId));
             if (!row) return null;
             if (access !== 'any' && row.userId !== access.owner) return null;

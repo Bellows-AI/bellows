@@ -128,6 +128,12 @@ export function bundleFromSkillMd(name: string, text: string): SkillBundle {
     return finish(name, [{ path: SKILL_MD, bytes: Buffer.from(text, 'utf8') }]);
 }
 
+/** The current files with SKILL.md replaced by `text`; every other file is kept as it was. */
+export function bundleReplacingSkillMd(name: string, files: BundleFile[], text: string): SkillBundle {
+    const main = { path: SKILL_MD, bytes: Buffer.from(text, 'utf8') };
+    return finish(name, [...files.filter((file) => file.path !== SKILL_MD), main]);
+}
+
 export function bundleFromZip(name: string, bytes: Buffer): SkillBundle {
     return finish(name, readZip(bytes));
 }
