@@ -71,6 +71,26 @@
                     "guides/env-and-secrets",
                     "guides/connections"
                 ]
+            },
+            {
+                "group": "CLI",
+                "pages": [
+                    "cli/install",
+                    "cli/commands"
+                ]
+            },
+            {
+                "group": "MCP",
+                "pages": [
+                    "mcp/connect",
+                    "mcp/tools"
+                ]
+            },
+            {
+                "group": "API",
+                "pages": [
+                    "api/overview"
+                ]
             }
         ]
     },
