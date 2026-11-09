@@ -1,0 +1,42 @@
+---
+title: "Core concepts"
+description: "The words you'll meet in the app, the CLI and these docs."
+---
+
+## Organization
+
+One Bellows GitHub App installation. It owns the list of repos and keeps its data apart from every other organization.
+
+## Task and job
+
+A **task** is one thread of work: your request and everything that follows it. Each attempt in the thread is a **job**. Follow-ups, retries and edits all add jobs to the same task.
+
+<div className="status-flow">
+  <span className="status status-queued">Queued</span> → <span className="status status-running">Running</span> → <span className="status status-review">Waiting for review</span> → <span className="status status-done">Done</span>
+</div>
+
+Along the way:
+
+- <span className="status status-question">Needs answer</span> the agent asked you something
+- <span className="status status-stopping">Stopping</span> you pressed stop
+- <span className="status status-failed">Failed · Needs review</span> a gate, timeout or config error
+
+## Gate
+
+A check command from `.bellows.yaml`, such as build, test or lint. Gates run at the end of every job, and the job succeeds only if all of them pass. An *on-demand* gate is one the agent may run while it works.
+
+## Executor
+
+The coding agent that does the work. Bellows ships **Claude Code** and **OpenCode**, and you can bring a **custom executor**. Save your settings as an executor profile, for yourself or for the whole organization.
+
+## Skill
+
+A versioned bundle of instructions (`SKILL.md`) the agent can load. Bellows ships built-in skills for fixing, reviewing and publishing. Your organization, workspace or repo can add its own.
+
+## Connection
+
+A stored third-party credential, such as Jira, that you choose to attach to a task so the agent can use it.
+
+## Question and follow-up
+
+A **question** is the agent asking you something mid-run. A **follow-up** is you asking for more after a run ends. Both continue the same task.
