@@ -98,6 +98,9 @@ describe('deliverSkills', () => {
                             PATH: process.env.PATH ?? '',
                             ...step.env,
                             TARGET_DIR: step.env.TARGET_DIR!.replace('/task', root),
+                            ...(step.env.CHECKOUT_DIR
+                                ? { CHECKOUT_DIR: step.env.CHECKOUT_DIR.replace('/task', root) }
+                                : {}),
                             RESTORE_URL: base,
                             RESTORE_TOKEN: TOKEN,
                         },
@@ -162,6 +165,19 @@ describe('deliverSkills', () => {
         expect(readFileSync(join(skillsDir(), 'org-style', 'scripts', 'x.sh'), 'utf8')).toBe('x\n');
         expect(existsSync(join(skillsDir(), 'mine', 'SKILL.md'))).toBe(true);
         expect(reads.sort()).toEqual([V1, V2]);
+    });
+
+    it('leaves a pinned org skill to the checkout that holds it, and still installs a workspace skill (BEL-286)', async () => {
+        mkdirSync(join(root, 'widgets', '.claude', 'skills', 'org-style'), { recursive: true });
+        writeFileSync(join(root, 'widgets', '.claude', 'skills', 'org-style', 'SKILL.md'), 'repo copy\n');
+        const { tar, pin: mine } = skillOf('mine', V2, undefined, 'workspace');
+        board.set(V2, tar);
+        const pin = [hold('org-style', V1), mine];
+        expect(await deliver({ skillPin: pin, repo: 'acme/widgets' })).toEqual({ ok: true, reason: null });
+        expect(steps[0]?.env).toMatchObject({ CHECKOUT_DIR: '/task/widgets' });
+        expect(existsSync(join(skillsDir(), 'org-style'))).toBe(false);
+        expect(existsSync(join(skillsDir(), 'mine', 'SKILL.md'))).toBe(true);
+        expect(reads).toEqual([V2]);
     });
 
     it('submits no step for a row that carries no pin field at all', async () => {

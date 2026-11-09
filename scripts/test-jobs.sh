@@ -4072,6 +4072,8 @@ ps_a=''
 ps_b=''
 
 # Text that appears only in one built-in's description, so the scripted model can tell whether the CLI offered it.
+PS_CLASH_REPO="${SMOKE_REPO%%/*}/clash" # a second origin whose checkout ships a skill named like the pinned org skill
+PS_REPO_SENTINEL=LANE_PIN_REPO_SENTINEL_5d2c
 PS_JIRA_DESC='Jira work items through the jira helper' # no comma: --skill-sentinel splits its value on commas
 PS_FIX_DESC='Optional playbook for fixing a backend bug'
 
@@ -4135,9 +4137,9 @@ ps_point() { # ps_point <claude|opencode> <member token> <port> -> that member's
     fi
 }
 
-ps_job() { # ps_job <claude|opencode> <member token> -> the member's new task id
+ps_job() { # ps_job <claude|opencode> <member token> [repo] -> the member's new task id
     local payload id
-    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: "list your skills", executor: process.argv[1], repo: process.argv[2] }))' "$1" "$SMOKE_REPO")"
+    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: "list your skills", executor: process.argv[1], repo: process.argv[2] }))' "$1" "${3:-$SMOKE_REPO}")"
     id="$(field "$(body "$(AUTH_HEADER="Bearer $2" api POST /api/jobs "$payload")")" id)"
     printf '%s\n' "$id" >>"$work/created-jobs"
     printf '%s' "$id"
@@ -4166,6 +4168,22 @@ await sql.end();
 process.exit(made.ok ? 0 : 1);
 ' >&2 || return 1
     printf '%s' "$token"
+}
+
+ps_clash_repo() { # a bare origin <owner>/clash whose main ships .claude/skills/$PS_ORG_SKILL, and the org's row for it
+    docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+        set -e
+        git init -q --bare -b main "/origins/$1.git"
+        git init -q -b main /tmp/seed
+        mkdir -p "/tmp/seed/.claude/skills/$2"
+        printf "%s\n" "---" "name: $2" "description: Lane fixture skill $3 - use it never." "---" "Nothing to do." >"/tmp/seed/.claude/skills/$2/SKILL.md"
+        git -C /tmp/seed add -A
+        git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q -m "repo skill"
+        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$PS_CLASH_REPO" "$PS_ORG_SKILL" "$PS_REPO_SENTINEL" || return 1
+    compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -v "org=$PS_ORG" -v "repo=$PS_CLASH_REPO" -f - >/dev/null <<'SQL'
+insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+values (:'org', 'claude-code', 'test-jobs-pinned-clash', :'repo', 'main', now(), now());
+SQL
 }
 
 ps_get() { # ps_get <url> -> the body
@@ -4265,6 +4283,21 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     expect_contains "$cli: a task made after the switch is back on succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
     ps_expect "$cli: the built-in is offered again after the switch is back on" "$(ps_seen "$(ps_get "http://127.0.0.1:$ps_port/skills-seen")" "$PS_FIX_DESC")" yes
     lane_endpoint_stop "$ps_pid"
+
+    # BEL-286: a checkout that ships a skill named like a pinned org skill keeps its own copy, and the org copy is not
+    # installed at all (the driver's install step reads the checkout).
+    ps_endpoint "pins-$cli-clash" "$PS_ORG_SENTINEL,$PS_REPO_SENTINEL" "$PS_DIR/$PS_ORG_SKILL/ref/helper.txt"
+    ps_point "$cli" "$ps_b" "$ps_port"
+    id="$(ps_job "$cli" "$ps_b" "$PS_CLASH_REPO")"
+    expect_contains "$cli: a task whose repo ships the org skill's name succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
+    seen="$(ps_get "http://127.0.0.1:$ps_port/skills-seen")"
+    ps_expect "$cli: the repo's own copy is offered" "$(ps_seen "$seen" "$PS_REPO_SENTINEL")" yes
+    ps_expect "$cli: the pinned org copy is not offered beside it" "$(ps_seen "$seen" "$PS_ORG_SENTINEL")" no
+    case "$(ps_probe "$(ps_get "http://127.0.0.1:$ps_port/tool-results")" 1)" in
+        open) bad "$cli: the pinned org copy is not installed" "its helper file opens" ;;
+        *) ok "$cli: the pinned org copy is not installed" ;;
+    esac
+    lane_endpoint_stop "$ps_pid"
     stop_driver
 }
 
@@ -4313,6 +4346,7 @@ pinned_skills_lane() {
     expect_field 'pinned skills: a member cannot publish an org skill' "$out" status 403
     AUTH_HEADER="Bearer $ps_b" expect_status "pinned skills: member B cannot read A's workspace skill" 404 GET "/api/workspace/skills/$ps_ws_id"
 
+    ps_clash_repo && ok 'pinned skills: a second origin ships a repo skill named like the org skill' || bad 'pinned skills: a second origin ships a repo skill named like the org skill' 'could not seed it'
     ps_cli_lane claude
     ps_cli_lane opencode
 }

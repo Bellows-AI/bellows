@@ -2,7 +2,7 @@ import type { BoardJob } from './board/board.js';
 import { skillInstallScript } from './container-scripts.js';
 import { SKILLS_DELIVERY } from './input-control.js';
 import { parseLastJsonLine } from './json-parse.js';
-import type { SyncResult } from './publish/publish.js';
+import { checkoutDir, type SyncResult } from './publish/publish.js';
 import { detailOf, stepRequest, submitStep, type StepHost } from './supervised-steps.js';
 import { deliverTaskInputs, hasInputs, INPUTS_DEADLINE_MS, InputsUnconfirmed } from './task-inputs.js';
 import { SKILLS_DIR } from './task-volume.js';
@@ -24,6 +24,8 @@ interface SkillsVerdict {
     ok: boolean;
     reason?: string;
     kind?: string;
+    /** The pinned org skills the checkout holds itself and so were not installed (the repo's copy wins). */
+    skipped?: string[];
 }
 
 /**
@@ -42,6 +44,7 @@ export async function deliverSkills(
     if (job.skillHiddenUnreadable !== undefined) throw new InputsUnconfirmed(job.skillHiddenUnreadable);
     if (job.skillPin === undefined) return { ok: true, reason: null };
     const pin = job.skillPin;
+    const checkout = checkoutDir(job);
     const result = await submitStep(
         host,
         job,
@@ -53,6 +56,8 @@ export async function deliverSkills(
                 PIN: JSON.stringify(pin),
                 INPUT_DELIVERY: SKILLS_DELIVERY,
                 STAGING_SEQ: String(job.claimSeq),
+                // A pinned org skill the checkout holds is not installed: the repo's copy wins.
+                ...(checkout ? { CHECKOUT_DIR: checkout } : {}),
                 // The supervisor lays its control endpoint and token over this one step only.
                 INPUT_FEED: '1',
             },

@@ -38,6 +38,7 @@ interface Verdict {
     skills?: number;
     fetched?: number;
     pruned?: number;
+    skipped?: string[];
 }
 type Pin = ReturnType<typeof skillOf>['pin'];
 
@@ -476,5 +477,83 @@ describe('the skill install script', () => {
         chmodSync(target, 0o755);
         const next = publish('other', V2);
         expect((await install([a, next])).ok).toBe(true);
+    });
+
+    describe('a checkout that holds the skill itself (BEL-286: the repo beats a pinned org skill)', () => {
+        let checkout = '';
+        const isRoot = process.getuid?.() === 0;
+        const holds = (dir: string, name: string) => {
+            mkdirSync(join(checkout, dir, name), { recursive: true });
+            writeFileSync(join(checkout, dir, name, 'SKILL.md'), `---\nname: ${name}\n---\nrepo\n`);
+        };
+        beforeEach(() => {
+            checkout = join(root, 'checkout');
+            mkdirSync(checkout);
+        });
+
+        it.each(['.claude/skills', '.opencode/skills', '.opencode/skill', '.agents/skills'])(
+            'a pinned org skill held under %s is not installed and is reported skipped',
+            async (dir) => {
+                holds(dir, 'org-style');
+                const a = publish('org-style', V1);
+                const b = publish('other', V2);
+                expect(await install([a, b], { CHECKOUT_DIR: checkout })).toEqual({
+                    ok: true,
+                    skills: 1,
+                    fetched: 1,
+                    pruned: 0,
+                    skipped: ['org-style'],
+                });
+                expect(existsSync(join(target, 'org-style'))).toBe(false);
+                expect(existsSync(join(target, 'other', 'SKILL.md'))).toBe(true);
+                expect(asked).toEqual([V2]);
+                expect(ledger().owned).toEqual({ other: b.sha256 });
+            }
+        );
+
+        it('prunes an org skill an earlier delivery installed once the checkout holds it', async () => {
+            const a = publish('org-style', V1);
+            await install([a], { CHECKOUT_DIR: checkout });
+            expect(existsSync(join(target, 'org-style', 'SKILL.md'))).toBe(true);
+            holds('.claude/skills', 'org-style');
+            expect(await install([a], { CHECKOUT_DIR: checkout })).toMatchObject({ ok: true, pruned: 1 });
+            expect(existsSync(join(target, 'org-style'))).toBe(false);
+        });
+
+        it('a pinned workspace skill the checkout holds is still installed', async () => {
+            holds('.claude/skills', 'mine');
+            const { tar, pin } = skillOf('mine', V1, undefined, 'workspace');
+            bodies.set(V1, tar);
+            expect(await install([pin], { CHECKOUT_DIR: checkout })).toEqual({
+                ok: true,
+                skills: 1,
+                fetched: 1,
+                pruned: 0,
+            });
+            expect(existsSync(join(target, 'mine', 'SKILL.md'))).toBe(true);
+        });
+
+        it('a checkout that does not hold the name leaves the org skill installed', async () => {
+            holds('.claude/skills', 'unrelated');
+            const a = publish('org-style', V1);
+            expect(await install([a], { CHECKOUT_DIR: checkout })).toEqual({
+                ok: true,
+                skills: 1,
+                fetched: 1,
+                pruned: 0,
+            });
+        });
+
+        it.skipIf(isRoot)('an EACCES on the checkout read is inconclusive (transient), not "not held"', async () => {
+            holds('.claude/skills', 'unrelated');
+            chmodSync(join(checkout, '.claude', 'skills'), 0o000);
+            try {
+                const a = publish('org-style', V1);
+                expect(await install([a], { CHECKOUT_DIR: checkout })).toMatchObject({ ok: false, transient: true });
+                expect(existsSync(join(target, 'org-style'))).toBe(false);
+            } finally {
+                chmodSync(join(checkout, '.claude', 'skills'), 0o755);
+            }
+        });
     });
 });
