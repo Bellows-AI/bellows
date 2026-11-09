@@ -32,7 +32,7 @@ new limit is one line.
 | `server/src/workspace/bellows*.ts` | `reference/bellows-yaml`, `guides/configure-repo`, `guides/gates`, `guides/services`, `guides/policy-and-reviewers` |
 | Limits (`MAX_*`, `*_LIMIT`, `docs/limits.md`) | `reference/limits` and the guide that quotes the value |
 | Failure kinds, job states | `guides/task-lifecycle`, `reference/faq` |
-| Executors, skills, connections, env/secrets, attachments, tokens | the matching `guides/*` page, `api/overview` for tokens |
+| Executors, skills, connections, env/secrets, attachments, tokens | the matching `guides/*` page, `cli/install` for tokens |
 | `server/src/config.ts`, `driver/src/config.ts`, `.env.example`, `charts/` | `self-host/configuration`, `self-host/kubernetes`, `self-host/docker-compose` |
 | GitHub App / Jira app setup, auth modes, runner isolation | `self-host/github-app`, `self-host/jira-app`, `self-host/security` |
 

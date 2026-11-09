@@ -97,12 +97,6 @@
                             "mcp/connect",
                             "mcp/tools"
                         ]
-                    },
-                    {
-                        "group": "API",
-                        "pages": [
-                            "api/overview"
-                        ]
                     }
                 ]
             },

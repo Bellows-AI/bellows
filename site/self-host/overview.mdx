@@ -9,7 +9,7 @@ Bellows is open source. You can run the whole platform on your own machine or cl
 
 | Component | What it does | Required |
 | --- | --- | --- |
-| **Web app and board (server)** | One Node process (`server/`). Serves the web app, the REST API, the [MCP endpoint](/mcp/tools) when enabled, and the job board. Keeps tasks, members, settings and telemetry in Postgres. | Yes |
+| **Web app and board (server)** | One Node process (`server/`). Serves the web app and its API, the [MCP endpoint](/mcp/tools) when enabled, and the job board. Keeps tasks, members, settings and telemetry in Postgres. | Yes |
 | **Driver** | Polls the board for queued tasks, claims them with a lease, and starts one runner per task. It is the only process that starts containers or pods. | Yes |
 | **Runners** | A container (Docker) or a Job pod (Kubernetes) per task. The agent works on a copy of your repository on a task volume. | Yes |
 | **Executor images** | The images a runner starts from: `claude-executor` for Claude Code and `opencode-executor` for OpenCode. You build or pull them yourself. | Yes |
