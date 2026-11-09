@@ -27,7 +27,7 @@ A new page is an `.mdx` file plus an entry in `docs.json` → `navigation`.
 
 ## Screenshots
 
-Light theme, captured from the app. These files are placeholders until replaced at the same path and size:
+Light theme, captured from the web app with fictional data (org `acme`, repo `acme/notes-api`, users `alex-doe` and `sam-roe`). Keep the same path and size when you replace one:
 
 | File                                   | Size       | Shows                                                         |
 | -------------------------------------- | ---------- | ------------------------------------------------------------- |

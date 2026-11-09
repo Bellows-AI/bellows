@@ -1,5 +1,7 @@
 # Bellows
 
+User documentation: <https://bellows.mintlify.app>.
+
 **Product teams drive change. Engineers define the guardrails. Bellows does the work.**
 
 Bellows lets engineering teams encode how AI-assisted changes should happen: repository workflows, checks and human review. Product teams can initiate scoped changes while engineers retain architecture and release control. The planned MCP chat bridge is intended to be open source, not restricted to Cloud.
