@@ -365,6 +365,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/repos/:owner/:name/branches', 'user'],
     ['/api/repos/:owner/:name/skills', 'user'],
     ['/api/skills', 'user'],
+    ['/api/skills/builtin/:name', 'user'],
     // Access-token management: a person's settings act, so session cookie or personal bearer —
     // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
     ['/api/tokens', 'user'],

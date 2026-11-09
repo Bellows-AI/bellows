@@ -10,9 +10,11 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { abortOnClose, effectiveCatalog, type EffectiveCatalog, storedOf } from '../skill-catalog.js';
+import { type BuiltinSkillView, readBuiltinSkill } from '../skills.js';
 import { bad, checkReposVisible } from './helpers.js';
 
 const HTTP_UNAVAILABLE = 503;
+const HTTP_NOT_FOUND = 404;
 
 /** Org and workspace skills that could not be read: a 503, never a list that silently lacks them. */
 const storedUnavailable = (reply: FastifyReply, catalog: EffectiveCatalog) =>
@@ -106,7 +108,14 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
  * "the repo has no skills".
  */
 export const skillRoutes =
-    (catalog: () => Skill[], orgs: OrgRegistry): FastifyPluginAsync =>
+    (
+        catalog: () => Skill[],
+        orgs: OrgRegistry,
+        {
+            version,
+            readBuiltin = readBuiltinSkill,
+        }: { version: string; readBuiltin?: (name: string) => BuiltinSkillView }
+    ): FastifyPluginAsync =>
     async (app) => {
         const builtin = catalog();
         await effectiveCatalog({ builtin, read: undefined, repo: null, branch: null });
@@ -126,6 +135,22 @@ export const skillRoutes =
                 .filter((skill) => result.switchedOff.includes(skill.name))
                 .map((skill) => ({ ...wireOf({ ...skill, source: 'builtin' }), switchedOff: true }));
             return { skills: [...result.entries.map(wireOf), ...off] };
+        });
+
+        // A built-in's files and the release that ships them. 404 only for a name the catalog lacks,
+        // decided before any fs call; a failed read is 503, never "no such skill".
+        app.get<{ Params: { name: string } }>('/api/skills/builtin/:name', async (request, reply) => {
+            const skill = builtin.find((entry) => entry.name === request.params.name);
+            if (!skill) return bad(reply, ERROR_CODES.SKILL_NOT_FOUND, 'No such built-in skill', HTTP_NOT_FOUND);
+            let view: BuiltinSkillView;
+            try {
+                view = readBuiltin(skill.name);
+            } catch (err) {
+                request.log.warn({ err }, 'built-in skill read failed');
+                return bad(reply, ERROR_CODES.UNAVAILABLE, 'The built-in skill could not be read', HTTP_UNAVAILABLE);
+            }
+            const { source: _source, ...wire } = wireOf({ ...skill, source: 'builtin' });
+            return { ...wire, ...view, version };
         });
 
         app.get<RepoSkillsRoute>('/api/repos/:owner/:name/skills', repoSkillsHandler(builtin, orgs));

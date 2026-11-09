@@ -106,7 +106,8 @@ function zip(entries: { name: string; data: string }[]): Buffer {
 
 async function boot(
     skills: MemorySkillStore = memorySkillStore(),
-    extra: Pick<NonNullable<Parameters<typeof staticRegistry>[0]>, 'repos' | 'repoSkills'> = {}
+    extra: Pick<NonNullable<Parameters<typeof staticRegistry>[0]>, 'repos' | 'repoSkills'> = {},
+    version?: string
 ) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
@@ -117,6 +118,7 @@ async function boot(
         config,
         orgs: staticRegistry({ config, skills, telemetry: stubTelemetryClient(), ...extra }),
         auth,
+        ...(version === undefined ? {} : { version }),
     });
     track(instance);
     const as = async (caller: typeof admin) => ({ cookie: await signedIn(auth, caller) });
@@ -560,6 +562,30 @@ describe('/api/skills catalog', () => {
         const names = skills.map((entry: { name: string }) => entry.name);
         expect(names).not.toContain('off-skill');
         expect(names).not.toContain('gone-skill');
+    });
+});
+
+describe('built-in view', () => {
+    const view = (booted: Booted, name: string) =>
+        booted.instance.inject({ method: 'GET', url: `/api/skills/builtin/${name}`, headers: booted.member });
+
+    it('returns SKILL.md, files and the board version', async () => {
+        const booted = await boot(memorySkillStore(), {}, '9.9.9');
+        const response = await view(booted, 'factory-jira');
+        expect(response.statusCode).toBe(HTTP_OK);
+        const body = response.json();
+        expect(body).toMatchObject({ name: 'factory-jira', version: '9.9.9' });
+        expect(body.skillMd).toContain('name: factory-jira');
+        expect(body.requires.connections[0]).toMatchObject({ name: 'jira' });
+        expect(body.files.map((file: { path: string }) => file.path)).toEqual(['SKILL.md', 'jira.cjs']);
+        expect(body.files[0].size).toBeGreaterThan(0);
+    });
+
+    it('an unknown name is 404 SKILL_NOT_FOUND', async () => {
+        const booted = await boot();
+        const response = await view(booted, 'no-such-builtin');
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(response.json().code).toBe('SKILL_NOT_FOUND');
     });
 });
 
