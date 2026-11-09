@@ -1,0 +1,52 @@
+---
+title: "Introduction"
+description: "Product teams drive change. Engineers define the guardrails. Bellows does the work."
+---
+
+Bellows runs a coding agent against your repository on a cluster. Every run happens inside a container you define. It must pass the checks you define. Its result is a pull request you review.
+
+## Ways to use Bellows
+
+<CardGroup cols={3}>
+  <Card title="Web app" icon="window" href="/guides/run-tasks">
+    Write tasks, answer the agent's questions and review results in the browser.
+  </Card>
+  <Card title="CLI" icon="terminal">
+    `bellows job create`: script tasks from your terminal or CI.
+  </Card>
+  <Card title="MCP server" icon="plug">
+    Drive Bellows from Claude Code, Claude.ai or any MCP client.
+  </Card>
+</CardGroup>
+
+## Cloud or self-hosted
+
+|          | Bellows Cloud                   | Self-hosted                                  |
+| -------- | ------------------------------- | -------------------------------------------- |
+| Setup    | Sign in with GitHub, pick repos | Postgres, a GitHub App, Docker or Kubernetes |
+| Runners  | Managed                         | Your cluster (Helm chart)                    |
+| Best for | Trying Bellows, most teams      | Strict data residency, custom infra          |
+
+<Note>
+  These docs follow the Cloud path. A self-hosting guide is coming.
+</Note>
+
+## How it fits together
+
+| Part         | What it does                                                                                        |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| **Server**   | Stores tasks and serves the web app, the API and the MCP endpoint                                   |
+| **Driver**   | Picks up queued jobs and starts a runner for each one                                               |
+| **Runner**   | The container your repo's `.bellows.yaml` describes. The agent works and the gates run here          |
+| **Executor** | The coding agent: Claude Code, OpenCode or a custom executor you bring                              |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/overview/quickstart">
+    From a repo to your first pull request in about 10 minutes.
+  </Card>
+  <Card title="Core concepts" icon="book-open" href="/overview/concepts">
+    Tasks, jobs, gates, skills: the words you'll meet.
+  </Card>
+</CardGroup>

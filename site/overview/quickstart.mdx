@@ -1,0 +1,86 @@
+---
+title: "Quickstart"
+description: "Connect a repo, describe a change, review the pull request Bellows opens."
+---
+
+## Before you start
+
+- A GitHub repository you can install apps on
+- Commands that build and test it (we'll use `make build` and `make test`)
+
+The examples use a small Go web server with lorem ipsum and notes endpoints. Any language works.
+
+## Steps
+
+<Steps>
+  <Step title="Sign in and choose repositories">
+    Sign in with GitHub, install the Bellows GitHub App, then choose the organizations and repositories Bellows should track.
+
+    <Frame>
+      <img src="/images/quickstart/01-onboarding.png" alt="Onboarding: choose organizations and repositories" />
+    </Frame>
+  </Step>
+  <Step title="Check the repository is tracked">
+    Open **Settings → Repositories**. Your repo is listed there, and **Configure** shows its environment.
+
+    <Frame>
+      <img src="/images/quickstart/02-settings-repos.png" alt="Settings, Repositories" />
+    </Frame>
+  </Step>
+  <Step title="Add .bellows.yaml to the repo root">
+    This file sets the runner's container and the checks every run must pass.
+
+    ```yaml .bellows.yaml
+    environment:
+        image: golang:1.25
+        setup: "go mod download"
+        gates:
+            - name: build
+              command: "make build"
+              timeout: 5
+            - name: test
+              command: "make test"
+              timeout: 10
+    ```
+
+    Commit and push it to the default branch.
+  </Step>
+  <Step title="Create a task">
+    Click **New task**. Under *What should the agent do?* describe the change, pick the repo and executor, then click **Start task**.
+
+    ```text Task
+    Add a GET /api/notes/count endpoint that returns {"count": N}.
+    Add a table test in internal/server/server_test.go.
+    ```
+
+    <Frame>
+      <img src="/images/quickstart/03-new-task.png" alt="New task form" />
+    </Frame>
+  </Step>
+  <Step title="Answer questions, if any">
+    Some tasks need a decision from you. The agent asks inline and waits. Pick an answer and click **Submit**.
+
+    <Frame>
+      <img src="/images/quickstart/04-question.png" alt="Agent question waiting for an answer" />
+    </Frame>
+  </Step>
+  <Step title="Review and finish">
+    Once the gates pass, Bellows opens a pull request and the task shows <span className="status status-review">Waiting for review</span>. Review the PR on GitHub. If it needs changes, use **Follow up** on the task. Once it's merged, click **Mark done**.
+
+    <Frame caption="The task page: conversation and follow-up on the left; outcome, verification and the published PR on the right.">
+      <img src="/images/quickstart/05-task-review.png" alt="Task waiting for review with a published pull request" />
+    </Frame>
+  </Step>
+</Steps>
+
+## What just happened
+
+<div className="status-flow">
+  <span className="status status-queued">Queued</span> → <span className="status status-running">Running</span> → <span className="status status-running">Gates: build, test</span> → <span className="status status-review">Waiting for review</span> → <span className="status status-done">Done</span>
+</div>
+
+The driver started a `golang:1.25` runner and ran `setup`. Then the agent made the change. Bellows ran each gate, and the PR opened only after all of them passed.
+
+<Tip>
+  Writing a good task description is the biggest lever on results. See [Writing good tasks](/guides/writing-good-tasks).
+</Tip>
