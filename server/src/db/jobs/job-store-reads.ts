@@ -261,7 +261,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
                -- The thread's wait (036) and publication (#324), served by the detail reads on
                -- the same thread-wide rule thread() follows — the per-run lists answer null.
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason,
-               ${threadBaseBranchFragment(sql)} as base_branch,
+               ${threadBaseBranchFragment(sql)} as base_branch, job.skill_hidden,
                ${threadTitleColumnsFragment(sql)}
                ${publicationColumns}
                ${authorColumns}

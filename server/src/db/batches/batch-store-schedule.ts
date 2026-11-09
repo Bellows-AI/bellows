@@ -74,6 +74,8 @@ export interface ScheduleDeps {
     stop?: StopThread | undefined;
     close?: CloseThread | undefined;
     revisionOf?: RevisionOf | undefined;
+    /** Whether the org's GitHub App is installed (BEL-286): the `github` connection a skill may require. */
+    githubApp?: boolean | undefined;
     /** The clock the deadline and the retry backoff are read against; absent is the wall clock. Tests move it. */
     now?: (() => Date) | undefined;
 }
@@ -390,7 +392,7 @@ async function launch(
     const kind: string = retrying ? (task.recovery ?? 'retry') : 'launch';
     const created =
         kind === RECOVERY_REPAIR
-            ? await repairInTx(tx, { orgId, batchId: id, task, startedBy })
+            ? await repairInTx(tx, { orgId, batchId: id, task, startedBy, githubApp: deps.githubApp })
             : retrying
               ? await retryInTx(tx, { orgId, id: task.root_job_id!, createdBy: startedBy })
               : await insertJobInTx(tx, deps, {

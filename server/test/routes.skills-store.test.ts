@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { createRepoSource } from '../src/github/repo-source.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import {
     HTTP_BAD_REQUEST,
@@ -13,6 +14,7 @@ import {
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
+import { listingClient } from './helpers-app-client.js';
 import { memorySkillStore, type MemorySkillStore } from './helpers-skill-store.js';
 
 /**
@@ -100,7 +102,10 @@ function zip(entries: { name: string; data: string }[]): Buffer {
     ]);
 }
 
-async function boot(skills: MemorySkillStore = memorySkillStore()) {
+async function boot(
+    skills: MemorySkillStore = memorySkillStore(),
+    extra: Pick<NonNullable<Parameters<typeof staticRegistry>[0]>, 'repos' | 'repoSkills'> = {}
+) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
@@ -108,7 +113,7 @@ async function boot(skills: MemorySkillStore = memorySkillStore()) {
     const config = testConfig({ auth: githubAuth() });
     const instance = await buildApp({
         config,
-        orgs: staticRegistry({ config, skills, telemetry: stubTelemetryClient() }),
+        orgs: staticRegistry({ config, skills, telemetry: stubTelemetryClient(), ...extra }),
         auth,
     });
     track(instance);
@@ -453,7 +458,44 @@ describe('skill writes', () => {
 });
 
 describe('/api/skills catalog', () => {
-    it('lists org and workspace skills with their source, the workspace one shadowed by an org one', async () => {
+    it('POST /api/org/skills with an unknown connection is 422 with reason unknown_connection', async () => {
+        const { instance, admin } = await boot();
+        const res = await instance.inject({
+            method: 'POST',
+            url: '/api/org/skills',
+            headers: admin,
+            payload: {
+                name: 'needs-nosuch',
+                skillMd: skillMd('needs-nosuch').replace(
+                    '---\n\nBody',
+                    'metadata:\n  requires-connections: nosuch\n---\n\nBody'
+                ),
+            },
+        });
+        expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+        expect(res.json()).toEqual(
+            expect.objectContaining({ code: 'SKILL_BUNDLE_INVALID', reason: 'unknown_connection' })
+        );
+        const listed = await instance.inject({ method: 'GET', url: '/api/org/skills', headers: admin });
+        expect(listed.json().skills ?? []).toHaveLength(0);
+    });
+
+    it("GET /api/skills lists a stored skill's connections", async () => {
+        const { instance, admin, member } = await boot();
+        const md = skillMd('needs-jira').replace('---\n\nBody', 'metadata:\n  requires-connections: jira\n---\n\nBody');
+        const made = await instance.inject({
+            method: 'POST',
+            url: '/api/org/skills',
+            headers: admin,
+            payload: { name: 'needs-jira', skillMd: md },
+        });
+        expect(made.statusCode).toBe(HTTP_CREATED);
+        const skills = (await instance.inject({ method: 'GET', url: '/api/skills', headers: member })).json().skills;
+        const entry = skills.find((e: { name: string }) => e.name === 'needs-jira');
+        expect(entry.requires.connections.map((c: { name: string }) => c.name)).toEqual(['jira']);
+    });
+
+    it('lists org and workspace skills with their source, the org one shadowed by a workspace one', async () => {
         const booted = await boot();
         const { instance, admin, member, other } = booted;
         await publish(booted, '/api/org/skills', admin, 'team-skill');
@@ -466,12 +508,38 @@ describe('/api/skills catalog', () => {
             mine.find((entry: { name: string; source: string }) => entry.name === name && entry.source === source);
         expect(by('team-skill', 'org')).toEqual(expect.objectContaining({ description: 'Does a thing.' }));
         expect(by('personal', 'workspace')).toBeDefined();
-        expect(by('clash', 'org')).toBeDefined();
-        expect(by('clash', 'workspace')).toEqual(expect.objectContaining({ shadowedBy: 'org' }));
+        expect(by('clash', 'workspace')).toBeDefined();
+        expect(by('clash', 'org')).toEqual(expect.objectContaining({ shadowedBy: 'workspace' }));
 
         const theirs = (await instance.inject({ method: 'GET', url: '/api/skills', headers: other })).json().skills;
         expect(theirs.some((entry: { name: string }) => entry.name === 'personal')).toBe(false);
         expect(theirs.some((entry: { name: string }) => entry.name === 'team-skill')).toBe(true);
+    });
+
+    it('the repo menu lists the org copy as shadowed by a repo skill of the same name', async () => {
+        const client = listingClient(async () => ({
+            repos: [{ owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: null }],
+            installation: { id: '1', account: 'acme', repositorySelection: 'selected' },
+        }));
+        const booted = await boot(memorySkillStore(), {
+            repos: createRepoSource({ client }),
+            repoSkills: async () => ({
+                revision: 'r',
+                skills: [{ name: 'clash', description: 'from the repo' }],
+                unreadable: [],
+                complete: true,
+            }),
+        });
+        await publish(booted, '/api/org/skills', booted.admin, 'clash');
+
+        const response = await booted.instance.inject({
+            method: 'GET',
+            url: '/api/repos/acme/web/skills',
+            headers: booted.member,
+        });
+        const body = response.json();
+        expect(body.skills.find((s: { name: string }) => s.name === 'clash')).toMatchObject({ source: 'repo' });
+        expect(body.shadowed).toEqual([expect.objectContaining({ name: 'clash', source: 'org', shadowedBy: 'repo' })]);
     });
 
     it('leaves out a disabled or deleted skill', async () => {
@@ -490,5 +558,78 @@ describe('/api/skills catalog', () => {
         const names = skills.map((entry: { name: string }) => entry.name);
         expect(names).not.toContain('off-skill');
         expect(names).not.toContain('gone-skill');
+    });
+});
+
+describe('built-in skill switch', () => {
+    const switchTo = (booted: Booted, name: string, headers: { cookie: string }, enabled: unknown = false) =>
+        booted.instance.inject({
+            method: 'PUT',
+            url: `/api/org/skills/builtin/${name}/enabled`,
+            headers,
+            payload: { enabled },
+        });
+    const catalog = async (booted: Booted) =>
+        (await booted.instance.inject({ method: 'GET', url: '/api/skills', headers: booted.member })).json();
+
+    it('a member gets 403 switching a built-in', async () => {
+        const booted = await boot();
+        expect((await switchTo(booted, 'factory-jira', booted.member)).statusCode).toBe(HTTP_FORBIDDEN);
+        expect(await booted.skills.switchedOff()).toEqual([]);
+    });
+
+    it('an unknown built-in is 404 SKILL_NOT_FOUND', async () => {
+        const booted = await boot();
+        const response = await switchTo(booted, 'no-such-builtin', booted.admin);
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(response.json().code).toBe('SKILL_NOT_FOUND');
+    });
+
+    it('a non-boolean enabled is 400', async () => {
+        const booted = await boot();
+        expect((await switchTo(booted, 'factory-jira', booted.admin, 'no')).statusCode).toBe(HTTP_BAD_REQUEST);
+    });
+
+    it('GET /api/skills marks a switched-off built-in and switching back on clears it', async () => {
+        const booted = await boot();
+        expect((await switchTo(booted, 'factory-jira', booted.admin)).statusCode).toBe(HTTP_OK);
+        expect((await switchTo(booted, 'factory-jira', booted.admin)).statusCode).toBe(HTTP_OK);
+        const off = (await catalog(booted)).skills.find((s: { name: string }) => s.name === 'factory-jira');
+        expect(off).toMatchObject({ source: 'builtin', switchedOff: true });
+        expect(
+            (await catalog(booted)).skills.find((s: { name: string }) => s.name === 'factory-fix')
+        ).not.toHaveProperty('switchedOff');
+        await switchTo(booted, 'factory-jira', booted.admin, true);
+        const on = (await catalog(booted)).skills.find((s: { name: string }) => s.name === 'factory-jira');
+        expect(on).not.toHaveProperty('switchedOff');
+    });
+
+    it('the repo menu omits a switched-off built-in', async () => {
+        const client = listingClient(async () => ({
+            repos: [{ owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: null }],
+            installation: { id: '1', account: 'acme', repositorySelection: 'selected' },
+        }));
+        const booted = await boot(memorySkillStore(), {
+            repos: createRepoSource({ client }),
+            repoSkills: async () => ({ revision: 'r', skills: [], unreadable: [], complete: true }),
+        });
+        await switchTo(booted, 'factory-jira', booted.admin);
+        const menu = (
+            await booted.instance.inject({ method: 'GET', url: '/api/repos/acme/web/skills', headers: booted.member })
+        ).json();
+        expect(menu.skills.some((s: { name: string }) => s.name === 'factory-jira')).toBe(false);
+        expect(menu.skills.some((s: { name: string }) => s.name === 'factory-fix')).toBe(true);
+    });
+
+    it('a switched-off read that throws is 503, never a full list', async () => {
+        const skills = memorySkillStore();
+        const booted = await boot({
+            ...skills,
+            switchedOff: async () => {
+                throw new Error('read failed');
+            },
+        });
+        const response = await booted.instance.inject({ method: 'GET', url: '/api/skills', headers: booted.member });
+        expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
     });
 });

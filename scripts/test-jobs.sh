@@ -967,7 +967,10 @@ echo 'building the stub runner images'
 # workflow engine's marker edges match the run's final non-empty line (docs/workflows.md, the
 # contract a real model honours by emitting the marker last), and the one-line `echo "$@"` puts
 # the driver's `--session-id <uuid> -p` flags ahead of the prompt on that line, so every marker
-# edge missed and the stub-walk graph stalled after its first review round.
+# edge missed and the stub-walk graph stalled after its first review round. The argv line leaves out
+# the `--append-system-prompt` value: the stub-walk nests each node's output into the next prompt and
+# the board keeps only the head of an interpolated output (INTERP_TAIL_LIMIT), so echoing the master
+# prompt every round pushed the fix node's FIXED-ONE-ROUND marker past the cut.
 # Every stub stands on scripts/stub-runner.Dockerfile: node + git as the uid-1000 `node` user, like
 # the executor images — the driver runs the startup sync and the other git steps IN the job's
 # executor image (`--entrypoint node`), and every task has a checkout to sync (issue #263) — and the
@@ -976,7 +979,7 @@ echo 'building the stub runner images'
 # supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
     docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
+printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; skip=; line=; for a; do if [ -n \\"$skip\\" ]; then skip=; elif [ \\"$a\\" = --append-system-prompt ]; then skip=1; else line=\\"$line $a\\"; fi; done; echo \\"${line# }\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
 printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
 # Issue #814: an agent whose one tool signals everything its uid may, through the CLI's shell.
 mkdir -p "$work/kill"
@@ -4071,6 +4074,16 @@ ps_admin=''
 ps_a=''
 ps_b=''
 
+# Text that appears only in one built-in's description, so the scripted model can tell whether the CLI offered it.
+PS_CLASH_REPO="${SMOKE_REPO%%/*}/clash" # a second origin whose checkout ships a skill named like the pinned org skill
+PS_REPO_SENTINEL=LANE_PIN_REPO_SENTINEL_5d2c
+PS_JIRA_DESC='Jira work items through the jira helper' # no comma: --skill-sentinel splits its value on commas
+PS_FIX_DESC='Optional playbook for fixing a backend bug'
+
+ps_switch() { # ps_switch <built-in name> <true|false> -> the org admin's per-org switch for that built-in
+    AUTH_HEADER="Bearer $ps_admin" expect_status "pinned skills: the admin sets $1 enabled=$2" 200 PUT "/api/org/skills/builtin/$1/enabled" "{\"enabled\":$2}"
+}
+
 ps_ws_sentinel() { printf 'LANE_PIN_WS_SENTINEL_%s_5d2c' "$1"; }
 
 ps_mint() { # ps_mint <login> <admin|member> -> the member's personal token; non-zero with psql's answer
@@ -4127,12 +4140,53 @@ ps_point() { # ps_point <claude|opencode> <member token> <port> -> that member's
     fi
 }
 
-ps_job() { # ps_job <claude|opencode> <member token> -> the member's new task id
+ps_job() { # ps_job <claude|opencode> <member token> [repo] -> the member's new task id
     local payload id
-    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: "list your skills", executor: process.argv[1], repo: process.argv[2] }))' "$1" "$SMOKE_REPO")"
+    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: "list your skills", executor: process.argv[1], repo: process.argv[2] }))' "$1" "${3:-$SMOKE_REPO}")"
     id="$(field "$(body "$(AUTH_HEADER="Bearer $2" api POST /api/jobs "$payload")")" id)"
     printf '%s\n' "$id" >>"$work/created-jobs"
     printf '%s' "$id"
+}
+
+ps_jira_member() { # ps_jira_member <login> -> a member's token; the member holds one Jira connection, which binds to every task made
+    local token user
+    token="$(ps_mint "$1" member)" || {
+        printf '%s' "$token"
+        return 1
+    }
+    user="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -c "select id from app_user where github_login = '$1'" | tr -d '\r')"
+    DATABASE_URL="$DATABASE_URL" LANE_ORG="$PS_ORG" LANE_USER="$user" node --input-type=module -e '
+import postgres from "postgres";
+import { createConnectionGrants } from "./server/dist/db/connection-grants.js";
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+const made = await createConnectionGrants({ sql, orgId: process.env.LANE_ORG }).attachGrantConnection({
+    principal: { kind: "user", userId: process.env.LANE_USER },
+    provider: "jira",
+    externalAccountId: "lane-account-" + process.env.LANE_USER,
+    authority: { scopes: ["read:jira-work"] },
+    resource: { id: "lane-cloud", label: "example.atlassian.net" },
+    access: "read",
+});
+await sql.end();
+process.exit(made.ok ? 0 : 1);
+' >&2 || return 1
+    printf '%s' "$token"
+}
+
+ps_clash_repo() { # a bare origin <owner>/clash whose main ships .claude/skills/$PS_ORG_SKILL, and the org's row for it
+    docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+        set -e
+        git init -q --bare -b main "/origins/$1.git"
+        git init -q -b main /tmp/seed
+        mkdir -p "/tmp/seed/.claude/skills/$2"
+        printf "%s\n" "---" "name: $2" "description: Lane fixture skill $3 - use it never." "---" "Nothing to do." >"/tmp/seed/.claude/skills/$2/SKILL.md"
+        git -C /tmp/seed add -A
+        git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q -m "repo skill"
+        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$PS_CLASH_REPO" "$PS_ORG_SKILL" "$PS_REPO_SENTINEL" || return 1
+    compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -v "org=$PS_ORG" -v "repo=$PS_CLASH_REPO" -f - >/dev/null <<'SQL'
+insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+values (:'org', 'claude-code', 'test-jobs-pinned-clash', :'repo', 'main', now(), now());
+SQL
 }
 
 ps_get() { # ps_get <url> -> the body
@@ -4186,7 +4240,7 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     lane_endpoint_stop "$ps_pid"
 
     # B is a member of the same org: the org skill, never A's workspace skill (its helper path does not exist for B).
-    ps_endpoint "pins-$cli-b" "$PS_ORG_SENTINEL,$v1,$v2" "$PS_DIR/$PS_ORG_SKILL/ref/helper.txt,$PS_DIR/$PS_WS_SKILL/ref/helper.txt,/etc/shadow"
+    ps_endpoint "pins-$cli-b" "$PS_ORG_SENTINEL,$v1,$v2,$PS_JIRA_DESC,$PS_FIX_DESC" "$PS_DIR/$PS_ORG_SKILL/ref/helper.txt,$PS_DIR/$PS_WS_SKILL/ref/helper.txt,/etc/shadow"
     ps_point "$cli" "$ps_b" "$ps_port"
     id="$(ps_job "$cli" "$ps_b")"
     expect_contains "$cli: B's task succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
@@ -4196,6 +4250,56 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     ps_expect "$cli: B's task does not see A's workspace skill" "$(ps_seen "$seen" "$v1")$(ps_seen "$seen" "$v2")" nono
     ps_expect "$cli: the org skill's helper file opens for B's tool uid" "$(ps_probe "$results" 1)" open
     case "$(ps_probe "$results" 2)" in open | missing) bad "$cli: A's workspace skill is not installed for B" "probe 2: $(ps_probe "$results" 2)" ;; *) ok "$cli: A's workspace skill is not installed for B" ;; esac
+    # BEL-286: B's task has no Jira binding, so factory-jira is not in what the model is offered; a built-in with no
+    # requirement is (the control: a probe that sees neither proves nothing).
+    ps_expect "$cli: a task with no Jira binding is not offered factory-jira" "$(ps_seen "$seen" "$PS_JIRA_DESC")" no
+    ps_expect "the control: $cli's task is offered an unrestricted built-in" "$(ps_seen "$seen" "$PS_FIX_DESC")" yes
+    lane_endpoint_stop "$ps_pid"
+
+    # BEL-286: a member who holds a Jira connection has it bound to the task when it is made, so factory-jira is listed.
+    local ps_c
+    ps_c="$(ps_jira_member "ps-member-c-$cli")" && ok "$cli: a member holding a Jira connection is minted" || bad "$cli: a member holding a Jira connection is minted" "$ps_c"
+    AUTH_HEADER="Bearer $ps_c" expect_status "$cli: the Jira member stores the task executors" 200 PUT /api/workspace/executors \
+        '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+    ps_endpoint "pins-$cli-jira" "$PS_JIRA_DESC,$PS_FIX_DESC" "/etc/shadow"
+    ps_point "$cli" "$ps_c" "$ps_port"
+    id="$(ps_job "$cli" "$ps_c")"
+    expect_contains "$cli: the Jira member's task succeeds" "$(AUTH_HEADER="Bearer $ps_c" await_settled "$id" 240)" succeeded
+    seen="$(ps_get "http://127.0.0.1:$ps_port/skills-seen")"
+    ps_expect "$cli: a task that holds Jira is offered factory-jira" "$(ps_seen "$seen" "$PS_JIRA_DESC")" yes
+    ps_expect "the control: $cli's Jira task is offered an unrestricted built-in" "$(ps_seen "$seen" "$PS_FIX_DESC")" yes
+    lane_endpoint_stop "$ps_pid"
+
+    # BEL-286: an org admin's switch hides a built-in from the next task of every member, and switching it back on
+    # lists it again; the pin is taken when the task is made, so only a task made after the flip sees the change.
+    ps_switch factory-fix false
+    ps_endpoint "pins-$cli-off" "$PS_FIX_DESC" "/etc/shadow"
+    ps_point "$cli" "$ps_b" "$ps_port"
+    id="$(ps_job "$cli" "$ps_b")"
+    expect_contains "$cli: a task made with a built-in switched off succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
+    ps_expect "$cli: a switched-off built-in is not offered" "$(ps_seen "$(ps_get "http://127.0.0.1:$ps_port/skills-seen")" "$PS_FIX_DESC")" no
+    lane_endpoint_stop "$ps_pid"
+    ps_switch factory-fix true
+    ps_endpoint "pins-$cli-on" "$PS_FIX_DESC" "/etc/shadow"
+    ps_point "$cli" "$ps_b" "$ps_port"
+    id="$(ps_job "$cli" "$ps_b")"
+    expect_contains "$cli: a task made after the switch is back on succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
+    ps_expect "$cli: the built-in is offered again after the switch is back on" "$(ps_seen "$(ps_get "http://127.0.0.1:$ps_port/skills-seen")" "$PS_FIX_DESC")" yes
+    lane_endpoint_stop "$ps_pid"
+
+    # BEL-286: a checkout that ships a skill named like a pinned org skill keeps its own copy, and the org copy is not
+    # installed at all (the driver's install step reads the checkout).
+    ps_endpoint "pins-$cli-clash" "$PS_ORG_SENTINEL,$PS_REPO_SENTINEL" "$PS_DIR/$PS_ORG_SKILL/ref/helper.txt"
+    ps_point "$cli" "$ps_b" "$ps_port"
+    id="$(ps_job "$cli" "$ps_b" "$PS_CLASH_REPO")"
+    expect_contains "$cli: a task whose repo ships the org skill's name succeeds" "$(AUTH_HEADER="Bearer $ps_b" await_settled "$id" 240)" succeeded
+    seen="$(ps_get "http://127.0.0.1:$ps_port/skills-seen")"
+    ps_expect "$cli: the repo's own copy is offered" "$(ps_seen "$seen" "$PS_REPO_SENTINEL")" yes
+    ps_expect "$cli: the pinned org copy is not offered beside it" "$(ps_seen "$seen" "$PS_ORG_SENTINEL")" no
+    case "$(ps_probe "$(ps_get "http://127.0.0.1:$ps_port/tool-results")" 1)" in
+        open) bad "$cli: the pinned org copy is not installed" "its helper file opens" ;;
+        *) ok "$cli: the pinned org copy is not installed" ;;
+    esac
     lane_endpoint_stop "$ps_pid"
     stop_driver
 }
@@ -4245,6 +4349,7 @@ pinned_skills_lane() {
     expect_field 'pinned skills: a member cannot publish an org skill' "$out" status 403
     AUTH_HEADER="Bearer $ps_b" expect_status "pinned skills: member B cannot read A's workspace skill" 404 GET "/api/workspace/skills/$ps_ws_id"
 
+    ps_clash_repo && ok 'pinned skills: a second origin ships a repo skill named like the org skill' || bad 'pinned skills: a second origin ships a repo skill named like the org skill' 'could not seed it'
     ps_cli_lane claude
     ps_cli_lane opencode
 }

@@ -2,7 +2,8 @@ import type { BoardJob } from './board/board.js';
 import { skillInstallScript } from './container-scripts.js';
 import { SKILLS_DELIVERY } from './input-control.js';
 import { parseLastJsonLine } from './json-parse.js';
-import type { SyncResult } from './publish/publish.js';
+import { checkoutDir, type SyncResult } from './publish/publish.js';
+import { OPENCODE } from './executors.js';
 import { detailOf, stepRequest, submitStep, type StepHost } from './supervised-steps.js';
 import { deliverTaskInputs, hasInputs, INPUTS_DEADLINE_MS, InputsUnconfirmed } from './task-inputs.js';
 import { SKILLS_DIR } from './task-volume.js';
@@ -11,18 +12,31 @@ import { SKILLS_DIR } from './task-volume.js';
  * Whether the claim carries a pin: a list (an empty one included, which prunes what an earlier run installed) or one
  * this client could not read (owed an answer, not skipped). Only a row with no pin field at all is skipped.
  */
-export const hasSkills = (job: Pick<BoardJob, 'skillPin' | 'skillPinUnreadable'>): boolean =>
-    job.skillPin !== undefined || job.skillPinUnreadable !== undefined;
+export const hasSkills = (job: Pick<BoardJob, 'skillPin' | 'skillPinUnreadable' | 'skillHiddenUnreadable'>): boolean =>
+    job.skillPin !== undefined || job.skillPinUnreadable !== undefined || job.skillHiddenUnreadable !== undefined;
 
 /** Whether the claim owes the attempt anything delivered before the agent is released. */
-export const hasClaimInputs = (job: Pick<BoardJob, 'attachments' | 'skillPin' | 'skillPinUnreadable'>): boolean =>
-    hasInputs(job) || hasSkills(job);
+export const hasClaimInputs = (
+    job: Pick<BoardJob, 'attachments' | 'skillPin' | 'skillPinUnreadable' | 'skillHiddenUnreadable'>
+): boolean => hasInputs(job) || hasSkills(job);
 
 /** What the install script's last stdout line says (`scripts/skill-install.cjs`). */
 interface SkillsVerdict {
     ok: boolean;
     reason?: string;
     kind?: string;
+    /** The pinned org skills the checkout holds itself and so were not installed (the repo's copy wins). */
+    skipped?: string[];
+}
+
+/**
+ * The checkout directories the job's CLI scans for skills — runnerPlan's CLI: a row with no executor type runs claude.
+ * opencode also reads a checkout's `.claude/skills` (`docker/opencode-executor/test.sh`).
+ */
+export function checkoutSkillDirsOf(job: BoardJob): readonly string[] {
+    return job.executorType === OPENCODE
+        ? ['.claude/skills', '.opencode/skills', '.opencode/skill', '.agents/skills']
+        : ['.claude/skills'];
 }
 
 /**
@@ -38,8 +52,10 @@ export async function deliverSkills(
     options: { signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
     if (job.skillPinUnreadable !== undefined) throw new InputsUnconfirmed(job.skillPinUnreadable);
+    if (job.skillHiddenUnreadable !== undefined) throw new InputsUnconfirmed(job.skillHiddenUnreadable);
     if (job.skillPin === undefined) return { ok: true, reason: null };
     const pin = job.skillPin;
+    const checkout = checkoutDir(job);
     const result = await submitStep(
         host,
         job,
@@ -51,6 +67,10 @@ export async function deliverSkills(
                 PIN: JSON.stringify(pin),
                 INPUT_DELIVERY: SKILLS_DELIVERY,
                 STAGING_SEQ: String(job.claimSeq),
+                // A pinned org skill the checkout holds where this CLI scans is not installed: the repo's copy wins.
+                ...(checkout
+                    ? { CHECKOUT_DIR: checkout, CHECKOUT_SKILL_DIRS: checkoutSkillDirsOf(job).join(',') }
+                    : {}),
                 // The supervisor lays its control endpoint and token over this one step only.
                 INPUT_FEED: '1',
             },

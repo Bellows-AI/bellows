@@ -304,6 +304,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
                 connectionIds,
                 admin,
                 attachmentIds,
+                githubApp: ctx.githubApp,
             });
         },
 

@@ -33,6 +33,10 @@ All built-in names start with `factory-`.
 
 Some skills need a tool or a connection. `factory-github` and `factory-pr-land` need a GitHub connection. `factory-jira` needs a Jira connection. Add them under **Settings → Integrations**.
 
+A task doesn't offer the agent a skill whose connection it doesn't hold, unless you selected that skill in the prompt. Bellows decides this once, when the task or its follow-up is created, so a connection you add later shows up from the next follow-up. `GET /api/jobs/:id` lists the hidden skills and why under `hiddenSkills`.
+
+An organization admin can switch a built-in skill off with `PUT /api/org/skills/builtin/<name>/enabled` and the body `{"enabled": false}`. A switched-off skill leaves the menu and is hidden from new tasks in that organization.
+
 ## Add a skill to your repository
 
 Commit a folder under `.claude/skills/` with a `SKILL.md`:
@@ -63,12 +67,16 @@ description: Draft release notes from merged PRs. Use when asked to prepare a re
 Bellows reads up to 50 skill folders from the repository at the task's branch. A folder whose `SKILL.md` can't be read or parsed is skipped.
 
 <Note>
-If a repository skill has the same name as a built-in, the built-in wins in the menu. Pick distinct names.
+A repository skill can't take a `factory-` name, so it never replaces a built-in.
 </Note>
 
 ## Organization and workspace skills
 
-Bellows also supports skills shared across your organization and skills owned by one member. Both are uploaded with the API, as a `SKILL.md` or a zip of up to 64 files and 5 MiB, and there is no Settings page for them yet. When names clash, the order is built-in, then organization, then workspace, then repository.
+Bellows also supports skills shared across your organization and skills owned by one member. Both are uploaded with the API, as a `SKILL.md` or a zip of up to 64 files and 5 MiB, and there is no Settings page for them yet. When names clash, the more personal skill wins: your workspace skill, then the repository's, then the organization's, then a built-in. A stored skill can declare what it needs under `metadata:` with `requires-connections`, and is hidden from tasks without that connection like the built-ins above.
+
+<Note>
+On a running task, a workspace skill that the repository also holds isn't guaranteed to win. Give them different names.
+</Note>
 
 ## From the CLI
 

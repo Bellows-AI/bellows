@@ -121,6 +121,42 @@ describe('skill bundle from SKILL.md', () => {
         expect(bundleFromSkillMd('my-skill', `${SKILL_MD('my-skill')}more`).sha256).not.toBe(a.sha256);
     });
 
+    describe('requirements', () => {
+        const withMetadata = (lines: string): string =>
+            `---\nname: my-skill\ndescription: Does a thing.\nmetadata:\n${lines}---\n\nBody.\n`;
+
+        it('a bundle declaring requires-connections: jira carries it', () => {
+            const bundle = bundleFromSkillMd('my-skill', withMetadata('  requires-connections: jira\n'));
+            expect(bundle.requires).toEqual({ tools: [], connections: ['jira'] });
+        });
+
+        it('requires-connections: nosuch is refused unknown_connection', () => {
+            expect(reason(() => bundleFromSkillMd('my-skill', withMetadata('  requires-connections: nosuch\n')))).toBe(
+                'unknown_connection'
+            );
+        });
+
+        it('requires-tools: nosuch is refused unknown_tool', () => {
+            expect(reason(() => bundleFromSkillMd('my-skill', withMetadata('  requires-tools: nosuch\n')))).toBe(
+                'unknown_tool'
+            );
+        });
+
+        it('no metadata gives empty requires', () => {
+            expect(bundleFromSkillMd('my-skill', SKILL_MD('my-skill')).requires).toEqual({
+                tools: [],
+                connections: [],
+            });
+        });
+
+        it('a zip upload goes through the same parse', () => {
+            const data = withMetadata('  requires-connections: nosuch\n');
+            expect(reason(() => bundleFromZip('my-skill', zip([{ name: 'SKILL.md', data }])))).toBe(
+                'unknown_connection'
+            );
+        });
+    });
+
     it('refuses bad frontmatter, a name mismatch, a reserved name and a bad name', () => {
         expect(reason(() => bundleFromSkillMd('my-skill', 'no frontmatter'))).toBe('bad_frontmatter');
         expect(reason(() => bundleFromSkillMd('my-skill', SKILL_MD('other')))).toBe('name_mismatch');

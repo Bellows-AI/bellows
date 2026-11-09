@@ -142,7 +142,7 @@ COPY --from=skills --chown=root:root . /usr/local/share/factory-skills/
 # One tree, one path, and the agent cannot edit it.
 RUN chmod -R u=rwX,go=rX /usr/local/share/factory-skills
 RUN mkdir -p /etc/claude-code/.claude \
-    && ln -s /usr/local/share/factory-skills /etc/claude-code/.claude/skills
+    && ln -s /tmp/.factory-skills /etc/claude-code/.claude/skills
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 #

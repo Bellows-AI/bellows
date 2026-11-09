@@ -489,7 +489,7 @@ async function acquireCandidate(
                        where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
                       (select r.skills from job r
                        where r.org_id = job.org_id and r.id = job.root_job_id) as skills,
-                      skill_pin,
+                      skill_pin, skill_hidden,
                       (select coalesce(array_agg(distinct b.provider), '{}'::text[])
                        from job_connection_binding b
                        join connector_connection c on c.org_id = b.org_id and c.id = b.connection_id
@@ -944,6 +944,7 @@ export function buildClaimResult(
         executorRefusal,
         skillRefusal,
         skillPin: row.skill_pin,
+        skillHidden: row.skill_hidden,
         planRefusal,
         userId: row.run_as,
         masterPrompt,

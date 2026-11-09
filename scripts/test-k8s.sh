@@ -3254,6 +3254,20 @@ case "$skills_org$skills_ws" in
 *'"status":201'*'"status":201'*) ok 'the org skill and the workspace skill are published' ;;
 *) bad 'the org skill and the workspace skill are published' "org: $skills_org workspace: $skills_ws" ;;
 esac
+# BEL-286: the org switches a built-in off before the task is made, so the row carries a hidden built-in whatever the
+# earlier phases bound (the connection phase leaves the member a Jira connection, which un-hides factory-jira).
+skills_switch() { # skills_switch <true|false> — as the org admin minted above: only an admin manages org skills
+    FACTORY_TOKEN="$skills_admin_token" node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "PUT", headers, body: JSON.stringify({ enabled: process.argv[2] === "true" }) })
+    .then(async (r) => process.stdout.write(r.status + " " + (await r.text()).slice(0, 160)))
+    .catch((e) => process.stdout.write("000 " + e.message));
+' "$BASE/api/org/skills/builtin/factory-task-title/enabled" "$1"
+}
+skills_off="$(skills_switch false)"
+case "$skills_off" in
+200*) ok 'the org switches a built-in off before the skills task is made' ;;
+*) bad 'the org switches a built-in off before the skills task is made' "status and body: $skills_off" ;;
+esac
 skills_job="$(queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
 skills_pod="$(await_runner_pod "$skills_job")"
 if [ -z "$skills_job" ] || [ -z "$skills_pod" ]; then
@@ -3280,11 +3294,30 @@ else
     expect_contains 'the resumed run holds the org skill at the pinned sha' "$skills_out" "skills lane-org-skill $skills_org_sha"
     expect_contains 'the resumed run holds the workspace skill at the sha it was made with' "$skills_out" "skills lane-ws-skill $skills_ws_sha"
     expect_not_contains 'the resumed run does not hold the version published after the task was made' "$skills_out" "$skills_ws_sha2"
+    # BEL-286: this output is the resumed run's (a new pod, the same row), so the hidden set survives the pod loss.
+    expect_contains 'the resumed runner is told to hide the built-in the org switched off' "$skills_out" 'hidden factory-task-title'
     expect_contains "the org skill's helper file opens for the agent" "$skills_out" 'helper lane-org-skill/ref/helper.txt open'
     expect_contains "the workspace skill's helper file opens for the agent" "$skills_out" 'helper lane-ws-skill/ref/helper.txt open'
 fi
 
-for job in $hard $drained $evicted $lost $final $unpullable $skills_job; do
+# BEL-286: a task whose owner holds no Jira connection (the org admin minted above has none, so nothing binds by
+# default) is made with factory-jira hidden: the row's skill_hidden is the stored decision the claim carries. The
+# switched-off built-in is the control that the column was read at all.
+skills_admin_exec="$(FACTORY_TOKEN="$skills_admin_token" http_status PUT "$BASE/api/workspace/executors" \
+    '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')"
+[ "$skills_admin_exec" = 200 ] && ok 'the connection-less admin stores the task executor' || bad 'the connection-less admin stores the task executor' "status $skills_admin_exec"
+skills_nojira_job="$(FACTORY_TOKEN="$skills_admin_token" queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
+skills_nojira_hidden="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "job=$skills_nojira_job" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+select coalesce(string_agg(h->>'name', ',' order by h->>'name'), '') from job, jsonb_array_elements(skill_hidden) h where id = :'job';
+SQL
+)"
+expect_contains 'the control: a task with no Jira connection has its stored hidden list read' "$skills_nojira_hidden" 'factory-task-title'
+expect_contains 'a task with no Jira connection hides factory-jira' "$skills_nojira_hidden" 'factory-jira'
+
+skills_switch true >/dev/null
+for job in $hard $drained $evicted $lost $final $unpullable $skills_job $skills_nojira_job; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

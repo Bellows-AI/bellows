@@ -37,6 +37,7 @@ export function createBatchStore({
     stop,
     close,
     revisionOf,
+    githubApp,
     now,
     telemetrySource,
 }: {
@@ -49,6 +50,8 @@ export function createBatchStore({
     close?: CloseThread;
     /** Resolves a target branch's head commit for the attempt record; absent records none. */
     revisionOf?: RevisionOf;
+    /** Whether the org's GitHub App is installed: the tasks the scheduler creates decide their skills' visibility by it (BEL-286). */
+    githubApp?: boolean;
     /** The clock the time limit and the retry backoff are read against; production leaves it unset. */
     now?: () => Date;
     /** Where usage is read from; absent is the org's own database. Fixture and off report it `unavailable`. */
@@ -57,7 +60,7 @@ export function createBatchStore({
     const gate = async () => {
         if (ready) await ready;
     };
-    const deps = { sql, orgId, stop, close, revisionOf, now };
+    const deps = { sql, orgId, stop, close, revisionOf, githubApp, now };
 
     return {
         async create(plan, createdBy, idempotency) {

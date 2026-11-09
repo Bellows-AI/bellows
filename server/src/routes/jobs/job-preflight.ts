@@ -269,7 +269,7 @@ async function connectionStanding(
 function skillChecks(selection: Selection, standing: Standing, catalog: EffectiveCatalog): Check[] {
     return selection.skills.flatMap((name): Check[] => {
         const skill = catalog.entries.find((candidate) => candidate.name === name);
-        if (!skill) {
+        if (!skill || standingOf(catalog, name) === 'unverified') {
             return standingOf(catalog, name) === 'unverified'
                 ? [
                       {

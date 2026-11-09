@@ -25,6 +25,7 @@ const SkillsSchema = z.object({
             description: z.string(),
             source: z.enum(SOURCES),
             shadowedBy: z.enum(SOURCES).optional(),
+            switchedOff: z.boolean().optional(),
             requires: z.object({
                 tools: z.array(z.string()),
                 connections: z.array(z.object({ name: z.string(), selectedBy: z.string().nullable() })),
@@ -90,6 +91,8 @@ export const listSkills = defineTool({
             : '/api/skills';
         const skills = judge(await ctx.fetch({ method: 'GET', url }), SkillsSchema);
         if (!skills.ok) return skills.tagged;
+        // A built-in the org switched off is not selectable: it is not listed here.
+        skills.data.skills = skills.data.skills.filter((skill) => skill.switchedOff !== true);
         const managed = skills.data.skills.some((skill) =>
             skill.requires.connections.some((connection) => connection.selectedBy !== null)
         );

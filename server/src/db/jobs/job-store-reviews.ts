@@ -19,6 +19,7 @@ import { withClaimAttachments } from './job-store-claim-row.js';
 import { resolveClaimExecutor } from './job-store-claim-executor.js';
 import { recordExecution } from './job-store-provenance.js';
 import { exists, workspacePathFor } from './job-store-rows.js';
+import { decideSkillVisibilityInTx, type HiddenSkill } from './job-store-skill-pin.js';
 import type {
     Claim,
     FailureKind,
@@ -157,7 +158,7 @@ export async function requestReviewFor(
         // One review of a caller runs at a time: the next key waits for the verdict of this one.
         const running = await runningReview(tx, orgId, id);
         if (running) return { result: 'running', review: viewOf(running, await evidence()) };
-        const created = await insertReview(tx, orgId, { caller, spec: spec!, request });
+        const created = await insertReview(tx, orgId, { caller, spec: spec!, request, githubApp: ctx.githubApp });
         const claim = await reviewClaim(ctx, tx, created.id);
         return { result: 'created', review: viewOf(created, await evidence()), claim };
     });
@@ -203,25 +204,27 @@ function refusalOf(
 async function insertReview(
     tx: TransactionSql,
     orgId: string,
-    new_: { caller: CallerRow; spec: ReviewerSpec; request: ReviewRequest }
+    new_: { caller: CallerRow; spec: ReviewerSpec; request: ReviewRequest; githubApp: boolean }
 ): Promise<ReviewRow> {
-    const { caller, spec, request } = new_;
+    const { caller, spec, request, githubApp } = new_;
     const [root] = await tx<{ command: string }[]>`
         select command from job where org_id = ${orgId} and id = ${caller.root_job_id}
     `;
     const { command } = reviewerPrompts(spec, root?.command ?? '');
+    // A reviewer pins no stored skill and holds no bindings: only the built-ins are decided (BEL-286).
+    const { hidden } = await decideSkillVisibilityInTx(tx, { orgId, githubApp, selected: [], stored: null });
     await tx`
         insert into job (
             org_id, command, created_by, repo, executor, executor_scope, id, root_job_id, mode,
             review_of, review_key, review_profile, review_spec, review_revision, review_ref,
             status, claimed_by, lease_token, lease_expires_at, attempts, claim_seq, started_at,
-            review_caller_seq, skill_pin
+            review_caller_seq, skill_pin, skill_hidden
         )
         select ${orgId}, ${command}, ${caller.owner_id}, ${caller.repo}, ${caller.executor},
                ${caller.executor_scope ?? USER_SCOPE}, x, x, ${OBJECTIVE_MODE},
                ${caller.id}, ${request.key}, ${spec.name}, ${tx.json(spec as never)}, ${request.revision}, ${request.ref},
                'running', ${caller.claimed_by}, gen_random_uuid(), ${caller.lease_expires_at}, 1, 1, now(),
-               ${caller.claim_seq}, '[]'::jsonb
+               ${caller.claim_seq}, '[]'::jsonb, ${tx.json(hidden as never)}
         from (select gen_random_uuid() as x) s
     `;
     return (await reviewByKey(tx, orgId, caller.id, request.key))!;
@@ -296,6 +299,7 @@ interface ReviewClaimRow {
     mode: JobMode;
     review_spec: ReviewerSpec;
     review_ref: string;
+    skill_hidden: HiddenSkill[];
     resumes_interrupted: boolean;
 }
 
@@ -313,7 +317,7 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
     const [row] = await tx<ReviewClaimRow[]>`
         select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, execution_user_id as run_as,
                session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
-               review_spec, review_ref,
+               review_spec, review_ref, skill_hidden,
                (session_id is not null
                 and coalesce((interruptions -> -1 ->> 'claimSeq')::bigint = claim_seq - 1, false))
                    as resumes_interrupted
@@ -328,6 +332,7 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
             root_command: row!.command,
             skills: [],
             skill_pin: [],
+            skill_hidden: row!.skill_hidden,
             live_providers: [],
             base_branch: null,
             last_attempt: false,

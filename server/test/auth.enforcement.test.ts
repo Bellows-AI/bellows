@@ -390,6 +390,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
         '/api/org/skills/:id',
         '/api/org/skills/:id/versions',
         '/api/org/skills/:id/enabled',
+        '/api/org/skills/builtin/:name/enabled',
         '/api/workspace/skills',
         '/api/workspace/skills/:id',
         '/api/workspace/skills/:id/versions',

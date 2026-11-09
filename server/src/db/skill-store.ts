@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
-import { isReservedSkillName, SKILL_NAME, SKILL_NAME_LIMIT } from '@factory-ai/core';
+import { isReservedSkillName, type SkillRequirements, SKILL_NAME, SKILL_NAME_LIMIT } from '@factory-ai/core';
 import type { ObjectStore } from '../artifacts/object-store.js';
 import type { SkillBundle } from '../skills/skill-bundle.js';
 
@@ -83,6 +83,8 @@ export interface EffectiveSkill {
     name: string;
     source: SkillScope;
     description: string;
+    /** The tools and connections the current version declares (none for one stored before they were read). */
+    requires: SkillRequirements;
     versionId: string;
     sha256: string;
     objectKey: string;
@@ -116,6 +118,10 @@ export interface SkillStore {
     get(owner: SkillOwner, id: string): Promise<SkillRecord | null>;
     /** Org skills plus the member's workspace skills; a caller with no member sees the org's alone. */
     effective(userId: string | null): Promise<EffectiveSkill[]>;
+    /** The built-in skill names this org switched off; a read that fails rejects, never answers none. */
+    switchedOff(): Promise<string[]>;
+    /** Switches a built-in on or off for the org; idempotent. `by` is the admin's member id. */
+    setBuiltinEnabled(name: string, enabled: boolean, by: string | null): Promise<void>;
     /**
      * A version's tar bytes verified against its sha256. Null when no such ready version is visible to `access`;
      * `SkillGoneError` when the store answers that the object is absent; an unconfirmed read throws
@@ -136,6 +142,8 @@ interface RecordRow {
     v_sha256: string;
     v_size: string | number;
     v_description: string;
+    v_requires_tools: string[];
+    v_requires_connections: string[];
     v_object_key: string;
     v_created_at: string;
 }
@@ -170,6 +178,7 @@ const effectiveOf = (row: RecordRow): EffectiveSkill => ({
     name: row.name,
     source: row.user_id === null ? 'org' : 'workspace',
     description: row.v_description,
+    requires: { tools: row.v_requires_tools, connections: row.v_requires_connections },
     versionId: row.v_id,
     sha256: row.v_sha256,
     objectKey: row.v_object_key,
@@ -202,6 +211,7 @@ export function createSkillStore({
     const select = (filter: { owner: SkillOwner; id?: string } | { effectiveFor: string | null }) => sql<RecordRow[]>`
         select s.id, s.name, s.user_id, s.enabled, s.created_by, s.created_at::text, s.updated_at::text,
                v.id as v_id, v.sha256 as v_sha256, v.size_bytes as v_size, v.description as v_description,
+               v.requires_tools as v_requires_tools, v.requires_connections as v_requires_connections,
                v.object_key as v_object_key, v.created_at::text as v_created_at
         from skill s join skill_version v on v.id = s.current_version_id
         where s.org_id = ${orgId} and s.deleted_at is null
@@ -253,9 +263,11 @@ export function createSkillStore({
     ): Promise<'added' | 'exists'> {
         await holdObject(tx, key, bundle);
         const [version] = await tx<{ id: string; inserted: boolean }[]>`
-            insert into skill_version (skill_id, sha256, size_bytes, object_key, description)
-            values (${skillId}, ${bundle.sha256}, ${bundle.size}, ${key}, ${bundle.description})
-            on conflict (skill_id, sha256) do update set sha256 = excluded.sha256
+            insert into skill_version (skill_id, sha256, size_bytes, object_key, description, requires_tools, requires_connections)
+            values (${skillId}, ${bundle.sha256}, ${bundle.size}, ${key}, ${bundle.description},
+                    ${bundle.requires.tools}, ${bundle.requires.connections})
+            on conflict (skill_id, sha256) do update set
+                requires_tools = excluded.requires_tools, requires_connections = excluded.requires_connections
             returning id, (xmax = 0) as inserted
         `;
         await tx`update skill set current_version_id = ${version!.id}, updated_at = now() where id = ${skillId}`;
@@ -356,6 +368,22 @@ export function createSkillStore({
         async effective(userId) {
             const rows = await select({ effectiveFor: userId });
             return rows.map(effectiveOf);
+        },
+
+        async switchedOff() {
+            const rows = await sql<{ name: string }[]>`select name from builtin_skill_off where org_id = ${orgId}`;
+            return rows.map((row) => row.name);
+        },
+
+        async setBuiltinEnabled(name, enabled, by) {
+            if (enabled) {
+                await sql`delete from builtin_skill_off where org_id = ${orgId} and name = ${name}`;
+                return;
+            }
+            await sql`
+                insert into builtin_skill_off (org_id, name, switched_by) values (${orgId}, ${name}, ${by})
+                on conflict (org_id, name) do nothing
+            `;
         },
 
         async readVersion(versionId, access) {

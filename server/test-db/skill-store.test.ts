@@ -274,6 +274,72 @@ describe.skipIf(!enabled)('the skill store', () => {
         await writeFile(join(root, skillObjectKey(PREFIX, ORG, sha256)), 'tampered');
         await expect(store.readVersion(id, 'any')).rejects.toBeInstanceOf(SkillIntegrityError);
     });
+
+    describe('requirements', () => {
+        const needs = (name: string, connections: string, body = 'Do the thing.') =>
+            bundleFromSkillMd(
+                name,
+                `---\nname: ${name}\ndescription: ${name} helps\nmetadata:\n  requires-connections: ${connections}\n---\n${body}\n`
+            );
+        const requiresOf = (versionId: string) =>
+            sql<{ requires_tools: string[]; requires_connections: string[] }[]>`
+                select requires_tools, requires_connections from skill_version where id = ${versionId}
+            `;
+
+        it('a version stores its requirements', async () => {
+            const store = storeOf();
+            const r = await store.create(null, {
+                name: 'needs-jira',
+                bundle: needs('needs-jira', 'jira'),
+                createdBy: null,
+            });
+            if (r.result !== 'created') throw new Error(r.result);
+            expect(await requiresOf(r.skill.current.id)).toEqual([
+                { requires_tools: [], requires_connections: ['jira'] },
+            ]);
+        });
+
+        it('effective() returns them per current version', async () => {
+            const store = storeOf();
+            await created(store, null, 'plain-one');
+            await store.create(null, {
+                name: 'needs-jira-two',
+                bundle: needs('needs-jira-two', 'jira'),
+                createdBy: null,
+            });
+            const byName = new Map((await store.effective(null)).map((s) => [s.name, s.requires]));
+            expect(byName.get('plain-one')).toEqual({ tools: [], connections: [] });
+            expect(byName.get('needs-jira-two')).toEqual({ tools: [], connections: ['jira'] });
+        });
+
+        it('a new version with other requirements replaces them for new reads only', async () => {
+            const store = storeOf();
+            const r = await store.create(null, { name: 'shifts', bundle: needs('shifts', 'jira'), createdBy: null });
+            if (r.result !== 'created') throw new Error(r.result);
+            const old = r.skill.current.id;
+            await store.addVersion(null, r.skill.id, md('shifts', 'no longer needs it'));
+            const now = (await store.effective(null)).find((s) => s.name === 'shifts');
+            expect(now?.requires).toEqual({ tools: [], connections: [] });
+            expect(now?.versionId).not.toBe(old);
+            expect(await requiresOf(old)).toEqual([{ requires_tools: [], requires_connections: ['jira'] }]);
+        });
+
+        it('an identical re-upload of a version stored with no requirements sets them on the same version id', async () => {
+            const store = storeOf();
+            const bundle = needs('pre-131', 'jira');
+            const r = await store.create(null, { name: 'pre-131', bundle, createdBy: null });
+            if (r.result !== 'created') throw new Error(r.result);
+            await sql`update skill_version set requires_connections = '{}' where id = ${r.skill.current.id}`;
+            expect((await store.effective(null)).find((s) => s.name === 'pre-131')?.requires.connections).toEqual([]);
+
+            const again = await store.addVersion(null, r.skill.id, bundle);
+            expect(again.result).toBe('exists');
+            expect(await versionRows(r.skill.id)).toHaveLength(1);
+            const now = (await store.effective(null)).find((s) => s.name === 'pre-131');
+            expect(now?.versionId).toBe(r.skill.current.id);
+            expect(now?.requires.connections).toEqual(['jira']);
+        });
+    });
 });
 
 /** A put that parks until released, so a second writer can run while the first is mid-write. */
@@ -461,5 +527,27 @@ describe.skipIf(!enabled)('the skill retention sweep', () => {
         const summary = await collectorOf().collect();
         expect(summary.failed).toBe(1);
         expect(await objectOf('test/_attachments/x/y')).not.toBeNull();
+    });
+});
+
+describe.skipIf(!enabled)('built-in skill switch', () => {
+    it("switchedOff lists only this org's names", async () => {
+        const mine = storeOf(ORG);
+        const theirs = storeOf(OTHER_ORG);
+        expect(await mine.switchedOff()).toEqual([]);
+        await mine.setBuiltinEnabled('factory-jira', false, ALICE.id);
+        await theirs.setBuiltinEnabled('factory-ask', false, null);
+        expect(await mine.switchedOff()).toEqual(['factory-jira']);
+        expect(await theirs.switchedOff()).toEqual(['factory-ask']);
+    });
+
+    it('switch off then on is idempotent', async () => {
+        const store = storeOf(ORG);
+        await store.setBuiltinEnabled('factory-idem', false, ALICE.id);
+        await store.setBuiltinEnabled('factory-idem', false, ALICE.id);
+        expect(await store.switchedOff()).toContain('factory-idem');
+        await store.setBuiltinEnabled('factory-idem', true, ALICE.id);
+        await store.setBuiltinEnabled('factory-idem', true, ALICE.id);
+        expect(await store.switchedOff()).not.toContain('factory-idem');
     });
 });
