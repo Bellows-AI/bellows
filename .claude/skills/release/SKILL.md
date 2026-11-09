@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a Factory release end to end — analyze everything since the last tag, decide with the user what else goes in, fix it through the fix skill, verify quality and correctness (suites, the migration upgrade path from the last release, a live batch on kind), merge in order, then run `npm run release`, watch the publish workflow and create the GitHub release with grouped notes. Use when the user says "release", "cut a release", "bump the version", "prepare vX.Y.Z", "what's left before release", or "/release".
+description: Cut a Factory release end to end — analyze everything since the last tag, decide with the user what else goes in, fix it through the fix skill, verify quality and correctness (suites, the user docs via validate-docs, the migration upgrade path from the last release, a live batch on kind), merge in order, then run `npm run release`, watch the publish workflow, create the GitHub release with grouped notes and add its docs changelog entry. Use when the user says "release", "cut a release", "bump the version", "prepare vX.Y.Z", "what's left before release", or "/release".
 ---
 
 # Cut a release
@@ -72,6 +72,11 @@ npm run test:k8s
 npm run test:jobs                 # needs a docker daemon
 npm run verify:ui                 # every release: a payload change breaks panels from outside web/src
 ```
+
+**User docs** — run the `validate-docs` skill with `REF=$LAST`: it maps every user-facing change
+since the last tag to the `site/` pages it touches, fixes them in one `docs(site)` PR, and runs the
+docs test, the Mintlify build and link checks and the anonymization scan. That PR is in scope like
+any fix and merges before the tag; a release never ships with docs that contradict it.
 
 **Migration upgrade path** — every new migration has to run against data the last release wrote,
 not only an empty schema:
@@ -151,7 +156,11 @@ images and chart can ship while the package fails, or the reverse. Read the fail
 in a PR and cut the next patch — never move or
 delete a pushed tag. Create the GitHub release only after the workflow succeeds.
 
+Then run `validate-docs` in release mode with the tag and the notes file: it adds the version's
+entry to `site/reference/changelog.mdx` in a `docs(site)` PR. Merge it once `validate` is green;
+merging publishes the docs site.
+
 ## Reporting back
 
 The tag and its sha, the workflow run's result, the release URL, every PR merged for it, what was
-verified live, and what was deferred with its issue number.
+verified live, the docs PRs (validation and changelog), and what was deferred with its issue number.

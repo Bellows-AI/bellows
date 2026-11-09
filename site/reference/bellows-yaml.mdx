@@ -1,0 +1,241 @@
+---
+title: ".bellows.yaml reference"
+description: "Every key, type, default, limit and error of the .bellows.yaml file at the root of your repository."
+---
+
+`.bellows.yaml` sits at the root of your repository. It has four top-level keys, all optional. Any other top-level key is an error.
+
+| Key | What it configures | Guide |
+| --- | --- | --- |
+| [`environment`](#environment) | Runner image, setup command, caches and gates | [Configure your repo](/guides/configure-repo), [Gates](/guides/gates) |
+| [`services`](#services) | Sidecar containers such as Postgres | [Services](/guides/services) |
+| [`policy`](#policy) | Evidence required before publishing | [Policy and reviewers](/guides/policy-and-reviewers) |
+| [`reviewers`](#reviewers) | Named reviewer profiles the agent can call | [Policy and reviewers](/guides/policy-and-reviewers) |
+
+Each key may appear once. All limits are collected in [Limits](/reference/limits).
+
+## Where the file is read from
+
+Bellows reads the file when a run starts. It does not read it from the agent's working tree.
+
+- It reads the file through GitHub at the tip of the task's base branch. If the task has no base branch, it uses the repository's default branch.
+- The file is read at one commit, and the whole plan is validated before anything launches. The run uses exactly that revision.
+- Each new run reads the file again. A change to `.bellows.yaml` applies to tasks started after it is merged into the base branch.
+- If the file is missing, the run has no gates, no services, no policy and no reviewers. Without an `environment` block no gates run, so nothing checks the agent's work.
+- A file over 65,536 bytes is refused.
+
+<Warning>
+  A task can edit `.bellows.yaml` in its own branch, but that edit changes nothing for that task. This is how `policy` stays out of the agent's reach.
+</Warning>
+
+## File format rules
+
+The parser reads a small, strict subset of YAML. It refuses what it does not understand instead of guessing, because a silently skipped gate is a check that never ran.
+
+| Rule | Detail |
+| --- | --- |
+| Indentation | Spaces only. A tab in indentation is an error. Any consistent width works; the examples use 4 |
+| Comments | A line that starts with `#` is ignored, and so are blank lines. See the note below for comments after a value |
+| Scalars | Bare, `'single'` or `"double"` quoted. There are no escape sequences in `environment`, `policy` and `reviewers` |
+| Lists | Block lists with `- `. Each gate and each reviewer starts with `- name: <name>` |
+| Unsupported | Anchors, multi-line values, flow maps, and any other YAML feature |
+| Duplicates | A repeated top-level block is an error |
+
+<Warning>
+  Do not put a comment after a value inside `environment`, `policy` or `reviewers`. `timeout: 5 # minutes` is refused, because the whole text after the colon is the value. Put the comment on its own line. Comments after a value are accepted inside `services`.
+</Warning>
+
+## Errors
+
+A bad file fails the task before the agent starts, with a configuration error. The message is shown on the failed run.
+
+| Source | Message shape | Example |
+| --- | --- | --- |
+| `environment`, `policy`, `reviewers` | `.bellows.yaml line N: <problem>` | `.bellows.yaml line 8: timeout is whole minutes, 1 to 120` |
+| `services` | `.bellows.yaml: <problem>`, no line number | `.bellows.yaml: duplicate service name "db"` |
+| Whole plan | `.bellows.yaml: the execution plan cannot be scheduled: <problems>` | `... at most 10 services fit one task pod, got 11` |
+| Unreadable file | `.bellows.yaml of <repo> at <branch> could not be read: <reason>` | The file is over 65,536 bytes |
+| No access | `the GitHub App installation cannot read <repo> ...` | Check repository access and the branch name |
+
+Fix the file on the base branch (or the default branch), then retry the task.
+
+## environment
+
+The runner image and what runs in it.
+
+```yaml .bellows.yaml
+environment:
+    image: golang:1.25
+    setup: "go mod download"
+    cache:
+        - GOCACHE
+    gates:
+        - name: test
+          command: "go test ./..."
+```
+
+| Key | Type | Required | Default | Rules |
+| --- | --- | --- | --- | --- |
+| `image` | string | yes | none | A plain Docker reference. Must match `^[A-Za-z0-9_][A-Za-z0-9_./:-]*$`: no spaces, `$`, `=`, quotes, `@` or leading `-` |
+| `setup` | string | no | none | One line, not empty, up to 4096 characters, declared once. Runs before the agent starts and is retried before the first gate while it fails |
+| `cache` | list of names | no | none | Up to 16 names, no repeats, at least one if the key is present. Declare it before `gates` |
+| `gates` | list of gates | no | none | Up to 16 gates, names unique |
+
+An `environment` block without `image` is an error: `environment declares no image`. `environment` takes no inline value, and a second `environment` block is an error.
+
+Guides: [Configure your repo](/guides/configure-repo), [Environment variables and secrets](/guides/env-and-secrets).
+
+### cache
+
+Each item is an environment variable name. Bellows sets that variable, in the runner and in gates, to a directory that outlives the container, so package caches survive between runs of the same repo.
+
+| Rule | Detail |
+| --- | --- |
+| Name shape | `^[A-Za-z_][A-Za-z0-9_]*$`, up to 255 characters |
+| Count | Up to 16. A 17th is an error |
+| Repeats | A name listed twice is an error |
+| Empty list | `cache:` with no item is an error |
+| Refused names | `HOME`, `PATH`, `SHELL`, `ENV`, `BASH_ENV`, `XDG_DATA_HOME`, `NPM_CONFIG_UPDATE_NOTIFIER`, `NODE_OPTIONS`, `NODE_PATH`, `PYTHONPATH`, `PYTHONSTARTUP`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `GITHUB_TOKEN`, `GH_TOKEN`, and the other names Bellows reserves for itself |
+| Refused prefixes | `RUNNER_`, `OTEL_`, `FACTORY_`, `BELLOWS_`, `CLAUDE_`, `OPENCODE_`, `GIT_`, `LD_`, `DYLD_` |
+
+### gates
+
+Each gate starts with `- name:`. Other keys are indented under it.
+
+| Key | Type | Required | Default | Rules |
+| --- | --- | --- | --- | --- |
+| `name` | string | yes | none | Unique. Up to 64 characters. No `/` or `\`. Cannot start with `-` or `.` |
+| `command` | string | yes | none | One line, not empty, up to 4096 characters. Run through a shell. Exit code 0 passes |
+| `timeout` | integer | no | 10 minutes | Whole minutes, 1 to 120. Without it, the platform's gate timeout applies (600 seconds by default) |
+| `on_demand` | `true` | no | off | Only the value `true`. The agent can run the gate, the end-of-run pass skips it |
+| `filter` | `true` | no | off | Only the value `true`. The agent can narrow a run; the value arrives as `$GATE_FILTER`, up to 256 characters |
+
+A gate's `timeout` is capped by the platform's run time budget. The agent cannot start a gate with `timeout` above 10 while it works; see [Gates](/guides/gates#on-demand-gates).
+
+Errors you may see: `gate "x" has no command`, `gate "x" is declared twice`, `more than 16 gates`, `unknown gate field "k" — only name, command, timeout, on_demand and filter are read`, `on_demand must be "true"`.
+
+## services
+
+Sidecar containers that start with the task. Guide: [Services](/guides/services).
+
+```yaml .bellows.yaml
+services:
+    - name: db
+      image: postgres:17
+      user: "999:999"
+      ports: [5432]
+      environment:
+          POSTGRES_PASSWORD: app
+```
+
+| Key | Type | Required | Default | Rules |
+| --- | --- | --- | --- | --- |
+| `name` | string | yes | none | A lowercase DNS label: letters, digits, hyphens, 1 to 30 characters, no hyphen at either end. Unique. `localhost` is reserved. Becomes the hostname |
+| `image` | string | yes | none | A plain image reference, for example `redis:7`, `registry.example.com:5000/app:1`, or a `name@sha256:<64 hex>` digest. No spaces, `$`, `=`, quotes or leading `-` |
+| `user` | string | no | image default | Numeric `"uid:gid"`. The uid is 1 to 999,999,999 (not 0), the gid 0 to 999,999,999 |
+| `ports` | inline list | no | none | `[5432]`. Up to 16 distinct ports, each 1 to 65535. A block list is an error |
+| `environment` | map | no | none | `KEY: value` lines. Key matches `[A-Za-z_][A-Za-z0-9_]*`, up to 256 characters. Value up to 8192 characters. Keys unique per service |
+
+Plan-level rules, checked across all services:
+
+- At most 10 services.
+- Two services cannot declare the same port. They share one network namespace.
+- `services:` takes a list, not an inline value, so `services: []` is an error. Leave the block out instead.
+- `unhardened` is refused. Every service runs hardened, so declare `user` instead.
+- Other keys are errors: `unknown service key "k" — supported: name, image, ports, environment, user`.
+
+Quoted values accept the usual YAML escapes in double quotes (`\n`, `\"`, `\xNN`, `\uNNNN`). Single quotes know one escape, `''`.
+
+## policy
+
+The evidence a task must carry before Bellows publishes it. Guide: [Policy and reviewers](/guides/policy-and-reviewers).
+
+```yaml .bellows.yaml (excerpt)
+policy:
+    gates: required
+    review: required
+```
+
+| Key | Type | Required | Default | Rules |
+| --- | --- | --- | --- | --- |
+| `gates` | `required` | no | not required | Only the value `required`. Needs an `environment` block |
+| `review` | `required` | no | not required | Only the value `required`. A review must approve the final work |
+
+Any other value, an unknown key or a repeated key is an error. `policy` takes keys, not an inline value. `gates: required` without an `environment` block is refused with `policy requires gates but no environment declares any`. Policy is read from the base branch only.
+
+## reviewers
+
+Named reviewer profiles the agent can call as a separate run. Guide: [Policy and reviewers](/guides/policy-and-reviewers#reviewers).
+
+```yaml .bellows.yaml
+reviewers:
+    - name: security
+      instructions: "Look for injection and leaked secrets."
+      timeout: 10
+      connections: SONAR_TOKEN
+```
+
+| Key | Type | Required | Default | Rules |
+| --- | --- | --- | --- | --- |
+| `name` | string | yes | none | `^[a-z0-9][a-z0-9-]{0,63}$`: lowercase letters, digits, hyphens, up to 64 characters. Unique |
+| `instructions` | string | yes | none | One line, not empty, up to 4096 characters, declared once |
+| `timeout` | integer | no | 15 minutes | Whole minutes, 1 to 120. The platform may cap it lower |
+| `connections` | comma list | no | none | Up to 8 names, each `^[A-Z][A-Z0-9_]{0,63}$`, for example `JIRA_TOKEN, SONAR_TOKEN`. Only these environment values reach the reviewer |
+
+At most 8 reviewers. Errors include `reviewer "x" has no instructions`, `reviewer "x" is declared twice`, `more than 8 reviewers`, and `reviewer name "X" must be lowercase letters, digits and hyphens`.
+
+## Complete example
+
+Every key in one file. Comments sit on their own lines.
+
+```yaml .bellows.yaml
+# Gates half: the runner image, setup and the checks.
+environment:
+    image: golang:1.25
+    # Env var names; each points at a directory kept between runs.
+    cache:
+        - GOCACHE
+        - GOMODCACHE
+    # Runs before the agent starts. Retried until it passes.
+    setup: "go mod download"
+    gates:
+        - name: build
+          command: "go build ./..."
+          timeout: 5
+        - name: test
+          command: "go test -race -count=1 ./..."
+          timeout: 10
+        - name: integration
+          command: 'DATABASE_URL="postgres://app:app@db:5432/app_test?sslmode=disable" go test -count=1 -tags=integration ./...'
+          timeout: 10
+        # Agent-only: skipped by the end-of-run pass, narrowed by $GATE_FILTER.
+        - name: test-filter
+          command: 'go test -race -count=1 -run "$GATE_FILTER" ./...'
+          on_demand: true
+          filter: true
+
+# Sidecar containers next to the agent and the gates.
+services:
+    - name: db
+      image: postgres:17
+      user: "999:999"
+      ports: [5432]
+      environment:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app_test
+
+# Evidence required before Bellows publishes.
+policy:
+    gates: required
+    review: required
+
+# Named reviewers the agent can call.
+reviewers:
+    - name: security
+      instructions: "Look for injection, unsafe deserialization and leaked secrets. Report blockers only."
+      timeout: 10
+      connections: SONAR_TOKEN
+    - name: api-compat
+      instructions: "Check that no public HTTP route or response field was removed or renamed."
+```

@@ -1,0 +1,187 @@
+---
+title: "Command reference"
+description: "Every bellows command and flag, with examples for creating, waiting on and following up tasks."
+---
+
+Commands that talk to the server need a URL and token. See [Install and sign in](/cli/install).
+
+In the CLI, a **job** is one run and a **task** is the whole conversation. See [Task lifecycle](/guides/task-lifecycle). Most commands are `bellows job <verb>` and take a job id.
+
+## Examples
+
+<AccordionGroup>
+  <Accordion title="Create a task and wait for it" defaultOpen>
+    ```bash Terminal
+    bellows job create "Add a GET /api/notes/count endpoint that returns {\"count\": N}" \
+      --repo acme/notes-api
+    # queued <id>
+
+    bellows job wait <id>
+    ```
+    `job wait` exits `0` when the run succeeded. Waiting holds for 300 seconds by default. Use `--timeout <seconds>` to change it.
+  </Accordion>
+  <Accordion title="Follow up with new instructions">
+    ```bash Terminal
+    bellows job follow-up <id> "Also add a table test for the empty case"
+    bellows job wait <id>
+    ```
+  </Accordion>
+  <Accordion title="Answer a question from the agent">
+    ```bash Terminal
+    bellows job questions <id>
+    bellows job answer <id> <question-id> --answer "Use a transaction"
+    ```
+    Give one `--answer` per prompt, in the order `job questions` lists them. An answer is an option's label or free text. A multi-select joins its picks with `, `.
+  </Accordion>
+  <Accordion title="List tasks that need you">
+    ```bash Terminal
+    bellows task list --state attention --repo acme/notes-api
+    ```
+  </Accordion>
+  <Accordion title="Read the prompt from a file and attach a screenshot">
+    ```bash Terminal
+    bellows job create --file task.md --repo acme/notes-api --attach ./error.png
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Tasks and runs
+
+### Create and check
+
+| Command | What it does |
+| --- | --- |
+| `bellows job create (<command...> \| --file <path> \| --stdin)` | Queue a new task. |
+| `bellows job preflight` | Check a selection (repo, executor, skills, connections) without creating anything. Advisory only: the server checks again at create. |
+
+Flags for `job create`:
+
+| Flag | Meaning |
+| --- | --- |
+| `--repo owner/name` | Repository to work on. |
+| `--executor <name>` | Executor profile. See [Executors](/guides/executors). |
+| `--executor-scope user\|org` | Which scope the executor profile is looked up in. |
+| `--base-branch <branch>` | Branch to start from. |
+| `--title <text>` | Task title. |
+| `--skill <name>` | Skill to use. Repeat for several. See [Skills](/guides/skills). |
+| `--connection <id>` | Managed connection to use. Repeat for several. See [Connections](/guides/connections). |
+| `--attach <path>` | Attach a file. Repeat for several. |
+| `--idempotency-key <key>` | Make a retry of the same command safe. |
+
+`job preflight` takes `--repo`, `--executor`, `--executor-scope`, `--skill` and `--connection`.
+
+The prompt comes from the arguments, `--file <path>` or `--stdin`. Give one source. It is sent exactly as written and may be at most 16,384 characters. To pass flags of your own in the prompt, end option parsing with `--`:
+
+```bash Terminal
+bellows job create --repo acme/notes-api -- npm test --watch
+```
+
+**Attachments.** `--attach` accepts png, jpg, webp, pdf, docx, txt, md and csv. Each file may be 20 MiB, with 10 files and 50 MiB per request. Files upload before the task is created. If any check or upload fails, nothing is created. See [Attachments](/guides/attachments).
+
+**Idempotency keys.** A key is 8 to 128 letters, digits or `. _ : -`. Repeat the same command with the same key to recover a write whose answer never arrived. You get the task the first attempt made, not a second one. A different request under the same key is refused. Keys are remembered for 24 hours. Use a new key for a genuinely new task.
+
+### List and inspect
+
+| Command | What it does |
+| --- | --- |
+| `bellows task list` | One row per task plus its latest run. |
+| `bellows job list` | One row per run. |
+| `bellows job investigate <id>` | Show a run's details. |
+| `bellows job activity <id>` | Show a run's activity, including token usage. |
+| `bellows job streams <id>` | List a run's log streams. |
+| `bellows job read <id>` | Read a run's log. |
+
+`task list` flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--state attention\|running\|review\|past` | Filter by state. |
+| `--q <text>` | Search text. |
+| `--author <login>` | Filter by author. |
+| `--repo owner/name` | Filter by repository. |
+| `--sort newest\|oldest` | Sort order. |
+| `--limit <n>` | Page size, 1 to 50. |
+| `--cursor <cursor>` | Continue from a previous page. A cursor fits only the filters that made it. |
+
+`job list` flags: `--status <status>`, `--limit <n>` (1 to 200), `--repo owner/name`.
+
+`job streams` and `job read` flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--stream <name>` | Pick a stream. |
+| `--attempt <n>` | Pick an attempt. |
+| `--session <id>` | Pick a session. |
+| `--executor <name>` | Pick an executor. |
+
+`job read` also takes `--cursor <cursor>`, `--limit <bytes>` and `--all` to read the whole log.
+
+### Wait
+
+| Command | What it does |
+| --- | --- |
+| `bellows job wait <id> [--timeout <seconds>]` | Wait for the run to finish. Default budget: 300 seconds. Leaving a wait, or interrupting the CLI, never stops the task. |
+
+### Change a task
+
+| Command | What it does |
+| --- | --- |
+| `bellows job follow-up <id> (<command...> \| --file <path> \| --stdin)` | Queue new instructions on the same task. Also takes `--attach` and `--idempotency-key`. |
+| `bellows job retry <id>` | Queue a fresh attempt of the task's existing command. Takes `--idempotency-key`. |
+| `bellows job edit <id> (<command...> \| --file <path> \| --stdin)` | Replace the command of a queued run you created. Refused once the run is claimed. |
+| `bellows job questions <id>` | List the agent's open questions. |
+| `bellows job answer <id> <question-id> --answer <text>...` | Answer a question. An answer that came late, lost to an earlier one, or whose run is no longer waiting is refused and not retried. |
+| `bellows job stop <id>` | Stop the run. |
+| `bellows job done <id> [--force]` | Mark the task done. |
+| `bellows job reopen <id>` | Undo done. |
+| `bellows job remove <id> --yes` | Remove the task. `--yes` is required. |
+
+`retry` re-runs the old command. `follow-up` sends new instructions.
+
+## Repositories, executors, skills, connections
+
+| Command | What it lists |
+| --- | --- |
+| `bellows repo list` | Repositories Bellows tracks. |
+| `bellows executor list` | Executor profiles by scope. |
+| `bellows skill list` | Skills a task can select with `--skill`. |
+| `bellows connection list` | Managed connections you can select with `--connection`. |
+
+## Auth and help
+
+| Command | What it does |
+| --- | --- |
+| `bellows auth status` | Show the configuration, where each value came from, the server's version, and who the token acts as. Read-only. |
+| `bellows help`, `--help`, `-h` | Print the full usage text. |
+| `bellows --version` | Print the CLI version. |
+| `--config <path>` | On any command: read that settings file. |
+
+## Output formats
+
+Add `--json` to any command to print one JSON object on stdout and nothing on stderr, whatever the outcome:
+
+```json Output
+{ "ok": true, "command": "...", "outcome": "...", "exitCode": 0, "data": {}, "error": null }
+```
+
+Without it, output is plain text for people. Progress, such as attachment uploads, goes to stderr.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | OK. For a wait: the run succeeded. |
+| `1` | The server refused the request. |
+| `2` | Usage or configuration error. Nothing was sent. |
+| `3` | A wait ran out of budget. |
+| `4` | The run failed or died. |
+| `5` | The run was stopped on the server. |
+| `6` | The task is parked on a workflow wait that waiting cannot move. |
+| `7` | The server was unreachable. |
+| `130` | Interrupted locally. The task on the server is untouched. |
+
+A succeeded run means the run's verdict, not that the pull request is merged.
+
+<Note>
+The CLI also has `bellows batch ...` commands. They work only on servers where batches are enabled, so they are not covered here.
+</Note>

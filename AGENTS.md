@@ -40,6 +40,10 @@ panel, page, style, label or `aria-*` name — or to a payload a panel renders r
 regressed, the spec if the UI changed on purpose. CI runs the e2e job only after merge to `main`
 (`.github/workflows/ci.yml`), so a PR never catches it.
 
+**A change to user-facing behaviour updates `site/` in the same PR.** UI labels, CLI commands and
+flags, MCP tools, `.bellows.yaml` and limits are documented there by hand; `server/test/site-docs.test.ts`
+fails when a CLI command, an MCP tool, a `.bellows.yaml` example or the navigation drifts.
+
 **This repo is public: anonymize every real case.** Issues, PRs, commit messages, code comments,
 docs and test fixtures never name a real deployment, customer, organization, repository, ticket key,
 task id, hostname or person. Describe the case in the abstract — "a multi-package node monorepo",
@@ -78,6 +82,7 @@ commit message needs a force-push to fix.
 | `server/src/commerce/*`, `server/src/db/commerce-*.ts`, `095_commerce.sql`, `routes/commerce.ts`, `COMMERCE_*` | [docs/commerce.md](docs/commerce.md) |
 | `core/src/notifications.ts`, `102_notification_event.sql`, `notification_event` | [docs/notifications.md](docs/notifications.md) |
 | Bind addresses, container hardening, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |
+| `site/` — the public user docs (Mintlify): CLI commands, MCP tools, `.bellows.yaml` examples, navigation | [site/README.md](site/README.md) |
 | Reporting a number as measured | [docs/limits.md](docs/limits.md) |
 
 Metric definitions live in `../factory-stats/SPEC.md`, outside this repo.

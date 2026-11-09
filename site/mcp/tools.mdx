@@ -1,0 +1,112 @@
+---
+title: "MCP tools"
+description: "Every tool the Bellows MCP server offers, grouped by what you want to do."
+---
+
+Your client lists these tools itself. This page explains what each does. Read tools need the read access you granted at [connect time](/mcp/connect); acting tools need the write access.
+
+Most tools take a task id. Where a tool says `jobId`, you can pass the task id or the id of any run in it.
+
+<Note>
+  Batch tools exist but stay hidden unless your administrator enables batches. They are not covered here.
+</Note>
+
+## Discovery
+
+Use these to find valid values before you create a task.
+
+| Tool | What it does | Key inputs |
+| --- | --- | --- |
+| `whoami` | Shows the account, organization, role, granted scopes and Bellows version this connection acts as | none |
+| `list_repos` | Lists tracked repositories. `stale: true` means the list could not refresh; a missing repo is not proof it is absent | `limit`, `cursor` |
+| `list_executors` | Lists your [executors](/guides/executors) (scope `user`) and the organization's (scope `org`), and which is the default | none |
+| `list_skills` | Lists selectable [skills](/guides/skills) with their source (`builtin`, `org`, `workspace`, `repo`) | `repo` (owner/name), `branch` |
+| `list_connections` | Lists your own [connections](/guides/connections) with a state: `connected`, `needs_reconnect` or `disconnected`. Never returns secrets | none |
+| `list_available_integrations` | Browses the providers Bellows offers. Connects nothing | `q`, `category`, `limit`, `cursor` |
+| `preflight_task` | Checks, without creating anything, whether a task would be accepted. Verdict: `ready`, `blocked`, `integration_required` or `unverified` | `repo`, `baseBranch`, `executor`, `executorScope`, `skills`, `connections` |
+
+## Reading
+
+| Tool | What it does | Key inputs |
+| --- | --- | --- |
+| `list_tasks` | Lists tasks like the inbox. Sections: `attention` (default), `running`, `review`, `past` | `state`, `q`, `author`, `repo`, `sort`, `limit` (1-50), `cursor` |
+| `get_task` | Reads one task: head run status, repo, branches, pull request, open questions, every run, attachment metadata | `taskId` |
+| `get_task_result` | The verified outcome of the head run: state, summary, pull request, gate `checks`, what you must answer, and failure cause | `taskId` |
+| `list_jobs` | Lists runs, newest first. Use `list_tasks` to page through tasks | `status`, `repo`, `limit` (1-200) |
+| `investigate_job` | Reads a run and its whole thread: status, failure kind and cause, gates, pull request, bounded output | `jobId` |
+| `job_activity` | Reads token usage over time, plus the gates and pull requests recorded for the run and its task | `jobId` |
+| `list_questions` | Lists the questions agents asked, oldest first, with options and whether an answer would land now | `jobId` |
+| `list_job_streams` | Lists a run's log streams and their state: `complete`, `partial`, `truncated` or `deleted` | `jobId`, `stream`, `attempt`, `session`, `executor`, `limit`, `cursor` |
+| `read_job_log` | Reads one page of log text. Secrets are already masked. Keep passing `cursor` until it is null | `jobId`, the same selectors, `cursor`, `limitBytes` (default 32 KiB, max 256 KiB) |
+
+Task states used across these tools: `pending`, `running`, `succeeded`, `failed`, `cancelled`, `needs_attention`. See [Task lifecycle](/guides/task-lifecycle).
+
+## Waiting
+
+| Tool | What it does | Key inputs |
+| --- | --- | --- |
+| `wait_task` | Waits until the head run settles, then returns its verified result: `succeeded`, `failed`, `cancelled`, `needs_attention` or `timeout`. A timeout is not a failure; call it again | `taskId`, `budgetSeconds` (default 45, max 55) |
+
+## Acting
+
+All of these act as you. Tools that create runs accept an `idempotencyKey` (8-128 characters). If an answer is lost, retry with the same key and you get the same task, not a second one.
+
+| Tool | What it does | Key inputs |
+| --- | --- | --- |
+| `create_task` | Queues a new task and returns its id | `command`, `repo` (required); `baseBranch`, `executor`, `executorScope`, `skills`, `connections`, `attachmentIds`, `idempotencyKey` |
+| `follow_up_task` | Queues a follow-up run on a finished task, in the same session and checkout | `jobId`, `command`, `attachmentIds`, `idempotencyKey` |
+| `retry_task` | Queues a retry of a failed run | `jobId`, `idempotencyKey` |
+| `edit_task` | Replaces the command of a task still queued that you queued. Refused once claimed | `jobId`, `command` |
+| `answer_question` | Answers an agent's question, one answer per prompt, in order. Give an option label or free text | `jobId`, `questionId`, `answers` |
+| `stop_task` | Stops a queued or running task. Destructive | `jobId`, `confirm` |
+| `mark_task_done` | Marks a finished task done. Refused while it runs | `jobId` |
+| `reopen_task` | Clears the done mark so the task takes a follow-up again | `jobId` |
+| `force_close_task` | Forces a task closed, leaving its pull request open. Destructive | `jobId`, `confirm` |
+| `remove_task` | Deletes a task and its thread. Cannot be undone. Refused while running. Destructive | `jobId`, `confirm` |
+| `create_attachment_upload` | Returns a single-use upload link for one file; call again with `uploadId` to check its state | none, or `uploadId`, `maxBytes`, `mediaTypes` |
+
+<Warning>
+  Destructive tools (`stop_task`, `force_close_task`, `remove_task`) do nothing unless you pass `confirm: true`. Without it, the tool tells you what it would do.
+</Warning>
+
+### Attach a file
+
+<Steps>
+  <Step title="Ask for a link">
+    Call `create_attachment_upload` with no arguments. It returns `uploadUrl` (one HTTP PUT of the raw file) and `pageUrl` (a page where you pick the file in the browser).
+  </Step>
+  <Step title="Upload">
+    Upload the file. The link expires in minutes and works once. Treat it as a secret.
+  </Step>
+  <Step title="Check and bind">
+    Call the tool again with `uploadId`. When the state is `completed`, pass `attachmentId` in `attachmentIds` of `create_task` or `follow_up_task`.
+  </Step>
+</Steps>
+
+## Example conversations
+
+### Fix a failing test and wait for the PR
+
+> **You:** Fix the failing test in acme/notes-api and wait for the PR.
+
+The assistant works through these calls:
+
+1. `list_repos` to confirm `acme/notes-api` exists.
+2. `preflight_task` with that repo. The verdict is `ready`.
+3. `create_task` with a command like "Fix the failing `TestListNotes` test. Don't change the public API." It returns a task id.
+4. `wait_task` with the id. It returns `timeout`, so the assistant calls it again until the result is `succeeded`.
+5. `get_task_result` for the summary, gate `checks` and pull request link.
+
+> **Assistant:** The task succeeded. All gates passed and the PR is open: the link comes from `pullRequest.url`.
+
+### An agent asks a question
+
+> **You:** Why is my notes-api task stuck?
+
+1. `list_tasks` with `state: "attention"` finds the task, marked `needs_attention`.
+2. `list_questions` shows: "Should deleted notes be soft-deleted?" with the options `Yes` and `No`.
+3. The assistant asks you. You say "Yes."
+4. `answer_question` with `answers: ["Yes"]`.
+5. `wait_task` until the run settles, then `get_task_result`.
+
+If the run had failed instead, the assistant would call `investigate_job`, then `read_job_log`, and offer `retry_task` or `follow_up_task` with a corrected command.

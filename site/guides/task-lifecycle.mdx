@@ -1,0 +1,103 @@
+---
+title: "Task lifecycle"
+description: "What each task status means, what moves a task between them, and what to do when a run fails."
+---
+
+## Tasks and jobs
+
+A **task** is the conversation you see in the app. A **job** (also called a run) is one attempt by the agent inside it.
+
+Your first prompt starts the first job. A follow-up, an answer to a question, or a retry starts a new job on the same task. The new job continues from the same checkout and session, so the task keeps one history and one status.
+
+The status you see on a task is the state of its newest job, plus what you still owe it.
+
+## Statuses
+
+<span className="status status-queued">Queued</span> <span className="status status-running">Running</span> <span className="status status-stopping">Stopping</span> <span className="status status-question">Needs answer</span> <span className="status status-review">Waiting for review</span> <span className="status status-done">Done</span> <span className="status status-failed">Failed</span>
+
+| Status | What it means |
+| --- | --- |
+| <span className="status status-queued">Queued</span> | The job waits for a free runner. |
+| <span className="status status-running">Running</span> | The agent is working, or the gates are checking its change. |
+| <span className="status status-stopping">Stopping</span> | You asked to stop. The run is winding down. |
+| <span className="status status-question">Needs answer</span> | The agent asked a question and waits for you. See [Run tasks](/guides/run-tasks). |
+| <span className="status status-review">Waiting for review</span> | The pull request is published and Bellows waits for review on it. |
+| <span className="status status-review">Succeeded · Needs review</span> | The run finished and passed. You have not closed the task yet. |
+| <span className="status status-failed">Failed · Needs review</span> | The run failed. Read the reason on the run. |
+| <span className="status status-queued">Stopped · Needs review</span> | The run was stopped before it finished. |
+| <span className="status status-done">Done</span> | You marked the task done. |
+
+<Note>
+A job whose runner vanished (for example a lost node) shows as **Failed**. Infrastructure losses are retried for you and listed on the task as interruptions. They do not count as a failed attempt.
+</Note>
+
+## What moves a task
+
+```text
+Queued -> Running -> Succeeded · Needs review -> Done
+              |  \-> Needs answer -> (you answer) -> Running
+              |  \-> Stopping -> Stopped · Needs review
+              \----> Failed · Needs review -> (Retry) -> Queued
+```
+
+- **Start task** creates the first job. It is **Queued**, then **Running** when a runner picks it up.
+- When the agent asks a question, the task shows **Needs answer** until you answer. Your answer starts a new job.
+- **Stop** moves a running task to **Stopping**, then **Stopped · Needs review**.
+- A finished run waits for you. **Follow up**, **Retry** or **Edit** start a new job. **Mark done** closes the task. **Reopen** brings it back.
+- When review on the pull request is pending, the task shows **Waiting for review**. Once that wait ends, the reason is added to the label.
+
+<Tip>
+**Mark done** closes the task in Bellows only. It does not merge or close the pull request.
+</Tip>
+
+## When a run fails
+
+A failed run shows a red pill with the reason. Open the run to read the output, the gates and the services.
+
+<AccordionGroup>
+  <Accordion title="timed out">
+    The run used its whole time budget and was killed. Gates still run on whatever the agent left behind. Split the task into smaller steps, or follow up and ask the agent to continue.
+  </Accordion>
+  <Accordion title="gate failed">
+    The agent finished, but a gate in `.bellows.yaml` failed. Open the run and read the gate output. Follow up with the failing command's error, or fix a flaky gate in the repo. See [Configure a repo](/guides/configure-repo).
+  </Accordion>
+  <Accordion title="config error">
+    Bellows could not start the run because of its configuration, for example an executor or `.bellows.yaml` problem. Fix the setting, then retry. A retry without a fix fails the same way.
+  </Accordion>
+  <Accordion title="service failed">
+    A service declared in `.bellows.yaml` (a database, for example) died during the run. Check the service image and settings, then retry.
+  </Accordion>
+  <Accordion title="cache lost">
+    Bellows ended the run because the agent's prompt cache was lost. Retry. The new job runs on the same task.
+  </Accordion>
+  <Accordion title="blocked">
+    The agent reported itself blocked, for example a missing credential or an unclear requirement. Read its last message, give it what it needs, and follow up.
+  </Accordion>
+  <Accordion title="publish failed">
+    The change was ready but Bellows could not publish the branch or pull request. Typical causes are a conflict with the base branch or a refused push. Read the run output, resolve it, then follow up or retry.
+  </Accordion>
+  <Accordion title="helper failed">
+    A helper step of the workflow failed. Read the run output for the step's error, then retry.
+  </Accordion>
+  <Accordion title="evidence required">
+    The agent said it succeeded, but your organization requires passing gates or a review as evidence, and the run did not have it. Bellows turned the result into a failure. Follow up and ask the agent to run the gates, or get the review.
+  </Accordion>
+  <Accordion title="checkpoint unrestorable">
+    The task's workspace was lost and Bellows could not rebuild it from its saved checkpoint. Start a new task for the follow-up work.
+  </Accordion>
+  <Accordion title="attachment unavailable">
+    An attached file could not be delivered to the runner. Attach it again in a follow-up. See [Attachments](/guides/attachments).
+  </Accordion>
+  <Accordion title="skill unavailable">
+    A skill the run needed could not be installed. Check the skill's configuration, then retry.
+  </Accordion>
+  <Accordion title="runner error">
+    The runner itself failed, or the run was cancelled mid-way. Retry. If it repeats, ask your admin to check the executor.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+Retry is for failures that are not your prompt's fault: runner error, cache lost, a flaky service. For gate, evidence and blocked failures, a **Follow up** with the details works better. See [Writing good tasks](/guides/writing-good-tasks).
+</Note>
+
+Stuck? See [FAQ and troubleshooting](/reference/faq).

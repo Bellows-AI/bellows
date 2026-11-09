@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { Menu, MenuButton, MenuItem, MenuItems, MenuSeparator } from '@headlessui/react';
 import { useDownwardAnchor } from '../anchor.js';
+import { DOCS_URL } from '../brand.js';
 import { signOut, type Session } from '../api/useSession.js';
 
 /**
@@ -37,6 +38,12 @@ export function UserMenu({ session }: { session: Session }) {
                     <NavLink to="/account" className="popover-option">
                         Account
                     </NavLink>
+                </MenuItem>
+                <MenuItem>
+                    <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="popover-option">
+                        Documentation
+                        <span className="visually-hidden"> (opens in a new tab)</span>
+                    </a>
                 </MenuItem>
                 {/*
                     Under AUTH_MODE=none there is no session to end, so no item — a button that can

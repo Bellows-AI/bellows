@@ -1,0 +1,225 @@
+---
+title: "Server and driver configuration"
+description: "Every environment variable the Bellows server and driver read, with defaults and what each one does."
+---
+
+Bellows is configured with environment variables only. Locally they come from `.env` (loaded by `npm run dev` and read by Compose). In Kubernetes the Helm chart renders them from its values. A bad value is fatal at boot and names the variable.
+
+- **Req** means the process refuses to start without it (or without it in the stated mode).
+- Booleans on the server accept `1`, `true`, `yes` or `0`, `false`, `no`. Artifact flags accept `true`, `1`, `false`, `0`.
+- An unknown variable is ignored, except the retired ones at the end of this page.
+- The secret-store keys go in `secrets.env`, not `.env`. The driver deletes every `SECRETS_*` variable at startup.
+
+## Server
+
+### Database and network
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | Yes | none | Postgres connection string. A fetching process refuses a database whose name ends in `_test`, `_seed`, `_synthetic`, `_demo` or `_e2e`. |
+| `DB_POOL_MAX` | | `50` | Maximum Postgres connections, shared by all routes and background loops. |
+| `PORT` | | `8080` | Port the server listens on. |
+| `HOST` | | `127.0.0.1` | Bind address. The container image sets `0.0.0.0`. |
+| `WEB_ROOT` | | unset | Directory of the built web app. Unset serves no web app. |
+| `PUBLIC_URL` | github mode, non-loopback bind | `http://<HOST>:<PORT>` on a loopback bind | Absolute origin of the board. Used for the OAuth redirect and as the MCP resource. |
+
+### Authentication
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `AUTH_MODE` | | `none` | `github` requires sign-in. `none` leaves every route open, including `POST /api/jobs`, which runs shell commands. Any other value is fatal. |
+| `AUTH_ALLOW_PUBLIC_BIND` | | off | Lets `AUTH_MODE=none` start on a non-loopback `HOST`. Use only if something in front of the port authenticates. |
+| `GITHUB_OAUTH_CLIENT_ID` | github mode | none | Client id of the GitHub OAuth App. |
+| `GITHUB_OAUTH_CLIENT_SECRET` | github mode | none | Client secret of the OAuth App. |
+| `SESSION_SECRET` | github mode | none | Signs the session cookie. At least 32 characters. Changing it signs everyone out. |
+| `SESSION_TTL_HOURS` | | `336` (14 days) | Session lifetime in hours. Positive integer. |
+| `COOKIE_SECURE` | | off | Sets `Secure` on the session cookie. Turn on behind TLS. |
+| `JOB_BOARD_TOKEN` | github mode | none | Shared secret the driver presents on the worker routes. At least 32 characters. Set the same value on the server and the driver. |
+| `INGEST_TOKEN` | | unset | Optional shared secret for the telemetry ingest routes, sent as `X-Factory-Ingest-Token`. Unset leaves them open. |
+| `GITHUB_WEBHOOK_SECRET` | | unset | HMAC secret for the App's installation webhook at `<PUBLIC_URL>/api/github/webhook`. At least 32 characters. Unset removes the route. |
+
+### GitHub App
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `GITHUB_APP_ID` | Yes | none | The App's id. |
+| `GITHUB_APP_PRIVATE_KEY` | Yes, unless the `_FILE` form is set | none | The PEM, or its base64. Must be a valid private key. |
+| `GITHUB_APP_PRIVATE_KEY_FILE` | | none | Path to the `.pem`, read at boot when `GITHUB_APP_PRIVATE_KEY` is empty. |
+
+See [GitHub App](/self-host/github-app) for permissions and setup.
+
+### Jira
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `ATLASSIAN_CLIENT_ID` | with the secret | none | Client id of the Atlassian OAuth app. Both variables or neither. |
+| `ATLASSIAN_CLIENT_SECRET` | with the id | none | Client secret. Without both, **Connect Jira** answers that Jira is not configured. |
+
+See [Jira app](/self-host/jira-app).
+
+### Optional features
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `MCP_ENABLED` | | off | Turns on the MCP endpoint `POST /api/mcp`. Needs an https `PUBLIC_URL` (http is accepted only for a loopback `PUBLIC_URL` on a loopback `HOST`). Off, the endpoint answers 404. |
+| `MCP_TRUSTED_ORIGINS` | | none | Comma-separated exact http(s) origins, besides `PUBLIC_URL`, that may call MCP from a browser. No wildcards, paths or trailing slashes. |
+| `BATCHES_ENABLED` | | off | Turns on batches. Off, `/api/batches` answers 404 `BATCHES_DISABLED`, batch MCP tools are not listed, and the batch loops do not start. |
+
+### Admission and capacity
+
+Admission budgets apply to every claim across all drivers and replicas. Unset means unlimited. Values are positive integers.
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `ADMISSION_MAX_RUNNING` | | unlimited | Most tasks running at once in total. |
+| `ADMISSION_MAX_RUNNING_PER_ORG` | | unlimited | Most running tasks per organization. |
+| `ADMISSION_MAX_RUNNING_PER_REPO` | | unlimited | Most running tasks per repository. |
+
+`DRIVER_CONCURRENCY` (below) limits one driver.
+
+### Telemetry
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `TELEMETRY_SOURCE` | | `postgres` | `postgres`, `fixture` or `off`. `fixture` is for development. |
+| `TELEMETRY_TTL_SECONDS` | | `30` | How long the dashboard caches a telemetry read. Minimum `5`. |
+| `INGEST_TOKEN` | | unset | See Authentication. |
+
+### Artifacts and attachments
+
+Artifacts and member uploads share one backend.
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `ARTIFACTS_BACKEND` | | `filesystem` | `s3` or `filesystem`. The filesystem backend supports a single replica only. |
+| `ARTIFACTS_FS_ROOT` | | `$TMPDIR/factory-artifacts` (`/tmp/...` if `TMPDIR` is unset) | Absolute directory for the filesystem backend. |
+| `ARTIFACTS_S3_BUCKET` | s3 | none | Bucket name. The board creates it on boot. |
+| `ARTIFACTS_S3_REGION` | s3 without an endpoint | `us-east-1` when an endpoint is set | AWS region. |
+| `ARTIFACTS_S3_ENDPOINT` | | empty (AWS) | Endpoint of an S3-compatible store. |
+| `ARTIFACTS_S3_FORCE_PATH_STYLE` | | `false` | Path-style addressing. Most S3-compatible stores need `true`. |
+| `ARTIFACTS_S3_PREFIX` | | `factory/` | Key prefix inside the bucket. |
+| `ARTIFACTS_S3_KMS_KEY_ID` | | empty | KMS key for server-side encryption. Empty uses SSE-S3. |
+| `ARTIFACTS_ACCESS_KEY_ID` | with the secret | none | Static S3 key. Both keys or neither. Neither means EKS Pod Identity, then IRSA. |
+| `ARTIFACTS_SECRET_ACCESS_KEY` | with the id | none | Static S3 secret. |
+| `ARTIFACTS_RETENTION_DAYS` | | `90` | Days after which a sweep deletes the artifacts of a removed task. Minimum `1`. |
+| `ARTIFACTS_ORG_QUOTA_BYTES` | | `0` (off) | Per-organization byte quota. |
+| `ATTACHMENTS_DRAFT_TTL_HOURS` | | `24` | Hours an upload may wait unattached before it is deleted. Minimum `1`. |
+
+### Secret store
+
+Required on every boot. Read from the server's environment only, from `secrets.env`. `npm run secrets:init` writes it for the `database` backend.
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `SECRETS_BACKEND` | Yes | none | `database`, `aws` or `vault`. One per deployment. Switching with secrets already stored is not supported. |
+| `SECRETS_DATA_KEYS` | database | none | Comma-separated `<keyId>:<base64 of 32 bytes>`. Key ids use `[a-z0-9-]`, up to 32 characters. |
+| `SECRETS_ACTIVE_KEY_ID` | database | none | Key id used for new versions. Must appear in `SECRETS_DATA_KEYS`. |
+| `SECRETS_OPERATION_KEY` | Yes | none | Base64, 32 bytes. Cannot be rotated. Must differ from every other key. |
+| `SECRETS_FINGERPRINT_KEY` | Yes | none | Base64, 32 bytes. Cannot be rotated. |
+| `SECRETS_AWS_REGION` | aws | none | Secrets Manager region. |
+| `SECRETS_AWS_PREFIX` | aws | none | Namespace in Secrets Manager, slash-separated. |
+| `SECRETS_AWS_ENDPOINT` | | none | Development emulator only. Set together with the static key pair below. |
+| `SECRETS_AWS_ACCESS_KEY_ID`, `SECRETS_AWS_SECRET_ACCESS_KEY` | | none | Development only. Both or neither. Production uses IRSA or Pod Identity. |
+| `SECRETS_VAULT_ADDR` | vault | none | Vault origin, no path. |
+| `SECRETS_VAULT_MOUNT` | vault | none | KV v2 mount, for example `secret`. |
+| `SECRETS_VAULT_PREFIX` | vault | none | Namespace in the mount, slash-separated. |
+| `SECRETS_VAULT_AUTH` | vault | none | `kubernetes` (production) or `token` (development). |
+| `SECRETS_VAULT_ROLE`, `SECRETS_VAULT_TOKEN_FILE` | with `kubernetes` | none | Role and projected service-account token file. |
+| `SECRETS_VAULT_TOKEN` | with `token` | none | Fixed client token. Development only. |
+
+A variable for a backend you did not choose is refused.
+
+## Driver
+
+The driver reads only the environment. It has no database access and talks to the board over HTTP.
+
+### Connection and identity
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `JOB_BOARD_URL` | | `http://127.0.0.1:8080` | Where the board is. http(s) only. |
+| `JOB_BOARD_TOKEN` | github mode | empty | Same value as the server. Empty sends no header, for an open board. |
+| `DRIVER_WORKER` | | `driver-<pid>` | Name of this driver on every claim. |
+| `EXECUTOR` | | `docker` | `docker` or `kubernetes`. Any other value is fatal. |
+| `REPO_CLONE_BASE` | | `https://github.com` | Where checkouts are cloned from: `<base>/<owner>/<name>.git`. |
+
+### Executor images and runner environment
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `CLAUDE_EXECUTOR_IMAGE` | | `claude-executor` | Image for Claude Code tasks. |
+| `OPENCODE_EXECUTOR_IMAGE` | | `opencode-executor` | Image for OpenCode tasks. |
+| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN` or `GH_TOKEN`. |
+| `RUNNER_SKIP_PERMISSIONS` | | off | Adds `--dangerously-skip-permissions`. Without it most headless jobs stall at a permission prompt. With it the agent runs anything inside the runner. |
+| `RUNNER_SERVICES` | | on | Starts the [services](/guides/services) a repo declares. `0` or `false` disables. |
+| `RUNNER_OTEL_ENDPOINT` | | `http://collector:4318` | OTLP endpoint given to runners. |
+| `RUNNER_STATS_URL` | | `JOB_BOARD_URL` | Where the runner's branch reporter posts. |
+| `RUNNER_NETWORK` | | none | Docker network runners join. Lets telemetry reach the collector. |
+| `RUNNER_CACHE_WATCH` | | off | Kills an OpenCode run when the provider stops serving prompt-cache hits. Docker only. Fatal with `EXECUTOR=kubernetes`. |
+| `RUNNER_CACHE_WATCH_POLL_MS` | | `30000` | Poll period for the cache watch. `250` to `300000`. |
+
+### Polling, leases and timeouts
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `DRIVER_CONCURRENCY` | | `2` | Tasks this driver runs at once. `1` to `32`. |
+| `DRIVER_POLL_MS` | | `5000` | Poll interval. `250` to `300000`. |
+| `DRIVER_LEASE_SECONDS` | | `300` | Lease length per claim. `10` to `3600`. |
+| `DRIVER_JOB_TIMEOUT_MS` | | `7200000` (2 hours) | Wall-clock cap per run. `1000` ms to 24 hours. |
+| `GATE_TIMEOUT_MS` | | `600000` (10 minutes) | Cap on one gate run. A timeout fails the gate with exit 124. `1000` ms to 24 hours. |
+| `DRIVER_HANDOVER_MS` | | `540000` | How long a stopping driver lets runs finish before handing them back to the board. Compose sets `5000`. |
+| `DRIVER_REBIND_GRACE_MS` | | `240000` (4 min) | Wait past the lease for a new holder to take over a released group. `1000` ms to 24 hours. |
+| `DRIVER_ORPHAN_MIN_MS` | | `30000` | Floor of a lost driver's orphan bound. `1000` ms and up. Refused if the lease cannot hold it. |
+| `DRIVER_STEP_WAIT_MS` | | `15000` | One step long poll. `500` ms and up. |
+| `DRIVER_HEARTBEAT_FILE` | | none | File touched on an interval, for a liveness probe. |
+
+### Cleanup
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `DRIVER_REAP_INTERVAL_MS` | | `300000` | How often the reaper sweeps orphaned service objects. `0` disables. |
+| `DRIVER_REAP_GRACE_MS` | | `600000` | Minimum age of an object before the reaper may act on it. |
+| `TASK_VOLUME_TTL_MS` | | `86400000` (1 day) | How long a task volume is kept after the last attempt, when everything it holds is whole. Up to 1 year. |
+| `TASK_VOLUME_BOUND_MS` | | `604800000` (7 days) | The same, when a checkpoint is truncated or an artifact is pending. |
+| `TASK_VOLUME_EXPORT_ATTEMPTS` | | `3` | Failed transcript exports tolerated before the volume is deleted anyway. `1` to `100`. |
+
+### Gates and metrics
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `GATE_LISTEN_HOST` | | `127.0.0.1` | Bind address of the gate server, which runs shell commands. Compose sets `0.0.0.0`. |
+| `GATE_ADVERTISE_URL` | | `http://host.docker.internal:<port>` | URL runners use to reach the gate server. The bound port is appended if the URL has none. |
+| `DRIVER_METRICS_PORT` | | unset (off) | Port for a Prometheus scrape at `GET /metrics`, protected by the board token. Needs `JOB_BOARD_TOKEN` when `GATE_LISTEN_HOST` is not loopback. |
+
+### Resources
+
+Values are Kubernetes quantities: CPU as cores or millicores (`2`, `500m`), memory with an optional suffix (`1Gi`). A request above its limit is fatal. All unset means no requests or limits. On Docker, memory request becomes `--memory-reservation`, limits become `--memory` and `--cpus`, and there is no CPU request.
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `RUNNER_CPU_REQUEST`, `RUNNER_MEMORY_REQUEST` | | unset | Requests for runner pods and containers, and services. |
+| `RUNNER_CPU_LIMIT`, `RUNNER_MEMORY_LIMIT` | | unset | Limits. Off by default: a memory limit can OOM-kill a large build. |
+| `GATE_CPU_REQUEST`, `GATE_MEMORY_REQUEST`, `GATE_CPU_LIMIT`, `GATE_MEMORY_LIMIT` | | the `RUNNER_` twin | Sizing for gate runs. |
+
+### Kubernetes executor
+
+Used only with `EXECUTOR=kubernetes`. The Helm chart sets them. See [Kubernetes](/self-host/kubernetes).
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `K8S_NAMESPACE` | | `default` | Namespace for runner Jobs. |
+| `K8S_RELEASE` | | none | Helm release name. Labels runner Jobs `app.kubernetes.io/instance`. |
+| `TASK_VOLUME_STORAGE_CLASS` | | cluster default | Storage class for task volumes. |
+| `TASK_VOLUME_ACCESS_MODE` | | `ReadWriteOncePod` | Access mode of task volumes. |
+| `TASK_VOLUME_SIZE` | | `20Gi` | Size of a task volume. |
+| `RUNNER_CREDENTIALS_SECRET` | | none | Secret holding one key per `RUNNER_ENV` name. |
+| `RUNNER_IMAGE_PULL_POLICY` | | `IfNotPresent` | `Always`, `IfNotPresent` or `Never`. |
+| `RUNNER_IMAGE_PULL_SECRETS` | | none | Comma-separated image pull Secret names for every pod. |
+| `RUNNER_DO_NOT_DISRUPT` | | off | Marks pods so Karpenter and cluster-autoscaler do not evict them. Spot interruptions and manual drains still do. |
+| `RUNNER_NODE_SELECTOR` | | none | JSON object of string values. |
+| `RUNNER_TOLERATIONS` | | none | JSON array of objects. |
+| `RUNNER_AFFINITY` | | none | JSON object. |
+
+## Retired variables
+
+These are fatal if set, so a stale value cannot change what a deployment reads: `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPOS`, `ORG_REPOS`, `ORG_ID`, `ORG_NAME`, `GITHUB_APP_INSTALLATION_ID`, `AUTH_AUTO_JOIN_GITHUB_ORG`, `AUTH_BOOTSTRAP_ADMIN`, `DATA_SOURCE`, `SYNC_TTL_SECONDS`, `CACHE_TTL_SECONDS`, `BASE_BRANCH` and `BOTS`. Organizations are now the GitHub App's installations, and the repository list comes from the App.

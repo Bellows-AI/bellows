@@ -1,0 +1,45 @@
+/* Status tags: the app's own status colors, so the docs match what users see in Bellows. */
+.status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 10px;
+    border: 1px solid #d9ddd3;
+    border-radius: 20px;
+    background: #fdfcf8;
+    font-size: 0.8em;
+    white-space: nowrap;
+}
+.status::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.status-queued,
+.status-done {
+    color: #5e6a7c;
+}
+.status-running {
+    color: #2f7a4f;
+}
+.status-stopping {
+    color: #93611c;
+}
+.status-failed {
+    color: #b8323f;
+}
+.status-review {
+    color: #1f63d1;
+}
+.status-question {
+    color: #7a3fc2;
+}
+.status-flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 1rem 0;
+}

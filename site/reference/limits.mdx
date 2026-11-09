@@ -1,0 +1,176 @@
+---
+title: "Limits"
+description: "Every user-visible limit in Bellows, grouped by area, with what happens when you go over it."
+---
+
+Values come from the Bellows code. Where a value is set by whoever runs Bellows, the table says so. A request over a limit is refused with an error that names the field; it is not trimmed silently.
+
+## Tasks and prompts
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Prompt length | 16,384 characters | Refused: `command exceeds 16384 characters` |
+| Create or follow-up request body | 128 KiB | Refused |
+| Task title (when you set one) | 120 characters | Refused: `title exceeds 120 characters`. A blank title is refused too |
+| Fallback title | 80 characters | When you set no title, the first line of the prompt is shown, cut with `…` |
+| Skills per task | 16 | Refused: `skills holds at most 16 names` |
+| Connections per task | 8 | Refused: `connections takes at most 8 ids` |
+| Attachments per task | 10 | Refused: `attachments takes at most 10 ids` |
+| Answer to an agent question | 2,000 characters | Refused |
+| Questions in one agent ask | 4, each with up to 4 options | The agent's question is refused |
+| Tasks per page (`GET /api/tasks`, `list_tasks`, `task list`) | Default 30, 1 to 50 | Refused: `limit must be an integer 1..50` |
+| Runs per page (`GET /api/jobs`) | Default 50, up to 200 | Refused |
+
+See [Writing good tasks](/guides/writing-good-tasks) and [Task lifecycle](/guides/task-lifecycle).
+
+## Attachments
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Files per request | 10 | Refused. Nothing is uploaded |
+| Size per file | 20 MiB | Refused |
+| Total size per request | 50 MiB | Refused |
+| Image dimensions | 16,384 px on the longest side, 64 megapixels | Refused |
+| File name | 255 bytes, no control characters | Refused. `/` and `\` become `_` |
+| Types | png, jpg, jpeg, webp, pdf, docx, txt, md, csv | Refused. The type is read from the file's bytes, not its name |
+| Uploads at once | 4 per server process | Extra uploads get `503` with a 5 second retry hint. Set by the operator |
+
+See [Attachments](/guides/attachments).
+
+## .bellows.yaml
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| File size | 65,536 bytes | The run fails with a configuration error |
+| Top-level keys | `environment`, `services`, `policy`, `reviewers`, each once | Error: unknown key or second block |
+| `environment.image` | A plain Docker reference, no `@` | Error |
+| `environment.setup` | 4,096 characters | Error |
+| `environment.cache` | 16 names, each up to 255 characters | Error |
+| Indentation | Spaces only | Error on a tab |
+
+The schema is in [.bellows.yaml reference](/reference/bellows-yaml).
+
+## Gates
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Gates per file | 16 | Configuration error: `more than 16 gates` |
+| Gate name | 64 characters, unique, no `/` or `\`, not starting with `-` or `.` | Configuration error |
+| Gate command | 4,096 characters, one line | Configuration error |
+| Gate `timeout` | 1 to 120 whole minutes | Configuration error |
+| Default gate time | 10 minutes. Set by the operator | The gate fails with exit code 124, and counts as an environment failure |
+| Longest gate the agent can start itself | 10 minutes | The call is refused. The gate runs only in the end-of-run pass |
+| Filter value (`$GATE_FILTER`) | 256 printable characters, one line | The agent's request is refused |
+| Gate repair rounds | 0 to 10, default 3 | `0` turns repair off. The value is fixed when the task is created |
+
+A gate's own `timeout` is also capped by the run time limit below. See [Gates](/guides/gates).
+
+## Services
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Services per file | 10 | Configuration error |
+| Service name | 1 to 30 characters, lowercase DNS label, not `localhost` | Configuration error |
+| Ports per service | 16, each 1 to 65535, no repeats | Configuration error |
+| Same port in two services | Not allowed | Configuration error |
+| Environment key | 256 characters | Configuration error |
+| Environment value | 8,192 characters | Configuration error |
+| `user` | Numeric `uid:gid`, uid not 0 | Configuration error |
+| Restart wait | 5 minutes | A service dead before the gates is restarted. If it stays down, the task fails with <span className="status status-failed">service failed</span> |
+
+See [Services](/guides/services).
+
+## Policy and reviewers
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Reviewers per file | 8 | Configuration error |
+| Reviewer name | 64 characters, lowercase letters, digits and hyphens | Configuration error |
+| Reviewer instructions | 4,096 characters, one line | Configuration error |
+| Reviewer `timeout` | 1 to 120 minutes, default 15 | Configuration error. The platform may cap the time lower |
+| Reviewer `connections` | 8 names, upper-case | Configuration error |
+
+See [Policy and reviewers](/guides/policy-and-reviewers).
+
+## Executors and profiles
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Personal executors | 10 per person | Refused: `TOO_MANY_EXECUTORS` |
+| Organization executors | 10 per organization | Refused: `TOO_MANY_EXECUTORS` |
+| Configuration JSON | A JSON object up to 32 KiB | The editor refuses to save |
+| Gate repair rounds | 0 to 10, default 3 | Refused |
+
+See [Executors](/guides/executors).
+
+## Skills
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Skills per task | 16 | Refused |
+| Skill name | 64 characters, lowercase letters, digits and single hyphens | The skill is skipped or refused |
+| Repo skill folders read | 50 per repository | The rest are not read |
+| Uploaded skill (zip) | 64 files, 5 MiB in total, 1 MiB per file | Refused |
+
+See [Skills](/guides/skills).
+
+## Environment variables and secrets
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Entries per scope | 100, variables and secrets together | Refused: `TOO_MANY_ENV_VARS` |
+| Name | Letters, digits and `_`, not starting with a digit, up to 255 characters | Refused |
+| Value | 32,768 characters, no line breaks | Refused |
+| Reserved names | `GITHUB_TOKEN`, `GH_TOKEN`, names starting with `LD_`, and names Bellows uses itself | Refused on save |
+
+See [Environment variables and secrets](/guides/env-and-secrets).
+
+## Tokens
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Token label | 1 to 128 characters | Refused: `BAD_LABEL` |
+| Idempotency key | 8 to 128 letters, digits or `. _ : -`. Remembered for 24 hours | A reused key with a different request is refused |
+
+See [Install and sign in](/cli/install#token-types).
+
+## MCP
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| One tool call | Ends after 55 seconds | `wait_task` returns `timeout`. It is not a failure; call it again |
+| Concurrent calls per client | 8 | Refused: `At most 8 tool calls at once` |
+| `list_tasks` page | 1 to 50 | Refused |
+| `list_jobs` page | 1 to 200 | Refused |
+| `read_job_log` page | 32 KiB by default, up to 256 KiB | Pass `cursor` for the next page |
+| Request body | 1 MiB | Refused |
+
+See [MCP tools](/mcp/tools).
+
+## CLI
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Prompt | 16,384 characters | Exit `2` |
+| `--attach` | 10 files, 20 MiB each, 50 MiB per request | Exit `2`, nothing is created |
+| `--idempotency-key` | 8 to 128 characters. With `--attach`, up to 122 | Exit `2` |
+| `--limit` on `task list` | 1 to 50 | Exit `2` |
+| `--limit` on `job list` | 1 to 200 | Exit `2` |
+| `FACTORY_REQUEST_TIMEOUT_S` | Default 30, range 1 to 3600. One request, headers and body included | The request fails; reads and keyed writes are retried |
+| `FACTORY_READ_RETRIES` | Default 3, range 0 to 10. Reads and keyed writes only | Out of retries, the call fails |
+| `job wait --timeout` | Default 300 seconds, whole seconds, 1 or more | Exit `3`. The task keeps running |
+
+Exit codes: `0` ok, `1` refused, `2` usage, `3` wait ran out, `4` failed, `5` stopped, `6` waiting, `7` unreachable, `130` interrupted. See [Command reference](/cli/commands).
+
+## Run time and timeouts
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Run time | 2 hours by default. Set by the operator | The run is killed and shows <span className="status status-failed">timed out</span>. Gates still run on what the agent left |
+| Gate | 10 minutes by default, or the gate's `timeout` up to 120 | Exit code 124 |
+| Reviewer | 15 minutes by default, or its `timeout` | The review run is stopped |
+| API wait (`?waitFor=terminal`) | 30 seconds by default, up to 60 | Capped at 60. Call again |
+| MCP wait | 55 seconds | Call again |
+| CLI wait step | Each request holds up to 60 seconds | The CLI repeats it until its budget ends |
+
+Values marked "set by the operator" are the defaults. Whoever runs Bellows can change them.
