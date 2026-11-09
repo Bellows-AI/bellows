@@ -967,7 +967,10 @@ echo 'building the stub runner images'
 # workflow engine's marker edges match the run's final non-empty line (docs/workflows.md, the
 # contract a real model honours by emitting the marker last), and the one-line `echo "$@"` puts
 # the driver's `--session-id <uuid> -p` flags ahead of the prompt on that line, so every marker
-# edge missed and the stub-walk graph stalled after its first review round.
+# edge missed and the stub-walk graph stalled after its first review round. The argv line leaves out
+# the `--append-system-prompt` value: the stub-walk nests each node's output into the next prompt and
+# the board keeps only the head of an interpolated output (INTERP_TAIL_LIMIT), so echoing the master
+# prompt every round pushed the fix node's FIXED-ONE-ROUND marker past the cut.
 # Every stub stands on scripts/stub-runner.Dockerfile: node + git as the uid-1000 `node` user, like
 # the executor images — the driver runs the startup sync and the other git steps IN the job's
 # executor image (`--entrypoint node`), and every task has a checkout to sync (issue #263) — and the
@@ -976,7 +979,7 @@ echo 'building the stub runner images'
 # supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
     docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
+printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; skip=; line=; for a; do if [ -n \\"$skip\\" ]; then skip=; elif [ \\"$a\\" = --append-system-prompt ]; then skip=1; else line=\\"$line $a\\"; fi; done; echo \\"${line# }\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
 printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
 # Issue #814: an agent whose one tool signals everything its uid may, through the CLI's shell.
 mkdir -p "$work/kill"
