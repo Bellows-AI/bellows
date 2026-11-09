@@ -39,11 +39,38 @@
         "groups": [
             {
                 "group": "Overview",
-                "pages": ["overview/introduction", "overview/quickstart", "overview/concepts"]
+                "pages": [
+                    "overview/introduction",
+                    "overview/quickstart",
+                    "overview/concepts"
+                ]
             },
             {
-                "group": "Guides",
-                "pages": ["guides/configure-repo", "guides/run-tasks", "guides/writing-good-tasks"]
+                "group": "Use Bellows",
+                "pages": [
+                    "guides/run-tasks",
+                    "guides/task-lifecycle",
+                    "guides/writing-good-tasks",
+                    "guides/attachments"
+                ]
+            },
+            {
+                "group": "Configure your repo",
+                "pages": [
+                    "guides/configure-repo",
+                    "guides/gates",
+                    "guides/services",
+                    "guides/policy-and-reviewers"
+                ]
+            },
+            {
+                "group": "Agents and integrations",
+                "pages": [
+                    "guides/executors",
+                    "guides/skills",
+                    "guides/env-and-secrets",
+                    "guides/connections"
+                ]
             }
         ]
     },

@@ -1,0 +1,75 @@
+---
+title: "Skills"
+description: "Give the agent reusable playbooks, and call them from a task with a slash."
+---
+
+A skill is a folder with a `SKILL.md` file: instructions the agent can load when a task needs them. Bellows ships built-in skills, and your repository can add its own.
+
+## Call a skill from a task
+
+In the **New task** composer, type `/` at the start of the prompt or after a space. A **Skills** menu opens. Keep typing to filter by name, use the arrow keys, and press Enter to insert the name. Press Escape to close the menu.
+
+```text Prompt
+/factory-fix PROJ-123: the notes list returns 500 when a note has no title
+```
+
+A `/name` in the prompt tells the agent to load that skill and follow it. Skills from your repository are tagged `repo` in the menu. A path such as `a/b` or a URL isn't treated as a skill.
+
+A task can select up to 16 skills.
+
+## Built-in skills
+
+All built-in names start with `factory-`.
+
+| Skill | What it does |
+| --- | --- |
+| `factory-fix` | A playbook for fixing a backend bug end to end under TDD: reproduce with a failing test, fix, publish the PR. |
+| `factory-gates` | Runs the repository's gates from `.bellows.yaml` and reads their output. See [Gates](/guides/gates). |
+| `factory-github` | Works with GitHub through `gh`: PR reviews, line comments, CI status, issues, replies. |
+| `factory-jira` | Reads, searches and comments on Jira work items using the task's Jira connection. |
+| `factory-pr-land` | Takes a pushed PR to landable: waits for CI, fixes red checks, answers review feedback. |
+| `factory-review` | Asks an independent reviewer to review the work in a separate run. |
+| `factory-task-title` | Sets a short title for the task in the task list. |
+
+Some skills need a tool or a connection. `factory-github` and `factory-pr-land` need a GitHub connection. `factory-jira` needs a Jira connection. Add them under **Settings → Integrations**.
+
+## Add a skill to your repository
+
+Commit a folder under `.claude/skills/` with a `SKILL.md`:
+
+```text Repository layout
+.claude/skills/
+  release-notes/
+    SKILL.md
+```
+
+```markdown .claude/skills/release-notes/SKILL.md
+---
+name: release-notes
+description: Draft release notes from merged PRs. Use when asked to prepare a release.
+---
+
+# Release notes
+
+1. List the PRs merged since the last tag.
+2. Group them by area and write one line each.
+```
+
+| Field | Rule |
+| --- | --- |
+| `name` | Lowercase letters, digits and single hyphens, up to 64 characters. It can't start with `factory-`. |
+| `description` | One line. Say what the skill does and when to use it. The agent and the menu both show it. |
+
+Bellows reads up to 50 skill folders from the repository at the task's branch. A folder whose `SKILL.md` can't be read or parsed is skipped.
+
+<Note>
+If a repository skill has the same name as a built-in, the built-in wins in the menu. Pick distinct names.
+</Note>
+
+## Organization and workspace skills
+
+Bellows also supports skills shared across your organization and skills owned by one member. Both are uploaded with the API, as a `SKILL.md` or a zip of up to 64 files and 5 MiB, and there is no Settings page for them yet. When names clash, the order is built-in, then organization, then workspace, then repository.
+
+## From the CLI
+
+`bellows skill list` shows the skills available to you.

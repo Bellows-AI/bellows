@@ -1,0 +1,88 @@
+---
+title: "Executors"
+description: "Choose and configure the coding agent that runs your tasks."
+---
+
+An executor is the coding agent that does the work inside the runner. Each task runs with one executor. You set executors up once as **executor profiles**, then pick one when you create a task.
+
+## Agents you can use
+
+When you add an executor profile, the **Agent** field offers two agents:
+
+| Agent | Model format | Example |
+| --- | --- | --- |
+| **Claude Code** | A Claude model id or an alias such as `sonnet` or `opus` | `claude-sonnet-4-5` |
+| **OpenCode** | Provider id and model id, separated by a slash | `anthropic/claude-sonnet-4-5` |
+
+A custom executor is a profile you build on one of these agents: your own name, model and agent configuration (see [Advanced configuration](#advanced-configuration)). Self-hosted installs can also replace the runner image behind each agent.
+
+## Personal and organization profiles
+
+A profile lives in one of two scopes.
+
+| | Personal | Organization |
+| --- | --- | --- |
+| Shown in Settings as | **My workspace** | **Organization** |
+| Who can use it | You | Every member |
+| Who can add or edit it | You | Organization admins |
+| Limit | 10 profiles | 10 profiles |
+
+In the task picker, personal profiles come first. Organization profiles are labelled `— organization`.
+
+## Add a profile
+
+<Steps>
+  <Step title="Open Settings → Executors">
+    The page is titled **Executors**.
+  </Step>
+  <Step title="Click Add executor">
+    Use it under **My workspace**. Organization admins see an add button under **Organization** too.
+  </Step>
+  <Step title="Fill in the form">
+    Give it a **Name**, such as `Code review`. The name appears in the task picker. Choose the **Agent**. Under **Model**, keep **Use runner default** or choose **Custom model identifier**.
+  </Step>
+  <Step title="Save">
+    Save the profile. It now shows in the task picker.
+  </Step>
+</Steps>
+
+Names can't contain `/` or `\`, and can't start with `-` or `.`.
+
+<Note>
+Saving checks the form only. It doesn't test your credentials or whether the model exists. Anything you leave unset is inherited from the runner's default configuration.
+</Note>
+
+### Advanced configuration
+
+Open **Advanced configuration** to edit the **Configuration JSON** directly. It must be a JSON object up to 32 KiB. A blank configuration is the same as `{}`. **Format JSON** tidies it.
+
+The JSON is merged into the agent's own settings in the runner. Some keys are managed by Bellows and have no effect. The form lists any you set.
+
+| Agent | Ignored keys |
+| --- | --- |
+| Claude Code | `hooks`, `enabledPlugins`, `extraKnownMarketplaces`, and the telemetry variables `CLAUDE_CODE_ENABLE_TELEMETRY` and `OTEL_*` under `env` |
+| OpenCode | `permission` |
+
+The same section has **gate repair rounds**: how many times a task on this executor may try to repair a failed gate on its own. The default is 3, the maximum is 10, and `0` turns repair off. The value is fixed when the task is created. See [Gates](/guides/gates).
+
+<Warning>
+Keep API keys out of the configuration JSON. Set them as environment variables under **Settings → Workspace** (your own) or **Settings → Organization** (shared). The form links to **Workspace settings**.
+</Warning>
+
+## Pick an executor for a task
+
+In the **New task** composer, the **Executor** chip next to **Repository** lists every profile you can use. Suspended profiles are not listed.
+
+If you don't pick one, the task uses your default. If you have no usable profile, Bellows refuses the task and links to **Add an executor in Settings**.
+
+## Defaults and suspending
+
+- **Make default** in a row's actions saves your own preference. The default row shows a **Default** tag, and the composer selects it for you. Each member chooses their own default, including among organization profiles.
+- **Suspend** stops a profile from launching tasks. A suspended profile can't be a default. **Resume** brings it back.
+- **Remove** deletes a personal profile. Admins can **Delete** an organization profile, or **Make personal** to move it into their own list.
+
+Follow-ups and retries keep the executor of the original task.
+
+## From the CLI
+
+`bellows executor list` shows the profiles you can use.
