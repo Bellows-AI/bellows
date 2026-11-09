@@ -20,7 +20,7 @@ policy:
 
 `required` is the only value. Any other value, an unknown key or a repeated key is an error. Leave a key out to require nothing. You can set one or both.
 
-`gates: required` needs at least one gate in `environment`. Without one the file is refused, because a requirement with nothing to check would pass for free.
+`gates: required` needs an `environment` block; without one the file is refused. Declare at least one gate there too, or the requirement has nothing to check.
 
 ### What counts as evidence
 
@@ -88,7 +88,7 @@ Declaring `reviewers` without `policy: review: required` makes reviews available
 
 <AccordionGroup>
   <Accordion title="“policy requires gates but no environment declares any”">
-    Add an `environment` block with an `image` and at least one gate, or drop `gates: required`.
+    Add an `environment` block with an `image` and your gates, or drop `gates: required`.
   </Accordion>
   <Accordion title="My policy change has no effect on the task">
     Policy is read from the base branch. Merge the change first, then start a new task.

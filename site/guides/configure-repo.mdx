@@ -19,14 +19,16 @@ Only `image` is required. Without gates, though, nothing checks the agent's work
 ```yaml Go
 environment:
     image: golang:1.25
-    cache:                       # env vars whose dirs persist between runs
+    # env vars whose directories persist between runs
+    cache:
         - GOCACHE
         - GOMODCACHE
     setup: "go mod download && make tools"
     gates:
         - name: build
           command: "make build"
-          timeout: 5               # minutes
+          # timeout is in minutes
+          timeout: 5
         - name: test
           command: "make test"
           timeout: 10
@@ -35,8 +37,9 @@ environment:
           timeout: 10
         - name: test-filter
           command: 'go test -race -count=1 -run "$GATE_FILTER" ./...'
-          on_demand: true          # agent runs it while working
-          filter: true             # agent picks $GATE_FILTER
+          # the agent runs it while working and picks $GATE_FILTER
+          on_demand: true
+          filter: true
 ```
 
 ```yaml Node
@@ -72,7 +75,7 @@ environment:
 
 | Field    | Required | Description                                                                         |
 | -------- | -------- | ----------------------------------------------------------------------------------- |
-| `image`  | yes      | Docker image the runner starts from                                                 |
+| `image`  | yes      | Docker image the runner starts from, by tag (`golang:1.25`). Digests (`@sha256:…`) are refused |
 | `setup`  | no       | Shell command run before the agent starts; retried while it fails. Max 4096 chars   |
 | `cache`  | no       | Up to 16 env var names whose directories persist between runs                       |
 | `gates`  | no       | Up to 16 checks; see below                                                          |
@@ -96,7 +99,7 @@ How gates run, fail and get repaired: [Gates](/guides/gates). Env vars and secre
 ## Common errors
 
 <Warning>
-  **Strict parser.** Unknown keys and tab characters are errors, and the error names the line. Indent with spaces.
+  **Strict parser.** Unknown keys and tab characters are errors, and the error names the line. Indent with spaces. Put comments on their own line: a `#` after a value is read as part of the value.
 </Warning>
 
 <AccordionGroup>
@@ -110,3 +113,5 @@ How gates run, fail and get repaired: [Gates](/guides/gates). Env vars and secre
     Raise `timeout` (max 120), or split the gate. Slow suites fit better as an `on_demand` gate plus a fast default gate.
   </Accordion>
 </AccordionGroup>
+
+Every key, limit and default: [.bellows.yaml reference](/reference/bellows-yaml).

@@ -36,69 +36,121 @@
         }
     },
     "navigation": {
-        "groups": [
+        "tabs": [
             {
-                "group": "Overview",
-                "pages": [
-                    "overview/introduction",
-                    "overview/quickstart",
-                    "overview/concepts"
+                "tab": "Docs",
+                "groups": [
+                    {
+                        "group": "Overview",
+                        "pages": [
+                            "overview/introduction",
+                            "overview/quickstart",
+                            "overview/concepts"
+                        ]
+                    },
+                    {
+                        "group": "Use Bellows",
+                        "pages": [
+                            "guides/run-tasks",
+                            "guides/task-lifecycle",
+                            "guides/writing-good-tasks",
+                            "guides/attachments"
+                        ]
+                    },
+                    {
+                        "group": "Use cases",
+                        "pages": [
+                            "use-cases/fix-jira-bug",
+                            "use-cases/add-tests",
+                            "use-cases/upgrade-dependencies",
+                            "use-cases/drive-from-claude-code"
+                        ]
+                    },
+                    {
+                        "group": "Configure your repo",
+                        "pages": [
+                            "guides/configure-repo",
+                            "guides/gates",
+                            "guides/services",
+                            "guides/policy-and-reviewers"
+                        ]
+                    },
+                    {
+                        "group": "Agents and integrations",
+                        "pages": [
+                            "guides/executors",
+                            "guides/skills",
+                            "guides/env-and-secrets",
+                            "guides/connections"
+                        ]
+                    },
+                    {
+                        "group": "CLI",
+                        "pages": [
+                            "cli/install",
+                            "cli/commands"
+                        ]
+                    },
+                    {
+                        "group": "MCP",
+                        "pages": [
+                            "mcp/connect",
+                            "mcp/tools"
+                        ]
+                    },
+                    {
+                        "group": "API",
+                        "pages": [
+                            "api/overview"
+                        ]
+                    }
                 ]
             },
             {
-                "group": "Use Bellows",
-                "pages": [
-                    "guides/run-tasks",
-                    "guides/task-lifecycle",
-                    "guides/writing-good-tasks",
-                    "guides/attachments"
+                "tab": "Self-host",
+                "groups": [
+                    {
+                        "group": "Get started",
+                        "pages": [
+                            "self-host/overview",
+                            "self-host/docker-compose",
+                            "self-host/kubernetes"
+                        ]
+                    },
+                    {
+                        "group": "Integrations",
+                        "pages": [
+                            "self-host/github-app",
+                            "self-host/jira-app"
+                        ]
+                    },
+                    {
+                        "group": "Operate",
+                        "pages": [
+                            "self-host/configuration",
+                            "self-host/security"
+                        ]
+                    }
                 ]
             },
             {
-                "group": "Use cases",
-                "pages": [
-                    "use-cases/fix-jira-bug",
-                    "use-cases/add-tests",
-                    "use-cases/upgrade-dependencies",
-                    "use-cases/drive-from-claude-code"
-                ]
-            },
-            {
-                "group": "Configure your repo",
-                "pages": [
-                    "guides/configure-repo",
-                    "guides/gates",
-                    "guides/services",
-                    "guides/policy-and-reviewers"
-                ]
-            },
-            {
-                "group": "Agents and integrations",
-                "pages": [
-                    "guides/executors",
-                    "guides/skills",
-                    "guides/env-and-secrets",
-                    "guides/connections"
-                ]
-            },
-            {
-                "group": "CLI",
-                "pages": [
-                    "cli/install",
-                    "cli/commands"
-                ]
-            },
-            {
-                "group": "MCP",
-                "pages": [
-                    "mcp/connect",
-                    "mcp/tools"
-                ]
-            },
-            {
-                "group": "API",
-                "pages": [
-                    "api/overview"
+                "tab": "Reference",
+                "groups": [
+                    {
+                        "group": "Reference",
+                        "pages": [
+                            "reference/bellows-yaml",
+                            "reference/limits",
+                            "reference/glossary",
+                            "reference/faq"
+                        ]
+                    },
+                    {
+                        "group": "Updates",
+                        "pages": [
+                            "reference/changelog"
+                        ]
+                    }
                 ]
             }
         ]
