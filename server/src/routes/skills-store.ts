@@ -1,4 +1,11 @@
-import { ADMIN_ROLE, CONTENT_TYPE_HEADER, ERROR_CODES, MAX_SKILL_BYTES, type Skill } from '@factory-ai/core';
+import {
+    ADMIN_ROLE,
+    CONTENT_TYPE_HEADER,
+    ERROR_CODES,
+    MAX_SKILL_BYTES,
+    SKILL_NAME,
+    type Skill,
+} from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
@@ -20,6 +27,7 @@ import {
     SkillBundleError,
     type SkillBundle,
 } from '../skills/skill-bundle.js';
+import { zipOfFiles } from '../skills/skill-zip.js';
 import { bad, body as jsonBody } from './helpers.js';
 
 const HTTP_OK = 200;
@@ -225,6 +233,27 @@ async function handleGet(orgs: OrgRegistry, door: Door, request: FastifyRequest,
     });
 }
 
+async function handleZip(orgs: OrgRegistry, door: Door, request: FastifyRequest, reply: FastifyReply) {
+    const context = await contextOf(orgs, request, reply, { door, write: false });
+    if (!context) return reply;
+    const id = idOf(request);
+    if (id === null) return notFound(reply);
+    const found = await attempt(request, reply, () => context.store.get(context.owner, id));
+    if (!found) return reply;
+    if (found.value === null) return notFound(reply);
+    const skill = found.value;
+    const files = await readCurrentFiles(request, reply, context, skill);
+    if (!files) return reply;
+    // The name was validated at create; re-check it so it can never break out of the header.
+    const name = SKILL_NAME.test(skill.name) ? skill.name : 'skill';
+    return reply
+        .code(HTTP_OK)
+        .header(CONTENT_TYPE_HEADER, ZIP_CONTENT_TYPE)
+        .header('content-disposition', `attachment; filename="${name}.zip"`)
+        .header('cache-control', 'no-store')
+        .send(zipOfFiles(files));
+}
+
 async function handleCreate(orgs: OrgRegistry, door: Door, request: FastifyRequest, reply: FastifyReply) {
     const context = await contextOf(orgs, request, reply, { door, write: true });
     if (!context) return reply;
@@ -405,6 +434,9 @@ export const skillStoreRoutes =
                 );
                 scope.get(`${base}/:id`, { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
                     handleGet(orgs, door, request, reply)
+                );
+                scope.get(`${base}/:id/zip`, { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+                    handleZip(orgs, door, request, reply)
                 );
                 scope.post(base, { bodyLimit: ZIP_BODY_LIMIT }, (request, reply) =>
                     handleCreate(orgs, door, request, reply)

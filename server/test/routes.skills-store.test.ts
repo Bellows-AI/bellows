@@ -15,6 +15,7 @@ import {
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
+import { bundleFromZip } from '../src/skills/skill-bundle.js';
 import { listingClient } from './helpers-app-client.js';
 import { memorySkillStore, type MemorySkillStore } from './helpers-skill-store.js';
 
@@ -867,6 +868,81 @@ describe('zip create without ?name=', () => {
                 payload: { skillMd: skillMd('json-one') },
             });
             expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+        });
+    });
+});
+
+describe('zip download', () => {
+    const DOORS = [
+        { door: 'org', prefix: '/api/org/skills', who: 'admin', reader: 'member' },
+        { door: 'workspace', prefix: '/api/workspace/skills', who: 'member', reader: 'member' },
+    ] as const;
+    const FILES = [
+        { name: 'SKILL.md', data: skillMd('packed') },
+        { name: 'scripts/run.sh', data: 'echo hi\n' },
+    ];
+
+    async function seed(booted: Booted, door: (typeof DOORS)[number]) {
+        const created = await booted.instance.inject({
+            method: 'POST',
+            url: `${door.prefix}?name=packed`,
+            headers: { ...booted[door.who], 'content-type': 'application/zip' },
+            payload: zip(FILES),
+        });
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        return created.json().skill.id as string;
+    }
+
+    const download = (
+        booted: Booted,
+        door: (typeof DOORS)[number],
+        id: string,
+        who: 'member' | 'other' = door.reader
+    ) => booted.instance.inject({ method: 'GET', url: `${door.prefix}/${id}/zip`, headers: booted[who] });
+
+    it("a member downloads an org skill's zip", async () => {
+        const booted = await boot();
+        const id = await seed(booted, DOORS[0]);
+        const response = await download(booted, DOORS[0], id);
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.headers['content-type']).toBe('application/zip');
+        expect(response.headers['content-disposition']).toBe('attachment; filename="packed.zip"');
+        expect(response.headers['cache-control']).toBe('no-store');
+        const back = bundleFromZip('packed', response.rawPayload).files;
+        expect(back.map((f) => [f.path, f.bytes.toString()])).toEqual(FILES.map((f) => [f.name, f.data]));
+    });
+
+    it("a workspace zip is the owner's only", async () => {
+        const booted = await boot();
+        const id = await seed(booted, DOORS[1]);
+        expect((await download(booted, DOORS[1], id)).statusCode).toBe(HTTP_OK);
+        const foreign = await download(booted, DOORS[1], id, 'other');
+        expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(foreign.json().code).toBe('SKILL_NOT_FOUND');
+    });
+
+    describe.each(DOORS)('$door door', (door) => {
+        it('a lost object is 410 and an unreachable store is 503, never an empty zip', async () => {
+            const booted = await boot();
+            const id = await seed(booted, door);
+            booted.skills.breakVersionReads();
+            const unreadable = await download(booted, door, id);
+            expect(unreadable.statusCode).toBe(HTTP_UNAVAILABLE);
+            expect(unreadable.headers['content-type']).not.toBe('application/zip');
+            booted.skills.breakVersionReads(false);
+            booted.skills.loseObjects();
+            const gone = await download(booted, door, id);
+            expect(gone.statusCode).toBe(HTTP_GONE);
+            expect(gone.json().code).toBe('SKILL_GONE');
+            booted.skills.breakAll();
+            expect((await download(booted, door, id)).statusCode).toBe(HTTP_UNAVAILABLE);
+        });
+
+        it('a non-uuid id is 404', async () => {
+            const booted = await boot();
+            const response = await download(booted, door, 'not-a-uuid');
+            expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+            expect(response.json().code).toBe('SKILL_NOT_FOUND');
         });
     });
 });
