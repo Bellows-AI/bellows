@@ -60,6 +60,7 @@ export interface BundleFile {
 }
 
 export interface SkillBundle {
+    name: string;
     /** Sorted by path. */
     files: BundleFile[];
     tar: Buffer;
@@ -134,7 +135,8 @@ export function bundleReplacingSkillMd(name: string, files: BundleFile[], text: 
     return finish(name, [...files.filter((file) => file.path !== SKILL_MD), main]);
 }
 
-export function bundleFromZip(name: string, bytes: Buffer): SkillBundle {
+/** A null `name` is taken from SKILL.md's frontmatter and then checked like any other. */
+export function bundleFromZip(name: string | null, bytes: Buffer): SkillBundle {
     return finish(name, readZip(bytes));
 }
 
@@ -142,7 +144,8 @@ function refuse(reason: SkillBundleReason, message: string): never {
     throw new SkillBundleError(reason, message);
 }
 
-function finish(name: string, entries: BundleFile[]): SkillBundle {
+function finish(given: string | null, entries: BundleFile[]): SkillBundle {
+    const name = given ?? nameFromSkillMd(entries);
     checkName(name);
     const files = entries.toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     let size = 0;
@@ -157,7 +160,23 @@ function finish(name: string, entries: BundleFile[]): SkillBundle {
     if (!skillMd) refuse('no_skill_md', 'The skill has no SKILL.md at its root');
     const { description, requires } = readSkillMd(name, skillMd.bytes);
     const tar = writeTar(files);
-    return { files, tar, sha256: createHash('sha256').update(tar).digest('hex'), size, description, requires };
+    return { name, files, tar, sha256: createHash('sha256').update(tar).digest('hex'), size, description, requires };
+}
+
+function nameFromSkillMd(entries: BundleFile[]): string {
+    const skillMd = entries.find((file) => file.path === SKILL_MD);
+    if (!skillMd) return refuse('no_skill_md', 'The skill has no SKILL.md at its root');
+    const parsed = parseRepoSkillFrontmatter(decodeSkillMd(skillMd.bytes));
+    if (!parsed) return refuse('bad_frontmatter', 'SKILL.md needs frontmatter with a name and a description');
+    return parsed.name;
+}
+
+function decodeSkillMd(bytes: Buffer): string {
+    try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+        return refuse('bad_frontmatter', 'SKILL.md is not valid UTF-8');
+    }
 }
 
 function checkName(name: string): void {
@@ -173,12 +192,7 @@ function checkName(name: string): void {
 
 /** The repo-skill reader's lenient parser: name and description, whatever other keys the tool supports. */
 function readSkillMd(name: string, bytes: Buffer): { description: string; requires: SkillRequirements } {
-    let text: string;
-    try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    } catch {
-        return refuse('bad_frontmatter', 'SKILL.md is not valid UTF-8');
-    }
+    const text = decodeSkillMd(bytes);
     const parsed = parseRepoSkillFrontmatter(text);
     if (!parsed) refuse('bad_frontmatter', 'SKILL.md needs frontmatter with a name and a description');
     if (parsed.name !== name)

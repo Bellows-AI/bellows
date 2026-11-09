@@ -407,7 +407,7 @@ describe('skill writes', () => {
         }
         const noName = await instance.inject({
             method: 'POST',
-            url: '/api/workspace/skills',
+            url: '/api/workspace/skills?name=',
             headers: { ...member, 'content-type': 'application/zip' },
             payload: zip([{ name: 'SKILL.md', data: skillMd('x') }]),
         });
@@ -777,6 +777,96 @@ describe('inline edit', () => {
             expect(response.statusCode).toBe(HTTP_CREATED);
             const after = await read(booted, door, id);
             expect(after.files.map((file: { path: string }) => file.path)).toEqual(['SKILL.md']);
+        });
+    });
+});
+
+describe('zip create without ?name=', () => {
+    const DOORS = [
+        { door: 'org', prefix: '/api/org/skills', who: 'admin' },
+        { door: 'workspace', prefix: '/api/workspace/skills', who: 'member' },
+    ] as const;
+
+    const create = (booted: Booted, door: (typeof DOORS)[number], data: string, query = '') =>
+        booted.instance.inject({
+            method: 'POST',
+            url: `${door.prefix}${query}`,
+            headers: { ...booted[door.who], 'content-type': 'application/zip' },
+            payload: zip([{ name: 'SKILL.md', data }]),
+        });
+
+    describe.each(DOORS)('$door door', (door) => {
+        it('takes the name from SKILL.md', async () => {
+            const booted = await boot();
+            const created = await create(booted, door, skillMd('from-md'));
+            expect(created.statusCode).toBe(HTTP_CREATED);
+            expect(created.json().skill.name).toBe('from-md');
+        });
+
+        it('a SKILL.md without a name is 422 bad_frontmatter', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, '---\ndescription: x\n---\n');
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('bad_frontmatter');
+        });
+
+        it('a factory-* name is 422 reserved_name', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, skillMd('factory-x'));
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('reserved_name');
+        });
+
+        it('a zip with no SKILL.md is 422 no_skill_md', async () => {
+            const booted = await boot();
+            const res = await booted.instance.inject({
+                method: 'POST',
+                url: door.prefix,
+                headers: { ...booted[door.who], 'content-type': 'application/zip' },
+                payload: zip([{ name: 'a.txt', data: 'a' }]),
+            });
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('no_skill_md');
+        });
+
+        it('an invalid name (uppercase) is 422 bad_name', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, skillMd('Bad'));
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('bad_name');
+        });
+
+        it('a taken derived name is 409 NAME_TAKEN', async () => {
+            const booted = await boot();
+            expect((await create(booted, door, skillMd('taken-one'))).statusCode).toBe(HTTP_CREATED);
+            const again = await create(booted, door, skillMd('taken-one'));
+            expect(again.statusCode).toBe(HTTP_CONFLICT);
+            expect(again.json().code).toBe('NAME_TAKEN');
+        });
+
+        it('a ?name= that differs from SKILL.md is 422 name_mismatch', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, skillMd('in-md'), '?name=in-query');
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('name_mismatch');
+        });
+
+        it('an empty ?name= is still 400 BAD_NAME', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, skillMd('in-md'), '?name=');
+            expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+            expect(res.json().code).toBe('BAD_NAME');
+        });
+
+        it('a JSON create without name is still 400', async () => {
+            const booted = await boot();
+            const res = await booted.instance.inject({
+                method: 'POST',
+                url: door.prefix,
+                headers: booted[door.who],
+                payload: { skillMd: skillMd('json-one') },
+            });
+            expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
         });
     });
 });

@@ -130,9 +130,12 @@ function bundleRefusal(reply: FastifyReply, error: SkillBundleError) {
         .send({ error: error.message, code: ERROR_CODES.SKILL_BUNDLE_INVALID, reason: error.reason });
 }
 
+/** A zip create with no `?name=` at all takes its name from SKILL.md; an empty `?name=` is a bad name. */
+const isDerived = (isZip: boolean, given: unknown): boolean => isZip && given === undefined;
+
 /**
- * The bundle a write carries: raw `application/zip` (the name from `?name=` on create) or JSON `{ name, skillMd }`. Null
- * once the refusal is sent.
+ * The bundle a write carries: raw `application/zip` (the name from `?name=`, else from its SKILL.md, on create) or JSON
+ * `{ name, skillMd }`. Null once the refusal is sent.
  */
 function bundleOf(
     request: FastifyRequest,
@@ -141,8 +144,8 @@ function bundleOf(
 ): { name: string; bundle: SkillBundle } | null {
     const isZip = request.headers[CONTENT_TYPE_HEADER]?.startsWith(ZIP_CONTENT_TYPE) === true;
     const fromBody = isZip ? null : jsonBody(request.body);
-    const bundleName = name ?? (isZip ? (request.query as { name?: unknown }).name : fromBody?.name);
-    if (typeof bundleName !== 'string' || bundleName === '') {
+    const given = name ?? (isZip ? (request.query as { name?: unknown }).name : fromBody?.name);
+    if (!isDerived(isZip, given) && (typeof given !== 'string' || given === '')) {
         bad(reply, ERROR_CODES.BAD_NAME, 'name is required');
         return null;
     }
@@ -152,13 +155,14 @@ function bundleOf(
                 bad(reply, ERROR_CODES.BAD_BODY, 'The body must be a zip archive');
                 return null;
             }
-            return { name: bundleName, bundle: bundleFromZip(bundleName, request.body) };
+            const bundle = bundleFromZip(given === undefined ? null : (given as string), request.body);
+            return { name: bundle.name, bundle };
         }
         if (typeof fromBody?.skillMd !== 'string') {
             bad(reply, ERROR_CODES.BAD_BODY, 'skillMd must be a string');
             return null;
         }
-        return { name: bundleName, bundle: bundleFromSkillMd(bundleName, fromBody.skillMd) };
+        return { name: given as string, bundle: bundleFromSkillMd(given as string, fromBody.skillMd) };
     } catch (error) {
         if (error instanceof SkillBundleError) {
             bundleRefusal(reply, error);
