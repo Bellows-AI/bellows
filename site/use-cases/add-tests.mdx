@@ -43,7 +43,7 @@ You want more tests for one part of your code, such as the `notes` package in `a
   <Step title="Optionally fail under a coverage threshold">
     A gate is any shell command, so a coverage check is a plain script. This one fails if the `notes` package is under 80 percent.
 
-    ```yaml .bellows.yaml
+    ```yaml .bellows.yaml (excerpt)
             - name: coverage
               command: 'go test -count=1 -coverprofile=c.out ./internal/notes/ && go tool cover -func=c.out | awk "/^total:/ { sub(/%/, \"\", \$3); exit (\$3 < 80) }"'
               timeout: 10
