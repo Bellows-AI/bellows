@@ -1,5 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CREDENTIAL_HELPER, gitProbeScript, prSummaryScript, taskCheckoutScript } from '../src/publish/publish.js';
 import { taskInitScript } from '../src/task-volume.js';
@@ -258,4 +260,39 @@ describe('the container scripts', () => {
         expect(run.stdout).toContain('username=x-access-token');
         expect(run.stdout).toContain('password=test-token');
     });
+});
+
+// The loops' heartbeat runs alone here, never the loop itself: `serve` kills every process of its uid.
+describe('the loop heartbeats', () => {
+    const beatOf = (script: string) => {
+        const def = /^beat\(\) \{\n[\s\S]*?^\}$/m.exec(script)?.[0];
+        if (!def) throw new Error('no beat() in the script');
+        return def;
+    };
+    const beat = (script: string, box: string) =>
+        spawnSync('sh', ['-c', `box=$1\n${beatOf(script)}\nbeat\necho survived`, 'sh', box], { encoding: 'utf8' });
+    const unwritable = () => {
+        const dir = mkdtempSync(join(tmpdir(), 'beat-'));
+        writeFileSync(join(dir, 'plainfile'), '');
+        return join(dir, 'plainfile', 'box');
+    };
+
+    for (const [name, script] of [
+        ['review', reviewLoopScript],
+        ['gate', gateLoopScript],
+    ] as const) {
+        it(`the ${name} loop's beat survives a mailbox it cannot write yet`, () => {
+            const run = beat(script, unwritable());
+            expect(run.status, run.stderr).toBe(0);
+            expect(run.stdout).toContain('survived');
+        });
+
+        it(`the ${name} loop's beat writes the heartbeat once the mailbox is writable`, () => {
+            const box = mkdtempSync(join(tmpdir(), 'beat-'));
+            const before = Date.now() - 1_000;
+            const run = beat(script, box);
+            expect(run.status, run.stderr).toBe(0);
+            expect(statSync(join(box, 'alive')).mtimeMs).toBeGreaterThanOrEqual(before);
+        });
+    }
 });

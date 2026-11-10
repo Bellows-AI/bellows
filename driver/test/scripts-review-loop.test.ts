@@ -63,7 +63,9 @@ describe('the review loop script', () => {
     it('resumes a restart by marking what it held as done with no exit, and beats while it waits', () => {
         expect(code).toContain('"$box/running"/*');
         expect(code).toContain('/bin/mv "$held" "$box/done/"');
-        expect(code).toContain(': > "$box/alive"');
+        expect(code).toContain('true > "$box/alive"');
+        // `:` is a special builtin: a failed redirect on it ends the shell, and with it the loop.
+        expect(code).not.toMatch(/(^|\s): >/m);
     });
 
     it('is POSIX: no bashisms, and no process tools the image may lack', () => {
