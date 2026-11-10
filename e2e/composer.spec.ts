@@ -693,6 +693,41 @@ test.describe('the base branch and the skill menu', () => {
         });
     });
 
+    test('the / menu reads the repository skills for the selected executor and re-reads when it changes', async ({
+        page,
+    }) => {
+        await mockExecutors(page, [
+            { ...E2E_EXECUTOR, config: {} },
+            { name: 'other', type: E2E_EXECUTOR.type, createdAt: E2E_EXECUTOR.createdAt, config: {} },
+        ]);
+        const reads: URL[] = [];
+        await page.route('**/api/repos/*/*/skills*', (route) => {
+            reads.push(new URL(route.request().url()));
+            return route.fulfill({
+                json: {
+                    skills: [{ name: 'review', description: 'Review the change', source: 'builtin' }],
+                    repoError: null,
+                    unreadable: [],
+                },
+            });
+        });
+        await page.goto('/tasks/new');
+        await prompt(page).click();
+        await page.keyboard.type('/re');
+        await expect(page.getByRole('listbox', { name: 'Skills' }).getByRole('option')).toHaveCount(1);
+        expect(reads.at(-1)?.searchParams.get('executor')).toBe(E2E_EXECUTOR.name);
+        expect(reads.at(-1)?.searchParams.get('executorScope')).toBe('user');
+
+        await page.keyboard.press('Escape');
+        await prompt(page).fill('');
+        await openSelector(page, 'Executor');
+        await page.getByRole('option', { name: 'other' }).click();
+        await prompt(page).click();
+        await page.keyboard.type('/re');
+        await expect(page.getByRole('listbox', { name: 'Skills' }).getByRole('option')).toHaveCount(1);
+        await expect.poll(() => reads.at(-1)?.searchParams.get('executor')).toBe('other');
+    });
+
     test('branch list failure shows an error, not an empty picker', async ({ page }) => {
         await stubBranches(page, true);
         await page.goto('/tasks/new');

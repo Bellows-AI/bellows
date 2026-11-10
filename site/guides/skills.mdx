@@ -64,7 +64,9 @@ description: Draft release notes from merged PRs. Use when asked to prepare a re
 | `name` | Lowercase letters, digits and single hyphens, up to 64 characters. It can't start with `factory-`. |
 | `description` | One line. Say what the skill does and when to use it. The agent and the menu both show it. |
 
-Bellows reads up to 50 skill folders from the repository at the task's branch. A folder whose `SKILL.md` can't be read or parsed is skipped.
+Where the folder lives depends on the executor that runs the task. A `claude-code` executor reads `.claude/skills/`. An `opencode` executor reads that and also `.opencode/skills/`, `.opencode/skill/` and `.agents/skills/`. The prompt's `/` menu, the task preflight and task creation all follow the executor you selected, and a repository skill is only offered where that executor would load it.
+
+Bellows reads up to 50 skill folders from the repository at the task's branch, counted across those directories. A folder whose `SKILL.md` can't be read or parsed is skipped.
 
 <Note>
 A repository skill can't take a `factory-` name, so it never replaces a built-in.
