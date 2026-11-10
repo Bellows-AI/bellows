@@ -41,7 +41,9 @@ const entry = (name: string, extra: Record<string, unknown> = {}) => ({
     ...extra,
 });
 
-async function boot() {
+type RepoSkills = NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
+
+async function boot(repoSkills?: RepoSkills) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
@@ -65,6 +67,7 @@ async function boot() {
             jobs,
             repos,
             userExecutors: executors,
+            repoSkills,
             telemetry: stubTelemetryClient(),
         }),
         auth,
@@ -467,5 +470,43 @@ describe('POST /api/jobs against a repository the board does not track', () => {
         const b = await bootWithExecutor();
         expect((await launch(b, { repo: 'acme/web' })).statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toHaveLength(1);
+    });
+});
+
+describe('POST /api/jobs selecting a repo skill that only the executor CLI scans', () => {
+    /** A reader that holds `oc-only` only when asked for the opencode directories. */
+    const dirAware: RepoSkills = async (_repo, _branch, dirs) => ({
+        revision: 'sha',
+        skills: dirs.includes('.opencode/skills') ? [{ name: 'oc-only', description: 'd' }] : [],
+        unreadable: [],
+        complete: true,
+    });
+    const queueSkill = (b: Booted, executor: string) =>
+        b.instance.inject({
+            method: 'POST',
+            url: '/api/jobs',
+            headers: { cookie: b.memberCookie },
+            payload: {
+                command: 'echo hi',
+                executor,
+                repo: `${READY_REPO.owner}/${READY_REPO.name}`,
+                skills: ['oc-only'],
+            },
+        });
+
+    it('accepts it on an opencode profile', async () => {
+        const b = await boot(dirAware);
+        await putPersonal(b, b.memberCookie, [entry('claude'), entry('oc', { type: 'opencode' })]);
+        expect((await queueSkill(b, 'oc')).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toHaveLength(1);
+    });
+
+    it('refuses it with 404 UNKNOWN_SKILL on a claude profile', async () => {
+        const b = await boot(dirAware);
+        await putPersonal(b, b.memberCookie, [entry('claude'), entry('oc', { type: 'opencode' })]);
+        const response = await queueSkill(b, 'claude');
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(response.json().code).toBe('UNKNOWN_SKILL');
+        expect(b.queued).toEqual([]);
     });
 });

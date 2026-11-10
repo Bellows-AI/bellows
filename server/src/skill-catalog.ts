@@ -1,7 +1,9 @@
 import {
+    checkoutSkillDirsOf,
     isReservedSkillName,
     resolveSkillCatalog,
     type CatalogEntry,
+    type ExecutorType,
     type Skill,
     type SourceSkill,
 } from '@factory-ai/core';
@@ -12,7 +14,19 @@ import type { RepoSkillRead } from './github/skill-read.js';
 import type { OrgRuntime } from './orgs.js';
 
 /** The org's repo skills read (`OrgRuntime.repoSkills`): rejects when the read did not confirm. */
-export type RepoSkillReader = (repo: string, branch: string | null, signal?: AbortSignal) => Promise<RepoSkillRead>;
+export type RepoSkillReader = (
+    repo: string,
+    branch: string | null,
+    dirs: readonly string[],
+    signal?: AbortSignal
+) => Promise<RepoSkillRead>;
+
+/**
+ * The executor type whose CLI scans the checkout, as far as it was confirmed. `known` with a null type is a task that
+ * resolves no executor (it runs claude); `unconfirmed` (a profile that could not be read, is missing or suspended) is
+ * no verdict, so the repository is not read and its skills stay unverified.
+ */
+export type ExecutorTypeRead = { state: 'known'; type: ExecutorType | null } | { state: 'unconfirmed'; error: string };
 
 /**
  * What the repository read answered. Only a `complete` `read` may confirm an absence, and then only for a name that is not in
@@ -41,6 +55,8 @@ export interface CatalogRequest {
     read: RepoSkillReader | undefined;
     repo: string | null;
     branch: string | null;
+    /** Which directories of the checkout the repository's skills are read from; required, nothing is assumed. */
+    executorType: ExecutorTypeRead;
     signal?: AbortSignal;
     /** Called with the cause of an unconfirmed read. */
     onUnconfirmed?: (cause: unknown) => void;
@@ -67,8 +83,10 @@ export async function effectiveCatalog(request: CatalogRequest): Promise<Effecti
     let held: readonly SourceSkill[] = [];
     if (request.repo !== null && needsRepo) {
         try {
+            if (request.executorType.state === 'unconfirmed') throw new Error(request.executorType.error);
             if (!request.read) throw new Error('Repository skills cannot be read on this board');
-            const read = await request.read(request.repo, request.branch, request.signal);
+            const dirs = checkoutSkillDirsOf(request.executorType.type);
+            const read = await request.read(request.repo, request.branch, dirs, request.signal);
             held = read.skills;
             repo = {
                 state: 'read',

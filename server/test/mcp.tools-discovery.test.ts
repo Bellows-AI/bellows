@@ -76,6 +76,8 @@ interface Scenario {
     noExecutorStore?: boolean;
     /** The board's repo skills reader. */
     repoSkills?: NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
+    /** Also configure an org opencode executor `oc`. */
+    opencodeExecutor?: boolean;
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -135,6 +137,14 @@ async function boot(scenario: Scenario = {}) {
         config: { token: 'ORG-SECRET' },
         createdBy: people.alice.user.id,
     });
+    if (scenario.opencodeExecutor) {
+        await executors.createOrg({
+            name: 'oc',
+            type: 'opencode',
+            config: {},
+            createdBy: people.alice.user.id,
+        });
+    }
     const orgA = staticRegistry({
         config,
         telemetry: stubTelemetryClient(),
@@ -369,6 +379,22 @@ describe('list_skills', () => {
         const { data } = await call(await boot(), 'alice', 'list_skills');
         expect(data.skills.length).toBeGreaterThan(0);
         expect(data.skills.every((s: { source: string }) => s.source === 'builtin')).toBe(true);
+    });
+
+    it('list_skills forwards executor and executorScope to the repo route', async () => {
+        const repoSkills = async (_repo: string, _branch: string | null, dirs: readonly string[]) => ({
+            revision: 'sha',
+            skills: dirs.includes('.opencode/skills') ? [{ name: 'oc-only', description: 'd' }] : [],
+            unreadable: [] as string[],
+            complete: true,
+        });
+        const url = await boot({ repoSkills, opencodeExecutor: true });
+        const names = async (extra: Record<string, string>) =>
+            (await call(url, 'alice', 'list_skills', { repo: 'acme/web', ...extra })).data.skills.map(
+                (s: { name: string }) => s.name
+            );
+        expect(await names({ executor: 'oc', executorScope: 'org' })).toContain('oc-only');
+        expect(await names({ executor: 'mine', executorScope: 'user' })).not.toContain('oc-only');
     });
 
     it('with a repo lists its skills too, shadowed ones marked, and says when the repo read failed', async () => {

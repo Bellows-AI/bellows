@@ -129,7 +129,14 @@ async function executorsUsable(ctx: Context, request: FastifyRequest, reply: Fas
             bad(reply, ERROR_CODES.BAD_EXECUTOR, shape.message);
             return false;
         }
-        if (await refusedAsUnusable(request, reply, { executors, createdBy: ctx.createdBy, executor: name, scope })) {
+        if (
+            (await refusedAsUnusable(request, reply, {
+                executors,
+                createdBy: ctx.createdBy,
+                executor: name,
+                scope,
+            })) === 'refused'
+        ) {
             return false;
         }
     }
