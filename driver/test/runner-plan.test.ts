@@ -381,6 +381,36 @@ describe('the pinned skills in the runner plan', () => {
         expect(opencode.envPairs.map(([name]) => name)).not.toContain('FACTORY_SKILLS_PATH');
     });
 
+    const WS_PIN = [
+        PIN[0]!,
+        { ...PIN[0]!, name: 'ws-a', source: 'workspace' as const },
+        { ...PIN[0]!, name: 'ws-b', source: 'workspace' as const },
+    ];
+    const workspaceEnv = (env: [string, string][]) => env.find(([name]) => name === 'FACTORY_WORKSPACE_SKILLS')?.[1];
+
+    it('names the pinned workspace skills for claude-code with the skills directory', () => {
+        const p = plan({ ...job, skillPin: WS_PIN }, SESSION_FRESH);
+        expect(workspaceEnv(p.envPairs)).toBe('ws-a,ws-b');
+        expect(p.envPairs).toContainEqual(['FACTORY_SKILLS_PATH', '/task/.factory/skills-root/.claude/skills']);
+        expect(p.cliArgs).toContain('--add-dir');
+    });
+
+    it('names the pinned workspace skills for opencode', () => {
+        const p = plan({ ...opencodeJob, skillPin: WS_PIN }, null);
+        expect(workspaceEnv(p.envPairs)).toBe('ws-a,ws-b');
+        expect(p.envPairs).toContainEqual(['FACTORY_SKILLS_PATH', '/task/.factory/skills-root/.claude/skills']);
+    });
+
+    it.each([[undefined], [[]], [PIN]])(
+        'sets no FACTORY_WORKSPACE_SKILLS for an org-only, empty or absent pin (%j)',
+        (skillPin) => {
+            const claude = plan({ ...job, ...(skillPin ? { skillPin } : {}) }, SESSION_FRESH);
+            const opencode = plan({ ...opencodeJob, ...(skillPin ? { skillPin } : {}) }, null);
+            expect(workspaceEnv(claude.envPairs)).toBeUndefined();
+            expect(workspaceEnv(opencode.envPairs)).toBeUndefined();
+        }
+    );
+
     it('keeps a resume’s session id where the bridge reads it', () => {
         const p = plan({ ...job, skillPin: PIN, resumeSessionId: SESSION }, { id: SESSION, resume: true });
         expect(p.cliArgs.slice(0, 2)).toEqual(['--resume', SESSION]);
