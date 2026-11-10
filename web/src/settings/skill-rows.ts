@@ -40,6 +40,8 @@ export const builtinHiddenNote = (entry: CatalogSkill, connections: ConnectionsS
     return missing === undefined ? null : `Needs ${labelOf(missing)}`;
 };
 
+export const shortSha = (current: SkillVersion): string => current.sha256.slice(0, SHORT_SHA);
+
 /** The version cell: the short sha and the date. The author is only in View. */
 export const versionLabel = (current: SkillVersion): string =>
-    `${current.sha256.slice(0, SHORT_SHA)} · ${current.createdAt.slice(0, DATE_LENGTH)}`;
+    `${shortSha(current)} · ${current.createdAt.slice(0, DATE_LENGTH)}`;

@@ -11,6 +11,7 @@ import { UPLOAD_PAGE_ROUTE } from './upload-route.js';
 import { AttachmentUploadPage } from './pages/AttachmentUploadPage.js';
 import { OAuthConsentPage } from './pages/OAuthConsentPage.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
+import { SettingsSkillsPage } from './pages/SettingsSkillsPage.js';
 import { SettingsExecutorsPage } from './pages/SettingsExecutorsPage.js';
 import { SettingsIntegrationsCatalogPage } from './pages/SettingsIntegrationsCatalogPage.js';
 import { SettingsIntegrationDetailPage } from './pages/SettingsIntegrationDetailPage.js';
@@ -72,6 +73,7 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
                     <Route path=":provider/:connectionId" element={<SettingsIntegrationDetailPage />} />
                 </Route>
                 <Route path="repos" element={<SettingsRepositoriesPage />} />
+                <Route path="skills" element={<SettingsSkillsPage />} />
                 <Route path="executors" element={<SettingsExecutorsPage />} />
                 {/* Workflows are dormant: no route, no nav entry, no composer selector. The API,
                     the engine and SettingsWorkflowsPage stay for when they come back. */}
