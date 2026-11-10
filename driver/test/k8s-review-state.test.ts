@@ -1,19 +1,30 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { job, namespace } from './fixtures/k8s-suite.js';
+import { randomUUID } from 'node:crypto';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { job as suiteJob, namespace } from './fixtures/k8s-suite.js';
 import { loadDriverConfig } from '../src/config.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 import type { ReviewRun } from '../src/review/review-step.js';
 
+// The project shares module state across files (isolate: false): the mocks are scoped to this
+// file's own fresh module graph, and dropped after it, so no other file sees them.
 const steps = vi.hoisted(() => ({ run: vi.fn() }));
-vi.mock('../src/review/review-step.js', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('../src/review/review-step.js')>()),
+vi.resetModules();
+vi.doMock('../src/review/review-step.js', async () => ({
+    ...(await vi.importActual<typeof import('../src/review/review-step.js')>('../src/review/review-step.js')),
     runReviewSteps: steps.run,
 }));
-vi.mock('../src/k8s/k8s-group.js', () => ({ stepHostFor: async () => ({}) }));
+vi.doMock('../src/k8s/k8s-group.js', () => ({ stepHostFor: async () => ({}) }));
 
 const { runReviewInGroup } = await import('../src/k8s/k8s-gate.js');
 
+afterAll(() => {
+    vi.doUnmock('../src/review/review-step.js');
+    vi.doUnmock('../src/k8s/k8s-group.js');
+    vi.resetModules();
+});
+
+const job = { ...suiteJob, id: randomUUID(), leaseToken: randomUUID() };
 const run = { caller: job } as unknown as ReviewRun;
 const lost: StepResult = { exitCode: null, stdout: '', stderr: 'its loop is not running', timedOut: false };
 const LOG_LINE = 'sh: 1: cannot create /factory/review/alive: Permission denied';

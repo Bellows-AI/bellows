@@ -1,17 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { job } from './fixtures/k8s-suite.js';
+import { randomUUID } from 'node:crypto';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { job as suiteJob } from './fixtures/k8s-suite.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 import type { ReviewRun } from '../src/review/review-step.js';
-import { reviewerName } from '../src/docker/docker-group.js';
 
+// The project shares module state across files (isolate: false): the mock is scoped to this
+// file's own fresh module graph, and dropped after it, so no other file sees it.
 const steps = vi.hoisted(() => ({ run: vi.fn() }));
-vi.mock('../src/review/review-step.js', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('../src/review/review-step.js')>()),
+vi.resetModules();
+vi.doMock('../src/review/review-step.js', async () => ({
+    ...(await vi.importActual<typeof import('../src/review/review-step.js')>('../src/review/review-step.js')),
     runReviewSteps: steps.run,
 }));
 
 const { runDockerReview } = await import('../src/docker/docker-gate.js');
+const { reviewerName } = await import('../src/docker/docker-group.js');
 
+afterAll(() => {
+    vi.doUnmock('../src/review/review-step.js');
+    vi.resetModules();
+});
+
+const job = { ...suiteJob, id: randomUUID(), leaseToken: randomUUID() };
 const run = { caller: job } as unknown as ReviewRun;
 const lost: StepResult = { exitCode: null, stdout: '', stderr: 'its loop is not running', timedOut: false };
 const STATE = '{"Status":"exited","ExitCode":2,"OOMKilled":false}';
