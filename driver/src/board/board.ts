@@ -230,18 +230,19 @@ export interface BoardJob extends ClaimSkills {
     policy?: EvidencePolicy;
     review?: ReviewEvidence;
     /**
-     * The ad-hoc gate credentials the LOOP mints for this attempt (`BELLOWS_GATE_URL` /
-     * `BELLOWS_GATE_TOKEN`) — set just before spawn, never by the board, which is why it sits
-     * beside `env` rather than inside it: the reserved-name filter that keeps a member's claim
-     * env from spoofing these names must not strip the driver's own.
+     * The gate registration key the LOOP mints for this attempt (`BELLOWS_GATE_TOKEN`) — set just
+     * before spawn, never by the board, which is why it sits beside `env` rather than inside it:
+     * the reserved-name filter that keeps a member's claim env from spoofing the name must not
+     * strip the driver's own. It is no runner env: the agent asks for a gate through the control
+     * socket (`POST /gate/run`) and holds neither a gate URL nor a token (BEL-88).
      */
     gateEnv?: Record<string, string>;
     /**
      * The task supervisor's control pair (`SUPERVISOR_CONTROL_URL` / `SUPERVISOR_CONTROL_TOKEN`)
      * and the transcript exporter's own token (`SUPERVISOR_EXPORT_TOKEN`) — minted by the LOOP
-     * beside `gateEnv`, and kept apart from it on purpose: `gateEnv` rides the agent's environment,
-     * and these are the credentials the agent container must never hold. The supervisor receives
-     * its pair, the exporter the URL and its own token.
+     * beside `gateEnv`, and kept apart from the claim env on purpose: these are credentials the
+     * agent container must never hold. The supervisor receives its pair, the exporter the URL and
+     * its own token.
      */
     supervisorEnv?: Record<string, string>;
     /** The lease the group's objects were made under, set by the LOOP on a takeover (#829); unset: `leaseToken`'s own. */

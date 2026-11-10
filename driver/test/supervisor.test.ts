@@ -309,7 +309,7 @@ async function startDriver({
             };
             driver.calls += 1;
             if (driver.silent) return request.socket.destroy();
-            if (/^\/(publish|review|export|connection)(\/|\?|$)/.test(request.url ?? '')) {
+            if (/^\/(publish|review|export|connection|gate\/run)(\/|\?|$)/.test(request.url ?? '')) {
                 const entry = {
                     method: request.method ?? '',
                     url: request.url ?? '',
@@ -2352,6 +2352,7 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['POST', '/review', '{"profile":"a"}'],
         ['GET', '/review/key-1', undefined],
         ['POST', '/connection', '{"provider":"jira"}'],
+        ['POST', '/gate/run', '{"gate":"verify"}'],
     ])('relays the agent route %s %s under the agent token, the answer unchanged', async (method, url, body) => {
         const driver = await startDriver();
         const supervised = relayed(driver);
@@ -2394,6 +2395,11 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['agent', 'GET', '/review/../control'],
         ['agent', 'PUT', '/export/chunk?session=s&offset=0'],
         ['agent', 'POST', '/review?x=1'],
+        ['agent', 'GET', '/gate/run'],
+        ['agent', 'PUT', '/gate/run'],
+        ['agent', 'POST', '/gate/run?x=1'],
+        ['agent', 'POST', '/gate/run/../control'],
+        ['export', 'POST', '/gate/run'],
         ['export', 'POST', '/publish'],
         ['export', 'GET', '/control'],
         ['export', 'GET', '/export/chunk?session=s&offset=0'],
@@ -2492,6 +2498,87 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         );
         expect(next.seen).toHaveLength(1);
         await finish(supervised);
+    });
+
+    describe("POST /gate/run, the agent's ad-hoc gate run (BEL-88)", () => {
+        const GATE = '{"gate":"verify"}';
+        const gateRun = (socket: string, body: Buffer | string = GATE) =>
+            viaSocket(socket, 'POST', '/gate/run', { body });
+        /** A holder that answers after `ms` with `size` bytes of gate output. */
+        const answersAfter = (driver: Driver, ms: number, size = 0) => {
+            driver.relayAnswer = async (response) => {
+                await new Promise((resolve) => setTimeout(resolve, ms));
+                const output = 'x'.repeat(size);
+                response.writeHead(200, { 'content-type': 'application/json' });
+                response.end(JSON.stringify({ exitCode: 0, output }));
+            };
+        };
+
+        it('refuses a body past its cap with 413, the driver untouched', async () => {
+            const driver = await startDriver();
+            const supervised = relayed(driver);
+            const { agent } = await ready(supervised);
+            expect((await gateRun(agent, Buffer.alloc(4 * 1024 + 1))).status).toBe(413);
+            expect(driver.seen).toEqual([]);
+            await finish(supervised);
+        });
+
+        it('is bounded by the run budget, not by the relay timeout a publish gets', async () => {
+            const driver = await startDriver();
+            answersAfter(driver, 700);
+            const supervised = relayed(driver, {
+                SUPERVISOR_RELAY_TIMEOUT_MS: '300',
+                SUPERVISOR_DEADLINE_MS: '600000',
+            });
+            const { agent } = await ready(supervised);
+            const gate = await gateRun(agent);
+            expect(gate.status).toBe(200);
+            expect(JSON.parse(gate.body.toString())).toMatchObject({ exitCode: 0 });
+            await expect(viaSocket(agent, 'POST', '/publish', { body: '{}' })).rejects.toBeInstanceOf(Error);
+            driver.relayAnswer = null;
+            await finish(supervised);
+        });
+
+        it('hangs up on a gate run that outlasts its own bound, never answering for it', async () => {
+            const driver = await startDriver();
+            driver.relayAnswer = () => new Promise<void>(() => {});
+            const supervised = relayed(driver, { SUPERVISOR_GATE_RELAY_TIMEOUT_MS: '300' });
+            const { agent } = await ready(supervised);
+            await expect(gateRun(agent)).rejects.toBeInstanceOf(Error);
+            driver.relayAnswer = null;
+            await finish(supervised);
+        });
+
+        it("streams a large answer through whole: the gate's output is never cut to a size", async () => {
+            const driver = await startDriver();
+            const size = 3 * 1024 * 1024;
+            answersAfter(driver, 0, size);
+            const supervised = relayed(driver);
+            const { agent } = await ready(supervised);
+            const answer = await gateRun(agent);
+            expect(JSON.parse(answer.body.toString()).output).toHaveLength(size);
+            await finish(supervised);
+        });
+
+        it('hangs up on a gate run in flight across a rebind and lands the retry on the new holder', async () => {
+            const [old, next] = [await startDriver(), await startDriver({ token: 'tok-next' })];
+            old.autoFinish = false;
+            old.relayAnswer = () => new Promise<void>(() => {});
+            const { supervised, name, rebound } = bound(old);
+            const sockets = await ready(supervised);
+            const outcome = gateRun(sockets.agent).then(
+                (answer) => answer,
+                (error: Error) => error
+            );
+            await until('the request to reach the old holder', () => old.seen.length === 1);
+            name(next, 2);
+            await until('the rebind', rebound);
+            expect(await outcome).toBeInstanceOf(Error);
+            expect((await gateRun(sockets.agent)).status).toBe(200);
+            expect(next.seen).toEqual([expect.objectContaining({ url: '/gate/run' })]);
+            old.relayAnswer = null;
+            await finish(supervised);
+        });
     });
 
     describe('a holder that does not answer', () => {

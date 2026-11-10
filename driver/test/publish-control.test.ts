@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
-import { createGateServer } from '../src/gates.js';
+import { createGateServer, type GateClaim } from '../src/gates.js';
 import { newJobState } from '../src/loop/loop-attempt.js';
 import { recordEnding, transition } from '../src/loop/loop-phase.js';
 import { createPublishRelay } from '../src/loop/loop-publish.js';
@@ -412,5 +412,136 @@ describe('a revision-bound publish across retries (BEL-253)', () => {
         } as unknown as LoopRuntime;
         await publishWithRetry({ rt, job: JOB, state: newJobState() }, { what: 'x', options: undefined }, () => false);
         expect(probed).toBe(0);
+    });
+});
+
+describe('the control server: POST /gate/run (BEL-88)', () => {
+    const KEY = 'root/repo';
+    const gates: GateClaim['gates'] = [
+        { name: 'verify', command: 'npm test', filter: true },
+        { name: 'slow', command: 'npm run slow', timeoutMinutes: 11 },
+    ];
+    const SUPERVISOR = 'tok-g-supervisor';
+    const AGENT = 'tok-g-agent';
+    const EXPORTER = 'tok-g-exporter';
+    const SERVICE_UNAVAILABLE_STATUS = 503;
+    const UNPROCESSABLE_STATUS = 422;
+
+    const post = (port: number, token: string, body: unknown = { gate: 'verify' }, signal?: AbortSignal) =>
+        fetch(`http://127.0.0.1:${port}/gate/run`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify(body),
+            ...(signal ? { signal } : {}),
+        });
+
+    /** A control channel with the agent and exporter tokens granted; `register` also files the gate claim and opens the door. */
+    async function opened(runGate: (...args: unknown[]) => Promise<{ exitCode: number; output: string }>) {
+        const server = createGateServer({ host: '127.0.0.1', manager: { acquire: async () => {}, runGate } });
+        server.openControl(SUPERVISOR);
+        server.grantAgent(SUPERVISOR, AGENT);
+        server.grantExporter(SUPERVISOR, EXPORTER);
+        const gateToken = 'tok-g-gate';
+        const register = () => {
+            server.register(gateToken, { key: KEY, image: 'node:24', job: JOB, gates });
+            server.attachGateRun(SUPERVISOR, gateToken);
+        };
+        return { server, port: await server.listen(), gateToken, register };
+    }
+
+    const passes = async () => ({ exitCode: 0, output: 'all green' });
+
+    it('answers a retryable 503 until the gate claim is attached: never "no gates", never a run', async () => {
+        let ran = 0;
+        const { server, port } = await opened(async () => {
+            ran += 1;
+            return { exitCode: 0, output: '' };
+        });
+        const answer = await post(port, AGENT);
+        expect(answer.status).toBe(SERVICE_UNAVAILABLE_STATUS);
+        await expect(answer.json()).resolves.toMatchObject({ retryable: true });
+        expect(ran).toBe(0);
+        await server.close();
+    });
+
+    it('runs the declared gate of the attached claim under the agent token', async () => {
+        const { server, port, register } = await opened(passes);
+        register();
+        const answer = await post(port, AGENT);
+        expect(answer.status).toBe(OK_STATUS);
+        await expect(answer.json()).resolves.toMatchObject({ exitCode: 0, output: 'all green' });
+        await server.close();
+    });
+
+    it('answers 404 "no gates" for a job that declares none', async () => {
+        const { server, port } = await opened(passes);
+        server.attachGateRun(SUPERVISOR, null);
+        const answer = await post(port, AGENT);
+        expect(answer.status).toBe(NOT_FOUND_STATUS);
+        await expect(answer.json()).resolves.toEqual({ error: 'no gates' });
+        await server.close();
+    });
+
+    it('opens the route to the agent token alone: the supervisor and exporter tokens are 403, an unknown one 401', async () => {
+        const { server, port, register } = await opened(passes);
+        register();
+        expect((await post(port, SUPERVISOR)).status).toBe(FORBIDDEN_STATUS);
+        expect((await post(port, EXPORTER)).status).toBe(FORBIDDEN_STATUS);
+        expect((await post(port, 'tok-g-unknown')).status).toBe(UNAUTHORIZED_STATUS);
+        await server.close();
+    });
+
+    it('is closed again once the gate claim is unregistered: 503, not a run', async () => {
+        let ran = 0;
+        const { server, port, gateToken, register } = await opened(async () => {
+            ran += 1;
+            return { exitCode: 0, output: '' };
+        });
+        register();
+        server.unregister(gateToken);
+        const answer = await post(port, AGENT);
+        expect(answer.status).toBe(SERVICE_UNAVAILABLE_STATUS);
+        expect(ran).toBe(0);
+        await server.close();
+    });
+
+    it('stops admitting runs once the token is quiesced, as the direct route does', async () => {
+        const { server, port, gateToken, register } = await opened(passes);
+        register();
+        await server.quiesce(gateToken);
+        const answer = await post(port, AGENT);
+        expect(answer.status).toBe(SERVICE_UNAVAILABLE_STATUS);
+        await expect(answer.json()).resolves.toMatchObject({ retryable: true });
+        await server.close();
+    });
+
+    it('keeps the ad-hoc rules: an undeclared gate is 404, a filter the gate does not take and a gate too long to wait for are 422', async () => {
+        const { server, port, register } = await opened(passes);
+        register();
+        expect((await post(port, AGENT, { gate: 'missing' })).status).toBe(NOT_FOUND_STATUS);
+        expect((await post(port, AGENT, { gate: 'slow' })).status).toBe(UNPROCESSABLE_STATUS);
+        expect((await post(port, AGENT, { gate: 'verify', filter: 'a-test' })).status).toBe(OK_STATUS);
+        await server.close();
+    });
+
+    it('cancels the run when the agent hangs up on it', async () => {
+        let aborted: Promise<void> = Promise.resolve();
+        let started: () => void = () => {};
+        const running = new Promise<void>((resolve) => (started = resolve));
+        const { server, port, register } = await opened(async (...args) => {
+            const { signal } = args[3] as { signal: AbortSignal };
+            aborted = new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+            started();
+            await aborted;
+            return { exitCode: 130, output: 'killed' };
+        });
+        register();
+        const hangUp = new AbortController();
+        const asked = post(port, AGENT, { gate: 'verify' }, hangUp.signal).catch(() => undefined);
+        await running;
+        hangUp.abort();
+        await asked;
+        await aborted;
+        await server.close();
     });
 });

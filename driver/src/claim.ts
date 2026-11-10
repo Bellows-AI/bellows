@@ -177,8 +177,8 @@ export const RESUME_MAY_BE_UNWRITTEN_ENV = 'BELLOWS_RESUME_MAY_BE_UNWRITTEN';
 
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
- * sets, the two BELLOWS_GATE_ names are the
- * ad-hoc gate credentials the loop mints per attempt, CRED_HELPER is the credential-helper CODE
+ * sets, the two BELLOWS_GATE_ names stay the driver's
+ * (no runner env carries them since BEL-88, and a member cannot set them), CRED_HELPER is the credential-helper CODE
  * the sync fetch runs, RESTORE is the sync's restore-mode switch (a member value there would
  * flip starting claims into restore mode, silently skipping the fetch and rebase issue #58
  * reserves for continuations), the two SYNC_LOCK_* names are the startup sync lock's bounds
@@ -425,8 +425,8 @@ export function supervisorEnvFileBody(job: BoardJob, pairs: readonly { name: str
 }
 
 /**
- * The `--env-file` body for the runner: the claim env's lines, then the loop's minted gate
- * credentials, then the runner's own branch-ingest credential. Pure and exported for the same
+ * The `--env-file` body for the runner: the claim env's lines, then the runner's own
+ * branch-ingest credential; no gate line (the agent reaches gates through the control socket). Pure and exported for the same
  * pinning as dockerArgs. The config argument is optional and only ever adds the attempt pair —
  * aux containers (sync, publish, gates) are called without it and get no credential, because
  * none of them reports telemetry.
@@ -437,14 +437,8 @@ export function envFileBody(job: BoardJob, config?: DriverConfig): string {
     const lines = Object.entries(config ? runnerClaimEnv(job) : claimEnv(job)).map(([name, value]) =>
         envLine(job, name, value)
     );
-    // The driver's own gate credentials go LAST. Docker's --env-file is last-duplicate-wins, so
-    // the order is the precedence rule: a `BELLOWS_GATE_TOKEN` a member configured in any env
-    // scope was already dropped from the claim lines (reserved names), and the lines here are the
-    // driver's minted values — but keeping them visually and structurally after the claim's is
-    // what makes "the driver wins a collision" readable in one place.
-    for (const [name, value] of Object.entries(job.gateEnv ?? {})) {
-        lines.push(envLine(job, name, value));
-    }
+    // No gate lines: the agent asks for a gate through the control socket and holds no gate URL or
+    // token (BEL-88); `job.gateEnv`'s registration key is the driver's own and is never rendered.
     // The attempt pair is the one driver-side credential in the file, and it goes after
     // everything: same precedence rule, and the lines a reader audits for "what can authenticate
     // as this runner" are always the last ones. The reporter presents them as headers, and the
