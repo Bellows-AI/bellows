@@ -85,8 +85,8 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
   `driver/test/k8s/` and run through the supervisor with the stub's question (`--phase control`); docker's lane is `ask_roundtrip_lane` in `scripts/test-jobs.sh`.
 - `make reset` destroys the local state release and its data; the `volumeClaimTemplate` claim survives `helm uninstall`.
   `EXECUTOR=kubernetes` with `RUNNER_CACHE_WATCH=1` is fatal at startup (`driver/src/config.ts`).
-- Deliberate docker divergences: no cpu-request flag, no node scheduling, no `imagePullSecrets` twin, no admission
-  equivalent; on docker (development only) service listeners are reachable by IP on the compose network (`driver/src/docker/docker-mailbox.ts`).
+- Deliberate docker divergences: no cpu-request flag, no node scheduling, no RuntimeClass (`RUNNER_RUNTIME_CLASS`), no
+  `imagePullSecrets` twin, no admission equivalent; on docker (development only) service listeners are reachable by IP on the compose network (`driver/src/docker/docker-mailbox.ts`).
 
 ## EKS prerequisites
 

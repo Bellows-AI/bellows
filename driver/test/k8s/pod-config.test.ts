@@ -206,6 +206,17 @@ describe('RUNNER_IMAGE_PULL_SECRETS', () => {
     });
 });
 
+// every pod the driver specs runs under the configured RuntimeClass, or none of them names one.
+describe('RUNNER_RUNTIME_CLASS', () => {
+    it.each(POD_NAMES)('runs %s under the configured RuntimeClass', (name) => {
+        expect(everyPodSpec({ RUNNER_RUNTIME_CLASS: 'gvisor' })[name]().pod.runtimeClassName).toBe('gvisor');
+    });
+
+    it.each(POD_NAMES)('leaves runtimeClassName off %s when unset', (name) => {
+        expect(everyPodSpec()[name]().pod).not.toHaveProperty('runtimeClassName');
+    });
+});
+
 // Issue #361: the chart's scheduling knobs reach the chart's own pods only; these are the runner
 // group's — the tainted node group agent-written code is meant to land on and nothing else. Every
 // pod the driver specs carries them: the runner, each aux Job and each service pod, exactly as

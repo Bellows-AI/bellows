@@ -9,7 +9,7 @@ This page is for a security reviewer. It states what each control does and what 
 
 - An agent runs code you did not write, next to credentials. Bellows confines it with hardened containers, separate user ids, a network policy, and an admission policy. It holds no long-lived credential.
 - The agent gets a short-lived GitHub token for one repository, fetched on demand. The token is not in its environment.
-- This is **not** kernel or VM isolation. Every runner shares the node's kernel with other pods.
+- By default this is **not** kernel or VM isolation: every runner shares the node's kernel with other pods. Set `runner.runtimeClassName` (for example `gvisor` on GKE Sandbox) to run every runner pod in a sandbox kernel.
 - Membership is not a sandbox. Anyone in an organization can queue a command that an agent runs on any tracked repository.
 
 ## Trust boundaries
@@ -38,10 +38,13 @@ On Kubernetes, the admission policy requires these on every pod the driver creat
 | No host access | No host ports, no host namespaces, no host path mounts, no `nodeName` pinning |
 | Limited mounts | Only the task volume, `emptyDir` and the pod's own per-attempt Secrets |
 | Limited Secret reads | Only the pod's own per-attempt Secrets and the runner credentials |
+| Sandbox runtime | `runtimeClassName` equal to `runner.runtimeClassName`, when it is set |
 
 One exception exists. The `agent` container starts as root with only `SETUID` and `SETGID` added, so it can start commands as another user. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
 
 Pod Security `restricted` cannot admit the agent container. `baseline` can.
+
+Under gVisor (GKE Sandbox) the policy keeps every rule above. GKE admits and starts these pods, but seccomp and No New Privileges have no effect inside the sandbox: a runner reads `Seccomp: 0`. The gVisor kernel is the boundary there. The rules stay so that one policy fits installs with and without a RuntimeClass.
 
 ### Separate users
 
@@ -71,7 +74,7 @@ Gates run in a separate `gate` sidecar, and declared services run as `svc-<name>
 | Other repositories | No, unless public | The token names one repository |
 | The internet | Yes, except `isolation.blockedCidrs` | Defaults block private ranges, the pod and service networks, and `169.254.0.0/16` (cloud metadata) |
 | Your VPC or private hosts | No | Add a host as a `/32` in `isolation.allowedCidrs` if a run needs it |
-| DNS | Only the resolvers | `kube-dns` and `isolation.dnsCidrs` |
+| DNS | Only the resolvers | `kube-dns`, `node-local-dns` and `isolation.dnsCidrs` |
 | The dashboard, collector and driver | Yes | Dashboard on its serving port, collector on 4317 and 4318. The driver on any port it listens on, because its gate endpoint uses an ephemeral port |
 | Other runner pods | No | Runner pods accept no ingress |
 | The Kubernetes API | No | No ServiceAccount token |
@@ -161,7 +164,7 @@ Attachment type is decided from the file's bytes, not its declared type. SVG, HT
 
 ## Known limits
 
-- Not kernel or VM isolation. For a hard boundary, run runner nodes under gVisor, Kata Containers or Firecracker. The chart does not provision them.
+- Kernel isolation needs a RuntimeClass. Without `runner.runtimeClassName`, runners share the node kernel. With it, the admission policy refuses any pod the driver creates outside that RuntimeClass, even from a compromised driver. The chart does not provision the runtime: install gVisor, Kata Containers or Firecracker on the runner nodes, or use a GKE Sandbox node pool.
 - The network controls do nothing without an enforcing CNI.
 - A taken-over run's gate requests keep the lost driver's endpoint, and a node that goes NotReady is noticed only when the cluster acts on it (about 300 seconds by default).
 - A task volume is a thread boundary. A volume's size is a request, and a cap only where the provisioner enforces it.
