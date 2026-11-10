@@ -273,6 +273,34 @@ describe('an open skill draft survives async transitions', () => {
         await waitFor(() => expect(screen.queryByRole('region', { name: 'New skill' })).toBeNull());
     });
 
+    it('no other editor can be opened while a save is in flight, and the save closes only its own editor', async () => {
+        const user = userEvent.setup();
+        let release = () => {};
+        const rows = [skill('workspace', 'one'), skill('workspace', 'two')];
+        const data = store(rows);
+        data.hold = new Promise((resolve) => {
+            release = () => resolve(undefined);
+        });
+        mount(data);
+        renderApp('/settings/skills');
+
+        const editor = await openEdit(user, 'one');
+        await user.type(await editor.findByDisplayValue(/# one/), 'x');
+        await user.click(editor.getByRole('button', { name: 'Save new version' }));
+
+        const mine = await panelOf(/^My workspace/);
+        await waitFor(() =>
+            expect((mine.getByRole('button', { name: 'New skill' }) as HTMLButtonElement).disabled).toBe(true)
+        );
+        expect((mine.getByRole('button', { name: 'Upload .zip' }) as HTMLButtonElement).disabled).toBe(true);
+        const two = within(mine.getByRole('row', { name: /two/ }));
+        expect((two.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((two.getByRole('button', { name: 'Actions for two' }) as HTMLButtonElement).disabled).toBe(true);
+        release();
+        await waitFor(() => expect(screen.queryByRole('region', { name: 'Edit one' })).toBeNull());
+        expect(screen.queryByRole('region', { name: /^(Edit|New)/ })).toBeNull();
+    });
+
     it('a failed list re-read keeps the open editor and its text, with the error beside it', async () => {
         const user = userEvent.setup();
         const rows = [skill('workspace', 'one'), skill('workspace', 'two')];

@@ -283,6 +283,7 @@ export function SkillsSection({
     editor,
     onEditor,
     renderEditor,
+    locked,
     onChanged,
 }: {
     door: SkillDoor;
@@ -298,12 +299,15 @@ export function SkillsSection({
     editor: SkillEditorTarget | null;
     onEditor: (target: SkillEditorTarget | null) => void;
     renderEditor?: (target: SkillEditorTarget) => ReactNode;
+    /** An editor's save is in flight: no other editor may be opened and no row changes under it. */
+    locked: boolean;
     /** Re-reads these doors' lists after a write. */
     onChanged: (doors: readonly SkillDoor[]) => void;
 }) {
     const title = TITLES[door];
     const writes = useSkillWrites(door, onChanged);
-    const { busy, pending, setPending } = writes;
+    const { pending, setPending } = writes;
+    const busy = writes.busy || locked;
     const [viewing, setViewing] = useState<string | null>(null);
     const here = editor?.door === door ? editor : null;
 

@@ -387,15 +387,22 @@ export function SkillEditor({
     target,
     onClose,
     onChanged,
+    onBusyChange,
 }: {
     target: SkillEditorTarget;
     onClose: () => void;
     onChanged: (doors: readonly SkillDoor[]) => void;
+    /** Told whenever a submit starts or settles (and false on unmount), so the page can lock the other entry points. */
+    onBusyChange: (busy: boolean) => void;
 }) {
     const { door } = target;
     const [tab, setTab] = useState<'write' | 'zip'>(target.mode === 'zip' ? 'zip' : 'write');
     const [busy, setBusy] = useState(false);
     const guard = useUnsavedChanges();
+    const notify = useRef(onBusyChange);
+    notify.current = onBusyChange;
+    useEffect(() => notify.current(busy), [busy]);
+    useEffect(() => () => notify.current(false), []);
 
     /** The ✕: a dirty draft asks first, exactly as navigating away does. */
     const requestClose = async () => {

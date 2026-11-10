@@ -1,5 +1,5 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { PageHeader } from '../components/PageHeader.js';
 import { BuiltinSkillsSection } from '../panels/BuiltinSkillsSection.js';
 import { SkillEditor, SKILL_DRAFT_ID, editorKey } from '../panels/SkillEditor.js';
@@ -29,6 +29,9 @@ export function SettingsSkillsPage() {
     const { session } = useSettingsPage();
     const { lists, reload } = useSkillLists();
     const [editor, setEditor] = useState<SkillEditorTarget | null>(null);
+    const [saving, setSaving] = useState(false);
+    // Each opened editor gets the next token; a completion acts on the page only while its token is still the open one.
+    const token = useRef(0);
     const isAdmin = session?.role === ADMIN_ROLE;
     const guard = useUnsavedChanges();
 
@@ -37,16 +40,24 @@ export function SettingsSkillsPage() {
         const draft =
             editor && (!next || editorKey(next) !== editorKey(editor)) ? guard?.dirtyDraft(SKILL_DRAFT_ID) : null;
         if (draft && guard && !(await guard.confirmDiscard(draft))) return;
+        if (next && (!editor || editorKey(next) !== editorKey(editor))) token.current += 1;
         setEditor(next);
     };
-    const renderEditor = (target: SkillEditorTarget) => (
-        <SkillEditor
-            key={editorKey(target)}
-            target={target}
-            onClose={() => setEditor(null)}
-            onChanged={(doors) => void reload(doors)}
-        />
-    );
+    const closeIfCurrent = (own: number) => {
+        if (token.current === own) setEditor(null);
+    };
+    const renderEditor = (target: SkillEditorTarget) => {
+        const own = token.current;
+        return (
+            <SkillEditor
+                key={editorKey(target)}
+                target={target}
+                onClose={() => closeIfCurrent(own)}
+                onBusyChange={(busy) => token.current === own && setSaving(busy)}
+                onChanged={(doors) => void reload(doors)}
+            />
+        );
+    };
 
     return (
         <>
@@ -84,6 +95,7 @@ export function SettingsSkillsPage() {
                 editor={editor}
                 onEditor={(next) => void openEditor(next)}
                 renderEditor={renderEditor}
+                locked={saving}
                 onChanged={(doors) => void reload(doors)}
             />
             <SkillsSection
@@ -96,6 +108,7 @@ export function SettingsSkillsPage() {
                 editor={editor}
                 onEditor={(next) => void openEditor(next)}
                 renderEditor={renderEditor}
+                locked={saving}
                 onChanged={(doors) => void reload(doors)}
             />
             <BuiltinSkillsSection isAdmin={isAdmin} />
