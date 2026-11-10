@@ -291,6 +291,22 @@ spec:
                       - name: SECRETS_VAULT_TOKEN_FILE
                         value: /var/run/secrets/vault/token
                       {{- end }}
+                      {{- if eq .Values.secretStore.backend "gcp" }}
+                      - name: SECRETS_GCP_PROJECT
+                        value: {{ .Values.secretStore.gcp.project | quote }}
+                      {{- with .Values.secretStore.gcp.prefix }}
+                      - name: SECRETS_GCP_PREFIX
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- with .Values.secretStore.gcp.location }}
+                      - name: SECRETS_GCP_LOCATION
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- with .Values.secretStore.gcp.kmsKey }}
+                      - name: SECRETS_GCP_KMS_KEY
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- end }}
                   {{- with .Values.dashboard.resources }}
                   resources:
                       {{- toYaml . | nindent 22 }}

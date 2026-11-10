@@ -103,7 +103,7 @@ The GitHub App's private key is the worst secret to leak. It mints installation 
 | Topic | Behavior |
 | --- | --- |
 | Secrets members save | Write-only through the API. No one, an admin included, can read a value back. See [Environment variables and secrets](/guides/env-and-secrets). |
-| Where they are stored | Your choice of `secretStore.backend`: AES-256-GCM envelopes in PostgreSQL, AWS Secrets Manager, or HashiCorp Vault KV v2. External backends keep only a reference and a MAC in the database. |
+| Where they are stored | Your choice of `secretStore.backend`: AES-256-GCM envelopes in PostgreSQL, AWS Secrets Manager, HashiCorp Vault KV v2, or Google Cloud Secret Manager. External backends keep only a reference and a MAC in the database. |
 | How a runner gets them | A per-attempt Secret, mounted as a file with mode `0600` at the container start. Never in argv, a log or the board. |
 | Secret-store keys | Reach the dashboard container alone. The driver strips every `SECRETS_*` variable it receives. |
 | Model credentials | Referenced by name (`runner.env`) from a Secret. The value does not appear in a pod spec, so `kubectl get pods -o yaml` shows only the reference. |

@@ -955,6 +955,58 @@ refuses 'a vault store without an operation key is refused' 'secretStore.operati
 vault_byo="$(gh_render "${VAULT_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
 expect_contains 'a managed secret-store Secret serves the vault backend too' "$vault_byo" 'name: managed-keys'
 
+# The gcp backend (docs/secrets.md): the provider settings reach the dashboard container alone, the Secret holds no
+# data key, and no credential is rendered (Workload Identity is the service-account annotation).
+GCP_SETS=(
+    --set secretStore.backend=gcp --set secretStore.gcp.project=example-project
+    --set secretStore.gcp.prefix=acme- --set secretStore.gcp.location=europe-west1
+    --set secretStore.gcp.kmsKey=projects/example-project/locations/europe-west1/keyRings/ring/cryptoKeys/key
+    --set-string secretStore.dataKeys= --set secretStore.activeKeyId=
+)
+gcp_render="$(gh_render "${GCP_SETS[@]}")"
+gcp_doc="$(awk '/^# Source:/ { keep = ($0 ~ /templates\/deployment.yaml$/) } keep' <<<"$gcp_render")"
+gcp_dashboard="$(awk '/^ +containers:$/ { on = 1 } on' <<<"$gcp_doc" | awk '/^ +- name: dashboard$/ { on = 1 } /^ +volumes:$/ { on = 0 } on')"
+expect_contains 'the gcp backend is selected explicitly' "$gcp_dashboard" 'value: "gcp"'
+expect_contains 'the dashboard container gets the gcp project' "$gcp_dashboard" 'value: "example-project"'
+expect_contains 'the dashboard container gets the gcp prefix' "$gcp_dashboard" 'value: "acme-"'
+expect_contains 'the dashboard container gets the gcp location' "$gcp_dashboard" 'value: "europe-west1"'
+expect_contains 'the dashboard container gets the gcp key' "$gcp_dashboard" 'cryptoKeys/key'
+[ "$(grep -c 'SECRETS_' <<<"$gcp_render")" = 7 ] && [ "$(grep -c 'SECRETS_' <<<"$gcp_dashboard")" = 7 ] &&
+    ok 'every gcp-mode SECRETS_ variable is in the dashboard container alone' ||
+    bad 'every gcp-mode SECRETS_ variable is in the dashboard container alone' \
+        "whole render: $(grep -c 'SECRETS_' <<<"$gcp_render"), dashboard container: $(grep -c 'SECRETS_' <<<"$gcp_dashboard")"
+expect_not_contains 'a gcp store renders no data-key variable' "$gcp_render" 'SECRETS_DATA_KEYS'
+expect_not_contains 'a gcp store renders no active-key-id variable' "$gcp_render" 'SECRETS_ACTIVE_KEY_ID'
+expect_not_contains 'a gcp store references no data-keys entry' "$gcp_render" 'data-keys'
+expect_not_contains 'a gcp store renders no AWS setting' "$gcp_render" 'SECRETS_AWS_'
+expect_not_contains 'a gcp store renders no Vault setting' "$gcp_render" 'SECRETS_VAULT_'
+expect_not_contains 'a gcp store renders no credential file variable' "$gcp_render" 'GOOGLE_APPLICATION_CREDENTIALS'
+expect_contains 'a gcp store still holds the operation and fingerprint keys' "$gcp_render" 'fingerprint-key:'
+expect_not_contains 'no configmap or collector carries a gcp setting' \
+    "$(awk '/^# Source:/ { keep = ($0 ~ /configmap|collector/) } keep' <<<"$gcp_render")" 'SECRETS_'
+gcp_driver="$(awk '/^# Source:/ { keep = ($0 ~ /driver-deployment.yaml$/) } keep' <<<"$gcp_render")"
+expect_not_contains 'the driver deployment carries no gcp setting' "$gcp_driver" 'SECRETS_'
+gcp_minimal="$(gh_render --set secretStore.backend=gcp --set secretStore.gcp.project=example-project --set-string secretStore.dataKeys= --set secretStore.activeKeyId=)"
+expect_not_contains 'an unset gcp prefix renders no variable, so the app default applies' "$gcp_minimal" 'SECRETS_GCP_PREFIX'
+expect_not_contains 'an unset gcp location renders no variable, so the app default applies' "$gcp_minimal" 'SECRETS_GCP_LOCATION'
+expect_not_contains 'an unset gcp key renders no variable' "$gcp_minimal" 'SECRETS_GCP_KMS_KEY'
+refuses 'a gcp store without a project is refused' 'secretStore.gcp.project is required' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.gcp.project=
+refuses 'data keys under the gcp backend are refused' 'are for secretStore.backend database' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set-string secretStore.dataKeys=k1:AAAA
+refuses 'aws settings under the gcp backend are refused' 'are for secretStore.backend aws, not gcp' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.aws.region=eu-west-1
+refuses 'vault settings under the gcp backend are refused' 'secretStore.vault.* is for secretStore.backend vault, not gcp' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.vault.role=factory
+refuses 'gcp settings under the database backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not database' \
+    "${GH_SETS[@]}" --set secretStore.gcp.project=example-project
+refuses 'gcp settings under the aws backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not aws' \
+    "${GH_SETS[@]}" "${AWS_SETS[@]}" --set secretStore.gcp.prefix=acme-
+refuses 'gcp settings under the vault backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not vault' \
+    "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set secretStore.gcp.location=europe-west1
+gcp_byo="$(gh_render "${GCP_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
+expect_contains 'a managed secret-store Secret serves the gcp backend too' "$gcp_byo" 'name: managed-keys'
+
 # --- The optional ingress (#359): off by default, never disagreeing with auth.publicUrl --------
 
 # Off by default in both profiles: the ClusterIP is the perimeter until the operator says

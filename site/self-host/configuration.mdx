@@ -114,7 +114,7 @@ Required on every boot. Read from the server's environment only, from `secrets.e
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
-| `SECRETS_BACKEND` | Yes | none | `database`, `aws` or `vault`. One per deployment. Switching with secrets already stored is not supported. |
+| `SECRETS_BACKEND` | Yes | none | `database`, `aws`, `vault` or `gcp`. One per deployment. Switching with secrets already stored is not supported. |
 | `SECRETS_DATA_KEYS` | database | none | Comma-separated `<keyId>:<base64 of 32 bytes>`. Key ids use `[a-z0-9-]`, up to 32 characters. |
 | `SECRETS_ACTIVE_KEY_ID` | database | none | Key id used for new versions. Must appear in `SECRETS_DATA_KEYS`. |
 | `SECRETS_OPERATION_KEY` | Yes | none | Base64, 32 bytes. Cannot be rotated. Must differ from every other key. |
@@ -129,6 +129,12 @@ Required on every boot. Read from the server's environment only, from `secrets.e
 | `SECRETS_VAULT_AUTH` | vault | none | `kubernetes` (production) or `token` (development). |
 | `SECRETS_VAULT_ROLE`, `SECRETS_VAULT_TOKEN_FILE` | with `kubernetes` | none | Role and projected service-account token file. |
 | `SECRETS_VAULT_TOKEN` | with `token` | none | Fixed client token. Development only. |
+| `SECRETS_GCP_PROJECT` | gcp | none | Google Cloud project id the secrets live in. |
+| `SECRETS_GCP_PREFIX` | | `bellows-` | Starts every secret's name. An IAM condition on the name prefix can fence the service account to it. |
+| `SECRETS_GCP_LOCATION` | | `europe-west3` | The one region each secret is replicated to (user-managed replication). |
+| `SECRETS_GCP_KMS_KEY` | | none | Customer-managed key `projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>`, in the same location. |
+
+The `gcp` backend uses Application Default Credentials only: Workload Identity on GKE, `gcloud auth application-default login` locally. There is no key file option, and a service-account key file is refused. `SECRETS_DATA_KEYS` and `SECRETS_ACTIVE_KEY_ID` are refused with `gcp`.
 
 A variable for a backend you did not choose is refused.
 
