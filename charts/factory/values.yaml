@@ -68,6 +68,11 @@ dashboard:
     serviceAccount:
         create: true
         annotations: {}
+    # Annotations on the dashboard Service, for the load balancer in front of it: on GKE,
+    # `cloud.google.com/backend-config: '{"default":"<BackendConfig>"}'` attaches a Cloud Armor
+    # policy. The Service stays ClusterIP whatever is set here.
+    service:
+        annotations: {}
     # Requests only: a limit on the process that clones every member's checkouts would turn a big
     # repository into an OOM kill mid-clone.
     resources:

@@ -1090,6 +1090,16 @@ expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" 
 expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" \
     'value: "{\"podAntiAffinity\":{\"preferredDuringSchedulingIgnoredDuringExecution\":[{\"weight\":1}]}}"'
 
+# Dashboard Service annotations: a load balancer's per-Service knobs (a GKE BackendConfig for Cloud
+# Armor, NEG settings). None by default.
+service_doc() { awk '/^# Source: factory\/templates\/service.yaml/,/^---/' <<<"$1"; }
+expect_not_contains 'the dashboard Service carries no annotations by default' "$(service_doc "$gh")" 'annotations:'
+printf '%s\n' 'dashboard:' '    service:' '        annotations:' \
+    "            cloud.google.com/backend-config: '{\"default\":\"bellows-dashboard\"}'" >"$work/service-annotations.yaml"
+annotated="$(gh_render -f "$work/service-annotations.yaml")"
+expect_contains 'the dashboard Service carries its annotations' "$(service_doc "$annotated")" \
+    'cloud.google.com/backend-config: '"'"'{"default":"bellows-dashboard"}'"'"''
+
 # The runner RuntimeClass: forwarded to the driver and required by admission when set;
 # unset, neither renders.
 expect_not_contains 'no runner RuntimeClass var renders on defaults' "$gh" 'name: RUNNER_RUNTIME_CLASS'

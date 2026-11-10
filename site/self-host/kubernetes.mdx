@@ -140,7 +140,7 @@ auth:
   cookieSecure: 'true'
 ```
 
-Annotations and `tls` pass through to the Ingress unchanged, so use whatever your controller expects. An empty `className` uses the cluster's default IngressClass. The render is refused if the host of `auth.publicUrl` is not in `ingress.hosts`, because sign-in would never return.
+Annotations and `tls` pass through to the Ingress unchanged, so use whatever your controller expects. An empty `className` uses the cluster's default IngressClass. GKE's built-in controller has no IngressClass object: leave `className` empty and set the annotation `kubernetes.io/ingress.class: gce`. To attach a Cloud Armor policy on GKE, create a `BackendConfig` with `securityPolicy` and name it in `dashboard.service.annotations` as `cloud.google.com/backend-config: '{"default":"<name>"}'`. The render is refused if the host of `auth.publicUrl` is not in `ingress.hosts`, because sign-in would never return.
 
 <Note>
 MCP needs only the one `/` Prefix rule the chart renders per host. It serves `/.well-known/oauth-*` and `/api/mcp` through it. Do not add a second path rule.
