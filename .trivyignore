@@ -27,3 +27,11 @@
 # undici denial of service via an unhandled stream error. npm 11.21.1 vendors 6.29.0; the fix is
 # 6.29.1. Revisit 2026-11-24, or when an npm release vendors undici 6.29.1.
 CVE-2026-109869
+
+# CVE-2026-78661 — golang.org/x/net/html denial of service, in the GitHub CLI binary of both
+# executor images (/usr/local/libexec/gh). gh v2.103.3, the newest release, builds with x/net
+# v0.60.0 and gh's trunk with v0.61.0; the fix is v0.62.0, so there is no gh to upgrade to. The
+# worst case is a gh process the agent itself runs inside its own runner hanging on crafted input;
+# no service in the images runs gh. Revisit 2026-11-24, or when a gh release builds with x/net
+# v0.62.0 or later: bump GH_VERSION in both executor Dockerfiles and drop this line (BEL-309).
+CVE-2026-78661
