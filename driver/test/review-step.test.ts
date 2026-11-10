@@ -88,6 +88,12 @@ describe('the reviewer’s review step', () => {
         if (executorType === 'claude-code') expect(step?.argv.join(' ')).toContain('Skill(factory-jira)');
     });
 
+    it.each(['claude-code', 'opencode'] as const)('carries no workspace skill promotion on %s', (executorType) => {
+        const own = { ...review, executorType } as unknown as ReviewClaim;
+        const step = reviewStepEnv(host, own, executorType === 'opencode' ? null : { id: 'sess-1', resume: false });
+        expect(step?.env).not.toHaveProperty('FACTORY_WORKSPACE_SKILLS');
+    });
+
     // The existing branch reporter and the usage attribution key on the run's OWN board identity:
     // the review row's id and lease token and the board's URL — never the caller's.
     it.each(['claude-code', 'opencode'] as const)(

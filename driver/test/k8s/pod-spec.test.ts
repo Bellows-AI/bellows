@@ -313,6 +313,29 @@ describe('the runner job spec', () => {
         ]);
     });
 
+    it('a runner pod for a workspace pin carries FACTORY_WORKSPACE_SKILLS and FACTORY_SKILLS_PATH', () => {
+        const pin = ['ws-a', 'ws-b'].map((name) => ({
+            name,
+            source: 'workspace' as const,
+            versionId: '77777777-7777-4777-8777-777777777777',
+            sha256: 'b'.repeat(64),
+        }));
+        const pinned = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...job, skillPin: pin },
+            {
+                id: SESSION,
+                resume: false,
+            }
+        );
+        const env = pinned.spec.template.spec.containers[0]!.env;
+        expect(env).toContainEqual({ name: 'FACTORY_WORKSPACE_SKILLS', value: 'ws-a,ws-b' });
+        expect(env).toContainEqual({
+            name: 'FACTORY_SKILLS_PATH',
+            value: expect.stringMatching(/\/\.claude\/skills$/),
+        });
+    });
+
     // The claim env's VALUES never touch the pod spec — anyone who can `get pods` would read them.
     // They live in a per-attempt Secret the runner creates before the Job and reaps with it.
     it('references claim env by secretKeyRef into the per-job Secret, never by value', () => {
