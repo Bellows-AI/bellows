@@ -87,11 +87,11 @@ Admission budgets apply to every claim across all drivers and replicas. Unset me
 
 ### Artifacts and attachments
 
-Artifacts and member uploads share one backend.
+Artifacts and member uploads share one backend. The gcs backend takes its credentials from Application Default Credentials only: Workload Identity on GKE, or `gcloud auth application-default login` on a workstation. A service-account key file is refused.
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
-| `ARTIFACTS_BACKEND` | | `filesystem` | `s3` or `filesystem`. The filesystem backend supports a single replica only. |
+| `ARTIFACTS_BACKEND` | | `filesystem` | `s3`, `gcs` or `filesystem`. The filesystem backend supports a single replica only. A variable of a backend you did not choose is refused at boot. |
 | `ARTIFACTS_FS_ROOT` | | `$TMPDIR/factory-artifacts` (`/tmp/...` if `TMPDIR` is unset) | Absolute directory for the filesystem backend. |
 | `ARTIFACTS_S3_BUCKET` | s3 | none | Bucket name. The board creates it on boot. |
 | `ARTIFACTS_S3_REGION` | s3 without an endpoint | `us-east-1` when an endpoint is set | AWS region. |
@@ -101,6 +101,9 @@ Artifacts and member uploads share one backend.
 | `ARTIFACTS_S3_KMS_KEY_ID` | | empty | KMS key for server-side encryption. Empty uses SSE-S3. |
 | `ARTIFACTS_ACCESS_KEY_ID` | with the secret | none | Static S3 key. Both keys or neither. Neither means EKS Pod Identity, then IRSA. |
 | `ARTIFACTS_SECRET_ACCESS_KEY` | with the id | none | Static S3 secret. |
+| `ARTIFACTS_GCS_BUCKET` | gcs | none | Bucket name. Created outside the board, which needs object read, write and delete on it only. |
+| `ARTIFACTS_GCS_PREFIX` | | `factory/` | Key prefix inside the bucket. |
+| `ARTIFACTS_GCS_KMS_KEY` | | empty | Full Cloud KMS key name for new objects. Empty uses Google-managed encryption. |
 | `ARTIFACTS_RETENTION_DAYS` | | `90` | Days after which a sweep deletes the artifacts of a removed task. Minimum `1`. |
 | `ARTIFACTS_ORG_QUOTA_BYTES` | | `0` (off) | Per-organization byte quota. |
 | `ATTACHMENTS_DRAFT_TTL_HOURS` | | `24` | Hours an upload may wait unattached before it is deleted. Minimum `1`. |

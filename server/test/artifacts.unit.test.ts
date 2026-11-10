@@ -343,8 +343,69 @@ describe('artifacts config', () => {
         });
     });
 
+    it('reads the gcs backend, defaulting the prefix and leaving the key empty', () => {
+        expect(loadArtifactsConfig({ ARTIFACTS_BACKEND: 'gcs', ARTIFACTS_GCS_BUCKET: ' bkt ' }).backend).toEqual({
+            kind: 'gcs',
+            bucket: 'bkt',
+            prefix: 'factory/',
+            kmsKey: '',
+        });
+    });
+
+    it('reads a gcs prefix and KMS key, and ignores a blank variable of another backend', () => {
+        const { backend } = loadArtifactsConfig({
+            ARTIFACTS_BACKEND: 'gcs',
+            ARTIFACTS_GCS_BUCKET: 'bkt',
+            ARTIFACTS_GCS_PREFIX: '/store',
+            ARTIFACTS_GCS_KMS_KEY: 'projects/p/locations/l/keyRings/r/cryptoKeys/k',
+            ARTIFACTS_S3_BUCKET: '  ',
+        });
+        expect(backend).toEqual({
+            kind: 'gcs',
+            bucket: 'bkt',
+            prefix: 'store/',
+            kmsKey: 'projects/p/locations/l/keyRings/r/cryptoKeys/k',
+        });
+    });
+
     it.each([
-        ['an unknown backend', { ARTIFACTS_BACKEND: 'gcs' }, /ARTIFACTS_BACKEND/],
+        ['an unknown backend', { ARTIFACTS_BACKEND: 'azure' }, /ARTIFACTS_BACKEND/],
+        ['gcs without a bucket', { ARTIFACTS_BACKEND: 'gcs' }, /ARTIFACTS_GCS_BUCKET/],
+        [
+            'a gcs setting with the s3 backend',
+            { ARTIFACTS_BACKEND: 's3', ARTIFACTS_S3_BUCKET: 'b', ARTIFACTS_S3_REGION: 'r', ARTIFACTS_GCS_PREFIX: 'x/' },
+            /ARTIFACTS_GCS_PREFIX is only valid with ARTIFACTS_BACKEND=gcs/,
+        ],
+        [
+            'an s3 setting with the gcs backend',
+            { ARTIFACTS_BACKEND: 'gcs', ARTIFACTS_GCS_BUCKET: 'b', ARTIFACTS_S3_REGION: 'r' },
+            /ARTIFACTS_S3_REGION is only valid with ARTIFACTS_BACKEND=s3/,
+        ],
+        [
+            'a static key with the gcs backend',
+            {
+                ARTIFACTS_BACKEND: 'gcs',
+                ARTIFACTS_GCS_BUCKET: 'b',
+                ARTIFACTS_ACCESS_KEY_ID: 'a',
+                ARTIFACTS_SECRET_ACCESS_KEY: 'b',
+            },
+            /ARTIFACTS_ACCESS_KEY_ID is only valid with ARTIFACTS_BACKEND=s3/,
+        ],
+        [
+            'a bucket with the filesystem backend',
+            { ARTIFACTS_GCS_BUCKET: 'b' },
+            /ARTIFACTS_GCS_BUCKET is only valid with ARTIFACTS_BACKEND=gcs/,
+        ],
+        [
+            'an s3 bucket with the filesystem backend',
+            { ARTIFACTS_S3_BUCKET: 'b' },
+            /ARTIFACTS_S3_BUCKET is only valid with ARTIFACTS_BACKEND=s3/,
+        ],
+        [
+            'a filesystem root with the gcs backend',
+            { ARTIFACTS_BACKEND: 'gcs', ARTIFACTS_GCS_BUCKET: 'b', ARTIFACTS_FS_ROOT: '/data' },
+            /ARTIFACTS_FS_ROOT is only valid with ARTIFACTS_BACKEND=filesystem/,
+        ],
         ['s3 without a bucket', { ARTIFACTS_BACKEND: 's3' }, /ARTIFACTS_S3_BUCKET/],
         ['s3 with neither a region nor an endpoint', { ARTIFACTS_BACKEND: 's3', ARTIFACTS_S3_BUCKET: 'b' }, /REGION/],
         [

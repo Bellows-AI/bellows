@@ -777,9 +777,31 @@ expect_not_contains 'no credentials Secret leaves Pod Identity and IRSA to the c
 refuses 'an s3 backend with no bucket is refused' 'artifacts.s3.bucket is required' \
     "${GH_SETS[@]}" --set artifacts.s3.bucket=
 refuses 'an unknown artifacts backend is refused' 'artifacts.backend must be' \
-    "${GH_SETS[@]}" --set artifacts.backend=gcs
+    "${GH_SETS[@]}" --set artifacts.backend=azure
+GCS_SETS=("${GH_SETS[@]}" --set artifacts.backend=gcs --set artifacts.s3.bucket= --set artifacts.s3.region= \
+    --set artifacts.gcs.bucket=factory-artifacts-gcs)
+gcs_render() { helm template "$RELEASE" charts/factory "${GCS_SETS[@]}" --namespace "$NAMESPACE" "$@" 2>&1; }
+gcs="$(gcs_render)"
+expect_contains 'the gcs backend reaches the dashboard as environment' "$gcs" 'name: ARTIFACTS_GCS_BUCKET'
+expect_contains 'the gcs bucket is rendered' "$gcs" 'value: "factory-artifacts-gcs"'
+expect_contains 'the gcs prefix defaults to factory/' "$(grep -A1 'name: ARTIFACTS_GCS_PREFIX$' <<<"$gcs")" 'value: "factory/"'
+expect_not_contains 'the gcs backend renders no s3 setting' "$gcs" 'ARTIFACTS_S3_BUCKET'
+expect_not_contains 'the gcs backend renders no storage key' "$gcs" 'ARTIFACTS_ACCESS_KEY_ID'
+expect_contains 'the Workload Identity annotation lands on the dashboard ServiceAccount' \
+    "$(gcs_render --set 'dashboard.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=dash@proj.iam.gserviceaccount.com')" \
+    'iam.gke.io/gcp-service-account: dash@proj.iam.gserviceaccount.com'
+expect_contains 'the gcs backend renders above one dashboard replica' \
+    "$(gcs_render --set dashboard.replicas=2)" 'replicas: 2'
+refuses 'a gcs backend with no bucket is refused' 'artifacts.gcs.bucket is required' \
+    "${GCS_SETS[@]}" --set artifacts.gcs.bucket=
+refuses 'an s3 setting with the gcs backend is refused' 'only valid with artifacts.backend=s3' \
+    "${GCS_SETS[@]}" --set artifacts.s3.bucket=leftover
+refuses 'a storage key Secret with the gcs backend is refused' 'only valid with artifacts.backend=s3' \
+    "${GCS_SETS[@]}" --set artifacts.credentialsExistingSecret=store-keys
+refuses 'a gcs setting with the s3 backend is refused' 'only valid with artifacts.backend=gcs' \
+    "${GH_SETS[@]}" --set artifacts.gcs.bucket=leftover
 refuses 'the filesystem backend is refused above one dashboard replica' \
-    'dashboard.replicas above 1 requires artifacts.backend=s3' \
+    'dashboard.replicas above 1 requires artifacts.backend=s3 or gcs' \
     "${GH_SETS[@]}" --set artifacts.backend=filesystem --set dashboard.replicas=2
 refuses 'zero dashboard replicas are refused' 'dashboard.replicas must be a whole number of at least 1' \
     "${GH_SETS[@]}" --set dashboard.replicas=0

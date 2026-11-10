@@ -160,7 +160,7 @@ MCP is off unless you set `mcp.enabled`. It requires an `https` public URL, sinc
 
 ## Uploads
 
-Attachment type is decided from the file's bytes, not its declared type. SVG, HTML and macro documents are refused. Downloads are sandboxed attachments, and only three image types may display inline. A draft upload is readable by its uploader only. Text extraction runs in the runner with no board credentials, under a timeout and an output cap. Artifact store credentials live in the dashboard only.
+Attachment type is decided from the file's bytes, not its declared type. SVG, HTML and macro documents are refused. Downloads are sandboxed attachments, and only three image types may display inline. A draft upload is readable by its uploader only. Text extraction runs in the runner with no board credentials, under a timeout and an output cap. Artifact store credentials live in the dashboard only. With the gcs backend there is no stored credential at all: the dashboard's ServiceAccount is bound by Workload Identity, and runner pods have no binding.
 
 ## Known limits
 
