@@ -52,6 +52,47 @@ const HOME_STEP_TIMEOUT_MS = 60_000;
 
 const failed = (reason: string): StepResult => ({ exitCode: 1, stdout: '', stderr: reason, timedOut: false });
 
+/** A lost review's evidence: the last lines of the reviewer's log, how many, how long, and the one bound on both reads. */
+export const REVIEWER_LOG_TAIL_LINES = 3;
+export const REVIEWER_LOG_LINE_MAX = 200;
+export const REVIEWER_READ_MS = 5_000;
+
+/**
+ * What the executor read of the reviewer container after a review came back lost: its state (null
+ * with `why` when it could not be read) and the tail of its log (null when it could not be read),
+ * `beforeRestart` naming the restart a previous instance's tail precedes. Text only: an unread
+ * answer is "state unknown" / "logs unavailable", never a verdict on the container.
+ */
+export function reviewerStateNote(read: {
+    state: string | null;
+    why?: string;
+    tail: string[] | null;
+    beforeRestart?: number;
+}): string {
+    const lines = (read.tail ?? [])
+        .map((line) => line.trimEnd())
+        .filter((line) => line !== '')
+        .slice(-REVIEWER_LOG_TAIL_LINES)
+        .map((line) => (line.length > REVIEWER_LOG_LINE_MAX ? `${line.slice(0, REVIEWER_LOG_LINE_MAX - 1)}…` : line));
+    const state = read.state ?? `state unknown: ${read.why ?? 'unreadable'}`;
+    const label = `its last log lines${read.beforeRestart === undefined ? '' : ` (before restart ${read.beforeRestart})`}`;
+    return `the reviewer container: ${state}; ${lines.length > 0 ? `${label}: ${lines.join(' | ')}` : 'logs unavailable'}`;
+}
+
+/** The signal both evidence reads share: the attempt's own, and one absolute bound made once. */
+export const reviewerReadSignal = (signal?: AbortSignal): AbortSignal =>
+    AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(REVIEWER_READ_MS)]);
+
+/** A lost review (no exit code, not cancelled) is the one the executor reads the reviewer for. */
+export const reviewIsLost = (result: StepResult, signal?: AbortSignal): boolean =>
+    result.exitCode === null && !signal?.aborted;
+
+/** The result with the evidence appended to its stderr; its exit code and every other field untouched. */
+export const withReviewerNote = (result: StepResult, note: string): StepResult => ({
+    ...result,
+    stderr: result.stderr ? `${result.stderr}; ${note}` : note,
+});
+
 /** The wall-clock budget of one review: its profile's, never past the operator's ceiling. */
 export const reviewBudgetMs = (config: { jobTimeoutMs: number }, review: ReviewClaim): number =>
     Math.min(config.jobTimeoutMs, review.reviewRun.timeoutMinutes * MS_PER_MINUTE);

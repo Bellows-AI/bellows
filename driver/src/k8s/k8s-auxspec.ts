@@ -35,6 +35,10 @@ export const podLogPath = (
     return `${podsPath(namespace)}/${pod}/log${query.length > 0 ? `?${query.join('&')}` : ''}`;
 };
 
+/** `podLogPath` of the container's LAST instance — the one that died; a 400 for a container that never restarted. */
+export const previousPodLogPath = (namespace: string, pod: string, tail: number | null, container: string): string =>
+    `${podLogPath(namespace, pod, tail, container)}&previous=true`;
+
 export const secretsPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/secrets`;
 
 /** Label-scoped collection paths by JOB for the re-claim fence: every OTHER attempt's. */

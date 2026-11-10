@@ -380,7 +380,10 @@ async function stepHostFor(deps: RunnerDeps, job: BoardJob): Promise<StepHost> {
 }
 
 /** The attempt's group as a gate run reaches it (`docker-gate.ts`). */
-const gateDeps = (deps: RunnerDeps, job: BoardJob): DockerGateDeps => ({ host: () => stepHostFor(deps, job) });
+const gateDeps = (deps: RunnerDeps, job: BoardJob): DockerGateDeps => ({
+    host: () => stepHostFor(deps, job),
+    execDocker: attemptExecOf(deps, job),
+});
 
 /**
  * The declared services, in the network namespace of the attempt's group supervisor (issue #773):

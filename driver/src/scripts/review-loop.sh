@@ -7,7 +7,8 @@
 #   running/<id>                     claimed by rename: from here on the request ran
 #   running/<id>/cancel              the supervisor's order to kill it
 #   done/<id>/{output,exit}          the answer: `exit` written atomically, then the rename
-#   alive                            this loop's heartbeat, touched every iteration
+#   alive                            this loop's heartbeat, touched every iteration; a write the
+#                                    mailbox refuses is retried, never the loop's end
 #
 # A request's env is its credential volume: exported inside its own subshell alone, so it never
 # reaches the loop's own commands or the next request, and the env file is gone before the command
@@ -22,7 +23,7 @@ umask 002
 box=${FACTORY_REVIEW_DIR:-/factory/review}
 
 beat() {
-    : > "$box/alive"
+    true > "$box/alive"
 }
 
 pause() {
