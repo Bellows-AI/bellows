@@ -132,14 +132,36 @@ if [ -z "${BELLOWS_SESSION_ID:-}" ]; then
     fi
 fi
 
-if [ -n "$MEMBER_ROOT" ] || [ -n "${FACTORY_SKILLS_PATH:-}" ] || [ -n "${FACTORY_HIDDEN_SKILLS:-}" ]; then
+# A pinned workspace skill must win over a same-name skill of the checkout (BEL-289). opencode lists the checkout's
+# .claude/.agents skills by a racy directory scan, so with a workspace pin the scan is switched off and the same skills
+# are offered through one per-start view, in which the workspace copy is the only one of its name. The view is rebuilt
+# on every start; one that is not ours ends the run, as does a list or a checkout the builder cannot read (exit 78).
+# A skill-folder clash under the checkout's own .opencode/ stays a limit (docs/skills.md).
+SKILLS_VIEW=""
+if [ -n "${FACTORY_WORKSPACE_SKILLS:-}" ]; then
+    SKILLS_VIEW=/tmp/.factory-skills-view
+    if [ -L "$SKILLS_VIEW" ] || { [ -e "$SKILLS_VIEW" ] && { [ ! -d "$SKILLS_VIEW" ] || [ ! -O "$SKILLS_VIEW" ]; }; }; then
+        echo "opencode-executor: $SKILLS_VIEW is not a directory of ours" >&2
+        exit 78
+    fi
+    rm -rf "$SKILLS_VIEW" && mkdir "$SKILLS_VIEW" || { echo "opencode-executor: cannot reset $SKILLS_VIEW" >&2; exit 78; }
+    WORKTREE_ROOT="$(git -C "$WORKDIR" rev-parse --show-toplevel 2>/dev/null)" || {
+        echo "opencode-executor: workspace skills pinned but $WORKDIR is not in a git worktree" >&2
+        exit 78
+    }
+    node "$(dirname "$0")/skill-view.cjs" opencode "$SKILLS_VIEW" "$WORKDIR" "$WORKTREE_ROOT" >/dev/null || exit 78
+    OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+    export OPENCODE_DISABLE_EXTERNAL_SKILLS
+fi
+
+if [ -n "$MEMBER_ROOT" ] || [ -n "$SKILLS_VIEW" ] || [ -n "${FACTORY_SKILLS_PATH:-}" ] || [ -n "${FACTORY_HIDDEN_SKILLS:-}" ]; then
     # FACTORY_SKILLS_PATH is the directory the driver installed the claim's pinned org and workspace skills in: it joins
     # `skills.paths` and gets its own external_directory allow, so a bundle's helper files open for the tool uid.
     # Single-quoted: the shell expands nothing in the script. A value the merge cannot extend is
     # named in one line on stderr and passed through untouched. FACTORY_HIDDEN_SKILLS (BEL-286) is the exception: the
     # built-in skills the task does not list get `permission.skill[<name>] = "deny"`, written last so a member
     # config's allow cannot win, and a list that cannot be applied ends the run (exit 78) instead of listing them.
-    if amended="$(MEMBER_ROOT="$MEMBER_ROOT" node -e '
+    if amended="$(MEMBER_ROOT="$MEMBER_ROOT" SKILLS_VIEW="$SKILLS_VIEW" node -e '
         let c;
         try {
             c = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}");
@@ -166,6 +188,12 @@ if [ -n "$MEMBER_ROOT" ] || [ -n "${FACTORY_SKILLS_PATH:-}" ] || [ -n "${FACTORY
             if (!c.skills || typeof c.skills !== "object" || Array.isArray(c.skills)) c.skills = {};
             c.skills.paths = [...(Array.isArray(c.skills.paths) ? c.skills.paths : []), skills];
             allow(skills);
+        }
+        const view = process.env.SKILLS_VIEW;
+        if (view) {
+            if (!c.skills || typeof c.skills !== "object" || Array.isArray(c.skills)) c.skills = {};
+            c.skills.paths = [...(Array.isArray(c.skills.paths) ? c.skills.paths : []), view];
+            allow(view);
         }
         const hidden = (process.env.FACTORY_HIDDEN_SKILLS || "").split(",").filter((name) => name !== "");
         if (hidden.length > 0) {

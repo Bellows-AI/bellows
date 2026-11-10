@@ -361,7 +361,8 @@ fi
 # as .opencode/skills, .opencode/skill and .agents/skills, with no config of ours. On a name clash across sources
 # (a repo copy, a baked global skill, a skills.paths directory) opencode lists ONE copy, but which source wins is
 # not deterministic: measured under contention, skills.paths won 7 of 12 runs, the repo 4 and the global 1, so the
-# clash checks assert exactly one copy from an expected source, never a winner (docs/skills.md).
+# clash checks assert exactly one copy from an expected source, never a winner (docs/skills.md). The one exception
+# is a pinned WORKSPACE skill (BEL-289): its entrypoint view makes the workspace copy the only one (check below).
 skill_ws="$(mktemp -d)"
 for d in .claude/skills/probe-claude .opencode/skills/probe-ocskills .opencode/skill/probe-ocskill .agents/skills/probe-agents .claude/skills/factory-fix extra/factory-fix; do
     mkdir -p "$skill_ws/$d"
@@ -412,6 +413,49 @@ if [ "$located" = /task/.factory/skills-root/.claude/skills/probe-org/SKILL.md ]
 else
     bad 'a pinned skill installed under the task volume is listed through skills.paths' "listed: $located"
 fi
+# A pinned WORKSPACE skill wins over a same-name checkout skill (BEL-289). The checkout holds probe-ws in both
+# .claude/skills and .agents/skills, padded to 4 MB (the size at which the repo copy won every run before the fix),
+# and the entrypoint is run for real with FACTORY_WORKSPACE_SKILLS set: it switches the checkout scan off and offers
+# the checkout's skills through a view in which the workspace copy is alone (the pinned directory in skills.paths holds
+# the same copy, so either location is the workspace one). Ten runs, the last under CPU load. A clash
+# under the checkout's own .opencode/ is a stated limit (docs/skills.md) and is not asserted.
+mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-ws"
+printf -- '---\nname: probe-ws\ndescription: pinned workspace skill\n---\nworkspace body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-ws/SKILL.md"
+chmod -R a+rX "$task_vol"
+ws_repo="$(mktemp -d)"
+for d in .claude/skills/probe-ws .agents/skills/probe-ws .claude/skills/probe-claude .agents/skills/probe-agents; do
+    mkdir -p "$ws_repo/$d"
+    printf -- '---\nname: %s\ndescription: repo copy\n---\nrepo body\n' "${d##*/}" >"$ws_repo/$d/SKILL.md"
+done
+head -c 4194304 /dev/zero | tr '\0' 'x' >>"$ws_repo/.claude/skills/probe-ws/SKILL.md"
+head -c 4194304 /dev/zero | tr '\0' 'x' >>"$ws_repo/.agents/skills/probe-ws/SKILL.md"
+git -C "$ws_repo" init -q
+chmod -R a+rX "$ws_repo"
+ws_bad=""
+for run in 1 2 3 4 5 6 7 8 9 10; do
+    load=""
+    [ "$run" = 10 ] && load="--cpus 1"
+    # shellcheck disable=SC2086
+    located="$(docker run --rm $load -v "$ws_repo:/workspace" -v "$task_vol:/task:ro" -e WORKDIR=/workspace \
+        -e FACTORY_WORKSPACE_SKILLS=probe-ws -e FACTORY_SKILLS_PATH=/task/.factory/skills-root/.claude/skills \
+        "$IMAGE" debug skill 2>/dev/null | grep -o '"location": *"[^"]*"')"
+    count="$(printf '%s\n' "$located" | grep -c '/probe-ws/SKILL.md')"
+    case "$located" in
+    */tmp/.factory-skills-view/probe-ws/SKILL.md* | */task/.factory/skills-root/.claude/skills/probe-ws/SKILL.md*) ws_copy=1 ;;
+    *) ws_copy=0 ;;
+    esac
+    case "$located" in */probe-claude/SKILL.md*/probe-agents/SKILL.md* | */probe-agents/SKILL.md*/probe-claude/SKILL.md*) others=1 ;; *) others=0 ;; esac
+    if [ "$count" != 1 ] || [ "$ws_copy" != 1 ] || [ "$others" != 1 ]; then
+        ws_bad="run $run: $(printf '%s' "$located" | tr '\n' ' ')"
+        break
+    fi
+done
+if [ -z "$ws_bad" ]; then
+    ok 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others still listed'
+else
+    bad 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others still listed' "$ws_bad"
+fi
+rm -rf "$ws_repo"
 rm -rf "$task_vol"
 
 # The agent's tool isolation (issue #814), the same checks in both images.

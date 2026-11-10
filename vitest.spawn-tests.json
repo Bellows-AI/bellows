@@ -72,6 +72,7 @@
         "driver/test/scripts-task-checkout.test.ts",
         "driver/test/scripts.test.ts",
         "driver/test/skill-inputs.test.ts",
+        "driver/test/skill-view.test.ts",
         "driver/test/supervisor-gate-token.test.ts",
         "driver/test/telemetry-shipping.test.ts",
         "driver/test/tool-broker.test.ts",

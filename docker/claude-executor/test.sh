@@ -226,11 +226,12 @@ fi
 # CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1 in place, a checkout's .claude/skills/<name> is loaded; on a name
 # clash the MANAGED (baked) skill is the one that loads, so a repo cannot shadow a built-in at runtime.
 skill_ws="$(mktemp -d)"
-for s in probe-repo factory-fix; do
+for s in probe-repo factory-fix probe-ws; do
     mkdir -p "$skill_ws/.claude/skills/$s"
     printf -- '---\nname: %s\ndescription: repo copy of %s\n---\nrepo body\n' "$s" "$s" >"$skill_ws/.claude/skills/$s/SKILL.md"
 done
 chmod -R a+rX "$skill_ws"
+skill_env=()
 skill_mounts=() # extra `docker run` args and CLI args of skill_base, set by the delivery check below
 skill_args=()
 skill_base() { # skill_base <skill>: where the CLI loaded <skill> from, with the checkout mounted at /workspace
@@ -241,7 +242,7 @@ skill_base() { # skill_base <skill>: where the CLI loaded <skill> from, with the
     for _ in $(seq 1 40); do [ -s "$out" ] && break; sleep 0.25; done
     port="$(cat "$out")"
     env -u CLAUDE_CODE_OAUTH_TOKEN docker run --rm --add-host host.docker.internal:host-gateway -v "$skill_ws:/workspace" \
-        ${skill_mounts[@]+"${skill_mounts[@]}"} \
+        ${skill_mounts[@]+"${skill_mounts[@]}"} ${skill_env[@]+"${skill_env[@]}"} \
         -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=http://host.docker.internal:$port" \
         "$IMAGE" --dangerously-skip-permissions --model fake-model ${skill_args[@]+"${skill_args[@]}"} -p probe >/dev/null 2>&1
     base="$(node -e 'fetch(process.argv[1] + "/steps").then((r) => r.json()).then((j) => console.log(j.skillBases.join(" ")))' "http://127.0.0.1:$port")"
@@ -268,7 +269,8 @@ fi
 # Pinned org and workspace skills (BEL-273): the driver installs them root-owned (0755/0644) under the task volume at
 # /task/.factory/skills-root/.claude/skills and starts the CLI with `--add-dir /task/.factory/skills-root` (the plan
 # in driver/src/runner-plan.ts). The CLI loads the skill from there, through the image's real entrypoint and bridge.
-# It ranks below a checkout's own skill of the same name: a stated limit in docs/skills.md.
+# `--add-dir` ranks below a checkout's own skill of the same name, so a WORKSPACE skill is also named in
+# FACTORY_WORKSPACE_SKILLS (BEL-289): the entrypoint links it into the managed view, which outranks the checkout.
 task_vol="$(mktemp -d)"
 mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-org"
 printf -- '---\nname: probe-org\ndescription: pinned org skill\n---\norg body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-org/SKILL.md"
@@ -285,6 +287,24 @@ else
 fi
 skill_mounts=()
 skill_args=()
+# A workspace skill whose name a checkout skill also has: the workspace copy loads, from the managed path.
+mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-ws"
+printf -- '---\nname: probe-ws\ndescription: pinned workspace skill\n---\nworkspace body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-ws/SKILL.md"
+chmod -R a+rX "$task_vol"
+skill_mounts=(-v "$task_vol:/task:ro")
+skill_args=(--add-dir /task/.factory/skills-root)
+skill_env=(-e FACTORY_WORKSPACE_SKILLS=probe-ws -e FACTORY_SKILLS_PATH=/task/.factory/skills-root/.claude/skills)
+got="$(skill_base probe-ws)"
+if [ "$got" = /etc/claude-code/.claude/skills/probe-ws ]; then
+    printf 'ok   %s\n' 'a pinned workspace skill wins over a same-name checkout skill'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     got: %s\n' 'a pinned workspace skill wins over a same-name checkout skill' "$got"
+    fail=$((fail + 1))
+fi
+skill_mounts=()
+skill_args=()
+skill_env=()
 rm -rf "$task_vol"
 rm -rf "$skill_ws"
 
