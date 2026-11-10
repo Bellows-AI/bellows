@@ -1558,14 +1558,19 @@ stop_driver
 # factory-job-* networks are none of this suite's business.
 svc_networks=0
 leftover=0
+leftover_names=''
 for job in $(cat "$work/created-jobs" 2>/dev/null); do
     n="$(docker network ls --filter "name=factory-job-$job-" --format '{{.Name}}' | wc -l | tr -d ' ')"
     svc_networks=$((svc_networks + n))
-    n="$(docker ps -aq --filter "label=factory.job=$job" | wc -l | tr -d ' ')"
-    leftover=$((leftover + n))
+    # Each survivor is named with its image and state, so a failure says what was left, not just how many.
+    left="$(docker ps -a --filter "label=factory.job=$job" --format '{{.Names}} ({{.Image}}, {{.Status}})')"
+    if [ -n "$left" ]; then
+        leftover=$((leftover + $(printf '%s\n' "$left" | wc -l | tr -d ' ')))
+        leftover_names="$leftover_names $(printf '%s' "$left" | tr '\n' ';')"
+    fi
 done
 if [ "$svc_networks" = '0' ]; then ok 'no job made a network of its own'; else bad 'no job made a network of its own' "$svc_networks found"; fi
-if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no containers left behind' "$leftover remain"; fi
+if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no containers left behind' "$leftover remain:$leftover_names"; fi
 
 fi
 
