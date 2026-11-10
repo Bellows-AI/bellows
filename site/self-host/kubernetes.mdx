@@ -163,11 +163,12 @@ Tune the runners:
 | Value | Default | Notes |
 | --- | --- | --- |
 | `runner.nodeSelector`, `runner.tolerations`, `runner.affinity` | empty | Where agent code runs. Use a tainted node group so it never shares a node with the dashboard. |
+| `runner.runtimeClassName` | empty | RuntimeClass every driver pod runs under, such as `gvisor` on a GKE Sandbox node pool. Set, the admission policy refuses a driver pod without it. |
 | `runner.resources` | requests `500m` / `1Gi`, limits `4` / `8Gi` | Applies to the runner, services and helpers. |
 | `runner.gateResources` | requests `2` / `2Gi` | Gate pods. Unset slots fall back to `runner.resources`. |
 | `isolation.blockedCidrs` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16` | Blocked for runners, including the cloud metadata address. |
 | `isolation.allowedCidrs` | `[]` | Add a private host a runner must reach, as a `/32`. |
-| `isolation.dnsCidrs` | `169.254.20.10/32` | Extra resolver addresses allowed on port 53. List your resolver if your DNS pods are not labelled `k8s-app: kube-dns`. |
+| `isolation.dnsCidrs` | `169.254.20.10/32` | Extra resolver addresses allowed on port 53. List your resolver if your DNS pods are labelled neither `k8s-app: kube-dns` nor `k8s-app: node-local-dns`. |
 
 `blockedCidrs` blocks your VPC too, so a database on a private address is unreachable from a runner unless you allow it.
 

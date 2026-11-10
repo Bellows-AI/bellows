@@ -1090,6 +1090,18 @@ expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" 
 expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" \
     'value: "{\"podAntiAffinity\":{\"preferredDuringSchedulingIgnoredDuringExecution\":[{\"weight\":1}]}}"'
 
+# The runner RuntimeClass: forwarded to the driver and required by admission when set;
+# unset, neither renders.
+expect_not_contains 'no runner RuntimeClass var renders on defaults' "$gh" 'name: RUNNER_RUNTIME_CLASS'
+expect_not_contains 'no RuntimeClass admission rule renders on defaults' "$gh" 'variables.spec.runtimeClassName'
+sandboxed="$(gh_render --set runner.runtimeClassName=gvisor)"
+expect_contains 'the driver is handed the runner RuntimeClass' "$sandboxed" 'value: "gvisor"'
+expect_contains 'admission requires the runner RuntimeClass' "$sandboxed" \
+    "variables.spec.runtimeClassName == 'gvisor'"
+expect_contains 'the refusal names the RuntimeClass' "$sandboxed" 'runner pods must run under the gvisor RuntimeClass'
+refuses 'a RuntimeClass that is no DNS name is refused' 'runner.runtimeClassName must be a RuntimeClass name' \
+    "${GH_SETS[@]}" --set "runner.runtimeClassName=gvisor' || true"
+
 # The runner Secret has a key for every forwarded name, valued or not.
 runner_secret="$(gh_render --set-string "runner.env=ONE\,TWO" --set runner.credentials.ONE=x)"
 expect_contains 'the runner Secret keys every forwarded name' "$runner_secret" 'TWO: ""'
@@ -1147,6 +1159,10 @@ expect_contains 'the runner policy is both directions' "$netpol" 'policyTypes: [
 expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpol" \
     $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: kube-dns'
 expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
+# GKE runs NodeLocal DNSCache as pod-networked node-local-dns pods; Dataplane V2 redirects the
+# kube-dns Service address to them, so kube-dns alone leaves runners without DNS.
+expect_contains 'the runner policy sends DNS to node-local-dns pods in kube-system' "$netpol" \
+    $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: node-local-dns'
 expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
 # Issue #773: a run's services are on its own pod's loopback, so no runner pod takes a connection
 # from anything and none dials another runner pod.

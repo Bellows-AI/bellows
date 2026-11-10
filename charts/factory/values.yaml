@@ -438,6 +438,11 @@ runner:
     nodeSelector: {}
     tolerations: []
     affinity: {}
+    # The RuntimeClass every pod the driver specs runs under (RUNNER_RUNTIME_CLASS):
+    # `gvisor` on a GKE Sandbox node pool, so agent code never shares the node kernel. Set, the
+    # admission policy refuses any driver pod that names another RuntimeClass or none. Empty: pods
+    # run on the node's default runtime and the rule is not rendered.
+    runtimeClassName: ''
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.
     env: CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY
     # Requests and limits on every pod the driver specs but the gates — the runner, the sync, the

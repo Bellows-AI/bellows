@@ -155,6 +155,8 @@ export interface RunnerJobSpec {
                 nodeSelector?: Record<string, string>;
                 tolerations?: Record<string, unknown>[];
                 affinity?: Record<string, unknown>;
+                /** The runner RuntimeClass — `schedulingField`, absent when unset. */
+                runtimeClassName?: string;
                 /** The gate and service sidecars (issue #773). */
                 initContainers?: RunnerPodContainer[];
                 /** The agent, the supervisor beside it and, for a run that exports its transcript, the exporter. */

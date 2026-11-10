@@ -7,6 +7,11 @@ Values that live in `secret.existingSecret` cannot be seen from here — the ser
 those at boot, which is why every such key is `optional` in the pod spec: a missing key reads as
 the server's own message, never as an opaque CreateContainerConfigError.
 */}}
+{{- with .Values.runner.runtimeClassName }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" .) }}
+{{- fail (printf "runner.runtimeClassName must be a RuntimeClass name (a DNS-1123 subdomain), got %q" .) }}
+{{- end }}
+{{- end }}
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}
