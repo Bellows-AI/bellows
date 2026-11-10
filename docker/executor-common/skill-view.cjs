@@ -3,7 +3,7 @@
 // The per-start skill view both executor entrypoints build when a task pins workspace skills.
 //
 //   skill-view.cjs claude   <view dir>
-//   skill-view.cjs opencode <view dir> <workdir> <worktree root>
+//   skill-view.cjs opencode <view dir> <workdir> [<worktree root>]
 //
 // A workspace skill must win over a checkout skill of the same name. Claude ranks the managed skills path above the
 // project's, so each pinned name is linked into the managed view (<view>/<name> -> $FACTORY_SKILLS_PATH/<name>).
@@ -75,30 +75,71 @@ const workspaceNames = () => {
     return names;
 };
 
-/** The skill directories of one `.claude/skills`-style folder, nearest first by caller. Absent folder = none. */
-const skillDirs = (folder) => {
-    let entries;
+/** The `name` of a SKILL.md frontmatter, or null when it has none (opencode skips such a skill). */
+const frontmatterName = (file) => {
+    let text;
     try {
-        entries = fs.readdirSync(folder, { withFileTypes: true });
-    } catch (e) {
-        if (absent(e)) return [];
-        return refuse(`cannot read ${folder}: ${e.code}`);
-    }
-    const dirs = [];
-    for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
-        const dir = path.join(folder, entry.name);
-        let stat;
+        const fd = fs.openSync(file, 'r');
         try {
-            stat = fs.statSync(dir);
+            const buf = Buffer.alloc(65536);
+            text = buf.toString('utf8', 0, fs.readSync(fd, buf, 0, buf.length, 0));
+        } finally {
+            fs.closeSync(fd);
+        }
+    } catch (e) {
+        if (absent(e)) return null;
+        return refuse(`cannot read ${file}: ${e.code}`);
+    }
+    const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+    const found = block && /^name:[ \t]*(.+?)[ \t]*$/m.exec(block[1]);
+    const name = found && found[1].replace(/^(["'])(.*)\1$/, '$2');
+    return name || null;
+};
+
+/**
+ * Every skill under one `skills` folder the way opencode finds them (`skills/**\/SKILL.md`, dot directories and
+ * symlinks followed): the directory of each SKILL.md with its frontmatter name, in a stable order. An absent folder is
+ * none; any other read failure refuses.
+ */
+const skillDirs = (folder) => {
+    const found = [];
+    const seen = new Set();
+    const walk = (dir) => {
+        let key;
+        try {
+            key = fs.realpathSync(dir);
         } catch (e) {
-            if (absent(e)) continue; // a dangling link is not a skill
+            if (absent(e)) return; // a dangling link is not a skill
             return refuse(`cannot read ${dir}: ${e.code}`);
         }
-        if (!stat.isDirectory()) continue;
-        if (lstatOrNull(path.join(dir, 'SKILL.md')) === null) continue;
-        dirs.push({ name: entry.name, dir });
-    }
-    return dirs;
+        if (seen.has(key)) return;
+        seen.add(key);
+        let entries;
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch (e) {
+            if (absent(e)) return;
+            return refuse(`cannot read ${dir}: ${e.code}`);
+        }
+        for (const entry of entries.sort((x, y) => (x.name < y.name ? -1 : 1))) {
+            const at = path.join(dir, entry.name);
+            if (entry.name === 'SKILL.md') {
+                const name = frontmatterName(at);
+                if (name !== null) found.push({ name, dir });
+                continue;
+            }
+            let stat;
+            try {
+                stat = fs.statSync(at);
+            } catch (e) {
+                if (absent(e)) continue;
+                return refuse(`cannot read ${at}: ${e.code}`);
+            }
+            if (stat.isDirectory()) walk(at);
+        }
+    };
+    walk(folder);
+    return found;
 };
 
 const real = (p, what) => {
@@ -112,7 +153,7 @@ const real = (p, what) => {
 const [mode, view, workdir, worktreeRoot] = process.argv.slice(2);
 if (mode !== 'claude' && mode !== 'opencode') refuse(`unknown mode '${mode}'`);
 if (!view) refuse('no view directory');
-if (mode === 'opencode' && (!workdir || !worktreeRoot)) refuse('opencode mode needs a workdir and a worktree root');
+if (mode === 'opencode' && !workdir) refuse('opencode mode needs a workdir');
 
 const names = workspaceNames();
 const skillsPath = process.env.FACTORY_SKILLS_PATH || '';
@@ -122,11 +163,19 @@ if (names.length > 0 && skillsPath === '') refuse('FACTORY_WORKSPACE_SKILLS is s
 for (const name of names) link(view, name, path.join(skillsPath, name), true);
 
 if (mode === 'opencode') {
-    const top = real(worktreeRoot, 'worktree root');
+    const offered = new Set(names);
+    // No worktree (a repository-free run): the scan walks up to the filesystem root, as opencode does.
+    const top = worktreeRoot ? real(worktreeRoot, 'worktree root') : null;
     let dir = real(workdir, 'workdir');
     for (;;) {
         for (const folder of FOLDERS) {
-            for (const skill of skillDirs(path.join(dir, folder))) link(view, skill.name, skill.dir, false);
+            for (const skill of skillDirs(path.join(dir, folder))) {
+                // Named by the frontmatter, like opencode: a workspace name, or one already offered, is not offered
+                // again, so the workspace copy is the only one.
+                if (offered.has(skill.name)) continue;
+                offered.add(skill.name);
+                link(view, skill.name.replace(/[^A-Za-z0-9._-]/g, '_'), skill.dir, false);
+            }
         }
         if (dir === top || path.dirname(dir) === dir) break;
         dir = path.dirname(dir);

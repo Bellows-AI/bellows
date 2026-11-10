@@ -423,7 +423,7 @@ mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-ws"
 printf -- '---\nname: probe-ws\ndescription: pinned workspace skill\n---\nworkspace body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-ws/SKILL.md"
 chmod -R a+rX "$task_vol"
 ws_repo="$(mktemp -d)"
-for d in .claude/skills/probe-ws .agents/skills/probe-ws .claude/skills/probe-claude .agents/skills/probe-agents; do
+for d in .claude/skills/probe-ws .agents/skills/probe-ws .claude/skills/probe-claude .agents/skills/probe-agents .agents/skills/team/probe-nested; do
     mkdir -p "$ws_repo/$d"
     printf -- '---\nname: %s\ndescription: repo copy\n---\nrepo body\n' "${d##*/}" >"$ws_repo/$d/SKILL.md"
 done
@@ -445,15 +445,16 @@ for run in 1 2 3 4 5 6 7 8 9 10; do
     *) ws_copy=0 ;;
     esac
     case "$located" in */probe-claude/SKILL.md*/probe-agents/SKILL.md* | */probe-agents/SKILL.md*/probe-claude/SKILL.md*) others=1 ;; *) others=0 ;; esac
+    case "$located" in */probe-nested/SKILL.md*) ;; *) others=0 ;; esac
     if [ "$count" != 1 ] || [ "$ws_copy" != 1 ] || [ "$others" != 1 ]; then
         ws_bad="run $run: $(printf '%s' "$located" | tr '\n' ' ')"
         break
     fi
 done
 if [ -z "$ws_bad" ]; then
-    ok 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others still listed'
+    ok 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others still listed, nested ones included'
 else
-    bad 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others still listed' "$ws_bad"
+    bad 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others still listed, nested ones included' "$ws_bad"
 fi
 rm -rf "$ws_repo"
 rm -rf "$task_vol"

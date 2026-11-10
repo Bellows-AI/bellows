@@ -135,7 +135,7 @@ fi
 # A pinned workspace skill must win over a same-name skill of the checkout. opencode lists the checkout's
 # .claude/.agents skills by a racy directory scan, so with a workspace pin the scan is switched off and the same skills
 # are offered through one per-start view, in which the workspace copy is the only one of its name. The view is rebuilt
-# on every start; one that is not ours ends the run, as does a list or a checkout the builder cannot read (exit 78).
+# on every start; one that is not ours ends the run, as does a list or a checkout folder the builder cannot read (exit 78).
 # A skill-folder clash under the checkout's own .opencode/ stays a limit (docs/skills.md).
 SKILLS_VIEW=""
 if [ -n "${FACTORY_WORKSPACE_SKILLS:-}" ]; then
@@ -145,10 +145,8 @@ if [ -n "${FACTORY_WORKSPACE_SKILLS:-}" ]; then
         exit 78
     fi
     rm -rf "$SKILLS_VIEW" && mkdir "$SKILLS_VIEW" || { echo "opencode-executor: cannot reset $SKILLS_VIEW" >&2; exit 78; }
-    WORKTREE_ROOT="$(git -C "$WORKDIR" rev-parse --show-toplevel 2>/dev/null)" || {
-        echo "opencode-executor: workspace skills pinned but $WORKDIR is not in a git worktree" >&2
-        exit 78
-    }
+    # No worktree (a repository-free run) leaves the root empty: the builder then walks up to the filesystem root.
+    WORKTREE_ROOT="$(git -C "$WORKDIR" rev-parse --show-toplevel 2>/dev/null || true)"
     node "$(dirname "$0")/skill-view.cjs" opencode "$SKILLS_VIEW" "$WORKDIR" "$WORKTREE_ROOT" >/dev/null || exit 78
     OPENCODE_DISABLE_EXTERNAL_SKILLS=1
     export OPENCODE_DISABLE_EXTERNAL_SKILLS

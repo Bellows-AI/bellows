@@ -196,10 +196,53 @@ describe('opencode mode', () => {
         expect(entries()).toEqual([]);
     });
 
-    it('refuses a missing workdir or worktree root argument', () => {
+    it('refuses a missing workdir', () => {
         const got = run(['opencode', view], { FACTORY_WORKSPACE_SKILLS: 'ws-a' });
         expect(got.status).toBe(REFUSED);
         expect(entries()).toEqual([]);
+    });
+
+    it('takes a run without a worktree root: the view holds the workspace skills and the scan stops at /', () => {
+        const got = run(['opencode', view, repo, ''], { FACTORY_WORKSPACE_SKILLS: 'ws-a' });
+        expect(got.status).toBe(0);
+        expect(entries()).toEqual(['ws-a']);
+    });
+
+    // opencode finds skills by `skills/**/SKILL.md` under each .claude/.agents folder, named by the frontmatter
+    // `name`, so the view must offer the nested ones too.
+    it('keeps a nested checkout skill listed beside a workspace pin', () => {
+        skillAt(join(repo, '.agents', 'skills', 'backend'), 'review');
+        const got = opencode(repo);
+        expect(got.status).toBe(0);
+        expect(entries()).toEqual(['review', 'ws-a']);
+        expect(target('review')).toBe(join(repo, '.agents', 'skills', 'backend', 'review'));
+    });
+
+    it('excludes a nested checkout skill whose frontmatter name is a workspace name', () => {
+        skillAt(join(repo, '.agents', 'skills', 'backend'), 'ws-a');
+        mkdirSync(join(repo, '.claude', 'skills', 'x'), { recursive: true });
+        writeFileSync(join(repo, '.claude', 'skills', 'x', 'SKILL.md'), '---\nname: ws-a\n---\n');
+        expect(opencode(repo).status).toBe(0);
+        expect(entries()).toEqual(['ws-a']);
+        expect(target('ws-a')).toBe(join(skills, 'ws-a'));
+    });
+
+    it('names a skill by its frontmatter, not its directory, and skips one with no name', () => {
+        mkdirSync(join(repo, '.claude', 'skills', 'dir-a'), { recursive: true });
+        writeFileSync(join(repo, '.claude', 'skills', 'dir-a', 'SKILL.md'), '---\nname: "real-name"\n---\n');
+        mkdirSync(join(repo, '.claude', 'skills', 'dir-b'), { recursive: true });
+        writeFileSync(join(repo, '.claude', 'skills', 'dir-b', 'SKILL.md'), 'no frontmatter\n');
+        expect(opencode(repo).status).toBe(0);
+        expect(entries()).toEqual(['real-name', 'ws-a']);
+    });
+
+    it('follows a symlinked skill directory and skips a dangling one', () => {
+        skillAt(join(root, 'elsewhere'), 'linked');
+        mkdirSync(join(repo, '.claude', 'skills'), { recursive: true });
+        symlinkSync(join(root, 'elsewhere', 'linked'), join(repo, '.claude', 'skills', 'linked'));
+        symlinkSync(join(root, 'nowhere'), join(repo, '.claude', 'skills', 'dangling'));
+        expect(opencode(repo).status).toBe(0);
+        expect(entries()).toEqual(['linked', 'ws-a']);
     });
 });
 

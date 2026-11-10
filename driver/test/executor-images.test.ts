@@ -1702,7 +1702,7 @@ describe('the opencode-executor permission policy', () => {
         );
 
         it(
-            'refuses a workspace pin without a git worktree to read the checkout from (exit 78)',
+            'starts a repository-free run with a workspace pin: the view holds the workspace skill',
             async () => {
                 const sandbox = makeSandbox();
                 try {
@@ -1714,7 +1714,8 @@ describe('the opencode-executor permission policy', () => {
                         FACTORY_SKILLS_PATH: SKILLS,
                     };
                     const child = spawnDetached([stagedEntrypoint('docker/opencode-executor'), 'run'], env);
-                    expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(78);
+                    expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                    expect(readdirSync(VIEW)).toEqual(['ws-a']);
                 } finally {
                     sandbox.cleanup();
                 }
