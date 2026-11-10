@@ -245,6 +245,11 @@ secret:
 #             a MAC. The dashboard logs in with Vault's Kubernetes auth, presenting a service-account token
 #             projected into the dashboard container alone (audience `vault.audience`). The role's policy needs
 #             create/read on <mount>/data/<prefix>/* and delete on <mount>/metadata/<prefix>/*.
+#   gcp       the plaintext in Google Cloud Secret Manager, one secret per version named <gcp.prefix><reference>-<version>;
+#             PostgreSQL keeps a reference and a MAC. Credentials come from Workload Identity only: annotate
+#             `dashboard.serviceAccount` with iam.gke.io/gcp-service-account. The service account needs
+#             secretmanager.secrets.create on the project and secretmanager.versions.add, versions.access and
+#             secrets.delete conditioned on the secret name prefix (docs/secrets.md).
 # With existingSecret set (and secret.create false or true) the chart creates nothing and references that
 # one, which must hold `operation-key` and `fingerprint-key` (and `data-keys` with backend database);
 # activeKeyId is not secret and always comes from here.
@@ -281,6 +286,15 @@ secretStore:
         role: ''
         # The audience the projected token carries; the Vault role's `audience` must match it.
         audience: vault
+    gcp:
+        # The Google Cloud project id the secrets live in. Required with backend gcp.
+        project: ''
+        # Starts every secret's name; the IAM condition fences the service account to it. Empty: `bellows-`.
+        prefix: ''
+        # The one region each secret is replicated to (user-managed replication). Empty: `europe-west3`.
+        location: ''
+        # Optional customer-managed key, projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>, in `location`.
+        kmsKey: ''
 
 driver:
     # Built from docker/driver.Dockerfile:

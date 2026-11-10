@@ -2,6 +2,8 @@ import type { Sql } from 'postgres';
 import { createCredentialProvider } from '../artifacts/s3-credentials.js';
 import { createAwsObjectClient } from './aws-secrets-manager.js';
 import { createExternalPayloads } from './external-payloads.js';
+import { createGcpTokenProvider } from './gcp-credentials.js';
+import { createGcpObjectClient } from './gcp-secret-manager.js';
 import { createSecretRepo } from './postgres-secret-repo.js';
 import {
     type CoordinatedSecretStore,
@@ -20,13 +22,13 @@ import { createVaultObjectClient } from './vault-kv.js';
 import type { VaultAuth } from './vault-token.js';
 
 /**
- * Which backend holds the secret payloads (docs/secrets.md): `SECRETS_BACKEND=database|aws|vault`, required on
+ * Which backend holds the secret payloads (docs/secrets.md): `SECRETS_BACKEND=database|aws|vault|gcp`, required on
  * every boot with no default, one per deployment. Pure: no I/O, and every refusal names a variable and never a
  * value. A variable that belongs to another backend is refused rather than ignored, because a deployment that
  * thinks it is on one backend while configured for another is the failure this rules out.
  */
 
-export const BACKENDS = ['database', 'aws', 'vault'] as const;
+export const BACKENDS = ['database', 'aws', 'vault', 'gcp'] as const;
 export type SecretBackendName = (typeof BACKENDS)[number];
 
 /** Variables that only make sense in one backend; set in another they are refused. */
@@ -34,12 +36,19 @@ const OWNED_PREFIXES: Record<SecretBackendName, string> = {
     database: '',
     aws: 'SECRETS_AWS_',
     vault: 'SECRETS_VAULT_',
+    gcp: 'SECRETS_GCP_',
 };
 const DATA_KEY_VARIABLES = ['SECRETS_DATA_KEYS', 'SECRETS_ACTIVE_KEY_ID'];
 
 const REGION = /^[a-z]{2}(?:-[a-z]+)+-\d$/;
 const PREFIX_SEGMENT = /^[A-Za-z0-9_+=.@-]+$/;
 const MAX_PREFIX_CHARS = 200;
+const GCP_PROJECT = /^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]+)$/;
+const GCP_PREFIX = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
+const GCP_LOCATION = /^[a-z]+-[a-z]+[0-9]+$/;
+const GCP_KMS_KEY = /^projects\/[^/]+\/locations\/[^/]+\/keyRings\/[^/]+\/cryptoKeys\/[^/]+$/;
+const GCP_DEFAULT_PREFIX = 'bellows-';
+const GCP_DEFAULT_LOCATION = 'europe-west3';
 const VAULT_SEGMENT = /^[A-Za-z0-9_+=@-][A-Za-z0-9_+=.@-]*$/;
 
 export interface AwsBackendConfig {
@@ -62,10 +71,22 @@ export interface VaultBackendConfig {
     auth: VaultAuth;
 }
 
+export interface GcpBackendConfig {
+    /** The project id the secrets live in; credentials come from Application Default Credentials only. */
+    project: string;
+    /** Starts every secret's name, so an IAM condition on the name prefix can fence the backend in. */
+    prefix: string;
+    /** The one region a secret is replicated to (user-managed replication). */
+    location: string;
+    /** The customer-managed key that encrypts the replica, or null for Google-managed encryption. */
+    kmsKey: string | null;
+}
+
 export type SecretBackendConfig =
     | { kind: 'database'; keys: SecretKeys }
     | { kind: 'aws'; keys: OperationKeys; aws: AwsBackendConfig }
-    | { kind: 'vault'; keys: OperationKeys; vault: VaultBackendConfig };
+    | { kind: 'vault'; keys: OperationKeys; vault: VaultBackendConfig }
+    | { kind: 'gcp'; keys: OperationKeys; gcp: GcpBackendConfig };
 
 type Env = Record<string, string | undefined>;
 
@@ -187,6 +208,50 @@ function loadAws(env: Env): AwsBackendConfig {
     };
 }
 
+interface GcpSetting {
+    pattern: RegExp;
+    fallback: string | null;
+    shape: string;
+}
+
+/** A GCP setting that must match its shape; the refusal names the variable and never the value. */
+function gcpSetting(env: Env, name: string, { pattern, fallback, shape }: GcpSetting): string | null {
+    const raw = trimmed(env, name) ?? fallback;
+    if (raw !== null && !pattern.test(raw)) {
+        throw new SecretKeyConfigError(`${name} must be ${shape}`);
+    }
+    return raw;
+}
+
+function loadGcp(env: Env): GcpBackendConfig {
+    const project = gcpSetting(env, 'SECRETS_GCP_PROJECT', {
+        pattern: GCP_PROJECT,
+        fallback: required(env, 'SECRETS_GCP_PROJECT'),
+        shape: 'a Google Cloud project id or number',
+    });
+    const prefix = gcpSetting(env, 'SECRETS_GCP_PREFIX', {
+        pattern: GCP_PREFIX,
+        fallback: GCP_DEFAULT_PREFIX,
+        shape: 'a non-empty name of letters, digits, _ and -, starting with a letter (at most 128 characters)',
+    });
+    const location = gcpSetting(env, 'SECRETS_GCP_LOCATION', {
+        pattern: GCP_LOCATION,
+        fallback: GCP_DEFAULT_LOCATION,
+        shape: 'a Google Cloud region name such as europe-west3',
+    });
+    const kmsKey = gcpSetting(env, 'SECRETS_GCP_KMS_KEY', {
+        pattern: GCP_KMS_KEY,
+        fallback: null,
+        shape: 'a key name projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key> with no version',
+    });
+    return {
+        project: project ?? '',
+        prefix: prefix ?? GCP_DEFAULT_PREFIX,
+        location: location ?? GCP_DEFAULT_LOCATION,
+        kmsKey,
+    };
+}
+
 const VAULT_AUTH_METHODS = ['kubernetes', 'token'] as const;
 /** Variables that belong to one auth method; set under the other they are refused, as a foreign backend's are. */
 const VAULT_AUTH_VARIABLES: Record<(typeof VAULT_AUTH_METHODS)[number], string[]> = {
@@ -229,7 +294,7 @@ export function loadSecretBackend(env: Env): SecretBackendConfig {
     const raw = trimmed(env, 'SECRETS_BACKEND');
     if (raw === undefined) {
         throw new SecretKeyConfigError(
-            'SECRETS_BACKEND is required (database, aws or vault); for an existing secrets.env, run `npm run secrets:init` to add it'
+            'SECRETS_BACKEND is required (database, aws, vault or gcp); for an existing secrets.env, run `npm run secrets:init` to add it'
         );
     }
     const mode = BACKENDS.find((name) => name === raw);
@@ -242,6 +307,9 @@ export function loadSecretBackend(env: Env): SecretBackendConfig {
     }
     if (mode === 'vault') {
         return { kind: 'vault', keys: loadOperationKeys(env), vault: loadVault(env) };
+    }
+    if (mode === 'gcp') {
+        return { kind: 'gcp', keys: loadOperationKeys(env), gcp: loadGcp(env) };
     }
     return { kind: 'aws', keys: loadOperationKeys(env), aws: loadAws(env) };
 }
@@ -272,10 +340,13 @@ export function createSecretStore(options: SecretStoreOptions): CoordinatedSecre
     if (backend.kind === 'database') {
         return createPostgresSecretStore({ sql, ready, keys: backend.keys, log });
     }
+    const env = options.env ?? process.env;
     const client =
         backend.kind === 'vault'
             ? createVaultObjectClient(backend.vault)
-            : createAwsClient(backend.aws, options.env ?? process.env);
+            : backend.kind === 'gcp'
+              ? createGcpClient(backend.gcp, env)
+              : createAwsClient(backend.aws, env);
     return createSecretStoreOver({
         repo: createSecretRepo(sql),
         keys: backend.keys,
@@ -292,4 +363,8 @@ function createAwsClient(aws: AwsBackendConfig, env: NodeJS.ProcessEnv) {
         endpoint: aws.endpoint ?? undefined,
         credentials: createCredentialProvider({ static: aws.staticCredentials, env, region: aws.region }),
     });
+}
+
+function createGcpClient(gcp: GcpBackendConfig, env: NodeJS.ProcessEnv) {
+    return createGcpObjectClient({ ...gcp, credentials: createGcpTokenProvider({ env }) });
 }

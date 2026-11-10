@@ -39,7 +39,7 @@ The render refuses to start without them, and names the missing value.
 | `github.appId` | Id of the GitHub App. |
 | `github.appPrivateKey` | The App's private key, as the PEM or its base64. |
 | `database.url` | PostgreSQL connection URL. It carries the password, so the chart stores it in the Secret. |
-| `secretStore.backend` | `database`, `aws` or `vault`. No default. See [Secret store](#secret-store). |
+| `secretStore.backend` | `database`, `aws`, `vault` or `gcp`. No default. See [Secret store](#secret-store). |
 | `secretStore.operationKey`, `secretStore.fingerprintKey` | Each from `openssl rand -base64 32`, and different from each other. They cannot be rotated. |
 | `artifacts.s3.bucket` and `artifacts.s3.region` | Where task artifacts go. The region may be empty when you set `artifacts.s3.endpoint`. |
 
@@ -80,8 +80,11 @@ The secret store holds the secrets members save in Settings. Pick one backend.
 | `database` | Encrypted (AES-256-GCM) in PostgreSQL | `dataKeys` (`<keyId>:<base64 of 32 bytes>`, comma separated, for example `echo "k1:$(openssl rand -base64 32)"`) and `activeKeyId` (one of the key ids) |
 | `aws` | AWS Secrets Manager | `aws.region`, `aws.prefix`, and workload identity on `dashboard.serviceAccount.annotations` |
 | `vault` | HashiCorp Vault KV v2 | `vault.addr`, `vault.mount`, `vault.prefix`, `vault.role`, `vault.audience` (default `vault`) |
+| `gcp` | Google Cloud Secret Manager | `gcp.project`, optional `gcp.prefix` (default `bellows-`), `gcp.location` (default `europe-west3`) and `gcp.kmsKey`, and Workload Identity: `iam.gke.io/gcp-service-account` on `dashboard.serviceAccount.annotations` |
 
 Do not switch backends once secrets are stored. Only the dashboard container receives these keys.
+
+With `gcp`, bind the dashboard's Google service account to the dashboard ServiceAccount only, so the driver and runner pods have no access. The backend calls `secretmanager.secrets.create` on the project, and `secretmanager.versions.add`, `secretmanager.versions.access` and `secretmanager.secrets.delete` on secrets whose names start with the prefix. It never lists secrets. Grant the three name-scoped permissions with an IAM condition `resource.name.startsWith("projects/<project number>/secrets/<prefix>")`: the condition sees the project number, while `gcp.project` takes the project id. `secrets.create` is checked on the project, so grant it without the condition.
 
 ## Secrets to create
 

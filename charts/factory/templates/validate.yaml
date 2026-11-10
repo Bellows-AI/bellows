@@ -10,8 +10,8 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}
-{{- if not (has .Values.secretStore.backend (list "database" "aws" "vault")) }}
-{{- fail "secretStore.backend is required: database (AES envelopes in PostgreSQL), aws (AWS Secrets Manager) or vault (HashiCorp Vault KV v2)" }}
+{{- if not (has .Values.secretStore.backend (list "database" "aws" "vault" "gcp")) }}
+{{- fail "secretStore.backend is required: database (AES envelopes in PostgreSQL), aws (AWS Secrets Manager), vault (HashiCorp Vault KV v2) or gcp (Google Cloud Secret Manager)" }}
 {{- end }}
 {{- if eq .Values.secretStore.backend "database" }}
 {{- if not .Values.secretStore.activeKeyId }}
@@ -26,6 +26,9 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if or .Values.secretStore.vault.addr .Values.secretStore.vault.mount .Values.secretStore.vault.prefix .Values.secretStore.vault.role }}
 {{- fail "secretStore.vault.* is for secretStore.backend vault, not database" }}
 {{- end }}
+{{- if or .Values.secretStore.gcp.project .Values.secretStore.gcp.prefix .Values.secretStore.gcp.location .Values.secretStore.gcp.kmsKey }}
+{{- fail "secretStore.gcp.* is for secretStore.backend gcp, not database" }}
+{{- end }}
 {{- end }}
 {{- if eq .Values.secretStore.backend "aws" }}
 {{- if not .Values.secretStore.aws.region }}
@@ -39,6 +42,9 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- end }}
 {{- if or .Values.secretStore.vault.addr .Values.secretStore.vault.mount .Values.secretStore.vault.prefix .Values.secretStore.vault.role }}
 {{- fail "secretStore.vault.* is for secretStore.backend vault, not aws" }}
+{{- end }}
+{{- if or .Values.secretStore.gcp.project .Values.secretStore.gcp.prefix .Values.secretStore.gcp.location .Values.secretStore.gcp.kmsKey }}
+{{- fail "secretStore.gcp.* is for secretStore.backend gcp, not aws" }}
 {{- end }}
 {{- end }}
 {{- if eq .Values.secretStore.backend "vault" }}
@@ -62,6 +68,23 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- end }}
 {{- if or .Values.secretStore.aws.region .Values.secretStore.aws.prefix }}
 {{- fail "secretStore.aws.region and secretStore.aws.prefix are for secretStore.backend aws, not vault" }}
+{{- end }}
+{{- if or .Values.secretStore.gcp.project .Values.secretStore.gcp.prefix .Values.secretStore.gcp.location .Values.secretStore.gcp.kmsKey }}
+{{- fail "secretStore.gcp.* is for secretStore.backend gcp, not vault" }}
+{{- end }}
+{{- end }}
+{{- if eq .Values.secretStore.backend "gcp" }}
+{{- if not .Values.secretStore.gcp.project }}
+{{- fail "secretStore.gcp.project is required with secretStore.backend gcp: the Google Cloud project id the secrets live in" }}
+{{- end }}
+{{- if or .Values.secretStore.dataKeys .Values.secretStore.activeKeyId }}
+{{- fail "secretStore.dataKeys and secretStore.activeKeyId are for secretStore.backend database: a gcp store keeps no data key" }}
+{{- end }}
+{{- if or .Values.secretStore.aws.region .Values.secretStore.aws.prefix }}
+{{- fail "secretStore.aws.region and secretStore.aws.prefix are for secretStore.backend aws, not gcp" }}
+{{- end }}
+{{- if or .Values.secretStore.vault.addr .Values.secretStore.vault.mount .Values.secretStore.vault.prefix .Values.secretStore.vault.role }}
+{{- fail "secretStore.vault.* is for secretStore.backend vault, not gcp" }}
 {{- end }}
 {{- end }}
 {{- if and .Values.secret.create (not .Values.secretStore.existingSecret) }}
