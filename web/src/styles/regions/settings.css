@@ -452,7 +452,12 @@
 
     .skill-head-actions {
         display: flex;
+        flex-wrap: wrap;
         gap: 8px;
+    }
+
+    .panel-head:has(> .skill-head-actions) {
+        flex-wrap: wrap;
     }
 
     .skill-note {
