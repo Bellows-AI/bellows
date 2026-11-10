@@ -28,6 +28,7 @@ import {
 } from './job-field-validation.js';
 import { validateGates } from './job-gate-validation.js';
 import { abortOnClose, effectiveCatalog, installedNames, standingOf, storedOf } from '../../skill-catalog.js';
+import type { ExecutorTypeRead } from '../../skill-catalog.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body, checkReposVisible, guard } from '../helpers.js';
 import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
@@ -175,9 +176,9 @@ async function refusedAsUnknownSkill(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply,
-    opts: { names: readonly string[]; repo: string | null; baseBranch: string | null }
+    opts: { names: readonly string[]; repo: string | null; baseBranch: string | null; executorType: ExecutorTypeRead }
 ): Promise<boolean> {
-    const { names, repo, baseBranch } = opts;
+    const { names, repo, baseBranch, executorType } = opts;
     if (names.length === 0) return false;
     const rt = await orgs.for(orgOf(request));
     const catalog = await effectiveCatalog({
@@ -185,6 +186,7 @@ async function refusedAsUnknownSkill(
         read: rt?.repoSkills,
         repo,
         branch: baseBranch,
+        executorType,
         signal: abortOnClose(reply),
         need: names,
         stored: storedOf(rt, request),
@@ -258,10 +260,11 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         scope: simple.executorScope,
     });
     if (!selection) return reply;
-    const { executor, scope: executorScope } = selection;
+    const { executor, scope: executorScope, type: executorType } = selection;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;
-    if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch })) return reply;
+    if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch, executorType }))
+        return reply;
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
         fields,

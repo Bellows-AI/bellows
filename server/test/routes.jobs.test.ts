@@ -1036,13 +1036,14 @@ describe('POST /api/jobs skill selection', () => {
         const jobs = stubStore();
         const reads: unknown[] = [];
         const instance = await harnessReading(jobs, async (...args) => {
-            reads.push(args.slice(0, 2));
+            reads.push(args.slice(0, 3));
             return readOf('repo-only')();
         });
         const response = await createWith(instance, { baseBranch: 'dev' });
         expect(response.statusCode).toBe(201);
         expect(jobs.skillSelections).toEqual([['repo-only']]);
-        expect(reads).toEqual([['acme/web', 'dev']]);
+        // No executor store: nothing resolves, the task runs claude, and claude scans `.claude/skills`.
+        expect(reads).toEqual([['acme/web', 'dev', ['.claude/skills']]]);
     });
 
     it('accepts when the repository read fails: an unconfirmed read is no verdict', async () => {

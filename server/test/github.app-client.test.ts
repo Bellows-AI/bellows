@@ -296,7 +296,9 @@ describe('listRepoSkills', () => {
         }) as typeof fetch;
         const client = createGitHubAppClient(github, tokens, fetchFn);
         const controller = new AbortController();
-        const read = await client.listRepoSkills('acme/skills-signal', 'main', controller.signal).catch((e) => e);
+        const read = await client
+            .listRepoSkills('acme/skills-signal', 'main', ['.claude/skills'], controller.signal)
+            .catch((e) => e);
         // The tip answered {sha}; the directory read got the same JSON, a non-array: unconfirmed, not "none".
         expect(read).toMatchObject({ kind: 'binding' });
         expect(seen.length).toBeGreaterThan(1);
