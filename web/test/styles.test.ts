@@ -798,6 +798,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.task-summary',
             '.env-raw .env-raw-text',
             '.inbox-repo-name',
+            '.skill-view-source',
         ]);
         const offenders = rules(css)
             .filter(([, body]) => /font-family\s*:\s*var\(--font-mono\)/.test(body))
