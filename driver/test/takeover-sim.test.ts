@@ -307,6 +307,9 @@ describe("takeover simulation, the agent's gate request (BEL-88)", () => {
             expect(answer.status).toBe(200);
             expect(JSON.parse(answer.body)).toMatchObject({ exitCode: 0, output: 'ran on driver B' });
             expect(s.gateRuns).toEqual([{ driver: 'B', command: 'verify-it' }]);
+            // The agent never held a gate URL or token to go stale: nothing in its env names the lost driver's endpoint.
+            expect(s.runnerEnvs.length).toBeGreaterThan(0);
+            for (const { body } of s.runnerEnvs) expect(body).not.toMatch(/BELLOWS_GATE_/);
             s.agentExits(g, 0);
             await settled(s);
         } finally {

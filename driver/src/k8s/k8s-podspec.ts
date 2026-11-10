@@ -194,7 +194,7 @@ export function credentialsSecretEnv(config: DriverConfig): EnvVar[] {
 
 /**
  * The board's stacked environment plus every credential the pod carries by reference: the
- * bring-your-own credentials Secret, the claim env + minted gate credentials (the per-attempt
+ * bring-your-own credentials Secret, the claim env (the per-attempt
  * Secret `runnerJobSpec`'s caller creates), the telemetry/board URLs, and the runner's own
  * branch-ingest attempt pair. Pulled out of `runnerJobSpec` purely to keep that function's
  * complexity readable — every value here is a NAME or a literal path/URL, never a credential
@@ -202,14 +202,13 @@ export function credentialsSecretEnv(config: DriverConfig): EnvVar[] {
  */
 function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
     const env: EnvVar[] = credentialsSecretEnv(config);
-    // The board's stacked environment plus the loop's minted gate credentials, same discipline:
-    // names in the pod spec, values in the per-attempt Secret (created before the Job — see
-    // create()). claimEnv has already dropped the reserved names, and the BELLOWS_* gate names
-    // are disjoint from it, so a gated job whose claim resolves to nothing still gets its gate
-    // credentials. NOT optional: this driver created this exact Secret moments earlier under
+    // The board's stacked environment, same discipline: names in the pod spec, values in the
+    // per-attempt Secret (created before the Job — see create()). claimEnv has already dropped the
+    // reserved names; the gate registration key (`job.gateEnv`) is the driver's and is no agent env
+    // (BEL-88). NOT optional: this driver created this exact Secret moments earlier under
     // this attempt's own lease token, so a missing key is a bug and must fail loud
     // (CreateContainerConfigError) rather than start the pod silently without its env.
-    const secretEnv = { ...runnerClaimEnv(job), ...(job.gateEnv ?? {}) };
+    const secretEnv = runnerClaimEnv(job);
     for (const name of Object.keys(secretEnv)) {
         env.push({ name, valueFrom: { secretKeyRef: { name: secretName(job), key: name } } });
     }

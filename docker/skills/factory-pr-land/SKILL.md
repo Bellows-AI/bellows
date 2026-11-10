@@ -55,7 +55,7 @@ the reason is on stderr.
      `.bellows.yaml`, one per call:
      `factory-gate <name>`. The answer's `exitCode` 0 is a
      pass; otherwise its `output` tail says what to fix (a gate that sets `filter: true` also takes
-     `--filter <tests>`, see the factory-gates skill). With `BELLOWS_GATE_URL` unset, run the
+     `--filter <tests>`, see the factory-gates skill). When `factory-gate` reports no gates, run the
      failing check's own command instead. Commit, push, back to step 2.
    - A flake the log proves (a network timeout, a runner lost mid-job): `gh run rerun <run-id>
      --failed` once per run, back to step 2.

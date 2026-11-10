@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Board, BoardJob } from '../../src/board/board.js';
+import { envFileBody } from '../../src/claim.js';
 import { createGateServer, createSupervisedGateManager } from '../../src/gates.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import { type AdoptedRun, type LiveRun, ownGroup, type Read, type Runner } from '../../src/runner.js';
@@ -197,6 +198,8 @@ export class Sim {
     readonly gated: boolean;
     /** Every gate run a driver's gate manager executed, with the driver that ran it. */
     readonly gateRuns: { driver: string; command: string }[] = [];
+    /** The env file the docker writer renders for each agent run a driver started (what the agent's process would hold). */
+    readonly runnerEnvs: { driver: string; body: string }[] = [];
 
     /** The loop's stalls: they are the host's, so the board's clock leaves them out unless `wallClock` keeps them in. */
     readonly host = new StallWatch();
@@ -506,6 +509,7 @@ export class Sim {
                     });
                 const group = sim.ensureGroup(job);
                 const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '';
+                sim.runnerEnvs.push({ driver: d.name, body: envFileBody(job) });
                 if (!resumed) {
                     await sim.goGate;
                     sim.agentRuns += 1;

@@ -360,10 +360,8 @@ describe("the board's environment", () => {
         expect(() => envFileBody({ ...job, env: { 'BRO\nKEN': 'fine' } })).toThrow(
             /the name of "BRO\nKEN" contains a newline/
         );
-        // The gate lines are checked by the same rule.
-        expect(() => envFileBody({ ...job, gateEnv: { BELLOWS_GATE_TOKEN: 'tok\ntok' } })).toThrow(
-            /the value of "BELLOWS_GATE_TOKEN" contains a newline/
-        );
+        // The gate token is not rendered at all, so it has no line to corrupt.
+        expect(envFileBody({ ...job, gateEnv: { BELLOWS_GATE_TOKEN: 'tok\ntok' } })).toBe('');
     });
 
     // The run-control pair is never minted into the env file (the supervisor's relays carry it), and a

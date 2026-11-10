@@ -389,8 +389,8 @@ describe('environment.setup before the agent starts', () => {
         expect(board.board.completed[0]).not.toHaveProperty('setupMs');
     });
     // The kubernetes group is one pod whose env is frozen when the first step (the checkout sync) makes
-    // it, long before the agent starts. The gate pair must already be on the job then.
-    it('mints the agent gate pair before the first runner step makes the group, and registers that token', async () => {
+    // it, long before the agent starts. The gate registration key must already be on the job then.
+    it('mints the gate registration key before the first runner step makes the group, and registers that token', async () => {
         const board = stubBoard([setupJob(1)]);
         const { stack, gates } = stubGateStack();
         let atSync: BoardJob['gateEnv'];
@@ -407,7 +407,8 @@ describe('environment.setup before the agent starts', () => {
 
         await drive({ ...board, runner, gates });
 
-        expect(Object.keys(atSync ?? {}).sort()).toEqual(['BELLOWS_GATE_TOKEN', 'BELLOWS_GATE_URL']);
+        // Only the registration key: no BELLOWS_GATE_URL, and nothing renders it into the runner's env.
+        expect(Object.keys(atSync ?? {})).toEqual(['BELLOWS_GATE_TOKEN']);
         expect(atRun).toEqual(atSync);
         expect(stack.registeredTokens).toEqual([atSync?.BELLOWS_GATE_TOKEN]);
     });
@@ -648,7 +649,8 @@ describe('verification gates', () => {
 
         expect(stack.stack.registered).toBe(1);
         expect(stack.stack.unregistered).toBe(1);
-        expect(stack.stack.advertised).toBe('http://host.docker.internal:9099');
+        // No gate URL is minted for the agent any more (BEL-88): it asks the control socket.
+        expect(stack.stack.advertised).toBe('');
     });
 
     // A gate that cannot RUN at all — the harness failed, docker exec refused — is a failed gate
