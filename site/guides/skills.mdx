@@ -79,7 +79,7 @@ Bellows also supports skills shared across your organization and skills owned by
 A zip upload takes the skill's name from its `SKILL.md`. Editing only the `SKILL.md` of a stored skill keeps its other files; send the `baseVersionId` you edited, and if someone saved a newer version first the edit is refused with `409 SKILL_VERSION_STALE` so you can reload. `GET /api/org/skills/<id>/zip` and `GET /api/workspace/skills/<id>/zip` download a skill as a zip, and `GET /api/skills/builtin/<name>` shows a built-in skill's files and the Bellows release it ships with.
 
 <Note>
-On a running task, a workspace skill that the repository also holds isn't guaranteed to win. Give them different names.
+On a running task, a workspace skill that the repository also holds wins: the agent lists it once, the workspace copy. The one exception is opencode with a repository skill under `.opencode/skill` or `.opencode/skills`, where either copy may be listed, so give those different names.
 </Note>
 
 ## From the CLI

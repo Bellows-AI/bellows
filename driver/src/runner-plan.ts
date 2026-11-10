@@ -86,6 +86,16 @@ const baseBranchEnv = (job: BoardJob): [string, string][] => {
 export const SKILLS_PATH_ENV = 'FACTORY_SKILLS_PATH';
 const hasPinnedSkills = (job: BoardJob): boolean => (job.skillPin?.length ?? 0) > 0;
 const skillsEnv = (job: BoardJob): [string, string][] => (hasPinnedSkills(job) ? [[SKILLS_PATH_ENV, SKILLS_DIR]] : []);
+/**
+ * The pinned workspace skills, as one comma list in pin order, set only when non-empty. A workspace skill must beat a
+ * same-name checkout skill, which neither CLI's own search order guarantees, so the entrypoints promote exactly these
+ * names. Both executors read `envPairs`, so a replacement pod or a takeover sets it again from the same pin.
+ */
+export const WORKSPACE_SKILLS_ENV = 'FACTORY_WORKSPACE_SKILLS';
+const workspaceSkillsEnv = (job: BoardJob): [string, string][] => {
+    const names = (job.skillPin ?? []).filter((e) => e.source === 'workspace').map((e) => e.name);
+    return names.length === 0 ? [] : [[WORKSPACE_SKILLS_ENV, names.join(',')]];
+};
 const claudeSkillArgs = (job: BoardJob): string[] => (hasPinnedSkills(job) ? ['--add-dir', SKILLS_ROOT] : []);
 
 /**
@@ -141,6 +151,7 @@ function opencodePlan(job: BoardJob, session: RunSession | null, attachmentsPath
         ...repoCacheEnv(job),
         ...baseBranchEnv(job),
         ...skillsEnv(job),
+        ...workspaceSkillsEnv(job),
         ...hiddenSkillsEnv(job),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
@@ -191,6 +202,8 @@ function claudePlan(
         ...npmQuietEnv(job),
         ...repoCacheEnv(job),
         ...baseBranchEnv(job),
+        ...skillsEnv(job),
+        ...workspaceSkillsEnv(job),
         ...hiddenSkillsEnv(job),
     ];
     const cliArgs = [
