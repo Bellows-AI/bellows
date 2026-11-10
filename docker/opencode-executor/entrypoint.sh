@@ -132,7 +132,7 @@ if [ -z "${BELLOWS_SESSION_ID:-}" ]; then
     fi
 fi
 
-# A pinned workspace skill must win over a same-name skill of the checkout (BEL-289). opencode lists the checkout's
+# A pinned workspace skill must win over a same-name skill of the checkout. opencode lists the checkout's
 # .claude/.agents skills by a racy directory scan, so with a workspace pin the scan is switched off and the same skills
 # are offered through one per-start view, in which the workspace copy is the only one of its name. The view is rebuilt
 # on every start; one that is not ours ends the run, as does a list or a checkout the builder cannot read (exit 78).

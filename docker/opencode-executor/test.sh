@@ -362,7 +362,7 @@ fi
 # (a repo copy, a baked global skill, a skills.paths directory) opencode lists ONE copy, but which source wins is
 # not deterministic: measured under contention, skills.paths won 7 of 12 runs, the repo 4 and the global 1, so the
 # clash checks assert exactly one copy from an expected source, never a winner (docs/skills.md). The one exception
-# is a pinned WORKSPACE skill (BEL-289): its entrypoint view makes the workspace copy the only one (check below).
+# is a pinned WORKSPACE skill: its entrypoint view makes the workspace copy the only one (check below).
 skill_ws="$(mktemp -d)"
 for d in .claude/skills/probe-claude .opencode/skills/probe-ocskills .opencode/skill/probe-ocskill .agents/skills/probe-agents .claude/skills/factory-fix extra/factory-fix; do
     mkdir -p "$skill_ws/$d"
@@ -413,7 +413,7 @@ if [ "$located" = /task/.factory/skills-root/.claude/skills/probe-org/SKILL.md ]
 else
     bad 'a pinned skill installed under the task volume is listed through skills.paths' "listed: $located"
 fi
-# A pinned WORKSPACE skill wins over a same-name checkout skill (BEL-289). The checkout holds probe-ws in both
+# A pinned WORKSPACE skill wins over a same-name checkout skill. The checkout holds probe-ws in both
 # .claude/skills and .agents/skills, padded to 4 MB (the size at which the repo copy won every run before the fix),
 # and the entrypoint is run for real with FACTORY_WORKSPACE_SKILLS set: it switches the checkout scan off and offers
 # the checkout's skills through a view in which the workspace copy is alone (the pinned directory in skills.paths holds

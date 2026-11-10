@@ -3368,7 +3368,7 @@ case "$skills_off" in
 200*) ok 'the org switches a built-in off before the skills task is made' ;;
 *) bad 'the org switches a built-in off before the skills task is made' "status and body: $skills_off" ;;
 esac
-# BEL-289: the checkout holds a skill named like the pinned workspace skill (and two others), so the resumed pod's view
+# The checkout holds a skill named like the pinned workspace skill (and two others), so the resumed pod's view
 # is built against a real clash.
 skills_clash="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/clash; git clone -q /origins/$SMOKE_REPO.git /tmp/clash; cd /tmp/clash
 for d in .claude/skills/lane-ws-skill .claude/skills/lane-repo-other-claude .agents/skills/lane-repo-other; do mkdir -p \$d; printf '%s\n' '---' \"name: \${d##*/}\" 'description: Lane fixture repo skill - use it never.' '---' 'Nothing to do.' >\$d/SKILL.md; done
@@ -3404,7 +3404,7 @@ else
     expect_contains 'the resumed runner is told to hide the built-in the org switched off' "$skills_out" 'hidden factory-task-title'
     expect_contains "the org skill's helper file opens for the agent" "$skills_out" 'helper lane-org-skill/ref/helper.txt open'
     expect_contains "the workspace skill's helper file opens for the agent" "$skills_out" 'helper lane-ws-skill/ref/helper.txt open'
-    # BEL-289: the executors' view builder, run by the stub on the resumed pod against the clashing checkout: the workspace
+    # The executors' view builder, run by the stub on the resumed pod against the clashing checkout: the workspace
     # copy is the one entry of its name in both views, and opencode's view still holds the checkout's other skills.
     expect_contains 'the resumed pod links the workspace skill into the claude view' "$skills_out" 'view claude lane-ws-skill /task/.factory/skills-root/.claude/skills/lane-ws-skill'
     expect_contains 'the resumed pod links the workspace skill into the opencode view' "$skills_out" 'view opencode lane-ws-skill /task/.factory/skills-root/.claude/skills/lane-ws-skill'

@@ -1197,7 +1197,7 @@ describe('the shared executor skills', () => {
         expect(dockerfile).not.toMatch(/^COPY[^\n]*\/home\/node\/\.claude\/skills/m);
     });
 
-    // BEL-289: a pinned workspace skill is linked into the managed view, which outranks a same-name checkout skill.
+    // A pinned workspace skill is linked into the managed view, which outranks a same-name checkout skill.
     it('links the pinned workspace skills into the managed view, and refuses a bad list before the CLI starts', () => {
         const entrypoint = read('docker/claude-executor/entrypoint.sh');
         const chmod = entrypoint.indexOf('chmod 0755 "$HIDDEN_VIEW"');
@@ -1606,7 +1606,7 @@ describe('the opencode-executor permission policy', () => {
         CASE_TIMEOUT_MS
     );
 
-    // BEL-289: a pinned workspace skill must beat a same-name skill of the checkout. opencode lists the checkout's
+    // A pinned workspace skill must beat a same-name skill of the checkout. opencode lists the checkout's
     // `.claude`/`.agents` skills by a racy directory scan, so with a workspace pin the scan is switched off and the
     // same skills are offered through one per-start view in which the workspace copy is alone of its name.
     describe('with pinned workspace skills', () => {

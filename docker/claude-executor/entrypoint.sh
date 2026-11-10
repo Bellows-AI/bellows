@@ -102,7 +102,7 @@ for skill in /usr/local/share/factory-skills/*/; do
 done
 chmod 0755 "$HIDDEN_VIEW"
 
-# A pinned workspace skill must win over a same-name skill of the checkout (BEL-289). The managed skills path outranks
+# A pinned workspace skill must win over a same-name skill of the checkout. The managed skills path outranks
 # the project's, so each pinned name is linked into this view, to the bundle the driver installed under
 # FACTORY_SKILLS_PATH. The view is world-readable, so the tool uid reads the bundle through the link. An empty
 # list is no pin. A list the builder refuses ends the run before the CLI starts.

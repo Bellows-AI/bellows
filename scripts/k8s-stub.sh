@@ -67,7 +67,7 @@ for (const name of Object.keys(owned).sort()) console.log(`skills ${name} ${owne
     for helper in "$skills_dir"/*/ref/helper.txt; do
         if cat "$helper" >/dev/null 2>&1; then echo "helper ${helper#"$skills_dir"/} open"; else echo "helper ${helper#"$skills_dir"/} denied"; fi
     done
-    # BEL-289: the executors' own view builder (docker/executor-common/skill-view.cjs, the one both entrypoints run) against
+    # The executors' own view builder (docker/executor-common/skill-view.cjs, the one both entrypoints run) against
     # this pod's env and checkout: one `view <mode> <name> <realpath>` line per entry, or `view <mode> refused <code>`.
     if [ -n "${FACTORY_WORKSPACE_SKILLS:-}" ]; then
         for mode in claude opencode; do

@@ -270,7 +270,7 @@ fi
 # /task/.factory/skills-root/.claude/skills and starts the CLI with `--add-dir /task/.factory/skills-root` (the plan
 # in driver/src/runner-plan.ts). The CLI loads the skill from there, through the image's real entrypoint and bridge.
 # `--add-dir` ranks below a checkout's own skill of the same name, so a WORKSPACE skill is also named in
-# FACTORY_WORKSPACE_SKILLS (BEL-289): the entrypoint links it into the managed view, which outranks the checkout.
+# FACTORY_WORKSPACE_SKILLS: the entrypoint links it into the managed view, which outranks the checkout.
 task_vol="$(mktemp -d)"
 mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-org"
 printf -- '---\nname: probe-org\ndescription: pinned org skill\n---\norg body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-org/SKILL.md"

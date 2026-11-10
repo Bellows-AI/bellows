@@ -80,7 +80,7 @@ exec ${JSON.stringify(realDirname)} "$@"
         expect(stub).toMatch(/\*factory-stub-skills\*\)[\s\S]*\.factory-skills\.json/);
     });
 
-    it('runs the executors skill view builder on the resumed pod against a same-name checkout skill (BEL-289)', () => {
+    it('runs the executors skill view builder on the resumed pod against a same-name checkout skill', () => {
         const script = readRepoFile('scripts/test-k8s.sh');
         const stub = readRepoFile('scripts/k8s-stub.sh');
         // The stub image carries the builder the entrypoints run, and the stub runs it in both modes.

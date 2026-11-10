@@ -4090,7 +4090,7 @@ ps_b=''
 # Text that appears only in one built-in's description, so the scripted model can tell whether the CLI offered it.
 PS_CLASH_REPO="${SMOKE_REPO%%/*}/clash" # a second origin whose checkout ships a skill named like the pinned org skill
 PS_REPO_SENTINEL=LANE_PIN_REPO_SENTINEL_5d2c
-PS_WS_CLASH_REPO="${SMOKE_REPO%%/*}/ws-clash" # an origin whose checkout ships a skill named like the pinned WORKSPACE skill (BEL-289)
+PS_WS_CLASH_REPO="${SMOKE_REPO%%/*}/ws-clash" # an origin whose checkout ships a skill named like the pinned WORKSPACE skill
 PS_REPO_WS_SENTINEL=LANE_PIN_REPO_WS_SENTINEL_5d2c
 PS_REPO_OTHER_SENTINEL=LANE_PIN_REPO_OTHER_5d2c # .agents/skills: opencode scans it, claude does not
 PS_REPO_OTHER_CLAUDE_SENTINEL=LANE_PIN_REPO_OTHER_CLAUDE_5d2c
@@ -4344,7 +4344,7 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     esac
     lane_endpoint_stop "$ps_pid"
 
-    # BEL-289: a checkout that ships a skill named like a pinned WORKSPACE skill loses to it: one copy is listed, the
+    # A checkout that ships a skill named like a pinned WORKSPACE skill loses to it: one copy is listed, the
     # workspace one, and the repo's other skills still are. The org skill (no clash here) is the one-copy baseline.
     local ws_now ws_n_org ws_n_ws
     ws_now="$(ps_ws_sentinel "$ps_ws_n")"

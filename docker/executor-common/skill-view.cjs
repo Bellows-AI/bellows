@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// The per-start skill view both executor entrypoints build when a task pins workspace skills (BEL-289).
+// The per-start skill view both executor entrypoints build when a task pins workspace skills.
 //
 //   skill-view.cjs claude   <view dir>
 //   skill-view.cjs opencode <view dir> <workdir> <worktree root>
