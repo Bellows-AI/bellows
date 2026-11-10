@@ -10,7 +10,14 @@ import {
     type ReviewCollection,
 } from '../src/review/review.js';
 import { collectRef } from './fixtures/review-fixtures.js';
-import { cleanupTempDirs, fixture, runScript, TEST_TOKEN, writeFixture } from './fixtures/review-script-support.js';
+import {
+    cleanupTempDirs,
+    fixture,
+    runScript,
+    runStubGh,
+    TEST_TOKEN,
+    writeFixture,
+} from './fixtures/review-script-support.js';
 
 afterEach(cleanupTempDirs);
 
@@ -439,5 +446,30 @@ describe('the review collection script: byte bound and server-reported truncatio
         expect(verdict.error).toBeNull();
         expect(verdict.ref).toEqual(collectRef);
         expect(args).toHaveLength(EXPECTED_ARGS_COUNT);
+    });
+});
+
+describe('the stub gh route table', () => {
+    const SHA = 'a'.repeat(40);
+    const UNKNOWN_PATH_EXIT_CODE = 127;
+
+    it.each([
+        'repos/octo/factory/issues/7garbage/comments',
+        'repos/octo/factory/pulls/7garbage/comments',
+        'repos/octo/factory/pulls/7/comments/111garbage/replies',
+        'repos/octo/factory/commits/not-a-sha/check-runs',
+        `repos/octo/factory/commits/${'A'.repeat(40)}/check-runs`,
+        `repos/octo/factory/commits/${'a'.repeat(39)}/check-runs`,
+    ])('refuses %s as an unknown path, as the real gh would', async (path) => {
+        expect((await runStubGh(['api', path])).code).toBe(UNKNOWN_PATH_EXIT_CODE);
+    });
+
+    it.each([
+        'repos/octo/factory/issues/7/comments',
+        'repos/octo/factory/pulls/7/comments',
+        'repos/octo/factory/pulls/7/comments/111/replies',
+        `repos/octo/factory/commits/${SHA}/check-runs`,
+    ])('answers the well-formed %s', async (path) => {
+        expect((await runStubGh(['api', path])).code).toBe(0);
     });
 });

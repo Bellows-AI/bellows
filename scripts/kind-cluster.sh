@@ -35,19 +35,32 @@ case "${LAYOUT:-}" in
     ;;
 esac
 
-# Fails unless the listing succeeds with at least one node: a silent empty list would skip every check.
+# Sets node_list; fails unless the listing succeeds with at least one node: a silent empty list would skip every check.
 nodes() {
-    list="$(kind get nodes --name "$name" 2>/dev/null)" && [ -n "$list" ] && printf '%s\n' "$list"
+    node_list="$(kind get nodes --name "$name" 2>/dev/null)" && [ -n "$node_list" ]
 }
+# The checks below capture a node's output once and match it with case: a pipe to grep is a process more
+# per node, and this script runs against a loaded host.
 mirror_capable() { # mirror_capable <node> — containerd was created reading $CERTS_D
-    docker exec "$1" containerd config dump 2>/dev/null | grep -Eq "config_path = [\"']$CERTS_D[\"']"
+    config="$(docker exec "$1" containerd config dump 2>/dev/null)"
+    case "$config" in
+    *"config_path = \"$CERTS_D\""* | *"config_path = '$CERTS_D'"*) ;;
+    *) return 1 ;;
+    esac
 }
 mirrored() { # mirrored <node> — the node's hosts.toml sends $REGISTRY_HOST to the registry
-    docker exec "$1" cat "$CERTS_D/$REGISTRY_HOST/hosts.toml" 2>/dev/null | grep -qF "$MIRROR"
+    hosts="$(docker exec "$1" cat "$CERTS_D/$REGISTRY_HOST/hosts.toml" 2>/dev/null)"
+    case "$hosts" in
+    *"$MIRROR"*) ;;
+    *) return 1 ;;
+    esac
 }
-running() { docker inspect -f '{{.State.Running}}' "$REGISTRY_NAME" 2>/dev/null; }
-on_kind_network() {
-    [ "$(docker inspect -f '{{if index .NetworkSettings.Networks "kind"}}kind{{end}}' "$REGISTRY_NAME" 2>/dev/null)" = kind ]
+# One inspect for both fields: "<true|false> <kind|>", empty when the registry cannot be inspected, which
+# reads as neither running nor on the kind network.
+registry_state() { # sets state, running and networked
+    state="$(docker inspect -f '{{.State.Running}} {{if index .NetworkSettings.Networks "kind"}}kind{{end}}' "$REGISTRY_NAME" 2>/dev/null)"
+    running="${state%% *}"
+    networked="${state#* }"
 }
 # Every binding, not any: a registry also published beyond loopback is an open, unauthenticated one.
 published() { [ "$(docker port "$REGISTRY_NAME" 5000/tcp 2>/dev/null)" = "$REGISTRY_PORT" ]; }
@@ -72,30 +85,33 @@ create)
     if ! kind get clusters 2>/dev/null | grep -qx "$name"; then
         kind create cluster --name "$name" --config "$config" || exit 1
     fi
-    node_list="$(nodes)" || rewire "no nodes found for the kind cluster $name"
+    nodes || rewire "no nodes found for the kind cluster $name"
     for node in $node_list; do
         mirror_capable "$node" || recreate
     done
-    case "$(running)" in
+    registry_state
+    case "$running" in
     true) ;;
     '') docker run -d --restart=always -p "$REGISTRY_PORT:5000" --name "$REGISTRY_NAME" registry:2 >/dev/null || exit 1 ;;
     *) docker start "$REGISTRY_NAME" >/dev/null || exit 1 ;;
     esac
     published || misbound
-    on_kind_network || docker network connect kind "$REGISTRY_NAME" || exit 1
+    registry_state
+    [ "$networked" = kind ] || docker network connect kind "$REGISTRY_NAME" || exit 1
     for node in $node_list; do
         printf '%s\n' "$MIRROR" | docker exec -i "$node" sh -c \
             "mkdir -p '$CERTS_D/$REGISTRY_HOST' && cat >'$CERTS_D/$REGISTRY_HOST/hosts.toml'" || exit 1
     done
     ;;
 check)
-    node_list="$(nodes)" || rewire "no nodes found for the kind cluster $name"
+    nodes || rewire "no nodes found for the kind cluster $name"
     for node in $node_list; do
         mirror_capable "$node" || recreate
         mirrored "$node" || rewire "node $node does not mirror $REGISTRY_HOST to $REGISTRY_NAME"
     done
-    [ "$(running)" = true ] || rewire "the registry container $REGISTRY_NAME is not running"
-    on_kind_network || rewire "the registry container $REGISTRY_NAME is not on the kind network"
+    registry_state
+    [ "$running" = true ] || rewire "the registry container $REGISTRY_NAME is not running"
+    [ "$networked" = kind ] || rewire "the registry container $REGISTRY_NAME is not on the kind network"
     published || misbound
     ;;
 delete)

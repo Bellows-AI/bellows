@@ -3,7 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import type { ObjectStore } from '../src/artifacts/object-store.js';
 import { createAttachmentCollector, SECOND_DELETE_AFTER_MS } from '../src/attachments/attachment-collector.js';
@@ -464,32 +464,42 @@ describe.runIf(enabled)('attachment collector', () => {
     });
 
     it('aborts the write at the deadline taken before the stamp, not a fresh window after it', async () => {
-        const base = createAttachmentRows({ sql, orgId: ORG, ready: Promise.resolve() });
-        const slowStamp = createAttachmentStore({
-            rows: {
-                ...base,
-                beginAttempt: async (id) => {
-                    await new Promise((resolve) => setTimeout(resolve, 300));
-                    return base.beginAttempt(id);
-                },
-            },
-            objects: {
-                ...objects,
-                put: (_k, _body, call) =>
-                    new Promise((_resolve, reject) => {
-                        call?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
-                    }),
-            } as ObjectStore,
-            orgId: ORG,
-            prefix: PREFIX,
-            writeBoundMs: 500,
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const windows: number[] = [];
+        const abort = new AbortController();
+        vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+            windows.push(ms);
+            return abort.signal;
         });
-        const started = Date.now();
+        try {
+            const base = createAttachmentRows({ sql, orgId: ORG, ready: Promise.resolve() });
+            const slowStamp = createAttachmentStore({
+                rows: {
+                    ...base,
+                    beginAttempt: async (id) => {
+                        vi.setSystemTime(Date.now() + 300);
+                        return base.beginAttempt(id);
+                    },
+                },
+                objects: {
+                    ...objects,
+                    put: (_k, _body, call) =>
+                        new Promise((_resolve, reject) => {
+                            call?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+                            abort.abort();
+                        }),
+                } as ObjectStore,
+                orgId: ORG,
+                prefix: PREFIX,
+                writeBoundMs: 500,
+            });
 
-        await expect(slowStamp.upload(input('slow stamp'))).rejects.toBeInstanceOf(AttachmentUnavailableError);
+            await expect(slowStamp.upload(input('slow stamp'))).rejects.toBeInstanceOf(AttachmentUnavailableError);
 
-        const elapsed = Date.now() - started;
-        expect(elapsed).toBeGreaterThanOrEqual(480);
-        expect(elapsed).toBeLessThan(750);
+            expect(windows).toEqual([200]);
+        } finally {
+            vi.restoreAllMocks();
+            vi.useRealTimers();
+        }
     });
 });

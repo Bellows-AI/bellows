@@ -16,7 +16,8 @@ import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { fakeConnector, type FakeScript } from '../test/notifications-fake-connector.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { subscriptionSecretIdentity } from '../src/notifications/subscription-credential.js';
-import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
+import { faultySecrets } from './env-secrets-harness.js';
+import { createPostgresHarness } from './secrets-postgres-harness.js';
 import { ORG_OWNER } from '../src/notifications/subscription-store.js';
 import { useTestDb } from './harness.js';
 import { startRow, testOrg, testUser } from './fixtures.js';
@@ -51,7 +52,7 @@ beforeAll(() => {
     sql = db.sql;
     jobs = createJobStore({ sql, orgId: ORG });
     otherJobs = createJobStore({ sql, orgId: OTHER });
-    secrets = testSecretStore(sql);
+    secrets = onFakeStoreClock(createPostgresHarness(sql).openControlled());
     subs = createNotificationSubscriptionStore({ sql, orgId: ORG, secrets, secretLog: () => {} });
     otherSubs = createNotificationSubscriptionStore({ sql, orgId: OTHER, secrets, secretLog: () => {} });
 });
@@ -63,6 +64,37 @@ beforeEach(() => {
 afterEach(() => {
     vi.restoreAllMocks();
 });
+
+/**
+ * The real store at its 3 s deadline with nothing real bounding it: the store's deadline timers and Date are faked
+ * for exactly the span of each call (so a slow read cannot hit it), and the harness's repo withholds the
+ * server-side statement_timeout (`statementBoundary`). Code outside a store call keeps its real timers.
+ */
+function onFakeStoreClock(store: SecretStore): SecretStore {
+    let active = 0;
+    const scoped =
+        <A extends unknown[], R>(call: (...args: A) => Promise<R>) =>
+        async (...args: A): Promise<R> => {
+            if (active++ === 0) vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            try {
+                return await call(...args);
+            } finally {
+                if (--active === 0) vi.useRealTimers();
+            }
+        };
+    return {
+        issueOperationId: scoped((...args: Parameters<SecretStore['issueOperationId']>) =>
+            store.issueOperationId(...args)
+        ),
+        create: scoped((...args: Parameters<SecretStore['create']>) => store.create(...args)),
+        readActive: scoped((...args: Parameters<SecretStore['readActive']>) => store.readActive(...args)),
+        replace: scoped((...args: Parameters<SecretStore['replace']>) => store.replace(...args)),
+        delete: scoped((...args: Parameters<SecretStore['delete']>) => store.delete(...args)),
+        reconcileOperation: scoped((...args: Parameters<SecretStore['reconcileOperation']>) =>
+            store.reconcileOperation(...args)
+        ),
+    };
+}
 
 const outboxFor = (org = ORG): NotificationOutboxStore =>
     createNotificationOutboxStore({ sql, orgId: org, secrets, now: () => new Date(clock.t) });
@@ -387,12 +419,29 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
     it('two concurrent delivery passes post each row once', async () => {
         await subs.create(ORG_OWNER, fields(), credential());
         for (let i = 0; i < 4; i++) await emit({ command: `task ${i}` });
+        // Barrier, not a delay: no send starts until both passes have taken their first lease.
+        let leased = 0;
+        let bothLeased!: () => void;
+        const barrier = new Promise<void>((resolve) => {
+            bothLeased = resolve;
+        });
+        const watched = (): NotificationOutboxStore => {
+            const store = outboxFor();
+            return {
+                ...store,
+                lease: async (...args) => {
+                    const got = await store.lease(...args);
+                    if (++leased === 2) bothLeased();
+                    return got;
+                },
+            };
+        };
         const fake = fakeConnector('fake', async (event) => {
-            await new Promise((resolve) => setTimeout(resolve, 30));
+            await barrier;
             return { status: 'delivered', externalId: event.id };
         });
 
-        await Promise.all([pass(fake, { outbox: outboxFor() }), pass(fake, { outbox: outboxFor() })]);
+        await Promise.all([pass(fake, { outbox: watched() }), pass(fake, { outbox: watched() })]);
 
         expect(fake.sent.map((s) => s.event.id).sort()).toEqual([...new Set(fake.sent.map((s) => s.event.id))].sort());
         expect(fake.sent).toHaveLength(4);
@@ -480,12 +529,29 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
     it('a timed-out send is retryable, never delivered or parked', async () => {
         const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
+        // The send deadline is a controlled signal, not a clock: the pass derives it from `AbortSignal.timeout(n)`, and
+        // only the sentinel `n` is intercepted (below the pass budget, which clamps it). The connector aborts it once
+        // the send is entered, so the credential read, which shares that signal, can never lose a race to it.
+        const SENTINEL_MS = 7_777;
+        const sendDeadline = new AbortController();
+        const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+        const timeouts: number[] = [];
+        vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+            timeouts.push(ms);
+            return ms === SENTINEL_MS ? sendDeadline.signal : realTimeout(ms);
+        });
         const fake = fakeConnector(
             'fake',
-            (_event, _config, signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', reject))
+            (_event, _config, signal) =>
+                new Promise((_resolve, reject) => {
+                    signal.addEventListener('abort', reject);
+                    sendDeadline.abort();
+                })
         );
 
-        await pass(fake, { sendTimeoutMs: 20 });
+        await pass(fake, { sendTimeoutMs: SENTINEL_MS });
+
+        expect(timeouts).toContain(SENTINEL_MS);
 
         expect(await rowOf(sub.id)).toMatchObject({
             attempts: 1,
@@ -630,7 +696,7 @@ describe.skipIf(!enabled)('notification outbox — credential', () => {
         `;
         return { sub, outbox, lease: lease!, item, row: row!, value };
     }
-    const live = () => AbortSignal.timeout(3000);
+    const live = () => new AbortController().signal;
 
     it('lease carries the subscription’s ref and version', async () => {
         const { item, row } = await leased();
@@ -672,14 +738,39 @@ describe.skipIf(!enabled)('notification outbox — credential', () => {
             expect(await store.credentialOf(target, live()), label).toBeNull();
         }
 
+        // The read really hangs until the signal cuts it: pending after the hung read is entered, null once aborted.
+        const cut = new AbortController();
+        let entered!: () => void;
+        const readEntered = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
         const hanging = createNotificationOutboxStore({
             sql,
             orgId: ORG,
-            secrets: faultySecrets(secrets, { readActive: () => new Promise(() => {}) }),
+            secrets: faultySecrets(secrets, {
+                readActive: () => {
+                    entered();
+                    return new Promise(() => {});
+                },
+            }),
         });
-        const started = Date.now();
-        expect(await hanging.credentialOf(item, AbortSignal.timeout(50))).toBeNull();
-        expect(Date.now() - started).toBeLessThan(2000);
+        const pending = hanging.credentialOf(item, cut.signal);
+        let settled = false;
+        void pending.then(() => {
+            settled = true;
+        });
+        await readEntered;
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(settled, 'the read returned before the signal was aborted').toBe(false);
+        cut.abort();
+        let guard: NodeJS.Timeout | undefined;
+        const result = await Promise.race([
+            pending,
+            new Promise<never>((_resolve, reject) => {
+                guard = setTimeout(() => reject(new Error('hanging read was not cut by the signal')), 15_000);
+            }),
+        ]).finally(() => clearTimeout(guard));
+        expect(result).toBeNull();
 
         // not-found: the record is deleted behind the row's back.
         const deleted = await secrets.delete({

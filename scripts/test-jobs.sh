@@ -142,19 +142,8 @@ COMPOSE_PROJECT="factory-jobs-$RUN_ID-compose"
 # through compose(). The compose phase's driver is started with the token cleared
 # (`-e JOB_BOARD_TOKEN=`), like every host-driven one: this value only satisfies the parse.
 COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
-# The secret store's keys (docs/secrets.md), generated per run. They ride ONLY on each board's launch command
-# (SECRET_STORE_ENV) and in the file compose hands the dashboard service (SECRETS_ENV_FILE): never exported, so
-# no driver, CLI or runner this script starts can inherit one. server/test/secrets.environment.test.ts pins that.
-secret_key() { head -c 32 /dev/urandom | base64; }
-SECRET_STORE_ENV=(
-    SECRETS_BACKEND=database
-    "SECRETS_DATA_KEYS=jobs:$(secret_key)"
-    SECRETS_ACTIVE_KEY_ID=jobs
-    "SECRETS_OPERATION_KEY=$(secret_key)"
-    "SECRETS_FINGERPRINT_KEY=$(secret_key)"
-)
+# The file's path is fixed here (compose() and cleanup() name it); the file itself is written after the preflight.
 SECRETS_ENV_FILE_PATH="${TMPDIR:-/tmp}/factory-jobs-$RUN_ID-secrets.env"
-(umask 077 && printf '%s\n' "${SECRET_STORE_ENV[@]}" >"$SECRETS_ENV_FILE_PATH")
 compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
 # The repository every task runs against (issue #263): a ready selection on the board and, in the
 # driver volume, a clone whose origin is a bare repository beside it — no GitHub, no network.
@@ -198,6 +187,19 @@ if needs_board; then
     compose version >/dev/null 2>&1 || { echo 'test-jobs: the compose plugin is required'; exit 1; }
     [[ "$DB" =~ ^[a-z_][a-z0-9_]*_test$ ]] || { echo 'test-jobs: JOBS_TEST_DB must be a SQL identifier ending _test'; exit 2; }
 fi
+# Generated after the preflight: a refused run (missing tool, image or unsafe database) pays for no keys and leaves no file.
+# The secret store's keys (docs/secrets.md), generated per run. They ride ONLY on each board's launch command
+# (SECRET_STORE_ENV) and in the file compose hands the dashboard service (SECRETS_ENV_FILE): never exported, so
+# no driver, CLI or runner this script starts can inherit one. server/test/secrets.environment.test.ts pins that.
+secret_key() { head -c 32 /dev/urandom | base64; }
+SECRET_STORE_ENV=(
+    SECRETS_BACKEND=database
+    "SECRETS_DATA_KEYS=jobs:$(secret_key)"
+    SECRETS_ACTIVE_KEY_ID=jobs
+    "SECRETS_OPERATION_KEY=$(secret_key)"
+    "SECRETS_FINGERPRINT_KEY=$(secret_key)"
+)
+(umask 077 && printf '%s\n' "${SECRET_STORE_ENV[@]}" >"$SECRETS_ENV_FILE_PATH")
 
 # Bring Postgres up and wait until it answers. --no-recreate: the stack's postgres is shared, and a
 # run from another checkout carries another config hash, so a plain `up` would replace the container

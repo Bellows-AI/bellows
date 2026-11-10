@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createSecretRepo, type NewVersion, type SecretRepo } from '../src/secrets/postgres-secret-repo.js';
 import { createDatabaseSecretStoreOver, type PostgresSecretStore } from '../src/secrets/postgres-secret-store.js';
@@ -97,12 +98,13 @@ export function steppedRepo(real: SecretRepo, faults: SecretStoreFaults, afterSt
 }
 
 /** Wraps a repo with the harness faults (docs/secrets.md); every other method passes straight through. */
-export function faultyRepo(real: SecretRepo, faults: SecretStoreFaults): SecretRepo {
+export function faultyRepo(real: SecretRepo, faults: SecretStoreFaults, onProviderWrite?: () => void): SecretRepo {
     return steppedRepo(
         {
             ...real,
             async stageVersion(version: NewVersion, budgetMs) {
                 faults.providerWriteCount += 1;
+                onProviderWrite?.();
                 if (faults.providerWrite === 'timeout-lost') {
                     throw dbError('CONNECTION_CLOSED');
                 }
@@ -157,6 +159,37 @@ export async function databaseSnapshot(sql: Sql): Promise<Record<string, unknown
     return db;
 }
 
+/**
+ * `sql` seen at the one statement the store uses to apply a call's budget (`inTx`'s `set_config('statement_timeout',
+ * ...)`): every value is pushed to `timeouts`. With `apply` false the statement is not sent, so a case that fakes the
+ * deadline clock has no real server-side timer racing the faked one; the client deadline stays the only bound and the
+ * mapping itself is pinned by the cases that read `timeouts` through the applying boundary.
+ */
+export function statementBoundary(real: Sql, apply: boolean, timeouts: string[]): Sql {
+    const wrapTx = (tx: Sql): Sql =>
+        new Proxy(tx, {
+            apply(target, thisArg, args) {
+                const strings = args[0] as readonly string[];
+                if (Array.isArray(strings) && strings.join('?').includes("set_config('statement_timeout'")) {
+                    timeouts.push(String(args[1]));
+                    if (!apply) {
+                        return Promise.resolve([]);
+                    }
+                }
+                return Reflect.apply(target, thisArg, args);
+            },
+        });
+    return new Proxy(real, {
+        get(target, key) {
+            if (key === 'begin') {
+                return (fn: (tx: Sql) => Promise<unknown>) => target.begin((tx) => fn(wrapTx(tx as unknown as Sql)));
+            }
+            const value = Reflect.get(target, key, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+        },
+    });
+}
+
 export interface PostgresHarness extends SecretStoreHarness {
     keys: MutableKeys;
     /**
@@ -164,7 +197,23 @@ export interface PostgresHarness extends SecretStoreHarness {
      * optionally over a payload store that wraps the database one.
      */
     openWith(repo: SecretRepo, payloads?: (database: DatabasePayloads) => PayloadStore): PostgresSecretStore;
+    /**
+     * A store over the same repo, keys and clock at the default deadline, for a case's setup writes: the case's
+     * own tight `deadlineMs` bounds only the phase under test, never the seeding before it.
+     */
+    openSetup(payloads?: (database: DatabasePayloads) => PayloadStore): PostgresSecretStore;
+    /**
+     * The harness deadline over a repo that does not send the statement_timeout (`statementBoundary`, apply false):
+     * for a phase whose deadline clock the case fakes and advances itself (`exhaustRetries`). Never with a real clock.
+     */
+    openControlled(payloads?: (database: DatabasePayloads) => PayloadStore): PostgresSecretStore;
+    /** Every `statement_timeout` value the harness repos were asked to apply, in order. */
+    statementTimeouts: string[];
+    /** Resolves once the faulty repo's `stageVersion` has been entered `count` times in all. */
+    untilProviderWrites(count: number): Promise<void>;
     realRepo: SecretRepo;
+    /** The faulty repo over the non-applying boundary `openControlled` uses. */
+    controlledRepo: SecretRepo;
     faultyRepo: SecretRepo;
     now(): number;
     open(): PostgresSecretStore;
@@ -191,8 +240,21 @@ export function createPostgresHarness(sql: Sql, options: PostgresHarnessOptions 
     const clock = { now: () => now };
     const faults = createFaults();
     const diagnostics: unknown[] = [];
-    const realRepo = createSecretRepo(options.sql ?? sql);
-    const wrapped = faultyRepo(realRepo, faults);
+    const statementTimeouts: string[] = [];
+    const realRepo = createSecretRepo(statementBoundary(options.sql ?? sql, true, statementTimeouts));
+    const writeWaiters: Array<{ count: number; resolve: () => void }> = [];
+    const onProviderWrite = () => {
+        for (const waiter of writeWaiters.filter((w) => faults.providerWriteCount >= w.count)) {
+            writeWaiters.splice(writeWaiters.indexOf(waiter), 1);
+            waiter.resolve();
+        }
+    };
+    const wrapped = faultyRepo(realRepo, faults, onProviderWrite);
+    const controlledRepo = faultyRepo(
+        createSecretRepo(statementBoundary(options.sql ?? sql, false, statementTimeouts)),
+        faults,
+        onProviderWrite
+    );
     const log = (d: SecretDiagnostic) => diagnostics.push(d);
     const openWith = (repo: SecretRepo, payloads?: (database: DatabasePayloads) => PayloadStore) =>
         createDatabaseSecretStoreOver({
@@ -205,11 +267,31 @@ export function createPostgresHarness(sql: Sql, options: PostgresHarnessOptions 
             ready: options.ready,
         });
     const open = () => openWith(wrapped);
+    const openControlled = (payloads?: (database: DatabasePayloads) => PayloadStore) =>
+        openWith(controlledRepo, payloads);
+    const openSetup = (payloads?: (database: DatabasePayloads) => PayloadStore) =>
+        createDatabaseSecretStoreOver({
+            repo: wrapped,
+            keys,
+            payloads,
+            clock,
+            log,
+            deadlineMs: HELD_CALL_DEADLINE_MS,
+            ready: options.ready,
+        });
     return {
         keys,
         realRepo,
+        controlledRepo,
         faultyRepo: wrapped,
         openWith,
+        openSetup,
+        openControlled,
+        statementTimeouts,
+        untilProviderWrites: (count) =>
+            faults.providerWriteCount >= count
+                ? Promise.resolve()
+                : new Promise<void>((resolve) => writeWaiters.push({ count, resolve })),
         now: () => now,
         open,
         // A restart over a database loses nothing: a new store over the same tables is the whole story.
@@ -323,3 +405,36 @@ export const wrappedPayloads =
         remove: () => database.remove(),
         ...over,
     });
+
+/**
+ * Drives `call` (started under `vi.useFakeTimers` for Date, setTimeout and clearTimeout) to the end of its retries:
+ * time moves only at a barrier, after the injected `stageVersion` attempt has been entered and thrown, when the retry
+ * loop is parked on its backoff timer and no database work of the call is pending. Returns how many injected attempts
+ * were made, so a case can assert the injection was reached before the deadline ended it.
+ */
+export async function exhaustRetries(h: PostgresHarness, call: Promise<unknown>): Promise<number> {
+    let settled = false;
+    const done = call.then(
+        () => {
+            settled = true;
+        },
+        () => {
+            settled = true;
+        }
+    );
+    const from = h.faults.providerWriteCount;
+    for (let seen = from; !settled; ) {
+        await Promise.race([h.untilProviderWrites(seen + 1), done]);
+        if (settled) {
+            break;
+        }
+        seen += 1;
+        // The rejection travels a few microtasks to the backoff sleep; wait real turns until its timer exists.
+        for (let turns = 0; !settled && vi.getTimerCount() === 0 && turns < 50; turns += 1) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+        await vi.advanceTimersToNextTimerAsync();
+    }
+    await done;
+    return h.faults.providerWriteCount - from;
+}

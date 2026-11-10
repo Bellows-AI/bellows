@@ -78,27 +78,34 @@ describe.skipIf(!enabled)('key rotation', () => {
         h.keys.addActive();
         const s = target as Seeded;
 
-        let raced = false;
+        // rotate() has read its page (version `s.version` active) when the replace lands. The page is captured
+        // first, the replace runs outside any rotation call so it spends none of a call's budget, and rotate()
+        // is then handed the stale page once: its swap holds an expectedVersionId that is no longer active.
+        const stale = await h.realRepo.listForRotation(h.keys.activeKeyId, null, 100, 3000);
+        expect(stale.some((row) => row.ref === s.ref)).toBe(true);
+        const replaced = await h.open().replace({
+            identity: s.identity,
+            ref: s.ref,
+            operationId: await h.open().issueOperationId(),
+            expectedVersion: s.version as never,
+            payload: utf8('replaced meanwhile'),
+        });
+        expect(replaced.ok).toBe(true);
+        let served = false;
         const racing: SecretRepo = {
             ...h.realRepo,
-            async rekeySwap(ref, expectedVersionId, next, budgetMs) {
-                if (!raced && ref === s.ref) {
-                    raced = true;
-                    const replaced = await h.open().replace({
-                        identity: s.identity,
-                        ref: s.ref,
-                        operationId: await h.open().issueOperationId(),
-                        expectedVersion: s.version as never,
-                        payload: utf8('replaced meanwhile'),
-                    });
-                    expect(replaced.ok).toBe(true);
+            async listForRotation(activeKeyId, afterRef, limit, budgetMs) {
+                if (!served) {
+                    served = true;
+                    return stale;
                 }
-                return h.realRepo.rekeySwap(ref, expectedVersionId, next, budgetMs);
+                return h.realRepo.listForRotation(activeKeyId, afterRef, limit, budgetMs);
             },
         };
         const summary = await h.openWith(racing).rotate();
         expect(summary.skipped).toBe(1);
         expect(summary.failed).toBe(0);
+        expect(served).toBe(true);
         const read = await h.open().readActive({ identity: s.identity, ref: s.ref });
         expect(read.ok && new TextDecoder().decode(read.value)).toBe('replaced meanwhile');
         expect(read.ok && read.version).not.toBe(s.version);

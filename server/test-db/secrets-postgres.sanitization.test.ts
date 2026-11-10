@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useTestDb } from './harness.js';
-import { createPostgresHarness, createSecret, testIdentity, utf8 } from './secrets-postgres-harness.js';
+import { createPostgresHarness, createSecret, exhaustRetries, testIdentity, utf8 } from './secrets-postgres-harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 const db = useTestDb({ max: 8 });
@@ -31,50 +31,57 @@ describe.skipIf(!enabled)('sanitization', () => {
         const payloadSentinel = `SENTINEL-${crypto.randomUUID()}-payload`;
         const bodySentinel = `SENTINEL-${crypto.randomUUID()}-body`;
         const identity = testIdentity();
-        const store = h.open();
+        const store = h.openControlled();
         const seen: unknown[] = [];
 
-        const s = await createSecret(store, identity, utf8(payloadSentinel));
+        const s = await createSecret(h.openSetup(), identity, utf8(payloadSentinel));
         seen.push(s);
-        const replaceOp = await store.issueOperationId();
-        h.faults.providerWrite = 'unavailable-with-body';
-        h.faults.providerErrorBody = `database said ${bodySentinel}`;
-        seen.push(
-            await store.replace({
+        // The tight phase's deadline clock (Date and timers) is faked throughout; nothing real bounds it.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            const replaceOp = await store.issueOperationId();
+            h.faults.providerWrite = 'unavailable-with-body';
+            h.faults.providerErrorBody = `database said ${bodySentinel}`;
+            const persistent = store.replace({
                 identity,
                 ref: s.ref,
                 operationId: replaceOp,
                 expectedVersion: s.version,
                 payload: utf8(payloadSentinel),
-            })
-        );
-        h.faults.providerWrite = 'timeout-lost';
-        seen.push(
-            await store.replace({
-                identity,
-                ref: s.ref,
-                operationId: replaceOp,
-                expectedVersion: s.version,
-                payload: utf8(payloadSentinel),
-            })
-        );
-        h.faults.providerWrite = 'ok';
-        seen.push(await store.reconcileOperation({ identity, ref: s.ref, operationId: replaceOp }));
-        seen.push(
-            await store.replace({
-                identity,
-                ref: s.ref,
-                operationId: replaceOp,
-                expectedVersion: s.version,
-                payload: utf8(payloadSentinel),
-            })
-        );
-        const read = await store.readActive({ identity, ref: s.ref });
-        expect(read.ok && new TextDecoder().decode(read.value)).toBe(payloadSentinel);
-        seen.push({ ...read, value: undefined });
-        h.keys.addActive();
-        await store.rekey(identity, s.ref);
-        await store.collect();
+            });
+            // Retry exhaustion of the injected 53300 is driven by the test: time moves only between attempts.
+            expect(await exhaustRetries(h, persistent), 'the injected 53300 was reached').toBeGreaterThanOrEqual(3);
+            seen.push(await persistent);
+            h.faults.providerWrite = 'timeout-lost';
+            seen.push(
+                await store.replace({
+                    identity,
+                    ref: s.ref,
+                    operationId: replaceOp,
+                    expectedVersion: s.version,
+                    payload: utf8(payloadSentinel),
+                })
+            );
+            h.faults.providerWrite = 'ok';
+            seen.push(await store.reconcileOperation({ identity, ref: s.ref, operationId: replaceOp }));
+            seen.push(
+                await store.replace({
+                    identity,
+                    ref: s.ref,
+                    operationId: replaceOp,
+                    expectedVersion: s.version,
+                    payload: utf8(payloadSentinel),
+                })
+            );
+            const read = await store.readActive({ identity, ref: s.ref });
+            expect(read.ok && new TextDecoder().decode(read.value)).toBe(payloadSentinel);
+            seen.push({ ...read, value: undefined });
+            h.keys.addActive();
+            await store.rekey(identity, s.ref);
+            await store.collect();
+        } finally {
+            vi.useRealTimers();
+        }
 
         const keyForms = [...h.keys.dataKeys.values(), h.keys.operationKey, h.keys.fingerprintKey].flatMap((key) =>
             forms(key)
