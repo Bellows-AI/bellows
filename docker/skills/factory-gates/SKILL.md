@@ -1,6 +1,6 @@
 ---
 name: factory-gates
-description: Run a repository's verification gates (tests, lint, build checks declared in .bellows.yaml) in the shared environment image, and read their output. Use before finishing a task, after changes that could break CI, or whenever asked to "run the gates", "run the checks" or "verify with CI steps". Requires BELLOWS_GATE_URL and BELLOWS_GATE_TOKEN to be set.
+description: Run a repository's verification gates (tests, lint, build checks declared in .bellows.yaml) in the shared environment image, and read their output. Use before finishing a task, after changes that could break CI, or whenever asked to "run the gates", "run the checks" or "verify with CI steps". Needs a repository that declares gates: `factory-gate` reports when it has none.
 ---
 
 # Verification gates
@@ -15,10 +15,12 @@ workspace, so anything you have written to the tree is exactly what the gates se
 factory-gate test
 ```
 
-`factory-gate <name>` sends the request to the gate server with this run's credentials and prints the
-answer unchanged. A gate that accepts a filter takes `--filter <string>` after the name (see below). It
-exits non-zero when no answer came at all, and with 22 for an answer that is not a 2xx (its body is still
-printed, with the status on stderr).
+`factory-gate <name>` asks the gate server through this run's control socket (there is no URL or token
+to hold) and prints the answer unchanged. A gate that accepts a filter takes `--filter <string>` after
+the name (see below). It exits with 22 for an answer that is not a 2xx (its body is still printed, with
+the status on stderr), with 3 when the repository declares no gates, and with 75 when no usable answer
+came at all (the control socket is missing or refuses, the relay hung up, the gate run is not open yet,
+the answer was cut short): that says nothing about the gate and is never a pass, so ask again.
 
 The answer is JSON: `{"exitCode":0,"output":"...","executionId":"..."}`. `exitCode` `0` means the gate passed; anything
 else failed, and `output` carries its tail — read it, fix what it names, run the gate again. A 503 with
@@ -39,8 +41,8 @@ An unavailable gate (an environment failure) is reported, not a blocker; the pul
 the task, but the work still ships as a draft; only a repository that sets `policy: gates:
 required` in `.bellows.yaml` holds the publish back until they pass.
 
-If `BELLOWS_GATE_URL` is unset, this environment has no gates configured: say so and verify with
-your own commands instead. Do not guess the URL.
+If `factory-gate` reports no gates (exit 3), this environment has no gates configured: say so and verify with
+your own commands instead. Do not try to reach the gate server by any other route.
 
 ## Rules
 

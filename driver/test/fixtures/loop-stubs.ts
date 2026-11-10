@@ -776,6 +776,7 @@ export function stubGateStack(
                 const control = stack.controls.get(token);
                 if (control) control.gateToken.relay = gateToken;
             },
+            attachGateRun: () => {},
             attachInputs: () => {},
             controlPolled: () => options.polled ?? true,
             raiseKill: (token: string) => {

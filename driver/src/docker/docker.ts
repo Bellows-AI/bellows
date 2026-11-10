@@ -271,7 +271,7 @@ function pushRunnerCredentialArgs(args: string[], config: DriverConfig, job: Boa
     const claim = runnerClaimEnv(job);
     // The file is not optional any more, even for a claim that resolves to nothing: the
     // runner's own branch-ingest credential — this attempt's job id + lease token pair —
-    // rides it (envFileBody appends it after the claim's and gate lines), and a runner
+    // rides it (envFileBody appends it after the claim's lines), and a runner
     // without its file would report 401s into silence.
     if (!envFile) {
         throw new Error(`refusing to run job ${job.id}: no env file was given`);

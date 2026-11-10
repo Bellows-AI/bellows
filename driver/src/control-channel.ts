@@ -40,8 +40,8 @@ import {
  *  - the EXPORTER token — all the transcript exporter holds — carries the transcript chunks
  *    (`/export`) and nothing else;
  *  - the AGENT token — all the agent container holds — reaches only the draft publication
- *    (`POST /publish`), the named reviewers (`/review`) and the connection ask (`POST /connection`),
- *    the routes the baked skills call.
+ *    (`POST /publish`), the named reviewers (`/review`), the connection ask (`POST /connection`) and
+ *    its ad-hoc gate runs (`POST /gate/run`), the routes the baked skills call.
  *
  * A token used on another's route is 403; a gate token is no key here, and an unknown or closed
  * token is 401. One entry per attempt, so one per lease.
@@ -55,12 +55,29 @@ export const PUBLISH_PATH = '/publish';
 export const QUESTION_PATH = '/question';
 /** The reviewer routes beside them (issue #549): `POST /review`, `GET /review/:key`. */
 export const REVIEW_PATH = '/review';
+/** The agent's ad-hoc gate run: `POST /gate/run {gate, filter?}`, served by the gate server's own run logic. */
+export const GATE_RUN_PATH = '/gate/run';
 export { CONNECTION_PATH, GATE_TOKEN_PATH };
 
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
+const HTTP_INTERNAL_ERROR = 500;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+
+/** What a route answers: its status and JSON body. */
+export interface BodyAnswer {
+    status: number;
+    body: unknown;
+}
+
+/**
+ * What serves an attempt's `POST /gate/run`: the gate server's ad-hoc run of the gate token registered for it, which
+ * answers the reply itself, or `none` for a job that declares no gates (`404 no gates`).
+ */
+export type GateRunDoor = ((request: IncomingMessage, reply: ServerResponse) => Promise<void>) | 'none';
 
 export interface ControlChannel {
     /**
@@ -87,6 +104,12 @@ export interface ControlChannel {
     attachConnection(token: string, connection: ConnectionRelay): void;
     /** Gives an open token the relay of its supervisor's gate token ask (BEL-258): `/gate-token` answers 503 until then. */
     attachGateToken(token: string, gateToken: GateTokenRelay): void;
+    /**
+     * Gives an open token the door of its agent's ad-hoc gate runs (`POST /gate/run`): 503 retryable until then, so a run
+     * asked for in the takeover window, before the new holder registers its gate claim, is retried and never read as
+     * "no gates".
+     */
+    attachGateRun(token: string, door: GateRunDoor): void;
     /**
      * Registers a delivery of task inputs on an open token (the task's own as `task`, a review's under its row id):
      * `GET /input/<name>/<id>` serves only the files of its manifest, read from the board under its row's lease.
@@ -125,6 +148,7 @@ type Route =
     | 'connection'
     | 'control'
     | 'export'
+    | 'gate-run'
     | 'gate-token'
     | 'input'
     | 'publish'
@@ -153,6 +177,7 @@ const POST_ROUTES = new Map<string, Route>([
     [PUBLISH_PATH, 'publish'],
     [CONNECTION_PATH, 'connection'],
     [GATE_TOKEN_PATH, 'gate-token'],
+    [GATE_RUN_PATH, 'gate-run'],
 ]);
 
 /** Which control route a request is, or null when it is none of them. */
@@ -170,11 +195,11 @@ function routeOf(request: IncomingMessage): Route | null {
     return isPostOrGetOf(request, REVIEW_PATH) ? 'review' : null;
 }
 
-type RelayRoute = 'checkpoint' | 'export' | 'input';
+type RelayRoute = 'checkpoint' | 'export' | 'gate-run' | 'input';
 const isRelayRoute = (route: Route): route is RelayRoute =>
-    route === 'export' || route === 'checkpoint' || route === 'input';
+    route === 'export' || route === 'checkpoint' || route === 'input' || route === 'gate-run';
 
-/** The routes each token opens: the supervisor's, the exporter's one and the agent's three. */
+/** The routes each token opens: the supervisor's, the exporter's one and the agent's four. */
 const SUPERVISOR_ROUTES: readonly Route[] = [
     'checkpoint',
     'control',
@@ -185,7 +210,7 @@ const SUPERVISOR_ROUTES: readonly Route[] = [
     'step',
 ];
 const EXPORTER_ROUTES: readonly Route[] = ['export'];
-const AGENT_ROUTES: readonly Route[] = ['connection', 'publish', 'review'];
+const AGENT_ROUTES: readonly Route[] = ['connection', 'gate-run', 'publish', 'review'];
 
 /** `GET /step`, `POST /step/:id` and `POST /report`: the supervised steps' routes, under the supervisor token. */
 function serveSupervisorStep(
@@ -234,12 +259,6 @@ async function serveWithoutEntry(
         const answer = await serveSupervisorStep(route, channel, request, reply);
         respondJson(reply, answer.status, answer.body);
     }
-}
-
-/** What a route answers: its status and JSON body. */
-interface BodyAnswer {
-    status: number;
-    body: unknown;
 }
 
 /** A route that reads a bounded body: 413 past the bound, `stale` once the attempt closed meanwhile, else its answer. */
@@ -292,6 +311,55 @@ const serveGateTokenAsk = (
         });
     });
 
+/** What `POST /gate/run` answers while no gate claim is open for the attempt: retryable, never "no gates". */
+const GATE_RUN_NOT_OPEN: BodyAnswer = {
+    status: HTTP_SERVICE_UNAVAILABLE,
+    body: { error: 'the gate run is not open yet', retryable: true },
+};
+
+/**
+ * A gate server's `attachGateRun`: opens `POST /gate/run` of a control token on `run`, the ad-hoc run of a registered gate
+ * token (`null`: the job declares no gates). A gate token no longer in `claims` is the attempt's end: a retryable 503, never a run.
+ */
+export const gateRunAttacher =
+    (
+        channel: Pick<ControlChannel, 'attachGateRun'>,
+        claims: ReadonlyMap<string, unknown>,
+        run: (request: IncomingMessage, reply: ServerResponse, gateToken: string) => Promise<void>
+    ) =>
+    (controlToken: string, gateToken: string | null): void =>
+        channel.attachGateRun(
+            controlToken,
+            gateToken === null
+                ? 'none'
+                : async (request, reply) =>
+                      claims.has(gateToken)
+                          ? run(request, reply, gateToken)
+                          : respondJson(reply, GATE_RUN_NOT_OPEN.status, GATE_RUN_NOT_OPEN.body)
+        );
+
+/** An attempt's gate door; the entry is dropped with the attempt, and its door with it. */
+const gateDoors = new WeakMap<ControlEntry, GateRunDoor>();
+
+/** `POST /gate/run`: the attempt's door answers the reply itself (null); none open yet is a retryable 503, a run that throws a 500. */
+async function serveGateRun(
+    door: GateRunDoor | undefined,
+    { request, reply }: { request: IncomingMessage; reply: ServerResponse }
+): Promise<BodyAnswer | null> {
+    if (door === 'none') return { status: HTTP_NOT_FOUND, body: { error: 'no gates' } };
+    if (door === undefined) return GATE_RUN_NOT_OPEN;
+    try {
+        await door(request, reply);
+        return null;
+    } catch (e) {
+        if (reply.headersSent) {
+            reply.destroy();
+            return null;
+        }
+        return { status: HTTP_INTERNAL_ERROR, body: { error: `gate run failed: ${(e as Error).message}` } };
+    }
+}
+
 /** `POST /review` / `GET /review/:key`, once the token is known. */
 const serveReview = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
     request.method === 'GET'
@@ -300,8 +368,9 @@ const serveReview = (control: ControlEntry, request: IncomingMessage, stale: Sta
               serveReviewRequest(control.reviewing, control.reviewer, raw)
           );
 
-/** A relay route's answer: the input file's raw bytes beside the board's digest, or the JSON of any other answer. */
-function respondAnswer(reply: ServerResponse, answer: BodyAnswer | InputAnswer): void {
+/** A relay route's answer: the input file's raw bytes beside the board's digest, or the JSON of any other answer; null when the route answered the reply itself. */
+function respondAnswer(reply: ServerResponse, answer: BodyAnswer | InputAnswer | null): void {
+    if (answer === null) return;
     if ('bytes' in answer) {
         reply.writeHead(HTTP_OK, {
             [CONTENT_TYPE_HEADER]: OCTET_STREAM_CONTENT_TYPE,
@@ -338,13 +407,14 @@ const attachRelay = <R>(slot: { relay: R | null } | undefined, relay: R): void =
     if (slot) slot.relay = relay;
 };
 
-/** `/export` (the exporter's own slot where it has one), `/checkpoint` or `/input` (the supervisor's), once the token holds that door. */
+/** `/export` (the exporter's own slot where it has one), `/checkpoint` or `/input` (the supervisor's), or the agent's `/gate/run`, once the token holds that door. */
 const serveRelayRoute = (
     route: RelayRoute,
     control: ControlEntry,
     slot: ExportSlot | undefined,
-    call: { request: IncomingMessage; open: () => boolean }
-): Promise<BodyAnswer | InputAnswer> => {
+    call: { request: IncomingMessage; reply: ServerResponse; open: () => boolean }
+): Promise<BodyAnswer | InputAnswer | null> => {
+    if (route === 'gate-run') return serveGateRun(gateDoors.get(control), call);
     if (route === 'export') return serveExport(slot ?? control.exporting, call.request, call.open);
     if (route === 'input') return serveInput(control.inputs, call.request, call.open);
     return serveCheckpoint(control.checkpointing, call.request, call.open);
@@ -353,11 +423,18 @@ const serveRelayRoute = (
 /** The `attach*` doors that hand an open token a relay for one of its routes. */
 const relayAttachers = (
     controls: Map<string, ControlEntry>
-): Pick<ControlChannel, 'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachGateToken'> => ({
+): Pick<
+    ControlChannel,
+    'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachGateToken' | 'attachGateRun'
+> => ({
     attachExporter: (token, exporter) => attachRelay(controls.get(token)?.exporting, exporter),
     attachCheckpoint: (token, checkpoint) => attachRelay(controls.get(token)?.checkpointing, checkpoint),
     attachConnection: (token, connection) => attachRelay(controls.get(token)?.connecting, connection),
     attachGateToken: (token, gateToken) => attachRelay(controls.get(token)?.gateToken, gateToken),
+    attachGateRun(token, door) {
+        const control = controls.get(token);
+        if (control) gateDoors.set(control, door);
+    },
 });
 
 export function createControlChannel(steps: StepBroker = createStepBroker()): ControlChannel {
@@ -468,8 +545,8 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             if (isRelayRoute(route)) {
                 // Not the supervisor's poll: neither the exporter's calls nor its finalize stage's say a Stop can be cooperative.
                 const open = () => entryOf(auth) === control;
-                const answer = await serveRelayRoute(route, control, exporters.get(auth)?.slot, { request, open });
-                respondAnswer(reply, answer);
+                const done = await serveRelayRoute(route, control, exporters.get(auth)?.slot, { request, reply, open });
+                respondAnswer(reply, done);
                 return true;
             }
             // Only the supervisor holds a door that gets here besides publish and review: its poll

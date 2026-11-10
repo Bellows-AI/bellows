@@ -1762,6 +1762,41 @@ describe('the gate filter and the pre-push gate run in the agent instructions (i
     );
 });
 
+// BEL-88: the agent holds no gate URL or token; `factory-gate` asks the control socket, and the guides key the
+// "no gates here" directive off what it reports. Every directive that says what to do then stays.
+describe('the no-gates and retry directives in the agent instructions (BEL-88)', () => {
+    const NO_GATES = [
+        [
+            'docker/skills/factory-gates/SKILL.md',
+            /If `factory-gate` reports no gates[^.]*say so and verify with your own commands instead/,
+        ],
+        [
+            'docker/skills/factory-pr-land/SKILL.md',
+            /When `factory-gate` reports no gates, run the failing check's own command instead/,
+        ],
+        [
+            'docker/opencode-executor/opencode-home/AGENTS.md',
+            /If `factory-gate` reports no gates[^.]*verify with your own commands instead/,
+        ],
+    ] as const;
+
+    it.each(NO_GATES)('%s keys the no-gates directive off factory-gate, not an env var', (path, directive) => {
+        const text = read(path).replace(/\s+/g, ' ');
+        expect(text).toMatch(directive);
+        expect(text).not.toMatch(/BELLOWS_GATE_(URL|TOKEN)/);
+    });
+
+    it.each(['docker/skills/factory-gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '%s says a retryable answer is asked again and is neither a pass nor "no gates"',
+        (path) => {
+            const text = read(path).replace(/\s+/g, ' ');
+            expect(text).toMatch(/\b75\b/);
+            expect(text).toMatch(/ask again|call it again/);
+            expect(text).toMatch(/never a pass/);
+        }
+    );
+});
+
 // Issue #814: the agent's commands run as their own uid. The launcher in front of each image's
 // entrypoint starts the tool broker as root and drops for good; the entrypoints keep the CLI's own
 // state from the tool uid, which shares its group and its umask.

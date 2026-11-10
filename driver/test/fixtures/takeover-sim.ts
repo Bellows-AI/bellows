@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Board, BoardJob } from '../../src/board/board.js';
+import { envFileBody } from '../../src/claim.js';
 import { createGateServer, createSupervisedGateManager } from '../../src/gates.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import { type AdoptedRun, type LiveRun, ownGroup, type Read, type Runner } from '../../src/runner.js';
@@ -27,6 +28,7 @@ import {
     SUPERVISOR_ENV,
     SUPERVISOR_RELEASED_LINE,
     SUPERVISOR_SERVED_LINE,
+    type StepResult,
 } from '../../src/supervisor-contract.js';
 import { StartupRefused } from '../../src/startup-cause.js';
 import { reportFinalized } from '../../src/termination.js';
@@ -158,6 +160,12 @@ export class Driver {
     ) {}
 }
 
+/** The job's declaration when `gated`: one gate only the agent asks for, so no end-of-run pass runs it. */
+const ON_DEMAND_GATE: Pick<BoardJob, 'repo' | 'gates'> = {
+    repo: 'Bellows-AI/bellows',
+    gates: { image: 'node:24', gates: [{ name: 'verify', command: 'verify-it', onDemand: true }] },
+};
+
 export class Sim {
     readonly dirs: string[] = [];
     readonly logs: string[] = [];
@@ -186,6 +194,13 @@ export class Sim {
     /** A fault on one board call: the ms it takes to fail (0: at once), as a request timeout would; undefined: none. */
     boardFault?: ((op: string) => number | undefined) | undefined;
 
+    /** Whether the job declares one on-demand gate, run by whichever driver holds the claim (`gateRuns`). */
+    readonly gated: boolean;
+    /** Every gate run a driver's gate manager executed, with the driver that ran it. */
+    readonly gateRuns: { driver: string; command: string }[] = [];
+    /** The env file the docker writer renders for each agent run a driver started (what the agent's process would hold). */
+    readonly runnerEnvs: { driver: string; body: string }[] = [];
+
     /** The loop's stalls: they are the host's, so the board's clock leaves them out unless `wallClock` keeps them in. */
     readonly host = new StallWatch();
     /**
@@ -197,8 +212,9 @@ export class Sim {
 
     constructor(
         readonly t: Timing,
-        opts: { wallClock?: boolean } = {}
+        opts: { wallClock?: boolean; gated?: boolean } = {}
     ) {
+        this.gated = Boolean(opts.gated);
         this.now = opts.wallClock ? Date.now : this.host.loopNow;
         this.config = {
             ...baseConfig(),
@@ -250,6 +266,7 @@ export class Sim {
         const continues = r.interruptions.at(-1)?.claimSeq === r.claimSeq - 1;
         return {
             ...baseJob(1),
+            ...(this.gated ? ON_DEMAND_GATE : {}),
             id: r.id,
             claimSeq: r.claimSeq,
             leaseToken: r.leaseToken,
@@ -457,6 +474,10 @@ export class Sim {
         const base = stubRunner(async () => ok());
         const groupJob = (j: BoardJob) => ownGroup(j);
         return Object.assign(base, {
+            async runGate(_job: BoardJob, gate: { command: string }): Promise<StepResult> {
+                sim.gateRuns.push({ driver: d.name, command: gate.command });
+                return { exitCode: 0, stdout: `ran on driver ${d.name}`, stderr: '', timedOut: false };
+            },
             async syncCheckout(job: BoardJob) {
                 const created = !sim.groupOf(job);
                 const group = sim.ensureGroup(job);
@@ -488,6 +509,7 @@ export class Sim {
                     });
                 const group = sim.ensureGroup(job);
                 const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '';
+                sim.runnerEnvs.push({ driver: d.name, body: envFileBody(job) });
                 if (!resumed) {
                     await sim.goGate;
                     sim.agentRuns += 1;

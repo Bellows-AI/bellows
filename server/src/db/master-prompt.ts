@@ -73,7 +73,7 @@ ${RULES_TAIL}`;
  */
 const OBJECTIVE_RULES = `${RULES_HEAD}
 - Factory runs the declared gates and a publish after your turn, and reuses any pull request you opened; do not emulate the other capabilities this turn's Factory turn context lists.
-- You may push the task branch and open or update a pull request. Before every push, run the declared gates that cover your change, filtered to your tests when the gate accepts a filter, and fix a red one before you push. An unavailable gate (no BELLOWS_GATE_URL, or an environment failure) is reported, not a blocker. Never say a gate passed that did not.
+- You may push the task branch and open or update a pull request. Before every push, run the declared gates that cover your change, filtered to your tests when the gate accepts a filter, and fix a red one before you push. An unavailable gate (factory-gate reports no gates, or an environment failure) is reported, not a blocker. Never say a gate passed that did not.
 - Do not merge or close a pull request, enable auto-merge, or start the next workflow step.
 - You may wait for CI checks and reviews on the pull request you published, fix what they find and push again, and reply to each review comment you addressed saying what changed.
 - After you push and open or update a pull request, load the factory-pr-land skill and follow it to wait for CI and review before you finish.

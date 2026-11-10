@@ -934,9 +934,9 @@ describe('the docker runner', () => {
         });
     });
 
-    // A gated job whose claim resolves to no variables still needs the minted gate credentials:
-    // keyed on the claim alone, the file would not exist and the runner could never call a gate.
-    it('writes the gate credentials into the env file of a job whose claim env is empty', async () => {
+    // The agent reaches ad-hoc gates through the control socket (BEL-88): a gated job whose claim
+    // resolves to nothing carries no gate pair, only the runner's own attempt pair.
+    it('writes no gate pair into the env file of a gated job whose claim env is empty', async () => {
         let fileBody: string | null = null;
         let create: string[] = [];
         const exec = (args: string[]) => {
@@ -956,10 +956,7 @@ describe('the docker runner', () => {
 
         expect(outcome).toMatchObject({ exitCode: 0 });
         expect(create).toContain('--env-file');
-        expect(fileBody).toBe(
-            'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n' +
-                `RUNNER_JOB_ID=${job.id}\nRUNNER_LEASE_TOKEN=${job.leaseToken}\n`
-        );
+        expect(fileBody).toBe(`RUNNER_JOB_ID=${job.id}\nRUNNER_LEASE_TOKEN=${job.leaseToken}\n`);
     });
 
     // The lease lost DURING the env-file write: the kill-check just above the write has already

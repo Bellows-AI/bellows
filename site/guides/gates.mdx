@@ -23,7 +23,7 @@ environment:
 
 <Steps>
   <Step title="While the agent works">
-    The agent can run any declared gate by name, as often as it likes, and read the output. It is told to run the gates that cover its change before it pushes.
+    The agent can run any declared gate by name, as often as it likes, and read the output. It is told to run the gates that cover its change before it pushes. If the Bellows driver running the task restarts, for example when its node is drained, the agent's gate runs go to the driver that takes the task over. A gate run in flight at that moment is cut off, and the agent runs it again.
   </Step>
   <Step title="When the agent finishes">
     Bellows runs every declared gate once, in the order you wrote them. Gates marked `on_demand` are skipped. A gate that the agent already ran unfiltered, and that passed on exactly the final tree, is reused instead of run again.
