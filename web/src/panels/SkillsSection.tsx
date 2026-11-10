@@ -1,5 +1,5 @@
 import { ERROR_CODES } from '@factory-ai/core';
-import { Fragment, useState, type ReactNode } from 'react';
+import { Fragment, useRef, useState, type ReactNode } from 'react';
 import {
     deleteSkill,
     downloadZip,
@@ -254,10 +254,23 @@ function HeadActions({
     );
 }
 
-function ListNote({ list }: { list: SkillList }) {
+function ListNote({ list, hasRows }: { list: SkillList; hasRows: boolean }) {
     if (list.status === 'loading') return <StateNote state="loading">Loading skills…</StateNote>;
     if (list.status === 'error') return <StateNote state="error">{list.error}</StateNote>;
-    return list.skills.length === 0 ? <StateNote state="empty">{NO_SKILLS}</StateNote> : null;
+    return !hasRows ? <StateNote state="empty">{NO_SKILLS}</StateNote> : null;
+}
+
+/**
+ * The rows a section shows. An open row editor holds a draft, so its row stays rendered where it is
+ * whatever a re-read says: the last good rows stand in for a failed read, and an edited skill the list
+ * dropped is kept.
+ */
+function useShownRows(list: SkillList, here: SkillEditorTarget | null): readonly StoredSkill[] {
+    const lastRows = useRef<readonly StoredSkill[]>([]);
+    if (list.status === 'ok') lastRows.current = list.skills;
+    const editing = here && 'skill' in here ? here.skill : null;
+    const shown = list.status === 'ok' ? list.skills : editing ? lastRows.current : [];
+    return editing && !shown.some((s) => s.id === editing.id) ? [...shown, editing] : shown;
 }
 
 export function SkillsSection({
@@ -293,6 +306,8 @@ export function SkillsSection({
     const { busy, pending, setPending } = writes;
     const [viewing, setViewing] = useState<string | null>(null);
     const here = editor?.door === door ? editor : null;
+
+    const rows = useShownRows(list, here);
 
     const promoteEntry = (skill: StoredSkill): RowAction[] =>
         door === 'workspace' && canPromote
@@ -348,8 +363,8 @@ export function SkillsSection({
             </div>
             <p className="muted">{ledeOf(door, canWrite)}</p>
             {here && !('skill' in here) ? renderEditor?.(here) : null}
-            <ListNote list={list} />
-            {list.status === 'ok' && list.skills.length > 0 ? (
+            <ListNote list={list} hasRows={rows.length > 0} />
+            {rows.length > 0 ? (
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
                 <section className="table-wrap" tabIndex={0} aria-label={`${title} skills`}>
                     <table className="data data-compact table-cards">
@@ -364,7 +379,7 @@ export function SkillsSection({
                                 </th>
                             </tr>
                         </thead>
-                        <tbody>{list.skills.map(row)}</tbody>
+                        <tbody>{rows.map(row)}</tbody>
                     </table>
                 </section>
             ) : null}

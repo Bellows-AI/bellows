@@ -45,11 +45,14 @@ const refusalText = (refusal: SkillRefusal, name: string): string => {
 function EditorFrame({
     title,
     tabs,
+    busy,
     onClose,
     children,
 }: {
     title: string;
     tabs?: ReactNode;
+    /** A submit is in flight: nothing may close the card under it. */
+    busy: boolean;
     onClose: () => void;
     children: ReactNode;
 }) {
@@ -59,7 +62,7 @@ function EditorFrame({
                 <strong>{title}</strong>
                 <div className="skill-editor-head-actions">
                     {tabs}
-                    <button type="button" aria-label="Close editor" onClick={onClose}>
+                    <button type="button" aria-label="Close editor" disabled={busy} onClick={onClose}>
                         ✕
                     </button>
                 </div>
@@ -76,15 +79,18 @@ function ZipPanel({
     door,
     skill,
     onChanged,
+    onBusy,
 }: {
     door: SkillDoor;
     skill?: StoredSkill;
     onChanged: (doors: readonly SkillDoor[]) => void;
+    onBusy: (busy: boolean) => void;
 }) {
     const [uploads, setUploads] = useState<Upload[]>([]);
     const [over, setOver] = useState(false);
     const input = useRef<HTMLInputElement>(null);
     const busy = uploads.some((u) => u.state === 'busy');
+    useEffect(() => onBusy(busy), [busy, onBusy]);
 
     const send = async (file: File) => {
         const mark = (next: Upload) => setUploads((all) => [...all.filter((u) => u.file !== file.name), next]);
@@ -128,6 +134,7 @@ function ZipPanel({
                     ref={input}
                     type="file"
                     hidden
+                    disabled={busy}
                     accept=".zip,application/zip"
                     aria-label="Choose a .zip file"
                     onChange={(event) => {
@@ -198,6 +205,7 @@ function WritePanel({
     onClose,
     onChanged,
     onReload,
+    onBusy,
 }: {
     door: SkillDoor;
     skill: StoredSkill | null;
@@ -205,11 +213,13 @@ function WritePanel({
     onClose: () => void;
     onChanged: (doors: readonly SkillDoor[]) => void;
     onReload: () => void;
+    onBusy: (busy: boolean) => void;
 }) {
     const [name, setName] = useState(skill?.name ?? '');
     const [md, setMd] = useState(initialMd);
     const [busy, setBusy] = useState(false);
     const [refusal, setRefusal] = useState<SkillRefusal | null>(null);
+    useEffect(() => onBusy(busy), [busy, onBusy]);
     const dirty = name !== (skill?.name ?? '') || md !== initialMd;
     const nameId = useId();
     const mdId = useId();
@@ -271,6 +281,7 @@ function WritePanel({
                     className="mono"
                     value={name}
                     readOnly={skill !== null}
+                    disabled={busy}
                     placeholder="skill-name"
                     aria-describedby={`${nameId}-hint`}
                     onChange={(event) => onName(event.target.value)}
@@ -283,6 +294,7 @@ function WritePanel({
                     className="mono"
                     value={md}
                     spellCheck={false}
+                    disabled={busy}
                     onChange={(event) => {
                         setMd(event.target.value);
                         setRefusal(null);
@@ -321,11 +333,13 @@ function EditPanel({
     skill,
     onClose,
     onChanged,
+    onBusy,
 }: {
     door: SkillDoor;
     skill: StoredSkill;
     onClose: () => void;
     onChanged: (doors: readonly SkillDoor[]) => void;
+    onBusy: (busy: boolean) => void;
 }) {
     type Loaded =
         | { status: 'loading' }
@@ -359,6 +373,7 @@ function EditPanel({
             initialMd={loaded.skillMd}
             onClose={onClose}
             onChanged={onChanged}
+            onBusy={onBusy}
             onReload={() => {
                 setLoaded({ status: 'loading' });
                 setRound((n) => n + 1);
@@ -379,6 +394,7 @@ export function SkillEditor({
 }) {
     const { door } = target;
     const [tab, setTab] = useState<'write' | 'zip'>(target.mode === 'zip' ? 'zip' : 'write');
+    const [busy, setBusy] = useState(false);
     const guard = useUnsavedChanges();
 
     /** The ✕: a dirty draft asks first, exactly as navigating away does. */
@@ -390,15 +406,15 @@ export function SkillEditor({
 
     if (target.mode === 'edit') {
         return (
-            <EditorFrame title={`Edit ${target.skill.name}`} onClose={() => void requestClose()}>
-                <EditPanel door={door} skill={target.skill} onClose={onClose} onChanged={onChanged} />
+            <EditorFrame title={`Edit ${target.skill.name}`} busy={busy} onClose={() => void requestClose()}>
+                <EditPanel door={door} skill={target.skill} onClose={onClose} onChanged={onChanged} onBusy={setBusy} />
             </EditorFrame>
         );
     }
     if (target.mode === 'version') {
         return (
-            <EditorFrame title={`New version of ${target.skill.name}`} onClose={onClose}>
-                <ZipPanel door={door} skill={target.skill} onChanged={onChanged} />
+            <EditorFrame title={`New version of ${target.skill.name}`} busy={busy} onClose={onClose}>
+                <ZipPanel door={door} skill={target.skill} onChanged={onChanged} onBusy={setBusy} />
             </EditorFrame>
         );
     }
@@ -410,6 +426,7 @@ export function SkillEditor({
                     type="button"
                     role="tab"
                     aria-selected={tab === value}
+                    disabled={busy}
                     onClick={() => setTab(value)}
                 >
                     {value === 'write' ? (
@@ -428,6 +445,7 @@ export function SkillEditor({
         <EditorFrame
             title={door === 'org' ? 'New organization skill' : 'New skill'}
             tabs={tabs}
+            busy={busy}
             onClose={() => void requestClose()}
         >
             {/* Hidden, not unmounted: a half-written draft survives a look at the zip tab. */}
@@ -439,9 +457,10 @@ export function SkillEditor({
                     onClose={onClose}
                     onChanged={onChanged}
                     onReload={onClose}
+                    onBusy={setBusy}
                 />
             </div>
-            {tab === 'zip' ? <ZipPanel door={door} onChanged={onChanged} /> : null}
+            {tab === 'zip' ? <ZipPanel door={door} onChanged={onChanged} onBusy={setBusy} /> : null}
         </EditorFrame>
     );
 }

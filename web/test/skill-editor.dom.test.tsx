@@ -42,6 +42,12 @@ interface Store {
     rows: StoredSkill[];
     /** The answer the next write gets instead of success. */
     refuse: { status: number; body: unknown } | null;
+    /** A held answer for the next create/version POST. */
+    hold?: Promise<unknown>;
+    /** Runs on a switch PUT, to change what the following list read answers. */
+    afterEnabled?: () => void;
+    /** Workspace list reads answer 503. */
+    listFails?: boolean;
 }
 
 const MD = (name: string) => `---\nname: ${name}\ndescription: Stored\n---\n# ${name}\n`;
@@ -50,7 +56,15 @@ const routes =
     (data: Store): FetchHandler =>
     ({ method, url }) => {
         if (url === '/api/org/skills') return { skills: [] };
-        if (url === WORKSPACE && method === 'GET') return { skills: data.rows };
+        if (url === WORKSPACE && method === 'GET') {
+            return data.listFails ? { status: 503, body: { error: 'the store is down' } } : { skills: data.rows };
+        }
+        const toggled = /^\/api\/workspace\/skills\/([^/?]+)\/enabled$/.exec(url);
+        if (toggled && method === 'PUT') {
+            const row = data.rows.find((r) => r.id === toggled[1])!;
+            data.afterEnabled?.();
+            return { skill: row };
+        }
         const item = /^\/api\/workspace\/skills\/([^/?]+)(\/versions)?$/.exec(url);
         if (item && method === 'GET') {
             const row = data.rows.find((r) => r.id === item[1]);
@@ -59,6 +73,7 @@ const routes =
                 : { status: 404, body: { error: 'No such skill', code: 'SKILL_NOT_FOUND' } };
         }
         if (method === 'POST' && url.startsWith(WORKSPACE)) {
+            if (data.hold) return data.hold.then(() => ({ skill: skill('workspace', 'held') }));
             if (data.refuse) return data.refuse;
             const row = data.rows.find((r) => item && r.id === item[1]) ?? skill('workspace', 'from-zip');
             return { skill: row };
@@ -230,6 +245,74 @@ describe('the Skills inline editor', () => {
         await user.click(editor.getByRole('button', { name: 'Cancel' }));
         expect(screen.queryByRole('region', { name: 'New skill' })).toBeNull();
         expect(screen.queryByText('Discard unsaved changes?')).toBeNull();
+    });
+});
+
+describe('an open skill draft survives async transitions', () => {
+    afterEach(cleanup);
+
+    it('locks the fields, tabs and close while a save is in flight', async () => {
+        const user = userEvent.setup();
+        let release = () => {};
+        const data = store();
+        data.hold = new Promise((resolve) => {
+            release = () => resolve(undefined);
+        });
+        mount(data);
+        renderApp('/settings/skills');
+
+        const editor = await openNew(user);
+        await user.type(editor.getByLabelText('Name'), 'ship-it');
+        await user.click(editor.getByRole('button', { name: 'Create skill' }));
+
+        await waitFor(() => expect((editor.getByLabelText('SKILL.md') as HTMLTextAreaElement).disabled).toBe(true));
+        expect((editor.getByLabelText('Name') as HTMLInputElement).disabled).toBe(true);
+        expect((editor.getByRole('tab', { name: 'Upload .zip' }) as HTMLButtonElement).disabled).toBe(true);
+        expect((editor.getByRole('button', { name: 'Close editor' }) as HTMLButtonElement).disabled).toBe(true);
+        release();
+        await waitFor(() => expect(screen.queryByRole('region', { name: 'New skill' })).toBeNull());
+    });
+
+    it('a failed list re-read keeps the open editor and its text, with the error beside it', async () => {
+        const user = userEvent.setup();
+        const rows = [skill('workspace', 'one'), skill('workspace', 'two')];
+        const data = store(rows);
+        mount(data);
+        renderApp('/settings/skills');
+
+        const editor = await openEdit(user, 'one');
+        const textarea = (await editor.findByDisplayValue(/# one/)) as HTMLTextAreaElement;
+        await user.type(textarea, 'draft');
+        data.afterEnabled = () => {
+            data.listFails = true;
+        };
+        const mine = await panelOf(/^My workspace/);
+        await user.click(within(mine.getByRole('row', { name: /two/ })).getByRole('switch'));
+
+        expect(await mine.findByText('the store is down')).toBeTruthy();
+        expect(screen.getByRole('region', { name: 'Edit one' })).toBeTruthy();
+        expect((screen.getByLabelText('SKILL.md') as HTMLTextAreaElement).value).toContain('draft');
+        await user.click(document.querySelector('a[href="/tasks"]') as HTMLElement);
+        expect((await screen.findAllByText('Discard unsaved changes?')).length).toBeGreaterThan(0);
+    });
+
+    it('a re-read that no longer lists the edited skill keeps its editor', async () => {
+        const user = userEvent.setup();
+        const rows = [skill('workspace', 'one'), skill('workspace', 'two')];
+        const data = store(rows);
+        mount(data);
+        renderApp('/settings/skills');
+
+        const editor = await openEdit(user, 'one');
+        await user.type(await editor.findByDisplayValue(/# one/), 'draft');
+        data.afterEnabled = () => {
+            data.rows = [rows[1]!];
+        };
+        const mine = await panelOf(/^My workspace/);
+        await user.click(within(mine.getByRole('row', { name: /two/ })).getByRole('switch'));
+
+        await waitFor(() => expect(mine.queryAllByRole('row')).not.toHaveLength(0));
+        expect((screen.getByLabelText('SKILL.md') as HTMLTextAreaElement).value).toContain('draft');
     });
 });
 
