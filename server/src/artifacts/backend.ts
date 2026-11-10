@@ -1,15 +1,17 @@
 import { mkdir } from 'node:fs/promises';
 import type { ArtifactsConfig } from '../config-artifacts.js';
 import { createFilesystemStore, sweepStaleTemps, type TempSweepResult } from './fs-store.js';
+import { createGcsTokenProvider } from './gcs-credentials.js';
+import { createGcsStore } from './gcs-store.js';
 import type { ObjectStore } from './object-store.js';
 import { createCredentialProvider } from './s3-credentials.js';
 import { createS3Store } from './s3-store.js';
 
 export interface ArtifactBackend {
     objects: ObjectStore;
-    /** Key prefix for this backend: the S3 prefix, empty for the filesystem (its root is the prefix). */
+    /** Key prefix for this backend: the S3 or GCS prefix, empty for the filesystem (its root is the prefix). */
     prefix: string;
-    /** Boot step: makes the filesystem root, or creates a missing bucket. Returns a log line. */
+    /** Boot step: makes the filesystem root, creates a missing S3 bucket, proves GCS credentials. Returns a log line. */
     prepare(): Promise<string>;
     /** The filesystem backend's stale temp-file sweep; the boot step runs it once, `main.ts` repeats it. */
     sweepTemps?(): Promise<TempSweepResult>;
@@ -52,6 +54,18 @@ export function createArtifactBackend(config: ArtifactsConfig, env: NodeJS.Proce
                 await mkdir(backend.root, { recursive: true });
                 const swept = await sweepStaleTemps(backend.root);
                 return `filesystem ${backend.root} (single replica only); swept ${swept.removed} stale temp files`;
+            },
+        };
+    }
+    if (backend.kind === 'gcs') {
+        const token = createGcsTokenProvider({ env });
+        return {
+            objects: createGcsStore({ bucket: backend.bucket, kmsKey: backend.kmsKey, token }),
+            prefix: backend.prefix,
+            // The bucket is Terraform's: the board neither creates nor probes it (objectUser has no bucket rights).
+            async prepare() {
+                await token();
+                return `gcs bucket ${backend.bucket} (created outside the board); Application Default Credentials ready`;
             },
         };
     }

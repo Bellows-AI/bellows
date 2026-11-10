@@ -93,8 +93,8 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- fail (printf "auth.publicUrl host %q is not among ingress.hosts: GitHub redirects to auth.publicUrl and the Ingress answers ingress.hosts" $publicHost) }}
 {{- end }}
 {{- end }}
-{{- if not (has .Values.artifacts.backend (list "s3" "filesystem")) }}
-{{- fail "artifacts.backend must be s3 or filesystem" }}
+{{- if not (has .Values.artifacts.backend (list "s3" "gcs" "filesystem")) }}
+{{- fail "artifacts.backend must be s3, gcs or filesystem" }}
 {{- end }}
 {{- $replicas := .Values.dashboard.replicas }}
 {{- if not (or (kindIs "int64" $replicas) (kindIs "float64" $replicas)) }}
@@ -108,7 +108,7 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- fail "dashboard.preStopSeconds must be a whole number from 0 below the 30 s termination grace period" }}
 {{- end }}
 {{- if and (gt (int64 $replicas) 1) (eq .Values.artifacts.backend "filesystem") }}
-{{- fail (printf "dashboard.replicas above 1 requires artifacts.backend=s3: the filesystem backend is one pod's /tmp (dashboard.replicas=%v, artifacts.backend=filesystem)" $replicas) }}
+{{- fail (printf "dashboard.replicas above 1 requires artifacts.backend=s3 or gcs: the filesystem backend is one pod's /tmp (dashboard.replicas=%v, artifacts.backend=filesystem)" $replicas) }}
 {{- end }}
 {{- if eq .Values.artifacts.backend "s3" }}
 {{- if not .Values.artifacts.s3.bucket }}
@@ -117,6 +117,16 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if and (not .Values.artifacts.s3.region) (not .Values.artifacts.s3.endpoint) }}
 {{- fail "artifacts.s3.region is required when artifacts.backend is s3 and artifacts.s3.endpoint is empty" }}
 {{- end }}
+{{- end }}
+{{- if eq .Values.artifacts.backend "gcs" }}
+{{- if not .Values.artifacts.gcs.bucket }}
+{{- fail "artifacts.gcs.bucket is required when artifacts.backend is gcs" }}
+{{- end }}
+{{- if or .Values.artifacts.s3.bucket .Values.artifacts.s3.region .Values.artifacts.s3.endpoint .Values.artifacts.s3.kmsKeyId .Values.artifacts.s3.forcePathStyle .Values.artifacts.credentialsExistingSecret }}
+{{- fail "artifacts.s3.* and artifacts.credentialsExistingSecret are only valid with artifacts.backend=s3" }}
+{{- end }}
+{{- else if or .Values.artifacts.gcs.bucket .Values.artifacts.gcs.kmsKey }}
+{{- fail "artifacts.gcs.* is only valid with artifacts.backend=gcs" }}
 {{- end }}
 {{- if not .Values.auth.oauthClientId }}
 {{- fail "auth.oauthClientId is required" }}

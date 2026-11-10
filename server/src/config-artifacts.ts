@@ -23,6 +23,15 @@ export type ArtifactBackendConfig =
           readonly kmsKeyId: string;
           /** Both keys or neither; neither means Pod Identity, then IRSA. */
           readonly staticCredentials: { accessKeyId: string; secretAccessKey: string } | null;
+      }
+    | {
+          readonly kind: 'gcs';
+          /** Created outside the board; the board holds object read, write and delete on it only. */
+          readonly bucket: string;
+          /** Normalized: empty or one trailing slash. */
+          readonly prefix: string;
+          /** Full Cloud KMS key resource name; empty: Google-managed encryption. */
+          readonly kmsKey: string;
       };
 
 export interface ArtifactsConfig {
@@ -41,10 +50,18 @@ export function normalizePrefix(raw: string): string {
     return trimmed === '' ? '' : `${trimmed}/`;
 }
 
-const BACKENDS = ['s3', 'filesystem'] as const;
+const BACKENDS = ['s3', 'gcs', 'filesystem'] as const;
+
+/** Which backend each variable belongs to: a variable of a backend that was not chosen is refused. */
+const OWNED_VARIABLES = [
+    ['s3', /^ARTIFACTS_S3_/],
+    ['s3', /^ARTIFACTS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)$/],
+    ['gcs', /^ARTIFACTS_GCS_/],
+    ['filesystem', /^ARTIFACTS_FS_ROOT$/],
+] as const;
 const DEFAULT_RETENTION_DAYS = 90;
 const DEFAULT_ATTACHMENT_DRAFT_TTL_HOURS = 24;
-const DEFAULT_S3_PREFIX = 'factory/';
+const DEFAULT_PREFIX = 'factory/';
 const DEFAULT_REGION = 'us-east-1';
 const DEFAULT_FILESYSTEM_DIR = 'factory-artifacts';
 
@@ -68,13 +85,35 @@ function flag(raw: string | undefined, label: string): boolean {
 function backendOf(env: NodeJS.ProcessEnv): ArtifactBackendConfig {
     const raw = env.ARTIFACTS_BACKEND?.trim() || 'filesystem';
     const kind = BACKENDS.find((name) => name === raw);
-    if (!kind) throw new Error(`ARTIFACTS_BACKEND must be "s3" or "filesystem", got "${raw}"`);
+    if (!kind) throw new Error(`ARTIFACTS_BACKEND must be "s3", "gcs" or "filesystem", got "${raw}"`);
+    refuseForeign(env, kind);
     if (kind === 'filesystem') {
         const root = env.ARTIFACTS_FS_ROOT?.trim() || `${env.TMPDIR?.trim() || '/tmp'}/${DEFAULT_FILESYSTEM_DIR}`;
         if (!isAbsolute(root)) throw new Error(`ARTIFACTS_FS_ROOT must be an absolute path, got "${root}"`);
         return { kind, root };
     }
-    return s3BackendOf(env);
+    return kind === 'gcs' ? gcsBackendOf(env) : s3BackendOf(env);
+}
+
+/** A blank value is unset, as a rendered chart leaves it. */
+function refuseForeign(env: NodeJS.ProcessEnv, chosen: (typeof BACKENDS)[number]): void {
+    for (const name of Object.keys(env).sort()) {
+        const owner = OWNED_VARIABLES.find(([, pattern]) => pattern.test(name))?.[0];
+        if (owner && owner !== chosen && env[name]?.trim()) {
+            throw new Error(`${name} is only valid with ARTIFACTS_BACKEND=${owner}`);
+        }
+    }
+}
+
+function gcsBackendOf(env: NodeJS.ProcessEnv): Extract<ArtifactBackendConfig, { kind: 'gcs' }> {
+    const bucket = env.ARTIFACTS_GCS_BUCKET?.trim() ?? '';
+    if (!bucket) throw new Error('ARTIFACTS_GCS_BUCKET is required when ARTIFACTS_BACKEND is "gcs"');
+    return {
+        kind: 'gcs',
+        bucket,
+        prefix: normalizePrefix(env.ARTIFACTS_GCS_PREFIX ?? DEFAULT_PREFIX),
+        kmsKey: env.ARTIFACTS_GCS_KMS_KEY?.trim() ?? '',
+    };
 }
 
 function s3BackendOf(env: NodeJS.ProcessEnv): Extract<ArtifactBackendConfig, { kind: 's3' }> {
@@ -94,7 +133,7 @@ function s3BackendOf(env: NodeJS.ProcessEnv): Extract<ArtifactBackendConfig, { k
         region,
         endpoint,
         forcePathStyle: flag(env.ARTIFACTS_S3_FORCE_PATH_STYLE, 'ARTIFACTS_S3_FORCE_PATH_STYLE'),
-        prefix: normalizePrefix(env.ARTIFACTS_S3_PREFIX ?? DEFAULT_S3_PREFIX),
+        prefix: normalizePrefix(env.ARTIFACTS_S3_PREFIX ?? DEFAULT_PREFIX),
         kmsKeyId: env.ARTIFACTS_S3_KMS_KEY_ID?.trim() ?? '',
         staticCredentials: accessKeyId ? { accessKeyId, secretAccessKey } : null,
     };
