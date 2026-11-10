@@ -32,7 +32,7 @@ const PHASE_SECONDS = {
     'image-checks': 60,
     'ask-user-question': 35,
     'question-round-trip': 67,
-    'repo-skills': 60,
+    'repo-skills': 90,
     'pinned-skills': 150,
     mcp: 40,
 };

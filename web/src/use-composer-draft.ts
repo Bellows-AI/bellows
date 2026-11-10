@@ -222,7 +222,12 @@ function useClampNotices() {
  * create body.
  */
 function useDraftSkills(state: ComposerDraftInput) {
-    const repoSkills = useRepoSkills(state.repo, state.baseBranch, hasSlashToken(state.draft));
+    const repoSkills = useRepoSkills(
+        state.repo,
+        state.baseBranch,
+        { name: state.executor, scope: state.executorScope },
+        hasSlashToken(state.draft)
+    );
     const builtins = repoSkills.skills.filter((skill) => skill.source === 'builtin').map((skill) => skill.name);
     return { repoSkills, builtinsNamedIn: (draft: string) => builtinSkillsIn(draft, builtins) };
 }

@@ -111,7 +111,7 @@ export function reviewerResourcesField(config: DriverConfig): { resources: PodRe
 
 /**
  * The runner group's scheduling knobs (RUNNER_NODE_SELECTOR / RUNNER_TOLERATIONS / RUNNER_AFFINITY,
- * issue #361) on a pod spec: the tainted node group agent-written code lands on and nothing else
+ * issue #361) and its RuntimeClass (RUNNER_RUNTIME_CLASS) on a pod spec: the tainted node group agent-written code lands on and nothing else
  * schedules onto. Absent field by field when unset, so the spec an untainted cluster sees is
  * unchanged. Docker has no twin — the daemon decides placement, there is nothing to forward.
  */
@@ -119,6 +119,7 @@ export interface SchedulingField {
     nodeSelector?: Record<string, string>;
     tolerations?: Record<string, unknown>[];
     affinity?: Record<string, unknown>;
+    runtimeClassName?: string;
 }
 
 export function schedulingField(config: DriverConfig): SchedulingField {
@@ -126,6 +127,7 @@ export function schedulingField(config: DriverConfig): SchedulingField {
     if (config.runnerNodeSelector) field.nodeSelector = config.runnerNodeSelector;
     if (config.runnerTolerations) field.tolerations = config.runnerTolerations;
     if (config.runnerAffinity) field.affinity = config.runnerAffinity;
+    if (config.runnerRuntimeClass) field.runtimeClassName = config.runnerRuntimeClass;
     return field;
 }
 

@@ -12,7 +12,14 @@ import { callerOf, orgOf } from '../../auth/plugin.js';
 import { BINDABLE_PROVIDERS, type Resolution, type ResolveRefusal } from '../../db/connection-bindings.js';
 import type { ConnectionView } from '../../db/connection-store.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { abortOnClose, effectiveCatalog, standingOf, type EffectiveCatalog } from '../../skill-catalog.js';
+import {
+    abortOnClose,
+    effectiveCatalog,
+    standingOf,
+    type EffectiveCatalog,
+    type ExecutorTypeRead,
+} from '../../skill-catalog.js';
+import { executorTypeOf } from './executor-usable.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body } from '../helpers.js';
 import { parseConnectionIds } from '../connections.js';
@@ -123,70 +130,84 @@ async function repoCheck(log: FastifyBaseLogger, repo: string | null, rt: Runtim
     return { subject: 'repo', name: repo, status: 'blocked', detail: `${repo} is not tracked by this board` };
 }
 
+/** The executor check and the executor type it resolved, which says which checkout directories hold the repo's skills. */
+interface ExecutorStanding {
+    check: Check;
+    type: ExecutorTypeRead;
+}
+
 async function executorCheck(
     log: FastifyBaseLogger,
     selection: Selection,
     userId: string,
     rt: Runtime
-): Promise<Check> {
+): Promise<ExecutorStanding> {
     const { executor, scope } = selection;
     const store = rt.userExecutors;
     if (!store) {
         return {
-            subject: 'executor',
-            name: executor,
-            status: 'unverified',
-            detail: 'executor profiles cannot be read on this board',
+            check: {
+                subject: 'executor',
+                name: executor,
+                status: 'unverified',
+                detail: 'executor profiles cannot be read on this board',
+            },
+            // Create resolves nothing without a store, and the task runs claude.
+            type: { state: 'known', type: null },
         };
     }
-    if (executor === null) {
+    let name = executor;
+    let at = scope;
+    if (name === null) {
         // Create stamps the caller's resolved default on a task naming none (executor-usable.ts), so that is the verdict.
         const fallback = await attempt(log, 'default executor', () => store.resolvedDefault(userId));
         if (!fallback.ok) {
             return {
-                subject: 'executor',
-                name: null,
-                status: 'unverified',
-                detail: 'the default executor could not be read',
+                check: {
+                    subject: 'executor',
+                    name: null,
+                    status: 'unverified',
+                    detail: 'the default executor could not be read',
+                },
+                type: { state: 'unconfirmed', error: 'the default executor could not be read' },
             };
         }
         if (fallback.value === null) {
-            return { subject: 'executor', name: null, status: 'blocked', detail: noExecutorMessage };
+            return {
+                check: { subject: 'executor', name: null, status: 'blocked', detail: noExecutorMessage },
+                type: { state: 'unconfirmed', error: noExecutorMessage },
+            };
         }
-        const { scope: defaultScope, name } = fallback.value;
-        return {
-            subject: 'executor',
-            name,
-            status: 'ok',
-            detail: `none selected: the task runs on your default, ${defaultScope} ${name}`,
-        };
+        ({ name, scope: at } = fallback.value);
     }
-    const row = await attempt(log, 'executor profile', () => store.configFor(userId, executor, scope));
+    const row = await attempt(log, 'executor profile', () => store.configFor(userId, name, at));
     if (!row.ok) {
+        const detail = 'the executor profiles could not be read';
         return {
-            subject: 'executor',
-            name: executor,
-            status: 'unverified',
-            detail: 'the executor profiles could not be read',
+            check: { subject: 'executor', name, status: 'unverified', detail },
+            type: { state: 'unconfirmed', error: detail },
         };
     }
     if (row.value === null) {
+        const detail = executorMissingMessage(at, name);
         return {
-            subject: 'executor',
-            name: executor,
-            status: 'blocked',
-            detail: executorMissingMessage(scope, executor),
+            check: { subject: 'executor', name, status: 'blocked', detail },
+            type: { state: 'unconfirmed', error: detail },
         };
     }
     if (row.value.suspended) {
+        const detail = executorSuspendedMessage(at, name);
         return {
-            subject: 'executor',
-            name: executor,
-            status: 'blocked',
-            detail: executorSuspendedMessage(scope, executor),
+            check: { subject: 'executor', name, status: 'blocked', detail },
+            type: { state: 'unconfirmed', error: detail },
         };
     }
-    return { subject: 'executor', name: executor, status: 'ok', detail: `${scope} ${row.value.type}` };
+    const detail =
+        executor === null ? `none selected: the task runs on your default, ${at} ${name}` : `${at} ${row.value.type}`;
+    return {
+        check: { subject: 'executor', name, status: 'ok', detail },
+        type: executorTypeOf(row.value.type),
+    };
 }
 
 /** `unknown`: the caller's connection list could not be read, so `missing` would be a guess. */
@@ -362,11 +383,13 @@ async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply
     if (!selection) return reply;
     const userId = caller.user.id;
     const { log } = request;
+    const executor = await executorCheck(log, selection, userId, rt);
     const catalog = await effectiveCatalog({
         builtin: skillCatalog(),
         read: rt.repoSkills,
         repo: selection.repo,
         branch: selection.baseBranch,
+        executorType: executor.type,
         signal: abortOnClose(reply),
         need: selection.skills,
         stored: { store: rt.skills, userId },
@@ -375,7 +398,7 @@ async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply
     const standing = await connectionStanding(log, selection, { userId, rt }, catalog);
     const checks = [
         await repoCheck(log, selection.repo, rt),
-        await executorCheck(log, selection, userId, rt),
+        executor.check,
         ...skillChecks(selection, standing, catalog),
         ...standing.checks,
     ];

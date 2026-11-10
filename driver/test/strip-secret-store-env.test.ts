@@ -10,6 +10,10 @@ describe('stripSecretStoreEnv', () => {
             SECRETS_OPERATION_KEY: 'o',
             SECRETS_FINGERPRINT_KEY: 'f',
             SECRETS_FUTURE_THING: 'y',
+            SECRETS_GCP_PROJECT: 'p',
+            SECRETS_GCP_PREFIX: 'bellows-',
+            SECRETS_GCP_LOCATION: 'europe-west3',
+            SECRETS_GCP_KMS_KEY: 'k',
             SECRET_PROBE: 'kept',
             JOB_BOARD_TOKEN: 'kept',
         };

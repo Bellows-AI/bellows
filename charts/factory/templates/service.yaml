@@ -5,6 +5,10 @@ metadata:
     labels:
         {{- include "factory.labels" . | nindent 8 }}
         app.kubernetes.io/component: dashboard
+    {{- with .Values.dashboard.service.annotations }}
+    annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
 spec:
     # ClusterIP, never LoadBalancer, by default: the port carries the job board, and an
     # unauthenticated POST /api/jobs is remote code execution on the cluster (docs/security.md).

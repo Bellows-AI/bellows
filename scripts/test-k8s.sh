@@ -777,9 +777,31 @@ expect_not_contains 'no credentials Secret leaves Pod Identity and IRSA to the c
 refuses 'an s3 backend with no bucket is refused' 'artifacts.s3.bucket is required' \
     "${GH_SETS[@]}" --set artifacts.s3.bucket=
 refuses 'an unknown artifacts backend is refused' 'artifacts.backend must be' \
-    "${GH_SETS[@]}" --set artifacts.backend=gcs
+    "${GH_SETS[@]}" --set artifacts.backend=azure
+GCS_SETS=("${GH_SETS[@]}" --set artifacts.backend=gcs --set artifacts.s3.bucket= --set artifacts.s3.region= \
+    --set artifacts.gcs.bucket=factory-artifacts-gcs)
+gcs_render() { helm template "$RELEASE" charts/factory "${GCS_SETS[@]}" --namespace "$NAMESPACE" "$@" 2>&1; }
+gcs="$(gcs_render)"
+expect_contains 'the gcs backend reaches the dashboard as environment' "$gcs" 'name: ARTIFACTS_GCS_BUCKET'
+expect_contains 'the gcs bucket is rendered' "$gcs" 'value: "factory-artifacts-gcs"'
+expect_contains 'the gcs prefix defaults to factory/' "$(grep -A1 'name: ARTIFACTS_GCS_PREFIX$' <<<"$gcs")" 'value: "factory/"'
+expect_not_contains 'the gcs backend renders no s3 setting' "$gcs" 'ARTIFACTS_S3_BUCKET'
+expect_not_contains 'the gcs backend renders no storage key' "$gcs" 'ARTIFACTS_ACCESS_KEY_ID'
+expect_contains 'the Workload Identity annotation lands on the dashboard ServiceAccount' \
+    "$(gcs_render --set 'dashboard.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=dash@proj.iam.gserviceaccount.com')" \
+    'iam.gke.io/gcp-service-account: dash@proj.iam.gserviceaccount.com'
+expect_contains 'the gcs backend renders above one dashboard replica' \
+    "$(gcs_render --set dashboard.replicas=2)" 'replicas: 2'
+refuses 'a gcs backend with no bucket is refused' 'artifacts.gcs.bucket is required' \
+    "${GCS_SETS[@]}" --set artifacts.gcs.bucket=
+refuses 'an s3 setting with the gcs backend is refused' 'only valid with artifacts.backend=s3' \
+    "${GCS_SETS[@]}" --set artifacts.s3.bucket=leftover
+refuses 'a storage key Secret with the gcs backend is refused' 'only valid with artifacts.backend=s3' \
+    "${GCS_SETS[@]}" --set artifacts.credentialsExistingSecret=store-keys
+refuses 'a gcs setting with the s3 backend is refused' 'only valid with artifacts.backend=gcs' \
+    "${GH_SETS[@]}" --set artifacts.gcs.bucket=leftover
 refuses 'the filesystem backend is refused above one dashboard replica' \
-    'dashboard.replicas above 1 requires artifacts.backend=s3' \
+    'dashboard.replicas above 1 requires artifacts.backend=s3 or gcs' \
     "${GH_SETS[@]}" --set artifacts.backend=filesystem --set dashboard.replicas=2
 refuses 'zero dashboard replicas are refused' 'dashboard.replicas must be a whole number of at least 1' \
     "${GH_SETS[@]}" --set dashboard.replicas=0
@@ -932,6 +954,58 @@ refuses 'a vault store without an operation key is refused' 'secretStore.operati
     "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set-string secretStore.operationKey=
 vault_byo="$(gh_render "${VAULT_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
 expect_contains 'a managed secret-store Secret serves the vault backend too' "$vault_byo" 'name: managed-keys'
+
+# The gcp backend (docs/secrets.md): the provider settings reach the dashboard container alone, the Secret holds no
+# data key, and no credential is rendered (Workload Identity is the service-account annotation).
+GCP_SETS=(
+    --set secretStore.backend=gcp --set secretStore.gcp.project=example-project
+    --set secretStore.gcp.prefix=acme- --set secretStore.gcp.location=europe-west1
+    --set secretStore.gcp.kmsKey=projects/example-project/locations/europe-west1/keyRings/ring/cryptoKeys/key
+    --set-string secretStore.dataKeys= --set secretStore.activeKeyId=
+)
+gcp_render="$(gh_render "${GCP_SETS[@]}")"
+gcp_doc="$(awk '/^# Source:/ { keep = ($0 ~ /templates\/deployment.yaml$/) } keep' <<<"$gcp_render")"
+gcp_dashboard="$(awk '/^ +containers:$/ { on = 1 } on' <<<"$gcp_doc" | awk '/^ +- name: dashboard$/ { on = 1 } /^ +volumes:$/ { on = 0 } on')"
+expect_contains 'the gcp backend is selected explicitly' "$gcp_dashboard" 'value: "gcp"'
+expect_contains 'the dashboard container gets the gcp project' "$gcp_dashboard" 'value: "example-project"'
+expect_contains 'the dashboard container gets the gcp prefix' "$gcp_dashboard" 'value: "acme-"'
+expect_contains 'the dashboard container gets the gcp location' "$gcp_dashboard" 'value: "europe-west1"'
+expect_contains 'the dashboard container gets the gcp key' "$gcp_dashboard" 'cryptoKeys/key'
+[ "$(grep -c 'SECRETS_' <<<"$gcp_render")" = 7 ] && [ "$(grep -c 'SECRETS_' <<<"$gcp_dashboard")" = 7 ] &&
+    ok 'every gcp-mode SECRETS_ variable is in the dashboard container alone' ||
+    bad 'every gcp-mode SECRETS_ variable is in the dashboard container alone' \
+        "whole render: $(grep -c 'SECRETS_' <<<"$gcp_render"), dashboard container: $(grep -c 'SECRETS_' <<<"$gcp_dashboard")"
+expect_not_contains 'a gcp store renders no data-key variable' "$gcp_render" 'SECRETS_DATA_KEYS'
+expect_not_contains 'a gcp store renders no active-key-id variable' "$gcp_render" 'SECRETS_ACTIVE_KEY_ID'
+expect_not_contains 'a gcp store references no data-keys entry' "$gcp_render" 'data-keys'
+expect_not_contains 'a gcp store renders no AWS setting' "$gcp_render" 'SECRETS_AWS_'
+expect_not_contains 'a gcp store renders no Vault setting' "$gcp_render" 'SECRETS_VAULT_'
+expect_not_contains 'a gcp store renders no credential file variable' "$gcp_render" 'GOOGLE_APPLICATION_CREDENTIALS'
+expect_contains 'a gcp store still holds the operation and fingerprint keys' "$gcp_render" 'fingerprint-key:'
+expect_not_contains 'no configmap or collector carries a gcp setting' \
+    "$(awk '/^# Source:/ { keep = ($0 ~ /configmap|collector/) } keep' <<<"$gcp_render")" 'SECRETS_'
+gcp_driver="$(awk '/^# Source:/ { keep = ($0 ~ /driver-deployment.yaml$/) } keep' <<<"$gcp_render")"
+expect_not_contains 'the driver deployment carries no gcp setting' "$gcp_driver" 'SECRETS_'
+gcp_minimal="$(gh_render --set secretStore.backend=gcp --set secretStore.gcp.project=example-project --set-string secretStore.dataKeys= --set secretStore.activeKeyId=)"
+expect_not_contains 'an unset gcp prefix renders no variable, so the app default applies' "$gcp_minimal" 'SECRETS_GCP_PREFIX'
+expect_not_contains 'an unset gcp location renders no variable, so the app default applies' "$gcp_minimal" 'SECRETS_GCP_LOCATION'
+expect_not_contains 'an unset gcp key renders no variable' "$gcp_minimal" 'SECRETS_GCP_KMS_KEY'
+refuses 'a gcp store without a project is refused' 'secretStore.gcp.project is required' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.gcp.project=
+refuses 'data keys under the gcp backend are refused' 'are for secretStore.backend database' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set-string secretStore.dataKeys=k1:AAAA
+refuses 'aws settings under the gcp backend are refused' 'are for secretStore.backend aws, not gcp' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.aws.region=eu-west-1
+refuses 'vault settings under the gcp backend are refused' 'secretStore.vault.* is for secretStore.backend vault, not gcp' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.vault.role=factory
+refuses 'gcp settings under the database backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not database' \
+    "${GH_SETS[@]}" --set secretStore.gcp.project=example-project
+refuses 'gcp settings under the aws backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not aws' \
+    "${GH_SETS[@]}" "${AWS_SETS[@]}" --set secretStore.gcp.prefix=acme-
+refuses 'gcp settings under the vault backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not vault' \
+    "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set secretStore.gcp.location=europe-west1
+gcp_byo="$(gh_render "${GCP_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
+expect_contains 'a managed secret-store Secret serves the gcp backend too' "$gcp_byo" 'name: managed-keys'
 
 # --- The optional ingress (#359): off by default, never disagreeing with auth.publicUrl --------
 
@@ -1090,6 +1164,28 @@ expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" 
 expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" \
     'value: "{\"podAntiAffinity\":{\"preferredDuringSchedulingIgnoredDuringExecution\":[{\"weight\":1}]}}"'
 
+# Dashboard Service annotations: a load balancer's per-Service knobs (a GKE BackendConfig for Cloud
+# Armor, NEG settings). None by default.
+service_doc() { awk '/^# Source: factory\/templates\/service.yaml/,/^---/' <<<"$1"; }
+expect_not_contains 'the dashboard Service carries no annotations by default' "$(service_doc "$gh")" 'annotations:'
+printf '%s\n' 'dashboard:' '    service:' '        annotations:' \
+    "            cloud.google.com/backend-config: '{\"default\":\"bellows-dashboard\"}'" >"$work/service-annotations.yaml"
+annotated="$(gh_render -f "$work/service-annotations.yaml")"
+expect_contains 'the dashboard Service carries its annotations' "$(service_doc "$annotated")" \
+    'cloud.google.com/backend-config: '"'"'{"default":"bellows-dashboard"}'"'"''
+
+# The runner RuntimeClass: forwarded to the driver and required by admission when set;
+# unset, neither renders.
+expect_not_contains 'no runner RuntimeClass var renders on defaults' "$gh" 'name: RUNNER_RUNTIME_CLASS'
+expect_not_contains 'no RuntimeClass admission rule renders on defaults' "$gh" 'variables.spec.runtimeClassName'
+sandboxed="$(gh_render --set runner.runtimeClassName=gvisor)"
+expect_contains 'the driver is handed the runner RuntimeClass' "$sandboxed" 'value: "gvisor"'
+expect_contains 'admission requires the runner RuntimeClass' "$sandboxed" \
+    "variables.spec.runtimeClassName == 'gvisor'"
+expect_contains 'the refusal names the RuntimeClass' "$sandboxed" 'runner pods must run under the gvisor RuntimeClass'
+refuses 'a RuntimeClass that is no DNS name is refused' 'runner.runtimeClassName must be a RuntimeClass name' \
+    "${GH_SETS[@]}" --set "runner.runtimeClassName=gvisor' || true"
+
 # The runner Secret has a key for every forwarded name, valued or not.
 runner_secret="$(gh_render --set-string "runner.env=ONE\,TWO" --set runner.credentials.ONE=x)"
 expect_contains 'the runner Secret keys every forwarded name' "$runner_secret" 'TWO: ""'
@@ -1147,6 +1243,10 @@ expect_contains 'the runner policy is both directions' "$netpol" 'policyTypes: [
 expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpol" \
     $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: kube-dns'
 expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
+# GKE runs NodeLocal DNSCache as pod-networked node-local-dns pods; Dataplane V2 redirects the
+# kube-dns Service address to them, so kube-dns alone leaves runners without DNS.
+expect_contains 'the runner policy sends DNS to node-local-dns pods in kube-system' "$netpol" \
+    $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: node-local-dns'
 expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
 # Issue #773: a run's services are on its own pod's loopback, so no runner pod takes a connection
 # from anything and none dials another runner pod.

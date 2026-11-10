@@ -16,7 +16,7 @@ Bellows is open source. You can run the whole platform on your own machine or cl
 | **PostgreSQL** | The only database. Holds everything the board knows. | Yes |
 | **GitHub App** | Lets Bellows read repositories, list them, and mint short-lived tokens for runners. It also defines your organizations: one installation is one organization. | Yes |
 | **GitHub OAuth App** | Signs members in when `AUTH_MODE=github`. A separate registration from the GitHub App. | For sign-in |
-| **Secret store** | Holds environment secrets and connection credentials. Backend is `database`, `aws` or `vault`. | Yes |
+| **Secret store** | Holds environment secrets and connection credentials. Backend is `database`, `aws`, `vault` or `gcp`. | Yes |
 | **Object store** | Holds task artifacts and uploaded attachments. S3-compatible, or a local directory on a single replica. | Yes (defaults to the filesystem) |
 | **Telemetry collector** | An OpenTelemetry collector. Receives metrics from runners and forwards them to the board. | Recommended |
 | **Jira app** | An Atlassian OAuth app that powers **Connect Jira**. | Optional |

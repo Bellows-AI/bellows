@@ -38,7 +38,7 @@ dashboard:
         tag: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
-    # Above one requires artifacts.backend=s3 (the filesystem backend is one pod's /tmp). Every
+    # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp). Every
     # replica is still replaced by Recreate, so two versions never share the schema mid-upgrade.
     replicas: 1
     # Above one replica, a stopping pod sleeps this long before SIGTERM so the Service and the load
@@ -63,10 +63,17 @@ dashboard:
         enabled: false
         url: ''
     # The dashboard's own ServiceAccount (it ran as `default`). It carries the cloud role binding the
-    # artifact store's credentials come from: annotate it with the IRSA role ARN, or bind it to a role
-    # with an EKS Pod Identity association. The pod still mounts no API token (templates/deployment.yaml).
+    # artifact store's credentials come from: annotate it with the IRSA role ARN, bind it to a role
+    # with an EKS Pod Identity association, or on GKE annotate it with
+    # `iam.gke.io/gcp-service-account: <gsa>@<project>.iam.gserviceaccount.com` (Workload Identity).
+    # The pod still mounts no API token (templates/deployment.yaml).
     serviceAccount:
         create: true
+        annotations: {}
+    # Annotations on the dashboard Service, for the load balancer in front of it: on GKE,
+    # `cloud.google.com/backend-config: '{"default":"<BackendConfig>"}'` attaches a Cloud Armor
+    # policy. The Service stays ClusterIP whatever is set here.
+    service:
         annotations: {}
     # Requests only: a limit on the process that clones every member's checkouts would turn a big
     # repository into an OOM kill mid-clone.
@@ -185,10 +192,14 @@ limitRange:
         memory: 128Mi
 
 # Task artifacts (transcripts and the other streams a runner uploads): the dashboard writes them to
-# an object store and indexes them in the database. Only the dashboard holds the store's credentials.
+# an object store and indexes them in the database. Only the dashboard holds the store's credentials
+# (gcs holds none: Workload Identity, see dashboard.serviceAccount).
 # docs/configuration.md lists the environment each key renders to.
 artifacts:
-    # s3 | filesystem. filesystem keeps the objects in the dashboard pod's /tmp: single replica only,
+    # s3 | gcs | filesystem. gcs is Google Cloud Storage over Application Default Credentials: on GKE bind
+    # the dashboard's ServiceAccount with Workload Identity (dashboard.serviceAccount.annotations); the
+    # bucket is created outside the chart and the identity needs roles/storage.objectUser on it. Keys of
+    # the other backends are refused. filesystem keeps the objects in the dashboard pod's /tmp: single replica only,
     # lost with the pod. It is for kind and development, not for a deployment that keeps its history.
     backend: s3
     s3:
@@ -200,7 +211,13 @@ artifacts:
         prefix: factory/
         # Empty is SSE-S3; set a key id for SSE-KMS.
         kmsKeyId: ''
-    # A Secret holding `access-key-id` and `secret-access-key`. Empty: EKS Pod Identity, then IRSA.
+    gcs:
+        bucket: ''
+        prefix: factory/
+        # Empty is Google-managed encryption; set the full Cloud KMS key resource name
+        # (projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>) for a customer-managed key.
+        kmsKey: ''
+    # s3 only. A Secret holding `access-key-id` and `secret-access-key`. Empty: EKS Pod Identity, then IRSA.
     credentialsExistingSecret: ''
     # A board sweep deletes the artifacts of a removed task after this many days.
     retentionDays: 90
@@ -245,6 +262,11 @@ secret:
 #             a MAC. The dashboard logs in with Vault's Kubernetes auth, presenting a service-account token
 #             projected into the dashboard container alone (audience `vault.audience`). The role's policy needs
 #             create/read on <mount>/data/<prefix>/* and delete on <mount>/metadata/<prefix>/*.
+#   gcp       the plaintext in Google Cloud Secret Manager, one secret per version named <gcp.prefix><reference>-<version>;
+#             PostgreSQL keeps a reference and a MAC. Credentials come from Workload Identity only: annotate
+#             `dashboard.serviceAccount` with iam.gke.io/gcp-service-account. The service account needs
+#             secretmanager.secrets.create on the project and secretmanager.versions.add, versions.access and
+#             secrets.delete conditioned on the secret name prefix (docs/secrets.md).
 # With existingSecret set (and secret.create false or true) the chart creates nothing and references that
 # one, which must hold `operation-key` and `fingerprint-key` (and `data-keys` with backend database);
 # activeKeyId is not secret and always comes from here.
@@ -281,6 +303,15 @@ secretStore:
         role: ''
         # The audience the projected token carries; the Vault role's `audience` must match it.
         audience: vault
+    gcp:
+        # The Google Cloud project id the secrets live in. Required with backend gcp.
+        project: ''
+        # Starts every secret's name; the IAM condition fences the service account to it. Empty: `bellows-`.
+        prefix: ''
+        # The one region each secret is replicated to (user-managed replication). Empty: `europe-west3`.
+        location: ''
+        # Optional customer-managed key, projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>, in `location`.
+        kmsKey: ''
 
 driver:
     # Built from docker/driver.Dockerfile:
@@ -438,6 +469,11 @@ runner:
     nodeSelector: {}
     tolerations: []
     affinity: {}
+    # The RuntimeClass every pod the driver specs runs under (RUNNER_RUNTIME_CLASS):
+    # `gvisor` on a GKE Sandbox node pool, so agent code never shares the node kernel. Set, the
+    # admission policy refuses any driver pod that names another RuntimeClass or none. Empty: pods
+    # run on the node's default runtime and the rule is not rendered.
+    runtimeClassName: ''
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.
     env: CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY
     # Requests and limits on every pod the driver specs but the gates — the runner, the sync, the
