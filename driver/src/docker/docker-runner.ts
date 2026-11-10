@@ -86,6 +86,9 @@ import {
     type RunnerFiles,
     attemptExec,
     boundedExec,
+    groupRemoved,
+    lostOutcome,
+    supervisorRemoved,
     type Spawn,
     type ExecDocker,
     readUtf8,
@@ -235,9 +238,14 @@ async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
             const state = await readSupervisorState(boundedExec(exec, bound), job);
             if (state === 'running') seenRunning = true;
             else if (state === 'gone' && seenRunning) {
+                // `gone` also reads a supervisor that exited: only a container the daemon no longer knows is the
+                // platform's doing (BEL-302), so the removal is asked for again.
+                const removed = await supervisorRemoved(boundedExec(exec, bound), job);
                 throw new StartupRefused(
                     `the task supervisor ${supervisorName(job)} was lost before it made contact`,
-                    'transient'
+                    'transient',
+                    undefined,
+                    removed ? true : undefined
                 );
             }
         },
@@ -638,10 +646,7 @@ async function dockerRun(
                         unfinalized: supervisorLossOf(supervisorExit, false),
                     });
                     // A run the platform took away has nothing left to read: the loss, as kubernetes ends it.
-                    if (end.infraLoss) {
-                        const { exitCode, output, timedOut: lostTimedOut, started } = settled;
-                        return { exitCode, output, timedOut: lostTimedOut, started, infraLoss: end.infraLoss };
-                    }
+                    if (end.infraLoss) return lostOutcome(settled, end.infraLoss, end);
                     return applyCloseTimeReadout(
                         settled,
                         { execDocker, config, job, startedAt, signal: deps.ledger.signal(job) },
@@ -727,6 +732,8 @@ export function createDockerRunner(
             runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
         rebind: (group, binding, signal) => rebindGroup(execDocker, group, binding, signal),
         supervisorServing: (group, bound) => supervisorServing(execDocker, group, bound),
+        // A lost supervisor is a node loss only when its container is confirmed removed (BEL-302).
+        groupTakenAway: (job, signal) => groupRemoved(execDocker, job, signal),
         abandon: (job) => ledger.abandon(job),
         sampleRuntime: (job) => dockerSampleRuntime(attemptExecOf(deps, job), deps.config, job),
         agentStarted: (job) => dockerAgentStarted(attemptExecOf(deps, job), job),

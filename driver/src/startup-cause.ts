@@ -26,16 +26,23 @@ export const heldWords = ({ role, service }: HeldContainer): string =>
 export class StartupRefused extends Error {
     readonly role: HeldContainer['role'];
     readonly service: string | undefined;
+    /**
+     * Set only where the executor confirmed the platform took the group away before its first contact
+     * (BEL-302): the hand-back then stays out of the poison interruption budget. Never inferred from the message.
+     */
+    declare readonly nodeLoss?: true;
 
     constructor(
         message: string,
         readonly startupCause: StartupCause,
-        held: HeldContainer = { role: 'executor' }
+        held: HeldContainer = { role: 'executor' },
+        nodeLoss?: true
     ) {
         super(message);
         this.name = 'StartupRefused';
         this.role = held.role;
         this.service = held.service;
+        if (nodeLoss) this.nodeLoss = nodeLoss;
     }
 }
 

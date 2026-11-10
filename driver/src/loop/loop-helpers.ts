@@ -4,6 +4,7 @@ import type { HelperFailureReport, HelperPlan, HelperResult, InvokeChild } from 
 import { formatConcludeOutput, runHelperPlan } from '../helpers.js';
 import { askGithubToken } from './loop-github.js';
 import { down, raceStep } from './loop-attempt.js';
+import { supervisorLossFlag } from './loop-fence.js';
 import { helperCauseOf } from './loop-ledger.js';
 import type { AttemptCtx, SetupConclusion, SetupHalt } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
@@ -169,6 +170,6 @@ async function runPlanFenced(
         if (down(ctx.state)) return STOOD_DOWN;
         if (!stepLost(e)) throw e;
         const reason = `infrastructure loss: a ${plan.phase}-run helper's supervisor was lost (${(e as Error).message})`;
-        return { halt: 'interrupt', reason };
+        return { halt: 'interrupt', reason, ...(await supervisorLossFlag(ctx, e)) };
     }
 }

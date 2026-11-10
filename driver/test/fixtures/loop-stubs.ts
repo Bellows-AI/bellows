@@ -589,6 +589,10 @@ export function stubRunner(
         async supervisorServing(): Promise<Read<boolean>> {
             return { kind: 'value', value: true };
         },
+        /** The group is never confirmed taken away until a test scripts otherwise (BEL-302). */
+        async groupTakenAway(): Promise<boolean> {
+            return false;
+        },
         async runReview(
             caller: BoardJob,
             review: ReviewClaim,

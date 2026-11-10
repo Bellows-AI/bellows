@@ -2133,7 +2133,9 @@ describe('the poll loop', () => {
         await loop.handover('the driver was drained');
         await started;
 
-        expect(board.board.interrupted).toEqual([{ id: claimed.id, reason: 'the driver was drained', release: true }]);
+        expect(board.board.interrupted).toEqual([
+            { id: claimed.id, reason: 'the driver was drained', release: true, nodeLoss: true },
+        ]);
         expect(runner.abandoned).toHaveLength(1);
         expect(runner.killed).toEqual([]);
         expect(runner.finished).toEqual([]);
@@ -2168,7 +2170,9 @@ describe('the poll loop', () => {
         await started;
         await new Promise((resolve) => setTimeout(resolve, 20));
 
-        expect(board.board.interrupted).toEqual([{ id: claimed.id, reason: 'the driver was drained', release: true }]);
+        expect(board.board.interrupted).toEqual([
+            { id: claimed.id, reason: 'the driver was drained', release: true, nodeLoss: true },
+        ]);
         expect(board.board.completed).toEqual([]);
         expect(board.board.suspended).toEqual([]);
         expect(runner.finished).toEqual([]);

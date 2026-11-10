@@ -5,13 +5,14 @@
  * #472, steps 3 and 4 of #433, #828).
  */
 
-import { down, type JobState } from './loop-attempt.js';
+import { down, type JobState, raceStep } from './loop-attempt.js';
 import { lostOf } from './loop-phase.js';
 import type { BoardJob } from '../board/board.js';
 import { LeftoverTerminating, type RunOutcome } from '../runner.js';
 import { SYNC_FAILURE_KINDS, withConflictContext, type SyncResult } from '../publish/publish.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
 import { type StartupCause, StartupRefused, transientStartup } from '../startup-cause.js';
+import { StepChannelClosed } from '../step-control.js';
 
 /**
  * The ONE decision on a group start the platform refused for a proven cause (issue #824 D11) — on
@@ -19,7 +20,7 @@ import { type StartupCause, StartupRefused, transientStartup } from '../startup-
  * the board refunds within its budget, a permanent one a configuration fault a person fixes.
  */
 export function startupHaltOf(refused: StartupRefused): SetupHalt {
-    return startupHalt(refused.startupCause, refused.message);
+    return startupHalt(refused.startupCause, refused.message, refused.nodeLoss);
 }
 
 /** A failed setup step's halt: the attempt ends `failed` with `output`, `log` saying why in the driver's log. */
@@ -32,9 +33,15 @@ export function faultHalt(
     return { halt: 'fault', log, verdict: { status: 'failed', exitCode, output, failureKind } };
 }
 
-function startupHalt(cause: StartupCause, detail: string): SetupHalt {
-    if (transientStartup(cause))
-        return { halt: 'interrupt', reason: `the runner could not start: ${detail}`, refused: true };
+function startupHalt(cause: StartupCause, detail: string, nodeLoss?: true): SetupHalt {
+    if (transientStartup(cause)) {
+        return {
+            halt: 'interrupt',
+            reason: `the runner could not start: ${detail}`,
+            refused: true,
+            ...(nodeLoss ? { nodeLoss } : {}),
+        };
+    }
     return faultHalt(
         `the runner could not start (${cause}): ${detail}`,
         `The runner could not start: ${detail}`,
@@ -142,7 +149,13 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
     if (!down(state)) return null;
     // A drain's handover is an interruption: released to the next claim, whose runner is never finished.
     if (state.ending?.kind === 'handover') {
-        return { kind: 'interrupt', reason: state.handoverReason ?? 'the driver was drained', exitCode: null };
+        // Only a SIGTERM drains a driver, and no job can send its own driver one: the platform took the node (BEL-302).
+        return {
+            kind: 'interrupt',
+            reason: state.handoverReason ?? 'the driver was drained',
+            exitCode: null,
+            nodeLoss: true,
+        };
     }
     // A requirement wait is handed back like a drain's handover, but held by the board until it closes.
     if (state.ending?.kind === 'requirement') return requirementDecision(state, beforePark);
@@ -186,6 +199,7 @@ export function setupDecision(halt: SetupHalt): EndDecision {
                 exitCode: null,
                 ...(halt.refused ? { refused: true } : {}),
                 ...(halt.blocked ? { blocked: true } : {}),
+                ...(halt.nodeLoss ? { nodeLoss: true } : {}),
             };
         case 'fault':
         case 'concluded':
@@ -216,12 +230,43 @@ export function leaveDecision(job: BoardJob, reason: string, exitCode: number | 
  * A run that threw is not handed back: its runner may have survived (`thrownRunDecision`). Only an
  * interrupt that does not land or a spent budget leaves it to the lease (`end`).
  */
-export const interruptDecision = (reason: string, exitCode: number | null, refused = false): EndDecision => ({
+export const interruptDecision = (
+    reason: string,
+    exitCode: number | null,
+    refused = false,
+    nodeLoss = false
+): EndDecision => ({
     kind: 'interrupt',
     reason,
     exitCode,
     ...(refused ? { refused: true as const } : {}),
+    ...(nodeLoss ? { nodeLoss: true as const } : {}),
 });
+
+/** The bound on the read that asks the executor whether a lost supervisor's group was taken away. */
+export const GROUP_TAKEN_AWAY_READ_MS = 15_000;
+
+/**
+ * Whether a lost supervisor is a node loss (BEL-302): only a closed channel can be — a step answered too late
+ * or a token ask left unanswered is a hang, never node evidence — and only when the executor confirms the
+ * group was taken away. An error, a timeout, a stand-down mid-read, an answer other than a plain yes, or a
+ * runner that cannot tell is no confirmation: the interruption counts against the poison budget as before.
+ */
+export async function supervisorLossFlag(ctx: AttemptCtx, e: unknown): Promise<{ nodeLoss?: true }> {
+    if (!(e instanceof StepChannelClosed)) return {};
+    const { rt, job, state } = ctx;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), GROUP_TAKEN_AWAY_READ_MS);
+    });
+    const asked = (async () => (await rt.runner.groupTakenAway(job, state.signal)) === true)().catch(() => false);
+    try {
+        const answered = await raceStep(state.signal, Promise.race([asked, expired]));
+        return answered?.value === true ? { nodeLoss: true } : {};
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 /**
  * How a run that has no verdict to report ends, or null when it reports: a runner the platform took
@@ -234,7 +279,14 @@ export function unreportedDecision(outcome: RunOutcome): EndDecision | null {
     if (why !== null && outcome.startupCause && !transientStartup(outcome.startupCause)) {
         return setupDecision(startupHalt(outcome.startupCause, outcome.output.trim()));
     }
-    if (outcome.infraLoss) return interruptDecision(`infrastructure loss: ${outcome.infraLoss}`, outcome.exitCode);
+    if (outcome.infraLoss) {
+        return interruptDecision(
+            `infrastructure loss: ${outcome.infraLoss}`,
+            outcome.exitCode,
+            false,
+            outcome.infraNodeLoss === true
+        );
+    }
     return why === null ? null : interruptDecision(why, outcome.exitCode, true);
 }
 

@@ -349,3 +349,53 @@ describe('runnerLossOf (issue #560)', () => {
         ).toBe('the runner pod was deleted before it exited (evicted, drained or its node removed)');
     });
 });
+
+describe('groupTakenAway: the executor confirms the task group was taken away (BEL-302)', () => {
+    const pod = (status: Record<string, unknown>) => ({ metadata: { name: podName }, status });
+    const answering = (answer: K8sRequest | { status: number; body: string }) =>
+        runner(typeof answer === 'function' ? answer : async () => answer);
+    const listing = (...items: unknown[]) => ({ status: 200, body: JSON.stringify({ items }) });
+    const signal = () => new AbortController().signal;
+
+    it.each([
+        [
+            'a pod marked a disruption target',
+            listing(pod({ phase: 'Running', conditions: [{ type: 'DisruptionTarget', status: 'True', reason: 'x' }] })),
+        ],
+        ['an evicted pod', listing(pod({ phase: 'Failed', reason: 'Evicted' }))],
+        ['a pod the apiserver no longer lists', listing()],
+    ])('confirms %s', async (_name, response) => {
+        expect(await answering(response).groupTakenAway?.(job, signal())).toBe(true);
+    });
+
+    it.each([
+        ['a live pod whose supervisor crashed', listing(pod({ phase: 'Running', containerStatuses: [] }))],
+        ['a live pod with no conditions at all', listing({ metadata: { name: podName } })],
+        [
+            'a pod whose disruption condition is not true',
+            listing(pod({ phase: 'Running', conditions: [{ type: 'DisruptionTarget', status: 'False' }] })),
+        ],
+        ['an apiserver error', { status: 500, body: 'boom' }],
+        ['an empty answer', { status: 200, body: '' }],
+        ['a body that is not a list', { status: 200, body: '{}' }],
+        ['a body that is not JSON', { status: 200, body: 'not json' }],
+        ['a list entry that is not a pod', listing('nope')],
+    ])('does not confirm it from %s', async (_name, response) => {
+        expect(await answering(response).groupTakenAway?.(job, signal())).toBe(false);
+    });
+
+    it('does not confirm it when the request fails', async () => {
+        const failing = answering(async () => {
+            throw new Error('connection reset');
+        });
+
+        expect(await failing.groupTakenAway?.(job, signal())).toBe(false);
+    });
+
+    it('does not confirm it for an attempt that already stood down', async () => {
+        const down = new AbortController();
+        down.abort();
+
+        expect(await answering(listing()).groupTakenAway?.(job, down.signal)).toBe(false);
+    });
+});

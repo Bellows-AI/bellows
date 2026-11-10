@@ -6,10 +6,12 @@ import {
     INTERRUPTION_BUDGET,
     INTERRUPTION_WINDOW_MS,
     LEASE_EXPIRED_REASON,
+    NODE_LOSS_BUDGET,
+    NODE_LOSS_WINDOW_MS,
 } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { spendInterruptionBudget, testOrg } from './fixtures.js';
+import { recordInterruptions, spendInterruptionBudget, testOrg } from './fixtures.js';
 
 /**
  * Issue #792: an attempt the infrastructure interrupted (a node drained under the driver, a runner
@@ -502,5 +504,143 @@ describe.skipIf(!enabled)('a blocked hand-back waits outside the interruption bu
             await sql`update job set claim_deferred_until = now() where id = ${id}`;
         }
         expect(await claim()).toMatchObject({ id, lastAttempt: false });
+    });
+});
+
+/**
+ * BEL-302: an attempt lost to the node (a drained driver, an evicted runner) is flagged `nodeLoss` by the
+ * driver and never spends the poison budget; it has a far looser bound of its own. Lease expiries are written
+ * by the server, unflagged, and keep counting.
+ */
+describe.skipIf(!enabled)('node loss spends its own bound, not the poison budget — database', () => {
+    const lost = (id: string, leaseToken: string) =>
+        store.interrupt(id, leaseToken, { reason: 'the driver was drained', release: true, nodeLoss: true });
+    const gone = (id: string, leaseToken: string) =>
+        store.interrupt(id, leaseToken, { reason: 'the process died', release: true });
+
+    // A running row at its last attempt: queued rows at max_attempts are unclaimable, so it is set after the claim.
+    const atMaxAttempts = (id: string) => sql`update job set max_attempts = 3, attempts = 3 where id = ${id}`;
+
+    const backdate = (id: string, ago: number, malformed = false) =>
+        sql`update job set interruptions = (
+                select jsonb_agg(jsonb_set(e, '{at}', to_jsonb(${malformed ? 'garbage' : new Date(Date.now() - ago).toISOString()}::text)))
+                from jsonb_array_elements(interruptions) as e
+            ) where id = ${id}`;
+
+    it('keeps a job claimable after INTERRUPTION_BUDGET node losses and an expired lease at its last attempt', async () => {
+        const id = await queue();
+        for (let round = 0; round < INTERRUPTION_BUDGET; round += 1) {
+            const c = await claim();
+            expect(await lost(id, c.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+        }
+        await claim();
+        await atMaxAttempts(id);
+        await age(id);
+
+        expect(await claim()).toMatchObject({ id });
+        const row = (await store.get(id))!;
+        expect(row.status).not.toBe('dead');
+        expect(row.interruptions.filter((i) => i.nodeLoss === true)).toHaveLength(INTERRUPTION_BUDGET);
+        expect(row.interruptions.filter((i) => i.reason === LEASE_EXPIRED_REASON)).toHaveLength(1);
+    });
+
+    // Regression guard: passes before and after the fix.
+    it('still retires a job whose INTERRUPTION_BUDGET interruptions were not node loss', async () => {
+        const id = await queue();
+        for (let round = 0; round < INTERRUPTION_BUDGET; round += 1) {
+            const c = await claim();
+            expect(await gone(id, c.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+        }
+        await claim();
+        await atMaxAttempts(id);
+        await age(id);
+
+        expect(await store.claim(WORKER, 60)).toBeNull();
+        expect(await store.get(id)).toMatchObject({ status: 'dead' });
+    });
+
+    it('accepts a node-loss release past a spent poison budget', async () => {
+        const id = await queue();
+        await spendInterruptionBudget(sql, id);
+        const c = await claim();
+        expect(await lost(id, c.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+    });
+
+    // Regression guard: passes before and after the fix.
+    it('refuses an unflagged release past a spent poison budget', async () => {
+        const id = await queue();
+        await spendInterruptionBudget(sql, id);
+        const c = await claim();
+        expect(await gone(id, c.leaseToken)).toEqual({ result: 'exhausted' });
+    });
+
+    it('keeps a job claimable on 4 poison interruptions plus many node losses, retires it on 5 poison', async () => {
+        const kept = await queue();
+        await claim();
+        await recordInterruptions(sql, kept, INTERRUPTION_BUDGET - 1);
+        await recordInterruptions(sql, kept, 10, { nodeLoss: true });
+        await atMaxAttempts(kept);
+        await age(kept);
+        expect(await claim()).toMatchObject({ id: kept });
+
+        const retired = await queue();
+        await claim();
+        await recordInterruptions(sql, retired, INTERRUPTION_BUDGET);
+        await recordInterruptions(sql, retired, 10, { nodeLoss: true });
+        await atMaxAttempts(retired);
+        await age(retired);
+        expect(await store.claim(WORKER, 60)).toBeNull();
+        expect(await store.get(retired)).toMatchObject({ status: 'dead' });
+    });
+
+    describe('the node-loss bound', () => {
+        it('accepts a flagged release one below NODE_LOSS_BUDGET', async () => {
+            const id = await queue();
+            const c = await claim();
+            await recordInterruptions(sql, id, NODE_LOSS_BUDGET - 1, { nodeLoss: true });
+            expect(await lost(id, c.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+        });
+
+        it('refuses a flagged release once NODE_LOSS_BUDGET node losses are recorded', async () => {
+            const id = await queue();
+            const c = await claim();
+            await recordInterruptions(sql, id, NODE_LOSS_BUDGET, { nodeLoss: true });
+            expect(await lost(id, c.leaseToken)).toEqual({ result: 'exhausted' });
+        });
+
+        it('retires a job at its last attempt once NODE_LOSS_BUDGET node losses fall inside the window', async () => {
+            const id = await queue();
+            await claim();
+            await recordInterruptions(sql, id, NODE_LOSS_BUDGET, { nodeLoss: true });
+            await backdate(id, NODE_LOSS_WINDOW_MS - 60_000);
+            await atMaxAttempts(id);
+            await age(id);
+
+            expect(await store.claim(WORKER, 60)).toBeNull();
+            expect(await store.get(id)).toMatchObject({ status: 'dead' });
+        });
+
+        it('forgives node losses older than NODE_LOSS_WINDOW_MS', async () => {
+            const id = await queue();
+            await claim();
+            await recordInterruptions(sql, id, NODE_LOSS_BUDGET, { nodeLoss: true });
+            await backdate(id, NODE_LOSS_WINDOW_MS + 60_000);
+            await atMaxAttempts(id);
+            await age(id);
+
+            expect(await claim()).toMatchObject({ id });
+        });
+
+        it('counts a node loss whose time is malformed as spent', async () => {
+            const id = await queue();
+            await claim();
+            await recordInterruptions(sql, id, NODE_LOSS_BUDGET, { nodeLoss: true });
+            await backdate(id, 0, true);
+            await atMaxAttempts(id);
+            await age(id);
+
+            expect(await store.claim(WORKER, 60)).toBeNull();
+            expect(await store.get(id)).toMatchObject({ status: 'dead' });
+        });
     });
 });

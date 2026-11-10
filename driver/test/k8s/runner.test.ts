@@ -1908,6 +1908,85 @@ describe('the kubernetes runner', () => {
         expect(outcome).toMatchObject({ started: true, infraLoss: expect.stringMatching(/ContainerStatusUnknown/) });
     });
 
+    // BEL-302: only a runner the executor saw taken away is a node loss; a supervisor that died inside a live pod is not.
+    describe('which ended runs are a node loss (BEL-302)', () => {
+        const terminated = (name: string, exitCode: number) => ({ name, state: { terminated: { exitCode } } });
+        const endedWith = async (pods: unknown) => {
+            const { request } = fakeRequest({
+                job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) },
+                pods: { status: 200, body: JSON.stringify(pods) },
+            });
+            return runner(request).run(job, { id: SESSION, resume: false });
+        };
+
+        it.each<[string, unknown]>([
+            [
+                'an evicted pod',
+                {
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                phase: 'Failed',
+                                reason: 'Evicted',
+                                message: 'low on memory',
+                                containerStatuses: [terminated(AGENT_CONTAINER, 137), terminated('supervisor', 137)],
+                            },
+                        },
+                    ],
+                },
+            ],
+            [
+                'a pod marked a disruption target',
+                {
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                phase: 'Running',
+                                conditions: [
+                                    { type: 'DisruptionTarget', status: 'True', reason: 'EvictionByEvictionAPI' },
+                                ],
+                                containerStatuses: [terminated(AGENT_CONTAINER, 143), terminated('supervisor', 143)],
+                            },
+                        },
+                    ],
+                },
+            ],
+            ['a pod that is gone', { items: [] }],
+        ])('flags %s as a node loss', async (_name, pods) => {
+            const outcome = await endedWith(pods);
+
+            expect(outcome.infraLoss).toBeDefined();
+            expect(outcome.infraNodeLoss).toBe(true);
+        });
+
+        it('flags a runner Job deleted under the run', async () => {
+            const { request } = fakeRequest({ job: { status: 404, body: '{"kind":"Status"}' } });
+
+            const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+
+            expect(outcome.infraNodeLoss).toBe(true);
+        });
+
+        it('does not flag a supervisor that died inside a live pod (crash, OOM)', async () => {
+            const outcome = await endedWith({
+                items: [
+                    {
+                        metadata: { name: podName },
+                        status: {
+                            phase: 'Failed',
+                            containerStatuses: [terminated(AGENT_CONTAINER, 0), terminated('supervisor', 137)],
+                        },
+                    },
+                ],
+            });
+
+            expect(outcome.infraLoss).toBeDefined();
+            expect(outcome).not.toHaveProperty('infraNodeLoss');
+        });
+    });
+
     // The deadline is enforced by the kubelet, so the Job reports failed with the reason attached;
     // the driver maps that onto the same verdict `docker kill` after DRIVER_JOB_TIMEOUT_MS gets.
     // A current cluster marks the deadline `FailureTarget` first and `Failed` only once the pod is

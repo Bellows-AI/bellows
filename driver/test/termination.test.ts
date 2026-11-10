@@ -218,4 +218,30 @@ describe('settleEnd', () => {
             fields: { artifactSpoolFull: 'the spool cap was reached' },
         });
     });
+
+    describe('which losses are the platform taking the node (BEL-302)', () => {
+        it('flags a runner the executor saw vanish', () => {
+            expect(settleEnd({ ...END, vanished: VANISHED })).toMatchObject({
+                infraLoss: VANISHED,
+                infraNodeLoss: true,
+            });
+        });
+
+        it('flags a vanished runner whatever its supervisor logged on the way down', () => {
+            expect(settleEnd({ ...END, report: REPORT, vanished: VANISHED }).infraNodeLoss).toBe(true);
+        });
+
+        it.each([
+            ['a supervisor that never finalized', { ...END, unfinalized: UNFINALIZED }],
+            ['an agent the supervisor lost', { ...END, report: { ...REPORT, agentEnd: 'lost' } }],
+            [
+                'an agent killed by SIGTERM with no cause',
+                { ...END, report: { ...REPORT, outcome: 'failed', cause: 'agent_killed', agentExit: 143 } },
+            ],
+            ['a runner the driver hard-killed', { ...END, driverKilledHard: true, vanished: VANISHED }],
+            ['a run its budget ended', { ...END, budgetEnded: true, vanished: VANISHED }],
+        ])('never flags %s', (_name, evidence) => {
+            expect(settleEnd(evidence as EndEvidence).infraNodeLoss).toBeUndefined();
+        });
+    });
 });

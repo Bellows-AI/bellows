@@ -41,7 +41,7 @@ export const LOSS_ROWS = [
 
 /** What an infrastructure loss carries past the loss itself: the keys a lost run must not have. */
 export function carriedPastLoss(outcome: RunOutcome): string[] {
-    const loss = ['exitCode', 'output', 'timedOut', 'started', 'infraLoss'];
+    const loss = ['exitCode', 'output', 'timedOut', 'started', 'infraLoss', 'infraNodeLoss'];
     return Object.keys(outcome).filter((key) => !loss.includes(key));
 }
 

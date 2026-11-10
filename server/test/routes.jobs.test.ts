@@ -123,6 +123,7 @@ interface StoreStub extends JobStore {
             claimSeq?: number | null;
             refused?: boolean;
             blocked?: boolean;
+            nodeLoss?: boolean;
         };
     }[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
@@ -2218,6 +2219,44 @@ describe('POST /api/jobs/:id/interrupt', () => {
         });
     });
 
+    it('passes a node-loss release through to the store (BEL-302)', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'the driver was drained',
+            release: true,
+            nodeLoss: true,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.interrupted[0]!.interruption).toEqual({
+            reason: 'the driver was drained',
+            release: true,
+            claimSeq: null,
+            nodeLoss: true,
+        });
+    });
+
+    it('stores no node-loss flag when the body sends none or false', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        await post(instance, `/api/jobs/${ID}/interrupt`, { leaseToken: TOKEN, reason: 'a', release: true });
+        await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'b',
+            release: true,
+            nodeLoss: false,
+        });
+
+        expect(store.interrupted.map((i) => i.interruption)).toEqual([
+            { reason: 'a', release: true, claimSeq: null },
+            { reason: 'b', release: true, claimSeq: null },
+        ]);
+    });
+
     it('passes a blocked hand-back through on a release', async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
@@ -2264,6 +2303,8 @@ describe('POST /api/jobs/:id/interrupt', () => {
         ['a refused adoption', { reason: 'adopted', release: false, claimSeq: 2, refused: true }],
         ['a blocked flag that is not a boolean', { reason: 'blocked', release: true, blocked: 'yes' }],
         ['a blocked adoption', { reason: 'adopted', release: false, claimSeq: 2, blocked: true }],
+        ['a nodeLoss flag that is not a boolean', { reason: 'evicted', release: true, nodeLoss: 'yes' }],
+        ['a nodeLoss adoption', { reason: 'adopted', release: false, claimSeq: 2, nodeLoss: true }],
     ])('refuses %s with 400 BAD_BODY, touching nothing', async (_name, fields) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
