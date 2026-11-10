@@ -1766,9 +1766,9 @@ begin_phase images
 # entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
     docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-task-title/task-title.cjs "$work/"
+cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/executor-common/skill-view.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-task-title/task-title.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
-printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
+printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs skill-view.cjs jira.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >"$work/dashboard-build.log" 2>&1 &
 dash_build=$!
@@ -3368,6 +3368,12 @@ case "$skills_off" in
 200*) ok 'the org switches a built-in off before the skills task is made' ;;
 *) bad 'the org switches a built-in off before the skills task is made' "status and body: $skills_off" ;;
 esac
+# BEL-289: the checkout holds a skill named like the pinned workspace skill (and two others), so the resumed pod's view
+# is built against a real clash.
+skills_clash="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/clash; git clone -q /origins/$SMOKE_REPO.git /tmp/clash; cd /tmp/clash
+for d in .claude/skills/lane-ws-skill .claude/skills/lane-repo-other-claude .agents/skills/lane-repo-other; do mkdir -p \$d; printf '%s\n' '---' \"name: \${d##*/}\" 'description: Lane fixture repo skill - use it never.' '---' 'Nothing to do.' >\$d/SKILL.md; done
+git -c user.name=test-k8s -c user.email=test-k8s@localhost add -A; git -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q -m lane-repo-skills; git push -q origin HEAD:main; echo pushed" 2>&1 || true)"
+case "$skills_clash" in *pushed*) ok 'the origin ships repo skills named like the workspace skill' ;; *) bad 'the origin ships repo skills named like the workspace skill' "$skills_clash" ;; esac
 skills_job="$(queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
 skills_pod="$(await_runner_pod "$skills_job")"
 if [ -z "$skills_job" ] || [ -z "$skills_pod" ]; then
@@ -3398,6 +3404,14 @@ else
     expect_contains 'the resumed runner is told to hide the built-in the org switched off' "$skills_out" 'hidden factory-task-title'
     expect_contains "the org skill's helper file opens for the agent" "$skills_out" 'helper lane-org-skill/ref/helper.txt open'
     expect_contains "the workspace skill's helper file opens for the agent" "$skills_out" 'helper lane-ws-skill/ref/helper.txt open'
+    # BEL-289: the executors' view builder, run by the stub on the resumed pod against the clashing checkout: the workspace
+    # copy is the one entry of its name in both views, and opencode's view still holds the checkout's other skills.
+    expect_contains 'the resumed pod links the workspace skill into the claude view' "$skills_out" 'view claude lane-ws-skill /task/.factory/skills-root/.claude/skills/lane-ws-skill'
+    expect_contains 'the resumed pod links the workspace skill into the opencode view' "$skills_out" 'view opencode lane-ws-skill /task/.factory/skills-root/.claude/skills/lane-ws-skill'
+    skills_view_ws="$(printf '%s\n' "$skills_out" | grep -c '^view opencode lane-ws-skill ' || true)"
+    [ "$skills_view_ws" = 1 ] && ok 'the opencode view holds exactly one copy of the workspace skill' || bad 'the opencode view holds exactly one copy of the workspace skill' "$skills_view_ws lines"
+    expect_contains "the opencode view still holds the checkout's .agents skill" "$skills_out" '/.agents/skills/lane-repo-other'
+    expect_not_contains 'the control: the view builder did not refuse' "$skills_out" 'refused'
 fi
 
 # BEL-286: a task whose owner holds no Jira connection (the org admin minted above has none, so nothing binds by

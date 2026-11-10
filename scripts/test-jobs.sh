@@ -4090,6 +4090,10 @@ ps_b=''
 # Text that appears only in one built-in's description, so the scripted model can tell whether the CLI offered it.
 PS_CLASH_REPO="${SMOKE_REPO%%/*}/clash" # a second origin whose checkout ships a skill named like the pinned org skill
 PS_REPO_SENTINEL=LANE_PIN_REPO_SENTINEL_5d2c
+PS_WS_CLASH_REPO="${SMOKE_REPO%%/*}/ws-clash" # an origin whose checkout ships a skill named like the pinned WORKSPACE skill (BEL-289)
+PS_REPO_WS_SENTINEL=LANE_PIN_REPO_WS_SENTINEL_5d2c
+PS_REPO_OTHER_SENTINEL=LANE_PIN_REPO_OTHER_5d2c # .agents/skills: opencode scans it, claude does not
+PS_REPO_OTHER_CLAUDE_SENTINEL=LANE_PIN_REPO_OTHER_CLAUDE_5d2c
 PS_JIRA_DESC='Jira work items through the jira helper' # no comma: --skill-sentinel splits its value on commas
 PS_FIX_DESC='Optional playbook for fixing a backend bug'
 
@@ -4202,6 +4206,27 @@ values (:'org', 'claude-code', 'test-jobs-pinned-clash', :'repo', 'main', now(),
 SQL
 }
 
+ps_ws_clash_repo() { # a bare origin <owner>/ws-clash: .claude/skills/$PS_WS_SKILL plus two other repo skills, and the org's row for it
+    docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+        set -e
+        git init -q --bare -b main "/origins/$1.git"
+        git init -q -b main /tmp/seed
+        skill() { # skill <dir> <name> <sentinel>
+            mkdir -p "/tmp/seed/$1/$2"
+            printf "%s\n" "---" "name: $2" "description: Lane fixture skill $3 - use it never." "---" "Nothing to do." >"/tmp/seed/$1/$2/SKILL.md"
+        }
+        skill .claude/skills "$2" "$3"
+        skill .agents/skills lane-repo-other "$4"
+        skill .claude/skills lane-repo-other-claude "$5"
+        git -C /tmp/seed add -A
+        git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q -m "repo skills"
+        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$PS_WS_CLASH_REPO" "$PS_WS_SKILL" "$PS_REPO_WS_SENTINEL" "$PS_REPO_OTHER_SENTINEL" "$PS_REPO_OTHER_CLAUDE_SENTINEL" || return 1
+    compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -v "org=$PS_ORG" -v "repo=$PS_WS_CLASH_REPO" -f - >/dev/null <<'SQL'
+insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+values (:'org', 'claude-code', 'test-jobs-pinned-ws-clash', :'repo', 'main', now(), now());
+SQL
+}
+
 ps_get() { # ps_get <url> -> the body
     node -e 'fetch(process.argv[1]).then((r) => r.text()).then((t) => process.stdout.write(t))' "$1"
 }
@@ -4216,6 +4241,10 @@ ps_probe() { # ps_probe <tool-results json> <n> -> that probe's outcome
 
 ps_seen() { # ps_seen <skills-seen json> <sentinel> -> yes|no
     node -e 'console.log(JSON.parse(process.argv[1]).seenSentinels.includes(process.argv[2]) ? "yes" : "no")' "$1" "$2"
+}
+
+ps_count() { # ps_count <skills-seen json> <sentinel> -> how often the richest request carried it (0 when none)
+    node -e 'console.log((JSON.parse(process.argv[1]).sentinelCounts ?? {})[process.argv[2]] ?? 0)' "$1" "$2"
 }
 
 ps_cli_lane() { # ps_cli_lane <claude|opencode>
@@ -4314,6 +4343,30 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
         *) ok "$cli: the pinned org copy is not installed" ;;
     esac
     lane_endpoint_stop "$ps_pid"
+
+    # BEL-289: a checkout that ships a skill named like a pinned WORKSPACE skill loses to it: one copy is listed, the
+    # workspace one, and the repo's other skills still are. The org skill (no clash here) is the one-copy baseline.
+    local ws_now ws_n_org ws_n_ws
+    ws_now="$(ps_ws_sentinel "$ps_ws_n")"
+    ps_endpoint "pins-$cli-wsclash" "$PS_ORG_SENTINEL,$ws_now,$PS_REPO_WS_SENTINEL,$PS_REPO_OTHER_SENTINEL,$PS_REPO_OTHER_CLAUDE_SENTINEL" "$PS_DIR/$PS_WS_SKILL/ref/helper.txt,/etc/shadow"
+    ps_point "$cli" "$ps_a" "$ps_port"
+    id="$(ps_job "$cli" "$ps_a" "$PS_WS_CLASH_REPO")"
+    expect_contains "$cli: a task whose repo ships the workspace skill's name succeeds" "$(AUTH_HEADER="Bearer $ps_a" await_settled "$id" 240)" succeeded
+    seen="$(ps_get "http://127.0.0.1:$ps_port/skills-seen")"
+    results="$(ps_get "http://127.0.0.1:$ps_port/tool-results")"
+    ps_expect "$cli: a workspace skill named like a repo skill is offered from the workspace" "$(ps_seen "$seen" "$ws_now")$(ps_seen "$seen" "$PS_REPO_WS_SENTINEL")" yesno
+    ws_n_org="$(ps_count "$seen" "$PS_ORG_SENTINEL")"
+    ws_n_ws="$(ps_count "$seen" "$ws_now")"
+    [ "$ws_n_ws" -ge 1 ] && [ "$ws_n_ws" = "$ws_n_org" ] && ok "$cli: the workspace skill is listed exactly once" || bad "$cli: the workspace skill is listed exactly once" "workspace copy listed $ws_n_ws time(s), the org baseline $ws_n_org"
+    ps_expect "$cli: the repo's other .claude skill is still offered" "$(ps_seen "$seen" "$PS_REPO_OTHER_CLAUDE_SENTINEL")" yes
+    if [ "$cli" = opencode ]; then
+        ps_expect "$cli: the repo's .agents skill is still offered through the view" "$(ps_seen "$seen" "$PS_REPO_OTHER_SENTINEL")" yes
+    else
+        ps_expect "the control: $cli does not scan .agents" "$(ps_seen "$seen" "$PS_REPO_OTHER_SENTINEL")" no
+    fi
+    ps_expect "$cli: the workspace skill's helper opens for the tool uid" "$(ps_probe "$results" 1)" open
+    ps_expect "the control: $cli's tool uid is denied /etc/shadow beside the clash" "$(ps_probe "$results" 2)" denied
+    lane_endpoint_stop "$ps_pid"
     stop_driver
 }
 
@@ -4363,6 +4416,7 @@ pinned_skills_lane() {
     AUTH_HEADER="Bearer $ps_b" expect_status "pinned skills: member B cannot read A's workspace skill" 404 GET "/api/workspace/skills/$ps_ws_id"
 
     ps_clash_repo && ok 'pinned skills: a second origin ships a repo skill named like the org skill' || bad 'pinned skills: a second origin ships a repo skill named like the org skill' 'could not seed it'
+    ps_ws_clash_repo && ok 'pinned skills: a third origin ships a repo skill named like the workspace skill' || bad 'pinned skills: a third origin ships a repo skill named like the workspace skill' 'could not seed it'
     ps_cli_lane claude
     ps_cli_lane opencode
 }
