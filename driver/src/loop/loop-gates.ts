@@ -77,6 +77,9 @@ export type GateReport = {
 const declaresGateEnvironment = (job: BoardJob): boolean =>
     Boolean(job.gates && (job.gates.gates.length || job.gates.setup));
 
+/** Whether the agent can ask for a gate: a declared one, in a checkout the gate environment is keyed by. */
+const declaresGates = (job: BoardJob): boolean => Boolean(job.gates?.gates.length && checkoutKey(job));
+
 /**
  * Puts the pair the agent reaches the ad-hoc gate endpoint with onto `job.gateEnv`, once. The token
  * is registered only by `beginGates`; until then the endpoint answers it nothing.
@@ -146,8 +149,9 @@ export async function beginGates(
         gates.manager.release(key, job);
         return null;
     }
+    let token: string | null = null;
     try {
-        const token = await ensureGatePair(gates, job);
+        token = await ensureGatePair(gates, job);
         const runClaimSeq = opts.runClaimSeq ?? job.claimSeq;
         const ledger = gateLedger(rt, job, runClaimSeq);
         gates.server.register(token, {
@@ -162,6 +166,9 @@ export async function beginGates(
                 state.gateLoss ??= reason;
             },
         });
+        // The agent's `POST /gate/run` reaches this claim through the control channel, whichever driver holds the run.
+        const controlToken = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
+        if (controlToken && declaresGates(job)) gates.server.attachGateRun(controlToken, token);
         // The pair is on `job.gateEnv`, beside `env` and not inside it: the reserved-name filter keeps a
         // member-configured BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
         // A taken-over run's environment setup ran before the agent did (#829).
@@ -186,6 +193,8 @@ export async function beginGates(
         };
     } catch (e) {
         // Filed but never registered: the checkout is forgotten again, so no entry outlives the claim.
+        // Registered and then failed: the token and its gate door go with it.
+        if (token !== null) gates.server.unregister(token);
         gates.manager.release(key, job);
         throw e;
     }
@@ -272,6 +281,8 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         );
         attachConnection({ rt, job, state }, token);
         gates.server.attachGateToken(token, createGateTokenRelay(rt, job, state));
+        // A job with no gate to ask for answers its agent's `POST /gate/run` "no gates"; a gated one 503s until `beginGates`.
+        if (!declaresGates(job)) gates.server.attachGateRun(token, null);
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);

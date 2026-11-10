@@ -48,6 +48,26 @@ const attemptOf = (g: Group) =>
         req.end();
     });
 
+/** `POST /gate/run {gate}` on a group's agent relay, the way the agent's gate tool reaches its driver. */
+const gateRunOf = (g: Group, gate: string) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = request(
+            {
+                socketPath: join(g.root, 'out', AGENT_MAILBOX_DIR, MAILBOX_FILES.relay),
+                path: '/gate/run',
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+            },
+            (res) => {
+                let body = '';
+                res.on('data', (chunk) => (body += chunk));
+                res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+            }
+        );
+        req.on('error', reject);
+        req.end(JSON.stringify({ gate }));
+    });
+
 const scenarios: Record<string, (s: Sim) => Promise<void>> = {
     // #1045: the adopted runner's helpers read the new claim's lease from its supervisor, not their env.
     "t2: after the takeover the agent's /attempt answers the new claim's lease": async (s) => {
@@ -243,6 +263,52 @@ describe('takeover simulation, a supervisor that wound down before the rebind re
             expect(s.brief()).toBe('succeeded|1|1');
             expect(s.text()).toContain(ADOPTED);
             expect([s.spawned, s.agentRuns]).toEqual([1, 1]);
+        } finally {
+            await s.teardown();
+        }
+    }, 40_000);
+});
+
+describe("takeover simulation, the agent's gate request (BEL-88)", () => {
+    it('a job that declares no gates answers its agent\'s gate request "no gates"', async () => {
+        const s = new Sim(scaled(15));
+        try {
+            s.release();
+            await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            const answer = await gateRunOf(g, 'verify');
+            expect(answer.status).toBe(404);
+            expect(JSON.parse(answer.body)).toEqual({ error: 'no gates' });
+            s.agentExits(g, 0);
+            await settled(s);
+        } finally {
+            await s.teardown();
+        }
+    }, 40_000);
+
+    it("a taken-over run's agent gate request reaches the new holder", async () => {
+        const s = new Sim(scaled(15), { gated: true });
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            await s.kill(a);
+            s.expireLease();
+            await s.start('B');
+            await until('the rebind', s, () => g.logs.some((l) => l.startsWith('supervisor: rebound to claim 2')));
+            // The new holder registers its gate claim a moment after the rebind: until then the answer is a retryable 503.
+            let answer = await gateRunOf(g, 'verify');
+            for (let tries = 0; answer.status === 503 && tries < 200; tries++) {
+                await nap(20);
+                answer = await gateRunOf(g, 'verify');
+            }
+            expect(answer.status).toBe(200);
+            expect(JSON.parse(answer.body)).toMatchObject({ exitCode: 0, output: 'ran on driver B' });
+            expect(s.gateRuns).toEqual([{ driver: 'B', command: 'verify-it' }]);
+            s.agentExits(g, 0);
+            await settled(s);
         } finally {
             await s.teardown();
         }
