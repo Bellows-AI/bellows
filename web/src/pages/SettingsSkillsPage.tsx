@@ -1,6 +1,7 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
 import { useState } from 'react';
 import { PageHeader } from '../components/PageHeader.js';
+import { BuiltinSkillsSection } from '../panels/BuiltinSkillsSection.js';
 import { SkillEditor, SKILL_DRAFT_ID, editorKey } from '../panels/SkillEditor.js';
 import { SkillsSection, type SkillEditorTarget } from '../panels/SkillsSection.js';
 import { useUnsavedChanges } from '../components/UnsavedChangesDialog.js';
@@ -97,6 +98,7 @@ export function SettingsSkillsPage() {
                 renderEditor={renderEditor}
                 onChanged={(doors) => void reload(doors)}
             />
+            <BuiltinSkillsSection isAdmin={isAdmin} />
         </>
     );
 }

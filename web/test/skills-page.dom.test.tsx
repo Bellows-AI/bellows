@@ -63,6 +63,7 @@ const DOOR_PATH = /^\/api\/(org|workspace)\/skills(?:\/([^/]+))?(?:\/(enabled|sc
 const skillsRoutes =
     (data: Store): FetchHandler =>
     ({ method, url, body }) => {
+        if (method === 'GET' && url === '/api/skills') return { skills: [] };
         const match = DOOR_PATH.exec(url);
         if (!match) return;
         const door = match[1] as SkillDoor;
