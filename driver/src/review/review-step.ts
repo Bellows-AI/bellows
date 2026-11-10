@@ -52,7 +52,7 @@ const HOME_STEP_TIMEOUT_MS = 60_000;
 
 const failed = (reason: string): StepResult => ({ exitCode: 1, stdout: '', stderr: reason, timedOut: false });
 
-/** A lost review's evidence (BEL-288): the last lines of the reviewer's log, how many, how long, and the one bound on both reads. */
+/** A lost review's evidence: the last lines of the reviewer's log, how many, how long, and the one bound on both reads. */
 export const REVIEWER_LOG_TAIL_LINES = 3;
 export const REVIEWER_LOG_LINE_MAX = 200;
 export const REVIEWER_READ_MS = 5_000;

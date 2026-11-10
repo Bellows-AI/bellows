@@ -39,7 +39,7 @@ beforeEach(() => {
     steps.run.mockResolvedValue(lost);
 });
 
-describe('a lost docker review (BEL-288)', () => {
+describe('a lost docker review', () => {
     it("names the reviewer's docker state and its last log lines", async () => {
         const { deps: d, calls } = deps(healthy);
         const result = await runDockerReview(d, run);

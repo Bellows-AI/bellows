@@ -17,7 +17,7 @@ import type { ExecDocker } from './docker-runner-support.js';
 export interface DockerGateDeps {
     /** The attempt's step host, its group made on demand for an attempt whose sync made none. */
     host: () => Promise<StepHost>;
-    /** The attempt's docker CLI: how a lost review's reviewer container is read (BEL-288). */
+    /** The attempt's docker CLI: how a lost review's reviewer container is read. */
     execDocker: ExecDocker;
 }
 

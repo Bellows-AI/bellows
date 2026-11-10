@@ -60,7 +60,7 @@ beforeEach(() => {
     steps.run.mockResolvedValue(lost);
 });
 
-describe('a lost kubernetes review (BEL-288)', () => {
+describe('a lost kubernetes review', () => {
     it("names the reviewer sidecar's state and its current log tail", async () => {
         const { deps, seen } = harness(
             () => podList(reviewerStatus(0)),

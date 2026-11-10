@@ -7,7 +7,7 @@ import {
     reviewerStateNote,
 } from '../src/review/review-step.js';
 
-describe('the lost-review evidence note (BEL-288)', () => {
+describe('the lost-review evidence note', () => {
     it('pins the bounds', () => {
         expect([REVIEWER_LOG_TAIL_LINES, REVIEWER_LOG_LINE_MAX, REVIEWER_READ_MS]).toEqual([3, 200, 5_000]);
     });
