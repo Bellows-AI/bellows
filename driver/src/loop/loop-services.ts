@@ -1,10 +1,11 @@
 import type { BoardJob } from '../board/board.js';
 import { raceStep } from './loop-attempt.js';
-import { faultHalt } from './loop-fence.js';
+import { faultHalt, startupHaltOf, supervisorLossFlag } from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import { type DeadService, Inconclusive, type RunOutcome } from '../runner.js';
 import { ServicesNotRunning } from '../service-restart.js';
+import { StartupRefused } from '../startup-cause.js';
 import { stepLost } from '../step-control.js';
 
 /**
@@ -32,8 +33,11 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
                 'services'
             );
         }
-        // An infrastructure refusal: the start tore its partial fleet down itself.
-        return { halt: 'interrupt', reason: `could not start the services: ${(e as Error).message}` };
+        // An infrastructure refusal: the start tore its partial fleet down itself. The executor's own
+        // node-loss evidence (a refused start's, a lost supervisor's) rides the interruption (BEL-302).
+        if (e instanceof StartupRefused) return startupHaltOf(e);
+        const reason = `could not start the services: ${(e as Error).message}`;
+        return { halt: 'interrupt', reason, ...(stepLost(e) ? await supervisorLossFlag(ctx, e) : {}) };
     }
     if (raced === null) {
         // The late fleet is the lifecycle owner's to release, under its retention (`loop-conclusion.ts`).
