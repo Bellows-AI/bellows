@@ -1,7 +1,9 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
 import { useState } from 'react';
 import { PageHeader } from '../components/PageHeader.js';
+import { SkillEditor, SKILL_DRAFT_ID, editorKey } from '../panels/SkillEditor.js';
 import { SkillsSection, type SkillEditorTarget } from '../panels/SkillsSection.js';
+import { useUnsavedChanges } from '../components/UnsavedChangesDialog.js';
 import { useSkillLists, type SkillList } from '../settings/useSkillLists.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
@@ -27,6 +29,23 @@ export function SettingsSkillsPage() {
     const { lists, reload } = useSkillLists();
     const [editor, setEditor] = useState<SkillEditorTarget | null>(null);
     const isAdmin = session?.role === ADMIN_ROLE;
+    const guard = useUnsavedChanges();
+
+    /** Opening a different editor remounts the card, so a dirty draft is asked about first; null closes it. */
+    const openEditor = async (next: SkillEditorTarget | null) => {
+        const draft =
+            editor && (!next || editorKey(next) !== editorKey(editor)) ? guard?.dirtyDraft(SKILL_DRAFT_ID) : null;
+        if (draft && guard && !(await guard.confirmDiscard(draft))) return;
+        setEditor(next);
+    };
+    const renderEditor = (target: SkillEditorTarget) => (
+        <SkillEditor
+            key={editorKey(target)}
+            target={target}
+            onClose={() => setEditor(null)}
+            onChanged={(doors) => void reload(doors)}
+        />
+    );
 
     return (
         <>
@@ -62,7 +81,8 @@ export function SettingsSkillsPage() {
                 organizationNames={skillsOf(lists.org).map((skill) => skill.name)}
                 workspaceRows={skillsOf(lists.workspace)}
                 editor={editor}
-                onEditor={setEditor}
+                onEditor={(next) => void openEditor(next)}
+                renderEditor={renderEditor}
                 onChanged={(doors) => void reload(doors)}
             />
             <SkillsSection
@@ -73,7 +93,8 @@ export function SettingsSkillsPage() {
                 organizationNames={[]}
                 workspaceRows={skillsOf(lists.workspace)}
                 editor={editor}
-                onEditor={setEditor}
+                onEditor={(next) => void openEditor(next)}
+                renderEditor={renderEditor}
                 onChanged={(doors) => void reload(doors)}
             />
         </>

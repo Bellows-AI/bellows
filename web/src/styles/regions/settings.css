@@ -553,6 +553,85 @@
         }
     }
 
+    /* The inline skill editor (BEL-272): a card in the row's place, tabs for a new skill, the save bar below. */
+    .skill-editor {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        margin: 12px 0 4px;
+        overflow: hidden;
+    }
+
+    .skill-editor-head {
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        padding: 12px 16px;
+    }
+
+    .skill-editor-head-actions {
+        align-items: center;
+        display: flex;
+        gap: 10px;
+    }
+
+    .skill-editor-body {
+        display: grid;
+        gap: 8px;
+        padding: 16px;
+    }
+
+    .skill-editor-body textarea {
+        min-height: 220px;
+        resize: vertical;
+    }
+
+    .skill-field {
+        font-weight: 600;
+    }
+
+    .skill-editor-refusal {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+    }
+
+    .skill-savebar {
+        align-items: center;
+        border-top: 1px solid var(--line);
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        padding: 10px 16px;
+    }
+
+    .skill-drop {
+        background: var(--surface-sunken);
+        border: 1.5px dashed var(--line-strong);
+        border-radius: var(--radius-xl);
+        color: var(--ink-muted);
+        padding: 28px;
+        text-align: center;
+    }
+
+    .skill-drop strong {
+        color: var(--ink);
+    }
+
+    .skill-drop-over {
+        background: var(--accent-wash);
+        border-color: var(--accent);
+        color: var(--accent);
+    }
+
+    .skill-upload {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
     .pill-list .pill {
         max-width: 24ch;
         overflow: hidden;
@@ -1247,6 +1326,10 @@
         .org-executor-add,
         .skill-add,
         .skill-view-head button,
+        .skill-editor-head button,
+        .skill-editor-refusal button,
+        .skill-savebar button,
+        .skill-drop button,
         button.notification-subscription-add,
         .integration-actions button,
         .picker-advanced > summary,
