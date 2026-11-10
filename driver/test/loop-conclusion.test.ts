@@ -419,3 +419,35 @@ describe('end takes the board\'s "lost" as final', () => {
         expect(calls).toContain('finish');
     });
 });
+
+describe('the interruption body names a node loss only when the decision does (BEL-302)', () => {
+    const bodyOf = async (decision: EndDecision): Promise<Record<string, unknown>> => {
+        const { ctx } = attempt();
+        const bodies: Record<string, unknown>[] = [];
+        (
+            ctx.rt.board as unknown as { interrupt: (job: BoardJob, body: Record<string, unknown>) => Promise<string> }
+        ).interrupt = async (_job, body) => {
+            bodies.push(body);
+            return 'held';
+        };
+        await end(ctx, decision);
+        return bodies[0] ?? {};
+    };
+
+    it('posts nodeLoss: true for a decision that carries it', async () => {
+        const body = await bodyOf({
+            kind: 'interrupt',
+            reason: 'the driver was drained',
+            exitCode: null,
+            nodeLoss: true,
+        });
+
+        expect(body).toMatchObject({ release: true, nodeLoss: true });
+    });
+
+    it('posts no nodeLoss for a decision that does not', async () => {
+        const body = await bodyOf({ kind: 'interrupt', reason: 'the pod was evicted', exitCode: null });
+
+        expect(body).not.toHaveProperty('nodeLoss');
+    });
+});

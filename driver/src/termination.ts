@@ -113,8 +113,14 @@ export interface EndEvidence {
 export interface SettledEnd {
     timedOut: boolean;
     infraLoss: string | null;
+    /** The loss is the runner taken away (`vanished`) — structured evidence of a node loss, BEL-302 — and no other kind. */
+    infraNodeLoss?: true;
     fields: Partial<Pick<RunOutcome, 'timedOut' | 'cacheLost' | 'artifactSpoolFull'>>;
 }
+
+/** The outcome field a settled end's node loss stands for: nothing unless the runner itself was taken away. */
+export const nodeLossField = (end: SettledEnd): { infraNodeLoss?: true } =>
+    end.infraNodeLoss ? { infraNodeLoss: true } : {};
 
 /** A report of a lost agent is a loss by itself: the supervisor may log it and still exit 0. */
 const LOST_AGENT = 'the supervisor lost the agent before it exited';
@@ -157,6 +163,7 @@ export function settleEnd(e: EndEvidence): SettledEnd {
     return {
         timedOut,
         infraLoss,
+        ...(infraLoss !== null && infraLoss === e.vanished ? { infraNodeLoss: true as const } : {}),
         fields: { ...reportVerdictOf(e.report), ...adoptedVerdictOf(e.kills) },
     };
 }

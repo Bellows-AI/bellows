@@ -5,7 +5,7 @@
 
 import { evidenceDecision, gatesEvidenceOf } from '../evidence-policy.js';
 import type { HelperFailureReport } from '../helpers.js';
-import { interruptDecision, setupDecision } from './loop-fence.js';
+import { interruptDecision, setupDecision, supervisorLossFlag } from './loop-fence.js';
 import { stepLost } from '../step-control.js';
 import { runPostHelperPhase } from './loop-helpers.js';
 import { end, endIfDown } from './loop-conclusion.js';
@@ -70,11 +70,14 @@ async function publishPhase(
     } catch (e) {
         if (!stepLost(e)) throw e;
         // The supervisor was lost under the push: no verdict on the publish, the next claim redoes it (#925).
+        const { nodeLoss = false } = await supervisorLossFlag(ctx, e);
         await end(
             ctx,
             interruptDecision(
                 `infrastructure loss: the task supervisor running the publish was lost (${(e as Error).message})`,
-                null
+                null,
+                false,
+                nodeLoss
             )
         );
         return STOOD_DOWN;

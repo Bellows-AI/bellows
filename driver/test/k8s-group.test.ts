@@ -469,6 +469,41 @@ describe('the task group of one attempt', () => {
             expect(thrown).toBeInstanceOf(Error);
             expect(reads).toBeGreaterThan(100);
         });
+
+        // BEL-302: the refusal is a node loss only where the pod's own state proves the platform took it.
+        it('flags a pod seen starting and then gone as a node loss', async () => {
+            const { thrown } = await lostSync((read) => (read < 3 ? [starting] : []));
+
+            expect(thrown).toMatchObject({ nodeLoss: true });
+        });
+
+        it('flags a pod carrying a disruption mark as a node loss', async () => {
+            const { thrown } = await lostSync(() => [disrupted]);
+
+            expect(thrown).toMatchObject({ nodeLoss: true });
+        });
+
+        it('flags no group that never came up', async () => {
+            const { thrown } = await lostSync(() => []);
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).not.toHaveProperty('nodeLoss');
+        });
+
+        it('flags no refusal the image pull proves', async () => {
+            const thrown = await runner(
+                cluster({ imagePull: 'manifest unknown' }).request,
+                steps(() => ok(), false).sink
+            )
+                .syncCheckout(job, undefined, SESSION)
+                .then(
+                    () => null,
+                    (e: unknown) => e
+                );
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).not.toHaveProperty('nodeLoss');
+        });
     });
 
     describe('a task pod held Pending by its volume', () => {
@@ -515,6 +550,13 @@ describe('the task group of one attempt', () => {
                 );
             return { thrown, patched, api, readsAtPatch };
         }
+
+        it('is not flagged a node loss: the volume sits in a zone no node can take', async () => {
+            const { thrown } = await stuckSync(pending(AFFINITY));
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).not.toHaveProperty('nodeLoss');
+        });
 
         it('is an infrastructure loss, never a failure: refused as transient, its volume marked unschedulable', async () => {
             const { thrown, patched, api } = await stuckSync(pending(AFFINITY));

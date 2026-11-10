@@ -1,12 +1,12 @@
 import type { BoardJob } from '../board/board.js';
 import { executorImage } from '../config.js';
-import { jobPath } from './k8s-auxspec.js';
+import { jobPath, jobPodsPath } from './k8s-auxspec.js';
 import { ledgerOf, RunnerKilled } from './k8s-kill.js';
 import { launch, prepare, readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { markTaskVolumeUnschedulable } from './k8s-task-volume.js';
 import { jobsPath, runnerJobSpec, runnerName } from './k8s-podspec.js';
 import { isLease } from './k8s-shapes.js';
-import { asIdentified } from './k8s-pod-shapes.js';
+import { asIdentified, asPod } from './k8s-pod-shapes.js';
 import {
     asJob,
     ABSENT,
@@ -16,6 +16,7 @@ import {
     readImagePullStatus,
     readTyped,
     readTypedList,
+    runnerLossOf,
     startRefusalOf,
 } from './k8s-poll.js';
 import { heldUnpullable } from './k8s-held.js';
@@ -73,6 +74,20 @@ export const runnerGroupOf = (job: BoardJob, uids?: IncarnationUids): GroupRef =
     jobName: runnerName(job),
     ...(uids ? { uids } : {}),
 });
+
+/**
+ * Whether one successful, well-formed pod list of the runner Job proves its pod was taken away (BEL-302): the
+ * pod gone from the list, evicted, or marked a disruption target (`runnerLossOf`). Any other read — a failed
+ * request, a non-2xx answer, a body that is no pod list — proves nothing and answers false, as does a pod that
+ * is still live with its supervisor crashed or OOM-killed inside it.
+ */
+export async function runnerPodTakenAway(deps: K8sDeps, jobName: string): Promise<boolean> {
+    const read = await readTypedList(deps, jobPodsPath(deps.config.k8sNamespace, jobName), 'listing the runner pods', {
+        entry: asPod,
+        once: true,
+    });
+    return read.kind === 'value' && runnerLossOf(read.value) !== null;
+}
 
 /**
  * Forgets the attempt's group, its end marked pending first — synchronously, before anything is
@@ -155,7 +170,9 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
             if (pull.disrupted || (seen.pod && pull.podState === 'none'))
                 throw new StartupRefused(
                     `the task pod of ${jobName} was lost before its supervisor made contact`,
-                    'transient'
+                    'transient',
+                    undefined,
+                    true
                 );
             if (pull.podState === 'starting' || pull.podState === 'started') seen.pod = true;
             if (pull.blocked) seen.unproven = heldUnpullable(image, pull, pull.blocked);

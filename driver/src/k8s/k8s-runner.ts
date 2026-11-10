@@ -21,7 +21,15 @@ import { removeTaskVolumes } from './k8s-task-volume.js';
 import { claimContinuesSession } from '../claim.js';
 import { deliverClaimInputs, hasClaimInputs } from '../skill-inputs.js';
 import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from '../task-restore.js';
-import { ensureGroup, finishGroup, forgetGroup, groupsOf, runnerGroupOf, takeGroupDown } from './k8s-group.js';
+import {
+    ensureGroup,
+    finishGroup,
+    forgetGroup,
+    groupsOf,
+    runnerGroupOf,
+    runnerPodTakenAway,
+    takeGroupDown,
+} from './k8s-group.js';
 import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.js';
 import { podsOf, pollRunnerJobUntilTerminal, readJobStatus, readRunnerVerdict, readTyped } from './k8s-poll.js';
 import {
@@ -54,7 +62,7 @@ import { reviewRunOf } from '../review/review-step.js';
 import { checkoutDir } from '../publish/publish.js';
 import type { ReclaimResult, SyncResult } from '../publish/publish.js';
 import type { StepSink, SupervisorEndpoint } from '../step-control.js';
-import { type KillRecord, settleEnd } from '../termination.js';
+import { type KillRecord, nodeLossField, settleEnd } from '../termination.js';
 import {
     controlTokenOf,
     detailOf,
@@ -224,6 +232,9 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
     if (metrics.status >= HTTP_ERROR_STATUS) return composeRuntimeSample(null, services);
     return composeRuntimeSample(parsePodMetrics(metrics.body), services);
 }
+
+/** The bound on the pod read that confirms a lost supervisor's group was taken away. */
+const GROUP_TAKEN_AWAY_READ_MS = 10_000;
 
 // The agent container's own start: running, or terminated with a start time. Sidecars running while the
 // agent waits (ImagePullBackOff) prove nothing, and neither does a pod or status that cannot be read.
@@ -445,7 +456,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
     const timedOut = polled.timedOut || supervisorDeadline;
-    const { infraLoss } = settleEnd({
+    const settled = settleEnd({
         kills: [],
         driverKilledHard: ledgerOf(deps).was(job).hard,
         report: watch.report,
@@ -453,7 +464,8 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         vanished,
         unfinalized,
     });
-    if (infraLoss) return { exitCode, output, timedOut, started: true, infraLoss };
+    const { infraLoss } = settled;
+    if (infraLoss) return { exitCode, output, timedOut, started: true, infraLoss, ...nodeLossField(settled) };
 
     const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };
 
@@ -623,5 +635,13 @@ export function createKubernetesRunner(
         releaseFence: async (job: BoardJob) => {
             await releaseClaimAfterGroupEnd(deps, job);
         },
+        // A lost supervisor is a node loss only when its pod is confirmed taken away; no doubt counts (BEL-302).
+        groupTakenAway: (job: BoardJob, signal: AbortSignal) =>
+            signal.aborted
+                ? Promise.resolve(false)
+                : runnerPodTakenAway(
+                      withSignal(boundedBy(deps, Date.now() + GROUP_TAKEN_AWAY_READ_MS), signal),
+                      runnerName(job)
+                  ).catch(() => false),
     });
 }

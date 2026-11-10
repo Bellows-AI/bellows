@@ -36,6 +36,7 @@ import { supervisorName } from './docker-mailbox.js';
 import { boardIdentity } from '../task-volume.js';
 import type { StepSink } from '../step-control.js';
 import { controlTokenOf } from '../supervised-steps.js';
+import { nodeLossField, type SettledEnd } from '../termination.js';
 import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from '../poll.js';
 import { awaitServicesRunning, throwIfStoodDown } from '../service-restart.js';
 import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from '../startup-cause.js';
@@ -176,6 +177,38 @@ export function alreadyGone(e: unknown): boolean {
  */
 export function noSuchObject(e: unknown, kinds: readonly string[]): boolean {
     return new RegExp(`no such (${kinds.join('|')})`, 'i').test(refusalText(e));
+}
+
+/**
+ * Whether the daemon answers that the group's supervisor container no longer exists (BEL-302): `docker rm`,
+ * a restarted host, a reaped node. Only docker's own "no such container" answer confirms it — a supervisor that
+ * is running or merely exited (its own crash), an unreachable daemon and an unreadable answer do not.
+ */
+export async function supervisorRemoved(execDocker: ExecDocker, job: BoardJob): Promise<boolean> {
+    try {
+        await execDocker(['inspect', '--format', '{{json .State}}', supervisorName(job)]);
+        return false;
+    } catch (e) {
+        return noSuchObject(e, ['container', 'object']);
+    }
+}
+
+/** The bound on the inspect that confirms a lost supervisor's group was removed. */
+const GROUP_TAKEN_AWAY_READ_MS = 10_000;
+
+/** `Runner.groupTakenAway` on docker: the supervisor container confirmed removed, within the bound and the attempt. */
+export const groupRemoved = (execDocker: ExecDocker, job: BoardJob, signal: AbortSignal): Promise<boolean> =>
+    signal.aborted
+        ? Promise.resolve(false)
+        : supervisorRemoved(boundedExec(execDocker, { deadline: Date.now() + GROUP_TAKEN_AWAY_READ_MS, signal }), job);
+
+/** A run the platform took away has nothing left to read: the loss, with what was known of the run and no more. */
+export function lostOutcome(
+    { exitCode, output, timedOut, started }: Pick<RunOutcome, 'exitCode' | 'output' | 'timedOut' | 'started'>,
+    infraLoss: string,
+    end: SettledEnd
+): RunOutcome {
+    return { exitCode, output, timedOut, started, infraLoss, ...nodeLossField(end) };
 }
 
 /** A failed docker call's stderr and message, as one string. */
