@@ -38,7 +38,7 @@ const skillAt = (dir: string, name: string, withManifest = true) => {
 const run = (args: string[], env: Record<string, string | undefined>) => {
     const child = spawnSync('node', [SCRIPT, ...args], {
         encoding: 'utf8',
-        env: { PATH: process.env.PATH, FACTORY_SKILLS_PATH: skills, ...env },
+        env: { PATH: process.env.PATH, HOME: join(root, 'home'), FACTORY_SKILLS_PATH: skills, ...env },
     });
     return { status: child.status, stdout: child.stdout, stderr: child.stderr };
 };
@@ -234,6 +234,31 @@ describe('opencode mode', () => {
         writeFileSync(join(repo, '.claude', 'skills', 'dir-b', 'SKILL.md'), 'no frontmatter\n');
         expect(opencode(repo).status).toBe(0);
         expect(entries()).toEqual(['real-name', 'ws-a']);
+    });
+
+    // With the native scan switched off, opencode's global compatibility roots go with it: the view offers them too.
+    it('offers the skills of both home roots, below the project ones, and never a second copy of a workspace name', () => {
+        const home = join(root, 'home');
+        skillAt(join(home, '.claude', 'skills'), 'from-home-claude');
+        skillAt(join(home, '.agents', 'skills'), 'from-home-agents');
+        skillAt(join(home, '.claude', 'skills'), 'ws-a');
+        skillAt(join(home, '.agents', 'skills'), 'shared');
+        skillAt(join(repo, '.claude', 'skills'), 'shared');
+        expect(opencode(repo).status).toBe(0);
+        expect(entries()).toEqual(['from-home-agents', 'from-home-claude', 'shared', 'ws-a']);
+        expect(target('shared')).toBe(join(repo, '.claude', 'skills', 'shared'));
+        expect(target('ws-a')).toBe(join(skills, 'ws-a'));
+    });
+
+    it.skipIf(process.getuid?.() === 0)('refuses a home skills folder it cannot read', () => {
+        const folder = join(root, 'home', '.agents', 'skills');
+        skillAt(folder, 'x');
+        chmodSync(folder, 0o000);
+        try {
+            expect(opencode(repo).status).toBe(REFUSED);
+        } finally {
+            chmodSync(folder, 0o755);
+        }
     });
 
     it('follows a symlinked skill directory and skips a dangling one', () => {

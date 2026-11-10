@@ -9,7 +9,7 @@
 // project's, so each pinned name is linked into the managed view (<view>/<name> -> $FACTORY_SKILLS_PATH/<name>).
 // opencode lists the checkout's own folders by a racy scan that the entrypoint switches off, so in opencode mode the
 // view also holds a link to every other skill of the checkout's .claude/.agents folders, from the workdir up to the
-// worktree root, and the workspace copy is the only one of its name.
+// worktree root and the home roots ($HOME/.claude, $HOME/.agents), and the workspace copy is the only one of its name.
 //
 // The view is rebuilt on every start from the environment and the checkout, so nothing is read back from an earlier
 // run. Every refusal is one stderr line and exit 78, before the CLI starts. A checkout folder that cannot be read is a
@@ -167,9 +167,9 @@ if (mode === 'opencode') {
     // No worktree (a repository-free run): the scan walks up to the filesystem root, as opencode does.
     const top = worktreeRoot ? real(worktreeRoot, 'worktree root') : null;
     let dir = real(workdir, 'workdir');
-    for (;;) {
+    const offer = (parent) => {
         for (const folder of FOLDERS) {
-            for (const skill of skillDirs(path.join(dir, folder))) {
+            for (const skill of skillDirs(path.join(parent, folder))) {
                 // Named by the frontmatter, like opencode: a workspace name, or one already offered, is not offered
                 // again, so the workspace copy is the only one.
                 if (offered.has(skill.name)) continue;
@@ -177,9 +177,14 @@ if (mode === 'opencode') {
                 link(view, skill.name.replace(/[^A-Za-z0-9._-]/g, '_'), skill.dir, false);
             }
         }
+    };
+    for (;;) {
+        offer(dir);
         if (dir === top || path.dirname(dir) === dir) break;
         dir = path.dirname(dir);
     }
+    // The global compatibility roots opencode also drops with the external scan: below the project's own skills.
+    offer(process.env.HOME || require('node:os').homedir());
 }
 
 try {

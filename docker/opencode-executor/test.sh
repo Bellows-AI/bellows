@@ -446,15 +446,17 @@ for run in 1 2 3 4 5 6 7 8 9 10; do
     esac
     case "$located" in */probe-claude/SKILL.md*/probe-agents/SKILL.md* | */probe-agents/SKILL.md*/probe-claude/SKILL.md*) others=1 ;; *) others=0 ;; esac
     case "$located" in */probe-nested/SKILL.md*) ;; *) others=0 ;; esac
+    # The flag that hides the checkout scan must not drop the baked built-ins of the global config directory.
+    case "$located" in */home/node/.config/opencode/skills/factory-fix/SKILL.md*) ;; *) others=0 ;; esac
     if [ "$count" != 1 ] || [ "$ws_copy" != 1 ] || [ "$others" != 1 ]; then
         ws_bad="run $run: $(printf '%s' "$located" | tr '\n' ' ')"
         break
     fi
 done
 if [ -z "$ws_bad" ]; then
-    ok 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others still listed, nested ones included'
+    ok 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others, nested and baked built-in ones still listed'
 else
-    bad 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others still listed, nested ones included' "$ws_bad"
+    bad 'a pinned workspace skill is the only copy listed over a same-name checkout skill, the others, nested and baked built-in ones still listed' "$ws_bad"
 fi
 rm -rf "$ws_repo"
 rm -rf "$task_vol"
