@@ -161,6 +161,8 @@ export interface JobInterruption {
     blocked?: true;
     /** A hand-back that waited on a connection the task asked for: outside the interruption budget. */
     requirement?: true;
+    /** The platform took the attempt away (BEL-302): outside the interruption budget, bounded by `NODE_LOSS_BUDGET`. */
+    nodeLoss?: true;
 }
 
 export interface Job {
