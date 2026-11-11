@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { App, appRoutes } from './App.js';
+import { RouteError } from './components/RouteError.js';
 import { LoginGate } from './components/LoginGate.js';
 import { ThemeProvider } from './theme.js';
 import './styles.css';
@@ -20,6 +21,9 @@ import './styles.css';
 // inside one — a plain `<BrowserRouter>` throws the moment a layout calls it.
 const router = createBrowserRouter([
     {
+        // A render error anywhere below lands here, not on a blank page. It replaces the shell
+        // too: a layout that threw cannot be trusted to draw its own error.
+        errorElement: <RouteError />,
         element: (
             <LoginGate>
                 <App />

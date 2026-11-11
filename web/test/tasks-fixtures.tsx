@@ -234,6 +234,7 @@ export const renderDetail = ({
                 jobs={jobs}
                 viewer={viewer}
                 error={error}
+                onRetry={() => {}}
                 actionError={actionError}
                 followUpError={followUpError}
                 sending={sending}
