@@ -93,6 +93,10 @@ spec:
           message: 'a driver-specced pod runs as the default ServiceAccount'
         - expression: "!has(variables.spec.nodeName) || variables.spec.nodeName == ''"
           message: 'a driver-specced pod is placed by the scheduler, never pinned to a node'
+        {{- with .Values.runner.runtimeClassName }}
+        - expression: "has(variables.spec.runtimeClassName) && variables.spec.runtimeClassName == '{{ . }}'"
+          message: 'runner pods must run under the {{ . }} RuntimeClass (runner.runtimeClassName)'
+        {{- end }}
         - expression: >-
               variables.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))
           message: 'a driver-specced container may not bind a host port'

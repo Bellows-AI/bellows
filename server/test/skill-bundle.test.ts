@@ -171,6 +171,27 @@ describe('skill bundle from SKILL.md', () => {
 describe('skill bundle from zip', () => {
     const md = { name: 'SKILL.md', data: SKILL_MD('my-skill') };
 
+    describe('without a name', () => {
+        it('takes the name from SKILL.md', () => {
+            expect(bundleFromZip(null, zip([md])).name).toBe('my-skill');
+            expect(bundleFromZip('my-skill', zip([md])).name).toBe('my-skill');
+        });
+
+        it('refuses a zip with no SKILL.md, a SKILL.md without a name, a bad name and a reserved name', () => {
+            const other = { name: 'a.txt', data: 'a' };
+            expect(reason(() => bundleFromZip(null, zip([other])))).toBe('no_skill_md');
+            expect(
+                reason(() => bundleFromZip(null, zip([{ name: 'SKILL.md', data: '---\ndescription: x\n---\n' }])))
+            ).toBe('bad_frontmatter');
+            expect(reason(() => bundleFromZip(null, zip([{ name: 'SKILL.md', data: SKILL_MD('Bad_Name') }])))).toBe(
+                'bad_name'
+            );
+            expect(reason(() => bundleFromZip(null, zip([{ name: 'SKILL.md', data: SKILL_MD('factory-x') }])))).toBe(
+                'reserved_name'
+            );
+        });
+    });
+
     it('reads stored and deflated entries, sorts paths and ignores directory entries', () => {
         const bytes = zip([
             { name: 'scripts/', data: '' },

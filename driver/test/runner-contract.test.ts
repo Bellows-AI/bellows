@@ -45,6 +45,7 @@ const IMPLEMENTED_BY: Record<keyof Runner, 'both' | 'kubernetes'> = {
     rebind: 'both',
     supervisorServing: 'both',
     abandon: 'both',
+    groupTakenAway: 'both',
     releaseFence: 'kubernetes',
 };
 

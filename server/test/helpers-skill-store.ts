@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isReservedSkillName, SKILL_NAME, SKILL_NAME_LIMIT } from '@factory-ai/core';
 import {
     SkillGoneError,
+    SkillUnavailableError,
     type SkillOwner,
     type SkillRecord,
     type SkillStore,
@@ -14,6 +15,10 @@ export interface MemorySkillStore extends SkillStore {
     loseObjects(): void;
     /** Makes every call reject, as an unreachable database would. */
     breakAll(): void;
+    /** Makes `readVersion` throw `SkillUnavailableError` while every other call keeps working. */
+    breakVersionReads(broken?: boolean): void;
+    /** Names the login of a version's author, as the SQL store's join to the user row does. */
+    resolveLogins(loginOf: (id: string) => string | undefined): void;
 }
 
 interface Row {
@@ -35,6 +40,8 @@ export function memorySkillStore(): MemorySkillStore {
     const requirements = new Map<string, SkillBundle['requires']>();
     let lost = false;
     let broken = false;
+    let versionReadsBroken = false;
+    let loginOf: (id: string) => string | undefined = () => undefined;
     const check = () => {
         if (broken) throw new Error('database is down');
     };
@@ -53,7 +60,7 @@ export function memorySkillStore(): MemorySkillStore {
         const row = rows.get(id);
         return row && !row.deleted && row.userId === owner ? row : undefined;
     };
-    const versionOf = (bundle: SkillBundle): SkillVersionInfo => {
+    const versionOf = (bundle: SkillBundle, createdBy: string | null): SkillVersionInfo => {
         const id = randomUUID();
         bodies.set(id, bundle.tar);
         requirements.set(id, bundle.requires);
@@ -64,6 +71,7 @@ export function memorySkillStore(): MemorySkillStore {
             description: bundle.description,
             objectKey: `_skills/org/${bundle.sha256}`,
             createdAt: '2026-01-01T00:00:00Z',
+            author: createdBy === null ? null : { id: createdBy, login: loginOf(createdBy) ?? '' },
         };
     };
     const live = (owner: SkillOwner) => [...rows.values()].filter((row) => !row.deleted && row.userId === owner);
@@ -75,12 +83,18 @@ export function memorySkillStore(): MemorySkillStore {
         breakAll: () => {
             broken = true;
         },
+        breakVersionReads: (isBroken = true) => {
+            versionReadsBroken = isBroken;
+        },
+        resolveLogins: (resolve) => {
+            loginOf = resolve;
+        },
         async create(owner, { name, bundle, createdBy }) {
             check();
             if (isReservedSkillName(name)) return { result: 'reserved' };
             if (name.length > SKILL_NAME_LIMIT || !SKILL_NAME.test(name)) return { result: 'invalid_name' };
             if (live(owner).some((row) => row.name === name)) return { result: 'name_taken' };
-            const version = versionOf(bundle);
+            const version = versionOf(bundle, createdBy);
             const row: Row = {
                 id: randomUUID(),
                 name,
@@ -94,17 +108,20 @@ export function memorySkillStore(): MemorySkillStore {
             rows.set(row.id, row);
             return { result: 'created', skill: recordOf(row) };
         },
-        async addVersion(owner, id, bundle) {
+        async addVersion(owner, id, bundle, options) {
             check();
             const row = owned(owner, id);
             if (!row) return { result: 'missing' };
+            if (options?.expectedVersionId !== undefined && options.expectedVersionId !== row.current) {
+                return { result: 'stale' };
+            }
             const same = row.versions.find((v) => v.sha256 === bundle.sha256);
             if (same) {
                 requirements.set(same.id, bundle.requires);
                 row.current = same.id;
                 return { result: 'exists', skill: recordOf(row) };
             }
-            const version = versionOf(bundle);
+            const version = versionOf(bundle, options?.createdBy ?? null);
             row.versions.push(version);
             row.current = version.id;
             return { result: 'added', skill: recordOf(row) };
@@ -173,6 +190,7 @@ export function memorySkillStore(): MemorySkillStore {
         },
         async readVersion(versionId, access) {
             check();
+            if (versionReadsBroken) throw new SkillUnavailableError('the stored object could not be read');
             const row = [...rows.values()].find((r) => r.versions.some((v) => v.id === versionId));
             if (!row) return null;
             if (access !== 'any' && row.userId !== access.owner) return null;

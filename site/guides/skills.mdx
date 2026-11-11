@@ -64,7 +64,9 @@ description: Draft release notes from merged PRs. Use when asked to prepare a re
 | `name` | Lowercase letters, digits and single hyphens, up to 64 characters. It can't start with `factory-`. |
 | `description` | One line. Say what the skill does and when to use it. The agent and the menu both show it. |
 
-Bellows reads up to 50 skill folders from the repository at the task's branch. A folder whose `SKILL.md` can't be read or parsed is skipped.
+Where the folder lives depends on the executor that runs the task. A `claude-code` executor reads `.claude/skills/`. An `opencode` executor reads that and also `.opencode/skills/`, `.opencode/skill/` and `.agents/skills/`. The prompt's `/` menu, the task preflight and task creation all follow the executor you selected, and a repository skill is only offered where that executor would load it.
+
+Bellows reads up to 50 skill folders from the repository at the task's branch, counted across those directories. A folder whose `SKILL.md` can't be read or parsed is skipped.
 
 <Note>
 A repository skill can't take a `factory-` name, so it never replaces a built-in.
@@ -72,10 +74,12 @@ A repository skill can't take a `factory-` name, so it never replaces a built-in
 
 ## Organization and workspace skills
 
-Bellows also supports skills shared across your organization and skills owned by one member. Both are uploaded with the API, as a `SKILL.md` or a zip of up to 64 files and 5 MiB, and there is no Settings page for them yet. When names clash, the more personal skill wins: your workspace skill, then the repository's, then the organization's, then a built-in. A stored skill can declare what it needs under `metadata:` with `requires-connections`, and is hidden from tasks without that connection like the built-ins above.
+Bellows also supports skills shared across your organization and skills owned by one member. Both live under **Settings → Skills**, in the My workspace and Organization sections: list them, switch one on or off, view its `SKILL.md` and files, download it as a zip, delete it, or (for an admin) promote a workspace skill to the organization. Members see the organization's skills read-only. Both are also created through the API, as a `SKILL.md` or a zip of up to 64 files and 5 MiB. When names clash, the more personal skill wins: your workspace skill, then the repository's, then the organization's, then a built-in. A stored skill can declare what it needs under `metadata:` with `requires-connections`, and is hidden from tasks without that connection like the built-ins above.
+
+A zip upload takes the skill's name from its `SKILL.md`. Editing only the `SKILL.md` of a stored skill keeps its other files; send the `baseVersionId` you edited, and if someone saved a newer version first the edit is refused with `409 SKILL_VERSION_STALE` so you can reload. `GET /api/org/skills/<id>/zip` and `GET /api/workspace/skills/<id>/zip` download a skill as a zip, and `GET /api/skills/builtin/<name>` shows a built-in skill's files and the Bellows release it ships with.
 
 <Note>
-On a running task, a workspace skill that the repository also holds isn't guaranteed to win. Give them different names.
+On a running task, a workspace skill that the repository also holds wins: the agent lists it once, the workspace copy. The one exception is opencode with a repository skill under `.opencode/skill` or `.opencode/skills`, where either copy may be listed, so give those different names.
 </Note>
 
 ## From the CLI

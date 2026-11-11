@@ -70,6 +70,8 @@ interface Scenario {
     repoSkills?: NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
     /** The org's skill store; absent means the org holds none. */
     skills?: SkillStore;
+    /** The executor profile reads throw: the caller's executor type cannot be confirmed. */
+    brokenExecutors?: boolean;
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -113,7 +115,17 @@ async function boot(scenario: Scenario = {}) {
             config,
             repos,
             connections,
-            userExecutors: executors,
+            userExecutors: scenario.brokenExecutors
+                ? {
+                      ...executors,
+                      configFor: async () => {
+                          throw new Error('profiles unreadable');
+                      },
+                      resolvedDefault: async () => {
+                          throw new Error('profiles unreadable');
+                      },
+                  }
+                : executors,
             repoSkills: scenario.repoSkills,
             skills: scenario.skills,
         }),
@@ -640,5 +652,69 @@ describe('POST /api/jobs/preflight typed integration requirements', () => {
         );
         expect(absent).toMatchObject({ status: 'blocked' });
         expect(absent).not.toHaveProperty('integration');
+    });
+});
+
+describe('POST /api/jobs/preflight repo skills follow the executor', () => {
+    const base = { repo: 'acme/web', skills: ['oc-only'] };
+    const OPENCODE_DIRS = ['.claude/skills', '.opencode/skills', '.opencode/skill', '.agents/skills'];
+    /** A reader that holds `oc-only` only when asked for the opencode directories. */
+    const dirAware =
+        (seen: (readonly string[])[] = []) =>
+        async (_repo: string, _branch: string | null, dirs: readonly string[]) => {
+            seen.push(dirs);
+            const holds = dirs.includes('.opencode/skills');
+            return {
+                revision: 'sha',
+                skills: holds ? [{ name: 'oc-only', description: 'd' }] : [],
+                unreadable: [] as string[],
+                complete: true,
+            };
+        };
+
+    /** The boot's `main` claude profile plus an opencode `oc` one. */
+    const bootWithOpencode = async (scenario: Scenario) => {
+        const booted = await boot(scenario);
+        await booted.executors.replace(booted.member.user.id, [
+            { name: 'main', type: 'claude-code', config: {} },
+            { name: 'oc', type: 'opencode', config: {} },
+        ]);
+        return booted;
+    };
+
+    it('is ok for a skill only under .opencode/skills on an opencode executor', async () => {
+        const { check } = await verdict(
+            await bootWithOpencode({ repoSkills: dirAware() }),
+            { ...base, executor: 'oc' },
+            'skill'
+        );
+        expect(check).toMatchObject({ name: 'oc-only', status: 'ok' });
+    });
+
+    it('is blocked for that skill on a claude executor', async () => {
+        const { check } = await verdict(
+            await bootWithOpencode({ repoSkills: dirAware() }),
+            { ...base, executor: 'main' },
+            'skill'
+        );
+        expect(check).toMatchObject({ name: 'oc-only', status: 'blocked' });
+    });
+
+    it('is unverified, never blocked, when the executor profile cannot be read', async () => {
+        const seen: (readonly string[])[] = [];
+        const booted = await bootWithOpencode({ repoSkills: dirAware(seen), brokenExecutors: true });
+        const { check, body } = await verdict(booted, { ...base, executor: 'oc' }, 'skill');
+        expect(check).toMatchObject({ name: 'oc-only', status: 'unverified' });
+        expect(body.checks.find((c) => c.subject === 'executor')).toMatchObject({ status: 'unverified' });
+        expect(seen).toEqual([]);
+    });
+
+    it("the repo read receives the default profile's dirs when no executor is named", async () => {
+        const seen: (readonly string[])[] = [];
+        const booted = await bootWithOpencode({ repoSkills: dirAware(seen) });
+        await booted.executors.setDefault(booted.member.user.id, { scope: 'user', name: 'oc' });
+        const { check } = await verdict(booted, base, 'skill');
+        expect(seen).toEqual([OPENCODE_DIRS]);
+        expect(check).toMatchObject({ name: 'oc-only', status: 'ok' });
     });
 });

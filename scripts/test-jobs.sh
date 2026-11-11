@@ -1558,14 +1558,19 @@ stop_driver
 # factory-job-* networks are none of this suite's business.
 svc_networks=0
 leftover=0
+leftover_names=''
 for job in $(cat "$work/created-jobs" 2>/dev/null); do
     n="$(docker network ls --filter "name=factory-job-$job-" --format '{{.Name}}' | wc -l | tr -d ' ')"
     svc_networks=$((svc_networks + n))
-    n="$(docker ps -aq --filter "label=factory.job=$job" | wc -l | tr -d ' ')"
-    leftover=$((leftover + n))
+    # Each survivor is named with its image and state, so a failure says what was left, not just how many.
+    left="$(docker ps -a --filter "label=factory.job=$job" --format '{{.Names}} ({{.Image}}, {{.Status}})')"
+    if [ -n "$left" ]; then
+        leftover=$((leftover + $(printf '%s\n' "$left" | wc -l | tr -d ' ')))
+        leftover_names="$leftover_names $(printf '%s' "$left" | tr '\n' ';')"
+    fi
 done
 if [ "$svc_networks" = '0' ]; then ok 'no job made a network of its own'; else bad 'no job made a network of its own' "$svc_networks found"; fi
-if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no containers left behind' "$leftover remain"; fi
+if [ "$leftover" = '0' ]; then ok 'no containers left behind'; else bad 'no containers left behind' "$leftover remain:$leftover_names"; fi
 
 fi
 
@@ -3675,12 +3680,14 @@ begin_phase repo-skills
 # these images unchanged, so this phase is its proof too (docs/jobs.md).
 
 echo
-echo '# repo skills (real agent CLIs on a checkout that ships .claude/skills/lane-repo-skill)'
+echo '# repo skills (real agent CLIs on a checkout that ships lane-repo-skill under .claude/skills or .opencode/skills)'
 
 REPO_SKILL_SENTINEL=LANE_REPO_SKILL_SENTINEL_4c1d
 
-repo_skill_lane() { # repo_skill_lane <claude|opencode> <with|without>
-    local cli="$1" mode="$2" image="$1-executor" name="reposkill-$1-$2" fake_pid port status seen
+repo_skill_lane() { # repo_skill_lane <claude|opencode> <with|without> [skills dir under the checkout] [seen|unseen]
+    local cli="$1" mode="$2" dir="${3:-.claude/skills}" expect="${4:-seen}" image="$1-executor" name="reposkill-$1-$2" fake_pid port status seen
+    local top="${dir%%/*}"
+    [ "$dir" = .claude/skills ] || name="$name-${top#.}"
     local ws="lane-$RUN_ID-$name-ws"
     local flags=(--user 0:0 --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges)
     if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -3690,9 +3697,9 @@ repo_skill_lane() { # repo_skill_lane <claude|opencode> <with|without>
     docker volume create "$ws" >/dev/null
     if [ "$mode" = with ]; then
         docker run --rm -v "$ws:/workspace" --entrypoint sh "$image" -c \
-            "mkdir -p /workspace/.claude/skills/lane-repo-skill && printf '%s\n' '---' 'name: lane-repo-skill' \
+            "mkdir -p /workspace/$dir/lane-repo-skill && printf '%s\n' '---' 'name: lane-repo-skill' \
 'description: Lane fixture skill $REPO_SKILL_SENTINEL — use it never.' '---' 'Nothing to do.' \
->/workspace/.claude/skills/lane-repo-skill/SKILL.md && chmod -R a+rX /workspace/.claude" >/dev/null
+>/workspace/$dir/lane-repo-skill/SKILL.md && chmod -R a+rX /workspace/$top" >/dev/null
     fi
     node scripts/fake-model-endpoint.mjs --skill-sentinel "$REPO_SKILL_SENTINEL" --tool-steps 1 >"$work/fake-$name.port" &
     fake_pid=$!
@@ -3721,11 +3728,18 @@ repo_skill_lane() { # repo_skill_lane <claude|opencode> <with|without>
     seen="$(node -e 'fetch(process.argv[1] + "/skills-seen").then((r) => r.json()).then((a) => console.log(a.agentRequests > 0 ? a.seen : "no-requests"))' "http://127.0.0.1:$port")"
     lane_endpoint_stop "$fake_pid"
     docker volume rm "$ws" >/dev/null
-    if [ "$mode" = with ]; then
-        if [ "$status" = 0 ] && [ "$seen" = true ]; then
-            ok "$cli: a skill under the checkout's .claude/skills reaches the model"
+    if [ "$mode" = with ] && [ "$expect" = unseen ]; then
+        # The negative half of the catalog's per-executor dirs: a CLI that does not scan the folder never offers it.
+        if [ "$status" = 0 ] && [ "$seen" = false ]; then
+            ok "$cli: a skill only under the checkout's $dir never reaches the model"
         else
-            bad "$cli: a skill under the checkout's .claude/skills reaches the model" "exit $status, sentinel seen '$seen': $(tail -5 "$work/$name.log")"
+            bad "$cli: a skill only under the checkout's $dir never reaches the model" "exit $status, sentinel seen '$seen': $(tail -5 "$work/$name.log")"
+        fi
+    elif [ "$mode" = with ]; then
+        if [ "$status" = 0 ] && [ "$seen" = true ]; then
+            ok "$cli: a skill under the checkout's $dir reaches the model"
+        else
+            bad "$cli: a skill under the checkout's $dir reaches the model" "exit $status, sentinel seen '$seen': $(tail -5 "$work/$name.log")"
         fi
     elif [ "$status" = 0 ] && [ "$seen" = false ]; then
         ok "the control: $cli on a checkout without the skill never carries its sentinel"
@@ -3734,8 +3748,10 @@ repo_skill_lane() { # repo_skill_lane <claude|opencode> <with|without>
     fi
 }
 
-claude_repo_skill_lanes() { repo_skill_lane claude with; repo_skill_lane claude without; }
-opencode_repo_skill_lanes() { repo_skill_lane opencode with; repo_skill_lane opencode without; }
+# Each CLI scans its own folders (checkoutSkillDirsOf in core/src/executors.ts): opencode also reads
+# .opencode/skills, claude does not. These two runs pass without the board fix; the server tests carry the red.
+claude_repo_skill_lanes() { repo_skill_lane claude with; repo_skill_lane claude without; repo_skill_lane claude with .opencode/skills unseen; }
+opencode_repo_skill_lanes() { repo_skill_lane opencode with; repo_skill_lane opencode without; repo_skill_lane opencode with .opencode/skills seen; }
 lane_pair claude_repo_skill_lanes opencode_repo_skill_lanes
 
 fi
@@ -4079,6 +4095,10 @@ ps_b=''
 # Text that appears only in one built-in's description, so the scripted model can tell whether the CLI offered it.
 PS_CLASH_REPO="${SMOKE_REPO%%/*}/clash" # a second origin whose checkout ships a skill named like the pinned org skill
 PS_REPO_SENTINEL=LANE_PIN_REPO_SENTINEL_5d2c
+PS_WS_CLASH_REPO="${SMOKE_REPO%%/*}/ws-clash" # an origin whose checkout ships a skill named like the pinned WORKSPACE skill
+PS_REPO_WS_SENTINEL=LANE_PIN_REPO_WS_SENTINEL_5d2c
+PS_REPO_OTHER_SENTINEL=LANE_PIN_REPO_OTHER_5d2c # .agents/skills: opencode scans it, claude does not
+PS_REPO_OTHER_CLAUDE_SENTINEL=LANE_PIN_REPO_OTHER_CLAUDE_5d2c
 PS_JIRA_DESC='Jira work items through the jira helper' # no comma: --skill-sentinel splits its value on commas
 PS_FIX_DESC='Optional playbook for fixing a backend bug'
 
@@ -4191,6 +4211,27 @@ values (:'org', 'claude-code', 'test-jobs-pinned-clash', :'repo', 'main', now(),
 SQL
 }
 
+ps_ws_clash_repo() { # a bare origin <owner>/ws-clash: .claude/skills/$PS_WS_SKILL plus two other repo skills, and the org's row for it
+    docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+        set -e
+        git init -q --bare -b main "/origins/$1.git"
+        git init -q -b main /tmp/seed
+        skill() { # skill <dir> <name> <sentinel>
+            mkdir -p "/tmp/seed/$1/$2"
+            printf "%s\n" "---" "name: $2" "description: Lane fixture skill $3 - use it never." "---" "Nothing to do." >"/tmp/seed/$1/$2/SKILL.md"
+        }
+        skill .claude/skills "$2" "$3"
+        skill .agents/skills lane-repo-other "$4"
+        skill .claude/skills lane-repo-other-claude "$5"
+        git -C /tmp/seed add -A
+        git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q -m "repo skills"
+        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$PS_WS_CLASH_REPO" "$PS_WS_SKILL" "$PS_REPO_WS_SENTINEL" "$PS_REPO_OTHER_SENTINEL" "$PS_REPO_OTHER_CLAUDE_SENTINEL" || return 1
+    compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -v "org=$PS_ORG" -v "repo=$PS_WS_CLASH_REPO" -f - >/dev/null <<'SQL'
+insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+values (:'org', 'claude-code', 'test-jobs-pinned-ws-clash', :'repo', 'main', now(), now());
+SQL
+}
+
 ps_get() { # ps_get <url> -> the body
     node -e 'fetch(process.argv[1]).then((r) => r.text()).then((t) => process.stdout.write(t))' "$1"
 }
@@ -4205,6 +4246,10 @@ ps_probe() { # ps_probe <tool-results json> <n> -> that probe's outcome
 
 ps_seen() { # ps_seen <skills-seen json> <sentinel> -> yes|no
     node -e 'console.log(JSON.parse(process.argv[1]).seenSentinels.includes(process.argv[2]) ? "yes" : "no")' "$1" "$2"
+}
+
+ps_count() { # ps_count <skills-seen json> <sentinel> -> how often the richest request carried it (0 when none)
+    node -e 'console.log((JSON.parse(process.argv[1]).sentinelCounts ?? {})[process.argv[2]] ?? 0)' "$1" "$2"
 }
 
 ps_cli_lane() { # ps_cli_lane <claude|opencode>
@@ -4303,6 +4348,30 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
         *) ok "$cli: the pinned org copy is not installed" ;;
     esac
     lane_endpoint_stop "$ps_pid"
+
+    # A checkout that ships a skill named like a pinned WORKSPACE skill loses to it: one copy is listed, the
+    # workspace one, and the repo's other skills still are. The org skill (no clash here) is the one-copy baseline.
+    local ws_now ws_n_org ws_n_ws
+    ws_now="$(ps_ws_sentinel "$ps_ws_n")"
+    ps_endpoint "pins-$cli-wsclash" "$PS_ORG_SENTINEL,$ws_now,$PS_REPO_WS_SENTINEL,$PS_REPO_OTHER_SENTINEL,$PS_REPO_OTHER_CLAUDE_SENTINEL" "$PS_DIR/$PS_WS_SKILL/ref/helper.txt,/etc/shadow"
+    ps_point "$cli" "$ps_a" "$ps_port"
+    id="$(ps_job "$cli" "$ps_a" "$PS_WS_CLASH_REPO")"
+    expect_contains "$cli: a task whose repo ships the workspace skill's name succeeds" "$(AUTH_HEADER="Bearer $ps_a" await_settled "$id" 240)" succeeded
+    seen="$(ps_get "http://127.0.0.1:$ps_port/skills-seen")"
+    results="$(ps_get "http://127.0.0.1:$ps_port/tool-results")"
+    ps_expect "$cli: a workspace skill named like a repo skill is offered from the workspace" "$(ps_seen "$seen" "$ws_now")$(ps_seen "$seen" "$PS_REPO_WS_SENTINEL")" yesno
+    ws_n_org="$(ps_count "$seen" "$PS_ORG_SENTINEL")"
+    ws_n_ws="$(ps_count "$seen" "$ws_now")"
+    [ "$ws_n_ws" -ge 1 ] && [ "$ws_n_ws" = "$ws_n_org" ] && ok "$cli: the workspace skill is listed exactly once" || bad "$cli: the workspace skill is listed exactly once" "workspace copy listed $ws_n_ws time(s), the org baseline $ws_n_org"
+    ps_expect "$cli: the repo's other .claude skill is still offered" "$(ps_seen "$seen" "$PS_REPO_OTHER_CLAUDE_SENTINEL")" yes
+    if [ "$cli" = opencode ]; then
+        ps_expect "$cli: the repo's .agents skill is still offered through the view" "$(ps_seen "$seen" "$PS_REPO_OTHER_SENTINEL")" yes
+    else
+        ps_expect "the control: $cli does not scan .agents" "$(ps_seen "$seen" "$PS_REPO_OTHER_SENTINEL")" no
+    fi
+    ps_expect "$cli: the workspace skill's helper opens for the tool uid" "$(ps_probe "$results" 1)" open
+    ps_expect "the control: $cli's tool uid is denied /etc/shadow beside the clash" "$(ps_probe "$results" 2)" denied
+    lane_endpoint_stop "$ps_pid"
     stop_driver
 }
 
@@ -4352,6 +4421,7 @@ pinned_skills_lane() {
     AUTH_HEADER="Bearer $ps_b" expect_status "pinned skills: member B cannot read A's workspace skill" 404 GET "/api/workspace/skills/$ps_ws_id"
 
     ps_clash_repo && ok 'pinned skills: a second origin ships a repo skill named like the org skill' || bad 'pinned skills: a second origin ships a repo skill named like the org skill' 'could not seed it'
+    ps_ws_clash_repo && ok 'pinned skills: a third origin ships a repo skill named like the workspace skill' || bad 'pinned skills: a third origin ships a repo skill named like the workspace skill' 'could not seed it'
     ps_cli_lane claude
     ps_cli_lane opencode
 }

@@ -36,6 +36,10 @@ describe('start() without secret-store keys', () => {
             'SECRETS_VAULT_ROLE',
             'SECRETS_VAULT_TOKEN_FILE',
             'SECRETS_VAULT_TOKEN',
+            'SECRETS_GCP_PROJECT',
+            'SECRETS_GCP_PREFIX',
+            'SECRETS_GCP_LOCATION',
+            'SECRETS_GCP_KMS_KEY',
         ]) {
             vi.stubEnv(name, overrides[name] ?? '');
         }
@@ -89,6 +93,15 @@ describe('start() without secret-store keys', () => {
             expect(refusal.message).not.toContain(SENTINEL);
         }
     );
+
+    it('refuses a gcp backend that lacks the project, naming it', async () => {
+        bootEnv({
+            SECRETS_BACKEND: 'gcp',
+            SECRETS_OPERATION_KEY: Buffer.alloc(32, 7).toString('base64'),
+            SECRETS_FINGERPRINT_KEY: Buffer.alloc(32, 8).toString('base64'),
+        });
+        await expect(start({ github: { mode: 'none' } })).rejects.toThrow('SECRETS_GCP_PROJECT is required');
+    });
 
     it('refuses when the keys are missing, even offline', async () => {
         bootEnv({ SECRETS_BACKEND: 'database' });

@@ -44,9 +44,8 @@ export async function createRunner(
      * The env file's ride: a 0600 file in the OS temp directory, written just before the spawn
      * and removed as soon as the run is over — a crash leaves it in tmpdir at worst, never
      * in argv and never in this process's environment. The body is the claim env PLUS the
-     * loop's minted gate credentials PLUS the runner's own attempt pair, so a gated job whose
-     * claim resolves to nothing still carries its BELLOWS_GATE_URL/TOKEN and the credential
-     * its attribution reports authenticate with.
+     * runner's own attempt pair, so a job whose claim resolves to nothing still carries
+     * the credential its attribution reports authenticate with.
      */
     const body = envFileBody(job, config);
     const file = body ? envFilePath(job) : null;

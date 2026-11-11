@@ -202,6 +202,17 @@ describe('the driver config: executor and endpoints', () => {
         // Empty is unset, as it is for every other variable here.
         expect(loadDriverConfig({ RUNNER_NODE_SELECTOR: '' }).runnerNodeSelector).toBeNull();
     });
+
+    // the RuntimeClass every driver pod runs under (gvisor on GKE Sandbox). A name the API
+    // server would refuse fails at boot, never as a burned attempt.
+    it('reads RUNNER_RUNTIME_CLASS as a RuntimeClass name, null unless set', () => {
+        expect(loadDriverConfig({}).runnerRuntimeClass).toBeNull();
+        expect(loadDriverConfig({ RUNNER_RUNTIME_CLASS: '' }).runnerRuntimeClass).toBeNull();
+        expect(loadDriverConfig({ RUNNER_RUNTIME_CLASS: 'gvisor' }).runnerRuntimeClass).toBe('gvisor');
+        expect(loadDriverConfig({ RUNNER_RUNTIME_CLASS: 'kata.fc' }).runnerRuntimeClass).toBe('kata.fc');
+        expect(() => loadDriverConfig({ RUNNER_RUNTIME_CLASS: 'gVisor' })).toThrow(/RUNNER_RUNTIME_CLASS/);
+        expect(() => loadDriverConfig({ RUNNER_RUNTIME_CLASS: "gvisor' || true" })).toThrow(/RUNNER_RUNTIME_CLASS/);
+    });
 });
 
 describe('the driver config: policy and gates', () => {

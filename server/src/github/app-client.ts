@@ -91,7 +91,12 @@ export interface GitHubAppClient {
      * Resolves only for a confirmed answer (a 404 skills directory is `skills: []`); every other
      * failure, including `signal` aborting or the deadline, rejects.
      */
-    listRepoSkills(repo: string, branch: string | null, signal?: AbortSignal): Promise<RepoSkillRead>;
+    listRepoSkills(
+        repo: string,
+        branch: string | null,
+        dirs: readonly string[],
+        signal?: AbortSignal
+    ): Promise<RepoSkillRead>;
 }
 
 /**
@@ -288,9 +293,9 @@ export function createGitHubAppClient(
             }
         },
 
-        async listRepoSkills(repo, branch, signal) {
+        async listRepoSkills(repo, branch, dirs, signal) {
             try {
-                return await readRepoSkills(call, repo, branch, signal ? { signal } : {});
+                return await readRepoSkills(call, repo, branch, signal ? { dirs, signal } : { dirs });
             } catch (e) {
                 throw readError(e);
             }

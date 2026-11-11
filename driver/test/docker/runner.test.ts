@@ -364,6 +364,49 @@ describe('the docker runner', () => {
         });
     });
 
+    // BEL-302: a removed container is the platform taking the run away; a supervisor that exited badly is not.
+    it('flags a runner container removed mid-run as a node loss', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.reject(
+                      Object.assign(new Error('Command failed'), {
+                          stderr: `Error: No such object: ${containerName(job)}\n`,
+                      })
+                  )
+                : Promise.resolve({ stdout: '' });
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', '', 137),
+            steps: fakeSteps(undefined, new Promise<never>(() => undefined)).sink,
+        });
+
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+
+        expect(outcome.infraNodeLoss).toBe(true);
+    });
+
+    it('does not flag a supervisor that exited non-zero as a node loss', async () => {
+        const exec = (args: string[]) =>
+            Promise.resolve({
+                stdout:
+                    args[0] === 'wait'
+                        ? '70\n'
+                        : args[0] === 'inspect'
+                          ? '{"Status":"exited","StartedAt":"2026-01-01T00:00:00Z"}'
+                          : '',
+            });
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', '', 0),
+            steps: fakeSteps(undefined, new Promise<never>(() => undefined)).sink,
+        });
+
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+
+        expect(outcome.infraLoss).toBeDefined();
+        expect(outcome).not.toHaveProperty('infraNodeLoss');
+    });
+
     // An agent that died before it wrote agent.exit (#920) leaves its supervisor waiting out the start or heartbeat
     // window: the supervisor cannot see the container, so the driver names it once the daemon confirms it over.
     describe.each([
@@ -934,9 +977,9 @@ describe('the docker runner', () => {
         });
     });
 
-    // A gated job whose claim resolves to no variables still needs the minted gate credentials:
-    // keyed on the claim alone, the file would not exist and the runner could never call a gate.
-    it('writes the gate credentials into the env file of a job whose claim env is empty', async () => {
+    // The agent reaches ad-hoc gates through the control socket (BEL-88): a gated job whose claim
+    // resolves to nothing carries no gate pair, only the runner's own attempt pair.
+    it('writes no gate pair into the env file of a gated job whose claim env is empty', async () => {
         let fileBody: string | null = null;
         let create: string[] = [];
         const exec = (args: string[]) => {
@@ -956,10 +999,7 @@ describe('the docker runner', () => {
 
         expect(outcome).toMatchObject({ exitCode: 0 });
         expect(create).toContain('--env-file');
-        expect(fileBody).toBe(
-            'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n' +
-                `RUNNER_JOB_ID=${job.id}\nRUNNER_LEASE_TOKEN=${job.leaseToken}\n`
-        );
+        expect(fileBody).toBe(`RUNNER_JOB_ID=${job.id}\nRUNNER_LEASE_TOKEN=${job.leaseToken}\n`);
     });
 
     // The lease lost DURING the env-file write: the kill-check just above the write has already
@@ -1033,5 +1073,40 @@ describe('the docker runner', () => {
         expect(calls).toContainEqual(['rm', '-f', containerName(job)]);
         expect(envFile).toBeTruthy();
         expect(existsSync(envFile!)).toBe(false);
+    });
+});
+
+describe('groupTakenAway: the daemon confirms the task group was removed (BEL-302)', () => {
+    const inspected = (answer: () => Promise<{ stdout: string }>) => {
+        const asked: string[][] = [];
+        const runner = dockerRunner((args: string[]) => {
+            asked.push(args);
+            return args[0] === 'inspect' ? answer() : Promise.resolve({ stdout: '' });
+        });
+        return { runner, asked };
+    };
+    const signal = () => new AbortController().signal;
+    const refused = (stderr: string) => () => Promise.reject(Object.assign(new Error('Command failed'), { stderr }));
+
+    it.each(['Error: No such object: x\n', 'Error: No such container: x\n'])(
+        'confirms a supervisor container the daemon no longer knows (%s)',
+        async (stderr) => {
+            const { runner, asked } = inspected(refused(stderr));
+
+            expect(await runner.groupTakenAway?.(job, signal())).toBe(true);
+            expect(asked[0]).toContain(supervisorName(job));
+        }
+    );
+
+    it.each([
+        ['a running supervisor', async () => ({ stdout: '{"Running":true}' })],
+        ['a supervisor that exited (a crash is its own, not the node)', async () => ({ stdout: '{"Running":false}' })],
+        ['a daemon that cannot be reached', refused('Cannot connect to the Docker daemon')],
+        ['an answer that is not JSON', async () => ({ stdout: 'garbled' })],
+        ['an empty answer', async () => ({ stdout: '' })],
+    ])('does not confirm it from %s', async (_name, answer) => {
+        const { runner } = inspected(answer);
+
+        expect(await runner.groupTakenAway?.(job, signal())).toBe(false);
     });
 });

@@ -1,3 +1,4 @@
+import { MAX_SKILL_FILE_BYTES } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { createRepoSource } from '../src/github/repo-source.js';
@@ -14,6 +15,7 @@ import {
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
+import { bundleFromZip } from '../src/skills/skill-bundle.js';
 import { listingClient } from './helpers-app-client.js';
 import { memorySkillStore, type MemorySkillStore } from './helpers-skill-store.js';
 
@@ -104,17 +106,21 @@ function zip(entries: { name: string; data: string }[]): Buffer {
 
 async function boot(
     skills: MemorySkillStore = memorySkillStore(),
-    extra: Pick<NonNullable<Parameters<typeof staticRegistry>[0]>, 'repos' | 'repoSkills'> = {}
+    extra: Pick<NonNullable<Parameters<typeof staticRegistry>[0]>, 'repos' | 'repoSkills'> = {},
+    version?: string
 ) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
+    const admin2 = auth.seedMember('test-org', 'admin-dog', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
     const other = auth.seedMember('test-org', 'hubot');
+    skills.resolveLogins((id) => [admin, admin2, member, other].find((caller) => caller.user.id === id)?.user.login);
     const config = testConfig({ auth: githubAuth() });
     const instance = await buildApp({
         config,
         orgs: staticRegistry({ config, skills, telemetry: stubTelemetryClient(), ...extra }),
         auth,
+        ...(version === undefined ? {} : { version }),
     });
     track(instance);
     const as = async (caller: typeof admin) => ({ cookie: await signedIn(auth, caller) });
@@ -122,6 +128,7 @@ async function boot(
         instance,
         skills,
         admin: await as(admin),
+        admin2: await as(admin2),
         member: await as(member),
         other: await as(other),
     };
@@ -324,7 +331,7 @@ describe('skill writes', () => {
             method: 'POST',
             url: `/api/workspace/skills/${id}/versions`,
             headers: member,
-            payload: { skillMd: skillMd('zipped', 'Changed.') },
+            payload: { skillMd: skillMd('zipped', 'Changed.'), baseVersionId: read.skill.current.id },
         });
         expect(changed.statusCode).toBe(HTTP_CREATED);
         expect(changed.json().skill.current.description).toBe('Changed.');
@@ -333,9 +340,35 @@ describe('skill writes', () => {
             method: 'POST',
             url: `/api/workspace/skills/${id}/versions`,
             headers: member,
-            payload: { skillMd: skillMd('zipped', 'Changed.') },
+            payload: { skillMd: skillMd('zipped', 'Changed.'), baseVersionId: changed.json().skill.current.id },
         });
         expect(same.statusCode).toBe(HTTP_OK);
+    });
+
+    it('names the version author by login on the wire, and a new version by another writer changes it', async () => {
+        const booted = await boot();
+        const { instance, admin, admin2 } = booted;
+        const created = await instance.inject({
+            method: 'POST',
+            url: '/api/org/skills',
+            headers: admin,
+            payload: { name: 'authored', skillMd: skillMd('authored') },
+        });
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        const id = created.json().skill.id;
+        expect(created.json().skill.current.author.login).toBe('admin-cat');
+
+        const read = await instance.inject({ method: 'GET', url: `/api/org/skills/${id}`, headers: booted.member });
+        expect(read.json().skill.current.author.login).toBe('admin-cat');
+
+        const second = await instance.inject({
+            method: 'POST',
+            url: `/api/org/skills/${id}/versions`,
+            headers: admin2,
+            payload: { skillMd: skillMd('authored', 'Changed.'), baseVersionId: read.json().skill.current.id },
+        });
+        expect(second.statusCode).toBe(HTTP_CREATED);
+        expect(second.json().skill.current.author.login).toBe('admin-dog');
     });
 
     it('maps a codec refusal to 422 with its stable reason', async () => {
@@ -406,7 +439,7 @@ describe('skill writes', () => {
         }
         const noName = await instance.inject({
             method: 'POST',
-            url: '/api/workspace/skills',
+            url: '/api/workspace/skills?name=',
             headers: { ...member, 'content-type': 'application/zip' },
             payload: zip([{ name: 'SKILL.md', data: skillMd('x') }]),
         });
@@ -561,6 +594,30 @@ describe('/api/skills catalog', () => {
     });
 });
 
+describe('built-in view', () => {
+    const view = (booted: Booted, name: string) =>
+        booted.instance.inject({ method: 'GET', url: `/api/skills/builtin/${name}`, headers: booted.member });
+
+    it('returns SKILL.md, files and the board version', async () => {
+        const booted = await boot(memorySkillStore(), {}, '9.9.9');
+        const response = await view(booted, 'factory-jira');
+        expect(response.statusCode).toBe(HTTP_OK);
+        const body = response.json();
+        expect(body).toMatchObject({ name: 'factory-jira', version: '9.9.9' });
+        expect(body.skillMd).toContain('name: factory-jira');
+        expect(body.requires.connections[0]).toMatchObject({ name: 'jira' });
+        expect(body.files.map((file: { path: string }) => file.path)).toEqual(['SKILL.md', 'jira.cjs']);
+        expect(body.files[0].size).toBeGreaterThan(0);
+    });
+
+    it('an unknown name is 404 SKILL_NOT_FOUND', async () => {
+        const booted = await boot();
+        const response = await view(booted, 'no-such-builtin');
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(response.json().code).toBe('SKILL_NOT_FOUND');
+    });
+});
+
 describe('built-in skill switch', () => {
     const switchTo = (booted: Booted, name: string, headers: { cookie: string }, enabled: unknown = false) =>
         booted.instance.inject({
@@ -631,5 +688,316 @@ describe('built-in skill switch', () => {
         });
         const response = await booted.instance.inject({ method: 'GET', url: '/api/skills', headers: booted.member });
         expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+    });
+});
+
+describe('inline edit', () => {
+    const DOORS = [
+        { door: 'org', prefix: '/api/org/skills', who: 'admin' },
+        { door: 'workspace', prefix: '/api/workspace/skills', who: 'member' },
+    ] as const;
+    const HELPER = 'echo hi\n';
+
+    /** Zip-creates `name` with SKILL.md plus the given helper files; returns its id and current version id. */
+    async function seed(
+        booted: Booted,
+        door: (typeof DOORS)[number],
+        name: string,
+        helpers: { name: string; data: string }[] = [{ name: 'scripts/run.sh', data: HELPER }]
+    ) {
+        const created = await booted.instance.inject({
+            method: 'POST',
+            url: `${door.prefix}?name=${name}`,
+            headers: { ...booted[door.who], 'content-type': 'application/zip' },
+            payload: zip([{ name: 'SKILL.md', data: skillMd(name) }, ...helpers]),
+        });
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        const skill = created.json().skill;
+        return { id: skill.id as string, versionId: skill.current.id as string };
+    }
+
+    const edit = (booted: Booted, door: (typeof DOORS)[number], id: string, payload: Record<string, unknown>) =>
+        booted.instance.inject({
+            method: 'POST',
+            url: `${door.prefix}/${id}/versions`,
+            headers: booted[door.who],
+            payload,
+        });
+
+    const read = async (booted: Booted, door: (typeof DOORS)[number], id: string) =>
+        (
+            await booted.instance.inject({ method: 'GET', url: `${door.prefix}/${id}`, headers: booted[door.who] })
+        ).json();
+
+    describe.each(DOORS)('$door door', (door) => {
+        it('keeps the helper files when JSON replaces SKILL.md', async () => {
+            const booted = await boot();
+            const { id, versionId } = await seed(booted, door, 'keeper');
+            const before = await read(booted, door, id);
+            const response = await edit(booted, door, id, {
+                skillMd: skillMd('keeper', 'Edited.'),
+                baseVersionId: versionId,
+            });
+            expect(response.statusCode).toBe(HTTP_CREATED);
+            expect(response.json().skill.current.description).toBe('Edited.');
+            const after = await read(booted, door, id);
+            expect(after.files.map((file: { path: string }) => file.path)).toEqual(['SKILL.md', 'scripts/run.sh']);
+            const helper = (list: { path: string; size: number }[]) => list.find((f) => f.path === 'scripts/run.sh');
+            expect(helper(after.files)?.size).toBe(helper(before.files)?.size);
+            expect(after.skillMd).toBe(skillMd('keeper', 'Edited.'));
+        });
+
+        it('an edit whose current version cannot be read is 503 and writes no version', async () => {
+            const booted = await boot();
+            const { id, versionId } = await seed(booted, door, 'unreadable');
+            booted.skills.breakVersionReads();
+            const response = await edit(booted, door, id, {
+                skillMd: skillMd('unreadable', 'Edited.'),
+                baseVersionId: versionId,
+            });
+            expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+            booted.skills.breakVersionReads(false);
+            const after = await read(booted, door, id);
+            expect(after.skill.current.id).toBe(versionId);
+            expect(after.files.map((file: { path: string }) => file.path)).toEqual(['SKILL.md', 'scripts/run.sh']);
+        });
+
+        it('an edit whose stored object is gone is 410', async () => {
+            const booted = await boot();
+            const { id, versionId } = await seed(booted, door, 'vanished');
+            booted.skills.loseObjects();
+            const response = await edit(booted, door, id, {
+                skillMd: skillMd('vanished', 'Edited.'),
+                baseVersionId: versionId,
+            });
+            expect(response.statusCode).toBe(HTTP_GONE);
+            expect(response.json().code).toBe('SKILL_GONE');
+        });
+
+        it('a stale baseVersionId is 409 SKILL_VERSION_STALE', async () => {
+            const booted = await boot();
+            const { id, versionId: v1 } = await seed(booted, door, 'stale');
+            const v2 = await booted.instance.inject({
+                method: 'POST',
+                url: `${door.prefix}/${id}/versions`,
+                headers: { ...booted[door.who], 'content-type': 'application/zip' },
+                payload: zip([
+                    { name: 'SKILL.md', data: skillMd('stale', 'Second.') },
+                    { name: 'scripts/run.sh', data: HELPER },
+                ]),
+            });
+            expect(v2.statusCode).toBe(HTTP_CREATED);
+            const response = await edit(booted, door, id, { skillMd: skillMd('stale', 'Late.'), baseVersionId: v1 });
+            expect(response.statusCode).toBe(HTTP_CONFLICT);
+            expect(response.json().code).toBe('SKILL_VERSION_STALE');
+            expect((await read(booted, door, id)).skill.current.id).toBe(v2.json().skill.current.id);
+        });
+
+        it('a missing baseVersionId is 400', async () => {
+            const booted = await boot();
+            const { id } = await seed(booted, door, 'unbased');
+            const response = await edit(booted, door, id, { skillMd: skillMd('unbased', 'Edited.') });
+            expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        });
+
+        it('an edit that pushes the bundle past MAX_SKILL_BYTES is 422 too_large', async () => {
+            const booted = await boot();
+            const big = 'x'.repeat(MAX_SKILL_FILE_BYTES - 1024);
+            const helpers = [1, 2, 3, 4, 5].map((n) => ({ name: `data/${n}.txt`, data: big }));
+            const { id, versionId } = await seed(booted, door, 'heavy', helpers);
+            const response = await edit(booted, door, id, {
+                skillMd: skillMd('heavy', 'Edited.') + 'y'.repeat(MAX_SKILL_FILE_BYTES / 2),
+                baseVersionId: versionId,
+            });
+            expect(response.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(response.json().reason).toBe('too_large');
+        });
+
+        it('name_mismatch on edit', async () => {
+            const booted = await boot();
+            const { id, versionId } = await seed(booted, door, 'named');
+            const response = await edit(booted, door, id, { skillMd: skillMd('other'), baseVersionId: versionId });
+            expect(response.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(response.json().reason).toBe('name_mismatch');
+        });
+
+        it('a zip version still replaces the whole bundle', async () => {
+            const booted = await boot();
+            const { id } = await seed(booted, door, 'replaced');
+            const response = await booted.instance.inject({
+                method: 'POST',
+                url: `${door.prefix}/${id}/versions`,
+                headers: { ...booted[door.who], 'content-type': 'application/zip' },
+                payload: zip([{ name: 'SKILL.md', data: skillMd('replaced', 'Only.') }]),
+            });
+            expect(response.statusCode).toBe(HTTP_CREATED);
+            const after = await read(booted, door, id);
+            expect(after.files.map((file: { path: string }) => file.path)).toEqual(['SKILL.md']);
+        });
+    });
+});
+
+describe('zip create without ?name=', () => {
+    const DOORS = [
+        { door: 'org', prefix: '/api/org/skills', who: 'admin' },
+        { door: 'workspace', prefix: '/api/workspace/skills', who: 'member' },
+    ] as const;
+
+    const create = (booted: Booted, door: (typeof DOORS)[number], data: string, query = '') =>
+        booted.instance.inject({
+            method: 'POST',
+            url: `${door.prefix}${query}`,
+            headers: { ...booted[door.who], 'content-type': 'application/zip' },
+            payload: zip([{ name: 'SKILL.md', data }]),
+        });
+
+    describe.each(DOORS)('$door door', (door) => {
+        it('takes the name from SKILL.md', async () => {
+            const booted = await boot();
+            const created = await create(booted, door, skillMd('from-md'));
+            expect(created.statusCode).toBe(HTTP_CREATED);
+            expect(created.json().skill.name).toBe('from-md');
+        });
+
+        it('a SKILL.md without a name is 422 bad_frontmatter', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, '---\ndescription: x\n---\n');
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('bad_frontmatter');
+        });
+
+        it('a factory-* name is 422 reserved_name', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, skillMd('factory-x'));
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('reserved_name');
+        });
+
+        it('a zip with no SKILL.md is 422 no_skill_md', async () => {
+            const booted = await boot();
+            const res = await booted.instance.inject({
+                method: 'POST',
+                url: door.prefix,
+                headers: { ...booted[door.who], 'content-type': 'application/zip' },
+                payload: zip([{ name: 'a.txt', data: 'a' }]),
+            });
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('no_skill_md');
+        });
+
+        it('an invalid name (uppercase) is 422 bad_name', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, skillMd('Bad'));
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('bad_name');
+        });
+
+        it('a taken derived name is 409 NAME_TAKEN', async () => {
+            const booted = await boot();
+            expect((await create(booted, door, skillMd('taken-one'))).statusCode).toBe(HTTP_CREATED);
+            const again = await create(booted, door, skillMd('taken-one'));
+            expect(again.statusCode).toBe(HTTP_CONFLICT);
+            expect(again.json().code).toBe('NAME_TAKEN');
+        });
+
+        it('a ?name= that differs from SKILL.md is 422 name_mismatch', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, skillMd('in-md'), '?name=in-query');
+            expect(res.statusCode).toBe(HTTP_UNPROCESSABLE);
+            expect(res.json().reason).toBe('name_mismatch');
+        });
+
+        it('an empty ?name= is still 400 BAD_NAME', async () => {
+            const booted = await boot();
+            const res = await create(booted, door, skillMd('in-md'), '?name=');
+            expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+            expect(res.json().code).toBe('BAD_NAME');
+        });
+
+        it('a JSON create without name is still 400', async () => {
+            const booted = await boot();
+            const res = await booted.instance.inject({
+                method: 'POST',
+                url: door.prefix,
+                headers: booted[door.who],
+                payload: { skillMd: skillMd('json-one') },
+            });
+            expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+        });
+    });
+});
+
+describe('zip download', () => {
+    const DOORS = [
+        { door: 'org', prefix: '/api/org/skills', who: 'admin', reader: 'member' },
+        { door: 'workspace', prefix: '/api/workspace/skills', who: 'member', reader: 'member' },
+    ] as const;
+    const FILES = [
+        { name: 'SKILL.md', data: skillMd('packed') },
+        { name: 'scripts/run.sh', data: 'echo hi\n' },
+    ];
+
+    async function seed(booted: Booted, door: (typeof DOORS)[number]) {
+        const created = await booted.instance.inject({
+            method: 'POST',
+            url: `${door.prefix}?name=packed`,
+            headers: { ...booted[door.who], 'content-type': 'application/zip' },
+            payload: zip(FILES),
+        });
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        return created.json().skill.id as string;
+    }
+
+    const download = (
+        booted: Booted,
+        door: (typeof DOORS)[number],
+        id: string,
+        who: 'member' | 'other' = door.reader
+    ) => booted.instance.inject({ method: 'GET', url: `${door.prefix}/${id}/zip`, headers: booted[who] });
+
+    it("a member downloads an org skill's zip", async () => {
+        const booted = await boot();
+        const id = await seed(booted, DOORS[0]);
+        const response = await download(booted, DOORS[0], id);
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.headers['content-type']).toBe('application/zip');
+        expect(response.headers['content-disposition']).toBe('attachment; filename="packed.zip"');
+        expect(response.headers['cache-control']).toBe('no-store');
+        const back = bundleFromZip('packed', response.rawPayload).files;
+        expect(back.map((f) => [f.path, f.bytes.toString()])).toEqual(FILES.map((f) => [f.name, f.data]));
+    });
+
+    it("a workspace zip is the owner's only", async () => {
+        const booted = await boot();
+        const id = await seed(booted, DOORS[1]);
+        expect((await download(booted, DOORS[1], id)).statusCode).toBe(HTTP_OK);
+        const foreign = await download(booted, DOORS[1], id, 'other');
+        expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(foreign.json().code).toBe('SKILL_NOT_FOUND');
+    });
+
+    describe.each(DOORS)('$door door', (door) => {
+        it('a lost object is 410 and an unreachable store is 503, never an empty zip', async () => {
+            const booted = await boot();
+            const id = await seed(booted, door);
+            booted.skills.breakVersionReads();
+            const unreadable = await download(booted, door, id);
+            expect(unreadable.statusCode).toBe(HTTP_UNAVAILABLE);
+            expect(unreadable.headers['content-type']).not.toBe('application/zip');
+            booted.skills.breakVersionReads(false);
+            booted.skills.loseObjects();
+            const gone = await download(booted, door, id);
+            expect(gone.statusCode).toBe(HTTP_GONE);
+            expect(gone.json().code).toBe('SKILL_GONE');
+            booted.skills.breakAll();
+            expect((await download(booted, door, id)).statusCode).toBe(HTTP_UNAVAILABLE);
+        });
+
+        it('a non-uuid id is 404', async () => {
+            const booted = await boot();
+            const response = await download(booted, door, 'not-a-uuid');
+            expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+            expect(response.json().code).toBe('SKILL_NOT_FOUND');
+        });
     });
 });

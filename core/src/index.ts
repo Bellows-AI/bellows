@@ -227,6 +227,7 @@ export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';
 export type { ExecutorScope, ExecutorType } from './executors.js';
 export {
+    checkoutSkillDirsOf,
     CLAUDE_CODE,
     DEFAULT_GATE_FIX_ROUNDS,
     EXECUTOR_SCOPES,

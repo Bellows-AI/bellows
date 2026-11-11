@@ -1,7 +1,7 @@
 # Secret storage
 
 The one contract that environment secrets, managed connection grants and notification credentials store their payload
-bytes through, with three backends (AES-256-GCM database, AWS Secrets Manager, Vault KV v2); `SECRETS_BACKEND` picks one.
+bytes through, with four backends (AES-256-GCM database, AWS Secrets Manager, Vault KV v2, Google Cloud Secret Manager); `SECRETS_BACKEND` picks one.
 
 | Concern | Code | Test |
 | --- | --- | --- |
@@ -17,6 +17,7 @@ bytes through, with three backends (AES-256-GCM database, AWS Secrets Manager, V
 | External payloads (all providers) and the bounded provider HTTP exchange | `server/src/secrets/external-payloads.ts`, `server/src/secrets/provider-http.ts` | `server/test/secrets.external-payloads.test.ts`, `server/test-db/secrets-external.faults.test.ts` |
 | AWS adapter (SigV4; credentials via `artifacts/s3-credentials.ts`) | `server/src/secrets/aws-secrets-manager.ts`, `server/src/artifacts/sigv4.ts`, `server/src/artifacts/s3-credentials.ts` | `server/test/secrets.aws.test.ts`, `server/test-db/secrets-aws.conformance.test.ts` |
 | Vault KV v2 adapter, answer classifier, Kubernetes login | `server/src/secrets/vault-kv.ts`, `server/src/secrets/vault-answer.ts`, `server/src/secrets/vault-token.ts` | `server/test/secrets.vault.test.ts`, `server/test-db/secrets-vault.conformance.test.ts` |
+| GCP Secret Manager adapter (REST, one secret per version named `<prefix><ref>-<version>`, delete destroys every version) and its Application Default Credentials source (metadata server, `authorized_user` file; no key file) | `server/src/secrets/gcp-secret-manager.ts`, `server/src/secrets/gcp-credentials.ts`, `server/migrations/134_secret_gcp_storage.sql` | `server/test/secrets.gcp.test.ts`, `server/test/secrets.gcp-credentials.test.ts`, `server/test/secrets.backend-config.gcp.test.ts`, `server/test-db/secrets-gcp.conformance.test.ts` |
 | Emulators for the external suites (moto, dev Vault; compose profiles) | `server/test-db/secrets-external-harness.ts`, `docker-compose.yml`, `.github/workflows/ci.yml` | `core/test/ci-workflows.test.ts` |
 | Key delivery: `secrets.env` (`npm run secrets:init`), compose `env_file`, chart `secretStore.*` | `scripts/secrets-init.mjs`, `secrets.env.example`, `charts/factory/templates/secret.yaml`, `charts/factory/templates/deployment.yaml` | `server/test/secrets.environment.test.ts`, `server/test/secrets.init-script.test.ts` |
 | Rotation: `npm run secrets:rotate` | `package.json` | `server/test/secrets.rotate-cli.test.ts` |
@@ -32,7 +33,11 @@ bytes through, with three backends (AES-256-GCM database, AWS Secrets Manager, V
   `driver/test/strip-secret-store-env.test.ts`.
 - **One backend per deployment, no default**; a variable of another backend is refused. `server/test/secrets.backend-config.test.ts`.
 - **An unconfirmed provider answer never deletes or condemns**: a row is dropped only after the provider confirmed the
-  object gone. `server/test/secrets.aws.test.ts`, `server/test/secrets.vault.test.ts`.
+  object gone. `server/test/secrets.aws.test.ts`, `server/test/secrets.vault.test.ts`, `server/test/secrets.gcp.test.ts`.
+- **The gcp backend calls only `secretmanager.secrets.create` (granted on the project, never conditionable), and
+  `versions.add`, `versions.access` and `secrets.delete` on secrets named `<prefix>...`**: it never lists, reads
+  metadata or destroys a version. An IAM condition on the name sees the project NUMBER, the settings take the id.
+  `server/test/secrets.gcp.test.ts`.
 - **Operation IDs are server-issued and bound to kind, reference, expected version and payload**; only `unavailable`
   retries automatically; an ambiguous write is `outcome-unknown` and is reconciled by its ID before any new mutation.
   `server/test/secrets-conformance.ts`.
@@ -49,6 +54,8 @@ bytes through, with three backends (AES-256-GCM database, AWS Secrets Manager, V
 - The store bounds a call by its own deadline, not the caller's signal; a consumer races the signal itself.
 - A Vault behind a private CA is trusted only through `NODE_EXTRA_CA_CERTS` on the dashboard; its login is
   `auth/kubernetes/login` with no namespace header.
+- Secret Manager error bodies and the IAM condition are checked against an in-process emulator
+  (`server/test-db/secrets-gcp-provider.ts`); the first real check is the hosted-cluster walk.
 - Signed AWS requests are checked against a signature-blind emulator; the EKS walk ([eks-runbook.md](eks-runbook.md)) is
   the first real check.
 - Docker development bind-mounts the tree, so `secrets.env` is visible inside the driver container.

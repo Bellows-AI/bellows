@@ -1,5 +1,6 @@
 import {
     ERROR_CODES,
+    EXECUTOR_TYPES,
     executorMissingMessage,
     executorSuspendedMessage,
     type ExecutorScope,
@@ -7,8 +8,43 @@ import {
 } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ExecutorDefault, UserExecutorStore } from '../../db/user-executor-store.js';
+import type { ExecutorTypeRead } from '../../skill-catalog.js';
 import { bad, guard } from '../helpers.js';
 import { HTTP_CONFLICT, HTTP_NOT_FOUND } from './job-limits.js';
+
+export const executorTypeOf = (type: string): ExecutorTypeRead =>
+    (EXECUTOR_TYPES as readonly string[]).includes(type)
+        ? { state: 'known', type: type as (typeof EXECUTOR_TYPES)[number] }
+        : { state: 'unconfirmed', error: `Unknown executor type ${type}` };
+
+/**
+ * The executor type whose CLI will scan the checkout: the named profile's, or the caller's resolved default's when none
+ * is named. No store or no caller resolves nothing and runs claude (`known` null). A failed read, a missing or suspended
+ * profile, no default or a stored type this board does not know is `unconfirmed`, never a guess.
+ */
+export async function readExecutorType(
+    executors: Pick<UserExecutorStore, 'configFor' | 'resolvedDefault'> | null | undefined,
+    userId: string | null,
+    executor: string | null,
+    scope: ExecutorScope
+): Promise<ExecutorTypeRead> {
+    if (!executors || !userId) return { state: 'known', type: null };
+    try {
+        let name = executor;
+        let at = scope;
+        if (name === null) {
+            const fallback = await executors.resolvedDefault(userId);
+            if (fallback === null) return { state: 'unconfirmed', error: noExecutorMessage };
+            ({ name, scope: at } = fallback);
+        }
+        const row = await executors.configFor(userId, name, at);
+        if (row === null) return { state: 'unconfirmed', error: executorMissingMessage(at, name) };
+        if (row.suspended) return { state: 'unconfirmed', error: executorSuspendedMessage(at, name) };
+        return executorTypeOf(row.type);
+    } catch (cause) {
+        return { state: 'unconfirmed', error: cause instanceof Error ? cause.message : String(cause) };
+    }
+}
 
 /**
  * A selection must name a profile its scope holds, and not a suspended one: a name the scope does
@@ -17,6 +53,7 @@ import { HTTP_CONFLICT, HTTP_NOT_FOUND } from './job-limits.js';
  * share; the claim keeps its own check for a profile removed after the task was queued. True when a
  * refusal (or a failed read) has already landed on `reply`. A selection naming no executor, a board
  * with no executor store or an unauthenticated caller has nothing to resolve against, so it refuses nothing.
+ * `refused` once the refusal is on `reply`; otherwise the usable profile's executor type (`known` null when none resolved).
  */
 export async function refusedAsUnusable(
     request: FastifyRequest,
@@ -27,22 +64,22 @@ export async function refusedAsUnusable(
         executor: string | null;
         scope: ExecutorScope;
     }
-): Promise<boolean> {
+): Promise<'refused' | ExecutorTypeRead> {
     const { executors, createdBy, executor, scope } = opts;
-    if (!executors || !createdBy || !executor) return false;
+    if (!executors || !createdBy || !executor) return { state: 'known', type: null };
     const row = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'executor row read failed'),
         () => executors.configFor(createdBy, executor, scope)
     );
-    if (!row.ok) return true;
+    if (!row.ok) return 'refused';
     if (row.value === null) {
         bad(reply, ERROR_CODES.UNKNOWN_EXECUTOR, executorMissingMessage(scope, executor), HTTP_NOT_FOUND);
-        return true;
+        return 'refused';
     }
-    if (!row.value.suspended) return false;
+    if (!row.value.suspended) return executorTypeOf(row.value.type);
     bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, executorSuspendedMessage(scope, executor), HTTP_CONFLICT);
-    return true;
+    return 'refused';
 }
 
 /**
@@ -71,7 +108,8 @@ export async function defaultExecutorOf(
 
 /**
  * What `POST /api/jobs` runs on: the named profile, or the caller's default when none is named, checked usable either
- * way. Null once a refusal is on `reply`. A board with no executor store or no caller keeps a null executor.
+ * way, with the executor type its CLI runs. Null once a refusal is on `reply`. A board with no executor store or no
+ * caller keeps a null executor and a `known` null type.
  */
 export async function usableSelection(
     request: FastifyRequest,
@@ -82,13 +120,14 @@ export async function usableSelection(
         executor: string | null;
         scope: ExecutorScope;
     }
-): Promise<{ executor: string | null; scope: ExecutorScope } | null> {
+): Promise<{ executor: string | null; scope: ExecutorScope; type: ExecutorTypeRead } | null> {
     let { executor, scope } = opts;
     if (executor === null) {
         const fallback = await defaultExecutorOf(request, reply, opts);
         if (fallback === 'refused') return null;
         if (fallback !== null) ({ name: executor, scope } = fallback);
     }
-    if (await refusedAsUnusable(request, reply, { ...opts, executor, scope })) return null;
-    return { executor, scope };
+    const type = await refusedAsUnusable(request, reply, { ...opts, executor, scope });
+    if (type === 'refused') return null;
+    return { executor, scope, type };
 }

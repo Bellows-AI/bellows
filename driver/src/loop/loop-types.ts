@@ -124,7 +124,7 @@ export type VerdictBody = Parameters<Board['complete']>[1];
 export type SetupHalt =
     | { halt: 'fault'; log: string; verdict: VerdictBody }
     | { halt: 'leave'; log: string }
-    | { halt: 'interrupt'; reason: string; refused?: true; blocked?: true }
+    | { halt: 'interrupt'; reason: string; refused?: true; blocked?: true; nodeLoss?: true }
     | { halt: 'concluded'; log: string; verdict: VerdictBody };
 
 /**
@@ -165,6 +165,8 @@ export type EndDecision =
           blocked?: true;
           /** The agent's helper asked for a connection the task lacks: released outside the budget, held by the board. */
           requirement?: true;
+          /** The platform took the attempt away, on the executor's structured evidence (BEL-302): outside the poison budget. */
+          nodeLoss?: true;
           /** The work that must land while the lease still lets it, before the hand-back (the output tail, the session). */
           beforeInterrupt?: () => Promise<void>;
       }

@@ -1,4 +1,5 @@
 import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
+import { interruptionOf } from './job-interruption-body.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
@@ -28,6 +29,7 @@ import {
 } from './job-field-validation.js';
 import { validateGates } from './job-gate-validation.js';
 import { abortOnClose, effectiveCatalog, installedNames, standingOf, storedOf } from '../../skill-catalog.js';
+import type { ExecutorTypeRead } from '../../skill-catalog.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body, checkReposVisible, guard } from '../helpers.js';
 import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
@@ -175,9 +177,9 @@ async function refusedAsUnknownSkill(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply,
-    opts: { names: readonly string[]; repo: string | null; baseBranch: string | null }
+    opts: { names: readonly string[]; repo: string | null; baseBranch: string | null; executorType: ExecutorTypeRead }
 ): Promise<boolean> {
-    const { names, repo, baseBranch } = opts;
+    const { names, repo, baseBranch, executorType } = opts;
     if (names.length === 0) return false;
     const rt = await orgs.for(orgOf(request));
     const catalog = await effectiveCatalog({
@@ -185,6 +187,7 @@ async function refusedAsUnknownSkill(
         read: rt?.repoSkills,
         repo,
         branch: baseBranch,
+        executorType,
         signal: abortOnClose(reply),
         need: names,
         stored: storedOf(rt, request),
@@ -258,10 +261,11 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         scope: simple.executorScope,
     });
     if (!selection) return reply;
-    const { executor, scope: executorScope } = selection;
+    const { executor, scope: executorScope, type: executorType } = selection;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;
-    if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch })) return reply;
+    if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch, executorType }))
+        return reply;
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
         fields,
@@ -510,55 +514,6 @@ export async function handleConclusion(orgs: OrgRegistry, request: FastifyReques
     if (result.value.result === 'lost') return leaseLost(reply);
     if (result.value.result === 'conflict') return conclusionConflict(reply);
     return reply.code(HTTP_OK).send({ id, status: parsed.value.status });
-}
-
-/** The longest interruption reason the board records (issue #792): one driver sentence. */
-const INTERRUPTION_REASON_MAX = 500;
-
-/**
- * The flags only a release carries: a start the runner refused is a released attempt's outcome (an
- * adoption has a runner), and a claim that waits on a leftover still terminating or on a
- * connection the task asked for is a release outside the budget.
- */
-function releaseFlagsOf(
-    raw: Record<string, unknown>,
-    release: boolean
-): { refused: boolean; blocked: boolean; requirement: boolean } | string {
-    for (const name of ['refused', 'blocked', 'requirement'] as const) {
-        if (raw[name] !== undefined && typeof raw[name] !== 'boolean') return `${name} must be a boolean`;
-        if (raw[name] === true && !release) return `${name} applies to a release`;
-    }
-    return { refused: raw.refused === true, blocked: raw.blocked === true, requirement: raw.requirement === true };
-}
-
-/** The interruption body's fields, or the refusal message for the first bad one. */
-function interruptionOf(
-    raw: Record<string, unknown>
-):
-    | { reason: string; release: boolean; claimSeq: number | null; refused?: true; blocked?: true; requirement?: true }
-    | string {
-    const { reason, release, claimSeq } = raw;
-    if (typeof reason !== 'string' || !reason.trim() || reason.length > INTERRUPTION_REASON_MAX) {
-        return `reason must be a non-empty string of at most ${INTERRUPTION_REASON_MAX} characters`;
-    }
-    if (typeof release !== 'boolean') return 'release must be a boolean';
-    if (claimSeq !== undefined && claimSeq !== null && (!Number.isSafeInteger(claimSeq) || (claimSeq as number) < 1)) {
-        return 'claimSeq must be a positive integer';
-    }
-    // An adoption records the earlier claim it adopted, never the adopter's own.
-    if (!release && (claimSeq === undefined || claimSeq === null))
-        return 'an adoption (release false) names its claimSeq';
-    const flagged = releaseFlagsOf(raw, release);
-    if (typeof flagged === 'string') return flagged;
-    const { refused, blocked, requirement } = flagged;
-    return {
-        reason,
-        release,
-        claimSeq: (claimSeq as number | null | undefined) ?? null,
-        ...(refused ? { refused: true as const } : {}),
-        ...(blocked ? { blocked: true as const } : {}),
-        ...(requirement ? { requirement: true as const } : {}),
-    };
 }
 
 // An attempt the infrastructure interrupted (issue #792): handed back claimable at once with its

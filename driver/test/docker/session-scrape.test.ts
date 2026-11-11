@@ -387,22 +387,15 @@ describe('the runner env for a gated job', () => {
         gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
     };
 
-    it('carries the gate credentials after the claim env, so the claim cannot spoof them', () => {
-        // docker's --env-file is last-duplicate-wins: the gate lines are appended after the
-        // claim's, so a member-configured BELLOWS_GATE_TOKEN in any scope loses to the driver's.
+    it('carries no gate credentials: the agent reaches gates through the control socket', () => {
         const body = envFileBody(gated).split('\n').filter(Boolean);
-        expect(body).toEqual([
-            'CLAIM_TOKEN=board-secret',
-            'BELLOWS_GATE_URL=http://host.docker.internal:9099',
-            'BELLOWS_GATE_TOKEN=tok',
-        ]);
+        expect(body).toEqual(['CLAIM_TOKEN=board-secret']);
     });
 
     /**
      * A claim can resolve to nothing — no env configured in any scope — while the job still
-     * declares gates. The loop mints BELLOWS_GATE_URL/TOKEN for exactly such a job, and a runner
-     * that keyed the env file on the claim alone would spawn with neither: no ad-hoc gate call
-     * possible, and the run's own verification unreadable to the agent.
+     * declares gates. The loop's gate token is an internal registration key, so such a job's env
+     * file carries no gate line at all.
      */
     const gateOnly: BoardJob = {
         ...job,
@@ -411,10 +404,8 @@ describe('the runner env for a gated job', () => {
         gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
     };
 
-    it('mounts the env file when the only env is the gate credentials', () => {
-        expect(envFileBody(gateOnly)).toBe(
-            'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n'
-        );
+    it('writes no env line when the only env was the gate credentials', () => {
+        expect(envFileBody(gateOnly)).toBe('');
         const line = dockerArgs(
             loadDriverConfig({}),
             gateOnly,

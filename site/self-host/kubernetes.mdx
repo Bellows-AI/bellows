@@ -18,7 +18,7 @@ Each Bellows release owns its namespace. The driver finds its runner pods by the
 - An installer that may create cluster-scoped `ValidatingAdmissionPolicy` objects. Turn this off with `isolation.admissionPolicy: false` only if your cluster enforces the same rules another way.
 - A PostgreSQL 17 database and its connection URL.
 - A GitHub App and a GitHub OAuth App. See [Create the GitHub App](/self-host/github-app).
-- An object store for task artifacts (S3 or an S3-compatible store), unless this is a single-replica trial.
+- An object store for task artifacts (S3, an S3-compatible store or Google Cloud Storage), unless this is a single-replica trial.
 - A registry that holds the Bellows images, and a DNS name for the dashboard.
 
 ## Values that matter
@@ -39,9 +39,10 @@ The render refuses to start without them, and names the missing value.
 | `github.appId` | Id of the GitHub App. |
 | `github.appPrivateKey` | The App's private key, as the PEM or its base64. |
 | `database.url` | PostgreSQL connection URL. It carries the password, so the chart stores it in the Secret. |
-| `secretStore.backend` | `database`, `aws` or `vault`. No default. See [Secret store](#secret-store). |
+| `secretStore.backend` | `database`, `aws`, `vault` or `gcp`. No default. See [Secret store](#secret-store). |
 | `secretStore.operationKey`, `secretStore.fingerprintKey` | Each from `openssl rand -base64 32`, and different from each other. They cannot be rotated. |
-| `artifacts.s3.bucket` and `artifacts.s3.region` | Where task artifacts go. The region may be empty when you set `artifacts.s3.endpoint`. |
+| `artifacts.s3.bucket` and `artifacts.s3.region` | Where task artifacts go on S3. The region may be empty when you set `artifacts.s3.endpoint`. |
+| `artifacts.backend: gcs` and `artifacts.gcs.bucket` | Where task artifacts go on Google Cloud Storage instead. See the Google GKE specifics below. |
 
 ### Common
 
@@ -49,8 +50,8 @@ The render refuses to start without them, and names the missing value.
 | --- | --- | --- |
 | `global.imageRegistry` | `''` | Prefixes every image the chart renders, both executor images included, for example `ghcr.io/<owner>`. Empty means bare names, which only work with side-loaded images. |
 | `dashboard.image.tag`, `driver.image.tag` | `''` | Empty uses the chart's `appVersion`, so a chart version names the exact build. |
-| `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3`. |
-| `artifacts.backend` | `s3` | `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |
+| `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs`. |
+| `artifacts.backend` | `s3` | `s3`, `gcs` or `filesystem`. `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |
 | `artifacts.retentionDays` | `90` | Artifacts of a removed task are deleted after this many days. |
 | `ingress.enabled` | `false` | See [Ingress and TLS](#ingress-and-tls). |
 | `taskVolume.size` | `20Gi` | Size request of each thread's volume. |
@@ -80,8 +81,11 @@ The secret store holds the secrets members save in Settings. Pick one backend.
 | `database` | Encrypted (AES-256-GCM) in PostgreSQL | `dataKeys` (`<keyId>:<base64 of 32 bytes>`, comma separated, for example `echo "k1:$(openssl rand -base64 32)"`) and `activeKeyId` (one of the key ids) |
 | `aws` | AWS Secrets Manager | `aws.region`, `aws.prefix`, and workload identity on `dashboard.serviceAccount.annotations` |
 | `vault` | HashiCorp Vault KV v2 | `vault.addr`, `vault.mount`, `vault.prefix`, `vault.role`, `vault.audience` (default `vault`) |
+| `gcp` | Google Cloud Secret Manager | `gcp.project`, optional `gcp.prefix` (default `bellows-`), `gcp.location` (default `europe-west3`) and `gcp.kmsKey`, and Workload Identity: `iam.gke.io/gcp-service-account` on `dashboard.serviceAccount.annotations` |
 
 Do not switch backends once secrets are stored. Only the dashboard container receives these keys.
+
+With `gcp`, bind the dashboard's Google service account to the dashboard ServiceAccount only, so the driver and runner pods have no access. The backend calls `secretmanager.secrets.create` on the project, and `secretmanager.versions.add`, `secretmanager.versions.access` and `secretmanager.secrets.delete` on secrets whose names start with the prefix. It never lists secrets. Grant the three name-scoped permissions with an IAM condition `resource.name.startsWith("projects/<project number>/secrets/<prefix>")`: the condition sees the project number, while `gcp.project` takes the project id. `secrets.create` is checked on the project, so grant it without the condition.
 
 ## Secrets to create
 
@@ -140,7 +144,7 @@ auth:
   cookieSecure: 'true'
 ```
 
-Annotations and `tls` pass through to the Ingress unchanged, so use whatever your controller expects. An empty `className` uses the cluster's default IngressClass. The render is refused if the host of `auth.publicUrl` is not in `ingress.hosts`, because sign-in would never return.
+Annotations and `tls` pass through to the Ingress unchanged, so use whatever your controller expects. An empty `className` uses the cluster's default IngressClass. GKE's built-in controller has no IngressClass object: leave `className` empty and set the annotation `kubernetes.io/ingress.class: gce`. To attach a Cloud Armor policy on GKE, create a `BackendConfig` with `securityPolicy` and name it in `dashboard.service.annotations` as `cloud.google.com/backend-config: '{"default":"<name>"}'`. The render is refused if the host of `auth.publicUrl` is not in `ingress.hosts`, because sign-in would never return.
 
 <Note>
 MCP needs only the one `/` Prefix rule the chart renders per host. It serves `/.well-known/oauth-*` and `/api/mcp` through it. Do not add a second path rule.
@@ -163,11 +167,12 @@ Tune the runners:
 | Value | Default | Notes |
 | --- | --- | --- |
 | `runner.nodeSelector`, `runner.tolerations`, `runner.affinity` | empty | Where agent code runs. Use a tainted node group so it never shares a node with the dashboard. |
+| `runner.runtimeClassName` | empty | RuntimeClass every driver pod runs under, such as `gvisor` on a GKE Sandbox node pool. Set, the admission policy refuses a driver pod without it. |
 | `runner.resources` | requests `500m` / `1Gi`, limits `4` / `8Gi` | Applies to the runner, services and helpers. |
 | `runner.gateResources` | requests `2` / `2Gi` | Gate pods. Unset slots fall back to `runner.resources`. |
 | `isolation.blockedCidrs` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16` | Blocked for runners, including the cloud metadata address. |
 | `isolation.allowedCidrs` | `[]` | Add a private host a runner must reach, as a `/32`. |
-| `isolation.dnsCidrs` | `169.254.20.10/32` | Extra resolver addresses allowed on port 53. List your resolver if your DNS pods are not labelled `k8s-app: kube-dns`. |
+| `isolation.dnsCidrs` | `169.254.20.10/32` | Extra resolver addresses allowed on port 53. List your resolver if your DNS pods are labelled neither `k8s-app: kube-dns` nor `k8s-app: node-local-dns`. |
 
 `blockedCidrs` blocks your VPC too, so a database on a private address is unreachable from a runner unless you allow it.
 
@@ -332,6 +337,25 @@ Then add an executor in the app, queue a task, and confirm the runner pod lands 
     `listen-ports` must include the HTTP listener, or `ssl-redirect` has nothing to redirect. The ACM certificate and the DNS record live outside the chart.
 
     **External Secrets.** If you sync Secrets from a secret manager: a path outside the controller's IAM scope fails with `could not get secret data from provider`, and the real `AccessDeniedException` is in the controller's events. A missing remote key fails the whole sync, so default optional keys to empty. `GITHUB_APP_PRIVATE_KEY` may be raw or base64.
+  </Accordion>
+  <Accordion title="Google GKE specifics">
+    **Artifacts on Google Cloud Storage.** Set `artifacts.backend: gcs` and `artifacts.gcs.bucket`. The board never creates the bucket, so create it first. The board authenticates with Application Default Credentials only: there is no key-file option, and the cluster holds no storage secret. Bind the dashboard's Kubernetes ServiceAccount (`<release>-factory-dashboard`) to a Google service account with Workload Identity, and give that account `roles/storage.objectUser` on the one bucket:
+
+    ```yaml values.yaml
+    dashboard:
+      replicas: 2
+      serviceAccount:
+        annotations:
+          iam.gke.io/gcp-service-account: <gsa>@<project-id>.iam.gserviceaccount.com
+    artifacts:
+      backend: gcs
+      gcs:
+        bucket: <bucket-name>
+        prefix: factory/
+        kmsKey: ''
+    ```
+
+    `artifacts.gcs.kmsKey` is optional. Set it to a full Cloud KMS key name to encrypt new objects with a customer-managed key, and grant `roles/cloudkms.cryptoKeyEncrypterDecrypter` on that key to the Cloud Storage service agent of the bucket's project. The dashboard's own account needs no KMS role. The chart refuses `artifacts.s3.*` and `artifacts.credentialsExistingSecret` with `gcs`, and `artifacts.gcs.*` with another backend. Only the dashboard's account is bound; runner pods hold no storage credential.
   </Accordion>
 </AccordionGroup>
 

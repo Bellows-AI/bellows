@@ -10,7 +10,8 @@ import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from '../evidence-policy.js';
-import { interruptionsSpent, LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { interruptionsSpent, spentRule } from './job-store-interruption-budget.js';
 import { resolveClaimSkills } from './job-store-claim-skills.js';
 import {
     admitInTx,
@@ -84,13 +85,17 @@ async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql)
     const due = dueRows(ctx, tx, claimRules(ctx).exhausted);
     const ids = await lockedCandidates(tx, due);
     if (ids.length === 0) return [];
-    const retired = await tx<{ id: string; root_job_id: string }[]>`
+    const retired = await tx<{ id: string; root_job_id: string; rule: string | null }[]>`
         update job set status = 'dead', finished_at = now(), lease_token = null,
                        wall_clock_ms = ${wallTick}
         where id = any(${ids}::uuid[]) and ${due}
           and not ${stagedUnderLease(tx, 'job')}
-        returning id, root_job_id
+        returning id, root_job_id, ${spentRule(tx)} as rule
     `;
+    // Which rule ended each row (BEL-302): a poison job and a platform thrashing one read the same on the row.
+    for (const r of retired) {
+        console.warn(`[jobs] job ${r.id} retired dead: its ${r.rule ?? 'interruption bound'} is spent`);
+    }
     // A retired caller's separate reviews (issue #549) have no one left to read them.
     await stopReviewsOf(
         tx,

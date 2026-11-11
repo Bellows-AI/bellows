@@ -100,6 +100,7 @@ export interface PodView {
         nodeSelector?: unknown;
         tolerations?: unknown;
         affinity?: unknown;
+        runtimeClassName?: string;
         containers: {
             resources?: unknown;
             securityContext?: {

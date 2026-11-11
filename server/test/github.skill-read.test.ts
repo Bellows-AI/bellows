@@ -9,6 +9,8 @@ import {
 } from '../src/github/skill-read.js';
 
 const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+const CLAUDE = ['.claude/skills'] as const;
+const OPENCODE_DIRS = ['.claude/skills', '.opencode/skills', '.opencode/skill', '.agents/skills'] as const;
 let counter = 0;
 /** A repo name no other test shares, so the revision-keyed cache never crosses tests. */
 const freshRepo = () => {
@@ -61,7 +63,7 @@ describe('readRepoSkills', () => {
         const { call, paths } = fakeCall(
             repoWith(repo, { fix: skillMd('fix', 'Fix an issue'), plan: skillMd('plan', 'Plan work') })
         );
-        const read = await readRepoSkills(call, repo, 'main');
+        const read = await readRepoSkills(call, repo, 'main', { dirs: CLAUDE });
         expect(read.revision).toBe(SHA);
         expect(read.skills).toEqual([
             { name: 'fix', description: 'Fix an issue' },
@@ -76,7 +78,7 @@ describe('readRepoSkills', () => {
         const repo = freshRepo();
         const answers = repoWith(repo, {});
         answers[`/repos/${repo}/contents/.claude/skills`] = new GitHubReadError('nf', READ_NOT_FOUND);
-        const read = await readRepoSkills(fakeCall(answers).call, repo, 'main');
+        const read = await readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: CLAUDE });
         expect(read).toEqual({ revision: SHA, skills: [], unreadable: [], complete: true });
     });
 
@@ -84,7 +86,7 @@ describe('readRepoSkills', () => {
         const repo = freshRepo();
         const answers = repoWith(repo, {});
         answers[`/repos/${repo}/commits/main`] = new GitHubReadError('nf', READ_NOT_FOUND);
-        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main')).rejects.toMatchObject({
+        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: CLAUDE })).rejects.toMatchObject({
             kind: READ_NOT_FOUND,
         });
     });
@@ -93,7 +95,7 @@ describe('readRepoSkills', () => {
         const repo = freshRepo();
         const answers = repoWith(repo, {});
         answers[`/repos/${repo}/contents/.claude/skills`] = new GitHubReadError('no', READ_FORBIDDEN);
-        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main')).rejects.toMatchObject({
+        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: CLAUDE })).rejects.toMatchObject({
             kind: READ_FORBIDDEN,
         });
     });
@@ -102,7 +104,7 @@ describe('readRepoSkills', () => {
         const repo = freshRepo();
         const answers = repoWith(repo, {});
         answers[`/repos/${repo}/contents/.claude/skills`] = { type: 'file' };
-        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main')).rejects.toMatchObject({
+        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: CLAUDE })).rejects.toMatchObject({
             kind: READ_BINDING,
         });
     });
@@ -111,7 +113,7 @@ describe('readRepoSkills', () => {
         const repo = freshRepo();
         const answers = repoWith(repo, { good: skillMd('good', 'ok'), bad: 'no frontmatter at all', gone: 'x' });
         answers[`/repos/${repo}/contents/.claude/skills/gone/SKILL.md`] = new GitHubReadError('nf', READ_NOT_FOUND);
-        const read = await readRepoSkills(fakeCall(answers).call, repo, 'main');
+        const read = await readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: CLAUDE });
         expect(read.skills).toEqual([{ name: 'good', description: 'ok' }]);
         expect([...read.unreadable].sort()).toEqual(['bad', 'gone']);
     });
@@ -120,7 +122,9 @@ describe('readRepoSkills', () => {
         const repo = freshRepo();
         const answers = repoWith(repo, { good: skillMd('good', 'ok') });
         answers[`/repos/${repo}/contents/.claude/skills/good/SKILL.md`] = new GitHubReadError('rl', READ_FORBIDDEN);
-        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main')).rejects.toBeInstanceOf(GitHubReadError);
+        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: CLAUDE })).rejects.toBeInstanceOf(
+            GitHubReadError
+        );
     });
 
     it('a SKILL.md with allowed-tools/other keys parses (name+description)', async () => {
@@ -130,7 +134,7 @@ describe('readRepoSkills', () => {
             'Fix a thing',
             'allowed-tools: Bash, Read\nargument-hint: "[issue]"\nmetadata:\n  tools: gh\n'
         );
-        const read = await readRepoSkills(fakeCall(repoWith(repo, { fix: text })).call, repo, 'main');
+        const read = await readRepoSkills(fakeCall(repoWith(repo, { fix: text })).call, repo, 'main', { dirs: CLAUDE });
         expect(read.skills).toEqual([{ name: 'fix', description: 'Fix a thing' }]);
         expect(read.unreadable).toEqual([]);
     });
@@ -140,7 +144,7 @@ describe('readRepoSkills', () => {
         const entries: Record<string, string> = {};
         for (let i = 0; i < MAX_REPO_SKILLS + 10; i += 1) entries[`s${i}`] = skillMd(`s${i}`, 'd');
         const { call, paths } = fakeCall(repoWith(repo, entries));
-        const read = await readRepoSkills(call, repo, 'main');
+        const read = await readRepoSkills(call, repo, 'main', { dirs: CLAUDE });
         expect(MAX_REPO_SKILLS).toBe(50);
         expect(read.skills).toHaveLength(MAX_REPO_SKILLS);
         expect(read.complete).toBe(false);
@@ -151,14 +155,15 @@ describe('readRepoSkills', () => {
         const repo = freshRepo();
         const entries: Record<string, string> = {};
         for (let i = 0; i < MAX_REPO_SKILLS; i += 1) entries[`s${i}`] = skillMd(`s${i}`, 'd');
-        const full = await readRepoSkills(fakeCall(repoWith(repo, entries)).call, repo, 'main');
+        const full = await readRepoSkills(fakeCall(repoWith(repo, entries)).call, repo, 'main', { dirs: CLAUDE });
         expect(full.complete).toBe(true);
         const other = freshRepo();
         const listing = [...dirs('fix'), { type: 'dir' }] as ReturnType<typeof dirs>;
         const odd = await readRepoSkills(
             fakeCall(repoWith(other, { fix: skillMd('fix', 'd') }, listing)).call,
             other,
-            'main'
+            'main',
+            { dirs: CLAUDE }
         );
         expect(odd.complete).toBe(false);
     });
@@ -174,7 +179,8 @@ describe('readRepoSkills', () => {
         const read = await readRepoSkills(
             fakeCall(repoWith(repo, {}, listing as unknown as ReturnType<typeof dirs>)).call,
             repo,
-            'main'
+            'main',
+            { dirs: CLAUDE }
         );
         expect(read.complete).toBe(false);
     });
@@ -190,7 +196,8 @@ describe('readRepoSkills', () => {
         const read = await readRepoSkills(
             fakeCall(repoWith(repo, { fix: skillMd('fix', 'd') }, listing)).call,
             repo,
-            'main'
+            'main',
+            { dirs: CLAUDE }
         );
         expect(read.complete).toBe(true);
     });
@@ -201,7 +208,8 @@ describe('readRepoSkills', () => {
         const read = await readRepoSkills(
             fakeCall(repoWith(repo, {}, files as ReturnType<typeof dirs>)).call,
             repo,
-            'main'
+            'main',
+            { dirs: CLAUDE }
         );
         expect(read.complete).toBe(false);
     });
@@ -209,12 +217,13 @@ describe('readRepoSkills', () => {
     it('a listing that is not an array throws, and an unreadable SKILL.md makes the read incomplete', async () => {
         const repo = freshRepo();
         const notList = repoWith(repo, {}, { type: 'file' } as unknown as ReturnType<typeof dirs>);
-        await expect(readRepoSkills(fakeCall(notList).call, repo, 'main')).rejects.toThrow();
+        await expect(readRepoSkills(fakeCall(notList).call, repo, 'main', { dirs: CLAUDE })).rejects.toThrow();
         const other = freshRepo();
         const read = await readRepoSkills(
             fakeCall(repoWith(other, { fix: skillMd('fix', 'd') }, dirs('fix', 'broken'))).call,
             other,
-            'main'
+            'main',
+            { dirs: CLAUDE }
         );
         expect(read.unreadable).toEqual(['broken']);
         expect(read.complete).toBe(false);
@@ -231,7 +240,9 @@ describe('readRepoSkills', () => {
                     reject(new Error('aborted'));
                 });
             });
-        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main', { deadlineMs: 30 })).rejects.toThrow();
+        await expect(
+            readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: CLAUDE, deadlineMs: 30 })
+        ).rejects.toThrow();
         expect(aborted).toBe(true);
     });
 
@@ -240,15 +251,15 @@ describe('readRepoSkills', () => {
         const controller = new AbortController();
         controller.abort();
         const { call } = fakeCall(repoWith(repo, { fix: skillMd('fix', 'd') }));
-        await expect(readRepoSkills(call, repo, 'main', { signal: controller.signal })).rejects.toThrow();
+        await expect(readRepoSkills(call, repo, 'main', { dirs: CLAUDE, signal: controller.signal })).rejects.toThrow();
     });
 
     it('a second call at the same sha issues only the tip request', async () => {
         const repo = freshRepo();
         const { call, paths } = fakeCall(repoWith(repo, { fix: skillMd('fix', 'd') }));
-        const first = await readRepoSkills(call, repo, 'main');
+        const first = await readRepoSkills(call, repo, 'main', { dirs: CLAUDE });
         const before = paths.length;
-        const second = await readRepoSkills(call, repo, 'main');
+        const second = await readRepoSkills(call, repo, 'main', { dirs: CLAUDE });
         expect(second).toEqual(first);
         expect(paths.slice(before)).toEqual([`/repos/${repo}/commits/main`]);
     });
@@ -257,7 +268,7 @@ describe('readRepoSkills', () => {
         const repo = freshRepo();
         const answers = repoWith(repo, {});
         answers[`/repos/${repo}/commits/HEAD`] = { sha: SHA };
-        const read = await readRepoSkills(fakeCall(answers).call, repo, null);
+        const read = await readRepoSkills(fakeCall(answers).call, repo, null, { dirs: CLAUDE });
         expect(read.revision).toBe(SHA);
     });
 });
@@ -274,5 +285,94 @@ describe('parseRepoSkillFrontmatter', () => {
         expect(parseRepoSkillFrontmatter('---\nname: x\n---\n')).toBeNull();
         expect(parseRepoSkillFrontmatter('---\ndescription: x\n---\n')).toBeNull();
         expect(parseRepoSkillFrontmatter('---\nname: x\ndescription: y\n')).toBeNull();
+    });
+});
+
+/** A repo whose skill folders live under several directories: `{ '.opencode/skills': { 'oc-only': text } }`. */
+function repoAcross(repo: string, byDir: Record<string, Record<string, string>>) {
+    const answers: Record<string, Answer> = { [`/repos/${repo}/commits/main`]: { sha: SHA } };
+    for (const [dir, entries] of Object.entries(byDir)) {
+        answers[`/repos/${repo}/contents/${dir}`] = dirs(...Object.keys(entries));
+        for (const [folder, text] of Object.entries(entries)) {
+            answers[`/repos/${repo}/contents/${dir}/${folder}/SKILL.md`] = file(text);
+        }
+    }
+    return answers;
+}
+
+describe('readRepoSkills across the executor skill directories', () => {
+    it('reads every given dir: a skill only under .opencode/skills is listed', async () => {
+        const repo = freshRepo();
+        const { call, paths } = fakeCall(
+            repoAcross(repo, { '.opencode/skills': { 'oc-only': skillMd('oc-only', 'Only opencode reads this') } })
+        );
+        const read = await readRepoSkills(call, repo, 'main', { dirs: OPENCODE_DIRS });
+        expect(read.skills).toEqual([{ name: 'oc-only', description: 'Only opencode reads this' }]);
+        for (const dir of OPENCODE_DIRS) expect(paths).toContain(`/repos/${repo}/contents/${dir}?ref=${SHA}`);
+    });
+
+    it('a 404 on one dir is that dir empty, the read stays complete', async () => {
+        const repo = freshRepo();
+        const { call } = fakeCall(repoAcross(repo, { '.claude/skills': { fix: skillMd('fix', 'Fix') } }));
+        const read = await readRepoSkills(call, repo, 'main', { dirs: OPENCODE_DIRS });
+        expect(read.skills).toEqual([{ name: 'fix', description: 'Fix' }]);
+        expect(read.complete).toBe(true);
+    });
+
+    it.each([
+        ['forbidden', new GitHubReadError('forbidden', READ_FORBIDDEN)],
+        ['not a list', { type: 'file' }],
+    ])('a %s answer on any one dir throws, never a narrower list', async (_name, answer) => {
+        const repo = freshRepo();
+        const answers = repoAcross(repo, { '.claude/skills': { fix: skillMd('fix', 'Fix') } });
+        answers[`/repos/${repo}/contents/.opencode/skills`] = answer;
+        await expect(readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: OPENCODE_DIRS })).rejects.toThrow();
+    });
+
+    it('the cap is across dirs: 30 + 30 folders read 50 and are incomplete', async () => {
+        const repo = freshRepo();
+        const folders = (prefix: string) =>
+            Object.fromEntries(
+                Array.from({ length: 30 }, (_v, i) => [`${prefix}${i}`, skillMd(`${prefix}${i}`, 'd')] as const)
+            );
+        const { call, paths } = fakeCall(
+            repoAcross(repo, { '.claude/skills': folders('a'), '.opencode/skills': folders('b') })
+        );
+        const read = await readRepoSkills(call, repo, 'main', { dirs: OPENCODE_DIRS });
+        expect(paths.filter((path) => path.endsWith(`/SKILL.md?ref=${SHA}`))).toHaveLength(MAX_REPO_SKILLS);
+        expect(read.skills).toHaveLength(MAX_REPO_SKILLS);
+        expect(read.complete).toBe(false);
+    });
+
+    it('a name in two dirs lists both raw, the first dir first', async () => {
+        const repo = freshRepo();
+        const { call } = fakeCall(
+            repoAcross(repo, {
+                '.claude/skills': { same: skillMd('same', 'from claude') },
+                '.opencode/skills': { same: skillMd('same', 'from opencode') },
+            })
+        );
+        const read = await readRepoSkills(call, repo, 'main', { dirs: OPENCODE_DIRS });
+        expect(read.skills.map((skill) => skill.description)).toEqual(['from claude', 'from opencode']);
+    });
+
+    it('the cache key holds the dir set', async () => {
+        const repo = freshRepo();
+        const { call } = fakeCall(
+            repoAcross(repo, { '.opencode/skills': { 'oc-only': skillMd('oc-only', 'Only opencode') } })
+        );
+        const claude = await readRepoSkills(call, repo, 'main', { dirs: CLAUDE });
+        expect(claude.skills).toEqual([]);
+        const opencode = await readRepoSkills(call, repo, 'main', { dirs: OPENCODE_DIRS });
+        expect(opencode.skills.map((skill) => skill.name)).toEqual(['oc-only']);
+    });
+
+    it('the deadline rejects when one of the dir listings hangs', async () => {
+        const repo = freshRepo();
+        const answers = repoAcross(repo, { '.claude/skills': { fix: skillMd('fix', 'Fix') } });
+        answers[`/repos/${repo}/contents/.agents/skills`] = () => new Promise(() => {});
+        await expect(
+            readRepoSkills(fakeCall(answers).call, repo, 'main', { dirs: OPENCODE_DIRS, deadlineMs: 30 })
+        ).rejects.toThrow();
     });
 });

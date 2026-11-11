@@ -44,6 +44,12 @@ export interface RunOutcome {
      * agent's exists, so the loop reports none: it leaves the job to the lease, which re-offers it.
      */
     infraLoss?: string;
+    /**
+     * Set with `infraLoss` only when the executor saw the runner itself taken away (its container removed, its pod
+     * evicted or gone; `TerminationEvidence.vanished`), never for a supervisor that ended badly or an agent that
+     * was killed (BEL-302): the hand-back then stays out of the poison interruption budget.
+     */
+    infraNodeLoss?: true;
     /** For a container that never started: the cause the platform's refusal proves (`startupCauseOf`), if any. */
     startupCause?: StartupCause;
     /**
@@ -464,6 +470,12 @@ export interface Runner {
      */
     releaseFence?(job: BoardJob): Promise<void>;
     /**
+     * Whether the executor confirms the attempt's task group was taken away (BEL-302): its pod evicted, marked
+     * for disruption or gone, its supervisor container removed. True only on that confirmation; any doubt, a
+     * failed or aborted read, answers false.
+     */
+    groupTakenAway(job: BoardJob, signal: AbortSignal): Promise<boolean>;
+    /**
      * Runs one declared block-helper step (issue #207): an allowlisted, board-owned script an
      * expanded workflow `block` node names to run before or after its agent turn. `call.token` is a
      * fresh GitHub installation token, minted by the loop immediately before a github-writing
@@ -563,6 +575,7 @@ const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
     finish: 'group',
     reclaimWorktree: 'attempt',
     releaseFence: 'group',
+    groupTakenAway: 'group',
     runHelper: 'group',
     runGate: 'group',
     resizeGate: 'group',

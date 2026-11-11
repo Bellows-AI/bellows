@@ -60,6 +60,7 @@ describe('nav model', () => {
             ['/settings/workspace', 'Workspace', false],
             ['/settings/integrations', 'Integrations', false],
             ['/settings/repos', 'Repositories', false],
+            ['/settings/skills', 'Skills', false],
             ['/settings/executors', 'Executors', false],
         ]);
     });

@@ -313,6 +313,29 @@ describe('the runner job spec', () => {
         ]);
     });
 
+    it('a runner pod for a workspace pin carries FACTORY_WORKSPACE_SKILLS and FACTORY_SKILLS_PATH', () => {
+        const pin = ['ws-a', 'ws-b'].map((name) => ({
+            name,
+            source: 'workspace' as const,
+            versionId: '77777777-7777-4777-8777-777777777777',
+            sha256: 'b'.repeat(64),
+        }));
+        const pinned = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...job, skillPin: pin },
+            {
+                id: SESSION,
+                resume: false,
+            }
+        );
+        const env = pinned.spec.template.spec.containers[0]!.env;
+        expect(env).toContainEqual({ name: 'FACTORY_WORKSPACE_SKILLS', value: 'ws-a,ws-b' });
+        expect(env).toContainEqual({
+            name: 'FACTORY_SKILLS_PATH',
+            value: expect.stringMatching(/\/\.claude\/skills$/),
+        });
+    });
+
     // The claim env's VALUES never touch the pod spec — anyone who can `get pods` would read them.
     // They live in a per-attempt Secret the runner creates before the Job and reaps with it.
     it('references claim env by secretKeyRef into the per-job Secret, never by value', () => {
@@ -331,9 +354,9 @@ describe('the runner job spec', () => {
         expect(JSON.stringify(container.env)).not.toContain('shh');
     });
 
-    // The gate pair rides the per-attempt Secret; run-control traffic goes through the supervisor's
-    // relays, so no BELLOWS_CONTROL_* name reaches the runner's env.
-    it('names the gate pair by secretKeyRef into the per-job Secret', () => {
+    // Run-control and ad-hoc gate traffic go through the supervisor's relays (BEL-88), so neither
+    // a BELLOWS_CONTROL_* nor a BELLOWS_GATE_* name reaches the runner's env.
+    it('puts no gate pair in the runner env, though the job carries its registration key', () => {
         const controlled: BoardJob = {
             ...job,
             gateEnv: {
@@ -346,10 +369,7 @@ describe('the runner job spec', () => {
             resume: false,
         }).spec.template.spec.containers[0]!;
         for (const name of ['BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN']) {
-            expect(container.env).toContainEqual({
-                name,
-                valueFrom: { secretKeyRef: { name: secretName(controlled), key: name } },
-            });
+            expect(container.env?.map((entry) => entry.name)).not.toContain(name);
         }
         expect(JSON.stringify(container.env)).not.toContain('ctl-secret');
     });

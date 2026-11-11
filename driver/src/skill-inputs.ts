@@ -31,7 +31,8 @@ interface SkillsVerdict {
 
 /**
  * The checkout directories the job's CLI scans for skills — runnerPlan's CLI: a row with no executor type runs claude.
- * opencode also reads a checkout's `.claude/skills` (`docker/opencode-executor/test.sh`).
+ * opencode also reads a checkout's `.claude/skills` (`docker/opencode-executor/test.sh`). A copy of core's
+ * `checkoutSkillDirsOf`, pinned equal by `server/test/skill-dirs.driver-copy.test.ts`.
  */
 export function checkoutSkillDirsOf(job: BoardJob): readonly string[] {
     return job.executorType === OPENCODE

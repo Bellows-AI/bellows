@@ -21,7 +21,7 @@ shell=$1
 github=$2
 
 beat() {
-    : > "$box/alive"
+    true > "$box/alive"
 }
 
 pause() {

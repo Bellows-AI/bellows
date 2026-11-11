@@ -283,6 +283,13 @@ export interface DriverConfig {
      * selector. Null forwards nothing.
      */
     runnerAffinity: Record<string, unknown> | null;
+    /**
+     * The RuntimeClass every pod this driver specs runs under (RUNNER_RUNTIME_CLASS):
+     * `gvisor` on GKE Sandbox, so agent code never shares the node kernel. The chart's admission
+     * policy refuses a driver pod without it. Null names none: the node's default runtime. Docker
+     * has no twin here — the daemon's runtime is the host's choice.
+     */
+    runnerRuntimeClass: string | null;
 }
 
 /** The four resource slots, each null when the variable is unset. */
@@ -609,6 +616,24 @@ function jsonArray(raw: string | undefined, label: string): Record<string, unkno
     return parsed as Record<string, unknown>[];
 }
 
+/** The longest DNS-1123 subdomain, which a RuntimeClass name is. */
+const DNS_SUBDOMAIN_MAX = 253;
+
+/** A RuntimeClass name: a DNS-1123 subdomain, so a typo is a refusal at boot, never a burned attempt. */
+function runtimeClassName(raw: string | undefined, label: string): string | null {
+    const value = (raw ?? '').trim();
+    if (value === '') return null;
+    if (
+        value.length > DNS_SUBDOMAIN_MAX ||
+        !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.test(value)
+    ) {
+        throw new Error(
+            `${label} must be a RuntimeClass name (a DNS-1123 subdomain), got "${value.slice(0, ERROR_PREVIEW_CHARS)}"`
+        );
+    }
+    return value;
+}
+
 /** A nodeSelector: kubernetes demands string values, and a YAML number (`--set foo.bar=3`) is a refusal at boot, never a burned attempt. */
 function jsonNodeSelector(raw: string | undefined, label: string): Record<string, string> | null {
     const parsed = parsedJsonValue(raw, label);
@@ -822,6 +847,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         runnerNodeSelector: jsonNodeSelector(env.RUNNER_NODE_SELECTOR, 'RUNNER_NODE_SELECTOR'),
         runnerTolerations: jsonArray(env.RUNNER_TOLERATIONS, 'RUNNER_TOLERATIONS'),
         runnerAffinity: jsonObject(env.RUNNER_AFFINITY, 'RUNNER_AFFINITY'),
+        runnerRuntimeClass: runtimeClassName(env.RUNNER_RUNTIME_CLASS, 'RUNNER_RUNTIME_CLASS'),
     };
 }
 

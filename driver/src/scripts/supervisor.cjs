@@ -354,6 +354,12 @@ function settingsOf(env) {
         agentToken: env.SUPERVISOR_AGENT_TOKEN || null,
         exportToken: env.SUPERVISOR_EXPORT_TOKEN || null,
         relayMs: positive(env, 'SUPERVISOR_RELAY_TIMEOUT_MS', DEFAULT_RELAY_MS),
+        // A gate run outlasts any other relayed call: it may run as long as the run's own budget, which caps every gate's deadline.
+        gateRelayMs: positive(
+            env,
+            'SUPERVISOR_GATE_RELAY_TIMEOUT_MS',
+            positive(env, 'SUPERVISOR_DEADLINE_MS', 0) || positive(env, 'SUPERVISOR_RELAY_TIMEOUT_MS', DEFAULT_RELAY_MS)
+        ),
         // The claim this binding belongs to, and the file a newer holder names itself in; no claim, no following.
         claimSeq: /^\d{1,15}$/.test(env.SUPERVISOR_CLAIM_SEQ ?? '') ? Number(env.SUPERVISOR_CLAIM_SEQ) : null,
         bindingFile: env.SUPERVISOR_BINDING_FILE || null,
@@ -1760,7 +1766,8 @@ function openReviewMailbox(run) {
  * its role's routes to the CURRENT holder under that role's token; anything the holder does not
  * answer in full — unreachable, rebound mid-request, timed out, cut off — is hung up on, never
  * answered 502, so a client reads a lost holder as a lost holder. A relayed answer is not contact:
- * `run.contactedAt` is the supervisor's own polls alone.
+ * `run.contactedAt` is the supervisor's own polls alone. A route's wall-clock bound is `relayMs` unless it names
+ * its own (`timeout`): a gate run is bounded by the gate's deadline, not by a publish's.
  */
 const KIB = 1024;
 const MIB = KIB * KIB;
@@ -1778,6 +1785,8 @@ const RELAYS = {
             { method: 'POST', match: (p) => p === '/publish', cap: MIB },
             { method: 'POST', match: (p) => p === '/review', cap: MIB },
             { method: 'POST', match: (p) => p === '/connection', cap: KIB },
+            // `{gate, filter}`; the answer carries the gate's output and is streamed back whole, never cut to a size.
+            { method: 'POST', match: (p) => p === '/gate/run', cap: JSON_KIB * KIB, timeout: 'gateRelayMs' },
             { method: 'GET', match: (p) => REVIEW_KEY.test(p), cap: MIB },
         ],
     },
@@ -1801,6 +1810,9 @@ function relayRouteOf(spec, request) {
         ) ?? null
     );
 }
+
+/** A route's wall-clock bound: the one it names in `timeout`, else `relayMs`. */
+const relayMsOf = (settings, route) => settings[route.timeout ?? 'relayMs'];
 
 /** Refuses a body past `cap` by erroring the stream: the relay then hangs up on both sides. */
 const capped = (cap) => {
@@ -1854,7 +1866,7 @@ function relayRequest(run, role, request, response) {
         run.bindingAbort.signal,
         run.stop.signal,
         gone.signal,
-        AbortSignal.timeout(run.settings.relayMs),
+        AbortSignal.timeout(relayMsOf(run.settings, route)),
     ]);
     const headers = { authorization: `Bearer ${token}` };
     for (const [name, value] of Object.entries(request.headers)) {

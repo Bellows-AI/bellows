@@ -48,7 +48,8 @@
 // `--skill-sentinel TEXT[,TEXT…]` is the skill mode (BEL-270, BEL-273): whatever else the run does, `GET /skills-seen`
 // returns `{seen, seenSentinels, agentRequests}` — `seenSentinels` lists each TEXT that any agent request's body (system
 // prompt, tool descriptions, messages) carried, i.e. each one the CLI told the model about in a skill description;
-// `seen` is true once any did.
+// `seen` is true once any did; `sentinelCounts` maps each TEXT to its occurrences in the one agent request that carried
+// the most of it, so a skill listed twice reads 2.
 //
 // In every mode it plays the driver's step channel too (driver/src/step-control.ts), as much as a
 // lane group needs: `GET /step` hands out `go` on the first poll and `finish` once `POST /report`
@@ -149,6 +150,8 @@ export function probeCommand(paths) {
 export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [], skillSentinels = [] } = {}) {
     let agentRequests = 0;
     const sentinelsSeen = new Set();
+    /** Each sentinel's occurrences in the agent request that carried the most of it. */
+    const sentinelCounts = {};
     /** The tool calls whose result carried TOOL_OK, by id: a resent history counts each once. */
     const reportedOk = new Set();
     /** The text of every tool result that carried TOOL_OK, by id. */
@@ -319,7 +322,7 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
             }
             if (url === SKILLS_SEEN_PATH) {
                 reply.setHeader('content-type', 'application/json');
-                return reply.end(JSON.stringify({ seen: sentinelsSeen.size > 0, seenSentinels: [...sentinelsSeen], agentRequests }));
+                return reply.end(JSON.stringify({ seen: sentinelsSeen.size > 0, seenSentinels: [...sentinelsSeen], sentinelCounts, agentRequests }));
             }
             if (url === ASKS_PATH) {
                 reply.setHeader('content-type', 'application/json');
@@ -373,7 +376,11 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
             }
             if (isAgentStep && skillSentinels.length > 0) {
                 const text = JSON.stringify(body);
-                for (const sentinel of skillSentinels) if (text.includes(sentinel)) sentinelsSeen.add(sentinel);
+                for (const sentinel of skillSentinels) {
+                    const count = text.split(sentinel).length - 1;
+                    if (count > 0) sentinelsSeen.add(sentinel);
+                    sentinelCounts[sentinel] = Math.max(sentinelCounts[sentinel] ?? 0, count);
+                }
             }
             const hookAnswer = () => {
                 hookRequests += 1;
