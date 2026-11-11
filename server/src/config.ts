@@ -490,7 +490,8 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         clientSecret,
         sessionSecret,
         sessionTtlMs: sessionTtlHours * SECONDS_PER_HOUR * MS_PER_SECOND,
-        cookieSecure: bool(env.COOKIE_SECURE, false, 'COOKIE_SECURE'),
+        // Follows the public origin's scheme: an https deployment must not ship a cookie that rides plain http.
+        cookieSecure: bool(env.COOKIE_SECURE, origin.protocol === 'https:', 'COOKIE_SECURE'),
         publicUrl: origin.origin,
         ingestToken,
         jobBoardToken,
