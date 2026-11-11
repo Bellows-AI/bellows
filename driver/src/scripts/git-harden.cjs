@@ -212,7 +212,8 @@ function harden(realGit, args, options) {
  */
 function planCall(args, options) {
     const real = options.env.GIT_HARDEN_REAL;
-    if (!real) throw Object.assign(new Error('no real git'), { stderr: 'git: the hardened git has no real git to run' });
+    if (!real)
+        throw Object.assign(new Error('no real git'), { stderr: 'git: the hardened git has no real git to run' });
     const env = { ...options.env };
     delete env.GIT_HARDEN_REAL;
     delete env.GIT_HARDEN_MODULE;
@@ -267,6 +268,16 @@ function main() {
     return ran.status ?? REFUSED_EXIT;
 }
 
-module.exports = { runCall, planCall, harden, hardeningPairs, refusalsOf, parseList, globalOptions, hardenedEnv, REFUSED_EXIT };
+module.exports = {
+    runCall,
+    planCall,
+    harden,
+    hardeningPairs,
+    refusalsOf,
+    parseList,
+    globalOptions,
+    hardenedEnv,
+    REFUSED_EXIT,
+};
 
 if (require.main === module) process.exitCode = main();

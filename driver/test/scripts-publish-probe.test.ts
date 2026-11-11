@@ -1,14 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import {
-    existsSync,
-    mkdirSync,
-    mkdtempSync,
-    readFileSync,
-    realpathSync,
-    rmSync,
-    statSync,
-    writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -322,23 +313,52 @@ exec '${REAL}' "$@"
         });
     });
 
-    it('adopts a filter the checkout defines mid-probe and still runs none of it', () => {
+    /**
+     * The probe over a checkout that gains a clean filter after the last directory listing and before `add`. Returns
+     * whether staging was reached and whether the filter ran. `harden` overrides the module the probe loads.
+     */
+    const withLateFilter = (harden?: string): { installed: boolean; staged: boolean; ran: boolean } => {
         synced();
-        const mark = join(fx.dir(), 'late-filter-ran');
+        const mark = join(fx.dir(), `late-filter-ran-${seq}`);
         const config = join(fx.checkout(), '.git', 'config');
-        const install = join(fx.dir(), 'install-late-filter.sh');
+        const install = join(fx.dir(), `install-late-filter-${seq}.sh`);
         writeFileSync(
             install,
             `cd '${fx.checkout()}' && printf '[filter "late"]\\n\\tclean = touch ${mark}; cat\\n' >> '${config}' && printf '* filter=late\\n' > .gitattributes\n`
         );
 
-        const { answer } = probe({ BEFORE_STAGING: install });
+        probe({ BEFORE_STAGING: install, ...(harden ? { GIT_HARDEN_MODULE: harden } : {}) });
 
-        // The filter was installed after the last listing call, so the pins only exist if the read before `add` saw it.
-        expect(existsSync(`${install}.done`)).toBe(true);
-        expect(lines(realLog).some((line) => / add -A /.test(line))).toBe(true);
-        expect(existsSync(mark)).toBe(false);
-        expect(answer.cloned).toBe(true);
+        return {
+            installed: existsSync(`${install}.done`),
+            staged: lines(realLog).some((line) => / add -A /.test(line)),
+            ran: existsSync(mark),
+        };
+    };
+
+    it('adopts a filter the checkout defines mid-probe and still runs none of it', () => {
+        // The filter lands after the last listing call, so the pins only exist if the read before `add` saw it.
+        expect(withLateFilter()).toEqual({ installed: true, staged: true, ran: false });
+    });
+
+    it('would run that filter if the hardening were resolved once: the control for the case above', () => {
+        // The same probe through a module that keeps the first call's pins for every later call.
+        const memoized = join(fx.dir(), 'memoized-harden.cjs');
+        writeFileSync(
+            memoized,
+            `const real = require(${JSON.stringify(join(tools, 'git-harden.cjs'))});
+const { execFileSync } = require('node:child_process');
+let prefix;
+exports.runCall = (args, options) => {
+    const env = options.env ?? process.env;
+    const plan = real.planCall(args, { cwd: options.cwd, env });
+    prefix ??= plan.argv.slice(0, plan.argv.length - args.length);
+    return execFileSync(plan.real, [...prefix, ...args], { ...options, env: plan.env });
+};
+`
+        );
+
+        expect(withLateFilter(memoized)).toEqual({ installed: true, staged: true, ran: true });
     });
 
     it('runs none of the checkout’s execution-capable config in-process', () => {
@@ -575,10 +595,5 @@ exec '${REAL}' "$@"
             expect(stderr).toMatch(/^git: .*ENOENT/m);
             expect(existsSync(join(fx.dir(), 'by-name-git-ran'))).toBe(false);
         });
-    });
-
-    it('trusts only what the supervisor wrote: a private directory, a read-only module', () => {
-        expect(statSync(tools).mode & 0o777).toBe(0o700);
-        expect(statSync(join(tools, 'git-harden.cjs')).mode & 0o777).toBe(0o644);
     });
 });

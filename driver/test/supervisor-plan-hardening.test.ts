@@ -128,6 +128,9 @@ describe('the hardened git of the supervisor’s steps', () => {
         expect(readFileSync(result.stdout, 'utf8')).toBe(stub);
         expect(statSync(result.stdout).mode & 0o777).toBe(0o644);
         expect(statSync(dirname(result.stdout)).mode & 0o777).toBe(0o700);
+        // Owned by the supervisor's uid, so a tool uid can neither replace the module nor the directory entry.
+        expect(statSync(result.stdout).uid).toBe(process.getuid?.());
+        expect(statSync(dirname(result.stdout)).uid).toBe(process.getuid?.());
     });
 
     it('is the only route a script has to the real git: the probe runs every call through one hardened runner', () => {
