@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
+import { StepChannelClosed } from '../src/step-control.js';
 import {
     PUBLISH_MOVED_REASON,
     type PublishOptions,
@@ -331,12 +332,29 @@ describe('the publish workflow', () => {
             'no uncommitted changes and nothing unpushed',
         ],
         ['an uncloned checkout', { cloned: false }, 'the checkout has not been cloned yet'],
-        ['a probe that cannot run', null, 'the checkout has not been cloned yet'],
     ])('answers %s as a no-op after the probe alone', async (_name, state, reason) => {
-        const t = transport(state ?? {}, { fail: (s) => (state === null && s.label === 'probe' ? 'boom' : null) });
+        const t = transport(state ?? {});
 
         expect(await publish(t)).toEqual(nothing(reason));
         expect(t.labels()).toEqual(['probe']);
+    });
+
+    it('fails the publish, naming the probe, when the probe cannot run (BEL-314)', async () => {
+        const t = transport({}, { fail: (s) => (s.label === 'probe' ? 'boom' : null) });
+
+        expect(await publish(t)).toMatchObject({ ok: false, reason: expect.stringContaining('probe: boom') });
+        expect(t.labels()).toEqual(['probe']);
+    });
+
+    it('lets a lost probe step propagate as the attempt’s interruption (BEL-314)', async () => {
+        const t = transport({});
+        const lost = new StepChannelClosed('its step was answered');
+        const run: typeof t.run = async (s) => {
+            if (s.label === 'probe') throw lost;
+            return t.run(s);
+        };
+
+        await expect(publishCheckout(ISSUE_JOB, undefined, run)).rejects.toBe(lost);
     });
 
     it('publishes nothing for a command-only job, without a probe', async () => {

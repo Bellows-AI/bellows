@@ -507,11 +507,18 @@ const probeStep = (repo: string, base: string | null = null, sinceMs: number | n
 });
 
 /**
- * Probes the checkout. A probe that cannot run reads as no state at all — the caller's
- * no-op-with-reason path, never a crash.
+ * Probes the checkout. A probe that ran and found no checkout answers `cloned: false`; a probe that
+ * could not run is not that answer — it throws, a lost supervisor keeping its class (an attempt
+ * interruption) and any other failure becoming a publish failure, never "nothing to publish".
  */
 async function probeCheckout(runStep: RunPublishStep, repo: string, base: string | null): Promise<GitState> {
-    const probe = await runStep(probeStep(repo, base)).catch(() => null);
+    let probe: { stdout: string };
+    try {
+        probe = await runStep(probeStep(repo, base));
+    } catch (e) {
+        if (stepLost(e)) throw e;
+        throw new Error(`probe: ${(e as Error).message.slice(0, STEP_ERROR_MAX_CHARS)}`);
+    }
     return { ...parseGitState(probe?.stdout ?? ''), ...(base ? { defaultBranch: base } : {}) };
 }
 
@@ -572,7 +579,11 @@ export async function probeGateTree(
 export async function probeNoChange(job: BoardJob, runStep: RunPublishStep): Promise<boolean> {
     const repo = checkoutDir(job);
     if (!repo) return false;
-    return (await probeCheckout(runStep, repo, baseBranchOf(job))).noChange;
+    try {
+        return (await probeCheckout(runStep, repo, baseBranchOf(job))).noChange;
+    } catch {
+        return false;
+    }
 }
 
 /**
