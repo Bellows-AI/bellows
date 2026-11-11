@@ -384,7 +384,9 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
     const jobId = request.headers[JOB_ID_HEADER];
     const leaseToken = request.headers[LEASE_TOKEN_HEADER];
     if (typeof jobId === 'string' && jobId && typeof leaseToken === 'string' && leaseToken) {
-        const orgId = await leaseOrgOf(jobId, leaseToken);
+        // Both columns are uuids, and postgres refuses to cast anything else: a malformed header is
+        // the same refusal as a pair that does not resolve, answered without a store round trip.
+        const orgId = UUID.test(jobId) && UUID.test(leaseToken) ? await leaseOrgOf(jobId, leaseToken) : null;
         if (!orgId) {
             await reply
                 .code(HTTP_UNAUTHORIZED)

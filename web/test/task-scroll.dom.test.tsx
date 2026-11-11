@@ -67,6 +67,7 @@ function TaskDetailUnder({ jobs, store }: { jobs: readonly ThreadJob[]; store: C
                 jobs={[...jobs] as never}
                 viewer={ADMIN}
                 error={null}
+                onRetry={() => {}}
                 actionError={null}
                 followUpError={null}
                 sending={false}

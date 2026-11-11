@@ -323,6 +323,8 @@ export interface QueueResult {
 const VISIBLE_THREAD_POLL_MS = 2_000;
 const HIDDEN_THREAD_POLL_MS = 15_000;
 
+const threadPollDelay = () => (document.hidden ? HIDDEN_THREAD_POLL_MS : VISIBLE_THREAD_POLL_MS);
+
 /**
  * One thread poll's answer, kept out of `useThread` itself so the hook only has to react to it:
  * a stale answer from an aborted chain must not land on the newly selected task, which is why
@@ -356,10 +358,10 @@ async function pollThreadOnce(id: string, signal: AbortSignal): Promise<ThreadPo
  * `GET /api/jobs/:id/thread`. ANY member's id resolves to the same chain, which is what lets the
  * detail page keep one URL per task while follow-ups keep arriving as new rows underneath.
  *
- * A failed tick says so and stops, the way the other polls do: the last good answer stays on
- * screen, an error line takes the place of the spinner, and re-selecting the task re-arms the
- * poll. What it must never do is go quiet — a transcript that silently stops growing reads as a
- * finished run.
+ * A failed tick says so and keeps going: the last good answer stays on screen, an error line is
+ * raised beside it, and the poll re-arms at its normal pace so a transient 503 (a deploy, a node
+ * swap) heals by itself — the next good tick clears the error. What it must never do is go quiet
+ * or give up: a transcript that silently stops growing reads as a finished run.
  *
  * The poll stops when EVERY member is terminal: a finished thread can still grow, but only by the
  * member's own follow-up, and `refresh` re-arms for exactly that.
@@ -384,13 +386,13 @@ export function useThread(id: string | null): { jobs: Job[] | null; error: strin
         }
         if (outcome.kind === 'error') {
             setError(outcome.message);
+            timer.current = window.setTimeout(() => void poll(signal), threadPollDelay());
             return;
         }
         setJobs(outcome.jobs);
         setError(null);
         if (outcome.terminal) return;
-        const delay = document.hidden ? HIDDEN_THREAD_POLL_MS : VISIBLE_THREAD_POLL_MS;
-        timer.current = window.setTimeout(() => void poll(signal), delay);
+        timer.current = window.setTimeout(() => void poll(signal), threadPollDelay());
     }, []);
 
     const start = useCallback(() => {

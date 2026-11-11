@@ -10,7 +10,9 @@
 # -rc-2, -rc-3, ... (one past the highest candidate locally or on origin), and only the tag is
 # pushed. VERSION and main do not move, so the final release still cuts vX.Y.Z.
 #
-# Refuses a branch other than main, a dirty tree, a HEAD not level with origin/main, a HEAD that
+# Refuses a branch other than main, a dirty tree, a HEAD not level with origin/main, a HEAD whose
+# push-event CI run on main is missing, still running or not green (needs `gh`, logged in; the
+# --rc path shares the check because it also requires HEAD level with origin/main), a HEAD that
 # already carries a final v* tag (with --rc: any v* tag), a malformed VERSION, and a next tag that
 # exists locally or on origin. On failure it undoes only what it created locally; the atomic push
 # lands both refs or neither.
@@ -35,6 +37,14 @@ cd "$(git rev-parse --show-toplevel)"
 [ -z "$(git status --porcelain)" ] || fail 'the working tree is not clean'
 git fetch --quiet origin main
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || fail 'HEAD is not level with origin/main'
+
+# The newest CI run (gh lists newest first) of this exact commit on main must have finished green.
+# A VERSION-only release commit never starts one, but such a HEAD is tagged and refused below.
+head_sha=$(git rev-parse HEAD)
+ci_run=$(gh run list --workflow ci.yml --branch main --event push --commit "$head_sha" --limit 1 \
+    --json status,conclusion) || fail "cannot read the CI runs for $head_sha; is gh installed and logged in?"
+printf '%s\n' "$ci_run" | grep -q '"status":"completed"' && printf '%s\n' "$ci_run" | grep -q '"conclusion":"success"' \
+    || fail "CI has not passed on main for $head_sha (no run, still running or failed); wait for it to go green or fix main, then retry"
 
 [ -f VERSION ] || fail 'VERSION is missing'
 current=$(cat VERSION)

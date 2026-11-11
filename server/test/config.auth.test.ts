@@ -127,6 +127,14 @@ describe('the rest of [auth]', () => {
         expect(() => github({ COOKIE_SECURE: 'yes please' })).toThrow(/must be a boolean/);
     });
 
+    it('defaults cookieSecure to the PUBLIC_URL scheme, and an explicit COOKIE_SECURE wins', () => {
+        const secure = (env: Record<string, string>) => (github(env).auth as { cookieSecure: boolean }).cookieSecure;
+        expect(secure({ PUBLIC_URL: 'http://board.example.test' })).toBe(false);
+        expect(secure({ PUBLIC_URL: 'https://board.example.test' })).toBe(true);
+        expect(secure({ PUBLIC_URL: 'https://board.example.test', COOKIE_SECURE: '0' })).toBe(false);
+        expect(secure({ PUBLIC_URL: 'http://board.example.test', COOKIE_SECURE: '1' })).toBe(true);
+    });
+
     it('defaults the session to a fortnight', () => {
         const DAYS_PER_FORTNIGHT = 14;
         const HOURS_PER_DAY = 24;

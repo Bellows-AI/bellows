@@ -1042,6 +1042,28 @@ describe('the branch route needs an org-bound credential in github mode', () => 
         expect(response.json().code).toBe('UNAUTHENTICATED');
     });
 
+    // postgres refuses to cast a non-uuid string, so a malformed header must never reach the resolver:
+    // it is the same 401 a pair that does not resolve gets, answered without touching the store.
+    it.each([
+        ['job id', 'not-a-uuid', LEASE],
+        ['lease token', JOB_ID, "x' or '1'='1"],
+    ])('401s a malformed %s without calling the resolver', async (_name, jobId, leaseToken) => {
+        const calls: string[] = [];
+        const server = await build(githubAuth(), memoryAuthStore(), async (id, token) => {
+            calls.push(`${id}:${token}`);
+            return ORG;
+        });
+        const response = await server.inject({
+            method: 'POST',
+            url: '/api/sessions/branch',
+            payload: report,
+            headers: { 'x-factory-job-id': jobId, 'x-factory-job-lease-token': leaseToken },
+        });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(response.json().code).toBe('UNAUTHENTICATED');
+        expect(calls).toEqual([]);
+    });
+
     it('401s a missing pair', async () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const response = await server.inject({ method: 'POST', url: '/api/sessions/branch', payload: report });
