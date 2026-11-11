@@ -2,7 +2,9 @@ name: CI
 
 on:
     pull_request:
-        branches: [main]
+        # project-* are integration branches for multi-slice work; their PRs get validate and test-db
+        # (the e2e job below stays main-push-only).
+        branches: [main, 'project-*']
     push:
         branches: [main]
         # `npm run release` pushes a VERSION-only commit with its v* tag; the tag's release workflow

@@ -8,7 +8,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 | Validation, the db suite (`test-db`) and the browser lane | `.github/workflows/ci.yml`, `vitest.db.config.ts` | `core/test/ci-workflows.test.ts` |
 | Tag fold, buildkit mirror, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
 | CLI publish: `@bellows-ai/bellows-cli` on npmjs.org, trusted publishing, `VERSION` stamped over `0.0.0` | `.github/workflows/release-image.yml` (`npm`), `cli/package.json`, `cli/src/version.ts` | `core/test/ci-workflows.test.ts`, `cli/test/diagnostics.test.ts` |
-| Release command: patch bump, version-only commit, tag, atomic push; `--rc` tags HEAD `vX.Y.Z-rc`, `-rc-2`, … and pushes only the tag | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
+| Release command: refuses unless main's CI run for HEAD is green; patch bump, version-only commit, tag, atomic push; `--rc` tags HEAD `vX.Y.Z-rc`, `-rc-2`, … and pushes only the tag | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | Release images; separate core/server/web compilation stages and source-only build inputs | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/`, `docker/executor-common/` | `driver/test/executor-images.test.ts`, `driver/test/compose.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
 | Postgres mirror: the compose pin copied from `mirror.gcr.io` to `ghcr.io/bellows-ai/postgres:17`, weekly and on demand | `.github/workflows/mirror-images.yml` | `core/test/ci-workflows.test.ts` |
@@ -18,7 +18,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 
 - **`npm run build` precedes `npm test`**, so a broken `core/dist` reports as a build failure; `npm run typecheck`
   follows, covering every `*/tsconfig.test.json` and `e2e/`. `core/test/typecheck-coverage.test.ts`.
-- **The `test-db` job runs `npm run test:db` on every pull request**, beside `validate`, against a `postgres:17`
+- **`validate` and `test-db` run on every pull request to `main` or a `project-*` branch**; the `test-db` job runs `npm run test:db`, beside `validate`, against a `postgres:17`
   service whose database ends `_test` — the only coverage the SQL and the migrations have. It also runs a `moto`
   AWS emulator and a dev-mode `vault` (GHCR mirrors of the compose pins, `mirror-images.yml`) with
   `SECRETS_TEST_REQUIRE_AWS=1` and `SECRETS_TEST_REQUIRE_VAULT=1`, so an unreachable provider fails the job

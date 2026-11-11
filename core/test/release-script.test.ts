@@ -112,8 +112,14 @@ async function setup(version: string | null = '0.0.2\n'): Promise<Fixture> {
             '',
         ].join('\n')
     );
+    // The script asks `gh` for the CI run of HEAD; this stands in for it and answers with $FAKE_GH_RUNS.
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'gh'), '#!/bin/sh\necho "$*" >>"$HOME/gh.log"\nprintf \'%s\\n\' "$FAKE_GH_RUNS"\n');
+    chmodSync(join(bin, 'gh'), 0o755);
     const env: NodeJS.ProcessEnv = {
-        PATH: process.env.PATH,
+        PATH: `${bin}:${process.env.PATH}`,
+        FAKE_GH_RUNS: '[{"conclusion":"success","status":"completed"}]',
         HOME: dir,
         GIT_CONFIG_GLOBAL: gitconfig,
         GIT_CONFIG_NOSYSTEM: '1',
@@ -175,7 +181,7 @@ describe('npm run release', () => {
                 `if [ -e "$PROBE_BARRIER" ]; then echo seen >> "$PROBE_LOG"; else echo late >> "$PROBE_LOG"; fi\nexec "${realGit}" "$@"\n`
         );
         chmodSync(shim, 0o755);
-        fixture.env = { ...fixture.env, PATH: `${shims}:${process.env.PATH}`, PROBE_BARRIER: barrier, PROBE_LOG: log };
+        fixture.env = { ...fixture.env, PATH: `${shims}:${fixture.env.PATH}`, PROBE_BARRIER: barrier, PROBE_LOG: log };
         setTimeout(() => writeFileSync(barrier, ''), 0);
         const result = await release(fixture);
         expect(result.status, result.stderr).toBe(0);
@@ -300,6 +306,26 @@ describe('npm run release', () => {
         const result = await release(fixture);
         expect(result.status, result.stderr).toBe(0);
         expect((await git(fixture, fixture.remote, 'tag', '--list')).split('\n')).toEqual(['v0.0.3', 'v0.0.3-rc']);
+    });
+});
+
+describe('the CI gate', () => {
+    it.each<[string, string]>([
+        ['no CI run for HEAD', '[]'],
+        ['a CI run still in progress', '[{"conclusion":"","status":"in_progress"}]'],
+        ['a failed CI run', '[{"conclusion":"failure","status":"completed"}]'],
+    ])('refuses %s, for a final release and a candidate alike', async (_label, runs) => {
+        const fixture = await setup();
+        fixture.env.FAKE_GH_RUNS = runs;
+        await expectRefusal(fixture, /CI has not passed on main/);
+        await expectRefusal(fixture, /CI has not passed on main/, '--rc');
+    });
+
+    it("asks for the push-event run of HEAD's own sha on main", async () => {
+        const fixture = await setup();
+        expect((await release(fixture)).status).toBe(0);
+        const asked = readFileSync(join(fixture.env.HOME as string, 'gh.log'), 'utf8');
+        expect(asked).toContain('--workflow ci.yml --branch main --event push --commit ');
     });
 });
 
