@@ -201,7 +201,7 @@ Operational facts behind those:
 - `AUTH_MODE` defaults to `none` (one local org, every route open, the loopback bind is the access
   control). `docker compose` pins `github`, uncontestable by `.env`.
 - `JOB_BOARD_TOKEN` is one shared secret read by both the dashboard and the driver.
-- Watch mode is tuned for low idle CPU (`isolate: false`, 6 forks, `**/dist/**` excluded in
+- Watch mode is tuned for low idle CPU (`isolate: false`, at most 6 forks, `**/dist/**` excluded in
   `vitest.config.ts`). Do not undo that to chase a flaky-looking failure; prefer
   `npx vitest watch core/test`. Orphaned `node (vitest N)` workers: `pkill -f 'node (vitest'`.
 

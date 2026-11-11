@@ -202,7 +202,7 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
 });
 
 /**
- * The probe's own git calls under the supervisor's hardening (BEL-284): the probe hardens each call in-process with
+ * The probe's own git calls under the supervisor's hardening: the probe hardens each call in-process with
  * the module the supervisor wrote beside its `git` shim, instead of starting the shim (a node process) per call. The
  * hardening is the same code and still reads the checkout's config before every call.
  */
