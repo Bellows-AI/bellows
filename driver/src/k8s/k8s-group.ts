@@ -33,7 +33,7 @@ import { boundedBy, POLL_MS, waitOf, withSignal } from './k8s-transport.js';
 import { GROUP_WATCH_MS, GROUP_WATCH_READ_MS, watchGroupEnd } from '../group-watch.js';
 import { anyOf, pollFor } from '../poll.js';
 import type { K8sDeps } from './k8s-transport.js';
-import type { RunSession } from '../runner.js';
+import type { GroupTakenAway, RunSession } from '../runner.js';
 import { StartupRefused } from '../startup-cause.js';
 import {
     attachSteps,
@@ -78,15 +78,16 @@ export const runnerGroupOf = (job: BoardJob, uids?: IncarnationUids): GroupRef =
 /**
  * Whether one successful, well-formed pod list of the runner Job proves its pod was taken away (BEL-302): the
  * pod gone from the list, evicted, or marked a disruption target (`runnerLossOf`). Any other read — a failed
- * request, a non-2xx answer, a body that is no pod list — proves nothing and answers false, as does a pod that
- * is still live with its supervisor crashed or OOM-killed inside it.
+ * request, a non-2xx answer, a body that is no pod list — proves nothing and answers `unknown` (BEL-316); a pod
+ * that is still live with its supervisor crashed or OOM-killed inside it is `kept`.
  */
-export async function runnerPodTakenAway(deps: K8sDeps, jobName: string): Promise<boolean> {
+export async function runnerPodTakenAway(deps: K8sDeps, jobName: string): Promise<GroupTakenAway> {
     const read = await readTypedList(deps, jobPodsPath(deps.config.k8sNamespace, jobName), 'listing the runner pods', {
         entry: asPod,
         once: true,
     });
-    return read.kind === 'value' && runnerLossOf(read.value) !== null;
+    if (read.kind !== 'value') return 'unknown';
+    return runnerLossOf(read.value) !== null ? 'taken' : 'kept';
 }
 
 /**

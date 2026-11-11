@@ -151,6 +151,15 @@ const stopAgent: Build<ExecDocker> = async (tap, alias) => {
     };
 };
 
+/** D-G1: a lost supervisor's container still answers its inspect: the group is kept (BEL-316). */
+const groupKept: Build<ExecDocker> = async (tap, alias) => {
+    const job = freshJob();
+    aliasPair(alias, job, 'lease');
+    const { exec } = routedDocker((args) => (is(args, 'inspect') ? ok('{"Status":"running"}') : undefined));
+    const runner = runnerOf(tap(exec));
+    return async () => ((await runner.groupTakenAway(job, new AbortController().signal)) === 'taken' ? ['taken'] : []);
+};
+
 /** D-AD: an earlier claim's runner exited and its supervisor finalized; an older attempt left a container and a mailbox. */
 const adoptExited: Build<ExecDocker> = async (tap, alias) => {
     const prior = freshJob({ claimSeq: 1 });
@@ -329,6 +338,8 @@ scenario(
     { build: hardKill, writes: ['kill <agent>', 'kill <supervisor>', 'kill <exporter>'] },
     {}
 );
+
+scenario('the group-taken-away read on a live supervisor (D-G1)', { build: groupKept, writes: [] }, {});
 
 scenario('the service teardown of a service (D-ST)', { build: serviceTeardown, writes: ['rm -f <service>'] }, {});
 

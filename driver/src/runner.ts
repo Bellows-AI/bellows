@@ -295,6 +295,9 @@ export class Inconclusive extends Error {}
  */
 export type Read<T> = { kind: 'value'; value: T } | { kind: 'absent' } | { kind: 'inconclusive'; reason: string };
 
+/** What `Runner.groupTakenAway` read (BEL-316): the group's loss confirmed, its survival confirmed, or neither. */
+export type GroupTakenAway = 'taken' | 'kept' | 'unknown';
+
 /** Thrown by `Runner.adopt` once the attempt stood down mid-adoption: nothing more of it is its to delete. */
 export const adoptionAbandoned = (): Error => new Error('the adoption was abandoned: the attempt stood down');
 
@@ -471,10 +474,10 @@ export interface Runner {
     releaseFence?(job: BoardJob): Promise<void>;
     /**
      * Whether the executor confirms the attempt's task group was taken away (BEL-302): its pod evicted, marked
-     * for disruption or gone, its supervisor container removed. True only on that confirmation; any doubt, a
-     * failed or aborted read, answers false.
+     * for disruption or gone, its supervisor container removed. `taken` only on that confirmation, `kept` only
+     * when the read confirms the group is still there; any doubt, a failed, timed-out or aborted read, is `unknown`.
      */
-    groupTakenAway(job: BoardJob, signal: AbortSignal): Promise<boolean>;
+    groupTakenAway(job: BoardJob, signal: AbortSignal): Promise<GroupTakenAway>;
     /**
      * Runs one declared block-helper step (issue #207): an allowlisted, board-owned script an
      * expanded workflow `block` node names to run before or after its agent turn. `call.token` is a

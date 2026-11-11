@@ -156,6 +156,18 @@ const teardownHeld: Build<K8sRequest> = async (tap, alias) => {
     };
 };
 
+/** K-G1: a lost supervisor's pod is live: the group is kept, and no read that fails may call it taken away (BEL-316). */
+const groupKept: Build<K8sRequest> = async (tap, alias) => {
+    const job = freshJob();
+    aliasPair(alias, job, 'lease');
+    const pod = podOf(`${runnerJobName(job)}-xxxxx`, 'Running', {}, []);
+    const { request } = serverFor(job, (method, path) =>
+        isGet(method, path, `${PODS}?`) && selector(path).includes('job-name=') ? list([pod]) : undefined
+    );
+    const runner = runnerOf(tap(request));
+    return async () => ((await runner.groupTakenAway(job, new AbortController().signal)) === 'taken' ? ['taken'] : []);
+};
+
 /** A reaper round over `request`, the board answering `leases` for every id. */
 const reaperOver = (request: K8sRequest, leases: Parameters<typeof createReaper>[0]['board']['leases']) =>
     createReaper({
@@ -381,6 +393,8 @@ scenario(
     },
     {}
 );
+
+scenario('the group-taken-away read on a live pod (K-G1)', groupKept, { writes: [] }, {});
 
 scenario('the sync fence on a claim a live lease holds (K-FH)', fenceHeld, { writes: [`POST ${API}/configmaps`] }, {});
 

@@ -1093,7 +1093,7 @@ describe('groupTakenAway: the daemon confirms the task group was removed (BEL-30
         async (stderr) => {
             const { runner, asked } = inspected(refused(stderr));
 
-            expect(await runner.groupTakenAway?.(job, signal())).toBe(true);
+            expect(await runner.groupTakenAway?.(job, signal())).toBe('taken');
             expect(asked[0]).toContain(supervisorName(job));
         }
     );
@@ -1101,12 +1101,35 @@ describe('groupTakenAway: the daemon confirms the task group was removed (BEL-30
     it.each([
         ['a running supervisor', async () => ({ stdout: '{"Running":true}' })],
         ['a supervisor that exited (a crash is its own, not the node)', async () => ({ stdout: '{"Running":false}' })],
-        ['a daemon that cannot be reached', refused('Cannot connect to the Docker daemon')],
-        ['an answer that is not JSON', async () => ({ stdout: 'garbled' })],
-        ['an empty answer', async () => ({ stdout: '' })],
-    ])('does not confirm it from %s', async (_name, answer) => {
+    ])('reads the group as kept from %s', async (_name, answer) => {
         const { runner } = inspected(answer);
 
-        expect(await runner.groupTakenAway?.(job, signal())).toBe(false);
+        expect(await runner.groupTakenAway?.(job, signal())).toBe('kept');
+    });
+
+    it.each([
+        ['an answer that is not JSON', async () => ({ stdout: 'garbled' })],
+        ['an empty answer', async () => ({ stdout: '' })],
+        ['a null state', async () => ({ stdout: 'null' })],
+        ['an array state', async () => ({ stdout: '[]' })],
+        ['a daemon that cannot be reached', refused('Cannot connect to the Docker daemon')],
+        ['a daemon error that is not "no such"', refused('Error response from daemon: boom')],
+        [
+            'an inspect killed at its timeout',
+            () => Promise.reject(Object.assign(new Error('timed out'), { killed: true })),
+        ],
+    ])('answers unknown from %s, never kept', async (_name, answer) => {
+        const { runner } = inspected(answer);
+
+        expect(await runner.groupTakenAway?.(job, signal())).toBe('unknown');
+    });
+
+    it('answers unknown for an attempt that already stood down', async () => {
+        const down = new AbortController();
+        down.abort();
+
+        expect(await inspected(async () => ({ stdout: '{}' })).runner.groupTakenAway?.(job, down.signal)).toBe(
+            'unknown'
+        );
     });
 });

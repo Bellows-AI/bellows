@@ -8,7 +8,7 @@
 import { down, type JobState, raceStep } from './loop-attempt.js';
 import { lostOf } from './loop-phase.js';
 import type { BoardJob } from '../board/board.js';
-import { LeftoverTerminating, type RunOutcome } from '../runner.js';
+import { type GroupTakenAway, LeftoverTerminating, type RunOutcome } from '../runner.js';
 import { SYNC_FAILURE_KINDS, withConflictContext, type SyncResult } from '../publish/publish.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
 import { type StartupCause, StartupRefused, transientStartup } from '../startup-cause.js';
@@ -234,35 +234,41 @@ export const interruptDecision = (
     reason: string,
     exitCode: number | null,
     refused = false,
-    nodeLoss = false
+    { nodeLoss = false, blocked = false }: { nodeLoss?: boolean; blocked?: boolean } = {}
 ): EndDecision => ({
     kind: 'interrupt',
     reason,
     exitCode,
     ...(refused ? { refused: true as const } : {}),
     ...(nodeLoss ? { nodeLoss: true as const } : {}),
+    ...(blocked ? { blocked: true as const } : {}),
 });
 
 /** The bound on the read that asks the executor whether a lost supervisor's group was taken away. */
 export const GROUP_TAKEN_AWAY_READ_MS = 15_000;
 
 /**
- * Whether a lost supervisor is a node loss (BEL-302): only a closed channel can be — a step answered too late
- * or a token ask left unanswered is a hang, never node evidence — and only when the executor confirms the
- * group was taken away. An error, a timeout, a stand-down mid-read, an answer other than a plain yes, or a
- * runner that cannot tell is no confirmation: the interruption counts against the poison budget as before.
+ * What a lost supervisor is (BEL-302, BEL-316): only a closed channel can be a node loss — a step answered too late
+ * or a token ask left unanswered is a hang, never node evidence. The executor's answer decides: `taken` is a node
+ * loss, `kept` (the group is confirmed still there) leaves the interruption counting against the poison budget,
+ * and `unknown` — an error, a timeout, a runner that cannot tell — is `blocked`: an unconfirmed read never
+ * licenses a negative verdict, so the hand-back spends no budget. A stand-down mid-read flags nothing.
  */
-export async function supervisorLossFlag(ctx: AttemptCtx, e: unknown): Promise<{ nodeLoss?: true }> {
+export async function supervisorLossFlag(ctx: AttemptCtx, e: unknown): Promise<{ nodeLoss?: true; blocked?: true }> {
     if (!(e instanceof StepChannelClosed)) return {};
     const { rt, job, state } = ctx;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<false>((resolve) => {
-        timer = setTimeout(() => resolve(false), GROUP_TAKEN_AWAY_READ_MS);
+    const expired = new Promise<GroupTakenAway>((resolve) => {
+        timer = setTimeout(() => resolve('unknown'), GROUP_TAKEN_AWAY_READ_MS);
     });
-    const asked = (async () => (await rt.runner.groupTakenAway(job, state.signal)) === true)().catch(() => false);
+    const asked = (async (): Promise<GroupTakenAway> => await rt.runner.groupTakenAway(job, state.signal))().catch(
+        (): GroupTakenAway => 'unknown'
+    );
     try {
         const answered = await raceStep(state.signal, Promise.race([asked, expired]));
-        return answered?.value === true ? { nodeLoss: true } : {};
+        if (answered === null || answered === undefined) return {};
+        if (answered.value === 'taken') return { nodeLoss: true };
+        return answered.value === 'unknown' ? { blocked: true } : {};
     } finally {
         clearTimeout(timer);
     }
@@ -280,12 +286,9 @@ export function unreportedDecision(outcome: RunOutcome): EndDecision | null {
         return setupDecision(startupHalt(outcome.startupCause, outcome.output.trim()));
     }
     if (outcome.infraLoss) {
-        return interruptDecision(
-            `infrastructure loss: ${outcome.infraLoss}`,
-            outcome.exitCode,
-            false,
-            outcome.infraNodeLoss === true
-        );
+        return interruptDecision(`infrastructure loss: ${outcome.infraLoss}`, outcome.exitCode, false, {
+            nodeLoss: outcome.infraNodeLoss === true,
+        });
     }
     return why === null ? null : interruptDecision(why, outcome.exitCode, true);
 }

@@ -40,6 +40,11 @@ describe('the EKS prerequisites record', () => {
     });
 
     // Issue #887: the reaper's scope is the release on kubernetes, the board label on docker.
+    it('states that an unconfirmed group read is a blocked interrupt, with the unbounded-retry limit (BEL-316)', () => {
+        expect(prose(kubernetesDocs)).toContain('is `unknown`, a blocked interrupt that spends no budget');
+        expect(prose(kubernetesDocs)).toContain('re-queues the task with no bound');
+    });
+
     it('states that the reaper is scoped to its own driver, and the unscoped limit', () => {
         expect(prose(kubernetesDocs)).toContain('The orphan reaper is scoped to its own driver on both executors');
         expect(prose(kubernetesDocs)).toContain('a driver started with no `K8S_RELEASE` is unscoped');

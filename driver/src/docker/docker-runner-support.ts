@@ -19,6 +19,7 @@ import { CONTAINER_GONE } from '../exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from '../telemetry-config.js';
 import {
     composeRuntimeSample,
+    type GroupTakenAway,
     type Read,
     type RunOutcome,
     type RunSession,
@@ -182,24 +183,26 @@ export function noSuchObject(e: unknown, kinds: readonly string[]): boolean {
 /**
  * Whether the daemon answers that the group's supervisor container no longer exists (BEL-302): `docker rm`,
  * a restarted host, a reaped node. Only docker's own "no such container" answer confirms it — a supervisor that
- * is running or merely exited (its own crash), an unreachable daemon and an unreadable answer do not.
+ * is running or merely exited (its own crash) is `kept`; an unreachable daemon, a timeout and an unreadable answer
+ * settle nothing and are `unknown` (BEL-316).
  */
-export async function supervisorRemoved(execDocker: ExecDocker, job: BoardJob): Promise<boolean> {
+export async function supervisorRemoved(execDocker: ExecDocker, job: BoardJob): Promise<GroupTakenAway> {
     try {
-        await execDocker(['inspect', '--format', '{{json .State}}', supervisorName(job)]);
-        return false;
+        const { stdout } = await execDocker(['inspect', '--format', '{{json .State}}', supervisorName(job)]);
+        const state: unknown = JSON.parse(stdout);
+        return typeof state === 'object' && state !== null && !Array.isArray(state) ? 'kept' : 'unknown';
     } catch (e) {
-        return noSuchObject(e, ['container', 'object']);
+        return noSuchObject(e, ['container', 'object']) ? 'taken' : 'unknown';
     }
 }
 
 /** The bound on the inspect that confirms a lost supervisor's group was removed. */
 const GROUP_TAKEN_AWAY_READ_MS = 10_000;
 
-/** `Runner.groupTakenAway` on docker: the supervisor container confirmed removed, within the bound and the attempt. */
-export const groupRemoved = (execDocker: ExecDocker, job: BoardJob, signal: AbortSignal): Promise<boolean> =>
+/** `Runner.groupTakenAway` on docker: the supervisor container inspected within the bound and the attempt. */
+export const groupRemoved = (execDocker: ExecDocker, job: BoardJob, signal: AbortSignal): Promise<GroupTakenAway> =>
     signal.aborted
-        ? Promise.resolve(false)
+        ? Promise.resolve('unknown')
         : supervisorRemoved(boundedExec(execDocker, { deadline: Date.now() + GROUP_TAKEN_AWAY_READ_MS, signal }), job);
 
 /** A run the platform took away has nothing left to read: the loss, with what was known of the run and no more. */

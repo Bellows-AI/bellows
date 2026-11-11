@@ -542,12 +542,9 @@ async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boo
     const decision =
         gateLoss === null
             ? unreportedDecision(outcome)
-            : interruptDecision(
-                  `infrastructure loss: ${gateLoss}`,
-                  outcome.exitCode,
-                  false,
-                  outcome.infraNodeLoss === true
-              );
+            : interruptDecision(`infrastructure loss: ${gateLoss}`, outcome.exitCode, false, {
+                  nodeLoss: outcome.infraNodeLoss === true,
+              });
     if (decision === null) return false;
     await end(ctx, decision);
     return true;
@@ -570,8 +567,8 @@ async function gatesOrLoss(
     } catch (e) {
         if (!servicesLost(e)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
-        const { nodeLoss = false } = await supervisorLossFlag(ctx, e);
-        await end(ctx, interruptDecision(reason, null, false, nodeLoss));
+        const { nodeLoss = false, blocked = false } = await supervisorLossFlag(ctx, e);
+        await end(ctx, interruptDecision(reason, null, false, { nodeLoss, blocked }));
         return STOOD_DOWN;
     }
 }

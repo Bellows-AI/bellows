@@ -365,7 +365,7 @@ describe('groupTakenAway: the executor confirms the task group was taken away (B
         ['an evicted pod', listing(pod({ phase: 'Failed', reason: 'Evicted' }))],
         ['a pod the apiserver no longer lists', listing()],
     ])('confirms %s', async (_name, response) => {
-        expect(await answering(response).groupTakenAway?.(job, signal())).toBe(true);
+        expect(await answering(response).groupTakenAway?.(job, signal())).toBe('taken');
     });
 
     it.each([
@@ -375,27 +375,33 @@ describe('groupTakenAway: the executor confirms the task group was taken away (B
             'a pod whose disruption condition is not true',
             listing(pod({ phase: 'Running', conditions: [{ type: 'DisruptionTarget', status: 'False' }] })),
         ],
-        ['an apiserver error', { status: 500, body: 'boom' }],
+    ])('reads the group as kept from %s', async (_name, response) => {
+        expect(await answering(response).groupTakenAway?.(job, signal())).toBe('kept');
+    });
+
+    it.each([
+        ['an apiserver 500', { status: 500, body: 'boom' }],
+        ['an apiserver 503', { status: 503, body: 'unavailable' }],
         ['an empty answer', { status: 200, body: '' }],
         ['a body that is not a list', { status: 200, body: '{}' }],
         ['a body that is not JSON', { status: 200, body: 'not json' }],
         ['a list entry that is not a pod', listing('nope')],
-    ])('does not confirm it from %s', async (_name, response) => {
-        expect(await answering(response).groupTakenAway?.(job, signal())).toBe(false);
+    ])('answers unknown from %s, never kept', async (_name, response) => {
+        expect(await answering(response).groupTakenAway?.(job, signal())).toBe('unknown');
     });
 
-    it('does not confirm it when the request fails', async () => {
+    it('answers unknown when the request fails', async () => {
         const failing = answering(async () => {
             throw new Error('connection reset');
         });
 
-        expect(await failing.groupTakenAway?.(job, signal())).toBe(false);
+        expect(await failing.groupTakenAway?.(job, signal())).toBe('unknown');
     });
 
-    it('does not confirm it for an attempt that already stood down', async () => {
+    it('answers unknown for an attempt that already stood down', async () => {
         const down = new AbortController();
         down.abort();
 
-        expect(await answering(listing()).groupTakenAway?.(job, down.signal)).toBe(false);
+        expect(await answering(listing()).groupTakenAway?.(job, down.signal)).toBe('unknown');
     });
 });
