@@ -320,6 +320,7 @@ export function TaskDetailPage() {
                 jobs={detail.jobs}
                 viewer={viewer}
                 error={detail.error}
+                onRetry={detail.refresh}
                 actionError={actionError}
                 followUpError={followUpError}
                 sending={sending}

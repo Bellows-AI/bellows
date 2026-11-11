@@ -5,6 +5,7 @@ import type { SubmittedFiles } from '../api/useTasks.js';
 import { type ComposerDraftStore, threadScope } from '../composer-draft.js';
 import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
+import { StateNote } from '../components/StateNote.js';
 import { endedOnQuestion, type FollowUpViewer, followUpEligibility } from '../task-outcome.js';
 import { useStickToBottom } from '../use-stick-to-bottom.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
@@ -245,6 +246,21 @@ function liveOutputOf(latest: Job | null | undefined): string | null | undefined
 }
 
 /** Offered when output landed under a reader who scrolled up: the way back to the newest line. */
+/**
+ * The thread poll's failure, said as an alert with a way to ask again now. The poll keeps its own
+ * retry pace; the button only spares the reader the wait.
+ */
+function ThreadError({ message, onRetry }: { message: string; onRetry: () => void }) {
+    return (
+        <>
+            <StateNote state="error">{message}</StateNote>
+            <button type="button" onClick={onRetry}>
+                Retry
+            </button>
+        </>
+    );
+}
+
 function JumpToLatest({ show, onJump }: { show: boolean; onJump: () => void }) {
     if (!show) return null;
     return (
@@ -272,6 +288,7 @@ export function TaskDetail({
     jobs,
     viewer,
     error,
+    onRetry,
     actionError,
     followUpError,
     sending,
@@ -289,8 +306,10 @@ export function TaskDetail({
     jobs: Job[] | null;
     /** Who is looking — only the task's author is offered the composer. */
     viewer: FollowUpViewer;
-    /** Why there is no task yet. Said in place, never silently. */
+    /** Why the thread poll's last tick failed. Said in place, never silently; the poll keeps trying. */
     error: string | null;
+    /** Polls the thread again now, instead of waiting for the next tick. */
+    onRetry: () => void;
     /** Why the last stop or Mark done did not land. Said under the header. */
     actionError: string | null;
     /** Why the last follow-up did not queue. Said inside the composer, beside the draft. */
@@ -328,7 +347,11 @@ export function TaskDetail({
             <>
                 {header}
                 <section className="panel">
-                    {error !== null ? <p className="muted">{error}</p> : <p className="muted">Loading the task…</p>}
+                    {error !== null ? (
+                        <ThreadError message={error} onRetry={onRetry} />
+                    ) : (
+                        <p className="muted">Loading the task…</p>
+                    )}
                 </section>
             </>
         );
@@ -346,6 +369,7 @@ export function TaskDetail({
                 {/* The action error sits under the title — it is about the reader's last stop or
                 Mark done, not about either column's content. */}
                 {actionError !== null ? <p className="status">{actionError}</p> : null}
+                {error !== null ? <ThreadError message={error} onRetry={onRetry} /> : null}
             </div>
             <aside className="task-rail" aria-label="Task details">
                 {controls}

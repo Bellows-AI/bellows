@@ -107,7 +107,7 @@ Shared state line: `state-note` (+ `error`) via `StateNote.tsx` — loading `rol
 ## Shared UI units
 
 `AppBar.tsx`, `AppShell.tsx`, `Avatar.tsx`, `ConfirmDialog.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
-`MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`,
+`MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`, `RouteError.tsx`,
 `SideNav.tsx`, `StateNote.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
 `SettingsLayout.tsx`, `TasksLayout.tsx` (`web/src/pages/`).
 
