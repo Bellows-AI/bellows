@@ -39,7 +39,9 @@ cover every command this skill names below.
 - `test:jobs` lanes: iterate and check a PR with `npm run test:jobs -- --changed origin/main` (or
   `--phase a,b` for a hand-picked pair); it prints the phases it chose and why, and runs the full lane
   itself when a shared file changed. The full default `npm run test:jobs` runs once at the end of a PR
-  series and on `main`, not per PR.
+  series and on `main`, not per PR. Within one slice no lane runs between commits; a runtime or
+  protocol slice runs its covering `test:jobs --phase` once, before review. The kind lane
+  (`test:k8s --cluster`) runs once at the end of a series, never per slice.
 - **A failed lane is not rerun to find its cause.** After `test:jobs`, `test:k8s` or `verify:ui`
   fails, that lane runs again only once the plan file records one of two things. Either a test
   outside the lane that reproduces the failure — red before the fix, green after (Phase 3, RED) —
@@ -66,9 +68,9 @@ cover every command this skill names below.
 
 ## Context budget
 
-Every turn re-reads the whole context, so context size × turns is what a run costs: one agent at
-600K tokens for 250 turns outspends the rest of the run. These rules bind this conversation and
-every agent it spawns — copy them into each brief.
+Every turn re-reads the whole context, so context size × turns is what a run costs. These rules
+bind this conversation and every agent it spawns — copy them into each brief. There is no turn or
+token cap and no forced handoff: an agent stopped mid-task loses what its handoff did not carry.
 
 - **Read narrowly.** Locate with `git grep -n` first, then read only the range you need — at most
   ~150 lines (`sed -n <a>,<b>p`, or Read with offset/limit). Never `cat` a whole source file or doc
@@ -91,12 +93,11 @@ every agent it spawns — copy them into each brief.
   implemented, committed (sha), verified (command and exit code), blocked or interrupted it is.
 - **Implementers are fresh agents, never forks.** A fork starts with this whole conversation.
   A review round's fixes go back to the implementer that wrote the commit, by `SendMessage` with
-  the findings file's path, while its completion notice reports under ~100 tool uses. Past that,
-  they go to a fresh agent briefed with the findings file and the implementer's handoff.
-- **Retire an agent at a boundary, never mid-task.** An implementer past ~150 turns or ~200K tokens
-  stops at its next green commit, writes `<scratchpad>/handoff-<N>-<slice>.md` (done, next step,
-  open failures) and returns; the next agent starts from that file. Unfinished work is never cut
-  off to meet the limit.
+  the findings file's path. Only a stuck or lost implementer is replaced, by a fresh agent briefed
+  with the findings file and its handoff.
+- **Handoff notes only for a stuck agent.** When the watchdog finds an agent stuck, stop it, have
+  it write `<scratchpad>/handoff-<N>-<slice>.md` (done, next step, open failures) and resume with a
+  fresh agent from that file. A healthy agent is never retired for its turn or token count.
 - **Keep this conversation resumable.** At each slice boundary write `<scratchpad>/progress-<N>.md`
   — merged PRs, the slice in progress, open decisions, the next step — so a compaction loses
   nothing. Hold no suite log, diff or full report here; read agent results from their files.
@@ -230,9 +231,9 @@ In order:
 Build coupling to remember: `server` and `web` resolve `@factory-ai/core` to `core/dist` — if
 type errors point into core, run `npm run build -w core` before hunting source bugs.
 
-## Phase 4 — Review loop (max 3 rounds)
+## Phase 4 — Review loop (max 10 rounds)
 
-For each round, up to 3:
+For each round, up to 10 (autonomous runs included):
 
 1. Produce the complete diff: `git diff $(git merge-base HEAD <default-branch>)...HEAD` (plus
    uncommitted changes staged first into a temp view if needed — the reviewer must see everything
@@ -254,7 +255,7 @@ For each round, up to 3:
    - Nitpicks/style: fix only if trivial; do not loop on them.
 4. A round with zero blockers ends the loop.
 
-After 3 rounds with blockers remaining: STOP. Commit nothing, push nothing. Report the remaining
+After 10 rounds with blockers remaining: STOP. Commit nothing, push nothing. Report the remaining
 findings to the user with your analysis. The cap is the user's to raise, never the run's.
 
 ## Phase 5 — Ship
@@ -307,21 +308,20 @@ Then:
 Never force-push, never push directly to the default branch, never `git worktree remove` a
 worktree whose PR is open.
 
-## Phase 6 — Wait for GitHub review (max 5 rounds)
+## Phase 6 — Wait for CI and human review (max 5 rounds)
 
-This repo has no CI — its PR checks are the automated reviewers themselves (CodeRabbit, Greptile),
-and their completion is what posts the comments. Loop until no unaddressed comments remain; one
-round = one wait, one fetch, one address cycle:
+This repo runs CI on every PR to `main` (`.github/workflows/ci.yml`: `validate` and `test-db`);
+no review bots are installed, so never wait for bot comments. One round = one wait, one fetch, one
+address cycle; loop until the checks are green and no unaddressed human comments remain:
 
-1. Wait for the review to land in one call: `gh pr checks <PR_NUMBER> --watch > <log> 2>&1` with
-   `run_in_background`, then wait for its exit notification — never poll. "no checks reported" means
-   the bots have not registered yet: wait once with `Monitor`, then watch again. Then fetch
-   everything with full detail —
-   review summaries and PR-level comments:
+1. Wait for the checks in one call: `gh pr checks <PR_NUMBER> --watch > <log> 2>&1` with
+   `run_in_background`, then wait for its exit notification — never poll. Fix every failing check
+   (reproduce it locally first) and push. Then fetch everything with full detail, if any human
+   reviewed — review summaries and PR-level comments:
    `gh pr view <PR_NUMBER> --repo <owner/repo> --comments --json comments,reviews`, plus the
    line-level comments: `gh api repos/<owner>/<repo>/pulls/<PR_NUMBER>/comments`. Read the review
    summary bodies too, not just the line comments — a "Request changes" verdict is ground for
-   another round even with no line comments.
+   another round even with no line comments. No comments is a finished loop, not a reason to wait.
 2. Address the **line-level comments** by invoking the **`github-review-fix`** skill on this PR.
    It owns every mechanical step through to verifying each reply landed; the conversation keeps
    only its ambiguity gate (next step).
@@ -335,7 +335,7 @@ round = one wait, one fetch, one address cycle:
 4. Every addressed comment gets a reply saying what was fixed and how — never a bare
    "fixed in <sha>". github-review-fix posts its own; for the ones you handled:
    `gh pr comment <PR_NUMBER> --body "✅ Fixed in <sha> — <what changed and why>"`. Each push
-   re-triggers the bots — return to step 1 for the next round.
+   re-triggers CI — return to step 1 for the next round.
 
 Stop conditions — hand back to the user instead of improvising:
 
@@ -349,7 +349,7 @@ Stop conditions — hand back to the user instead of improvising:
 
 **Stacked slices merge as they go green.** When the work is split into stacked PRs, merge a
 slice's PR (`gh pr merge`, with the method the repo's merged PRs use — check `gh pr list --state
-merged`) as soon as its CI, lanes and bot-review fixes are green; then rebase or retarget the next
+merged`) as soon as its CI, lanes and review fixes are green; then rebase or retarget the next
 slice's branch onto the default branch, and only then continue the next slice. Never keep more than
 one unmerged slice under the one in progress.
 
