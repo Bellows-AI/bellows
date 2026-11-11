@@ -65,9 +65,9 @@ const composeVault = () =>
 const vaultMirror = () => `ghcr.io/bellows-ai/${composeVault().image.split('/').pop()}`;
 
 describe('ci workflows', () => {
-    it('validates every pull request to main and every push to main', () => {
+    it('validates every pull request to main or a project branch and every push to main', () => {
         const on = triggers(workflow(CI));
-        expect(on.pull_request!.branches).toContain('main');
+        expect(on.pull_request!.branches).toEqual(['main', 'project-*']);
         expect(on.push!.branches).toContain('main');
     });
 
