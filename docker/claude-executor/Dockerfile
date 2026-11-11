@@ -142,7 +142,7 @@ COPY --from=skills --chown=root:root . /usr/local/share/factory-skills/
 # One tree, one path, and the agent cannot edit it.
 RUN chmod -R u=rwX,go=rX /usr/local/share/factory-skills
 RUN mkdir -p /etc/claude-code/.claude \
-    && ln -s /usr/local/share/factory-skills /etc/claude-code/.claude/skills
+    && ln -s /tmp/.factory-skills /etc/claude-code/.claude/skills
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 #
@@ -185,8 +185,9 @@ COPY --from=common github-credential.cjs /usr/local/bin/github-credential.cjs
 COPY --from=common credential-broker.cjs /usr/local/bin/credential-broker.cjs
 COPY --from=common attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
 COPY --from=common connection-ask.cjs /usr/local/bin/connection-ask.cjs
+COPY --from=common skill-view.cjs /usr/local/bin/skill-view.cjs
 COPY --from=common gh-wrapper.sh /usr/local/bin/gh
-RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
+RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/skill-view.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
 # the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in

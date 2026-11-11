@@ -1,0 +1,116 @@
+---
+title: "Gates"
+description: "Gates are the commands in .bellows.yaml that decide whether the agent's work counts as done."
+---
+
+A gate is a named shell command that runs in your repo's environment image, on the agent's working tree. Exit code `0` means it passed. Anything else means it failed.
+
+Gates live under `environment.gates` in `.bellows.yaml`. For `image`, `setup` and `cache`, see [Configure your repo](/guides/configure-repo).
+
+```yaml .bellows.yaml
+environment:
+    image: golang:1.25
+    gates:
+        - name: build
+          command: "go build ./..."
+          timeout: 5
+        - name: test
+          command: "go test -race -count=1 ./..."
+          timeout: 10
+```
+
+## When gates run
+
+<Steps>
+  <Step title="While the agent works">
+    The agent can run any declared gate by name, as often as it likes, and read the output. It is told to run the gates that cover its change before it pushes. If the Bellows driver running the task restarts, for example when its node is drained, the agent's gate runs go to the driver that takes the task over. A gate run in flight at that moment is cut off, and the agent runs it again.
+  </Step>
+  <Step title="When the agent finishes">
+    Bellows runs every declared gate once, in the order you wrote them. Gates marked `on_demand` are skipped. A gate that the agent already ran unfiltered, and that passed on exactly the final tree, is reused instead of run again.
+  </Step>
+</Steps>
+
+Gates run in a separate container that shares the task's workspace. What the agent wrote is exactly what the gates see.
+
+## When a gate fails
+
+A failing gate fails the run. The task page shows the badge <span className="status status-failed">gate failed</span> and a **Verification failed** pill.
+
+By default, Bellows then starts an automatic repair round: the agent gets the failing gate's name and output and tries to fix it. The limit is the **Gate repair rounds** setting on the executor. The default is 3, the maximum is 10, and 0 turns repair off. The limit is fixed when the task is created. A repair round that leaves the tree unchanged ends the loop, because the same gate would fail the same way.
+
+<Note>
+  If repair rounds run out, the work still ships as a draft pull request, unless your repo sets `policy: gates: required`. Then nothing is published until the gates pass. See [Policy and reviewers](/guides/policy-and-reviewers).
+</Note>
+
+A gate that fails because the environment broke is not the agent's fault. Bellows treats a gate as an environment failure when it timed out, was killed (for example out of memory), could not start, hit a stale file handle, or when every failure in a vitest or jest run is a worker or test timeout. Those are not repaired by editing code.
+
+## Gate options
+
+| Key         | Required | Description                                                                              |
+| ----------- | -------- | ---------------------------------------------------------------------------------------- |
+| `name`      | yes      | Unique. Up to 64 chars. No `/` or `\`, and cannot start with `-` or `.`                  |
+| `command`   | yes      | One line, up to 4096 chars, run through a shell                                          |
+| `timeout`   | no       | Whole minutes, 1 to 120. Without it, the platform default applies (10 minutes today)      |
+| `on_demand` | no       | Only `true`. The agent can run it, the end-of-run pass skips it, and it never fails the task |
+| `filter`    | no       | Only `true`. The agent can narrow a run; the value arrives as `$GATE_FILTER`             |
+
+You can declare up to 16 gates. Values may be bare, `'single'` or `"double"` quoted. There are no escape sequences. If a command needs real quoting, put it in a script in your repo and call the script.
+
+## On-demand gates
+
+Use `on_demand: true` for checks that are too slow or too specific to run on every task, such as an end-to-end suite. The agent runs it only when its change touches what the gate checks, and a failure never fails the task.
+
+<Warning>
+  A gate with `timeout` above 10 cannot be run by the agent while it works. The call is refused and the gate runs only at the end, so an `on_demand` gate with a long timeout never runs. Keep on-demand gates at 10 minutes or less.
+</Warning>
+
+## Filters
+
+With `filter: true` the agent can run part of a suite. Your command must read `$GATE_FILTER`, or the filter does nothing.
+
+<CodeGroup>
+
+```yaml Go
+gates:
+    - name: test-filter
+      command: 'go test -race -count=1 -run "$GATE_FILTER" ./...'
+      on_demand: true
+      filter: true
+```
+
+```yaml Node
+gates:
+    - name: test-filter
+      command: 'npx vitest run $GATE_FILTER'
+      on_demand: true
+      filter: true
+```
+
+</CodeGroup>
+
+The filter is up to 256 printable characters on one line. It is set for that one run only. A filtered run is never proof that the gate passed, and the end-of-run pass always runs gates without a filter. Pair a filtered `on_demand` gate with a full gate that has the same command and no filter.
+
+## Where results show
+
+Open the task and find the **Verification** panel. Each gate has a pill and, once it has run, its exit code and output. The panel shows the newest run only. A failed gate starts open, and its output has a **Copy** button.
+
+| Pill      | Meaning                                              |
+| --------- | ---------------------------------------------------- |
+| `passed`  | Exit code 0                                          |
+| `failed`  | Non-zero exit; the output explains why               |
+| `running` | In progress, with elapsed seconds                    |
+| `pending` | Not started yet                                      |
+| `not run` | The run ended before this gate started               |
+| `skipped` | Not part of the end-of-run pass, such as `on_demand` |
+
+## Tips for fast, reliable gates
+
+- Put the cheapest check first (`build` or `typecheck`) so failures show up early.
+- Set a `timeout` for each gate. A hung test then fails with a clear exit code instead of eating the run.
+- Make gates deterministic. Pin versions, avoid the network, and don't depend on wall-clock time.
+- Install once in `setup`, not in each gate. Use `cache` for package caches.
+- Run the same command locally in the same image before you commit it: `docker run --rm -v "$PWD":/w -w /w golang:1.25 sh -c 'go test ./...'`.
+- If a gate needs a database, declare it as a [service](/guides/services).
+- Don't let a gate rewrite tracked files. A formatter that edits the tree voids the reuse of later gates.
+
+**Worked example:** [Add tests to a package](/use-cases/add-tests).

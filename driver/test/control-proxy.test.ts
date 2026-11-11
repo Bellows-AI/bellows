@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CONNECTION_PATH, PUBLISH_PATH, REVIEW_PATH } from '../src/control-channel.js';
+import { CONNECTION_PATH, GATE_RUN_PATH, PUBLISH_PATH, REVIEW_PATH } from '../src/control-channel.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
@@ -20,6 +20,7 @@ const proxy = createRequire(import.meta.url)(PROXY) as {
     PUBLISH_PATH: string;
     REVIEW_PATH: string;
     CONNECTION_PATH: string;
+    GATE_RUN_PATH: string;
 };
 
 const servers: Server[] = [];
@@ -91,6 +92,7 @@ describe('the run-control proxy', () => {
         ['GET', '/review/security-1', undefined],
         ['GET', '/attempt', undefined],
         ['POST', '/connection', '{"provider":"jira"}'],
+        ['POST', '/gate/run', '{"gate":"verify","filter":"a-test"}'],
     ])(
         'forwards %s %s to the relay with no credential, and the relay’s answer unchanged',
         async (method, path, body) => {
@@ -122,6 +124,12 @@ describe('the run-control proxy', () => {
         ['POST', '/attempt'],
         ['DELETE', '/review/security-1'],
         ['POST', '/export/chunk'],
+        ['GET', '/gate/run'],
+        ['PUT', '/gate/run'],
+        ['POST', '/gate/run?x=1'],
+        ['POST', '/gate/run/x'],
+        ['POST', '/gate'],
+        ['POST', '/run'],
     ])('answers %s %s 404 without reaching the relay', async (method, path) => {
         const { relay, seen } = await board();
         const socket = await startProxy(relay);
@@ -132,6 +140,7 @@ describe('the run-control proxy', () => {
     it('answers a relay that is missing, or refuses connections, with 502', async () => {
         const socket = await startProxy(join(tmpdir(), 'no-such-relay.sock'));
         expect((await call(socket, 'POST', '/publish', '{}')).status).toBe(502);
+        expect((await call(socket, 'POST', '/gate/run', '{"gate":"verify"}')).status).toBe(502);
     });
 
     it('answers a relay that hangs up on the request with 502', async () => {
@@ -143,6 +152,7 @@ describe('the run-control proxy', () => {
         servers.push(hungUp);
         const socket = await startProxy(relay);
         expect((await call(socket, 'POST', '/publish', '{}')).status).toBe(502);
+        expect((await call(socket, 'POST', '/gate/run', '{"gate":"verify"}')).status).toBe(502);
     });
 
     it('holds no credential: it reads no BELLOWS_CONTROL_* name and sets no authorization header', () => {
@@ -161,5 +171,6 @@ describe('the run-control proxy', () => {
         expect(proxy.PUBLISH_PATH).toBe(PUBLISH_PATH);
         expect(proxy.REVIEW_PATH).toBe(REVIEW_PATH);
         expect(proxy.CONNECTION_PATH).toBe(CONNECTION_PATH);
+        expect(proxy.GATE_RUN_PATH).toBe(GATE_RUN_PATH);
     });
 });

@@ -369,8 +369,8 @@ export async function buildApp({
         }
         await registerMcp(app, { config, auth, oauth, version, metrics });
     }
-    await app.register(skillRoutes(skillCatalog, orgs));
-    await app.register(skillStoreRoutes({ orgs }));
+    await app.register(skillRoutes(skillCatalog, orgs, { version }));
+    await app.register(skillStoreRoutes({ orgs, builtin: skillCatalog }));
     await app.register(statsRoutes(config, orgs, auth, now));
     await app.register(repoRoutes({ config, orgs }));
     if (store) await app.register(ingestRoutes(store, orgs));

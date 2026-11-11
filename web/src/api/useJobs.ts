@@ -136,6 +136,7 @@ export interface JobInterruption {
     at: string;
     reason: string;
     claimSeq: number;
+    nodeLoss?: true;
 }
 
 export interface Job {

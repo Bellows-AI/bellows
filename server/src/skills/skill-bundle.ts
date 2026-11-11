@@ -5,6 +5,8 @@ import {
     MAX_SKILL_BYTES,
     MAX_SKILL_FILE_BYTES,
     MAX_SKILL_FILES,
+    parseSkillRequirements,
+    type SkillRequirements,
     SKILL_NAME,
     SKILL_NAME_LIMIT,
 } from '@factory-ai/core';
@@ -36,6 +38,8 @@ export const SKILL_BUNDLE_REASONS = [
     'bad_name',
     'name_mismatch',
     'reserved_name',
+    'unknown_tool',
+    'unknown_connection',
 ] as const;
 export type SkillBundleReason = (typeof SKILL_BUNDLE_REASONS)[number];
 
@@ -56,6 +60,7 @@ export interface BundleFile {
 }
 
 export interface SkillBundle {
+    name: string;
     /** Sorted by path. */
     files: BundleFile[];
     tar: Buffer;
@@ -64,6 +69,8 @@ export interface SkillBundle {
     /** Total bytes of the files (not the tar). */
     size: number;
     description: string;
+    /** What its SKILL.md `metadata:` declares; empty when it declares nothing. */
+    requires: SkillRequirements;
 }
 
 const SKILL_MD = 'SKILL.md';
@@ -122,7 +129,14 @@ export function bundleFromSkillMd(name: string, text: string): SkillBundle {
     return finish(name, [{ path: SKILL_MD, bytes: Buffer.from(text, 'utf8') }]);
 }
 
-export function bundleFromZip(name: string, bytes: Buffer): SkillBundle {
+/** The current files with SKILL.md replaced by `text`; every other file is kept as it was. */
+export function bundleReplacingSkillMd(name: string, files: BundleFile[], text: string): SkillBundle {
+    const main = { path: SKILL_MD, bytes: Buffer.from(text, 'utf8') };
+    return finish(name, [...files.filter((file) => file.path !== SKILL_MD), main]);
+}
+
+/** A null `name` is taken from SKILL.md's frontmatter and then checked like any other. */
+export function bundleFromZip(name: string | null, bytes: Buffer): SkillBundle {
     return finish(name, readZip(bytes));
 }
 
@@ -130,7 +144,8 @@ function refuse(reason: SkillBundleReason, message: string): never {
     throw new SkillBundleError(reason, message);
 }
 
-function finish(name: string, entries: BundleFile[]): SkillBundle {
+function finish(given: string | null, entries: BundleFile[]): SkillBundle {
+    const name = given ?? nameFromSkillMd(entries);
     checkName(name);
     const files = entries.toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     let size = 0;
@@ -143,9 +158,25 @@ function finish(name: string, entries: BundleFile[]): SkillBundle {
     if (files.length > MAX_SKILL_FILES) refuse('too_many_files', `The skill has more than ${MAX_SKILL_FILES} files`);
     const skillMd = files.find((file) => file.path === SKILL_MD);
     if (!skillMd) refuse('no_skill_md', 'The skill has no SKILL.md at its root');
-    const description = readDescription(name, skillMd.bytes);
+    const { description, requires } = readSkillMd(name, skillMd.bytes);
     const tar = writeTar(files);
-    return { files, tar, sha256: createHash('sha256').update(tar).digest('hex'), size, description };
+    return { name, files, tar, sha256: createHash('sha256').update(tar).digest('hex'), size, description, requires };
+}
+
+function nameFromSkillMd(entries: BundleFile[]): string {
+    const skillMd = entries.find((file) => file.path === SKILL_MD);
+    if (!skillMd) return refuse('no_skill_md', 'The skill has no SKILL.md at its root');
+    const parsed = parseRepoSkillFrontmatter(decodeSkillMd(skillMd.bytes));
+    if (!parsed) return refuse('bad_frontmatter', 'SKILL.md needs frontmatter with a name and a description');
+    return parsed.name;
+}
+
+function decodeSkillMd(bytes: Buffer): string {
+    try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+        return refuse('bad_frontmatter', 'SKILL.md is not valid UTF-8');
+    }
 }
 
 function checkName(name: string): void {
@@ -160,18 +191,18 @@ function checkName(name: string): void {
 }
 
 /** The repo-skill reader's lenient parser: name and description, whatever other keys the tool supports. */
-function readDescription(name: string, bytes: Buffer): string {
-    let text: string;
-    try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-    } catch {
-        return refuse('bad_frontmatter', 'SKILL.md is not valid UTF-8');
-    }
+function readSkillMd(name: string, bytes: Buffer): { description: string; requires: SkillRequirements } {
+    const text = decodeSkillMd(bytes);
     const parsed = parseRepoSkillFrontmatter(text);
     if (!parsed) refuse('bad_frontmatter', 'SKILL.md needs frontmatter with a name and a description');
     if (parsed.name !== name)
         refuse('name_mismatch', `SKILL.md name "${parsed.name}" must equal the skill name "${name}"`);
-    return parsed.description;
+    const declared = parseSkillRequirements(text);
+    if ('reason' in declared) {
+        const what = declared.reason === 'unknown_tool' ? 'tool' : 'connection';
+        refuse(declared.reason, `SKILL.md requires an unknown ${what} "${declared.value}"`);
+    }
+    return { description: parsed.description, requires: declared.requires };
 }
 
 interface CentralEntry {

@@ -121,6 +121,42 @@ describe('skill bundle from SKILL.md', () => {
         expect(bundleFromSkillMd('my-skill', `${SKILL_MD('my-skill')}more`).sha256).not.toBe(a.sha256);
     });
 
+    describe('requirements', () => {
+        const withMetadata = (lines: string): string =>
+            `---\nname: my-skill\ndescription: Does a thing.\nmetadata:\n${lines}---\n\nBody.\n`;
+
+        it('a bundle declaring requires-connections: jira carries it', () => {
+            const bundle = bundleFromSkillMd('my-skill', withMetadata('  requires-connections: jira\n'));
+            expect(bundle.requires).toEqual({ tools: [], connections: ['jira'] });
+        });
+
+        it('requires-connections: nosuch is refused unknown_connection', () => {
+            expect(reason(() => bundleFromSkillMd('my-skill', withMetadata('  requires-connections: nosuch\n')))).toBe(
+                'unknown_connection'
+            );
+        });
+
+        it('requires-tools: nosuch is refused unknown_tool', () => {
+            expect(reason(() => bundleFromSkillMd('my-skill', withMetadata('  requires-tools: nosuch\n')))).toBe(
+                'unknown_tool'
+            );
+        });
+
+        it('no metadata gives empty requires', () => {
+            expect(bundleFromSkillMd('my-skill', SKILL_MD('my-skill')).requires).toEqual({
+                tools: [],
+                connections: [],
+            });
+        });
+
+        it('a zip upload goes through the same parse', () => {
+            const data = withMetadata('  requires-connections: nosuch\n');
+            expect(reason(() => bundleFromZip('my-skill', zip([{ name: 'SKILL.md', data }])))).toBe(
+                'unknown_connection'
+            );
+        });
+    });
+
     it('refuses bad frontmatter, a name mismatch, a reserved name and a bad name', () => {
         expect(reason(() => bundleFromSkillMd('my-skill', 'no frontmatter'))).toBe('bad_frontmatter');
         expect(reason(() => bundleFromSkillMd('my-skill', SKILL_MD('other')))).toBe('name_mismatch');
@@ -134,6 +170,27 @@ describe('skill bundle from SKILL.md', () => {
 
 describe('skill bundle from zip', () => {
     const md = { name: 'SKILL.md', data: SKILL_MD('my-skill') };
+
+    describe('without a name', () => {
+        it('takes the name from SKILL.md', () => {
+            expect(bundleFromZip(null, zip([md])).name).toBe('my-skill');
+            expect(bundleFromZip('my-skill', zip([md])).name).toBe('my-skill');
+        });
+
+        it('refuses a zip with no SKILL.md, a SKILL.md without a name, a bad name and a reserved name', () => {
+            const other = { name: 'a.txt', data: 'a' };
+            expect(reason(() => bundleFromZip(null, zip([other])))).toBe('no_skill_md');
+            expect(
+                reason(() => bundleFromZip(null, zip([{ name: 'SKILL.md', data: '---\ndescription: x\n---\n' }])))
+            ).toBe('bad_frontmatter');
+            expect(reason(() => bundleFromZip(null, zip([{ name: 'SKILL.md', data: SKILL_MD('Bad_Name') }])))).toBe(
+                'bad_name'
+            );
+            expect(reason(() => bundleFromZip(null, zip([{ name: 'SKILL.md', data: SKILL_MD('factory-x') }])))).toBe(
+                'reserved_name'
+            );
+        });
+    });
 
     it('reads stored and deflated entries, sorts paths and ignores directory entries', () => {
         const bytes = zip([

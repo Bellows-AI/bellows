@@ -282,6 +282,16 @@ describe('the claim’s skill pin (BEL-273)', () => {
         expect(job).not.toHaveProperty('skillPinUnreadable');
     });
 
+    it('reads a claim skillHidden as the built-in names to hide, and an absent one as unreadable (BEL-286)', async () => {
+        const hidden = [{ name: 'factory-jira', source: 'builtin', reason: 'needs_connection', connection: 'jira' }];
+        const ok = await claimWith({ skillHidden: hidden });
+        expect(ok?.skillHidden).toEqual(['factory-jira']);
+        expect(ok).not.toHaveProperty('skillHiddenUnreadable');
+        const none = await claimWith({ skillHidden: undefined });
+        expect(typeof none?.skillHiddenUnreadable).toBe('string');
+        expect(none).not.toHaveProperty('skillHidden');
+    });
+
     it('reads an explicit empty pin as no skills', async () => {
         const job = await claimWith({ skillPin: [] });
         expect(job?.skillPin).toEqual([]);

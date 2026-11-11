@@ -157,6 +157,14 @@ spec:
                         value: {{ .Values.artifacts.orgQuotaBytes | quote }}
                       - name: ATTACHMENTS_DRAFT_TTL_HOURS
                         value: {{ .Values.artifacts.attachmentDraftTtlHours | quote }}
+                      {{- if eq .Values.artifacts.backend "gcs" }}
+                      - name: ARTIFACTS_GCS_BUCKET
+                        value: {{ .Values.artifacts.gcs.bucket | quote }}
+                      - name: ARTIFACTS_GCS_PREFIX
+                        value: {{ .Values.artifacts.gcs.prefix | quote }}
+                      - name: ARTIFACTS_GCS_KMS_KEY
+                        value: {{ .Values.artifacts.gcs.kmsKey | quote }}
+                      {{- end }}
                       {{- if eq .Values.artifacts.backend "s3" }}
                       - name: ARTIFACTS_S3_BUCKET
                         value: {{ .Values.artifacts.s3.bucket | quote }}
@@ -282,6 +290,22 @@ spec:
                         value: {{ .Values.secretStore.vault.role | quote }}
                       - name: SECRETS_VAULT_TOKEN_FILE
                         value: /var/run/secrets/vault/token
+                      {{- end }}
+                      {{- if eq .Values.secretStore.backend "gcp" }}
+                      - name: SECRETS_GCP_PROJECT
+                        value: {{ .Values.secretStore.gcp.project | quote }}
+                      {{- with .Values.secretStore.gcp.prefix }}
+                      - name: SECRETS_GCP_PREFIX
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- with .Values.secretStore.gcp.location }}
+                      - name: SECRETS_GCP_LOCATION
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- with .Values.secretStore.gcp.kmsKey }}
+                      - name: SECRETS_GCP_KMS_KEY
+                        value: {{ . | quote }}
+                      {{- end }}
                       {{- end }}
                   {{- with .Values.dashboard.resources }}
                   resources:

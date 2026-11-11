@@ -24,11 +24,12 @@ import {
     workspacePathFor,
     hasRunningMember,
 } from './job-store-rows.js';
+import { releaseOpen } from './job-store-interruption-budget.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import { fingerprintOf, missedSettle, recordReceipt, settleReplayOf, type SettleKey } from './job-store-receipts.js';
 import { commitStagedForStop } from './job-store-conclusions.js';
 import { stagedFingerprint } from './job-store-staged.js';
-import { resolveSkillPinInTx } from './job-store-skill-pin.js';
+import { recordCreateDecisionInTx, recordFollowUpDecisionInTx } from './job-store-skill-pin.js';
 import { threadRefusalOf } from './job-store-thread-refusal.js';
 import { TERMINAL_STATUSES } from '../task-summary.js';
 import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
@@ -320,7 +321,7 @@ export interface JobActionStore {
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
      * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
      * the earlier attempt it adopted; the adopting claim's launch becomes `adopted`, linked to that
-     * claim. `refused` says the runner never started (issue #845). `blocked` (a release only) says the claim waits on a leftover still terminating: it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for: no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
+     * claim. `refused` says the runner never started (issue #845). `blocked` (a release only) says the claim waits on a leftover still terminating: it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for: no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `nodeLoss` (a release only, BEL-302) says the platform took the attempt away (a drained driver, an evicted runner): it spends no `INTERRUPTION_BUDGET`, is accepted past a spent one, and counts against `NODE_LOSS_BUDGET` per `NODE_LOSS_WINDOW_MS` instead. `exhausted` once `INTERRUPTION_BUDGET` (or, for a node loss, that bound) is spent: nothing
      * changed, and the caller reports or leaves the attempt as before.
      */
     interrupt(
@@ -333,6 +334,7 @@ export interface JobActionStore {
             refused?: boolean;
             blocked?: boolean;
             requirement?: boolean;
+            nodeLoss?: boolean;
         }
     ): Promise<SuspendResult | { result: 'exhausted' }>;
 }
@@ -351,7 +353,7 @@ const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(va
  */
 export async function insertJobInTx(
     tx: TransactionSql,
-    ctx: Pick<JobStoreContext, 'sql' | 'orgId'>,
+    ctx: Pick<JobStoreContext, 'sql' | 'orgId'> & { githubApp?: boolean | undefined },
     { command, createdBy, target }: { command: string; createdBy: string | null; target: CreateTarget }
 ): Promise<CreatedRef> {
     const { sql, orgId } = ctx;
@@ -368,13 +370,11 @@ export async function insertJobInTx(
     // validated launch values beside it (030). The mode (051) is decided here, once: no
     // named workflow is objective, and the thread inherits it.
     const mode = target.workflow ? WORKFLOW_MODE : OBJECTIVE_MODE;
-    // Every enabled org skill and the creator's workspace skills, pinned at the versions current now (BEL-273).
-    const pin = await resolveSkillPinInTx(tx, orgId, createdBy);
     const rows = await tx<{ id: string }[]>`
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
-                execution_user_id, skills, base_branch, skill_pin
+                execution_user_id, skills, base_branch, skill_pin, skill_hidden
             )
             select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
@@ -386,12 +386,14 @@ export async function insertJobInTx(
                    ${createdBy},
                    ${sql.array([...(target.skills ?? [])])}::text[],
                    ${target.baseBranch ?? null},
-                   ${tx.json(pin as never)}
+                   '[]'::jsonb, '[]'::jsonb
             from (select gen_random_uuid() as x) s
             returning id
         `;
     await bindOnCreate(tx, { orgId, rootJobId: rows[0]!.id, createdBy, target });
     const jobId = rows[0]!.id;
+    // Pin and hide the row's skills after its bindings, in this transaction (BEL-273, BEL-286).
+    await recordCreateDecisionInTx(tx, { orgId, jobId, createdBy, target, githubApp: ctx.githubApp });
     await bindAttachmentsInTx(tx, { orgId, jobId, rootJobId: jobId, createdBy, ids: target.attachmentIds ?? [] });
     await stampKey(tx, orgId, rows[0]!.id, idem);
     return { id: rows[0]!.id };
@@ -431,6 +433,7 @@ export interface FollowUpRowInput {
     idempotency?: IdempotencyInput | undefined;
     /** The route's org-admin verdict; ignored for a null caller. */
     admin?: boolean | undefined;
+    githubApp?: boolean | undefined; // the `github` connection a skill may require (BEL-286)
 }
 
 /**
@@ -492,12 +495,6 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     // A busy thread is answered here, before the insert: the refusal read after it is a later snapshot, and a verdict
     // committing in between would turn not_finished into forbidden.
     if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
-    // A follow-up re-resolves the pin against the catalog as it is now (BEL-273), for the workspace of the thread's
-    // owner (an admin's turn is still the owner's run).
-    const [thread] = await tx<{ owner: string | null }[]>`
-            select execution_user_id as owner from job where org_id = ${orgId} and id = ${label.root_job_id}
-        `;
-    const pin = await resolveSkillPinInTx(tx, orgId, thread?.owner ?? null);
     const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode
@@ -536,10 +533,10 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                     end as session_id
                 from parent, root
             )
-            insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin)
+            insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
             select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.executor_scope, parent.id,
                    coalesce(primary_session.session_id, parent.session_id),
-                   parent.root_job_id, parent.workflow_name, parent.mode, ${tx.json(pin as never)}
+                   parent.root_job_id, parent.workflow_name, parent.mode, '[]'::jsonb, '[]'::jsonb
             from parent, root, primary_session
             -- Eligibility is the THREAD's, as a retry's is (#698): a finished parent whose thread
             -- still holds unfinished work, or carries a done on any member, refuses — so a repeat
@@ -558,6 +555,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
         `;
     if (rows[0]) {
         await addFollowUpBindings(tx, { orgId, rootJobId: label.root_job_id, createdBy, connectionIds });
+        await recordFollowUpDecisionInTx(tx, input, rows[0].id, label.root_job_id);
         const ref = { orgId, jobId: rows[0].id, rootJobId: label.root_job_id, createdBy };
         await bindAttachmentsInTx(tx, { ...ref, ids: attachmentIds });
         await stampKey(tx, orgId, rows[0].id, idem);
@@ -663,16 +661,16 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
                 for update
             ),
             head as (
-                select command, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin
+                select command, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin, skill_hidden
                 from job
                 where org_id = ${orgId} and root_job_id = (select root_job_id from named)
                 order by created_at desc, id desc
                 limit 1
             )
             -- The pin is the head's, as the command is: a retry re-runs the head with the versions it was locked to.
-            insert into job (org_id, command, created_by, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin)
+            insert into job (org_id, command, created_by, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
             select ${orgId}, head.command, ${createdBy}, head.repo, head.executor, head.executor_scope,
-                   head.root_job_id, head.workflow_name, head.mode, head.skill_pin
+                   head.root_job_id, head.workflow_name, head.mode, head.skill_pin, head.skill_hidden
             from named, head
             where not exists (
                   select 1
@@ -894,32 +892,10 @@ export async function suspendJob(
 }
 
 /**
- * How many attempts the infrastructure may interrupt before an interruption is refused (issue
- * #792): an interrupted attempt is refunded, so this — not `max_attempts` — bounds a job the
- * platform keeps taking away.
- */
-export const INTERRUPTION_BUDGET = 5;
-
-/** Only interruptions inside this trailing window count against `INTERRUPTION_BUDGET`. */
-export const INTERRUPTION_WINDOW_MS = 3_600_000;
-/**
  * How long a blocked hand-back defers the next claim (BEL-160): the claim could not start because a
  * leftover of an earlier claim is still terminating, so an immediate re-claim would only meet it again.
  */
 export const BLOCKED_RETRY_SECONDS = 60;
-
-/**
- * Whether the row's interruption budget is spent. A blocked hand-back waits on a leftover rather than
- * losing an attempt to the infrastructure, so it is outside the count; a requirement hand-back waits on a
- * person, so it is too. Only interruptions inside `INTERRUPTION_WINDOW_MS` count; an `at` that does not parse counts as spent.
- * The cutoff is bound per call from the process clock that wrote each `at`, never DB now().
- */
-export const interruptionsSpent = (q: Sql | TransactionSql): Fragment => q`(
-    select count(*) from jsonb_array_elements(interruptions) as spent
-    where spent ->> 'blocked' is distinct from 'true' and spent ->> 'requirement' is distinct from 'true'
-      and case when spent ->> 'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
-          then (spent ->> 'at')::timestamptz > ${new Date(Date.now() - INTERRUPTION_WINDOW_MS)} else true end
-) >= ${INTERRUPTION_BUDGET}`;
 
 /** The interruption the next claim records for an attempt whose lease expired (issue #822). */
 export const LEASE_EXPIRED_REASON = 'the lease expired: its driver went silent';
@@ -935,6 +911,7 @@ export async function interruptJob(
         refused = false,
         blocked = false,
         requirement = false,
+        nodeLoss = false,
     }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
@@ -949,9 +926,11 @@ export async function interruptJob(
         at: new Date().toISOString(),
         ...(blocked ? { blocked: true } : {}),
         ...(requirement ? { requirement: true } : {}),
+        ...(nodeLoss ? { nodeLoss: true } : {}),
     });
-    // Neither spends the budget, so both are accepted past a spent one.
-    const outsideBudget = blocked || requirement;
+    // Blocked and requirement spend no budget, so both are accepted past a spent one; a node loss spends only
+    // its own bound (BEL-302), accepted past a spent poison budget (see `releaseOpen`).
+    const open = releaseOpen(sql, { release, blocked, requirement, nodeLoss });
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
     )`;
@@ -962,17 +941,12 @@ export async function interruptJob(
         jobId: id,
         leaseToken,
         operation: 'interrupt',
-        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked, requirement }),
+        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked, requirement, nodeLoss }),
     };
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome (issue #821): nothing hands it back instead.
         if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
-        await recordInterruptLaunch(
-            tx,
-            { orgId, id, leaseToken },
-            { release, refused, claimSeq, outsideBudget },
-            recorded
-        );
+        await recordInterruptLaunch(tx, { orgId, id, leaseToken }, { release, refused, claimSeq, open }, recorded);
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = case when not ${release} then status
@@ -991,7 +965,7 @@ export async function interruptJob(
                 )
             where org_id = ${orgId} and id = ${id}
               and status = 'running' and lease_token = ${leaseToken}
-              and (${outsideBudget && release} or not ${interruptionsSpent(tx)})
+              and ${open}
               and not ${recorded}
             returning status, root_job_id
         `;
@@ -1040,16 +1014,16 @@ async function recordInterruptLaunch(
         release,
         refused,
         claimSeq,
-        outsideBudget,
-    }: { release: boolean; refused: boolean; claimSeq: number | null; outsideBudget: boolean },
+        open,
+    }: { release: boolean; refused: boolean; claimSeq: number | null; open: Fragment },
     recorded: Fragment
 ): Promise<void> {
     if (!refused && release) return;
     const { orgId, id, leaseToken } = at;
-    const open = release ? tx`and (${outsideBudget} or not ${interruptionsSpent(tx)}) and not ${recorded}` : tx``;
+    const guard = release ? tx`and ${open} and not ${recorded}` : tx``;
     const [held] = await tx<{ claim_seq: string }[]>`
         select claim_seq from job
-        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken} ${open}
+        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken} ${guard}
         for update
     `;
     if (!held) return;

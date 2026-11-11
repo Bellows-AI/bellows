@@ -9,6 +9,7 @@ import {
     mkdtempSync,
     readdirSync,
     readFileSync,
+    readlinkSync,
     realpathSync,
     rmSync,
     statSync,
@@ -354,6 +355,7 @@ SLEEP_PID=$!
 echo "$SLEEP_PID" > "$STUB_DIR/sleep-pid"
 printf '%s' "\${JIRA_API-unset}" > "$STUB_DIR/jira-api"
 printf '%s' "\${OPENCODE_CONFIG_CONTENT-unset}" > "$STUB_DIR/opencode-config-content"
+printf '%s' "\${OPENCODE_DISABLE_EXTERNAL_SKILLS-unset}" > "$STUB_DIR/disable-external-skills"
 printf '%s\\n' "$@" > "$STUB_DIR/argv"
 printf '%s' "\${BELLOWS_SESSION_ID-unset}" > "$STUB_DIR/bellows-session-id"
 printf '%s' "\${BRANCH_REPORTER_PRIOR_UNKNOWN-unset}" > "$STUB_DIR/prior-unknown"
@@ -393,6 +395,9 @@ const CONTAINER_GUARD_NAMES = [
     'DEFAULT_BRANCH',
     'BASE_BRANCH',
     'BELLOWS_RESUME_MAY_BE_UNWRITTEN',
+    'FACTORY_WORKSPACE_SKILLS',
+    'FACTORY_SKILLS_PATH',
+    'OPENCODE_DISABLE_EXTERNAL_SKILLS',
 ];
 // Budgets for the cases below that run a real entrypoint under /bin/sh. One such run boots four
 // node processes serially plus a git or two; the original 10s/5s were measured on an idle box and
@@ -1184,8 +1189,30 @@ describe('the shared executor skills', () => {
     // plain run. The managed tree is the only place the CLI finds them, so the path is one.
     it('gives claude its skills as managed skills at one path, with no copy in the config home', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
-        expect(dockerfile).toContain('ln -s /usr/local/share/factory-skills /etc/claude-code/.claude/skills');
+        // BEL-286: the managed path is a link to the per-run view the entrypoint fills with the visible built-ins.
+        expect(dockerfile).toContain('ln -s /tmp/.factory-skills /etc/claude-code/.claude/skills');
+        const entrypoint = read('docker/claude-executor/entrypoint.sh');
+        expect(entrypoint).toContain('HIDDEN_VIEW=/tmp/.factory-skills');
+        expect(entrypoint).toContain('exit 78');
         expect(dockerfile).not.toMatch(/^COPY[^\n]*\/home\/node\/\.claude\/skills/m);
+    });
+
+    // A pinned workspace skill is linked into the managed view, which outranks a same-name checkout skill.
+    it('links the pinned workspace skills into the managed view, and refuses a bad list before the CLI starts', () => {
+        const entrypoint = read('docker/claude-executor/entrypoint.sh');
+        const chmod = entrypoint.indexOf('chmod 0755 "$HIDDEN_VIEW"');
+        const call = entrypoint.indexOf('skill-view.cjs" claude "$HIDDEN_VIEW"');
+        expect(chmod).toBeGreaterThan(-1);
+        expect(call).toBeGreaterThan(chmod);
+        expect(entrypoint).toMatch(
+            /if \[ -n "\$\{FACTORY_WORKSPACE_SKILLS:-\}" \]; then\n\s+node [^\n]*skill-view\.cjs" claude "\$HIDDEN_VIEW" \|\| exit 78/
+        );
+    });
+
+    it('ships the skill-view builder executable in both images', () => {
+        for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
+            expect(read(`${dir}/Dockerfile`)).toMatch(/^RUN chmod 0755 [^\n]*\/usr\/local\/bin\/skill-view\.cjs/m);
+        }
     });
 
     it('removes the baked skills an older seed left in a thread’s config dir, and only those', () => {
@@ -1439,17 +1466,28 @@ describe('the opencode-executor permission policy', () => {
     });
 
     /** What the entrypoint hands opencode as OPENCODE_CONFIG_CONTENT; `unset` when it exports none. */
-    const runEntrypoint = async (opts: { defaultBranch?: string | null; env?: NodeJS.ProcessEnv }) => {
+    const runEntrypoint = async (opts: {
+        defaultBranch?: string | null;
+        env?: NodeJS.ProcessEnv;
+        exit?: number;
+        /** Runs after `git init`, before the entrypoint: plant checkout files. */
+        prepare?: (work: string) => void;
+        /** Runs after the CLI stub exited: read what it recorded. */
+        inspect?: (bin: string) => void;
+    }) => {
         const sandbox = makeSandbox();
         try {
             const git = (...args: string[]) => execFileSync('git', args, { cwd: sandbox.work, stdio: 'ignore' });
             git('init', '-q');
+            opts.prepare?.(sandbox.work);
             if (opts.defaultBranch) {
                 git('symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${opts.defaultBranch}`);
             }
             const env = { ...sandbox.env, GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig'), ...opts.env };
             const child = spawnDetached([stagedEntrypoint('docker/opencode-executor'), 'run'], env);
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(opts.exit ?? 0);
+            if (opts.exit) return '';
+            opts.inspect?.(sandbox.bin);
             return readFileSync(join(sandbox.bin, 'opencode-config-content'), 'utf8');
         } finally {
             sandbox.cleanup();
@@ -1536,6 +1574,155 @@ describe('the opencode-executor permission policy', () => {
         },
         CASE_TIMEOUT_MS
     );
+
+    // BEL-286: the built-ins the task does not list are denied by name, written last so a member config that allows the
+    // name cannot win; a list that is not a list of built-in names ends the run before the CLI starts.
+    it(
+        'denies each hidden built-in skill last, over a member config that allows it',
+        async () => {
+            const config = { permission: { skill: { 'factory-jira': 'allow', '*': 'allow' } } };
+            const got = JSON.parse(
+                await runEntrypoint({
+                    env: {
+                        FACTORY_HIDDEN_SKILLS: 'factory-jira,factory-github',
+                        OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+                    },
+                })
+            );
+            expect(Object.entries(got.permission.skill)).toEqual([
+                ['*', 'allow'],
+                ['factory-jira', 'deny'],
+                ['factory-github', 'deny'],
+            ]);
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'refuses a hidden skill list that is not built-in names (exit 78)',
+        async () => {
+            await runEntrypoint({ env: { FACTORY_HIDDEN_SKILLS: 'bad name' }, exit: 78 });
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // A pinned workspace skill must beat a same-name skill of the checkout. opencode lists the checkout's
+    // `.claude`/`.agents` skills by a racy directory scan, so with a workspace pin the scan is switched off and the
+    // same skills are offered through one per-start view in which the workspace copy is alone of its name.
+    describe('with pinned workspace skills', () => {
+        const VIEW = '/tmp/.factory-skills-view';
+        const SKILLS = '/task/.factory/skills-root/.claude/skills';
+        const skillIn = (dir: string, name: string) => {
+            mkdirSync(join(dir, name), { recursive: true });
+            writeFileSync(join(dir, name, 'SKILL.md'), `---\nname: ${name}\n---\n`);
+        };
+
+        it(
+            'switches the checkout scan off, builds the view and lists it beside the skills directory',
+            async () => {
+                let flag = '';
+                let work = '';
+                const got = JSON.parse(
+                    await runEntrypoint({
+                        env: { FACTORY_WORKSPACE_SKILLS: 'ws-a', FACTORY_SKILLS_PATH: SKILLS },
+                        prepare: (dir) => {
+                            work = realpathSync(dir);
+                            skillIn(join(dir, '.claude', 'skills'), 'ws-a');
+                            skillIn(join(dir, '.claude', 'skills'), 'other');
+                        },
+                        inspect: (bin) => {
+                            flag = readFileSync(join(bin, 'disable-external-skills'), 'utf8');
+                        },
+                    })
+                );
+                expect(flag).toBe('1');
+                expect(got.skills.paths).toEqual([SKILLS, VIEW]);
+                expect(got.permission.external_directory[`${VIEW}/**`]).toBe('allow');
+                expect(got.permission.external_directory[`${SKILLS}/**`]).toBe('allow');
+                expect(readdirSync(VIEW).sort()).toEqual(['other', 'ws-a']);
+                expect(readlinkSync(join(VIEW, 'ws-a'))).toBe(join(SKILLS, 'ws-a'));
+                expect(readlinkSync(join(VIEW, 'other'))).toBe(join(work, '.claude', 'skills', 'other'));
+            },
+            CASE_TIMEOUT_MS
+        );
+
+        it(
+            'rebuilds the view on every start, dropping what a previous start left',
+            async () => {
+                const env = { FACTORY_WORKSPACE_SKILLS: 'ws-a', FACTORY_SKILLS_PATH: SKILLS };
+                await runEntrypoint({ env, prepare: (dir) => skillIn(join(dir, '.claude', 'skills'), 'stale') });
+                await runEntrypoint({ env });
+                expect(readdirSync(VIEW)).toEqual(['ws-a']);
+            },
+            CASE_TIMEOUT_MS
+        );
+
+        it(
+            'leaves the scan and the config alone without a workspace pin',
+            async () => {
+                let flag = '';
+                const got = JSON.parse(
+                    await runEntrypoint({
+                        env: { FACTORY_SKILLS_PATH: SKILLS },
+                        inspect: (bin) => {
+                            flag = readFileSync(join(bin, 'disable-external-skills'), 'utf8');
+                        },
+                    })
+                );
+                expect(flag).toBe('unset');
+                expect(got.skills.paths).toEqual([SKILLS]);
+            },
+            CASE_TIMEOUT_MS
+        );
+
+        it(
+            'treats an empty list as no workspace pin',
+            async () => {
+                let flag = '';
+                await runEntrypoint({
+                    env: { FACTORY_WORKSPACE_SKILLS: '', FACTORY_SKILLS_PATH: SKILLS },
+                    inspect: (bin) => {
+                        flag = readFileSync(join(bin, 'disable-external-skills'), 'utf8');
+                    },
+                });
+                expect(flag).toBe('unset');
+            },
+            CASE_TIMEOUT_MS
+        );
+
+        it(
+            'refuses a list the builder rejects (exit 78) before the CLI starts',
+            async () => {
+                await runEntrypoint({
+                    env: { FACTORY_WORKSPACE_SKILLS: 'factory-x', FACTORY_SKILLS_PATH: SKILLS },
+                    exit: 78,
+                });
+            },
+            CASE_TIMEOUT_MS
+        );
+
+        it(
+            'starts a repository-free run with a workspace pin: the view holds the workspace skill',
+            async () => {
+                const sandbox = makeSandbox();
+                try {
+                    const env = {
+                        ...sandbox.env,
+                        GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig'),
+                        GIT_CEILING_DIRECTORIES: tmpdir(),
+                        FACTORY_WORKSPACE_SKILLS: 'ws-a',
+                        FACTORY_SKILLS_PATH: SKILLS,
+                    };
+                    const child = spawnDetached([stagedEntrypoint('docker/opencode-executor'), 'run'], env);
+                    expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                    expect(readdirSync(VIEW)).toEqual(['ws-a']);
+                } finally {
+                    sandbox.cleanup();
+                }
+            },
+            CASE_TIMEOUT_MS
+        );
+    });
 
     // opencode accepts a bare action for the whole permission block and for one permission: the merge widens either
     // into its `*` rule so the allows still land, instead of throwing and starting the agent without its skills.
@@ -1722,6 +1909,41 @@ describe('the gate filter and the pre-push gate run in the agent instructions (i
             expect(text).toContain('never evidence');
             expect(text).toMatch(/[Bb]efore every push, run the declared gates/);
             expect(text).not.toMatch(/does not stop you from publishing/);
+        }
+    );
+});
+
+// BEL-88: the agent holds no gate URL or token; `factory-gate` asks the control socket, and the guides key the
+// "no gates here" directive off what it reports. Every directive that says what to do then stays.
+describe('the no-gates and retry directives in the agent instructions (BEL-88)', () => {
+    const NO_GATES = [
+        [
+            'docker/skills/factory-gates/SKILL.md',
+            /If `factory-gate` reports no gates[^.]*say so and verify with your own commands instead/,
+        ],
+        [
+            'docker/skills/factory-pr-land/SKILL.md',
+            /When `factory-gate` reports no gates, run the failing check's own command instead/,
+        ],
+        [
+            'docker/opencode-executor/opencode-home/AGENTS.md',
+            /If `factory-gate` reports no gates[^.]*verify with your own commands instead/,
+        ],
+    ] as const;
+
+    it.each(NO_GATES)('%s keys the no-gates directive off factory-gate, not an env var', (path, directive) => {
+        const text = read(path).replace(/\s+/g, ' ');
+        expect(text).toMatch(directive);
+        expect(text).not.toMatch(/BELLOWS_GATE_(URL|TOKEN)/);
+    });
+
+    it.each(['docker/skills/factory-gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '%s says a retryable answer is asked again and is neither a pass nor "no gates"',
+        (path) => {
+            const text = read(path).replace(/\s+/g, ' ');
+            expect(text).toMatch(/\b75\b/);
+            expect(text).toMatch(/ask again|call it again/);
+            expect(text).toMatch(/never a pass/);
         }
     );
 });

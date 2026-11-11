@@ -1,0 +1,395 @@
+---
+title: "Kubernetes and Helm"
+description: "Install Bellows on a Kubernetes cluster with the Helm chart, try it on kind, and run it in production."
+---
+
+The Helm chart in `charts/factory` deploys three things into one namespace: the dashboard (API and web app on one port), the driver, and an OTLP collector. The driver runs every task as a Kubernetes Job in that same namespace. There is no CRD.
+
+The chart deploys **no database**. Bring your own PostgreSQL 17. The schema needs no extension, so RDS and Aurora both work.
+
+<Note>
+Each Bellows release owns its namespace. The driver finds its runner pods by the release label, so run one board per namespace.
+</Note>
+
+## Before you start
+
+- Kubernetes 1.33 or newer. The chart relies on native sidecars, `pods/resize` and ValidatingAdmissionPolicy.
+- A CNI that enforces NetworkPolicy. Without one, the runner network policy is accepted but does nothing.
+- An installer that may create cluster-scoped `ValidatingAdmissionPolicy` objects. Turn this off with `isolation.admissionPolicy: false` only if your cluster enforces the same rules another way.
+- A PostgreSQL 17 database and its connection URL.
+- A GitHub App and a GitHub OAuth App. See [Create the GitHub App](/self-host/github-app).
+- An object store for task artifacts (S3, an S3-compatible store or Google Cloud Storage), unless this is a single-replica trial.
+- A registry that holds the Bellows images, and a DNS name for the dashboard.
+
+## Values that matter
+
+Every value is commented in `charts/factory/values.yaml`. These are the ones you set or review.
+
+### Required
+
+The render refuses to start without them, and names the missing value.
+
+| Value | What it is |
+| --- | --- |
+| `auth.publicUrl` | The public origin of the dashboard, for example `https://bellows.example.com`. GitHub redirects back to it. |
+| `auth.oauthClientId` | Client id of the GitHub OAuth App. Not secret. |
+| `secret.oauthClientSecret` | Client secret of that OAuth App. |
+| `secret.sessionSecret` | At least 32 characters. Signs the session cookie. `openssl rand -hex 32`. |
+| `secret.jobBoardToken` | At least 32 characters. One shared secret: the dashboard checks it, the driver presents it. `openssl rand -hex 32`. |
+| `github.appId` | Id of the GitHub App. |
+| `github.appPrivateKey` | The App's private key, as the PEM or its base64. |
+| `database.url` | PostgreSQL connection URL. It carries the password, so the chart stores it in the Secret. |
+| `secretStore.backend` | `database`, `aws`, `vault` or `gcp`. No default. See [Secret store](#secret-store). |
+| `secretStore.operationKey`, `secretStore.fingerprintKey` | Each from `openssl rand -base64 32`, and different from each other. They cannot be rotated. |
+| `artifacts.s3.bucket` and `artifacts.s3.region` | Where task artifacts go on S3. The region may be empty when you set `artifacts.s3.endpoint`. |
+| `artifacts.backend: gcs` and `artifacts.gcs.bucket` | Where task artifacts go on Google Cloud Storage instead. See the Google GKE specifics below. |
+
+### Common
+
+| Value | Default | Notes |
+| --- | --- | --- |
+| `global.imageRegistry` | `''` | Prefixes every image the chart renders, both executor images included, for example `ghcr.io/<owner>`. Empty means bare names, which only work with side-loaded images. |
+| `dashboard.image.tag`, `driver.image.tag` | `''` | Empty uses the chart's `appVersion`, so a chart version names the exact build. |
+| `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs`. |
+| `artifacts.backend` | `s3` | `s3`, `gcs` or `filesystem`. `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |
+| `artifacts.retentionDays` | `90` | Artifacts of a removed task are deleted after this many days. |
+| `ingress.enabled` | `false` | See [Ingress and TLS](#ingress-and-tls). |
+| `taskVolume.size` | `20Gi` | Size request of each thread's volume. |
+| `taskVolume.storageClass` | `''` | Empty is the cluster default. |
+| `taskVolume.accessMode` | `ReadWriteOncePod` | Use `ReadWriteOnce` if your provisioner lacks it (kind's local-path). |
+| `taskVolume.ttlMs` | `'86400000'` | A thread's volumes are deleted this long after its last attempt, when nothing is pending. |
+| `driver.concurrency` | `'2'` | Tasks one driver runs at once. |
+| `driver.jobTimeoutMs` | `'7200000'` | Wall-clock cap on one run. |
+| `driver.gateTimeoutMs` | `'600000'` | Cap on one gate run. A gate's own `timeout:` in `.bellows.yaml` overrides it. |
+| `driver.runnerDoNotDisrupt` | `''` | Set to keep autoscalers from evicting a running task. It pins the node for the whole run. |
+| `dashboard.admission.maxRunning`, `maxRunningPerOrg`, `maxRunningPerRepo` | `''` | Cluster-wide caps on running tasks. Empty is unlimited. |
+| `mcp.enabled` | `false` | Turns on the MCP endpoint. Needs an `https` `auth.publicUrl`. See [Connect an MCP client](/mcp/connect). |
+| `integrations.jira.clientId`, `secret.atlassianClientSecret` | `''` | See [Set up Jira](/self-host/jira-app). |
+| `secret.githubWebhookSecret` | `''` | Registers the webhook route. See [Create the GitHub App](/self-host/github-app). |
+| `auth.cookieSecure` | `''` | Set `'true'` behind TLS. |
+
+### Model credentials
+
+The agent needs a model credential. The chart forwards the names in `runner.env` (default `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY`) to runners by reference. Put the values in `runner.credentials`, or in your own Secret named by `runner.credentialsExistingSecret` with one key per name. The value never appears in a pod spec.
+
+### Secret store
+
+The secret store holds the secrets members save in Settings. Pick one backend.
+
+| `secretStore.backend` | Where the secret lives | You also set |
+| --- | --- | --- |
+| `database` | Encrypted (AES-256-GCM) in PostgreSQL | `dataKeys` (`<keyId>:<base64 of 32 bytes>`, comma separated, for example `echo "k1:$(openssl rand -base64 32)"`) and `activeKeyId` (one of the key ids) |
+| `aws` | AWS Secrets Manager | `aws.region`, `aws.prefix`, and workload identity on `dashboard.serviceAccount.annotations` |
+| `vault` | HashiCorp Vault KV v2 | `vault.addr`, `vault.mount`, `vault.prefix`, `vault.role`, `vault.audience` (default `vault`) |
+| `gcp` | Google Cloud Secret Manager | `gcp.project`, optional `gcp.prefix` (default `bellows-`), `gcp.location` (default `europe-west3`) and `gcp.kmsKey`, and Workload Identity: `iam.gke.io/gcp-service-account` on `dashboard.serviceAccount.annotations` |
+
+Do not switch backends once secrets are stored. Only the dashboard container receives these keys.
+
+With `gcp`, bind the dashboard's Google service account to the dashboard ServiceAccount only, so the driver and runner pods have no access. The backend calls `secretmanager.secrets.create` on the project, and `secretmanager.versions.add`, `secretmanager.versions.access` and `secretmanager.secrets.delete` on secrets whose names start with the prefix. It never lists secrets. Grant the three name-scoped permissions with an IAM condition `resource.name.startsWith("projects/<project number>/secrets/<prefix>")`: the condition sees the project number, while `gcp.project` takes the project id. `secrets.create` is checked on the project, so grant it without the condition.
+
+## Secrets to create
+
+By default the chart creates its Secrets from your values. For production, create them yourself and reference them, so credentials never sit in a values file.
+
+<Steps>
+  <Step title="Create the dashboard Secret">
+    Set `secret.existingSecret` to its name. Every key but `database-url` is optional in the pod spec, and the server names any missing one at boot. The driver needs `job-board-token`.
+
+    | Key | Value |
+    | --- | --- |
+    | `database-url` | `database.url` |
+    | `github-app-private-key` | `github.appPrivateKey` |
+    | `github-oauth-client-secret` | `secret.oauthClientSecret` |
+    | `session-secret` | `secret.sessionSecret` |
+    | `job-board-token` | `secret.jobBoardToken` |
+    | `github-webhook-secret` | `secret.githubWebhookSecret` |
+    | `atlassian-client-secret` | `secret.atlassianClientSecret` |
+    | `ingest-token`, `commerce-token` | Optional |
+  </Step>
+  <Step title="Create the secret-store Secret">
+    Set `secretStore.existingSecret` to its name. It holds `operation-key`, `fingerprint-key`, and with the `database` backend also `data-keys`. `secretStore.activeKeyId` is not secret and always comes from values.
+  </Step>
+  <Step title="Create the runner credentials Secret">
+    Set `runner.credentialsExistingSecret`. One key per name in `runner.env`.
+  </Step>
+</Steps>
+
+```bash
+kubectl -n bellows create secret generic bellows-dashboard \
+  --from-literal=database-url='postgres://bellows:CHANGE_ME@db.example.com:5432/bellows' \
+  --from-literal=session-secret="$(openssl rand -hex 32)" \
+  --from-literal=job-board-token="$(openssl rand -hex 32)" \
+  --from-literal=github-oauth-client-secret='...' \
+  --from-file=github-app-private-key=./app-private-key.pem
+```
+
+## Ingress and TLS
+
+The dashboard Service is ClusterIP, and the Ingress is off by default. The dashboard port carries the job board, so exposing it is a deliberate choice. Turn it on in values:
+
+```yaml values.yaml
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - bellows.example.com
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  tls:
+    - secretName: bellows-tls
+      hosts:
+        - bellows.example.com
+auth:
+  publicUrl: https://bellows.example.com
+  cookieSecure: 'true'
+```
+
+Annotations and `tls` pass through to the Ingress unchanged, so use whatever your controller expects. An empty `className` uses the cluster's default IngressClass. GKE's built-in controller has no IngressClass object: leave `className` empty and set the annotation `kubernetes.io/ingress.class: gce`. To attach a Cloud Armor policy on GKE, create a `BackendConfig` with `securityPolicy` and name it in `dashboard.service.annotations` as `cloud.google.com/backend-config: '{"default":"<name>"}'`. The render is refused if the host of `auth.publicUrl` is not in `ingress.hosts`, because sign-in would never return.
+
+<Note>
+MCP needs only the one `/` Prefix rule the chart renders per host. It serves `/.well-known/oauth-*` and `/api/mcp` through it. Do not add a second path rule.
+</Note>
+
+## Runners, RBAC and admission
+
+Runners are Jobs in the release namespace. The chart sets up these guardrails:
+
+| Piece | What it does |
+| --- | --- |
+| Driver Role (namespaced) | Jobs: create, get, delete, list, patch. Secrets: create, delete, patch. ConfigMaps: create, get, delete. Pods: delete, list. PersistentVolumeClaims: create, get, list, delete, patch. `pods/log`: get. `pods/resize`: patch. `metrics.k8s.io` pods: get. It never reads a Secret back. |
+| Runner pods | `automountServiceAccountToken: false`. They run as the default ServiceAccount and hold no cluster credential. |
+| ValidatingAdmissionPolicy (`isolation.admissionPolicy`, default on) | Bound to the driver's ServiceAccount. Admits only pods that mount a task volume, `emptyDir` and the driver's own per-attempt Secrets, with no host access, `RuntimeDefault` seccomp, all capabilities dropped and no privilege escalation. Without it, "can create pods" would mean "can read every Secret". |
+| NetworkPolicy (`isolation.networkPolicy`, default on) | No ingress. Egress to DNS, the dashboard, the collector, the driver, other runner pods, and the internet outside `isolation.blockedCidrs`. |
+| LimitRange (`limitRange.enabled`, default on) | A pod without limits inherits 4 CPU and 8Gi memory (requests 100m and 128Mi). |
+
+Tune the runners:
+
+| Value | Default | Notes |
+| --- | --- | --- |
+| `runner.nodeSelector`, `runner.tolerations`, `runner.affinity` | empty | Where agent code runs. Use a tainted node group so it never shares a node with the dashboard. |
+| `runner.runtimeClassName` | empty | RuntimeClass every driver pod runs under, such as `gvisor` on a GKE Sandbox node pool. Set, the admission policy refuses a driver pod without it. |
+| `runner.resources` | requests `500m` / `1Gi`, limits `4` / `8Gi` | Applies to the runner, services and helpers. |
+| `runner.gateResources` | requests `2` / `2Gi` | Gate pods. Unset slots fall back to `runner.resources`. |
+| `isolation.blockedCidrs` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16` | Blocked for runners, including the cloud metadata address. |
+| `isolation.allowedCidrs` | `[]` | Add a private host a runner must reach, as a `/32`. |
+| `isolation.dnsCidrs` | `169.254.20.10/32` | Extra resolver addresses allowed on port 53. List your resolver if your DNS pods are labelled neither `k8s-app: kube-dns` nor `k8s-app: node-local-dns`. |
+
+`blockedCidrs` blocks your VPC too, so a database on a private address is unreachable from a runner unless you allow it.
+
+<Warning>
+IPv6 egress is not covered. Every rule is IPv4. Read [Security model](/self-host/security) for what these controls do and do not hold.
+</Warning>
+
+## Try it on kind
+
+You need a checkout of the Bellows repository, `docker`, `kind`, `helm`, `kubectl` and `node`. This builds every image locally and installs the chart on one node.
+
+<Steps>
+  <Step title="Fill in .env">
+    In the repository root, copy `.env.example` to `.env` and set `GITHUB_APP_ID`, the private key (`GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE`), `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SESSION_SECRET` and `JOB_BOARD_TOKEN`. Set a model credential too (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Register the OAuth App with the callback `http://127.0.0.1:8081/api/auth/github/callback`.
+  </Step>
+  <Step title="Create the secret-store keys">
+    ```bash
+    npm run secrets:init
+    ```
+    This writes `secrets.env`, which `make start` reads for the `SECRETS_*` values.
+  </Step>
+  <Step title="Start">
+    ```bash
+    make start
+    ```
+    It creates the kind cluster (`make cluster` does that alone), builds and loads the images, installs the database release `factory-state` and the `dev` release, then port-forwards the dashboard. A cold node can take minutes to pull the database image.
+  </Step>
+  <Step title="Sign in">
+    Open `http://127.0.0.1:8081` and sign in with GitHub. Change the port with `K8S_PORT`.
+  </Step>
+</Steps>
+
+| Command | What it does |
+| --- | --- |
+| `make cluster` | Creates the kind cluster and the local registry only. |
+| `make build` | Rebuilds and loads the images, and restarts a running release. |
+| `make stop` | Uninstalls the `dev` release and its runner Jobs. Keeps the database. |
+| `make reset` | Also uninstalls `factory-state` and deletes its data. |
+| `make cleanup` | Deletes the kind cluster. |
+
+The local profile keeps artifacts in the dashboard pod (`artifacts.backend: filesystem`) and uses `ReadWriteOnce` volumes. Do not copy it to production.
+
+## Install in production
+
+<Steps>
+  <Step title="Get the images and chart">
+    A release tag `v1.2.3` publishes the dashboard, driver, collector and both executor images, and the chart to `oci://ghcr.io/<owner>/charts/factory`. The chart version is the tag without the `v`. New registry packages start private, so make them public or add `imagePullSecrets`.
+  </Step>
+  <Step title="Write values.yaml">
+    ```yaml values.yaml
+    global:
+      imageRegistry: ghcr.io/<owner>
+    auth:
+      publicUrl: https://bellows.example.com
+      cookieSecure: 'true'
+      oauthClientId: Iv1.example
+    github:
+      appId: '123456'
+    secret:
+      create: false
+      existingSecret: bellows-dashboard
+    secretStore:
+      backend: database
+      existingSecret: bellows-secret-store
+      activeKeyId: k1
+    runner:
+      credentialsExistingSecret: bellows-runner-credentials
+      nodeSelector:
+        dedicated: runners
+      tolerations:
+        - { key: dedicated, operator: Equal, value: runners, effect: NoSchedule }
+    driver:
+      executorImages:
+        claudeCode: claude-executor:1.2.3
+        opencode: opencode-executor:1.2.3
+    artifacts:
+      s3:
+        bucket: bellows-artifacts
+        region: us-east-1
+    ingress:
+      enabled: true
+      hosts: [bellows.example.com]
+    ```
+    Give the two executor values a tag. They are bare repository strings, and a tagless one reads `:latest`, so a node reuses its first cached pull. `database.waitImage` (default `postgres:17-alpine`) is the one image the registry prefix never touches. Mirror it and set it whole if you need to.
+  </Step>
+  <Step title="Install">
+    ```bash
+    helm install bellows oci://ghcr.io/<owner>/charts/factory \
+      --version 1.2.3 --namespace bellows --create-namespace -f values.yaml
+    ```
+  </Step>
+  <Step title="Check">
+    ```bash
+    kubectl -n bellows rollout status deploy/bellows-factory deploy/bellows-factory-driver
+    ```
+    The release name `bellows` makes the dashboard `bellows-factory` and the driver `bellows-factory-driver`. The dashboard waits for the database with `pg_isready` before it starts, and `GET /api/ready` answers 200 once migrations have run. `GET /api/health` is the liveness check.
+  </Step>
+</Steps>
+
+Then add an executor in the app, queue a task, and confirm the runner pod lands on your runner nodes.
+
+<AccordionGroup>
+  <Accordion title="Amazon EKS specifics">
+    Use placeholders below for your own account, region and cluster.
+
+    **Cluster**
+    - EKS 1.33 or newer on EC2 Linux nodes. Fargate is out: it has no NetworkPolicy and no metrics API.
+    - VPC CNI add-on with `enableNetworkPolicy: true` in its configuration values. Without it the NetworkPolicy is inert.
+    - On the runner node group, set the instance metadata hop limit to 1 (`HttpPutResponseHopLimit: 1`) or disable IMDS. This keeps agent code from reaching node credentials.
+    - Install the metrics-server add-on, or a running task's resource readings stay empty.
+    - A tainted runner node group, matched by `runner.nodeSelector` and `runner.tolerations`, so agent code never shares a node with the dashboard that holds the App key.
+
+    **Task volumes.** Install the EBS CSI driver add-on, create this StorageClass, and set `taskVolume.storageClass: ebs-gp3`:
+
+    ```yaml
+    apiVersion: storage.k8s.io/v1
+    kind: StorageClass
+    metadata:
+      name: ebs-gp3
+    provisioner: ebs.csi.aws.com
+    volumeBindingMode: WaitForFirstConsumer
+    reclaimPolicy: Delete
+    parameters:
+      type: gp3
+    ```
+
+    A task's claim binds once its first pod is scheduled. EBS volumes are zonal, so runner nodes must exist in the zone of the volume.
+
+    **Database.** Use RDS or Aurora PostgreSQL 17 through `database.url`. Do not use `charts/factory-local-state`: it is for kind only. A private-address database sits inside `isolation.blockedCidrs`, so add the database as a `/32` in `isolation.allowedCidrs` if runners must reach it.
+
+    **Artifacts and secrets.** Annotate the dashboard ServiceAccount with an IRSA role, or bind it with an EKS Pod Identity association:
+
+    ```yaml values.yaml
+    dashboard:
+      serviceAccount:
+        annotations:
+          eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/<bellows-dashboard-role>
+    ```
+
+    With no static keys in `artifacts.credentialsExistingSecret`, the dashboard uses Pod Identity, then IRSA. With `secretStore.backend: aws`, the role needs Secrets Manager `Create`, `Get`, `Describe` and `DeleteSecret` on `arn:aws:secretsmanager:<region>:<account-id>:secret:<prefix>/*`. After install, create, read and delete one secret in Settings to confirm the signed requests work.
+
+    **Ingress with an ALB.** Install the AWS Load Balancer Controller, then:
+
+    ```yaml values.yaml
+    ingress:
+      enabled: true
+      className: alb
+      hosts:
+        - bellows.example.com
+      annotations:
+        alb.ingress.kubernetes.io/scheme: internet-facing
+        alb.ingress.kubernetes.io/target-type: ip
+        alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<account-id>:certificate/<certificate-id>
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+        alb.ingress.kubernetes.io/ssl-redirect: '443'
+        alb.ingress.kubernetes.io/healthcheck-path: /api/health
+    auth:
+      publicUrl: https://bellows.example.com
+      cookieSecure: 'true'
+    ```
+
+    `listen-ports` must include the HTTP listener, or `ssl-redirect` has nothing to redirect. The ACM certificate and the DNS record live outside the chart.
+
+    **External Secrets.** If you sync Secrets from a secret manager: a path outside the controller's IAM scope fails with `could not get secret data from provider`, and the real `AccessDeniedException` is in the controller's events. A missing remote key fails the whole sync, so default optional keys to empty. `GITHUB_APP_PRIVATE_KEY` may be raw or base64.
+  </Accordion>
+  <Accordion title="Google GKE specifics">
+    **Artifacts on Google Cloud Storage.** Set `artifacts.backend: gcs` and `artifacts.gcs.bucket`. The board never creates the bucket, so create it first. The board authenticates with Application Default Credentials only: there is no key-file option, and the cluster holds no storage secret. Bind the dashboard's Kubernetes ServiceAccount (`<release>-factory-dashboard`) to a Google service account with Workload Identity, and give that account `roles/storage.objectUser` on the one bucket:
+
+    ```yaml values.yaml
+    dashboard:
+      replicas: 2
+      serviceAccount:
+        annotations:
+          iam.gke.io/gcp-service-account: <gsa>@<project-id>.iam.gserviceaccount.com
+    artifacts:
+      backend: gcs
+      gcs:
+        bucket: <bucket-name>
+        prefix: factory/
+        kmsKey: ''
+    ```
+
+    `artifacts.gcs.kmsKey` is optional. Set it to a full Cloud KMS key name to encrypt new objects with a customer-managed key, and grant `roles/cloudkms.cryptoKeyEncrypterDecrypter` on that key to the Cloud Storage service agent of the bucket's project. The dashboard's own account needs no KMS role. The chart refuses `artifacts.s3.*` and `artifacts.credentialsExistingSecret` with `gcs`, and `artifacts.gcs.*` with another backend. Only the dashboard's account is bound; runner pods hold no storage credential.
+  </Accordion>
+</AccordionGroup>
+
+## Upgrade
+
+```bash
+helm upgrade bellows oci://ghcr.io/<owner>/charts/factory \
+  --version 1.2.4 --namespace bellows -f values.yaml
+```
+
+- Back up the database first. The dashboard runs schema migrations at boot.
+- The dashboard is always replaced by Recreate, never rolled, so two versions never share the schema. Expect a few seconds of downtime.
+- The driver drains on shutdown. It stops claiming, and a minute before `driver.terminationGracePeriodSeconds` (default `600`) it hands running tasks back. They are retried at once, and each runner Job keeps running for the next claim. Raise the value to let more runs finish in place.
+- Pin the executor image tags in values when you upgrade, since they are not derived from the chart version.
+
+## Roll back
+
+```bash
+helm history bellows -n bellows
+helm rollback bellows <revision> -n bellows
+```
+
+<Warning>
+Migrations only move forward. The repository ships no down migrations, and a Helm rollback does not undo them. Roll back only to a version that works with the current schema, or restore the database backup you took before the upgrade.
+</Warning>
+
+## Uninstall
+
+Stop runner Jobs first, then remove the release. Task volumes have no owner and survive it.
+
+```bash
+kubectl -n bellows delete jobs -l factory.job
+helm uninstall bellows -n bellows
+kubectl -n bellows delete pvc -l app.kubernetes.io/instance=bellows,factory.task-root
+```
+
+Next: [Create the GitHub App](/self-host/github-app), [Set up Jira](/self-host/jira-app), [Security model](/self-host/security).

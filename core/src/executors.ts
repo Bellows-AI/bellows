@@ -16,6 +16,18 @@ export type ExecutorType = (typeof EXECUTOR_TYPES)[number];
 export const [CLAUDE_CODE, OPENCODE] = EXECUTOR_TYPES;
 
 /**
+ * The checkout directories an executor's CLI scans for skills; `null` (a task with no resolved executor) runs claude.
+ * opencode also reads a checkout's `.claude/skills` (`docker/opencode-executor/test.sh`). The first directory's copy of a
+ * name wins in board listings. `driver/src/skill-inputs.ts` keeps its own copy, pinned equal by
+ * `server/test/skill-dirs.driver-copy.test.ts`.
+ */
+export function checkoutSkillDirsOf(type: ExecutorType | null): readonly string[] {
+    return type === OPENCODE
+        ? ['.claude/skills', '.opencode/skills', '.opencode/skill', '.agents/skills']
+        : ['.claude/skills'];
+}
+
+/**
  * The executor profile scopes (issue 391): a profile belongs either to one member (`user`) or to
  * the organization (`org`), managed by its administrators and selectable by every member. The
  * stored values on `executor_profile.user_id`'s nullness and `job.executor_scope`, and the wire

@@ -33,8 +33,25 @@ const idle = (key: string): Held => ({
     error: null,
 });
 
-async function readSkills(repo: string, branch: string, signal: AbortSignal): Promise<SkillsBody> {
-    const suffix = branch === '' ? '' : `?branch=${encodeURIComponent(branch)}`;
+/** The executor whose CLI will run the task: it decides which of the repository's skill directories are read. */
+export interface SkillsExecutor {
+    name: string;
+    scope: 'user' | 'org';
+}
+
+async function readSkills(
+    repo: string,
+    branch: string,
+    executor: SkillsExecutor,
+    signal: AbortSignal
+): Promise<SkillsBody> {
+    const query = new URLSearchParams();
+    if (branch !== '') query.set('branch', branch);
+    if (executor.name !== '') {
+        query.set('executor', executor.name);
+        query.set('executorScope', executor.scope);
+    }
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
     const response = await fetch(`/api/repos/${repo}/skills${suffix}`, { signal });
     if (response.status === HTTP_STATUS_UNAUTHORIZED) {
         reportUnauthenticated();
@@ -47,12 +64,14 @@ async function readSkills(repo: string, branch: string, signal: AbortSignal): Pr
 }
 
 /**
- * The skills the prompt's `/` menu offers for a repository at a branch ('' = its default): the
- * built-ins and the repository's own. Reads only while `enabled`, once per (repo, branch); a
- * change of either aborts the read in flight and discards its answer.
+ * The skills the prompt's `/` menu offers for a repository at a branch ('' = its default) and the
+ * selected executor ('' = none yet: the board uses the default profile): the built-ins and the
+ * repository's own. Reads only while `enabled`, once per (repo, branch, executor); a change of any
+ * aborts the read in flight and discards its answer.
  */
-export function useRepoSkills(repo: string, branch: string, enabled: boolean): UseRepoSkills {
-    const key = `${repo}\n${branch}`;
+export function useRepoSkills(repo: string, branch: string, executor: SkillsExecutor, enabled: boolean): UseRepoSkills {
+    const { name, scope } = executor;
+    const key = `${repo}\n${branch}\n${scope}\n${name}`;
     const [held, setHeld] = useState<Held>(() => idle(key));
     // The (repo, branch) whose answer has landed: it is not read again while the menu opens and closes.
     const done = useRef<string | null>(null);
@@ -61,7 +80,7 @@ export function useRepoSkills(repo: string, branch: string, enabled: boolean): U
         if (!enabled || repo === '' || done.current === key) return;
         const controller = new AbortController();
         setHeld({ ...idle(key), status: 'loading' });
-        readSkills(repo, branch, controller.signal).then(
+        readSkills(repo, branch, { name, scope }, controller.signal).then(
             (body) => {
                 if (controller.signal.aborted) return;
                 done.current = key;
@@ -72,7 +91,7 @@ export function useRepoSkills(repo: string, branch: string, enabled: boolean): U
             }
         );
         return () => controller.abort();
-    }, [enabled, repo, branch, key]);
+    }, [enabled, repo, branch, name, scope, key]);
 
     return held.key === key ? held : idle(key);
 }

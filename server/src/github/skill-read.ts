@@ -4,7 +4,7 @@ import { GitHubReadError } from './pr-read.js';
 /** One authenticated GET that honours a caller's abort signal. */
 export type SignalApiCall = (path: string, signal?: AbortSignal) => Promise<unknown>;
 
-/** A skill a repository ships under `.claude/skills/<dir>/SKILL.md`: the two fields a picker shows. */
+/** A skill a repository ships under `<skills dir>/<folder>/SKILL.md`: the two fields a picker shows. */
 export interface RepoSkill {
     readonly name: string;
     readonly description: string;
@@ -30,11 +30,12 @@ const CONCURRENCY = 5;
 /** The whole call: tip, directory and every file. */
 const DEADLINE_MS = 10_000;
 const CACHE_LIMIT = 200;
-const SKILLS_DIR = '.claude/skills';
 const DEFAULT_BRANCH_REF = 'HEAD';
 const BASE64 = 'base64';
 
 interface ReadOptions {
+    /** The checkout skills directories to read, in precedence order. */
+    readonly dirs: readonly string[];
     readonly signal?: AbortSignal;
     readonly deadlineMs?: number;
 }
@@ -112,22 +113,32 @@ const isListed = (entry: unknown): entry is Listed =>
 /** Entries that cannot hold a skill and say so; any other `type` is an unknown shape, never skipped as harmless. */
 const NON_SKILL_TYPES: readonly string[] = ['file', 'symlink', 'submodule'];
 
+/** A skill folder and the checkout skills directory it was listed under. */
+interface Folder {
+    readonly base: string;
+    readonly name: string;
+}
+
 /**
- * The listing's skill directories and whether they are ALL of them. Completeness is proven, never assumed: every
+ * One skills directory's skill folders and whether they are ALL of them. Completeness is proven, never assumed: every
  * element must validate (an object with a string `name` and `type`), only a well-formed file, symlink or submodule
  * may be skipped, the directories must fit `MAX_REPO_SKILLS`, and the listing must stay below the contents API's
  * `CONTENTS_LISTING_LIMIT`. A body that is not a listing throws.
  */
-async function listSkillDirs(ctx: ReadContext, revision: string): Promise<{ dirs: string[]; complete: boolean }> {
+async function listSkillDirs(
+    ctx: ReadContext,
+    revision: string,
+    base: string
+): Promise<{ dirs: string[]; complete: boolean }> {
     let body: unknown;
     try {
-        body = await ctx.call(`/repos/${ctx.repo}/contents/${SKILLS_DIR}?ref=${revision}`, ctx.signal);
+        body = await ctx.call(`/repos/${ctx.repo}/contents/${base}?ref=${revision}`, ctx.signal);
     } catch (e) {
         // Only a 404 on the directory, after the tip resolved, means the repository ships no skills.
         if (e instanceof GitHubReadError && e.kind === READ_NOT_FOUND) return { dirs: [], complete: true };
         throw e;
     }
-    if (!Array.isArray(body)) throw new GitHubReadError(`${SKILLS_DIR} is not a directory`, READ_BINDING);
+    if (!Array.isArray(body)) throw new GitHubReadError(`${base} is not a directory`, READ_BINDING);
     const valid = body.filter(isListed);
     const dirs = valid.filter((entry) => entry.type === 'dir').map((entry) => entry.name);
     const understood = valid.every((entry) => entry.type === 'dir' || NON_SKILL_TYPES.includes(entry.type));
@@ -141,12 +152,31 @@ async function listSkillDirs(ctx: ReadContext, revision: string): Promise<{ dirs
     };
 }
 
+/**
+ * Every given directory's skill folders, in `bases` order then listing order. The cap counts across directories, and a
+ * directory that is itself incomplete makes the whole listing so; a listing that throws throws the whole read.
+ */
+async function listFolders(
+    ctx: ReadContext,
+    revision: string,
+    bases: readonly string[]
+): Promise<{ folders: Folder[]; complete: boolean }> {
+    const listings = await Promise.all(bases.map((base) => listSkillDirs(ctx, revision, base)));
+    const all = listings.flatMap((listing, index) =>
+        listing.dirs.map((name): Folder => ({ base: bases[index] as string, name }))
+    );
+    return {
+        folders: all.slice(0, MAX_REPO_SKILLS),
+        complete: listings.every((listing) => listing.complete) && all.length <= MAX_REPO_SKILLS,
+    };
+}
+
 /** The parsed skill, null when SKILL.md is absent or unparseable; any other failed read is thrown. */
-async function readSkill(ctx: ReadContext, revision: string, dir: string): Promise<RepoSkill | null> {
+async function readSkill(ctx: ReadContext, revision: string, folder: Folder): Promise<RepoSkill | null> {
     let body: { type?: string; encoding?: string; content?: string } | null;
     try {
         body = (await ctx.call(
-            `/repos/${ctx.repo}/contents/${SKILLS_DIR}/${encodeURIComponent(dir)}/SKILL.md?ref=${revision}`,
+            `/repos/${ctx.repo}/contents/${folder.base}/${encodeURIComponent(folder.name)}/SKILL.md?ref=${revision}`,
             ctx.signal
         )) as typeof body;
     } catch (e) {
@@ -160,43 +190,45 @@ async function readSkill(ctx: ReadContext, revision: string, dir: string): Promi
 async function readAll(
     ctx: ReadContext,
     revision: string,
-    listing: { dirs: string[]; complete: boolean }
+    listing: { folders: Folder[]; complete: boolean }
 ): Promise<Omit<RepoSkillRead, 'revision'>> {
-    const { dirs } = listing;
-    const parsed: (RepoSkill | null)[] = Array.from({ length: dirs.length }, () => null);
-    const queue = dirs.map((dir, index) => ({ dir, index }));
+    const { folders } = listing;
+    const parsed: (RepoSkill | null)[] = Array.from({ length: folders.length }, () => null);
+    const queue = folders.map((folder, index) => ({ folder, index }));
     const worker = async () => {
         for (let item = queue.shift(); item; item = queue.shift()) {
-            parsed[item.index] = await readSkill(ctx, revision, item.dir);
+            parsed[item.index] = await readSkill(ctx, revision, item.folder);
         }
     };
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, dirs.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, folders.length) }, worker));
     const skills = parsed.filter((skill): skill is RepoSkill => skill !== null);
-    const unreadable = dirs.filter((_dir, index) => parsed[index] === null);
+    // Folder names, not paths: `standingOf` matches a selected name against them.
+    const unreadable = folders.filter((_folder, index) => parsed[index] === null).map((folder) => folder.name);
     // A directory whose SKILL.md could not be read may declare any name: the listing proves nothing then.
     return { skills, unreadable, complete: listing.complete && unreadable.length === 0 };
 }
 
 /**
- * The repository's own skills at the tip of `branch` (the default branch when null). Resolves only
- * for a confirmed answer; a failed, forbidden, malformed or timed-out read throws, because "the
- * repository has no skills" is a verdict only a 404 on the skills directory may give.
+ * The repository's own skills at the tip of `branch` (the default branch when null), from every checkout skills
+ * directory in `dirs`. Resolves only for a confirmed answer; a failed, forbidden, malformed or timed-out read of any
+ * directory throws, because "the repository has no skills" is a verdict only a 404 on a skills directory may give,
+ * and only for that directory.
  */
 export async function readRepoSkills(
     call: SignalApiCall,
     repo: string,
     branch: string | null,
-    options: ReadOptions = {}
+    options: ReadOptions
 ): Promise<RepoSkillRead> {
     const deadline = AbortSignal.timeout(options.deadlineMs ?? DEADLINE_MS);
     const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
     const run = async (): Promise<RepoSkillRead> => {
         const ctx = { call, repo, signal };
         const revision = await tipOf(ctx, branch);
-        const key = `${repo}@${revision}`;
+        const key = `${repo}@${revision}#${options.dirs.join(',')}`;
         const hit = cache.get(key);
         if (hit) return { revision, ...hit };
-        const read = await readAll(ctx, revision, await listSkillDirs(ctx, revision));
+        const read = await readAll(ctx, revision, await listFolders(ctx, revision, options.dirs));
         if (cache.size >= CACHE_LIMIT) cache.delete(cache.keys().next().value as string);
         cache.set(key, read);
         return { revision, ...read };

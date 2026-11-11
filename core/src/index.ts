@@ -227,6 +227,7 @@ export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';
 export type { ExecutorScope, ExecutorType } from './executors.js';
 export {
+    checkoutSkillDirsOf,
     CLAUDE_CODE,
     DEFAULT_GATE_FIX_ROUNDS,
     EXECUTOR_SCOPES,
@@ -247,6 +248,7 @@ export type {
     ResolvedCatalog,
     Skill,
     SkillRequirements,
+    SkillRequirementsRefusal,
     SkillSource,
     SkillSources,
     SourceSkill,
@@ -263,6 +265,7 @@ export {
     MAX_SKILL_FILES,
     MAX_TASK_SKILLS,
     parseSkillFrontmatter,
+    parseSkillRequirements,
     RESERVED_SKILL_PREFIX,
     RUNNER_TOOLS,
     SKILL_CONNECTIONS,

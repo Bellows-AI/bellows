@@ -228,7 +228,13 @@ function workerMethods(
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
  */
-export { INTERRUPTION_BUDGET, INTERRUPTION_WINDOW_MS, LEASE_EXPIRED_REASON } from './job-store-actions.js';
+export { LEASE_EXPIRED_REASON } from './job-store-actions.js';
+export {
+    INTERRUPTION_BUDGET,
+    INTERRUPTION_WINDOW_MS,
+    NODE_LOSS_BUDGET,
+    NODE_LOSS_WINDOW_MS,
+} from './job-store-interruption-budget.js';
 export { CLAIM_PREPARE_SECONDS } from './job-store-claim.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
@@ -304,6 +310,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
                 connectionIds,
                 admin,
                 attachmentIds,
+                githubApp: ctx.githubApp,
             });
         },
 

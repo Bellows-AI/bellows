@@ -1,0 +1,62 @@
+---
+title: "Attachments"
+description: "Attach screenshots, PDFs and other files to a task or follow-up so the agent can work from them."
+---
+
+Attach a file when words are not enough: a screenshot of a bug, a spec in PDF, a CSV of sample data.
+
+## Attach a file
+
+You can attach files when you create a task and when you send a follow-up.
+
+- Click the paperclip (**Attach files**) in the composer and pick one or more files.
+- Drag files onto the composer. A **Drop files to attach** overlay appears.
+- Paste a screenshot from the clipboard into the text field. Pasting text still inserts text.
+
+Each file shows as a chip and uploads right away. A chip that failed shows the reason and can be retried or removed. You cannot send the task while a file is still uploading or has failed.
+
+<Note>
+The paperclip appears only when your Bellows deployment has attachments turned on.
+</Note>
+
+## Allowed types and limits
+
+| Type | Extensions |
+| --- | --- |
+| Images | `.png`, `.jpg`, `.jpeg`, `.webp` |
+| Documents | `.pdf`, `.docx` |
+| Text | `.txt`, `.md`, `.csv` |
+
+| Limit | Value |
+| --- | --- |
+| Size per file | 20 MiB |
+| Files per request | 10 |
+| Total size per request | 50 MiB |
+| Image size | up to 16,384 px on the longest side and 64 megapixels |
+
+Bellows decides the file type from the file's bytes, not from its name. A renamed file of another type is refused.
+
+## How the agent sees them
+
+Before the agent starts, Bellows copies your files into the task workspace, outside your repository checkout:
+
+```text
+/task/.factory/attachments/<task>/<id><ext>
+/task/.factory/attachments/<task>/manifest.json
+```
+
+The file names are generated, so your original names appear only in the manifest and in the prompt. The prompt lists every file with its name, type, size and path, and tells the agent to treat the content as data, not instructions.
+
+- **Images:** the agent can look at them directly.
+- **PDF and Word files:** Bellows also extracts the text into a `<id>.derived.txt` file next to the original. If a file is encrypted, empty of text or damaged, the manifest marks it `unreadable` and the agent says so instead of guessing.
+- **Text, Markdown and CSV:** read as they are.
+
+Because the files live outside the checkout, they never end up in the pull request.
+
+<Tip>
+Say what the file is for in the prompt: "The attached screenshot shows the broken layout on mobile." See [Writing good tasks](/guides/writing-good-tasks).
+</Tip>
+
+## If an attachment fails
+
+A file over a limit, or of an unsupported type, is rejected in the composer with the reason. If a file passes but cannot be delivered to the runner, the run fails as **attachment unavailable**. See [Task lifecycle](/guides/task-lifecycle).

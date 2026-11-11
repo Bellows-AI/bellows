@@ -18,7 +18,7 @@ import type { GateRunNote } from './timeout-note.js';
 import type { ConnectionRelay } from './connection-control.js';
 import type { GateTokenRelay } from './gate-token-control.js';
 import type { InputDelivery } from './input-control.js';
-import { attachersOf, createControlChannel } from './control-channel.js';
+import { attachersOf, createControlChannel, gateRunAttacher } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { TASK_MOUNT } from './task-volume.js';
 import { reportTail } from './runner.js';
@@ -430,6 +430,12 @@ export interface GateServer {
     /** Gives an open control token the relay of its supervisor's gate token ask (`POST /gate-token`). */
     attachGateToken(token: string, gateToken: GateTokenRelay): void;
     /**
+     * Opens `POST /gate/run` on an open control token for its agent: the ad-hoc run of the registered `gateToken`, with
+     * the admission, quiesce, filter and cancellation rules of any ad-hoc run. Null for a job that declares no gates, which
+     * answers `404 no gates`. Once the gate token is unregistered the route answers a retryable 503 again, never a run.
+     */
+    attachGateRun(controlToken: string, gateToken: string | null): void;
+    /**
      * Settles a pending question on an open control token: an answer the board recorded, or an
      * answer arriving. False — and nothing changes — for an unknown token or id and a question
      * already settled, so a heartbeat repeating an answer is a no-op.
@@ -691,6 +697,7 @@ export function createGateServer({
         grantExporter: (token, exporterToken, exporter) => channel.grantExporter(token, exporterToken, exporter),
         revokeExporter: (exporterToken) => channel.revokeExporter(exporterToken),
         ...attachersOf(channel),
+        attachGateRun: gateRunAttacher(channel, claims, handleRun),
         resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
         hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
         cancelQuestions: (token) => channel.cancelQuestions(token),

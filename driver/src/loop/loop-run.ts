@@ -42,6 +42,7 @@ import {
     interruptDecision,
     releaseAbandonedSync,
     setupDecision,
+    supervisorLossFlag,
     syncThrewHalt,
     thrownRunDecision,
     unreportedDecision,
@@ -187,7 +188,7 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
         return gateOut.value;
     } catch (e) {
         // The setup's supervisor was lost (issue #773): the attempt's loss, never a config verdict.
-        if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e) };
+        if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e), ...(await supervisorLossFlag(ctx, e)) };
         return faultHalt(
             `gate environment failed, failing with a reason: ${(e as Error).message}`,
             `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
@@ -541,7 +542,12 @@ async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boo
     const decision =
         gateLoss === null
             ? unreportedDecision(outcome)
-            : interruptDecision(`infrastructure loss: ${gateLoss}`, outcome.exitCode);
+            : interruptDecision(
+                  `infrastructure loss: ${gateLoss}`,
+                  outcome.exitCode,
+                  false,
+                  outcome.infraNodeLoss === true
+              );
     if (decision === null) return false;
     await end(ctx, decision);
     return true;
@@ -564,7 +570,8 @@ async function gatesOrLoss(
     } catch (e) {
         if (!servicesLost(e)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
-        await end(ctx, interruptDecision(reason, null));
+        const { nodeLoss = false } = await supervisorLossFlag(ctx, e);
+        await end(ctx, interruptDecision(reason, null, false, nodeLoss));
         return STOOD_DOWN;
     }
 }

@@ -124,6 +124,11 @@ spec:
                       - name: RUNNER_AFFINITY
                         value: {{ toJson . | quote }}
                       {{- end }}
+                      {{- with $.Values.runner.runtimeClassName }}
+                      # The sandbox every driver pod runs under; admission requires it.
+                      - name: RUNNER_RUNTIME_CLASS
+                        value: {{ . | quote }}
+                      {{- end }}
                       # The claim each thread's task volume is created with (issue #775).
                       {{- with $.Values.taskVolume.storageClass }}
                       - name: TASK_VOLUME_STORAGE_CLASS

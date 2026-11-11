@@ -77,26 +77,25 @@ export type GateReport = {
 const declaresGateEnvironment = (job: BoardJob): boolean =>
     Boolean(job.gates && (job.gates.gates.length || job.gates.setup));
 
+/** Whether the agent can ask for a gate: a declared one, in a checkout the gate environment is keyed by. */
+const declaresGates = (job: BoardJob): boolean => Boolean(job.gates?.gates.length && checkoutKey(job));
+
 /**
- * Puts the pair the agent reaches the ad-hoc gate endpoint with onto `job.gateEnv`, once. The token
- * is registered only by `beginGates`; until then the endpoint answers it nothing.
+ * Puts the gate server's registration key onto `job.gateEnv`, once. It is the driver's own handle on
+ * the job's gate claim, never an agent credential: the agent asks for a gate through the control
+ * socket (`POST /gate/run`) and holds no gate URL or token, so no runner env renders this (BEL-88).
+ * The key is registered only by `beginGates`.
  */
 async function ensureGatePair(gates: GateStack, job: BoardJob): Promise<string> {
-    const port = await gates.server.listen();
-    job.gateEnv = {
-        ...job.gateEnv,
-        BELLOWS_GATE_URL: job.gateEnv?.BELLOWS_GATE_URL ?? gates.advertiseUrl(port),
-        BELLOWS_GATE_TOKEN: job.gateEnv?.BELLOWS_GATE_TOKEN ?? randomUUID(),
-    };
+    await gates.server.listen();
+    job.gateEnv = { ...job.gateEnv, BELLOWS_GATE_TOKEN: job.gateEnv?.BELLOWS_GATE_TOKEN ?? randomUUID() };
     return job.gateEnv.BELLOWS_GATE_TOKEN as string;
 }
 
 /**
- * Mints the agent's gate pair for a job that declares gates or setup, before the first runner step.
- * A kubernetes group is one pod whose env Secret is written when that step (the checkout sync)
- * makes it, long before `beginGates` runs, and a pod's env cannot change afterwards. Best-effort
- * like `openRunControl`: `beginGates` mints the pair itself when this could not, which is all a
- * docker agent container, created later, needs.
+ * Mints the job's gate registration key for a job that declares gates or setup, before the first
+ * runner step, so the key is one value across every step of the attempt. Best-effort like
+ * `openRunControl`: `beginGates` mints it itself when this could not.
  */
 export async function mintGateCredentials(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const { gates } = rt;
@@ -110,10 +109,9 @@ export async function mintGateCredentials(rt: LoopRuntime, job: BoardJob): Promi
 
 /**
  * Ensures the job's gate environment, registers its ad-hoc token and runs `environment.setup` in
- * it (issue #733), or answers null for a job that declares neither gates nor setup. The token and
- * URL ride the claim's env into the runner's env file — appended after the claim's own lines,
- * where docker's last-wins rule keeps a member-scoped `BELLOWS_GATE_TOKEN` from minting itself a
- * gate credential.
+ * it (issue #733), or answers null for a job that declares neither gates nor setup. The token
+ * stays the driver's: it is on `job.gateEnv` and in no runner env (BEL-88), so the agent's gate
+ * request carries it nowhere and a takeover has nothing for the agent to re-learn.
  */
 export async function beginGates(
     rt: LoopRuntime,
@@ -146,8 +144,9 @@ export async function beginGates(
         gates.manager.release(key, job);
         return null;
     }
+    let token: string | null = null;
     try {
-        const token = await ensureGatePair(gates, job);
+        token = await ensureGatePair(gates, job);
         const runClaimSeq = opts.runClaimSeq ?? job.claimSeq;
         const ledger = gateLedger(rt, job, runClaimSeq);
         gates.server.register(token, {
@@ -162,8 +161,11 @@ export async function beginGates(
                 state.gateLoss ??= reason;
             },
         });
-        // The pair is on `job.gateEnv`, beside `env` and not inside it: the reserved-name filter keeps a
-        // member-configured BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
+        // The agent's `POST /gate/run` reaches this claim through the control channel, whichever driver holds the run.
+        const controlToken = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
+        if (controlToken && declaresGates(job)) gates.server.attachGateRun(controlToken, token);
+        // The key is on `job.gateEnv`, beside `env` and not inside it, and no runner env renders it: the
+        // reserved-name filter keeps a member-configured BELLOWS_GATE_* out of the claim lines.
         // A taken-over run's environment setup ran before the agent did (#829).
         if (!opts.takeover) await runEnvironmentSetup(rt, job, key, state);
         // The same check at the far edge — listen can take its time, and nothing registered
@@ -186,6 +188,8 @@ export async function beginGates(
         };
     } catch (e) {
         // Filed but never registered: the checkout is forgotten again, so no entry outlives the claim.
+        // Registered and then failed: the token and its gate door go with it.
+        if (token !== null) gates.server.unregister(token);
         gates.manager.release(key, job);
         throw e;
     }
@@ -272,6 +276,8 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         );
         attachConnection({ rt, job, state }, token);
         gates.server.attachGateToken(token, createGateTokenRelay(rt, job, state));
+        // A job with no gate to ask for answers its agent's `POST /gate/run` "no gates"; a gated one 503s until `beginGates`.
+        if (!declaresGates(job)) gates.server.attachGateRun(token, null);
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);
@@ -332,7 +338,7 @@ interface GatesRunCtx {
 }
 
 /**
- * `beginGates` adds the gate server's own pair to `job.gateEnv` for the agent; a gate run never
+ * `beginGates` adds the gate server's own registration key to `job.gateEnv`; a gate run never
  * gets it, or a gate could call `/run` on its own checkout and wait behind itself.
  */
 const withoutGatePair = (job: BoardJob): BoardJob => ({

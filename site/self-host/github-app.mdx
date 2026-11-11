@@ -1,0 +1,136 @@
+---
+title: "Create the GitHub App"
+description: "Register the GitHub App and OAuth App that Bellows needs to sign people in, read repositories and open pull requests."
+---
+
+Bellows uses two GitHub registrations. They are separate on purpose: signing someone in needs no repository access, while reading and pushing code needs installation permissions. One credential doing both would give repository access to every person who signs in.
+
+| Registration | Used for | Gives Bellows |
+| --- | --- | --- |
+| **GitHub App** | Repository access. Installed on each organization or account. | App id and private key |
+| **GitHub OAuth App** | Sign-in. Lists the installations a person can see. | Client id and client secret |
+
+An organization in Bellows is one installation of the GitHub App. Installation access is membership: whoever can see an installation can sign in to that organization.
+
+You need the public URL of your dashboard first. This page writes it as `https://bellows.example.com`. It becomes `auth.publicUrl` in Helm, or `PUBLIC_URL` in the environment.
+
+## 1. Register the GitHub App
+
+In GitHub, go to **Settings**, **Developer settings**, **GitHub Apps**, **New GitHub App** (for an organization, use the organization's settings).
+
+<Steps>
+  <Step title="Basics">
+    Pick a name and set **Homepage URL** to your dashboard URL.
+  </Step>
+  <Step title="Setup URL">
+    Set **Setup URL** to:
+
+    ```text
+    https://bellows.example.com/api/auth/github/setup
+    ```
+
+    GitHub sends people here after they install the App. Bellows then restarts sign-in with the new installation selected. If someone returns without installing, sign-in reports that the install was cancelled.
+  </Step>
+  <Step title="Webhook">
+    Optional but recommended. Set **Webhook URL** to `https://bellows.example.com/api/github/webhook` and **Secret** to a random string of at least 32 characters (`openssl rand -hex 32`). Bellows refuses to boot with a shorter secret. Keep the webhook active. See [Webhook events](#webhook-events).
+
+    Without a webhook secret the route does not exist. Everything still works, but a person removed from the GitHub organization keeps access until their next sign-in.
+  </Step>
+  <Step title="Permissions">
+    Grant the repository permissions in the next table.
+  </Step>
+  <Step title="Install target">
+    Choose where the App can be installed, then create it. Note the **App ID**.
+  </Step>
+  <Step title="Private key">
+    On the App page, under **Private keys**, click **Generate a private key**. GitHub downloads a `.pem` file.
+  </Step>
+</Steps>
+
+### Permissions
+
+| Permission | Access | Why |
+| --- | --- | --- |
+| Metadata | Read | Required by GitHub for every App. Lists repositories. |
+| Contents | Read and write | Clone and push the agent's branch. |
+| Pull requests | Read and write | Open and update pull requests, reply to reviews. |
+| Issues | Read and write | Pull request comments. |
+| Checks | Read | Read check results for a pull request. |
+| Actions | Read | `gh pr checks` needs it to read a workflow run. |
+| Commit statuses | Read | Optional. Only for batch pull request observation. |
+
+For each run, Bellows asks GitHub for a short-lived token limited to the one repository and to Contents (write), Pull requests (write), Issues (write), Checks (read) and Actions (read). If the installation holds less than that, GitHub refuses with a 422 and the error names the missing permission. Add the permission in the App settings, then accept the update on the installation.
+
+### Webhook events
+
+Subscribe to these events.
+
+| Event | Needed for |
+| --- | --- |
+| `organization` | Removing a member's access as soon as GitHub removes them from the organization. This is the one that matters for security. |
+| `pull_request`, `pull_request_review`, `pull_request_review_comment`, `issue_comment` | Waking a task that waits on a pull request. |
+| `check_run`, `check_suite`, `status` | Refreshing batch pull request status. |
+
+Deliveries are verified with an HMAC signature. Any other event is acknowledged and ignored.
+
+<Note>
+Webhooks only speed things up. A lost delivery is repaired by a periodic read of GitHub.
+</Note>
+
+## 2. Register the OAuth App
+
+In GitHub, go to **Settings**, **Developer settings**, **OAuth Apps**, **New OAuth App**.
+
+- **Homepage URL**: your dashboard URL.
+- **Authorization callback URL**: `https://bellows.example.com/api/auth/github/callback`. It is `<PUBLIC_URL>/api/auth/github/callback` and must match what Bellows sends.
+
+Create it, generate a client secret, and keep the client id and secret. Bellows requests only the `read:org` scope, so it can list the installations a person can see. It reads no repository data at sign-in.
+
+## 3. Give the values to Bellows
+
+| Value | Environment variable | Helm value |
+| --- | --- | --- |
+| Public origin | `PUBLIC_URL` | `auth.publicUrl` |
+| Secure cookies | `COOKIE_SECURE` | `auth.cookieSecure` (`'true'` behind TLS) |
+| GitHub App id | `GITHUB_APP_ID` | `github.appId` |
+| App private key (PEM or base64) | `GITHUB_APP_PRIVATE_KEY`, or `GITHUB_APP_PRIVATE_KEY_FILE` for a path | `github.appPrivateKey`, or key `github-app-private-key` in `secret.existingSecret` |
+| OAuth client id | `GITHUB_OAUTH_CLIENT_ID` | `auth.oauthClientId` |
+| OAuth client secret | `GITHUB_OAUTH_CLIENT_SECRET` | `secret.oauthClientSecret`, or key `github-oauth-client-secret` |
+| Webhook secret | `GITHUB_WEBHOOK_SECRET` | `secret.githubWebhookSecret`, or key `github-webhook-secret` |
+| Session signing secret | `SESSION_SECRET` (32 or more characters) | `secret.sessionSecret`, or key `session-secret` |
+
+The App id and the key are required. Without them the server does not start. A key that is not a PEM is refused with a message that tells you what to paste. One line of base64 survives a `.env` file where a multi-line PEM does not.
+
+<Warning>
+The private key can mint installation tokens indefinitely, and the only way to rotate it is to generate a new key in GitHub. Store it like your most sensitive secret. See [Security model](/self-host/security).
+</Warning>
+
+<Note>
+Do not set `GITHUB_TOKEN`, `GITHUB_APP_INSTALLATION_ID` or `ORG_REPOS`. Bellows refuses to boot with them. Installations are discovered at sign-in.
+</Note>
+
+Helm install details are in [Kubernetes and Helm](/self-host/kubernetes).
+
+## 4. Install it on an organization
+
+<Steps>
+  <Step title="Install">
+    Open the App's public page on GitHub and click **Install**, or open the Bellows sign-in page and click **Sign in with GitHub**. Choose the organization or account, and the repositories the App may see.
+  </Step>
+  <Step title="Sign in">
+    After installing, GitHub sends you to the Setup URL and Bellows signs you in. On a first sign-in you see **Choose organizations and repositories**. Pick what Bellows tracks.
+  </Step>
+  <Step title="Check">
+    The organization appears in Bellows, and you are its first member, which makes you an admin. Open **Settings → Repositories** to see the tracked list.
+  </Step>
+</Steps>
+
+Later:
+
+- **More repositories.** Update the installation on GitHub, then open **Settings → Repositories**.
+- **More people.** Anyone who can see the installation can sign in. There are no invites. See [Connections](/guides/connections) for what members connect.
+- **Changed permissions.** GitHub asks an installation owner to accept the update. Runs fail with the 422 above until they do.
+
+<Note>
+Every member sees every repository the organization tracks. GitHub repository permissions are not projected into Bellows. Treat membership as write access to those repositories.
+</Note>

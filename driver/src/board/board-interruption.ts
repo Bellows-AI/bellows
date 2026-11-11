@@ -12,4 +12,9 @@ export interface Interruption {
      * budget with no retry deferral, and held by the board's claim gate until the requirement closes.
      */
     requirement?: boolean;
+    /**
+     * The platform took the attempt away (a drained driver, an evicted runner; BEL-302): released outside the
+     * poison interruption budget, counted against the board's far looser node-loss bound.
+     */
+    nodeLoss?: boolean;
 }

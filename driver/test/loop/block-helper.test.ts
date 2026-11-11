@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
 import type { RunOutcome, RunSession } from '../../src/runner.js';
 import type { HelperPlan, HelperResult } from '../../src/helpers.js';
-import { StepChannelClosed } from '../../src/step-control.js';
+import { StepChannelClosed, StepTimedOut } from '../../src/step-control.js';
 import type { LoopRuntime } from '../../src/loop/loop-types.js';
 import { newJobState, watchOutput } from '../../src/loop/loop-attempt.js';
 import { transition } from '../../src/loop/loop-phase.js';
@@ -189,6 +189,78 @@ describe('block-helper steps (issue #207)', () => {
             ]);
         }
     );
+
+    // BEL-302: a lost helper supervisor is a node loss only on the executor's confirmation that the group was taken away.
+    it.each<[string, () => Error, () => Promise<boolean>, boolean]>([
+        [
+            'a closed channel with the group confirmed taken away',
+            () => new StepChannelClosed('the helper'),
+            async () => true,
+            true,
+        ],
+        [
+            'a closed channel with the group still there',
+            () => new StepChannelClosed('the helper'),
+            async () => false,
+            false,
+        ],
+        [
+            'a closed channel whose read failed',
+            () => new StepChannelClosed('the helper'),
+            async () => {
+                throw new Error('apiserver unreachable');
+            },
+            false,
+        ],
+        [
+            'a step answered too late, whatever the executor says',
+            () => new StepTimedOut('step-1'),
+            async () => true,
+            false,
+        ],
+    ])('flags a helper whose supervisor was lost only when confirmed: %s', async (_name, lost, taken, flagged) => {
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase: 'pre' })] }]);
+        const runner = stubRunner(async () => ok());
+        runner.runHelper = async () => {
+            throw lost();
+        };
+        runner.groupTakenAway = taken;
+
+        await drive({ ...board, runner });
+
+        expect(board.board.interrupted).toEqual([
+            {
+                id: job(1).id,
+                reason: expect.stringContaining('infrastructure loss'),
+                release: true,
+                ...(flagged ? { nodeLoss: true } : {}),
+            },
+        ]);
+    });
+
+    it('flags a run the executor saw taken away, and the loss of one it did not', async () => {
+        for (const flagged of [true, false]) {
+            const board = stubBoard([{ ...job(1), helperPlans: [] }]);
+            const runner = stubRunner(async () =>
+                ok({
+                    exitCode: null,
+                    infraLoss: 'the runner pod was evicted',
+                    ...(flagged ? { infraNodeLoss: true as const } : {}),
+                })
+            );
+
+            await drive({ ...board, runner });
+
+            expect(board.board.interrupted).toEqual([
+                {
+                    id: job(1).id,
+                    reason: expect.stringContaining('evicted'),
+                    release: true,
+                    ...(flagged ? { nodeLoss: true } : {}),
+                },
+            ]);
+        }
+    });
 
     it('a non-zero exit is named after the agent, not a post-helper failure', async () => {
         const { kindOf, ledgerOf } = await import('../../src/loop/loop-ledger.js');

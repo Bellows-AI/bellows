@@ -109,8 +109,7 @@ declared service listens. Before connecting to a database or any other backing s
 ## Verification gates
 
 The repository may declare CI-style checks in `.bellows.yaml` — named commands (`test`, `lint`,
-build) that run in a separate container sharing this workspace. When `BELLOWS_GATE_URL` and
-`BELLOWS_GATE_TOKEN` are set, run one with `factory-gate`:
+build) that run in a separate container sharing this workspace. Run one with `factory-gate`:
 
 ```bash
 factory-gate test
@@ -127,4 +126,5 @@ did not opt in answers 422. A filtered run is never evidence that the gate passe
 that run when you finish are always unfiltered.
 A gate that declares `timeout:` above 10 (minutes) answers 422 and runs only when you finish (an
 `on_demand` one not at all): do not retry it; run its pieces with your own commands instead.
-If `BELLOWS_GATE_URL` is unset there are no gates here: verify with your own commands instead.
+If `factory-gate` reports no gates (exit 3) there are none here: verify with your own commands instead.
+Exit 75 means no usable answer came (the control socket is missing or refuses, the relay hung up, the gate run is not open yet): it says nothing about the gate and is never a pass, so ask again.

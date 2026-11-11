@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +7,7 @@ import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolveClaimSkills } from '../src/db/jobs/job-store-claim-skills.js';
 import { skillRoutes } from '../src/routes/skills.js';
-import { readSkillCatalog, skillCatalog } from '../src/skills.js';
+import { readBuiltinSkill, readSkillCatalog, skillCatalog } from '../src/skills.js';
 import { staticRegistry } from './helpers.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -56,6 +57,73 @@ describe('readSkillCatalog', () => {
     });
 });
 
+describe('readBuiltinSkill', () => {
+    const jira = (name: string) => `---\nname: ${name}\ndescription: x\n---\nbody\n`;
+
+    it("lists factory-jira's SKILL.md and jira.cjs with sizes", () => {
+        const dir = skillsDir({ 'factory-jira': jira('factory-jira') });
+        writeFileSync(join(dir, 'factory-jira', 'jira.cjs'), 'abc');
+        mkdirSync(join(dir, 'factory-jira', 'lib'));
+        writeFileSync(join(dir, 'factory-jira', 'lib', 'z.js'), 'zz');
+        const view = readBuiltinSkill('factory-jira', dir);
+        expect(view.skillMd).toBe(jira('factory-jira'));
+        expect(view.files).toEqual([
+            { path: 'SKILL.md', size: jira('factory-jira').length },
+            { path: 'jira.cjs', size: 3 },
+            { path: 'lib/z.js', size: 2 },
+        ]);
+    });
+
+    it('a symlink or socket in the tree throws', async () => {
+        const dir = skillsDir({ linked: jira('linked'), piped: jira('piped') });
+        symlinkSync(join(dir, 'linked', 'SKILL.md'), join(dir, 'linked', 'alias.md'));
+        const server = createServer();
+        await new Promise<void>((resolve) => server.listen(join(dir, 'piped', 's'), resolve));
+        expect(() => readBuiltinSkill('linked', dir)).toThrow();
+        try {
+            expect(() => readBuiltinSkill('piped', dir)).toThrow();
+        } finally {
+            server.close();
+        }
+    });
+
+    it('a missing SKILL.md throws, never returns empty', () => {
+        const dir = skillsDir({});
+        mkdirSync(join(dir, 'bare'));
+        expect(() => readBuiltinSkill('bare', dir)).toThrow();
+        expect(() => readBuiltinSkill('absent', dir)).toThrow();
+    });
+});
+
+describe('built-in view route', () => {
+    const boot = async (readBuiltin: (name: string) => never) => {
+        const app = Fastify();
+        await app.register(skillRoutes(readSkillCatalog, staticRegistry(), { version: '1.0.0', readBuiltin }));
+        return app;
+    };
+
+    it('a name with ../ is 404 with no fs read', async () => {
+        const reads: string[] = [];
+        const app = await boot((name) => {
+            reads.push(name);
+            throw new Error('must not read');
+        });
+        const response = await app.inject({ method: 'GET', url: '/api/skills/builtin/..%2F..%2Fetc' });
+        expect(response.statusCode).toBe(404);
+        expect(response.json().code).toBe('SKILL_NOT_FOUND');
+        expect(reads).toEqual([]);
+    });
+
+    it('a reader that throws is 503, never 404', async () => {
+        const app = await boot(() => {
+            throw new Error('EIO');
+        });
+        const response = await app.inject({ method: 'GET', url: '/api/skills/builtin/factory-jira' });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+});
+
 describe('resolveClaimSkills', () => {
     it('is null for no selection, and for a held connection', () => {
         expect(resolveClaimSkills([], undefined)).toBeNull();
@@ -81,7 +149,7 @@ describe('resolveClaimSkills', () => {
 describe('GET /api/skills', () => {
     it('lists each skill with its requirements and env names, never the instructions', async () => {
         const app = Fastify();
-        await app.register(skillRoutes(readSkillCatalog, staticRegistry()));
+        await app.register(skillRoutes(readSkillCatalog, staticRegistry(), { version: '1.0.0' }));
         const response = await app.inject({ method: 'GET', url: '/api/skills' });
 
         expect(response.statusCode).toBe(200);
@@ -106,9 +174,13 @@ describe('GET /api/skills', () => {
         const app = Fastify();
         await expect(
             app.register(
-                skillRoutes(() => {
-                    throw new Error('catalog broken');
-                }, staticRegistry())
+                skillRoutes(
+                    () => {
+                        throw new Error('catalog broken');
+                    },
+                    staticRegistry(),
+                    { version: '1.0.0' }
+                )
             )
         ).rejects.toThrow('catalog broken');
     });

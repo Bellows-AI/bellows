@@ -85,6 +85,23 @@ export const spendInterruptionBudget = (sql: Sql, id: string) =>
     `;
 
 /**
+ * Appends `count` interruptions to the job's record, each stamped now and flagged `nodeLoss` when asked
+ * (BEL-302), so a suite can stand at any point of either budget. Negative claim sequences never match a
+ * real claim's.
+ */
+export const recordInterruptions = (sql: Sql, id: string, count: number, { nodeLoss = false } = {}) =>
+    sql`
+        update job set interruptions = interruptions || coalesce((
+            select jsonb_agg(
+                jsonb_build_object('reason', 'recorded by the fixture', 'at', now(), 'claimSeq', -n - ${nodeLoss ? 1000 : 0})
+                || case when ${nodeLoss} then jsonb_build_object('nodeLoss', true) else '{}'::jsonb end
+            )
+            from generate_series(1, ${count}::int) as n
+        ), '[]'::jsonb)
+        where id = ${id}
+    `;
+
+/**
  * Holds a lock on `id` in another transaction until `release()` — the per-thread advisory lock
  * (claim, remove, reopen, done all take it) or the job row's own lock. `beforeCommit` runs inside
  * that transaction after the release, for a racing write that commits with the lock.

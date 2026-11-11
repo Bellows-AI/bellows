@@ -7,12 +7,16 @@ import {
     type Skill,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { orgOf } from '../auth/plugin.js';
+import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { abortOnClose, effectiveCatalog, type EffectiveCatalog, storedOf } from '../skill-catalog.js';
+import { type BuiltinSkillView, readBuiltinSkill } from '../skills.js';
 import { bad, checkReposVisible } from './helpers.js';
+import { readExecutorType } from './jobs/executor-usable.js';
+import { validateExecutorField, validateExecutorScopeField } from './jobs/job-field-validation.js';
 
 const HTTP_UNAVAILABLE = 503;
+const HTTP_NOT_FOUND = 404;
 
 /** Org and workspace skills that could not be read: a 503, never a list that silently lacks them. */
 const storedUnavailable = (reply: FastifyReply, catalog: EffectiveCatalog) =>
@@ -69,15 +73,30 @@ function repoMenuOf(result: EffectiveCatalog, canRead: boolean) {
     };
 }
 
-type RepoSkillsRoute = { Params: { owner: string; name: string }; Querystring: { branch?: string } };
+type RepoSkillsRoute = {
+    Params: { owner: string; name: string };
+    Querystring: { branch?: string; executor?: string; executorScope?: string };
+};
+
+/** The menu's query: the branch and the executor selection, or the 400 that has landed on `reply`. */
+function menuQueryOf(reply: FastifyReply, query: RepoSkillsRoute['Querystring']) {
+    const { branch, executor, executorScope } = query;
+    if (branch !== undefined && branch !== '' && (branch.length > BRANCH_LIMIT || !isBranchName(branch))) {
+        return void bad(reply, ERROR_CODES.BAD_BASE_BRANCH, 'branch must be a valid git branch name');
+    }
+    const named = validateExecutorField(executor === '' ? undefined : executor);
+    if (!named.ok) return void bad(reply, ERROR_CODES.BAD_EXECUTOR, named.message);
+    const scope = validateExecutorScopeField(executorScope);
+    if (!scope.ok) return void bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, scope.message);
+    return { branch: branch === '' ? undefined : branch, executor: named.value, scope: scope.value };
+}
 
 function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
     return async (request: FastifyRequest<RepoSkillsRoute>, reply: FastifyReply) => {
         const { owner, name } = request.params;
-        const branch = request.query.branch === '' ? undefined : request.query.branch;
-        if (branch !== undefined && (branch.length > BRANCH_LIMIT || !isBranchName(branch))) {
-            return bad(reply, ERROR_CODES.BAD_BASE_BRANCH, 'branch must be a valid git branch name');
-        }
+        const query = menuQueryOf(reply, request.query);
+        if (!query) return reply;
+        const { branch, executor, scope } = query;
         const rt = await orgs.for(orgOf(request));
         const visible = rt ? await checkReposVisible(rt.repos, [{ owner, name }], { subject: 'the repository' }) : null;
         if (visible && !visible.ok) return bad(reply, visible.code, visible.message, visible.status);
@@ -87,6 +106,13 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
             read: rt?.repoSkills,
             repo: `${owner}/${name}`,
             branch: branch ?? null,
+            // The directories a repo's skills are read from are the selected executor's CLI's, as at create.
+            executorType: await readExecutorType(
+                rt?.userExecutors,
+                callerOf(request)?.user.id ?? null,
+                executor,
+                scope
+            ),
             signal: abortOnClose(reply),
             stored: storedOf(rt, request),
             onUnconfirmed: (err) => request.log.warn({ err }, 'repo skills read failed'),
@@ -97,19 +123,32 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
 }
 
 /**
- * `GET /api/skills`: what a task may select, from every source (`source`; a name held twice lists the lower one with `shadowedBy`). Name, description and the declared requirements —
+ * `GET /api/skills`: what a task may select, from every source (`source`; a name held twice lists the lower one with `shadowedBy`; a built-in the org switched off is listed with `switchedOff: true` and is not selectable). Name, description and the declared requirements —
  * with each connection's env NAMES — and never the SKILL.md body or any env value. Reading the
  * catalog at registration means a broken catalog fails boot rather than the first request.
  *
  * `GET /api/repos/:owner/:name/skills`: the slash menu's list — the same catalog plus the repository's
- * own `.claude/skills` at a branch tip (`shadowed`: entries a higher source overrides, kept out of `skills`; `reserved`: names under the built-ins' prefix, not selectable). A repo read that did not confirm is `repoError`, never
+ * own skills (the selected executor's CLI's directories) at a branch tip (`shadowed`: entries a higher source overrides, kept out of `skills`; `reserved`: names under the built-ins' prefix, not selectable). A repo read that did not confirm is `repoError`, never
  * "the repo has no skills".
  */
 export const skillRoutes =
-    (catalog: () => Skill[], orgs: OrgRegistry): FastifyPluginAsync =>
+    (
+        catalog: () => Skill[],
+        orgs: OrgRegistry,
+        {
+            version,
+            readBuiltin = readBuiltinSkill,
+        }: { version: string; readBuiltin?: (name: string) => BuiltinSkillView }
+    ): FastifyPluginAsync =>
     async (app) => {
         const builtin = catalog();
-        await effectiveCatalog({ builtin, read: undefined, repo: null, branch: null });
+        await effectiveCatalog({
+            builtin,
+            read: undefined,
+            repo: null,
+            branch: null,
+            executorType: { state: 'known', type: null },
+        });
         app.get('/api/skills', async (request, reply) => {
             const rt = await orgs.for(orgOf(request));
             const result = await effectiveCatalog({
@@ -117,11 +156,32 @@ export const skillRoutes =
                 read: undefined,
                 repo: null,
                 branch: null,
+                executorType: { state: 'known', type: null },
                 stored: storedOf(rt, request),
                 onUnconfirmed: (err) => request.log.warn({ err }, 'stored skills read failed'),
             });
             if (result.storedError !== null) return storedUnavailable(reply, result);
-            return { skills: result.entries.map(wireOf) };
+            // A switched-off built-in is listed so an admin can switch it back on, marked so no client offers it.
+            const off = builtin
+                .filter((skill) => result.switchedOff.includes(skill.name))
+                .map((skill) => ({ ...wireOf({ ...skill, source: 'builtin' }), switchedOff: true }));
+            return { skills: [...result.entries.map(wireOf), ...off] };
+        });
+
+        // A built-in's files and the release that ships them. 404 only for a name the catalog lacks,
+        // decided before any fs call; a failed read is 503, never "no such skill".
+        app.get<{ Params: { name: string } }>('/api/skills/builtin/:name', async (request, reply) => {
+            const skill = builtin.find((entry) => entry.name === request.params.name);
+            if (!skill) return bad(reply, ERROR_CODES.SKILL_NOT_FOUND, 'No such built-in skill', HTTP_NOT_FOUND);
+            let view: BuiltinSkillView;
+            try {
+                view = readBuiltin(skill.name);
+            } catch (err) {
+                request.log.warn({ err }, 'built-in skill read failed');
+                return bad(reply, ERROR_CODES.UNAVAILABLE, 'The built-in skill could not be read', HTTP_UNAVAILABLE);
+            }
+            const { source: _source, ...wire } = wireOf({ ...skill, source: 'builtin' });
+            return { ...wire, ...view, version };
         });
 
         app.get<RepoSkillsRoute>('/api/repos/:owner/:name/skills', repoSkillsHandler(builtin, orgs));

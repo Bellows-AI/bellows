@@ -6,7 +6,7 @@
  * provider; the store classifies it (`secret-call.ts`) and the fault's message is never surfaced.
  */
 
-export type PayloadStorage = 'database' | 'aws' | 'vault';
+export type PayloadStorage = 'database' | 'aws' | 'vault' | 'gcp';
 
 /** What a failed provider call means for the call that raised it. */
 export type FaultVerdict = 'retry' | 'ambiguous' | 'definitive' | 'misconfigured';

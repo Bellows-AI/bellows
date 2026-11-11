@@ -777,9 +777,31 @@ expect_not_contains 'no credentials Secret leaves Pod Identity and IRSA to the c
 refuses 'an s3 backend with no bucket is refused' 'artifacts.s3.bucket is required' \
     "${GH_SETS[@]}" --set artifacts.s3.bucket=
 refuses 'an unknown artifacts backend is refused' 'artifacts.backend must be' \
-    "${GH_SETS[@]}" --set artifacts.backend=gcs
+    "${GH_SETS[@]}" --set artifacts.backend=azure
+GCS_SETS=("${GH_SETS[@]}" --set artifacts.backend=gcs --set artifacts.s3.bucket= --set artifacts.s3.region= \
+    --set artifacts.gcs.bucket=factory-artifacts-gcs)
+gcs_render() { helm template "$RELEASE" charts/factory "${GCS_SETS[@]}" --namespace "$NAMESPACE" "$@" 2>&1; }
+gcs="$(gcs_render)"
+expect_contains 'the gcs backend reaches the dashboard as environment' "$gcs" 'name: ARTIFACTS_GCS_BUCKET'
+expect_contains 'the gcs bucket is rendered' "$gcs" 'value: "factory-artifacts-gcs"'
+expect_contains 'the gcs prefix defaults to factory/' "$(grep -A1 'name: ARTIFACTS_GCS_PREFIX$' <<<"$gcs")" 'value: "factory/"'
+expect_not_contains 'the gcs backend renders no s3 setting' "$gcs" 'ARTIFACTS_S3_BUCKET'
+expect_not_contains 'the gcs backend renders no storage key' "$gcs" 'ARTIFACTS_ACCESS_KEY_ID'
+expect_contains 'the Workload Identity annotation lands on the dashboard ServiceAccount' \
+    "$(gcs_render --set 'dashboard.serviceAccount.annotations.iam\.gke\.io/gcp-service-account=dash@proj.iam.gserviceaccount.com')" \
+    'iam.gke.io/gcp-service-account: dash@proj.iam.gserviceaccount.com'
+expect_contains 'the gcs backend renders above one dashboard replica' \
+    "$(gcs_render --set dashboard.replicas=2)" 'replicas: 2'
+refuses 'a gcs backend with no bucket is refused' 'artifacts.gcs.bucket is required' \
+    "${GCS_SETS[@]}" --set artifacts.gcs.bucket=
+refuses 'an s3 setting with the gcs backend is refused' 'only valid with artifacts.backend=s3' \
+    "${GCS_SETS[@]}" --set artifacts.s3.bucket=leftover
+refuses 'a storage key Secret with the gcs backend is refused' 'only valid with artifacts.backend=s3' \
+    "${GCS_SETS[@]}" --set artifacts.credentialsExistingSecret=store-keys
+refuses 'a gcs setting with the s3 backend is refused' 'only valid with artifacts.backend=gcs' \
+    "${GH_SETS[@]}" --set artifacts.gcs.bucket=leftover
 refuses 'the filesystem backend is refused above one dashboard replica' \
-    'dashboard.replicas above 1 requires artifacts.backend=s3' \
+    'dashboard.replicas above 1 requires artifacts.backend=s3 or gcs' \
     "${GH_SETS[@]}" --set artifacts.backend=filesystem --set dashboard.replicas=2
 refuses 'zero dashboard replicas are refused' 'dashboard.replicas must be a whole number of at least 1' \
     "${GH_SETS[@]}" --set dashboard.replicas=0
@@ -932,6 +954,58 @@ refuses 'a vault store without an operation key is refused' 'secretStore.operati
     "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set-string secretStore.operationKey=
 vault_byo="$(gh_render "${VAULT_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
 expect_contains 'a managed secret-store Secret serves the vault backend too' "$vault_byo" 'name: managed-keys'
+
+# The gcp backend (docs/secrets.md): the provider settings reach the dashboard container alone, the Secret holds no
+# data key, and no credential is rendered (Workload Identity is the service-account annotation).
+GCP_SETS=(
+    --set secretStore.backend=gcp --set secretStore.gcp.project=example-project
+    --set secretStore.gcp.prefix=acme- --set secretStore.gcp.location=europe-west1
+    --set secretStore.gcp.kmsKey=projects/example-project/locations/europe-west1/keyRings/ring/cryptoKeys/key
+    --set-string secretStore.dataKeys= --set secretStore.activeKeyId=
+)
+gcp_render="$(gh_render "${GCP_SETS[@]}")"
+gcp_doc="$(awk '/^# Source:/ { keep = ($0 ~ /templates\/deployment.yaml$/) } keep' <<<"$gcp_render")"
+gcp_dashboard="$(awk '/^ +containers:$/ { on = 1 } on' <<<"$gcp_doc" | awk '/^ +- name: dashboard$/ { on = 1 } /^ +volumes:$/ { on = 0 } on')"
+expect_contains 'the gcp backend is selected explicitly' "$gcp_dashboard" 'value: "gcp"'
+expect_contains 'the dashboard container gets the gcp project' "$gcp_dashboard" 'value: "example-project"'
+expect_contains 'the dashboard container gets the gcp prefix' "$gcp_dashboard" 'value: "acme-"'
+expect_contains 'the dashboard container gets the gcp location' "$gcp_dashboard" 'value: "europe-west1"'
+expect_contains 'the dashboard container gets the gcp key' "$gcp_dashboard" 'cryptoKeys/key'
+[ "$(grep -c 'SECRETS_' <<<"$gcp_render")" = 7 ] && [ "$(grep -c 'SECRETS_' <<<"$gcp_dashboard")" = 7 ] &&
+    ok 'every gcp-mode SECRETS_ variable is in the dashboard container alone' ||
+    bad 'every gcp-mode SECRETS_ variable is in the dashboard container alone' \
+        "whole render: $(grep -c 'SECRETS_' <<<"$gcp_render"), dashboard container: $(grep -c 'SECRETS_' <<<"$gcp_dashboard")"
+expect_not_contains 'a gcp store renders no data-key variable' "$gcp_render" 'SECRETS_DATA_KEYS'
+expect_not_contains 'a gcp store renders no active-key-id variable' "$gcp_render" 'SECRETS_ACTIVE_KEY_ID'
+expect_not_contains 'a gcp store references no data-keys entry' "$gcp_render" 'data-keys'
+expect_not_contains 'a gcp store renders no AWS setting' "$gcp_render" 'SECRETS_AWS_'
+expect_not_contains 'a gcp store renders no Vault setting' "$gcp_render" 'SECRETS_VAULT_'
+expect_not_contains 'a gcp store renders no credential file variable' "$gcp_render" 'GOOGLE_APPLICATION_CREDENTIALS'
+expect_contains 'a gcp store still holds the operation and fingerprint keys' "$gcp_render" 'fingerprint-key:'
+expect_not_contains 'no configmap or collector carries a gcp setting' \
+    "$(awk '/^# Source:/ { keep = ($0 ~ /configmap|collector/) } keep' <<<"$gcp_render")" 'SECRETS_'
+gcp_driver="$(awk '/^# Source:/ { keep = ($0 ~ /driver-deployment.yaml$/) } keep' <<<"$gcp_render")"
+expect_not_contains 'the driver deployment carries no gcp setting' "$gcp_driver" 'SECRETS_'
+gcp_minimal="$(gh_render --set secretStore.backend=gcp --set secretStore.gcp.project=example-project --set-string secretStore.dataKeys= --set secretStore.activeKeyId=)"
+expect_not_contains 'an unset gcp prefix renders no variable, so the app default applies' "$gcp_minimal" 'SECRETS_GCP_PREFIX'
+expect_not_contains 'an unset gcp location renders no variable, so the app default applies' "$gcp_minimal" 'SECRETS_GCP_LOCATION'
+expect_not_contains 'an unset gcp key renders no variable' "$gcp_minimal" 'SECRETS_GCP_KMS_KEY'
+refuses 'a gcp store without a project is refused' 'secretStore.gcp.project is required' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.gcp.project=
+refuses 'data keys under the gcp backend are refused' 'are for secretStore.backend database' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set-string secretStore.dataKeys=k1:AAAA
+refuses 'aws settings under the gcp backend are refused' 'are for secretStore.backend aws, not gcp' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.aws.region=eu-west-1
+refuses 'vault settings under the gcp backend are refused' 'secretStore.vault.* is for secretStore.backend vault, not gcp' \
+    "${GH_SETS[@]}" "${GCP_SETS[@]}" --set secretStore.vault.role=factory
+refuses 'gcp settings under the database backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not database' \
+    "${GH_SETS[@]}" --set secretStore.gcp.project=example-project
+refuses 'gcp settings under the aws backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not aws' \
+    "${GH_SETS[@]}" "${AWS_SETS[@]}" --set secretStore.gcp.prefix=acme-
+refuses 'gcp settings under the vault backend are refused' 'secretStore.gcp.* is for secretStore.backend gcp, not vault' \
+    "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set secretStore.gcp.location=europe-west1
+gcp_byo="$(gh_render "${GCP_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
+expect_contains 'a managed secret-store Secret serves the gcp backend too' "$gcp_byo" 'name: managed-keys'
 
 # --- The optional ingress (#359): off by default, never disagreeing with auth.publicUrl --------
 
@@ -1090,6 +1164,28 @@ expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" 
 expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" \
     'value: "{\"podAntiAffinity\":{\"preferredDuringSchedulingIgnoredDuringExecution\":[{\"weight\":1}]}}"'
 
+# Dashboard Service annotations: a load balancer's per-Service knobs (a GKE BackendConfig for Cloud
+# Armor, NEG settings). None by default.
+service_doc() { awk '/^# Source: factory\/templates\/service.yaml/,/^---/' <<<"$1"; }
+expect_not_contains 'the dashboard Service carries no annotations by default' "$(service_doc "$gh")" 'annotations:'
+printf '%s\n' 'dashboard:' '    service:' '        annotations:' \
+    "            cloud.google.com/backend-config: '{\"default\":\"bellows-dashboard\"}'" >"$work/service-annotations.yaml"
+annotated="$(gh_render -f "$work/service-annotations.yaml")"
+expect_contains 'the dashboard Service carries its annotations' "$(service_doc "$annotated")" \
+    'cloud.google.com/backend-config: '"'"'{"default":"bellows-dashboard"}'"'"''
+
+# The runner RuntimeClass: forwarded to the driver and required by admission when set;
+# unset, neither renders.
+expect_not_contains 'no runner RuntimeClass var renders on defaults' "$gh" 'name: RUNNER_RUNTIME_CLASS'
+expect_not_contains 'no RuntimeClass admission rule renders on defaults' "$gh" 'variables.spec.runtimeClassName'
+sandboxed="$(gh_render --set runner.runtimeClassName=gvisor)"
+expect_contains 'the driver is handed the runner RuntimeClass' "$sandboxed" 'value: "gvisor"'
+expect_contains 'admission requires the runner RuntimeClass' "$sandboxed" \
+    "variables.spec.runtimeClassName == 'gvisor'"
+expect_contains 'the refusal names the RuntimeClass' "$sandboxed" 'runner pods must run under the gvisor RuntimeClass'
+refuses 'a RuntimeClass that is no DNS name is refused' 'runner.runtimeClassName must be a RuntimeClass name' \
+    "${GH_SETS[@]}" --set "runner.runtimeClassName=gvisor' || true"
+
 # The runner Secret has a key for every forwarded name, valued or not.
 runner_secret="$(gh_render --set-string "runner.env=ONE\,TWO" --set runner.credentials.ONE=x)"
 expect_contains 'the runner Secret keys every forwarded name' "$runner_secret" 'TWO: ""'
@@ -1147,6 +1243,10 @@ expect_contains 'the runner policy is both directions' "$netpol" 'policyTypes: [
 expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpol" \
     $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: kube-dns'
 expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
+# GKE runs NodeLocal DNSCache as pod-networked node-local-dns pods; Dataplane V2 redirects the
+# kube-dns Service address to them, so kube-dns alone leaves runners without DNS.
+expect_contains 'the runner policy sends DNS to node-local-dns pods in kube-system' "$netpol" \
+    $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: node-local-dns'
 expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
 # Issue #773: a run's services are on its own pod's loopback, so no runner pod takes a connection
 # from anything and none dials another runner pod.
@@ -1666,9 +1766,9 @@ begin_phase images
 # entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
     docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-task-title/task-title.cjs "$work/"
+cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/executor-common/skill-view.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-task-title/task-title.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
-printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
+printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs skill-view.cjs jira.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >"$work/dashboard-build.log" 2>&1 &
 dash_build=$!
@@ -3254,6 +3354,26 @@ case "$skills_org$skills_ws" in
 *'"status":201'*'"status":201'*) ok 'the org skill and the workspace skill are published' ;;
 *) bad 'the org skill and the workspace skill are published' "org: $skills_org workspace: $skills_ws" ;;
 esac
+# BEL-286: the org switches a built-in off before the task is made, so the row carries a hidden built-in whatever the
+# earlier phases bound (the connection phase leaves the member a Jira connection, which un-hides factory-jira).
+skills_switch() { # skills_switch <true|false> — as the org admin minted above: only an admin manages org skills
+    FACTORY_TOKEN="$skills_admin_token" node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "PUT", headers, body: JSON.stringify({ enabled: process.argv[2] === "true" }) })
+    .then(async (r) => process.stdout.write(r.status + " " + (await r.text()).slice(0, 160)))
+    .catch((e) => process.stdout.write("000 " + e.message));
+' "$BASE/api/org/skills/builtin/factory-task-title/enabled" "$1"
+}
+skills_off="$(skills_switch false)"
+case "$skills_off" in
+200*) ok 'the org switches a built-in off before the skills task is made' ;;
+*) bad 'the org switches a built-in off before the skills task is made' "status and body: $skills_off" ;;
+esac
+# The checkout holds a skill named like the pinned workspace skill (and two others), so the resumed pod's view
+# is built against a real clash.
+skills_clash="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/clash; git clone -q /origins/$SMOKE_REPO.git /tmp/clash; cd /tmp/clash
+for d in .claude/skills/lane-ws-skill .claude/skills/lane-repo-other-claude .agents/skills/lane-repo-other; do mkdir -p \$d; printf '%s\n' '---' \"name: \${d##*/}\" 'description: Lane fixture repo skill - use it never.' '---' 'Nothing to do.' >\$d/SKILL.md; done
+git -c user.name=test-k8s -c user.email=test-k8s@localhost add -A; git -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q -m lane-repo-skills; git push -q origin HEAD:main; echo pushed" 2>&1 || true)"
+case "$skills_clash" in *pushed*) ok 'the origin ships repo skills named like the workspace skill' ;; *) bad 'the origin ships repo skills named like the workspace skill' "$skills_clash" ;; esac
 skills_job="$(queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
 skills_pod="$(await_runner_pod "$skills_job")"
 if [ -z "$skills_job" ] || [ -z "$skills_pod" ]; then
@@ -3280,11 +3400,38 @@ else
     expect_contains 'the resumed run holds the org skill at the pinned sha' "$skills_out" "skills lane-org-skill $skills_org_sha"
     expect_contains 'the resumed run holds the workspace skill at the sha it was made with' "$skills_out" "skills lane-ws-skill $skills_ws_sha"
     expect_not_contains 'the resumed run does not hold the version published after the task was made' "$skills_out" "$skills_ws_sha2"
+    # BEL-286: this output is the resumed run's (a new pod, the same row), so the hidden set survives the pod loss.
+    expect_contains 'the resumed runner is told to hide the built-in the org switched off' "$skills_out" 'hidden factory-task-title'
     expect_contains "the org skill's helper file opens for the agent" "$skills_out" 'helper lane-org-skill/ref/helper.txt open'
     expect_contains "the workspace skill's helper file opens for the agent" "$skills_out" 'helper lane-ws-skill/ref/helper.txt open'
+    # The executors' view builder, run by the stub on the resumed pod against the clashing checkout: the workspace
+    # copy is the one entry of its name in both views, and opencode's view still holds the checkout's other skills.
+    expect_contains 'the resumed pod links the workspace skill into the claude view' "$skills_out" 'view claude lane-ws-skill /task/.factory/skills-root/.claude/skills/lane-ws-skill'
+    expect_contains 'the resumed pod links the workspace skill into the opencode view' "$skills_out" 'view opencode lane-ws-skill /task/.factory/skills-root/.claude/skills/lane-ws-skill'
+    skills_view_ws="$(printf '%s\n' "$skills_out" | grep -c '^view opencode lane-ws-skill ' || true)"
+    [ "$skills_view_ws" = 1 ] && ok 'the opencode view holds exactly one copy of the workspace skill' || bad 'the opencode view holds exactly one copy of the workspace skill' "$skills_view_ws lines"
+    expect_contains "the opencode view still holds the checkout's .agents skill" "$skills_out" '/.agents/skills/lane-repo-other'
+    expect_not_contains 'the control: the view builder did not refuse' "$skills_out" 'refused'
 fi
 
-for job in $hard $drained $evicted $lost $final $unpullable $skills_job; do
+# BEL-286: a task whose owner holds no Jira connection (the org admin minted above has none, so nothing binds by
+# default) is made with factory-jira hidden: the row's skill_hidden is the stored decision the claim carries. The
+# switched-off built-in is the control that the column was read at all.
+skills_admin_exec="$(FACTORY_TOKEN="$skills_admin_token" http_status PUT "$BASE/api/workspace/executors" \
+    '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')"
+[ "$skills_admin_exec" = 200 ] && ok 'the connection-less admin stores the task executor' || bad 'the connection-less admin stores the task executor' "status $skills_admin_exec"
+skills_nojira_job="$(FACTORY_TOKEN="$skills_admin_token" queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
+skills_nojira_hidden="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "job=$skills_nojira_job" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+select coalesce(string_agg(h->>'name', ',' order by h->>'name'), '') from job, jsonb_array_elements(skill_hidden) h where id = :'job';
+SQL
+)"
+expect_contains 'the control: a task with no Jira connection has its stored hidden list read' "$skills_nojira_hidden" 'factory-task-title'
+expect_contains 'a task with no Jira connection hides factory-jira' "$skills_nojira_hidden" 'factory-jira'
+
+skills_switch true >/dev/null
+for job in $hard $drained $evicted $lost $final $unpullable $skills_job $skills_nojira_job; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

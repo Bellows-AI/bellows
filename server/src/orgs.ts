@@ -27,7 +27,7 @@ import { createNotificationOutboxStore, type NotificationOutboxStore } from './n
 import { createGitHubAppClient, type GitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
-import type { RepoSkillRead } from './github/skill-read.js';
+import type { RepoSkillReader } from './skill-catalog.js';
 import { trackedRepos } from './db/tracked-repos.js';
 import { type CommerceStore, createCommerceStore } from './db/commerce-store.js';
 import { createWorkflowStore, type WorkflowStore } from './db/workflows/workflow-store.js';
@@ -75,7 +75,7 @@ export interface OrgRuntime {
     /** A page of the repository's branch names (or a prefix search) through the org's installation; absent offline. */
     listBranches?: GitHubAppClient['listBranches'] | undefined;
     /** The repository's own skills at a branch tip through the org's installation; rejects when unconfirmed; absent offline. */
-    repoSkills?: ((repo: string, branch: string | null, signal?: AbortSignal) => Promise<RepoSkillRead>) | undefined;
+    repoSkills?: RepoSkillReader | undefined;
     /** A branch's tip through the org's installation, null when it cannot be read; absent offline. */
     branchHead?: ((repo: string, branch: string) => Promise<string | null>) | undefined;
     /** The artifact index over the object store (070): the org's chunks and manifests; present with the other stores. */
@@ -226,6 +226,7 @@ function buildOrgStores({
         stop: (id, by) => jobs.stop(id, by),
         close: (id, by) => jobs.markDone(id, by),
         telemetrySource: config.telemetrySource,
+        githubApp: tokens !== undefined,
         ...(client ? { revisionOf: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
     });
     // The PR observer (063): reads the org's installation, records merges through the job store and
@@ -411,8 +412,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                       branchHead: (repo: string, branch: string) => client.readBranchHead(repo, branch),
                       listBranches: (repo: string, request: { query?: string; cursor?: string }) =>
                           client.listBranches(repo, request),
-                      repoSkills: (repo: string, branch: string | null, signal?: AbortSignal) =>
-                          client.listRepoSkills(repo, branch, signal),
+                      repoSkills: (repo, branch, dirs, signal) => client.listRepoSkills(repo, branch, dirs, signal),
                   }
                 : {}),
             githubToken: tokens,

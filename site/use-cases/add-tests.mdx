@@ -1,0 +1,102 @@
+---
+title: "Add tests to a package"
+description: "Raise test coverage for one package or endpoint, with gates that prove the new tests run and pass."
+---
+
+You want more tests for one part of your code, such as the `notes` package in `acme/notes-api`. You give Bellows a prompt that names the package and the cases. The agent writes the tests, runs them while it works, and the gates confirm they pass before a pull request is published.
+
+## Before you start
+
+- Your repo has a `.bellows.yaml` with an `image` and a test gate. See [Configure your repo](/guides/configure-repo).
+- You know how [gates](/guides/gates) run, including `on_demand` and `filter`.
+- If the integration tests need Postgres or Redis, declare it as a [service](/guides/services).
+- You can create tasks in the app, the [CLI](/cli/commands) or the [MCP server](/mcp/tools). See [Run tasks](/guides/run-tasks).
+
+## Steps
+
+<Steps>
+  <Step title="Add gates that verify the work">
+    Keep the full `test` gate. Add an `on_demand` gate with `filter: true`, so the agent can run just the tests it is writing in seconds instead of the whole suite.
+
+    ```yaml .bellows.yaml
+    environment:
+        image: golang:1.25
+        cache:
+            - GOCACHE
+            - GOMODCACHE
+        setup: "go mod download"
+        gates:
+            - name: build
+              command: "go build ./..."
+              timeout: 5
+            - name: test
+              command: "go test -race -count=1 ./..."
+              timeout: 10
+            - name: test-filter
+              command: 'go test -race -count=1 -run "$GATE_FILTER" ./...'
+              on_demand: true
+              filter: true
+    ```
+
+    Commit this to the default branch first. Bellows reads the file from the base branch, not from the agent's work.
+  </Step>
+  <Step title="Optionally fail under a coverage threshold">
+    A gate is any shell command, so a coverage check is a plain script. This one fails if the `notes` package is under 80 percent.
+
+    ```yaml .bellows.yaml (excerpt)
+            - name: coverage
+              command: 'go test -count=1 -coverprofile=c.out ./internal/notes/ && go tool cover -func=c.out | awk "/^total:/ { sub(/%/, \"\", \$3); exit (\$3 < 80) }"'
+              timeout: 10
+    ```
+
+    That quoting is hard to read. If you want a threshold that is easy to change, put it in a script in your repo and set `command: "sh scripts/check-coverage.sh"`. The gate writes `c.out` into the tree, so add it to `.gitignore`.
+  </Step>
+  <Step title="Write a prompt that names the package and the cases">
+    Click **New task**, pick `acme/notes-api` and an [executor](/guides/executors), and describe the work.
+
+    ```text Prompt
+    Add unit tests for the notes package in internal/notes.
+
+    Cover these cases:
+    - Create: empty title is rejected, title over 200 chars is rejected,
+      duplicate title for the same user is rejected.
+    - Update: unknown id returns ErrNotFound, a stale version returns ErrConflict.
+    - Delete: deleting twice is idempotent.
+    - List: pagination returns the right page and an empty page past the end.
+
+    Use table-driven tests and the existing fakes in internal/notes/testutil.
+    Do not change production code. If you find a bug, leave a failing test
+    out and describe the bug in the pull request instead.
+
+    Run the test-filter gate while you iterate, then run the full test gate
+    before you finish.
+    ```
+  </Step>
+  <Step title="Review the result">
+    Open the task. The **Verification** panel shows each gate. When it is green, review the pull request.
+  </Step>
+</Steps>
+
+## What you get
+
+- A pull request that adds only test files, when you said not to touch production code.
+- Gate results in the task's **Verification** panel: `build`, `test` and, if you added it, `coverage`.
+- A summary of what was covered and what was skipped, in the pull request and the final message.
+
+<Note>
+  If a gate keeps failing, Bellows runs repair rounds and then ships a draft pull request. To block publishing until gates pass, set `policy: gates: required`. See [Policy and reviewers](/guides/policy-and-reviewers).
+</Note>
+
+## Tips
+
+- One package or endpoint per task. A narrow task finishes faster and gives a pull request you can read.
+- Say "do not change production code" when that is what you want. Otherwise the agent may refactor to make code testable.
+- Name the cases. "Add tests" gets happy paths. A list of edge cases gets edge cases.
+- Read the test names in the diff first. They show quickly whether the agent understood the cases.
+- Follow up for gaps, for example "add a test for a nil context in Create". The agent continues in the same checkout. See [Task lifecycle](/guides/task-lifecycle).
+- Keep the filtered gate at 10 minutes or less, or the agent cannot run it while it works.
+
+## Variations
+
+- **Postgres-backed tests.** Add a `db` service and point your test at `localhost`. See [Services](/guides/services).
+- **Node project.** Use `npx vitest run $GATE_FILTER` for the filtered gate and `npm_config_cache` in `cache`.

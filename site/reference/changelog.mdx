@@ -1,0 +1,95 @@
+---
+title: "Changelog"
+description: "What changed in each Bellows release, in plain words."
+---
+
+User-facing changes only. Self-hosting upgrade notes live in the release notes on [GitHub](https://github.com/Bellows-AI/bellows/releases).
+
+<Update label="v0.0.15" description="2026-11-06">
+  **New**
+  - **MCP server.** Drive Bellows from Claude Code, Claude.ai or any MCP client. It is on for Bellows Cloud and switched on by the admin on self-hosted installs. See [Connect an MCP client](/mcp/connect).
+  - **Task titles.** Every task has a short title you can edit from the task page.
+  - **Base branch.** Pick the branch a task starts from in the composer.
+  - **Skill menu.** Type `/` in the composer to pick a [skill](/guides/skills).
+
+  **Improved**
+  - A redesigned task page: controls on top, published work in an **Outcome** tile, and collapsible sections.
+  - New task and follow-up share one chat input, with attach and send inside the box.
+  - A run that changed nothing skips its gates or reuses the last result.
+
+  **Fixed**
+  - Recovery after an infrastructure loss keeps the agent's own branch.
+</Update>
+
+<Update label="v0.0.14" description="2026-11-02">
+  **New**
+  - **Notifications.** Get told when a task is ready for review, blocked on a person, or has a question. Discord is supported first. See [Connections](/guides/connections#discord-notifications).
+  - **Attachments** reach the agent, with image previews and inline tiles in the chat. See [Attachments](/guides/attachments).
+  - **Connect block.** A task that needs a connection asks for it, then resumes once you connect.
+  - **Admin actions.** Admins can follow up on, retry or control the wait of another member's task. These actions are audited and the member is notified.
+
+  **Improved**
+  - A compact layout for Settings, notifications, repositories, executors, environment and the task composer, and a new integrations overview and catalog.
+  - Task detail shows live gate progress at the end of a run.
+  - Environment secrets use one stored format.
+</Update>
+
+<Update label="v0.0.13" description="2026-10-30">
+  **New**
+  - **Managed connections** with personal defaults, and a shared sign-in flow behind them.
+  - **Jira through Atlassian sign-in.** Connect Jira with your own Atlassian account. Older API-token Jira connections were disconnected, so reconnect once. See [Connections](/guides/connections#jira).
+
+  **Changed**
+  - Environment secrets are now stored encrypted. See [Environment variables and secrets](/guides/env-and-secrets).
+  - The agent may use any git and `gh` operation in its task checkout.
+
+  **Fixed**
+  - A leftover runner stuck terminating now hands the task back as blocked instead of letting it expire.
+  - The gates skill no longer asks for a stale tool.
+</Update>
+
+<Update label="v0.0.12" description="2026-10-28">
+  **Changed**
+  - Server-side secrets now live in one encrypted store. This release is groundwork for encrypting environment secrets, which arrived in v0.0.13.
+  - More than one dashboard replica is supported for self-hosted installs that use S3 for artifacts.
+</Update>
+
+<Update label="v0.0.11" description="2026-10-27">
+  **Improved**
+  - **Gates no longer run twice.** If the agent already passed a gate on the final files, completion reuses that result. See [Gates](/guides/gates#when-gates-run).
+  - Gate runs and pull request actions are recorded and shown in the task stats and activity.
+  - Claude Code can run gates and publish itself.
+
+  **Fixed**
+  - Claude Code's command allowlist refused the gate and publish commands.
+  - A runner taken over after a driver restart kept an old lease, so Jira and GitHub refused it.
+  - Transcripts are no longer lost when a task volume is cleaned up.
+</Update>
+
+<Update label="v0.0.10" description="2026-10-26">
+  **New**
+  - **Gate filter.** A gate with `filter: true` lets the agent run part of a suite. The value arrives as `$GATE_FILTER`. A filtered run never counts as proof. See [Gates](/guides/gates#filters).
+  - The agent runs the gates that cover its change before it pushes.
+  - **Token accounting** by task, run, user, day, model and source.
+
+  **Improved**
+  - Tasks that changed nothing skip the end-of-run gates.
+  - Executor images ship `python3` and `procps`, and OpenCode ships `ripgrep`.
+</Update>
+
+<Update label="v0.0.9" description="2026-10-24">
+  **Improved**
+  - **More resilient runs.** Setup, gates and services run in the task's own runner, with a checkpoint of each attempt. A lost node interrupts a task and resumes it instead of losing it.
+  - Limits on how many tasks run at once, in total, per organization and per repository.
+  - The runner's GitHub token renews during long runs.
+  - The agent's commands run under their own user.
+</Update>
+
+<Update label="v0.0.7" description="2026-10-14">
+  **New**
+  - **On-demand gates.** Mark a gate `on_demand: true` and the agent runs it only when needed. See [Gates](/guides/gates#on-demand-gates).
+  - CLI: retry, reopen, answer questions and read prompts from a file or stdin.
+
+  **Changed**
+  - A follow-up on a task that still has an unfinished run is now refused with a `409` instead of queuing a second one.
+</Update>

@@ -124,9 +124,11 @@ describe('SideNav', () => {
         expect(inside).toContain('href="/settings/organization"');
         expect(inside).toContain('href="/settings/workspace"');
         expect(inside).toContain('href="/settings/repos"');
+        expect(inside).toContain('href="/settings/skills"');
         expect(inside).toContain('href="/settings/executors"');
         expect(inside).toContain('Organization');
         expect(inside).toContain('Repositories');
+        expect(inside).toContain('Skills');
         expect(inside).toContain('Executors');
         // Off the settings area the tree is not polled, has no data and is not navigation for
         // anything in view — it renders nothing, the same reading that gates the task preview.

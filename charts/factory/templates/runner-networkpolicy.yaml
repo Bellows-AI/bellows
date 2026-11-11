@@ -5,9 +5,10 @@ are sidecars on its loopback, issue #773) and every aux Job — carries `factory
 release's `app.kubernetes.io/instance` (the driver's K8S_RELEASE), and none carries
 `app.kubernetes.io/name`, so this selects them and no chart pod. They run agent-written code, so
 they reach only what a run needs:
-  - DNS on port 53, only to the resolvers: kube-dns pods (`k8s-app: kube-dns` in kube-system) and
-    isolation.dnsCidrs — NodeLocal DNSCache answers on a host-network link-local address
-    (169.254.20.10) no pod selector matches and blockedCidrs covers. Port 53 is not open to any
+  - DNS on port 53, only to the resolvers: kube-dns and node-local-dns pods (`k8s-app` in
+    kube-system) and isolation.dnsCidrs — NodeLocal DNSCache answers either on a host-network
+    link-local address (169.254.20.10) no pod selector matches and blockedCidrs covers, or, on GKE
+    Dataplane V2, from pod-networked node-local-dns pods the kube-dns Service address is redirected to. Port 53 is not open to any
     other address, so a private host listening on 53 stays behind blockedCidrs. A cluster whose
     DNS carries other labels must list its resolver in dnsCidrs, or runners lose DNS;
   - this release's dashboard, on its serving port only (the branch reporter posts to
@@ -47,6 +48,12 @@ spec:
                 podSelector:
                     matchLabels:
                         k8s-app: kube-dns
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+                podSelector:
+                    matchLabels:
+                        k8s-app: node-local-dns
               {{- range .Values.isolation.dnsCidrs }}
               - ipBlock:
                     cidr: {{ . }}

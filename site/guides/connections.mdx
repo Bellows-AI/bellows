@@ -1,0 +1,89 @@
+---
+title: "Connections"
+description: "What Bellows connects to, what each connection lets tasks do, and how to set it up."
+---
+
+## At a glance
+
+| Service | What it is for | Who connects it |
+| --- | --- | --- |
+| GitHub | Cloning, branches, pull requests | Your organization, through the GitHub App |
+| Jira | Tasks look up and comment on your Jira issues | You, with your own Atlassian account |
+| Discord | Notifications about task events | You or an admin, through a webhook |
+
+Open **Settings → Integrations** to see what you have connected. **Browse integrations** lists everything available.
+
+## GitHub
+
+GitHub is the base of Bellows. You sign in with GitHub, and your organizations are the places where the Bellows GitHub App is installed.
+
+- **Sign in.** Click **Sign in with GitHub**. If you have no installation, you are asked to install the App first, then sign in again.
+- **Choose repositories.** On **Choose organizations and repositories**, pick what Bellows tracks. This changes what Bellows tracks, not your GitHub permissions.
+- **What runs use it for.** For each run, Bellows issues a short-lived token limited to that one repository. The agent uses it to read and push code, open the pull request and work with issues. There is no personal token to manage.
+
+To add repositories later, ask an administrator to update the App installation on GitHub. Then open **Settings → Repositories**.
+
+<Note>
+You cannot set `GITHUB_TOKEN` yourself. See [Environment variables and secrets](/guides/env-and-secrets).
+</Note>
+
+## Jira
+
+Connect Jira so that a task can read a ticket. Tasks can look issues up. If you allow it, they can also add comments. A connection belongs to you only. Admins cannot use it.
+
+<Steps>
+  <Step title="Open Integrations">
+    Go to **Settings → Integrations**, then **Browse integrations**, and choose **Jira**.
+  </Step>
+  <Step title="Connect">
+    Click **Connect**. In the **Connect Jira** dialog you can:
+    - Fill **Jira site (optional)** with a site such as `acme.atlassian.net`. Leave it blank to allow every site your Atlassian account can reach.
+    - Turn on **Allow adding comments**. Without it tasks can only look Jira up.
+  </Step>
+  <Step title="Approve in Atlassian">
+    Click **Continue to Atlassian** and approve. You return to Bellows with a "Jira connected." notice.
+  </Step>
+</Steps>
+
+Each connection has its own page. There you can **Reconnect** or **Disconnect**. Reconnect with the same Atlassian account. If you turn on comments later, tasks already started with read-only access are refused until you start them again.
+
+### Using Jira on a task
+
+Mention the ticket in the task, for example "Fix PROJ-123". When the task needs Jira and you have not connected it, the task page shows a block that says the task needs a Jira connection. Your options:
+
+- **Connect Jira**, which opens the flow above.
+- **Use selected connection**, if you have several. Pick the one this task uses.
+- **Continue without it**.
+
+The task stays queued, or pauses, until you choose. With Jira connected, the agent reads the ticket and sets the task title from the ticket's subject.
+
+## Discord notifications
+
+Discord sends task events to a channel you choose. It uses a webhook, not an account login.
+
+<Steps>
+  <Step title="Create a webhook in Discord">
+    In your Discord channel settings, create a webhook and copy its URL. Only `discord.com` webhook URLs are accepted.
+  </Step>
+  <Step title="Add the notification in Bellows">
+    - **Settings → Workspace**, section **My notifications**, for updates to your own tasks.
+    - **Settings → Organization**, section **Organization notifications**, for a channel shared by the whole organization. Admins can write it.
+
+    Click **Add notification**, choose the **Channel** (Discord), paste the **Webhook URL** and pick the **Events**.
+  </Step>
+  <Step title="Test it">
+    Use **Send test notification** on the row to check it works.
+  </Step>
+</Steps>
+
+Events you can pick: **Task ready**, **Task blocked**, **Task has a question** and **Admin action on a task**. You can limit a notification to some repositories (one per line, empty for all) and switch it off with the **Enabled** toggle.
+
+The webhook URL is stored encrypted and never shown again. When you edit a notification, leave the field blank to keep it.
+
+## Coming later
+
+Slack, GitLab and MCP servers are not connectable yet.
+
+**Worked example:** [Fix a bug from a Jira ticket](/use-cases/fix-jira-bug).
+
+Self-hosting? Set up the [GitHub App](/self-host/github-app) and the [Jira app](/self-host/jira-app) first.

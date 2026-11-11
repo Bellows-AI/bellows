@@ -25,10 +25,11 @@ const ORG = testOrg();
 const OTHER_ORG = testOrg();
 const ALICE = testUser('skill-alice');
 const BOB = testUser('skill-bob');
+const CAROL = testUser('skill-carol');
 const PREFIX = 'test/';
 const RETENTION_DAYS = 30;
 
-const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE, BOB] });
+const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE, BOB, CAROL] });
 let sql: Sql;
 let objects: ObjectStore;
 let root: string;
@@ -148,6 +149,46 @@ describe.skipIf(!enabled)('the skill store', () => {
         expect(back.result).toBe('exists');
         expect((await store.get(null, skill.id))?.current.id).toBe(first.id);
         expect(await versionRows(skill.id)).toHaveLength(2);
+    });
+
+    it("names the version's writer as its author, and null once the user row is deleted", async () => {
+        const store = storeOf();
+        const skill = await store.create(null, { name: 'authored', bundle: md('authored', 'v1'), createdBy: ALICE.id });
+        if (skill.result !== 'created') throw new Error(skill.result);
+        expect(skill.skill.current.author).toEqual({ id: ALICE.id, login: ALICE.login });
+
+        const added = await store.addVersion(null, skill.skill.id, md('authored', 'v2'), { createdBy: CAROL.id });
+        if (added.result !== 'added') throw new Error(added.result);
+        expect(added.skill.current.author).toEqual({ id: CAROL.id, login: CAROL.login });
+        expect((await store.get(null, skill.skill.id))?.current.author?.login).toBe(CAROL.login);
+
+        await sql`delete from app_user where id = ${CAROL.id}`;
+        expect((await store.get(null, skill.skill.id))?.current.author).toBeNull();
+    });
+
+    it('keeps the first author on an identical re-upload', async () => {
+        const store = storeOf();
+        const skill = await created(store, null, 'reuploaded', 'v1');
+        const again = await store.addVersion(null, skill.id, md('reuploaded', 'v1'), { createdBy: BOB.id });
+        if (again.result !== 'exists') throw new Error(again.result);
+        expect(again.skill.current.author).toEqual({ id: ALICE.id, login: ALICE.login });
+    });
+
+    it('refuses an expectedVersionId that is no longer current and writes no row', async () => {
+        const store = storeOf();
+        const skill = await created(store, null, 'guarded', 'v1');
+        const first = skill.current;
+        const second = await store.addVersion(null, skill.id, md('guarded', 'v2'));
+        expect(second.result).toBe('added');
+
+        const stale = await store.addVersion(null, skill.id, md('guarded', 'v3'), { expectedVersionId: first.id });
+        expect(stale).toEqual({ result: 'stale' });
+        expect(await versionRows(skill.id)).toHaveLength(2);
+
+        const current = (await store.get(null, skill.id))!.current;
+        const fresh = await store.addVersion(null, skill.id, md('guarded', 'v3'), { expectedVersionId: current.id });
+        expect(fresh.result).toBe('added');
+        expect(await versionRows(skill.id)).toHaveLength(3);
     });
 
     it('leaves no skill or version row when the object store fails, and a retry then succeeds', async () => {
@@ -273,6 +314,72 @@ describe.skipIf(!enabled)('the skill store', () => {
         );
         await writeFile(join(root, skillObjectKey(PREFIX, ORG, sha256)), 'tampered');
         await expect(store.readVersion(id, 'any')).rejects.toBeInstanceOf(SkillIntegrityError);
+    });
+
+    describe('requirements', () => {
+        const needs = (name: string, connections: string, body = 'Do the thing.') =>
+            bundleFromSkillMd(
+                name,
+                `---\nname: ${name}\ndescription: ${name} helps\nmetadata:\n  requires-connections: ${connections}\n---\n${body}\n`
+            );
+        const requiresOf = (versionId: string) =>
+            sql<{ requires_tools: string[]; requires_connections: string[] }[]>`
+                select requires_tools, requires_connections from skill_version where id = ${versionId}
+            `;
+
+        it('a version stores its requirements', async () => {
+            const store = storeOf();
+            const r = await store.create(null, {
+                name: 'needs-jira',
+                bundle: needs('needs-jira', 'jira'),
+                createdBy: null,
+            });
+            if (r.result !== 'created') throw new Error(r.result);
+            expect(await requiresOf(r.skill.current.id)).toEqual([
+                { requires_tools: [], requires_connections: ['jira'] },
+            ]);
+        });
+
+        it('effective() returns them per current version', async () => {
+            const store = storeOf();
+            await created(store, null, 'plain-one');
+            await store.create(null, {
+                name: 'needs-jira-two',
+                bundle: needs('needs-jira-two', 'jira'),
+                createdBy: null,
+            });
+            const byName = new Map((await store.effective(null)).map((s) => [s.name, s.requires]));
+            expect(byName.get('plain-one')).toEqual({ tools: [], connections: [] });
+            expect(byName.get('needs-jira-two')).toEqual({ tools: [], connections: ['jira'] });
+        });
+
+        it('a new version with other requirements replaces them for new reads only', async () => {
+            const store = storeOf();
+            const r = await store.create(null, { name: 'shifts', bundle: needs('shifts', 'jira'), createdBy: null });
+            if (r.result !== 'created') throw new Error(r.result);
+            const old = r.skill.current.id;
+            await store.addVersion(null, r.skill.id, md('shifts', 'no longer needs it'));
+            const now = (await store.effective(null)).find((s) => s.name === 'shifts');
+            expect(now?.requires).toEqual({ tools: [], connections: [] });
+            expect(now?.versionId).not.toBe(old);
+            expect(await requiresOf(old)).toEqual([{ requires_tools: [], requires_connections: ['jira'] }]);
+        });
+
+        it('an identical re-upload of a version stored with no requirements sets them on the same version id', async () => {
+            const store = storeOf();
+            const bundle = needs('pre-131', 'jira');
+            const r = await store.create(null, { name: 'pre-131', bundle, createdBy: null });
+            if (r.result !== 'created') throw new Error(r.result);
+            await sql`update skill_version set requires_connections = '{}' where id = ${r.skill.current.id}`;
+            expect((await store.effective(null)).find((s) => s.name === 'pre-131')?.requires.connections).toEqual([]);
+
+            const again = await store.addVersion(null, r.skill.id, bundle);
+            expect(again.result).toBe('exists');
+            expect(await versionRows(r.skill.id)).toHaveLength(1);
+            const now = (await store.effective(null)).find((s) => s.name === 'pre-131');
+            expect(now?.versionId).toBe(r.skill.current.id);
+            expect(now?.requires.connections).toEqual(['jira']);
+        });
     });
 });
 
@@ -461,5 +568,27 @@ describe.skipIf(!enabled)('the skill retention sweep', () => {
         const summary = await collectorOf().collect();
         expect(summary.failed).toBe(1);
         expect(await objectOf('test/_attachments/x/y')).not.toBeNull();
+    });
+});
+
+describe.skipIf(!enabled)('built-in skill switch', () => {
+    it("switchedOff lists only this org's names", async () => {
+        const mine = storeOf(ORG);
+        const theirs = storeOf(OTHER_ORG);
+        expect(await mine.switchedOff()).toEqual([]);
+        await mine.setBuiltinEnabled('factory-jira', false, ALICE.id);
+        await theirs.setBuiltinEnabled('factory-ask', false, null);
+        expect(await mine.switchedOff()).toEqual(['factory-jira']);
+        expect(await theirs.switchedOff()).toEqual(['factory-ask']);
+    });
+
+    it('switch off then on is idempotent', async () => {
+        const store = storeOf(ORG);
+        await store.setBuiltinEnabled('factory-idem', false, ALICE.id);
+        await store.setBuiltinEnabled('factory-idem', false, ALICE.id);
+        expect(await store.switchedOff()).toContain('factory-idem');
+        await store.setBuiltinEnabled('factory-idem', true, ALICE.id);
+        await store.setBuiltinEnabled('factory-idem', true, ALICE.id);
+        expect(await store.switchedOff()).not.toContain('factory-idem');
     });
 });

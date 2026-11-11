@@ -86,7 +86,38 @@ const baseBranchEnv = (job: BoardJob): [string, string][] => {
 export const SKILLS_PATH_ENV = 'FACTORY_SKILLS_PATH';
 const hasPinnedSkills = (job: BoardJob): boolean => (job.skillPin?.length ?? 0) > 0;
 const skillsEnv = (job: BoardJob): [string, string][] => (hasPinnedSkills(job) ? [[SKILLS_PATH_ENV, SKILLS_DIR]] : []);
+/**
+ * The pinned workspace skills, as one comma list in pin order, set only when non-empty. A workspace skill must beat a
+ * same-name checkout skill, which neither CLI's own search order guarantees, so the entrypoints promote exactly these
+ * names. Both executors read `envPairs`, so a replacement pod or a takeover sets it again from the same pin.
+ */
+export const WORKSPACE_SKILLS_ENV = 'FACTORY_WORKSPACE_SKILLS';
+const workspaceSkillsEnv = (job: BoardJob): [string, string][] => {
+    const names = (job.skillPin ?? []).filter((e) => e.source === 'workspace').map((e) => e.name);
+    return names.length === 0 ? [] : [[WORKSPACE_SKILLS_ENV, names.join(',')]];
+};
 const claudeSkillArgs = (job: BoardJob): string[] => (hasPinnedSkills(job) ? ['--add-dir', SKILLS_ROOT] : []);
+
+/**
+ * BEL-286: the built-in skills this task does not list, as one comma list the runner entrypoints read. Both executors,
+ * main agent and reviewer (`reviewerPlan` builds on this plan), always carry the variable: empty means nothing is hidden.
+ * A claim whose `skillHidden` this client could not read throws here, so no container starts on a guess.
+ */
+export const HIDDEN_SKILLS_ENV = 'FACTORY_HIDDEN_SKILLS';
+const hiddenSkills = (job: BoardJob): string[] => {
+    if (job.skillHiddenUnreadable !== undefined) {
+        throw new Error(`refusing to run job ${job.id}: ${job.skillHiddenUnreadable}`);
+    }
+    return job.skillHidden ?? [];
+};
+const hiddenSkillsEnv = (job: BoardJob): [string, string][] => [[HIDDEN_SKILLS_ENV, hiddenSkills(job).join(',')]];
+/** claude-code's second guard beside the entrypoint's filtered listing: a `Skill(<name>)` deny refuses the call. */
+const claudeHiddenArgs = (job: BoardJob): string[] => {
+    const names = hiddenSkills(job);
+    return names.length === 0
+        ? []
+        : ['--settings', JSON.stringify({ permissions: { deny: names.map((name) => `Skill(${name})`) } })];
+};
 
 /**
  * Issue #822: a takeover or handover of a session the row minted itself (`ownSession` — a root's,
@@ -120,6 +151,8 @@ function opencodePlan(job: BoardJob, session: RunSession | null, attachmentsPath
         ...repoCacheEnv(job),
         ...baseBranchEnv(job),
         ...skillsEnv(job),
+        ...workspaceSkillsEnv(job),
+        ...hiddenSkillsEnv(job),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
     if (session) {
@@ -169,8 +202,16 @@ function claudePlan(
         ...npmQuietEnv(job),
         ...repoCacheEnv(job),
         ...baseBranchEnv(job),
+        ...skillsEnv(job),
+        ...workspaceSkillsEnv(job),
+        ...hiddenSkillsEnv(job),
     ];
-    const cliArgs = [session.resume ? '--resume' : '--session-id', session.id, ...claudeSkillArgs(job)];
+    const cliArgs = [
+        session.resume ? '--resume' : '--session-id',
+        session.id,
+        ...claudeSkillArgs(job),
+        ...claudeHiddenArgs(job),
+    ];
     // Auto mode is pinned on the command line as well as in managed settings: a resumed session
     // otherwise restores the mode it recorded, and default mode denies every unlisted command.
     cliArgs.push(...(config.skipPermissions ? ['--dangerously-skip-permissions'] : ['--permission-mode', 'auto']));

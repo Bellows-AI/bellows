@@ -5,7 +5,7 @@ import { runnerName } from './k8s-podspec.js';
 import { expectOk, HTTP_NOT_FOUND, type K8sDeps } from './k8s-transport.js';
 import type { RunOutcome } from '../runner.js';
 import type { SupervisorReport } from '../supervisor-contract.js';
-import { type KillRecord, killMarkOf, settleEnd } from '../termination.js';
+import { type KillRecord, killMarkOf, nodeLossField, settleEnd } from '../termination.js';
 
 /**
  * What a Stop (`kill`) leaves for the polls it interrupts. Deleting a Job makes the very next
@@ -48,7 +48,7 @@ export class RunnerVanished extends Error {
 
 /** A run whose runner Job was deleted under it, by `settleEnd` over what the supervisor reported. */
 export function vanishedOutcome(e: RunnerVanished, report: SupervisorReport | null): RunOutcome {
-    const { timedOut, infraLoss } = settleEnd({
+    const settled = settleEnd({
         kills: [],
         driverKilledHard: false,
         report,
@@ -59,9 +59,10 @@ export function vanishedOutcome(e: RunnerVanished, report: SupervisorReport | nu
     return {
         exitCode: report?.agentExit ?? null,
         output: '',
-        timedOut,
+        timedOut: settled.timedOut,
         started: true,
-        ...(infraLoss ? { infraLoss } : {}),
+        ...(settled.infraLoss ? { infraLoss: settled.infraLoss } : {}),
+        ...nodeLossField(settled),
     };
 }
 

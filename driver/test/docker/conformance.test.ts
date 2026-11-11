@@ -374,6 +374,22 @@ describe('docker waits for the supervisor of a started group to make contact (#8
             expect(d.calls.some((a) => a[0] === 'rm' && a.includes(supervisorName(repoJob)))).toBe(true);
         });
 
+        // BEL-302: a removed container is the platform's doing; one that exited is the supervisor's own end.
+        it('flags a supervisor seen running and then removed as a node loss', async () => {
+            const { thrown } = await lostSync((read) => (read < 3 ? '{"Running":true}' : GONE));
+
+            expect(thrown).toMatchObject({ nodeLoss: true });
+        });
+
+        it('flags no supervisor that merely exited after it was seen running', async () => {
+            const { thrown } = await lostSync((read) =>
+                read < 3 ? '{"Running":true}' : '{"Running":false,"Status":"exited"}'
+            );
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).not.toHaveProperty('nodeLoss');
+        });
+
         it('counts no supervisor that was never seen running, and no read that did not answer', async () => {
             for (const answer of [GONE, new Error('Cannot connect to the Docker daemon')]) {
                 const { thrown, reads } = await lostSync(() => answer);

@@ -25,6 +25,7 @@ const SkillsSchema = z.object({
             description: z.string(),
             source: z.enum(SOURCES),
             shadowedBy: z.enum(SOURCES).optional(),
+            switchedOff: z.boolean().optional(),
             requires: z.object({
                 tools: z.array(z.string()),
                 connections: z.array(z.object({ name: z.string(), selectedBy: z.string().nullable() })),
@@ -42,7 +43,7 @@ type RequirementState = ConnectionStanding | 'unmanaged';
 export const listSkills = defineTool({
     name: 'list_skills',
     description:
-        'List the skills a task can select. `source` says where each comes from (`builtin`, `org`, `workspace`, `repo`); a name held by two sources lists the lower one with `shadowedBy`. Pass `repo` (owner/name, optionally `branch`) to include that repository\'s own `.claude/skills`; a failed read is `repoError`, never "no repo skills". `kind` is "manual" for a skill that needs nothing else, or "provider" for one that needs a connection: each of its `connections` says whether you currently have one (`connected`), have one whose grant lapsed (`needs_reconnect`), or have none (`missing`). A skill name alone authorizes nothing: the board checks your connection at create and at claim.',
+        'List the skills a task can select. `source` says where each comes from (`builtin`, `org`, `workspace`, `repo`); a name held by two sources lists the lower one with `shadowedBy`. Pass `repo` (owner/name, optionally `branch`) to include that repository\'s own skills, read from the skill directories of the selected `executor`\'s CLI (`.claude/skills`, plus the opencode directories for an opencode executor); a failed read is `repoError`, never "no repo skills". `kind` is "manual" for a skill that needs nothing else, or "provider" for one that needs a connection: each of its `connections` says whether you currently have one (`connected`), have one whose grant lapsed (`needs_reconnect`), or have none (`missing`). A skill name alone authorizes nothing: the board checks your connection at create and at claim.',
     scope: 'factory:read',
     routes: [
         ['GET', '/api/skills'],
@@ -60,6 +61,13 @@ export const listSkills = defineTool({
             .string()
             .optional()
             .describe("the branch to read the repository's skills at; default branch if omitted"),
+        executor: z
+            .string()
+            .optional()
+            .describe(
+                "the executor whose CLI will run the task: its CLI decides which of the repository's skill directories are read; your default executor if omitted"
+            ),
+        executorScope: z.enum(['user', 'org']).optional().describe("where `executor` lives; default 'user'"),
     }),
     output: z.object({
         repoError: z.string().nullable(),
@@ -85,11 +93,18 @@ export const listSkills = defineTool({
         ),
     }),
     async run(args, ctx) {
-        const url = args.repo
-            ? `/api/repos/${args.repo}/skills${args.branch ? `?branch=${encodeURIComponent(args.branch)}` : ''}`
-            : '/api/skills';
+        const query = new URLSearchParams();
+        if (args.branch) query.set('branch', args.branch);
+        if (args.executor) {
+            query.set('executor', args.executor);
+            query.set('executorScope', args.executorScope ?? 'user');
+        }
+        const suffix = query.size > 0 ? `?${query.toString()}` : '';
+        const url = args.repo ? `/api/repos/${args.repo}/skills${suffix}` : '/api/skills';
         const skills = judge(await ctx.fetch({ method: 'GET', url }), SkillsSchema);
         if (!skills.ok) return skills.tagged;
+        // A built-in the org switched off is not selectable: it is not listed here.
+        skills.data.skills = skills.data.skills.filter((skill) => skill.switchedOff !== true);
         const managed = skills.data.skills.some((skill) =>
             skill.requires.connections.some((connection) => connection.selectedBy !== null)
         );

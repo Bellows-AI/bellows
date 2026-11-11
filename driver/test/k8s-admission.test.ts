@@ -209,6 +209,19 @@ describe('the admission policy requires the pod hardening (#382)', () => {
  * the runner Job's pod, reached on its loopback through `hostAliases`. The policy fences that shape
  * — template pins paired with the driver's own output, as above.
  */
+// with runner.runtimeClassName set, the API server refuses a driver Job whose pod names any
+// other RuntimeClass, or none; unset, the rule is not rendered and an install without one is unchanged.
+describe('the admission policy requires the runner RuntimeClass when one is set', () => {
+    const pods = policy('pods');
+    const rule = /\{\{- with \.Values\.runner\.runtimeClassName \}\}\n([\s\S]*?)\{\{- end \}\}/.exec(pods)?.[1] ?? '';
+
+    it('compares the pod RuntimeClass with the value, rendered only when it is set', () => {
+        expect(rule).toContain('has(variables.spec.runtimeClassName)');
+        expect(rule).toMatch(/variables\.spec\.runtimeClassName == '\{\{ \. \}\}'/);
+        expect(rule).toMatch(/message: .*runner pods must run under the \{\{ \. \}\} RuntimeClass/);
+    });
+});
+
 describe('the admission policy fences the task pod shape (#773)', () => {
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' });
     const pod = runnerJobSpec(

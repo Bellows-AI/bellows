@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -74,60 +74,145 @@ const run = (script: string, args: string[], env: Record<string, string>): Promi
         );
     });
 
-describe('factory-gate', () => {
-    const env = (url: string) => ({ BELLOWS_GATE_URL: url, BELLOWS_GATE_TOKEN: 'tok-1' });
+/** A unix-socket HTTP server whose handler writes the raw reply itself, to hang up or cut an answer short. */
+async function serveRaw(handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<string> {
+    const server = createServer(handler);
+    servers.push(server);
+    const dir = mkdtempSync(join(tmpdir(), 'factory-ctl-'));
+    dirs.push(dir);
+    const socket = join(dir, 'control.sock');
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    return socket;
+}
 
-    it('POSTs the gate name to $BELLOWS_GATE_URL/run with the bearer and prints the answer unchanged', async () => {
+describe('factory-gate', () => {
+    const env = (socket: string) => ({ FACTORY_CONTROL_SOCKET: socket });
+    /** The exit of a transport failure: retryable, apart from the gate's own failure (22), no gates (3) and usage (2). */
+    const RETRYABLE = 75;
+
+    it('POSTs the gate name to /gate/run on the control socket, no bearer, and prints the answer unchanged', async () => {
         const answer = '{"exitCode":0,"output":"ok","executionId":"e-1"}';
-        const gate = await serve(200, answer);
+        const gate = await serve(200, answer, true);
         const ran = await run(GATE, ['test'], env(gate.listen));
         expect(ran).toMatchObject({ code: 0, stdout: answer });
         expect(gate.seen).toEqual([
-            { method: 'POST', url: '/run', authorization: 'Bearer tok-1', body: '{"gate":"test"}' },
+            { method: 'POST', url: '/gate/run', authorization: undefined, body: '{"gate":"test"}' },
         ]);
     });
 
+    it('never reads the gate pair from its environment: a stale BELLOWS_GATE_URL goes nowhere', async () => {
+        const gate = await serve(200, '{"exitCode":0}', true);
+        const decoy = await serve(200, '{"decoy":true}');
+        const ran = await run(GATE, ['test'], {
+            ...env(gate.listen),
+            BELLOWS_GATE_URL: decoy.listen,
+            BELLOWS_GATE_TOKEN: 'tok-1',
+        });
+        expect(ran).toMatchObject({ code: 0, stdout: '{"exitCode":0}' });
+        expect(decoy.seen).toEqual([]);
+    });
+
     it('sends --filter as the filter field and nothing else', async () => {
-        const gate = await serve(200, '{"exitCode":0}');
+        const gate = await serve(200, '{"exitCode":0}', true);
         await run(GATE, ['unit', '--filter', 'src/a.test.ts'], env(gate.listen));
         expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ gate: 'unit', filter: 'src/a.test.ts' });
     });
 
     it('encodes shell-hostile input as data: nothing is interpolated or run', async () => {
-        const gate = await serve(200, '{}');
+        const gate = await serve(200, '{}', true);
         const hostile = `a"}'; $(touch /tmp/pwned) \`id\` \\n`;
         await run(GATE, ['test', '--filter', hostile], env(gate.listen));
         expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ gate: 'test', filter: hostile });
     });
 
-    it('keeps the answer of a refused run: the retryable 503 body with its executionId, and a nonzero exit', async () => {
+    it('keeps the answer of a refused run: the 503 body with its executionId, and the HTTP exit', async () => {
         const body = '{"error":"not recorded","retryable":true,"executionId":"e-2"}';
-        const gate = await serve(503, body);
+        const gate = await serve(503, body, true);
         const ran = await run(GATE, ['test'], env(gate.listen));
         expect(ran.stdout).toBe(body);
         expect(ran.code).toBe(22);
         expect(ran.stderr).toContain('503');
     });
 
-    it('exits nonzero when nothing answers', async () => {
-        const gate = await serve(200, '{}');
-        const url = gate.listen;
-        servers.pop()?.close();
-        const ran = await run(GATE, ['test'], env(url));
-        expect(ran.code).toBe(1);
-        expect(ran.stdout).toBe('');
+    it('keeps the answer of a gate the driver refuses (422) with the HTTP exit', async () => {
+        const body = '{"error":"filter not allowed"}';
+        const gate = await serve(422, body, true);
+        const ran = await run(GATE, ['test', '--filter', 'x'], env(gate.listen));
+        expect(ran).toMatchObject({ code: 22, stdout: body });
     });
 
-    it('says there are no gates when BELLOWS_GATE_URL is unset', async () => {
-        const ran = await run(GATE, ['test'], {});
+    it("says there are no gates only on the driver's explicit 404 no-gates answer", async () => {
+        const gate = await serve(404, '{"error":"no gates"}', true);
+        const ran = await run(GATE, ['test'], env(gate.listen));
         expect(ran.code).toBe(3);
-        expect(ran.stderr).toContain('BELLOWS_GATE_URL');
+        expect(ran.stderr).toContain('no gates');
+    });
+
+    it('does not take any other 404 for "no gates"', async () => {
+        const gate = await serve(404, '{"error":"not found"}', true);
+        const ran = await run(GATE, ['test'], env(gate.listen));
+        expect(ran.code).toBe(22);
+    });
+
+    it('a missing control socket is a transport failure, never "no gates"', async () => {
+        const ran = await run(GATE, ['test'], env('/nonexistent/control.sock'));
+        expect(ran).toMatchObject({ code: RETRYABLE, stdout: '' });
+        expect(ran.stderr).toContain('retry');
+        expect(ran.stderr).not.toContain('no gates');
+    });
+
+    it('a socket nobody listens on (ECONNREFUSED) is a transport failure', async () => {
+        const socket = await serveRaw(() => undefined);
+        servers.pop()?.close();
+        const ran = await run(GATE, ['test'], env(socket));
+        expect(ran).toMatchObject({ code: RETRYABLE, stdout: '' });
+    });
+
+    it.each([
+        ['a 502 from the proxy', 502, '{"error":"control relay unavailable"}'],
+        [
+            'a retryable 503 before the gate run is open',
+            503,
+            '{"error":"the gate run is not open yet","retryable":true}',
+        ],
+    ])('%s is a retryable transport failure, never "passed" and never "no gates"', async (_name, status, body) => {
+        const gate = await serve(status, body, true);
+        const ran = await run(GATE, ['test'], env(gate.listen));
+        expect(ran.code).toBe(RETRYABLE);
+        expect(ran.stderr).toContain('retry');
+        expect(ran.stderr).not.toContain('no gates');
+    });
+
+    it('a relay that hangs up on the request is a retryable transport failure', async () => {
+        const socket = await serveRaw((req) => req.socket.destroy());
+        const ran = await run(GATE, ['test'], env(socket));
+        expect(ran).toMatchObject({ code: RETRYABLE, stdout: '' });
+    });
+
+    it('a 200 answer cut short is a transport failure and prints no partial result', async () => {
+        const socket = await serveRaw((req, res) => {
+            req.resume();
+            req.on('end', () => {
+                res.writeHead(200, { 'content-length': 500 });
+                res.write('{"exitCode":0,"output":"par');
+                setTimeout(() => res.destroy(), 20);
+            });
+        });
+        const ran = await run(GATE, ['test'], env(socket));
+        expect(ran).toMatchObject({ code: RETRYABLE, stdout: '' });
+    });
+
+    it('a 200 answer that is not JSON is a transport failure, not a pass', async () => {
+        const gate = await serve(200, '<html>proxy error</html>', true);
+        const ran = await run(GATE, ['test'], env(gate.listen));
+        expect(ran.code).toBe(RETRYABLE);
+        expect(ran.stdout).toBe('');
     });
 
     it.each([[[]], [['--filter', 'x']], [['test', 'extra']], [['test', '--filter']], [['test', '--url', 'http://x']]])(
         'refuses the arguments %j without sending anything',
         async (args) => {
-            const gate = await serve(200, '{}');
+            const gate = await serve(200, '{}', true);
             const ran = await run(GATE, args, env(gate.listen));
             expect(ran.code).toBe(2);
             expect(gate.seen).toEqual([]);

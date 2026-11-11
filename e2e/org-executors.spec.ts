@@ -1,8 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import postgres from 'postgres';
 import { ADMIN_ROLE } from '@factory-ai/core';
-import { AUTH_DATABASE_URL, E2E_LOGIN } from '../playwright.config.js';
+import { setRole } from './roles.js';
 import { throughSignIn } from './signin.js';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
 import { DEMOTE_LABEL } from '../web/src/panels/OrgExecutorsPanel.js';
@@ -52,18 +51,6 @@ const trigger = (page: Page, name: string) => page.getByRole('button', { name: `
 async function personalAction(page: Page, name: string, action: string) {
     await trigger(page, name).click();
     await page.getByRole('menu').getByRole('menuitem', { name: action }).click();
-}
-
-/** Admin, so the management actions exist to collapse. Test infrastructure — see the header. */
-async function setRole(role: string) {
-    const sql = postgres(AUTH_DATABASE_URL, { max: 1 });
-    try {
-        // Only the stub member's own memberships: the local organization's seeded admin
-        // (db/migrate.ts) is not this spec's to rewrite.
-        await sql`update org_membership set role = ${role} where github_login = ${E2E_LOGIN}`;
-    } finally {
-        await sql.end();
-    }
 }
 
 async function asAdmin(page: Page) {
