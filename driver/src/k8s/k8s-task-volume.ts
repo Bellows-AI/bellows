@@ -44,7 +44,7 @@ export async function listTaskVolumes(deps: K8sDeps, job: BoardJob): Promise<Vol
     };
     const read = await readTypedList(deps, path, `listing the task volumes of job ${job.id}`, { entry });
     if (read.kind !== 'value') {
-        throw new Error(read.kind === 'inconclusive' ? read.reason : 'the task volume listing is absent');
+        throw new Error(read.reason);
     }
     const mounted = read.value.filter((volume) => !volume.terminating);
     return {

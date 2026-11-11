@@ -58,7 +58,7 @@ const CAP_MS = 5_000;
 /** Reads a scenario may make before its world reads as non-converging. */
 export const MAX_READS = 120;
 
-export const K8S_FAULTS = ['503', 'transport', 'empty-object', 'null', 'status', 'truncated'] as const;
+export const K8S_FAULTS = ['503', 'transport', 'empty-object', 'null', 'status', 'truncated', 'list-404'] as const;
 export const DOCKER_FAULTS = ['exit', 'timeout', 'empty', 'garbage', 'no-such'] as const;
 export type K8sFault = (typeof K8S_FAULTS)[number];
 export type DockerFault = (typeof DOCKER_FAULTS)[number];
@@ -300,6 +300,13 @@ async function cleanOf<T extends (...args: never[]) => Promise<unknown>, F exten
 
 // --- kubernetes ---
 
+const K8S_NOT_FOUND_BODY = '{"kind":"Status","status":"Failure","reason":"NotFound","code":404}';
+
+/** Whether a GET names a collection: a label selector, or a plural resource with no object name after it. */
+const isCollection = (path: string): boolean =>
+    path.includes('?labelSelector=') ||
+    /\/(pods|jobs|services|persistentvolumeclaims|configmaps|secrets|events)$/.test(path.split('?')[0]!);
+
 const K8S_STATUS_BODY = '{"kind":"Status","status":"Failure","reason":"InternalError","code":500}';
 
 const K8S: Engine<K8sRequest, K8sFault> = {
@@ -327,6 +334,11 @@ const K8S: Engine<K8sRequest, K8sFault> = {
                 return { status: 200, body: 'null' } satisfies K8sResponse;
             case 'status':
                 return { status: 200, body: K8S_STATUS_BODY } satisfies K8sResponse;
+            case 'list-404':
+                // A collection the apiserver answers 404 names no missing object: nothing it says is "empty".
+                return isCollection(decodeURIComponent(path)) && (method as string) === 'GET'
+                    ? ({ status: 404, body: K8S_NOT_FOUND_BODY } satisfies K8sResponse)
+                    : base(method, path, body);
             case 'truncated': {
                 const answer = await base(method, path, body);
                 return { ...answer, body: answer.body.slice(0, Math.floor(answer.body.length / 2)) };

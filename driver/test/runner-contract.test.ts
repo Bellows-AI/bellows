@@ -146,6 +146,8 @@ describe('the Runner contract', () => {
                             }),
                         };
                     }
+                    // A collection answers empty: a collection 404 is inconclusive (BEL-315).
+                    if (method === 'GET' && path.includes('?')) return { status: 200, body: '{"items":[]}' };
                     return { status: 404, body: '{"kind":"Status"}' };
                 }
             );

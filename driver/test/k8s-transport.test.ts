@@ -109,6 +109,16 @@ describe('the typed list reader', () => {
         expect(await read(JSON.stringify({ items: [entry] }))).toEqual({ kind: 'value', value: [entry] });
     });
 
+    it('reads a 404 for a collection as inconclusive, never absent', async () => {
+        const answered = await readTypedList(
+            deps('{"kind":"Status","reason":"NotFound"}', 404),
+            '/pods',
+            'listing the pods',
+            { entry: asNamed, once: true }
+        );
+        expect(answered).toEqual({ kind: 'inconclusive', reason: 'listing the pods answered 404 for a collection' });
+    });
+
     it.each([
         ['an empty entry', '{"items":[{}]}'],
         ['a null entry', '{"items":[null]}'],

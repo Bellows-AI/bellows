@@ -646,6 +646,26 @@ export function readAnswer<T>(
         : { kind: 'value', value };
 }
 
+/** A collection read's answer: a list has no `absent`, because a collection URL that answers 404 names no missing object. */
+export type ListRead<T> = Exclude<Read<T>, { kind: 'absent' }>;
+
+/**
+ * A collection GET's answer as a typed read: `readAnswer` with a 404 inconclusive. A list of
+ * pods or Jobs the apiserver cannot serve (a missing namespace, a path it does not know) is no
+ * proof that nothing is there, and no caller may delete or free on it.
+ */
+export function readListAnswer<T>(
+    response: K8sResponse,
+    what: string,
+    shape: (value: unknown) => T | null | Refused
+): ListRead<T> {
+    return listOnly(readAnswer(response, what, shape), what);
+}
+
+/** A typed read of a collection: `absent` (a 404) becomes `inconclusive`, the other answers are unchanged. */
+export const listOnly = <T>(read: Read<T>, what: string): ListRead<T> =>
+    read.kind === 'absent' ? { kind: 'inconclusive', reason: `${what} answered 404 for a collection` } : read;
+
 /*
  * The runner vitals under kubernetes. `docker stats` has no direct twin here; the metrics API
  * (`metrics.k8s.io`, served by the metrics-server a cluster may not run) is the closest one, and

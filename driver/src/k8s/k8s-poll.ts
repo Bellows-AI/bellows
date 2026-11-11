@@ -27,11 +27,13 @@ import {
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
     readAnswer,
+    readListAnswer,
+    listOnly,
     refusal,
     waitOf,
     withSignal,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse, Refused } from './k8s-transport.js';
+import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse, ListRead, Refused } from './k8s-transport.js';
 import { heldWords, startupCauseOf, StartupRefused } from '../startup-cause.js';
 import { type HeldImage, heldOf, heldUnpullable } from './k8s-held.js';
 import {
@@ -173,21 +175,21 @@ const listOf =
     };
 
 /** `readTyped` of a list: every entry `entry` accepts, or inconclusive for a body with no list or any entry it refuses. */
-export function readTypedList<T>(
+export async function readTypedList<T>(
     deps: K8sDeps,
     path: string,
     what: string,
     { entry, once = false }: { entry: (value: unknown) => T | null | Refused; once?: boolean }
-): Promise<Read<T[]>> {
-    return readTyped(deps, path, what, { shape: listOf(entry), once });
+): Promise<ListRead<T[]>> {
+    return listOnly(await readTyped(deps, path, what, { shape: listOf(entry), once }), what);
 }
 
-/** A pod list already fetched, read as a typed answer (#869): the pods `entry` accepts, else absent or inconclusive. */
+/** A pod list already fetched, read as a typed answer (#869): the pods `entry` accepts, else inconclusive (a 404 included). */
 export const podsOf = (
     response: K8sResponse,
     what: string,
     entry: (value: unknown) => K8sPod | Refused | null = asPod
-) => readAnswer(response, what, listOf(entry));
+) => readListAnswer(response, what, listOf(entry));
 
 /** `readTyped` on the throwing channel (#824): `ABSENT` on a 404, an `Inconclusive` throw for a read that proves nothing. */
 export async function readObject<T>(
@@ -201,16 +203,16 @@ export async function readObject<T>(
     return read.kind === 'absent' ? ABSENT : read.value;
 }
 
-/** `readObject` of a list. */
+/** `readObject` of a list: a 404 throws `Inconclusive` too, never an empty list. */
 export async function readList<T>(
     deps: K8sDeps,
     path: string,
     what: string,
     options: { entry: (value: unknown) => T | null | Refused; once?: boolean }
-): Promise<T[] | typeof ABSENT> {
+): Promise<T[]> {
     const read = await readTypedList(deps, path, what, options);
     if (read.kind === 'inconclusive') throw new Inconclusive(read.reason);
-    return read.kind === 'absent' ? ABSENT : read.value;
+    return read.value;
 }
 
 /**
@@ -418,8 +420,7 @@ export async function readJobPodVerdict(
     what: string
 ): Promise<{ exitCode: number | null; output: string; truncated: boolean; pods: K8sPod[] }> {
     const podsPath = jobPodsPath(deps.config.k8sNamespace, jobName);
-    const listed = await readList(deps, podsPath, what, { entry: asPod });
-    const pods = listed === ABSENT ? [] : listed;
+    const pods = await readList(deps, podsPath, what, { entry: asPod });
     const pod = strict ? runnerPodOf(pods) : livePodOfItems(pods);
     // `container` names the one whose verdict this is when the pod holds several (the runner pod's
     // agent); an aux pod's only container is read by position, as ever.

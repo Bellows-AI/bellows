@@ -41,7 +41,9 @@ const router = (
             calls.push({ method, path, body });
             const hit = answers.find(([m, p]) => m === method && p === path);
             if (hit) return hit[2];
-            if (method === 'GET' && path.startsWith(`${jobsPath(NAMESPACE)}?`)) {
+            // An unlisted collection answers an empty list under the default fallback: a collection
+            // 404 is inconclusive (BEL-315), so a test that means "nothing there" must say so.
+            if (method === 'GET' && path.includes('?') && fallbackStatus === 404) {
                 return { status: 200, body: JSON.stringify({ items: [] }) };
             }
             return { status: fallbackStatus, body: '' };
@@ -838,7 +840,7 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
 
     it.each([
         ['a refused list', [listing([], 500)]],
-        ['a transport failure', []],
+        ['a collection 404', [listing([], 404)]],
         ['a claim without a uid', [listing([claim(ROOT, 1, { uid: undefined })])]],
     ] as const)('answers null — delete nothing — on %s', async (_name, answers) => {
         const { arm } = armOver(answers);

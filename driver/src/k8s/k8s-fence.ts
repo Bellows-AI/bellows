@@ -458,10 +458,8 @@ async function probeOneFleetKind(
         entry: sweepEntry(deps.adopted?.get(job.leaseToken), kind, adoptedLive(deps, job)),
         once: true,
     });
-    // A kind answering nothing at all has nothing of this job in it.
-    if (read.kind === 'absent') return { fleet: null, inconclusive: false };
-    // A transport failure, 429/5xx, or a 2xx that is no list of named objects says nothing about
-    // whether the objects are gone: the round cannot free the checkout.
+    // A transport failure, 429/5xx, a 404 for the collection, or a 2xx that is no list of named
+    // objects says nothing about whether the objects are gone: the round cannot free the checkout.
     if (read.kind === 'inconclusive') return { fleet: null, inconclusive: true };
     const found = namedItemsOf(deps, { job, kind, kept }, read.value);
     return { fleet: found.uids.size > 0 ? { kind, basePath, ...found } : null, inconclusive: false };
