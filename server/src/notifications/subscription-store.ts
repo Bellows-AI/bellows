@@ -4,6 +4,7 @@ import type { NotificationKind } from '@factory-ai/core';
 import {
     type CreatedEnvSecret,
     createEnvSecrets,
+    EnvSecretError,
     releaseEnvSecrets,
     type RetiredEnvSecret,
     retireEnvSecrets,
@@ -126,9 +127,9 @@ export function createNotificationSubscriptionStore({
         );
         if (failure || !created[0]) {
             await release(owner, id, [...created, ...unknown]);
-            throw new Error(
-                `notification credential unavailable: ${failure ? `${failure.code}/${failure.reason}` : 'not created'}`
-            );
+            // A secret-store failure is an outage the route answers 503 (server/src/routes/error-handler.ts).
+            if (failure) throw new EnvSecretError(id, failure.code, failure.reason);
+            throw new Error('notification credential unavailable: not created');
         }
         return created[0];
     };

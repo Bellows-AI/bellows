@@ -1,5 +1,6 @@
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { stackEnv } from '../src/db/env-var-store.js';
+import { storeOutage } from './helpers-outage.js';
 
 export interface MemoryEnvVarStore extends EnvVarStore {
     /**
@@ -129,7 +130,7 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
         scope: 'org' | { userId: string } | { owner: string; name: string },
         vars: readonly { name: string; value: string | null; isSecret: boolean }[]
     ): void {
-        if (store.broken) throw new Error('database is unreachable');
+        if (store.broken) throw storeOutage('database is unreachable');
         const inScope = (row: Row): boolean => {
             if (scope === 'org') return row.userId === null && row.owner === null;
             if ('userId' in scope) return row.userId === scope.userId;

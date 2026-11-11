@@ -14,6 +14,7 @@ import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
 import type { AgentTitle } from './db/agent-title.js';
 import { agentTitleRoutes } from './routes/agent-title.js';
+import { errorHandler } from './routes/error-handler.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import { batchRoutes } from './routes/batches/batches.js';
@@ -322,6 +323,7 @@ export async function buildApp({
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
     const app = Fastify({ logger });
+    app.setErrorHandler(errorHandler);
 
     const header = csp(config.webRoot === null);
     app.addHook('onSend', async (_request, reply) => {

@@ -34,6 +34,7 @@ import {
     HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 const TOOL_NAMES = [
     'accept_batch_task',
@@ -200,7 +201,7 @@ async function boot(
     const oauth: Pick<OAuthStore, 'findAccessToken'> = {
         async findAccessToken(hash): Promise<McpCaller | null> {
             seen.lookups += 1;
-            if (failLookup) throw new Error('connection refused');
+            if (failLookup) throw storeOutage('connection refused');
             const audience = known.get(hash.toString('hex'));
             if (!audience || lapsed.has(hash.toString('hex'))) return null;
             return {

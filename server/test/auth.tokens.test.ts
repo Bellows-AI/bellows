@@ -19,6 +19,7 @@ import {
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -477,7 +478,7 @@ describe('organization access tokens: lifecycle and validation', () => {
         const personal = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
         const org = store.seedAccessToken(ORG, 'org');
         const outage = async (): Promise<never> => {
-            throw new Error('getaddrinfo EAI_AGAIN factory-state-postgres');
+            throw storeOutage('getaddrinfo EAI_AGAIN factory-state-postgres');
         };
         store.findPersonalToken = outage;
         store.findOrgToken = outage;

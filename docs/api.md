@@ -5,6 +5,7 @@ codes, query parameters and error codes are read there, never restated here.
 
 | Surface | Code | Test |
 | --- | --- | --- |
+| Failure shape: a store outage is a generic `503 UNAVAILABLE`, anything else is `500 INTERNAL` with a `requestId`; the thrown text is logged, never sent (the driver retries both) | `server/src/routes/error-handler.ts`, `server/src/routes/helpers.ts` | `server/test/routes.error-handler.test.ts` |
 | Sign-in, session, org switch | `server/src/routes/auth.ts` | `server/test/auth.oauth.sign-in.test.ts` |
 | Onboarding (parked sign-in, installation pick) | `server/src/routes/auth-onboarding.ts` | `server/test/auth.completion.test.ts` |
 | Personal and org access tokens | `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts` |

@@ -50,7 +50,7 @@ function branchReadRefusal(
         );
     }
     request.log.error({ err: e }, 'branch list read failed');
-    return branchesUnavailable(reply, `Branches could not be read: ${(e as Error).message}`);
+    return branchesUnavailable(reply, 'Branches could not be read. Try again shortly.');
 }
 
 /** Branch names for the composer's base-branch picker. */

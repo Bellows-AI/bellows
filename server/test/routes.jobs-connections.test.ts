@@ -15,6 +15,7 @@ import {
     HTTP_OK,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 /**
  * Offline: how the job routes carry a task's `connections` (BEL-59) — the create and follow-up
@@ -256,7 +257,7 @@ describe('POST /api/jobs/:id/requirements (the runner asks for a connection)', (
     });
 
     it('answers a store that throws 503, never a verdict', async () => {
-        const { instance } = await bootWorker(new Error('database down'));
+        const { instance } = await bootWorker(storeOutage('database down'));
         const res = await ask(instance, { leaseToken: TOKEN, provider: 'jira' });
         expect(res.statusCode).toBe(503);
     });
@@ -309,7 +310,7 @@ describe('POST /api/jobs/:id/requirements/:provider/dismiss', () => {
     it('answers a store that throws 503', async () => {
         const { instance, cookie } = await boot({
             async dismissRequirement() {
-                throw new Error('database down');
+                throw storeOutage('database down');
             },
         });
         expect((await dismiss(instance, cookie)).statusCode).toBe(503);
