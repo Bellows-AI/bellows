@@ -11,7 +11,7 @@ import {
     parseOpencodeRunOutcome,
     readOpencodeWithRetries,
 } from '../close-read.js';
-import type { RunOutcome, RunSession, Runner } from '../runner.js';
+import type { GroupTakenAway, RunOutcome, RunSession, Runner } from '../runner.js';
 import { adoptFinishedRunner, supervisorServing } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from '../close-read.js';
 import { killedOutcome, ledgerOf, RunnerAbandoned, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
@@ -635,13 +635,14 @@ export function createKubernetesRunner(
         releaseFence: async (job: BoardJob) => {
             await releaseClaimAfterGroupEnd(deps, job);
         },
-        // A lost supervisor is a node loss only when its pod is confirmed taken away; no doubt counts (BEL-302).
-        groupTakenAway: (job: BoardJob, signal: AbortSignal) =>
+        // A lost supervisor is a node loss only when its pod is confirmed taken away; no doubt counts (BEL-302),
+        // and a read that settles nothing is `unknown` (BEL-316), never "kept".
+        groupTakenAway: (job: BoardJob, signal: AbortSignal): Promise<GroupTakenAway> =>
             signal.aborted
-                ? Promise.resolve(false)
+                ? Promise.resolve('unknown')
                 : runnerPodTakenAway(
                       withSignal(boundedBy(deps, Date.now() + GROUP_TAKEN_AWAY_READ_MS), signal),
                       runnerName(job)
-                  ).catch(() => false),
+                  ).catch((): GroupTakenAway => 'unknown'),
     });
 }

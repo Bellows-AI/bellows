@@ -20,7 +20,7 @@ import {
 } from '../src/loop/loop-fence.js';
 import { StepChannelClosed, StepTimedOut, StepTokenUnanswered } from '../src/step-control.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import type { RunOutcome } from '../src/runner.js';
+import type { GroupTakenAway, RunOutcome } from '../src/runner.js';
 import { LeftoverTerminating } from '../src/runner.js';
 import type { AttemptCtx, SetupHalt } from '../src/loop/loop-types.js';
 
@@ -433,7 +433,10 @@ describe('node loss is flagged on structured evidence only (BEL-302)', () => {
 
     it('leaves an interruption decision unflagged by default, and flags it on request', () => {
         expect(interruptDecision('the daemon refused', null)).not.toHaveProperty('nodeLoss');
-        expect(interruptDecision('the pod was evicted', null, false, true)).toMatchObject({ nodeLoss: true });
+        expect(interruptDecision('the pod was evicted', null, false, { nodeLoss: true })).toMatchObject({
+            nodeLoss: true,
+        });
+        expect(interruptDecision('lost', null, false, { blocked: true })).toMatchObject({ blocked: true });
     });
 
     it('carries the flag of an interrupt halt onto its decision, and none otherwise', () => {
@@ -463,7 +466,7 @@ describe('node loss is flagged on structured evidence only (BEL-302)', () => {
     });
 
     describe('a lost supervisor', () => {
-        const withRunner = (taken: (() => Promise<boolean>) | undefined) => {
+        const withRunner = (taken: (() => Promise<GroupTakenAway>) | undefined) => {
             const { ctx } = fencedAttempt();
             const read = taken ? vi.fn(taken) : undefined;
             (ctx.rt.runner as unknown as { groupTakenAway?: unknown }).groupTakenAway = read;
@@ -472,44 +475,50 @@ describe('node loss is flagged on structured evidence only (BEL-302)', () => {
         const closed = () => new StepChannelClosed('the step answered');
 
         it('is flagged when the executor confirms the group was taken away', async () => {
-            const { ctx, read } = withRunner(async () => true);
+            const { ctx, read } = withRunner(async () => 'taken');
 
             expect(await supervisorLossFlag(ctx, closed())).toEqual({ nodeLoss: true });
             expect(read).toHaveBeenCalledWith(ctx.job, expect.any(AbortSignal));
         });
 
         it('is not flagged while the group is still there', async () => {
-            const { ctx } = withRunner(async () => false);
+            const { ctx } = withRunner(async () => 'kept');
 
             expect(await supervisorLossFlag(ctx, closed())).toEqual({});
         });
 
-        it('is not flagged when the read fails', async () => {
+        it('is blocked, spending no budget, when the executor answers unknown', async () => {
+            const { ctx } = withRunner(async () => 'unknown');
+
+            expect(await supervisorLossFlag(ctx, closed())).toEqual({ blocked: true });
+        });
+
+        it('is blocked when the read fails', async () => {
             const { ctx } = withRunner(async () => {
                 throw new Error('the apiserver answered 503');
             });
 
-            expect(await supervisorLossFlag(ctx, closed())).toEqual({});
+            expect(await supervisorLossFlag(ctx, closed())).toEqual({ blocked: true });
         });
 
-        it('is not flagged when the runner cannot tell', async () => {
+        it('is blocked when the runner cannot tell', async () => {
             const { ctx } = withRunner(undefined);
 
-            expect(await supervisorLossFlag(ctx, closed())).toEqual({});
+            expect(await supervisorLossFlag(ctx, closed())).toEqual({ blocked: true });
         });
 
-        it('is not flagged when the read outlasts its deadline', async () => {
+        it('is blocked when the read outlasts its deadline', async () => {
             vi.useFakeTimers();
-            const { ctx } = withRunner(() => new Promise<boolean>(() => {}));
+            const { ctx } = withRunner(() => new Promise<GroupTakenAway>(() => {}));
 
             const flagged = supervisorLossFlag(ctx, closed());
             await vi.advanceTimersByTimeAsync(GROUP_TAKEN_AWAY_READ_MS);
 
-            expect(await flagged).toEqual({});
+            expect(await flagged).toEqual({ blocked: true });
         });
 
         it('is not flagged when the attempt stands down mid-read', async () => {
-            const { ctx } = withRunner(() => new Promise<boolean>(() => {}));
+            const { ctx } = withRunner(() => new Promise<GroupTakenAway>(() => {}));
 
             const flagged = supervisorLossFlag(ctx, closed());
             ctx.state.abortNow();
@@ -521,7 +530,7 @@ describe('node loss is flagged on structured evidence only (BEL-302)', () => {
             ['a step answered too late', () => new StepTimedOut('step-1')],
             ['an unanswered token ask', () => new StepTokenUnanswered()],
         ])('is never flagged for %s, and the executor is not asked', async (_name, make) => {
-            const { ctx, read } = withRunner(async () => true);
+            const { ctx, read } = withRunner(async () => 'taken');
 
             expect(await supervisorLossFlag(ctx, make())).toEqual({});
             expect(read).not.toHaveBeenCalled();

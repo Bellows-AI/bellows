@@ -36,6 +36,7 @@ import type { ReviewRelay } from '../../src/review/review-control.js';
 import type { SnapshotResult } from '../../src/review/review-snapshot.js';
 import type {
     AdoptedRun,
+    GroupTakenAway,
     LiveRun,
     DeadService,
     Read,
@@ -589,9 +590,9 @@ export function stubRunner(
         async supervisorServing(): Promise<Read<boolean>> {
             return { kind: 'value', value: true };
         },
-        /** The group is never confirmed taken away until a test scripts otherwise (BEL-302). */
-        async groupTakenAway(): Promise<boolean> {
-            return false;
+        /** The group is confirmed kept until a test scripts otherwise (BEL-302, BEL-316). */
+        async groupTakenAway(): Promise<GroupTakenAway> {
+            return 'kept';
         },
         async runReview(
             caller: BoardJob,

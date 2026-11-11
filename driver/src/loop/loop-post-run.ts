@@ -70,14 +70,14 @@ async function publishPhase(
     } catch (e) {
         if (!stepLost(e)) throw e;
         // The supervisor was lost under the push: no verdict on the publish, the next claim redoes it (#925).
-        const { nodeLoss = false } = await supervisorLossFlag(ctx, e);
+        const { nodeLoss = false, blocked = false } = await supervisorLossFlag(ctx, e);
         await end(
             ctx,
             interruptDecision(
                 `infrastructure loss: the task supervisor running the publish was lost (${(e as Error).message})`,
                 null,
                 false,
-                nodeLoss
+                { nodeLoss, blocked }
             )
         );
         return STOOD_DOWN;

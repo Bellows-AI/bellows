@@ -245,7 +245,7 @@ async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
                     `the task supervisor ${supervisorName(job)} was lost before it made contact`,
                     'transient',
                     undefined,
-                    removed ? true : undefined
+                    removed === 'taken' ? true : undefined
                 );
             }
         },
