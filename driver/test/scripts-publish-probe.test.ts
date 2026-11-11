@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { delimiter, join } from 'node:path';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { GIT_STAGE_STEPS, gitProbeScript } from '../src/publish/publish.js';
 import { GIT_FIXTURE_CONFIG, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
@@ -197,5 +198,402 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
         mkdirSync(join(fx.checkout(), '.factory'), { recursive: true });
         writeFileSync(join(fx.checkout(), '.factory', 'state.json'), '{}');
         expect(probed()).toBe(before);
+    });
+});
+
+/**
+ * The probe's own git calls under the supervisor's hardening: the probe hardens each call in-process with
+ * the module the supervisor wrote beside its `git` shim, instead of starting the shim (a node process) per call. The
+ * hardening is the same code and still reads the checkout's config before every call.
+ */
+describe.skipIf(!hasGit())('the probe’s own git under the supervisor’s hardening', () => {
+    const fx = setupWorktreeFixture();
+    const SCRIPTS = join(import.meta.dirname, '..', 'src', 'scripts');
+    const HARDEN_SOURCE = readFileSync(join(SCRIPTS, 'git-harden.cjs'), 'utf8');
+    const REAL = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const CONFIG_READ = 'config --list --includes --show-scope -z';
+    let tools: string;
+    let shimLog: string;
+    let realLog: string;
+    let seq = 0;
+
+    // The supervisor's directory: a mkdtemp (0700) holding the shim, the module (0644), and a logging real git.
+    beforeAll(() => {
+        tools = realpathSync(mkdtempSync(join(tmpdir(), 'factory-git-')));
+        writeFileSync(
+            join(tools, 'git'),
+            `#!${process.execPath}\nrequire('node:fs').appendFileSync(process.env.SHIM_LOG, process.argv.slice(2).join(' ') + '\\n');\n${HARDEN_SOURCE}`,
+            { mode: 0o755 }
+        );
+        writeFileSync(join(tools, 'git-harden.cjs'), HARDEN_SOURCE, { mode: 0o644 });
+        // Logs each call's argv; after the last directory listing, which precedes the staging call, it runs
+        // $BEFORE_STAGING once.
+        writeFileSync(
+            join(tools, 'real-git'),
+            `#!/bin/sh
+printf '%s\\n' "$*" >> "$REAL_LOG"
+case "$*" in
+*"ls-files -z --others --exclude-standard --directory"*)
+    '${REAL}' "$@"; status=$?
+    if [ -n "$BEFORE_STAGING" ] && [ ! -e "$BEFORE_STAGING.done" ]; then : > "$BEFORE_STAGING.done"; sh "$BEFORE_STAGING"; fi
+    exit $status ;;
+esac
+exec '${REAL}' "$@"
+`,
+            { mode: 0o755 }
+        );
+    });
+    afterAll(() => rmSync(tools, { recursive: true, force: true }));
+
+    beforeEach(() => {
+        seq += 1;
+        shimLog = join(fx.dir(), `shim-${seq}.log`);
+        realLog = join(fx.dir(), `real-${seq}.log`);
+        writeFileSync(shimLog, '');
+        writeFileSync(realLog, '');
+    });
+
+    const lines = (path: string): string[] => readFileSync(path, 'utf8').split('\n').filter(Boolean);
+
+    interface Ran {
+        answer: Record<string, unknown> & { cloned: boolean; fingerprint: string | null; content: string | null };
+        stderr: string;
+    }
+    /** The probe, run as the supervisor would run it; `inProcess: false` is the by-name shim of before. */
+    const probe = (extra: Record<string, string> = {}, inProcess = true): Ran => {
+        const ran = spawnSync(process.execPath, [join(SCRIPTS, 'git-probe.cjs')], {
+            env: {
+                ...process.env,
+                REPO: fx.checkout(),
+                GIT_CONFIG_GLOBAL: '/dev/null',
+                GIT_CONFIG_NOSYSTEM: '1',
+                PATH: `${tools}${delimiter}${process.env.PATH ?? ''}`,
+                SHIM_LOG: shimLog,
+                REAL_LOG: realLog,
+                GIT_HARDEN_REAL: join(tools, 'real-git'),
+                ...(inProcess ? { GIT_HARDEN_MODULE: join(tools, 'git-harden.cjs') } : {}),
+                ...extra,
+            },
+            encoding: 'utf8',
+        });
+        return { answer: JSON.parse(ran.stdout.trim().split('\n').filter(Boolean).pop()!), stderr: ran.stderr };
+    };
+
+    const synced = (): void => {
+        expect(fx.sync().ok).toBe(true);
+        // A runner's checkout is case-sensitive; git on a case-folding host turns ignorecase on, and the probe keys nothing then.
+        git(fx.checkout(), 'config', 'core.ignorecase', 'false');
+    };
+
+    it('runs its own git calls in-process: no hardened-git process starts', () => {
+        synced();
+
+        const { answer } = probe();
+
+        expect(answer.cloned).toBe(true);
+        expect(answer.fingerprint).toMatch(/^[0-9a-f]{40}:[0-9a-f]{64}$/);
+        expect(answer.content).not.toBeNull();
+        expect(lines(shimLog)).toEqual([]);
+        expect(lines(realLog).length).toBeGreaterThan(30);
+    });
+
+    it('reads the checkout’s config before every real git call, and runs each under the hardening prefix', () => {
+        synced();
+
+        probe();
+
+        const log = lines(realLog);
+        const works = log.filter((line) => !line.endsWith(CONFIG_READ));
+        const reads = log.filter((line) => line.endsWith(CONFIG_READ));
+        expect(reads).toHaveLength(works.length);
+        log.forEach((line, i) => {
+            if (line.endsWith(CONFIG_READ)) return;
+            expect(line).toMatch(/^--no-pager -c core\.pager=/);
+            expect(log[i - 1]?.endsWith(CONFIG_READ)).toBe(true);
+        });
+    });
+
+    /**
+     * The probe over a checkout that gains a clean filter after the last directory listing and before `add`. Returns
+     * whether staging was reached and whether the filter ran. `harden` overrides the module the probe loads.
+     */
+    const withLateFilter = (harden?: string): { installed: boolean; staged: boolean; ran: boolean } => {
+        synced();
+        const mark = join(fx.dir(), `late-filter-ran-${seq}`);
+        const config = join(fx.checkout(), '.git', 'config');
+        const install = join(fx.dir(), `install-late-filter-${seq}.sh`);
+        writeFileSync(
+            install,
+            `cd '${fx.checkout()}' && printf '[filter "late"]\\n\\tclean = touch ${mark}; cat\\n' >> '${config}' && printf '* filter=late\\n' > .gitattributes\n`
+        );
+
+        probe({ BEFORE_STAGING: install, ...(harden ? { GIT_HARDEN_MODULE: harden } : {}) });
+
+        return {
+            installed: existsSync(`${install}.done`),
+            staged: lines(realLog).some((line) => / add -A /.test(line)),
+            ran: existsSync(mark),
+        };
+    };
+
+    it('adopts a filter the checkout defines mid-probe and still runs none of it', () => {
+        // The filter lands after the last listing call, so the pins only exist if the read before `add` saw it.
+        expect(withLateFilter()).toEqual({ installed: true, staged: true, ran: false });
+    });
+
+    it('would run that filter if the hardening were resolved once: the control for the case above', () => {
+        // The same probe through a module that keeps the first call's pins for every later call.
+        const memoized = join(fx.dir(), 'memoized-harden.cjs');
+        writeFileSync(
+            memoized,
+            `const real = require(${JSON.stringify(join(tools, 'git-harden.cjs'))});
+const { execFileSync } = require('node:child_process');
+let prefix;
+exports.runCall = (args, options) => {
+    const env = options.env ?? process.env;
+    const plan = real.planCall(args, { cwd: options.cwd, env });
+    prefix ??= plan.argv.slice(0, plan.argv.length - args.length);
+    return execFileSync(plan.real, [...prefix, ...args], { ...options, env: plan.env });
+};
+`
+        );
+
+        expect(withLateFilter(memoized)).toEqual({ installed: true, staged: true, ran: true });
+    });
+
+    it('runs none of the checkout’s execution-capable config in-process', () => {
+        synced();
+        const fsmonitorMark = join(fx.dir(), 'fsmonitor-ran');
+        const filterMark = join(fx.dir(), 'filter-ran');
+        const hookScript = join(fx.dir(), 'fsmonitor.sh');
+        writeFileSync(hookScript, `#!/bin/sh\n: > '${fsmonitorMark}'\nprintf '\\0'\n`, { mode: 0o755 });
+        git(fx.checkout(), 'config', 'core.fsmonitor', hookScript);
+        git(fx.checkout(), 'config', 'filter.evil.clean', `touch ${filterMark}; cat`);
+        writeFileSync(join(fx.checkout(), '.gitattributes'), '*.txt filter=evil\n');
+        writeFileSync(join(fx.checkout(), 'note.txt'), 'untracked\n');
+        // Controls: the same config does run under a plain git, so an absent marker below is the hardening's doing.
+        const index = join(fx.dir(), 'control-index');
+        const control = {
+            cwd: fx.checkout(),
+            env: { ...process.env, GIT_INDEX_FILE: index },
+            stdio: 'ignore',
+        } as const;
+        execFileSync(REAL, ['status'], control);
+        execFileSync(REAL, ['add', '-A'], control);
+        expect(existsSync(fsmonitorMark)).toBe(true);
+        expect(existsSync(filterMark)).toBe(true);
+        rmSync(fsmonitorMark);
+        rmSync(filterMark);
+
+        probe();
+
+        expect(existsSync(fsmonitorMark)).toBe(false);
+        expect(existsSync(filterMark)).toBe(false);
+    });
+
+    describe('answers exactly as the shim does', () => {
+        const { runCall } = createRequire(import.meta.url)(join(SCRIPTS, 'git-harden.cjs')) as {
+            runCall(args: string[], options: object): string;
+        };
+        const COMMANDS = [
+            ['status', '--porcelain'],
+            ['diff', 'HEAD', '--binary'],
+            ['ls-files', '-z', '--others', '--exclude-standard'],
+            ['check-attr', '-a', '--', 'README.md'],
+            ['var', 'GIT_EDITOR'],
+            ['config', '--get-all', 'credential.helper'],
+        ];
+        /** What each call prints: the by-name shim as a process, and the call run in-process, over one checkout. */
+        const bothWays = (args: string[]): { shim: unknown; inProcess: unknown } => {
+            const env = {
+                ...process.env,
+                GIT_CONFIG_GLOBAL: '/dev/null',
+                GIT_CONFIG_NOSYSTEM: '1',
+                GIT_HARDEN_REAL: REAL,
+                // The environment the hardening strips: an external diff that does not exist.
+                GIT_EXTERNAL_DIFF: join(fx.dir(), 'no-such-diff'),
+            };
+            const shim = spawnSync(join(tools, 'git'), args, {
+                cwd: fx.checkout(),
+                env: { ...env, SHIM_LOG: shimLog },
+                encoding: 'utf8',
+            });
+            let inProcess: unknown;
+            try {
+                inProcess = { status: 0, stdout: runCall(args, { cwd: fx.checkout(), env, encoding: 'utf8' }) };
+            } catch (error) {
+                inProcess = { status: (error as { status: number }).status, stdout: '' };
+            }
+            return { shim: { status: shim.status, stdout: shim.stdout }, inProcess };
+        };
+        const cases: Array<[string, (checkout: string) => void]> = [
+            ['a synced checkout', () => undefined],
+            ['a dirty one', (c) => writeFileSync(join(c, 'WIP.md'), 'work\n')],
+            [
+                'one with a trusted credential helper and a checkout-named one',
+                (c) => {
+                    git(c, 'config', 'credential.helper', '!touch credential-ran');
+                    git(c, 'config', 'credential.https://example.test.helper', '!touch credential-ran');
+                },
+            ],
+            [
+                'one with a named filter family',
+                (c) => {
+                    git(c, 'config', 'filter.late.clean', 'cat');
+                    writeFileSync(join(c, '.gitattributes'), '*.md filter=late\n');
+                },
+            ],
+            [
+                'one with a nested repository',
+                (c) => {
+                    mkdirSync(join(c, 'nested'));
+                    git(join(c, 'nested'), 'init');
+                    writeFileSync(join(c, 'nested', 'f.txt'), 'x\n');
+                },
+            ],
+            [
+                'one with a tracked edit under an external diff in the environment',
+                (c) => writeFileSync(join(c, 'README.md'), 'edit\n'),
+            ],
+        ];
+        it.each(cases)('over %s', (_name, arrange) => {
+            synced();
+            arrange(fx.checkout());
+
+            for (const args of COMMANDS) {
+                const { shim, inProcess } = bothWays(args);
+                expect(inProcess, args.join(' ')).toEqual(shim);
+            }
+        });
+
+        it('over a config that names a command: both refuse the same way, with no real git work run', () => {
+            synced();
+            git(fx.checkout(), 'config', 'remote.origin.uploadpack', 'touch uploadpack-ran');
+
+            const inProcess = probe();
+            const refusedLog = lines(realLog);
+            writeFileSync(realLog, '');
+            const viaShim = probe({}, false);
+
+            expect(inProcess.answer.cloned).toBe(false);
+            expect(inProcess.answer).toEqual(viaShim.answer);
+            expect(inProcess.stderr).toMatch(/^git: refused, the checkout's config sets .*uploadpack/m);
+            expect(inProcess.stderr).toBe(viaShim.stderr);
+            expect(refusedLog.every((line) => line.endsWith(CONFIG_READ))).toBe(true);
+            expect(lines(realLog)).toEqual(refusedLog);
+        });
+
+        it('over a config git cannot parse', () => {
+            synced();
+            writeFileSync(join(fx.checkout(), '.git', 'config'), '[core\n\tbare = false\n');
+
+            const inProcess = probe();
+            const viaShim = probe({}, false);
+
+            expect(inProcess.answer.cloned).toBe(false);
+            expect(inProcess.answer).toEqual(viaShim.answer);
+            expect(inProcess.stderr).toMatch(/^git: refused, git config could not be read/m);
+            expect(inProcess.stderr).toBe(viaShim.stderr);
+        });
+    });
+
+    describe('the in-process call keeps the shim’s refusal contract', () => {
+        const call = (
+            args: string[],
+            env: Record<string, string>
+        ): { status: number | null; stderr: string; out: string } => {
+            const ran = spawnSync(
+                process.execPath,
+                [
+                    '-e',
+                    `try { process.stdout.write(String(require(process.env.GIT_HARDEN_MODULE).runCall(JSON.parse(process.env.ARGS), { cwd: process.env.CWD, encoding: 'utf8' }))); } catch (e) { process.exitCode = 40; process.stdout.write('status=' + e.status); }`,
+                ],
+                {
+                    env: {
+                        ...process.env,
+                        GIT_CONFIG_GLOBAL: '/dev/null',
+                        GIT_CONFIG_NOSYSTEM: '1',
+                        ARGS: JSON.stringify(args),
+                        CWD: fx.checkout(),
+                        REAL_LOG: realLog,
+                        GIT_HARDEN_MODULE: join(tools, 'git-harden.cjs'),
+                        ...env,
+                    },
+                    encoding: 'utf8',
+                }
+            );
+            return { status: ran.status, stderr: ran.stderr, out: ran.stdout };
+        };
+
+        it('exits 126 with the shim’s line for a refused config, and never runs the work command', () => {
+            synced();
+            git(fx.checkout(), 'config', 'core.sshCommand', 'touch ssh-ran');
+            git(fx.checkout(), 'config', 'remote.origin.uploadpack', 'touch uploadpack-ran');
+
+            const ran = call(['status'], { GIT_HARDEN_REAL: join(tools, 'real-git') });
+
+            expect(ran.out).toBe('status=126');
+            expect(ran.stderr).toMatch(
+                /^git: refused, the checkout's config sets .*uploadpack.*which names a command to run\n$/
+            );
+            expect(lines(realLog).every((line) => line.endsWith(CONFIG_READ))).toBe(true);
+        });
+
+        it('exits 126 when the config cannot be read, and when the real git does not start', () => {
+            synced();
+            writeFileSync(join(fx.checkout(), '.git', 'config'), '[core\n');
+            const unreadable = call(['status'], { GIT_HARDEN_REAL: join(tools, 'real-git') });
+            const missing = call(['status'], { GIT_HARDEN_REAL: join(tools, 'no-such-git') });
+
+            for (const ran of [unreadable, missing]) {
+                expect(ran.out).toBe('status=126');
+                expect(ran.stderr).toMatch(/^git: refused, git config could not be read/);
+            }
+        });
+
+        it('has no real git to run without GIT_HARDEN_REAL', () => {
+            const ran = call(['status'], { GIT_HARDEN_REAL: '' });
+
+            expect(ran.out).toBe('status=126');
+            expect(ran.stderr).toBe('git: the hardened git has no real git to run\n');
+        });
+    });
+
+    describe('when the module cannot load', () => {
+        it('runs the shim at its absolute path: the module file missing', () => {
+            const moved = join(fx.dir(), 'no-module');
+            mkdirSync(moved);
+            writeFileSync(join(moved, 'git'), readFileSync(join(tools, 'git')), { mode: 0o755 });
+            // Not a checkout: the first call is refused by git itself, so the shim is reached once and the run stays short.
+            const elsewhere = { REPO: fx.dir() };
+
+            const viaShim = probe(elsewhere, false);
+            writeFileSync(shimLog, '');
+            const { answer, stderr } = probe({ ...elsewhere, GIT_HARDEN_MODULE: join(moved, 'git-harden.cjs') });
+
+            expect(answer).toEqual(viaShim.answer);
+            expect(stderr).toBe(viaShim.stderr);
+            expect(lines(shimLog)).toEqual(['rev-parse --is-inside-work-tree']);
+        });
+
+        it('refuses with 126, not a bare `git`: the whole directory missing', () => {
+            synced();
+            const trap = join(fx.dir(), 'trap');
+            mkdirSync(trap);
+            writeFileSync(
+                join(trap, 'git'),
+                `#!/bin/sh\n: > '${join(fx.dir(), 'by-name-git-ran')}'\nexec '${REAL}' "$@"\n`,
+                { mode: 0o755 }
+            );
+
+            const { answer, stderr } = probe({
+                GIT_HARDEN_MODULE: join(fx.dir(), 'gone', 'git-harden.cjs'),
+                PATH: `${trap}${delimiter}${process.env.PATH ?? ''}`,
+            });
+
+            expect(answer.cloned).toBe(false);
+            expect(stderr).toMatch(/^git: .*ENOENT/m);
+            expect(existsSync(join(fx.dir(), 'by-name-git-ran'))).toBe(false);
+        });
     });
 });

@@ -1,5 +1,12 @@
 import { readFileSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { configDefaults, defineConfig } from 'vitest/config';
+
+/** The most forks a run uses; why six is at `poolOptions.forks` below. */
+const MAX_FORKS = 6;
+
+/** Forks for every run: vitest's own default (one per core minus one), never above MAX_FORKS. */
+const FORKS = Math.max(1, Math.min(MAX_FORKS, availableParallelism() - 1));
 
 /** Component suites driven through Testing Library under jsdom (`web/test/dom.tsx`). */
 const DOM_TESTS = 'web/test/**/*.dom.test.tsx';
@@ -58,10 +65,17 @@ export default defineConfig({
         ],
         pool: 'forks',
         poolOptions: {
+            // `maxForks`/`minForks` are the names vitest 3 reads; `maxWorkers` here was never read, so
+            // the cap this block meant never applied and a run forked one worker per core minus one.
+            // Seven forks, each fronting git and node children, oversubscribe an 8-core host that
+            // carries anything else: the spawn tier's cases ran 2-3x slower and six unrelated files
+            // timed out at 30s. Six, measured on 8 cores, stays within about 10% of the uncapped idle
+            // wall time and holds every case under 30s with twice as many CPU hogs as cores; five or
+            // fewer cost 25-50% idle. Smaller hosts keep vitest's default. Equal min and max: a pool
+            // that may shrink dies of "Terminating worker thread" at the end of a run.
             forks: {
-                // Default is one fork per core; watch idles hot without a cap.
-                minWorkers: 1,
-                maxWorkers: 2,
+                minForks: FORKS,
+                maxForks: FORKS,
             },
             // The `dom` project's pool only; a project-level `isolate` does not reach the pool. One
             // thread: it runs beside the forks, and more starved their RPC under a full run.

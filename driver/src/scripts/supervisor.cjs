@@ -63,7 +63,8 @@
 //   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //   SUPERVISOR_REPORT_MS      — how long a departure's report is redelivered before finalizing (default 60000).
 //   SUPERVISOR_GIT_HARDEN_SCRIPT — scripts/git-harden.cjs by content: the `git` first on every step's PATH, so a step never
-//                               runs what the agent-writable checkout's config names (a tree without it uses the file beside this one).
+//                               runs what the agent-writable checkout's config names (a tree without it uses the file beside this one); it is also
+//                               written as `git-harden.cjs` beside the shim, named by GIT_HARDEN_MODULE, for the publish probe's in-process calls.
 //   SUPERVISOR_CHECKPOINT_SCRIPT / _CHECKOUT / _BRANCH / _BASE / _DIR / _OPENCODE_DB — the checkpoint the finalize stage
 //                               takes (issue #775): scripts/checkpoint.cjs by content, the task tree and branch it
 //                               works on, the directory it writes in, the OpenCode database to snapshot. Absent
@@ -684,8 +685,11 @@ function gitShimOf(settings) {
     const source = settings.gitHarden ?? fs.readFileSync(path.join(__dirname, 'git-harden.cjs'), 'utf8');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-git-'));
     fs.writeFileSync(path.join(dir, 'git'), `#!${process.execPath}\n${source}`, { mode: 0o755 });
+    // The same source as a module: the publish probe hardens its own calls in-process with it (scripts/git-probe.cjs).
+    const module = path.join(dir, 'git-harden.cjs');
+    fs.writeFileSync(module, source, { mode: 0o644 });
     process.once('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
-    settings.gitShim = { dir, real };
+    settings.gitShim = { dir, real, module };
     return settings.gitShim;
 }
 
@@ -694,7 +698,12 @@ function stepEnv(run, step) {
     const env = { ...run.settings.childEnv, ...step.env, ...controlFeed(run, step) };
     const shim = gitShimOf(run.settings);
     if (!shim) return env;
-    return { ...env, PATH: `${shim.dir}${path.delimiter}${env.PATH ?? ''}`, GIT_HARDEN_REAL: shim.real };
+    return {
+        ...env,
+        PATH: `${shim.dir}${path.delimiter}${env.PATH ?? ''}`,
+        GIT_HARDEN_REAL: shim.real,
+        GIT_HARDEN_MODULE: shim.module,
+    };
 }
 
 function spawnStep(run, step) {
