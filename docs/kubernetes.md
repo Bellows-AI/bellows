@@ -35,6 +35,8 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - **An unconfirmed read is inconclusive, never empty**: a failed, timed-out, null or malformed answer stays a typed
   `Read` the caller leaves alone. `lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`.
   `driver/src/k8s/k8s-shapes.ts`, `driver/test/k8s-transport.test.ts`.
+- **A collection 404 is inconclusive**: a list (`readTypedList`, `podsOf`) has no `absent`, so a missing namespace holds
+  the claim, skips the reaper round and never frees the fence. `driver/src/k8s/k8s-transport.ts` (`listOnly`), `driver/test/k8s-read-faults.test.ts`.
 - **Credentials go by reference, never by value**, **runner pods hold no ServiceAccount token**
   (`automountServiceAccountToken: false`; pinned in `driver/test/k8s/`), and **the driver never reads a Secret back**: the Role grants no `get`/`list`.
 - **Every driver-owned object carries `factory.job`**, every Secret follows `factory-job-…-env`, every

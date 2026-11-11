@@ -1038,9 +1038,9 @@ describe('the kubernetes runner', () => {
         ]);
     });
 
-    // A collection that answers 404 has nothing behind it to fence: straight to the create, no
-    // second list, no deletes.
-    it('treats a 404 from the label list as nothing left to fence', async () => {
+    // A collection that answers 404 proves nothing is gone (BEL-315): the fence never frees the
+    // checkout on it, so no Job is created and nothing is deleted.
+    it('does not free the checkout on a 404 from the label list', async () => {
         const { request, calls } = routed((method, path) => {
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
                 return { status: 404, body: '{"kind":"Status"}' };
@@ -1048,17 +1048,11 @@ describe('the kubernetes runner', () => {
             if (isJobDelete(method, path)) return noAnswer(method, path);
         });
 
-        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
-        expect(outcome.exitCode).toBe(0);
-        expect(calls.map((call) => call.method)).toEqual([
-            'POST',
-            // Jobs 404s; the sweep goes on to the pods list, empty — the round is conclusive
-            // and the checkout is free. The per-attempt Secret is written after the sweep,
-            // before the claim that precedes the create — and reaped with it.
-            'GET',
-            'GET',
-            ...RUN_FROM_SECRET,
-        ]);
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not confirm the checkout empty/
+        );
+        expect(calls.some((call) => isJobDelete(call.method as K8sMethod, call.path))).toBe(false);
+        expect(calls.filter((call) => call.method === 'POST')).toHaveLength(1);
     });
 
     // A dropped connection says nothing about whether the objects are gone; the fence keeps

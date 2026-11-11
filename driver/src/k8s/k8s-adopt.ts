@@ -145,18 +145,16 @@ const asListedRunner =
         return marked && validRunnerSpec(item.spec) ? item : null;
     };
 
-/** The runner pods of `prior`, read with the verdict reads' patience; none for a list the apiserver has not. */
+/** The runner pods of `prior`, read with the verdict reads' patience; a list the apiserver cannot answer throws `Inconclusive`. */
 async function runnerPodsOf(deps: K8sDeps, prior: BoardJob): Promise<K8sPod[]> {
     const path = jobPodsPath(deps.config.k8sNamespace, runnerName(prior));
-    const pods = await readList(deps, path, 'listing the earlier runner pods', { entry: asPod });
-    return pods === ABSENT ? [] : pods;
+    return readList(deps, path, 'listing the earlier runner pods', { entry: asPod });
 }
 
 /** The earlier runners of this job, listed with the verdict reads' patience. */
 async function listEarlierRunners(deps: K8sDeps, job: BoardJob): Promise<ListedRunner[]> {
     const path = jobsSelectorPath(deps.config.k8sNamespace, job);
-    const runners = await readList(deps, path, 'listing the earlier runner jobs', { entry: asListedRunner(job) });
-    return runners === ABSENT ? [] : runners;
+    return readList(deps, path, 'listing the earlier runner jobs', { entry: asListedRunner(job) });
 }
 
 /**
@@ -289,7 +287,7 @@ async function groupOver(deps: K8sDeps, prior: BoardJob): Promise<boolean | null
         }
     );
     if (pods === null) return null;
-    const state = pods === ABSENT ? 'over' : groupStateOf(pods);
+    const state = groupStateOf(pods);
     return state === 'unknown' ? null : state === 'over';
 }
 
@@ -385,7 +383,7 @@ async function readFinalReport(
         const listed = await readList(deps, jobPodsPath(ns, runnerName(prior)), 'listing the earlier runner pods', {
             entry: asPod,
         });
-        const pod = runnerPodOf(listed === ABSENT ? [] : listed);
+        const pod = runnerPodOf(listed);
         const neverRan = supervisorNeverRan(pod);
         if (!pod?.metadata?.name || neverRan) return { report: null, neverRan };
         log = await readLogVerdict(

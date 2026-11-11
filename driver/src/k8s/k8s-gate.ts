@@ -87,8 +87,7 @@ async function readSidecar(deps: K8sDeps, caller: BoardJob, options: K8sRequestO
             options
         );
         const read = podsOf(listed, 'listing the reviewer pod');
-        if (read.kind !== 'value')
-            return { state: null, why: read.kind === 'inconclusive' ? read.reason : 'no pod listed', restarts: null };
+        if (read.kind !== 'value') return { state: null, why: read.reason, restarts: null };
         const pod = livePodOfItems(read.value);
         const status = pod?.status?.initContainerStatuses?.find((s) => s.name === REVIEWER_CONTAINER);
         const found = { ...(pod?.metadata?.name ? { pod: pod.metadata.name } : {}) };

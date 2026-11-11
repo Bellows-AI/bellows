@@ -115,7 +115,7 @@ const listBySelector = async (
 ): Promise<ListedItem[] | null> => {
     const read = await readTypedList(deps, path, what, { entry: asListedItem(kind), once: true });
     if (read.kind === 'inconclusive') return null;
-    return read.kind === 'absent' ? [] : read.value;
+    return read.value;
 };
 
 /** Select attempt Jobs within this release; never sweep another release. */
