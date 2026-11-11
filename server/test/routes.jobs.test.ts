@@ -59,6 +59,7 @@ import {
     testConfig,
     TEST_JOB_BOARD_TOKEN,
 } from './helpers.js';
+import { storeOutage } from './helpers-outage.js';
 
 const track = trackApps();
 
@@ -239,7 +240,7 @@ function stubStore(
     } = {}
 ): StoreStub {
     const boom = () => {
-        if (options.fail) throw new Error('database is down');
+        if (options.fail) throw storeOutage('database is down');
     };
     const reuse = () => {
         if (options.keyReused) throw new IdempotencyKeyReusedError();
@@ -1339,7 +1340,7 @@ describe('POST /api/jobs/claim', () => {
         const down = (reason: string): StoreStub => {
             const store = stubStore();
             store.claim = async () => {
-                throw new Error(reason);
+                throw storeOutage(reason);
             };
             return store;
         };
@@ -1587,7 +1588,7 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
     it('answers 503 when any board throws', async () => {
         const failing = stubStore();
         failing.leases = async () => {
-            throw new Error('database is down');
+            throw storeOutage('database is down');
         };
         const instance = await harnessOfBoards([
             ['org-a', failing],

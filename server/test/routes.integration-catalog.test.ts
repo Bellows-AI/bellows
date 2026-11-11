@@ -4,6 +4,7 @@ import type { ConnectionStore, ConnectionView } from '../src/db/connection-store
 import type { AuthorizationFlow } from '../src/integrations/authorization-flow.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, testConfig } from './helpers.js';
 import { HTTP_BAD_REQUEST, HTTP_SERVICE_UNAVAILABLE, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 /**
  * Offline: `GET /api/integrations/catalog`, the shared provider list joined with this deployment's configuration and
@@ -45,7 +46,7 @@ async function boot({ configured = ['jira'], rows = {}, failList = false, noStor
     ]);
     const connections = {
         async list(userId: string) {
-            if (failList) throw new Error('read failed');
+            if (failList) throw storeOutage('read failed');
             return byUser.get(userId) ?? [];
         },
     } as unknown as ConnectionStore;

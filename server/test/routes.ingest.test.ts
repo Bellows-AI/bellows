@@ -16,6 +16,7 @@ import {
     HTTP_UNSUPPORTED_MEDIA_TYPE,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 const track = trackApps();
 
@@ -34,14 +35,14 @@ function stubStore(options: { fail?: boolean } = {}): StoreStub {
         metrics: [],
         branches: [],
         async insertMetrics(rows) {
-            if (options.fail) throw new Error('database is down');
+            if (options.fail) throw storeOutage('database is down');
             stub.metrics.push(...rows);
             return rows.length;
         },
         // The org is a parameter now, not a resolver's answer: it arrives from the credential
         // verified at the ingest boundary, and these assertions pin that it did.
         async recordBranch(report, orgId) {
-            if (options.fail) throw new Error('database is down');
+            if (options.fail) throw storeOutage('database is down');
             stub.branches.push({ report, orgId });
         },
     };

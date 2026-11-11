@@ -21,6 +21,7 @@ import {
     HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 /** BEL-146: the member's plan read and the commerce service's plan push, behind a credential of its own. */
 const ORG = 'test-org';
@@ -127,7 +128,7 @@ describe('GET /api/commerce', () => {
     it('a store failure is 503, never an empty plan', async () => {
         const { app, cookie } = await boot({
             read: async () => {
-                throw new Error('database down');
+                throw storeOutage('database down');
             },
         });
         const response = await app.inject({ method: 'GET', url: '/api/commerce', headers: { cookie } });
@@ -239,7 +240,7 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
     );
 
     it('a writer failure is 503, never 200', async () => {
-        const { app } = await boot({ writer: fakeWriter(new Error('database down')).writer });
+        const { app } = await boot({ writer: fakeWriter(storeOutage('database down')).writer });
         const response = await put(app, BODY);
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
     });
