@@ -165,11 +165,11 @@ describe('the fix skills', () => {
         expect(fix).toContain('The same case failing twice is never environmental: reproduce it.');
     });
 
-    it('brief agents with one spec, keep plans on disk, revise them, and retire agents at a boundary', () => {
+    it('brief agents with one spec, keep plans on disk, revise them, and hand off only a stuck agent', () => {
         const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
         for (const rule of [
             '**Brief contract.**',
-            '**Retire an agent at a boundary, never mid-task.**',
+            '**Handoff notes only for a stuck agent.**',
             '**Keep this conversation resumable.**',
             '**Revise, never re-plan from scratch.**',
             '**Slices stay small.**',
@@ -179,7 +179,8 @@ describe('the fix skills', () => {
             'PLAN=`<scratchpad>/plan-<N>.md`',
         ])
             expect(fix).toContain(rule);
-        expect(fix).toContain('Unfinished work is never cut\n  off to meet the limit.');
+        expect(fix).not.toMatch(/~150 turns|~200K tokens/);
+        expect(fix).not.toMatch(/CodeRabbit|Greptile/);
         const planner = readFileSync(join(skill, '../../agents/fix-planner.md'), 'utf8');
         expect(planner).toContain('tools: Read, Grep, Glob, Write');
         expect(planner).toContain('You write exactly one file: the plan path your brief names.');
