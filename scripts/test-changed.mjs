@@ -64,7 +64,6 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
         if (TEST_TREE.test(file)) {
             // A test file or helper added, moved or changed moves the project lists and the test scans.
             named.add('core/test/vitest-projects.test.ts');
-            if (pkg === 'web') named.add('web/test/no-shared-module-spies.test.ts');
             if (GRAPH_FILE.test(file)) classify(namedBy([baseName(file)])); // launched by path
         } else if (SRC_MODULE.test(file)) {
             if (addedSet.has(file)) widen(pkg, `${file} was added or removed: directory scans see it`);
