@@ -185,7 +185,7 @@ Operational facts behind those:
   workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
   Postgres remains shared; worktrees set `COMPOSE_PROJECT_NAME` to the existing development stack
   before board phases. Do not recreate Postgres or prune images while a lane is active. Board phases
-  use `PORT` through `PORT + 2` (default 8129–8131). Keep separate `test:jobs` invocations serial on one Docker
+  use `PORT` through `PORT + 5` (default 8129–8134). Keep separate `test:jobs` invocations serial on one Docker
   daemon: they share the default ports and one checkout's `dist`. `--parallel [--slots N]` is the supported
   fan-out: it builds once and runs phase groups (`scripts/test-jobs-groups.mjs`) as runs of their own, each on
   a ten-port slice of `PORT` with its own database and names; each driver's reaper scans only its own board's

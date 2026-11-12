@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
+import { REPO_ROOT as ROOT, readLaneScript, readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
  * The lane stub executor images (scripts/test-jobs.sh, scripts/test-k8s.sh) only build where a
@@ -54,7 +54,7 @@ describe('the lane stub executor images', () => {
     });
 
     it('test-jobs: every executor stub builds on that base and starts through factory-launch and stub-agent.sh', () => {
-        const script = read('scripts/test-jobs.sh');
+        const script = readLaneScript('scripts/test-jobs.sh');
         expect(script).toContain(STAGE);
         expect(script).toContain('-f "$work/stub-runner.Dockerfile"');
         expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub-runner.Dockerfile"'));
@@ -84,7 +84,7 @@ describe('the lane stub executor images', () => {
     });
 
     it('test-k8s: the stub builds on that base and starts through factory-launch and stub-agent.sh', () => {
-        const script = read('scripts/test-k8s.sh');
+        const script = readLaneScript('scripts/test-k8s.sh');
         expect(script).toContain(STAGE);
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
         expect(line).toContain(`${ENTRY}"sh","/stub.sh"]`);
@@ -105,7 +105,7 @@ describe('the lane stub executor images', () => {
     });
 
     it('test-k8s: every pod runs the stub by its pushed registry ref, never the bare host name', () => {
-        const script = read('scripts/test-k8s.sh');
+        const script = readLaneScript('scripts/test-k8s.sh');
         expect(script).toContain('STUB_REF="$LANE_REGISTRY/echo-executor:$RELEASE"');
         expect(script).toContain('--set "driver.executorImages.claudeCode=$STUB_REF"');
         expect(script).toContain('--set "driver.executorImages.opencode=$STUB_REF"');

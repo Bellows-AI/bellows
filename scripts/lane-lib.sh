@@ -85,9 +85,21 @@ acc_poll() { # acc_poll <want> <seconds> <function> [arg...] -> the function's l
         got="$("$@")"
         [ "$got" = "$want" ] && break
         [ "$(date +%s)" -lt "$until" ] || break
-        sleep 3
+        sleep "${ACC_POLL_EVERY:-3}"
     done
     printf '%s' "$got"
+}
+
+acc_until() { # acc_until <seconds> <command> [arg...] -> 0 once the command succeeds, 1 when the deadline passes; asked every second
+    # Wall-clock seconds, not a count of polls: a slow docker or board answer spends the deadline, never extends it.
+    # The command runs in this shell, so it may set the variables its caller reads afterwards.
+    local until=$(($(date +%s) + $1))
+    shift
+    while :; do
+        "$@" && return 0
+        [ "$(date +%s)" -lt "$until" ] || return 1
+        sleep "${ACC_UNTIL_EVERY:-1}"
+    done
 }
 
 acc_transcript() { # acc_transcript <board base> <id> <session> <first> <last> [lossy] -> "exact" when the job's artifact read is records first..last, whole

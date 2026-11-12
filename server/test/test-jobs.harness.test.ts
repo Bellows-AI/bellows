@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { readLaneScript } from './fixtures/lane-script.js';
 
 /*
  * The jobs harness (scripts/test-jobs.sh) only runs where a docker daemon lives, so nothing in
@@ -13,7 +14,7 @@ import { describe, expect, it } from 'vitest';
  * suites do for bytes that only ship in a container.
  */
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+const SCRIPT = readLaneScript('scripts/test-jobs.sh');
 
 describe('the test-jobs harness', () => {
     // The offline board reads a plan over git from the smoke origin (REPO_CLONE_BASE): the daemon is up and
@@ -51,9 +52,9 @@ describe('the test-jobs harness', () => {
     // The route is gone from the board (404 Route not found); the claim's resumeSessionId has no
     // slash, so the legitimate field assertion cannot trip this.
     it('scripts/ holds no reference to the removed /resume route', () => {
-        for (const entry of readdirSync(join(ROOT, 'scripts'), { withFileTypes: true })) {
+        for (const entry of readdirSync(join(ROOT, 'scripts'), { withFileTypes: true, recursive: true })) {
             if (!entry.isFile()) continue;
-            expect(readFileSync(join(ROOT, 'scripts', entry.name), 'utf8')).not.toContain('/resume');
+            expect(readFileSync(join(entry.parentPath, entry.name), 'utf8')).not.toContain('/resume');
         }
     });
 

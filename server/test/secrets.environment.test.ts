@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { readLaneScript } from './fixtures/lane-script.js';
 
 /*
  * The secret store's keys decrypt every stored credential, so they reach the dashboard process and
@@ -81,7 +82,7 @@ describe('the secret-store keys stay in the dashboard process', () => {
     });
 
     describe('scripts/test-jobs.sh', () => {
-        const script = read('scripts/test-jobs.sh');
+        const script = readLaneScript('scripts/test-jobs.sh');
         const lines = script.split('\n').map((line) => (line.trimStart().startsWith('#') ? '' : line));
 
         it('exports no key and puts keys only on a board launch', () => {
