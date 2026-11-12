@@ -8,6 +8,7 @@ never utilities, and every color it renders resolves through a token.
 | Entry, import order, cascade | `web/src/styles.css` | `web/test/styles.test.ts` |
 | Tokens — both `:root` blocks, the `@theme` blocks | `web/src/styles/tokens.css` | `web/test/styles.test.ts` |
 | Self-hosted faces (Inter sans, Plex Mono) | `web/src/styles/fonts.css`, `web/public/fonts/` | `web/test/styles.test.ts` |
+| Type (`--text-*`), space (`--space-*`) and touch (`--touch`) tokens; px literals outside `tokens.css` only ever drop, breakpoints pinned | `web/src/styles/tokens.css` | `web/test/styles.test.ts` |
 | Mono identifier primitive `.mono` (SHAs, ids, tokens, branch names; no generic cell or `.status`) | `web/src/styles/primitives.css` | `web/test/styles.test.ts` |
 | Type scale, bare content link, 36px control floor | `web/src/styles/base.css` | `e2e/polish.spec.ts` |
 | Shared primitives (shell, panels, pills, fields, buttons, selectors, dialogs, tables) | `web/src/styles/primitives.css` | `e2e/polish.spec.ts` |

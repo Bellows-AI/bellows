@@ -11,8 +11,8 @@
     .inbox {
         display: flex;
         flex-direction: column;
-        gap: 16px;
-        padding: 24px;
+        gap: var(--space-4);
+        padding: var(--space-6);
     }
 
     /* New task: the primary recipe on a link (`button.primary` only skins buttons). */
@@ -24,9 +24,9 @@
         color: var(--ink-inverse);
         display: inline-flex;
         font-weight: 600;
-        gap: 8px;
+        gap: var(--space-2);
         min-height: 40px;
-        padding: 0 16px;
+        padding: 0 var(--space-4);
         text-decoration: none;
     }
 
@@ -38,15 +38,15 @@
     /* The state tabs ride the shared `.tabs` strip, label-wide: no side padding, so the first
        label starts on the heading's edge; the gap spaces them and hover changes ink, not fill. */
     .inbox-tabs {
-        gap: 24px;
+        gap: var(--space-6);
     }
 
     .inbox-tab {
         align-items: center;
         display: inline-flex;
-        gap: 8px;
+        gap: var(--space-2);
         min-height: 36px;
-        padding: 4px 0;
+        padding: var(--space-1) 0;
         text-decoration: none;
     }
 
@@ -60,12 +60,12 @@
         background: var(--surface-strong);
         border-radius: 999px;
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-variant-numeric: tabular-nums;
         font-weight: 600;
         line-height: 18px;
         min-width: 20px;
-        padding: 0 4px;
+        padding: 0 var(--space-1);
         text-align: center;
     }
 
@@ -81,7 +81,7 @@
         align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 4px;
+        gap: var(--space-1);
         margin-left: -10px;
         min-width: 0;
     }
@@ -92,10 +92,10 @@
         color: var(--ink-muted);
         display: flex;
         flex: 1 1 14rem;
-        gap: 8px;
+        gap: var(--space-2);
         min-height: 36px;
         min-width: 0;
-        padding: 4px 10px;
+        padding: var(--space-1) 10px;
     }
 
     .inbox-search:hover,
@@ -109,7 +109,7 @@
         color: var(--ink);
         flex: 1;
         font: inherit;
-        font-size: 14px;
+        font-size: var(--text-base);
         min-width: 0;
         padding: 0;
     }
@@ -126,12 +126,12 @@
     .inbox-toolbar-divider {
         background: var(--line);
         height: 20px;
-        margin: 0 4px;
+        margin: 0 var(--space-1);
         width: 1px;
     }
 
     .inbox-toolbar .select-trigger {
-        font-size: 14px;
+        font-size: var(--text-base);
         max-width: min(240px, 100%);
     }
 
@@ -139,7 +139,7 @@
     @media (min-width: 901px) {
         .inbox-toolbar .select-trigger {
             min-height: 36px;
-            padding: 4px 10px;
+            padding: var(--space-1) 10px;
         }
     }
 
@@ -162,7 +162,7 @@
 
     .inbox-toolbar .muted,
     .inbox-toolbar .status {
-        font-size: 13px;
+        font-size: var(--text-sm);
     }
 
     /* The author panel: a login field over the loaded authors. */
@@ -178,9 +178,9 @@
         border-radius: var(--radius-md);
         color: var(--ink);
         font: inherit;
-        font-size: 13px;
-        margin-bottom: 4px;
-        padding: 4px 8px;
+        font-size: var(--text-sm);
+        margin-bottom: var(--space-1);
+        padding: var(--space-1) var(--space-2);
     }
 
     .inbox-author-field:focus {
@@ -191,7 +191,7 @@
         align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 8px 12px;
+        gap: var(--space-2) var(--space-3);
     }
 
     /* The chip's remove link: the × alone, named by its aria-label, on a 24px target (the WCAG
@@ -213,7 +213,7 @@
 
     .inbox-clear {
         color: var(--accent);
-        font-size: 13px;
+        font-size: var(--text-sm);
     }
 
     /* The list: one framed panel, a quiet heading per day, rows on dividers. */
@@ -232,19 +232,19 @@
         background: var(--surface);
         border-bottom: 1px solid var(--line);
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-weight: 600;
         letter-spacing: 0.06em;
         line-height: 16px;
         margin: 0;
-        padding: 8px 16px;
+        padding: var(--space-2) var(--space-4);
         text-transform: uppercase;
     }
 
     .inbox-group-count {
         font-weight: 500;
         letter-spacing: 0;
-        margin-left: 8px;
+        margin-left: var(--space-2);
         text-transform: none;
     }
 
@@ -258,14 +258,14 @@
 
     .inbox-row {
         align-items: center;
-        column-gap: 12px;
+        column-gap: var(--space-3);
         display: grid;
         /* Fixed state and age tracks, so a long title, repository or login can never push the pill
            out of sight; repository and author give way first, each ellipsizing inside its own
            track. */
         grid-template-columns: 20px minmax(12rem, 1fr) 200px minmax(0, 180px) minmax(0, 144px) 96px;
         min-height: 64px;
-        padding: 12px 16px;
+        padding: var(--space-3) var(--space-4);
         position: relative;
     }
 
@@ -329,7 +329,7 @@
 
     .inbox-summary {
         color: var(--ink-muted);
-        font-size: 13px;
+        font-size: var(--text-sm);
         line-height: 18px;
     }
 
@@ -351,7 +351,7 @@
 
     .inbox-state .pill {
         max-width: 100%;
-        padding-block: 4px;
+        padding-block: var(--space-1);
         white-space: normal;
     }
 
@@ -376,8 +376,8 @@
         color: var(--ink);
         display: flex;
         font-family: var(--font-mono);
-        font-size: 12px;
-        gap: 8px;
+        font-size: var(--text-xs);
+        gap: var(--space-2);
         line-height: 18px;
         min-width: 0;
     }
@@ -388,10 +388,10 @@
 
     .inbox-executor {
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
         line-height: 16px;
         overflow: hidden;
-        padding-left: 24px;
+        padding-left: var(--space-6);
         text-overflow: ellipsis;
         white-space: nowrap;
     }
@@ -399,8 +399,8 @@
     .inbox-author {
         align-items: center;
         display: flex;
-        font-size: 13px;
-        gap: 8px;
+        font-size: var(--text-sm);
+        gap: var(--space-2);
         min-width: 0;
     }
 
@@ -413,7 +413,7 @@
     .inbox-cell-text,
     .inbox-when {
         color: var(--ink-muted);
-        font-size: 13px;
+        font-size: var(--text-sm);
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -454,11 +454,11 @@
         .inbox-row {
             align-items: start;
             grid-template-columns: 20px minmax(0, 1fr);
-            row-gap: 8px;
+            row-gap: var(--space-2);
         }
 
         .inbox-mark {
-            padding-top: 4px;
+            padding-top: var(--space-1);
         }
 
         .inbox-row > :not(.inbox-mark) {
@@ -479,14 +479,14 @@
         color: var(--ink-muted);
         display: flex;
         flex-direction: column;
-        gap: 8px;
-        padding: 48px 24px;
+        gap: var(--space-2);
+        padding: var(--space-12) var(--space-6);
         text-align: center;
     }
 
     .inbox-empty p {
         color: var(--ink);
-        font-size: 15px;
+        font-size: var(--text-md);
         font-weight: 600;
         margin: 0;
     }
@@ -496,7 +496,7 @@
         color: var(--lamp-stop);
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: var(--space-2);
     }
 
     .inbox-error p {
@@ -508,18 +508,18 @@
         align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 12px;
+        gap: var(--space-3);
         justify-content: space-between;
     }
 
     .inbox-footer p {
-        font-size: 13px;
+        font-size: var(--text-sm);
         margin: 0;
     }
 
     .inbox-note {
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
         margin: 0;
         min-height: 1em;
     }
@@ -535,8 +535,8 @@
         .inbox-error button {
             align-items: center;
             display: inline-flex;
-            min-height: 44px;
-            min-width: 44px;
+            min-height: var(--touch);
+            min-width: var(--touch);
         }
     }
 }

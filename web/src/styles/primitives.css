@@ -18,7 +18,7 @@
         font-family: var(--font-mono);
         font-size: 0.92em;
         background: var(--surface-sunken);
-        padding: 1px 4px;
+        padding: 1px var(--space-1);
         border-radius: var(--radius-md);
     }
 
@@ -41,7 +41,7 @@
         border-bottom: 1px solid var(--line);
         display: flex;
         flex-wrap: wrap;
-        gap: 12px;
+        gap: var(--space-3);
         /* Wrapping is the narrow-phone answer (issue 190): past the trigger+brand+actions sum
            the actions drop to their own row instead of pushing the bar past the viewport — no
            control is displaced or hidden, whatever the account login's length. */
@@ -50,7 +50,7 @@
         /* 48px border-box: a 36px control, 4px above and below, and the 1px bottom edge fit
            inside it (issue 274). */
         min-height: 48px;
-        padding: 4px 24px;
+        padding: var(--space-1) var(--space-6);
         position: sticky;
         top: 0;
         z-index: 20;
@@ -81,7 +81,7 @@
     .appbar-actions {
         align-items: center;
         display: flex;
-        gap: 12px;
+        gap: var(--space-3);
         /* Desktop shows only the actions (trigger and brand are hidden), and space-between
            leaves a lone item at the START edge — the actions belong at the end edge. The mobile
            breakpoint resets this, where all three groups use space-between. */
@@ -96,13 +96,13 @@
         display: flex;
         flex-wrap: wrap;
         align-items: baseline;
-        gap: 8px 16px;
+        gap: var(--space-2) var(--space-4);
     }
 
     .page-header-eyebrow {
         color: var(--ink-muted);
         flex-basis: 100%;
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-weight: 600;
         letter-spacing: 0.08em;
         margin: 0;
@@ -128,7 +128,7 @@
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
         display: -webkit-box;
-        font-size: 22px;
+        font-size: var(--text-3xl);
         line-clamp: 2;
         line-height: 30px;
         overflow: hidden;
@@ -137,16 +137,16 @@
 
     @media (max-width: 640px) {
         .page-header-leading h1.task-heading {
-            font-size: 20px;
+            font-size: var(--text-2xl);
             line-height: 28px;
         }
     }
 
     .page-header-description {
         color: var(--ink-muted);
-        font-size: 15px;
+        font-size: var(--text-md);
         line-height: 22px;
-        margin: 4px 0 0;
+        margin: var(--space-1) 0 0;
         max-width: 72ch;
     }
 
@@ -155,7 +155,7 @@
         align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: var(--space-2);
         min-width: 0;
     }
 
@@ -166,7 +166,7 @@
         display: flex;
         flex: none;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: var(--space-2);
         max-width: 100%;
     }
 
@@ -187,7 +187,7 @@
         /* Desktop control floor (issue 189): padding alone lands a 31px control; every button,
            tab and verdict clears 36. The compact shell restates 44 for touch below. */
         min-height: 36px;
-        padding: 4px 12px;
+        padding: var(--space-1) var(--space-3);
         font: inherit;
         cursor: pointer;
     }
@@ -221,7 +221,7 @@
         color: var(--ink-inverse);
         font-weight: 600;
         min-height: 40px;
-        padding: 0 16px;
+        padding: 0 var(--space-4);
     }
 
     button.primary:hover:not(:disabled) {
@@ -258,7 +258,7 @@
         display: inline-flex;
         justify-content: center;
         min-width: 36px;
-        padding: 4px;
+        padding: var(--space-1);
     }
 
     /* The destructive variant: the stop lamp's text with no frame or fill at rest, its wash on
@@ -291,7 +291,7 @@
         border-bottom: 1px solid var(--line);
         display: flex;
         flex-wrap: wrap;
-        gap: 4px;
+        gap: var(--space-1);
     }
 
     .tabs [role='tab'] {
@@ -319,7 +319,7 @@
         color: var(--ink-muted);
         display: inline-flex;
         margin-bottom: -1px;
-        padding: 4px 12px;
+        padding: var(--space-1) var(--space-3);
         text-decoration: none;
     }
 
@@ -341,7 +341,7 @@
         color: var(--ink);
         font: inherit;
         min-height: 40px;
-        padding: 8px 12px;
+        padding: var(--space-2) var(--space-3);
     }
 
     .field::placeholder {
@@ -412,13 +412,13 @@
         color: var(--ink);
         display: inline-flex;
         font: inherit;
-        gap: 8px;
+        gap: var(--space-2);
         /* A long organization, workflow, repository or executor name wraps inside the trigger,
            never the page. */
         max-width: 100%;
         min-height: 40px;
         overflow-wrap: anywhere;
-        padding: 8px 12px;
+        padding: var(--space-2) var(--space-3);
     }
 
     .select-trigger:hover,
@@ -474,7 +474,7 @@
        so the AppShell owns the region and a dialog or nested main never inherits page chrome.
        `min-width: 0` lets wide content shrink inside the shell's `minmax(0, 1fr)` track. */
     .page {
-        padding: 24px;
+        padding: var(--space-6);
         display: flex;
         flex-direction: column;
         gap: 20px;
@@ -488,17 +488,17 @@
         background: var(--surface-soft);
         border: 1px solid transparent;
         border-radius: var(--radius-xl);
-        padding: 24px;
+        padding: var(--space-6);
     }
 
     @media (max-width: 640px) {
         .panel {
-            padding: 16px;
+            padding: var(--space-4);
         }
     }
 
     .panel p {
-        margin: 0 0 12px;
+        margin: 0 0 var(--space-3);
         max-width: 68ch;
     }
 
@@ -507,8 +507,8 @@
        comes later (onboarding-orgs, chat-gate-list) wins without a fight. */
     .panel > :where(ul) {
         list-style: disc;
-        margin: 0 0 12px;
-        padding-left: 24px;
+        margin: 0 0 var(--space-3);
+        padding-left: var(--space-6);
     }
 
     .panel.panel-flat {
@@ -530,7 +530,7 @@
         border-radius: var(--radius-md);
         color: var(--on-bad);
         /* Status-marker floor (issue 189). */
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-weight: 600;
         letter-spacing: 0.04em;
         margin-left: 10px;
@@ -571,7 +571,7 @@
     table.data th,
     table.data td {
         text-align: left;
-        padding: 5px 8px;
+        padding: 5px var(--space-2);
         border-bottom: 1px solid var(--line);
         white-space: nowrap;
     }
@@ -579,7 +579,7 @@
     table.data th {
         color: var(--ink-muted);
         font-weight: 500;
-        font-size: 12px;
+        font-size: var(--text-xs);
         text-transform: uppercase;
         letter-spacing: 0.04em;
     }
@@ -600,7 +600,7 @@
         text-align: inherit;
         background: none;
         border: none;
-        padding: 5px 8px;
+        padding: 5px var(--space-2);
         cursor: pointer;
         user-select: none;
     }
@@ -637,7 +637,7 @@
 
     table.data.data-compact th,
     table.data.data-compact td {
-        padding: 8px 8px;
+        padding: var(--space-2) var(--space-2);
         vertical-align: middle;
     }
 
@@ -649,7 +649,7 @@
         align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: var(--space-2);
     }
 
     /* The small square icon control, the shape `env-icon-button` also uses. The 36px desktop
@@ -680,8 +680,8 @@
             border: 1px solid var(--line);
             border-radius: var(--radius-lg);
             display: block;
-            margin-bottom: 8px;
-            padding: 12px;
+            margin-bottom: var(--space-2);
+            padding: var(--space-3);
         }
 
         /* Qualified by `table.data`, not `.table-cards` alone: the cell base above is (0,1,2) and
@@ -691,7 +691,7 @@
         table.data.table-cards td {
             border-bottom: none;
             display: block;
-            padding: 4px 0;
+            padding: var(--space-1) 0;
             text-align: left;
             white-space: normal;
             width: auto;
@@ -706,16 +706,16 @@
             color: var(--ink-muted);
             content: attr(data-label);
             display: block;
-            font-size: 12px;
+            font-size: var(--text-xs);
         }
     }
 
     .kv {
         display: grid;
         grid-template-columns: auto auto;
-        gap: 2px 16px;
+        gap: 2px var(--space-4);
         margin: 0;
-        font-size: 13px;
+        font-size: var(--text-sm);
     }
 
     .kv dt {
@@ -735,15 +735,15 @@
         }
 
         .kv dd {
-            margin-bottom: 8px;
+            margin-bottom: var(--space-2);
         }
     }
 
     footer {
         display: flex;
         gap: 20px;
-        padding: 12px 24px 32px;
-        font-size: 12px;
+        padding: var(--space-3) var(--space-6) var(--space-8);
+        font-size: var(--text-xs);
     }
 
     /* The appearance control (issue 188): the one System/Light/Dark preference, worn by the app
@@ -754,12 +754,12 @@
     .theme-field {
         align-items: center;
         display: flex;
-        gap: 8px;
+        gap: var(--space-2);
     }
 
     .theme-label {
         color: var(--ink-muted);
-        font-size: 13px;
+        font-size: var(--text-sm);
     }
 
     /* Narrow screens drop the visible label — the select keeps its accessible name, and the
@@ -784,7 +784,7 @@
         border-radius: var(--radius-lg);
         color: var(--ink);
         left: 16px;
-        padding: 8px 12px;
+        padding: var(--space-2) var(--space-3);
         position: fixed;
         text-decoration: none;
         top: 16px;
@@ -813,7 +813,7 @@
 
     .sidenav {
         border-right: 1px solid var(--line);
-        padding: 0 12px 16px;
+        padding: 0 var(--space-3) var(--space-4);
         position: sticky;
         top: 0;
         align-self: start;
@@ -826,12 +826,12 @@
         align-items: center;
         color: var(--ink);
         display: flex;
-        font-size: 15px;
+        font-size: var(--text-md);
         font-weight: 600;
         letter-spacing: 0.12em;
-        margin-bottom: 8px;
+        margin-bottom: var(--space-2);
         min-height: 48px;
-        padding: 0 12px;
+        padding: 0 var(--space-3);
         text-transform: uppercase;
     }
 
@@ -849,9 +849,9 @@
         border-radius: var(--radius-lg);
         color: var(--ink-muted);
         display: flex;
-        gap: 12px;
+        gap: var(--space-3);
         min-height: 40px;
-        padding: 0 12px;
+        padding: 0 var(--space-3);
         text-decoration: none;
     }
 
@@ -874,17 +874,17 @@
         background: var(--surface-strong);
         border-radius: var(--radius-md);
         color: var(--ink);
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-variant-numeric: tabular-nums;
         font-weight: 600;
         line-height: 20px;
         margin-left: auto;
-        padding: 0 8px;
+        padding: 0 var(--space-2);
     }
 
     /* The task preview's one disclosure under the Tasks item; its summary is .sidenav-section. */
     .sidenav-preview {
-        margin: 4px 0 8px;
+        margin: var(--space-1) 0 var(--space-2);
     }
 
     /* The Settings tree's section links, under the Settings item: the task tree's scale without the
@@ -893,8 +893,8 @@
         border-radius: var(--radius-lg);
         color: var(--ink-muted);
         display: block;
-        font-size: 12px;
-        padding: 4px 10px 4px 24px;
+        font-size: var(--text-xs);
+        padding: var(--space-1) 10px var(--space-1) var(--space-6);
         text-decoration: none;
     }
 
@@ -921,9 +921,9 @@
         color: var(--ink-muted);
         display: flex;
         flex-wrap: wrap;
-        font-size: 13px;
+        font-size: var(--text-sm);
         overflow: hidden;
-        padding: 4px 12px 4px 24px;
+        padding: var(--space-1) var(--space-3) var(--space-1) var(--space-6);
         text-decoration: none;
     }
 
@@ -947,7 +947,7 @@
         flex: 0 0 100%;
         font-family: var(--font-mono);
         /* Task-information floor (issue 189); the token is the color — no extra opacity. */
-        font-size: 12px;
+        font-size: var(--text-xs);
         margin-top: 2px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -960,7 +960,7 @@
         color: var(--ink-muted);
         flex: none;
         /* Task-metadata floor (issue 189). */
-        font-size: 12px;
+        font-size: var(--text-xs);
         margin-left: 6px;
         max-width: 40%;
         overflow: hidden;
@@ -1000,7 +1000,7 @@
         border-radius: 50%;
         display: inline-block;
         height: 6px;
-        margin-right: 4px;
+        margin-right: var(--space-1);
         vertical-align: middle;
         width: 6px;
     }
@@ -1033,9 +1033,9 @@
 
     .sidenav-empty {
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
         margin: 2px 0 6px;
-        padding: 0 10px 0 24px;
+        padding: 0 10px 0 var(--space-6);
     }
 
     /* The task tree's count line — Running / Need review clauses, zero-valued ones omitted — as the
@@ -1046,11 +1046,11 @@
         color: var(--ink-muted);
         cursor: pointer;
         /* Navigation-caption floor (issue 189). */
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-weight: 600;
         letter-spacing: 0.05em;
-        margin: 4px 0 0;
-        padding: 4px 12px;
+        margin: var(--space-1) 0 0;
+        padding: var(--space-1) var(--space-3);
         text-align: left;
         text-transform: uppercase;
         width: 100%;
@@ -1064,9 +1064,9 @@
         border-radius: var(--radius-lg);
         color: var(--ink-muted);
         display: block;
-        font-size: 12px;
+        font-size: var(--text-xs);
         margin: 2px 0;
-        padding: 4px 10px 4px 24px;
+        padding: var(--space-1) 10px var(--space-1) var(--space-6);
         text-decoration: none;
     }
 
@@ -1113,9 +1113,9 @@
     .panel-head {
         align-items: center;
         display: flex;
-        gap: 16px;
+        gap: var(--space-4);
         justify-content: space-between;
-        margin-bottom: 8px;
+        margin-bottom: var(--space-2);
     }
 
     /* A status or type chip: the text is the whole message, the tone only reinforces it. An
@@ -1125,12 +1125,12 @@
         border: 1px solid var(--line);
         border-radius: var(--radius-md);
         display: inline-flex;
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-weight: 600;
-        gap: 4px;
+        gap: var(--space-1);
         line-height: 16px;
         min-height: 24px;
-        padding: 0 8px;
+        padding: 0 var(--space-2);
         white-space: nowrap;
     }
 
@@ -1177,7 +1177,7 @@
     .pill-list {
         display: flex;
         flex-wrap: wrap;
-        gap: 4px;
+        gap: var(--space-1);
     }
 
     /* A small neutral number beside a heading: how many rows the list below holds. */
@@ -1185,10 +1185,10 @@
         background: var(--surface-sunken);
         border-radius: var(--radius-md);
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-weight: 600;
         line-height: 16px;
-        margin-left: 8px;
+        margin-left: var(--space-2);
         padding: 0 6px;
     }
 
@@ -1240,10 +1240,10 @@
         border-radius: 999px;
         color: var(--ink);
         display: inline-flex;
-        font-size: 13px;
-        gap: 4px;
+        font-size: var(--text-sm);
+        gap: var(--space-1);
         min-height: 28px;
-        padding: 0 12px;
+        padding: 0 var(--space-3);
     }
 
     .inbox-chip button {
@@ -1266,9 +1266,9 @@
         border-radius: var(--radius-xl);
         color: var(--ink);
         display: flex;
-        gap: 16px;
+        gap: var(--space-4);
         margin: 0;
-        padding: 16px 24px;
+        padding: var(--space-4) var(--space-6);
     }
 
     .banner-warn {
@@ -1299,7 +1299,7 @@
     }
 
     .banner-title {
-        font-size: 15px;
+        font-size: var(--text-md);
         font-weight: 600;
         line-height: 22px;
         margin: 0;
@@ -1331,7 +1331,7 @@
         display: flex;
         inset: 0;
         justify-content: center;
-        padding: 16px;
+        padding: var(--space-4);
         position: fixed;
     }
 
@@ -1347,13 +1347,13 @@
         max-height: calc(100dvh - 32px);
         max-width: 560px;
         overflow-y: auto;
-        padding: 24px;
+        padding: var(--space-6);
         width: 90vw;
     }
 
     @media (max-width: 640px) {
         .dialog {
-            padding: 16px;
+            padding: var(--space-4);
             width: 100%;
         }
     }
@@ -1367,30 +1367,30 @@
         border-radius: var(--radius-lg);
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: var(--space-1);
         max-height: 80dvh;
         max-width: 400px;
         overflow-y: auto;
-        padding: 16px;
+        padding: var(--space-4);
         width: 90vw;
     }
 
     .mobile-nav-head {
         align-items: center;
         display: flex;
-        gap: 12px;
+        gap: var(--space-3);
         justify-content: space-between;
     }
 
     .mobile-nav-title {
-        font-size: 15px;
+        font-size: var(--text-md);
         margin: 0;
     }
 
     /* The drawer reuses the sidenav's link primitives; the sublinks drop their desktop indent and
         size up from 12px to the body size — no new small navigation text (issue 160). */
     .mobile-nav .sidenav-sublink {
-        font-size: 14px;
+        font-size: var(--text-base);
         padding-left: 10px;
     }
 
@@ -1426,8 +1426,8 @@
         cursor: pointer;
         display: flex;
         font: inherit;
-        gap: 8px;
-        padding: 8px 12px;
+        gap: var(--space-2);
+        padding: var(--space-2) var(--space-3);
         text-align: left;
         text-decoration: none;
         width: 100%;
@@ -1460,7 +1460,7 @@
     /* A restrained divider between option groups — the account menu's Account/Sign out split. */
     .popover-separator {
         border-top: 1px solid var(--line);
-        margin: 4px 2px;
+        margin: var(--space-1) 2px;
     }
 
     /* The keyboard path beside the launch button — a documentation mark, not an affordance. */
@@ -1473,9 +1473,9 @@
         display: inline-flex;
         font-family: var(--font-mono);
         /* Helper-text floor (issue 189) — documentation of the button is still read. */
-        font-size: 12px;
+        font-size: var(--text-xs);
         min-height: 24px;
-        padding: 0 8px;
+        padding: 0 var(--space-2);
         white-space: nowrap;
     }
 
@@ -1486,8 +1486,8 @@
     .user-menu-button {
         align-items: center;
         display: flex;
-        gap: 8px;
-        padding: 4px 10px;
+        gap: var(--space-2);
+        padding: var(--space-1) 10px;
     }
 
     .user-menu-login {
@@ -1516,14 +1516,14 @@
     .avatar-fallback {
         /* No picture from GitHub — the login's initial, sized to the avatar it stands in for. */
         color: var(--ink);
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-weight: 600;
         line-height: 28px;
         text-align: center;
     }
 
     .avatar-lg.avatar-fallback {
-        font-size: 18px;
+        font-size: var(--text-xl);
         line-height: 40px;
     }
 
@@ -1542,7 +1542,7 @@
        color. The partial and unavailable states are sentences, not tints. */
     .usage-figures {
         display: grid;
-        gap: 12px;
+        gap: var(--space-3);
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         margin: 0;
     }
@@ -1554,11 +1554,11 @@
 
     .usage-figure[aria-current='true'] {
         border-left: 3px solid var(--accent);
-        padding-left: 8px;
+        padding-left: var(--space-2);
     }
 
     .usage-figure dd {
-        font-size: 18px;
+        font-size: var(--text-xl);
         font-weight: 600;
         margin: 0;
         overflow-wrap: anywhere;
@@ -1566,12 +1566,12 @@
 
     .usage-figure-label {
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
     }
 
     .usage-precision {
         color: var(--ink-muted);
-        margin-left: 4px;
+        margin-left: var(--space-1);
     }
 
     /* The words behind the `~` glyph: out of sight, still read, never `display: none`. */
@@ -1588,9 +1588,9 @@
     .usage-state-note,
     .state-note {
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
         font-weight: 400;
-        margin: 4px 0;
+        margin: var(--space-1) 0;
     }
 
     .state-note.error {
@@ -1610,14 +1610,14 @@
 
     .usage-breakdown-toggle {
         display: block;
-        font-size: 12px;
-        margin-top: 4px;
+        font-size: var(--text-xs);
+        margin-top: var(--space-1);
     }
 
     .usage-variants {
         color: var(--ink-muted);
         display: block;
-        font-size: 12px;
+        font-size: var(--text-xs);
         overflow-wrap: anywhere;
         white-space: normal;
     }
@@ -1627,25 +1627,25 @@
     }
 
     .usage-child-row td:first-child {
-        padding-left: 24px;
+        padding-left: var(--space-6);
     }
 
     .usage-diagnostics {
         border: 1px solid var(--line);
         border-radius: var(--radius-lg);
-        margin-top: 12px;
-        padding: 12px;
+        margin-top: var(--space-3);
+        padding: var(--space-3);
     }
 
     .usage-diagnostics > p {
         color: var(--ink-muted);
-        font-size: 12px;
-        margin: 0 0 8px;
+        font-size: var(--text-xs);
+        margin: 0 0 var(--space-2);
     }
 
     .usage-diagnostics ul {
         display: grid;
-        gap: 8px;
+        gap: var(--space-2);
         list-style: none;
         margin: 0;
         padding: 0;

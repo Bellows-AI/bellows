@@ -198,6 +198,34 @@
     --measure-wide: 720px;
     --measure-narrow: 640px;
 
+    /* Type scale in px, named by step; `tick` is the chart axis, the one size under the 12px
+     * floor. A size that is not here is not on the scale: inherit, or ask for a step. */
+    --text-tick: 11px;
+    --text-xs: 12px;
+    --text-sm: 13px;
+    --text-base: 14px;
+    --text-md: 15px;
+    --text-lg: 16px;
+    --text-xl: 18px;
+    --text-2xl: 20px;
+    --text-3xl: 22px;
+    --text-4xl: 24px;
+    --text-5xl: 26px;
+    --text-6xl: 28px;
+
+    /* Spacing scale (4px steps to 32, then 48): padding, margin and gap. Media queries cannot
+     * read a token: the shared breakpoints (640, 900, 1024) are pinned in styles.test.ts. */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-12: 48px;
+
+    /* The smallest reliable finger target: the compact shell's control floor. */
+    --touch: 44px;
+
     /* The single ambient motion: a running lamp breathes. */
     --animate-lamp: lamp 2.4s ease-in-out infinite;
     @keyframes lamp {
