@@ -1,3 +1,4 @@
+// @ts-check
 // The operation ledger: the persisted identity of a remote effect and how far it got (issues #771,
 // #826). One JSON file in the task worktree's `.factory/` namespace — on the task volume, so it
 // outlives the pod and the driver that wrote it — maps an operation to its record. Each ledger
@@ -19,6 +20,7 @@ const path = require('node:path');
 
 const KEEP_OPERATIONS = 20;
 
+/** @param {string} file */
 const read = (file) => {
     try {
         const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -28,6 +30,7 @@ const read = (file) => {
     }
 };
 
+/** @param {string | undefined} raw */
 const dataOf = (raw) => {
     if (!raw) return {};
     const data = JSON.parse(raw);
@@ -35,16 +38,18 @@ const dataOf = (raw) => {
     return data;
 };
 
+/** @param {NodeJS.ProcessEnv} env */
 function main(env) {
     const { LEDGER: file, ACTION: action, OP: op, STATE: state } = env;
     if (!file || !op) throw new Error('the ledger needs LEDGER and OP');
     const ledger = read(file);
     if (action === 'read') return ledger.operations[op] ?? {};
     const states = (env.STATES ?? '').split(',').filter(Boolean);
-    if (action !== 'write' || !states.includes(state)) throw new Error(`not a ledger write: ${action} ${state}`);
+    if (action !== 'write' || !states.includes(/** @type {string} */ (state)))
+        throw new Error(`not a ledger write: ${action} ${state}`);
     const previous = ledger.operations[op] ?? {};
     // A state never moves backwards: a retried `pushing` after `pushed` keeps `pushed`.
-    const keep = states.indexOf(previous.state) > states.indexOf(state);
+    const keep = states.indexOf(previous.state) > states.indexOf(/** @type {string} */ (state));
     const record = {
         ...previous,
         ...(keep ? {} : { state }),
@@ -65,6 +70,6 @@ function main(env) {
 try {
     process.stdout.write(`${JSON.stringify(main(process.env))}\n`);
 } catch (error) {
-    process.stderr.write(`${error.message}\n`);
+    process.stderr.write(`${/** @type {Error} */ (error).message}\n`);
     process.exit(1);
 }
