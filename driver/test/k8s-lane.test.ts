@@ -9,7 +9,7 @@ import {
     SUPERVISOR_REBIND_GRACE_MS,
     SUPERVISOR_STEP_WAIT_MS,
 } from '../src/supervisor-contract.js';
-import { REPO_ROOT, readRepoFile } from './fixtures/repo-files.js';
+import { REPO_ROOT, readLaneScript, readRepoFile } from './fixtures/repo-files.js';
 import { killLiveChildren, runAsync } from './fixtures/run-async.js';
 
 describe('kind lane argument validation', () => {
@@ -71,7 +71,7 @@ exec ${JSON.stringify(realDirname)} "$@"
     });
 
     it('delivers pinned org and workspace skills in the recovery phase and holds the sha set across a pod deletion (BEL-273)', () => {
-        const script = readRepoFile('scripts/test-k8s.sh');
+        const script = readLaneScript('scripts/test-k8s.sh');
         const stub = readRepoFile('scripts/k8s-stub.sh');
         expect(script).toContain('begin_phase recovery-skills');
         expect(script).toContain('scripts/lane-skills.mjs');
@@ -81,7 +81,7 @@ exec ${JSON.stringify(realDirname)} "$@"
     });
 
     it('runs the executors skill view builder on the resumed pod against a same-name checkout skill', () => {
-        const script = readRepoFile('scripts/test-k8s.sh');
+        const script = readLaneScript('scripts/test-k8s.sh');
         const stub = readRepoFile('scripts/k8s-stub.sh');
         // The stub image carries the builder the entrypoints run, and the stub runs it in both modes.
         expect(script).toContain('docker/executor-common/skill-view.cjs');
@@ -95,7 +95,7 @@ exec ${JSON.stringify(realDirname)} "$@"
     });
 
     it('runs the failure-matrix acceptance phase in the full cluster run, one named check per case (issue #779)', () => {
-        const script = readRepoFile('scripts/test-k8s.sh');
+        const script = readLaneScript('scripts/test-k8s.sh');
         expect(script).toContain('if selected_phase acceptance; then');
         for (const c of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) expect(script).toContain(`'acceptance: ${c}. `);
         expect(script).toContain('--grace-period=0 --force');
@@ -315,7 +315,7 @@ describe('kind cluster create and delete', () => {
 });
 
 describe('kind lane image load', () => {
-    const script = readRepoFile('scripts/test-k8s.sh');
+    const script = readLaneScript('scripts/test-k8s.sh');
     const load = script.slice(script.indexOf('begin_phase image-load'), script.indexOf('begin_phase deploy'));
 
     it('pushes the rebuilt images to the cluster registry under a per-run tag', () => {
@@ -430,7 +430,7 @@ describe('kind lane pod timeline', () => {
 });
 
 describe('kind lane timing evidence', () => {
-    const script = readRepoFile('scripts/test-k8s.sh');
+    const script = readLaneScript('scripts/test-k8s.sh');
     const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
 
     it('records every check with the seconds since the one before it', () => {
@@ -478,7 +478,7 @@ describe('kind lane timing evidence', () => {
 });
 
 describe('kind lane takeover and drain phases (issue #829)', () => {
-    const script = readRepoFile('scripts/test-k8s.sh');
+    const script = readLaneScript('scripts/test-k8s.sh');
     const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
     const takeover = script.slice(
         script.indexOf('if selected_phase takeover; then'),
@@ -563,7 +563,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
 });
 
 describe('kind lane compressed timers and stall evidence (issue #829)', () => {
-    const script = readRepoFile('scripts/test-k8s.sh');
+    const script = readLaneScript('scripts/test-k8s.sh');
     const install = script.slice(script.indexOf(`helm install "$RELEASE" charts/factory "$\{LOCAL_SETS[@]}"`));
     const installCall = install.slice(0, install.indexOf('>/dev/null'));
 
@@ -638,7 +638,7 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
 });
 
 describe('kind lane capacity phase (issue #831)', () => {
-    const script = readRepoFile('scripts/test-k8s.sh');
+    const script = readLaneScript('scripts/test-k8s.sh');
     const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
     const capacity = script.slice(
         script.indexOf('if selected_phase capacity; then'),
@@ -674,7 +674,7 @@ describe('kind lane capacity phase (issue #831)', () => {
 });
 
 describe('kind lane services restart case (issue #926)', () => {
-    const script = readRepoFile('scripts/test-k8s.sh');
+    const script = readLaneScript('scripts/test-k8s.sh');
     const fnStart = script.indexOf('\nend_postgres_sidecar() {');
     const fn = script.slice(fnStart, script.indexOf('\n}\n', fnStart) + 3);
 
@@ -741,7 +741,7 @@ esac
 });
 
 describe('kind lane bench phase (issue #831)', () => {
-    const script = readRepoFile('scripts/test-k8s.sh');
+    const script = readLaneScript('scripts/test-k8s.sh');
     const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
     const bench = script.slice(
         script.indexOf('if [ "$PHASE" = bench ]; then'),

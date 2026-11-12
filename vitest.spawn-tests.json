@@ -88,6 +88,7 @@
         "server/test/test-jobs.changed.test.ts",
         "server/test/test-jobs.groups.test.ts",
         "server/test/test-jobs.options.test.ts",
+        "server/test/test-jobs.phases.test.ts",
         "server/test/test-jobs.stub-walk.test.ts"
     ]
 }

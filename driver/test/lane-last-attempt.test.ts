@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { readRepoFile as read } from './fixtures/repo-files.js';
+import { readLaneScript as read } from './fixtures/repo-files.js';
 
 /*
  * The lanes' recovery cases run their job at max_attempts 1 (issue #822), where an expiry spending

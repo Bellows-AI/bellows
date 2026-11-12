@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_MAILBOX_DIR, GO_MARKER, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 import { agentLaunchArgs, containerHardeningArgs } from '../src/docker/docker.js';
-import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
+import { REPO_ROOT as ROOT, readLaneScript } from './fixtures/repo-files.js';
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /*
@@ -423,7 +423,7 @@ describe('the scripted model endpoint as the step channel (issue #812)', () => {
 });
 
 describe('the test-jobs ask lane', () => {
-    const script = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+    const script = readLaneScript('scripts/test-jobs.sh');
 
     it('runs the real claude image against the endpoint in ask mode', () => {
         expect(script).toContain('ask_lane');
@@ -439,7 +439,7 @@ describe('the test-jobs ask lane', () => {
 });
 
 describe('the test-jobs cooperative-Stop lane', () => {
-    const script = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+    const script = readLaneScript('scripts/test-jobs.sh');
 
     it('drives both real executor images against the scripted endpoint', () => {
         expect(script).toContain('scripts/fake-model-endpoint.mjs');
@@ -455,7 +455,7 @@ describe('the test-jobs cooperative-Stop lane', () => {
 });
 
 describe('the tool-isolation lanes (issue #814)', () => {
-    const script = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+    const script = readLaneScript('scripts/test-jobs.sh');
     const checks = readFileSync(join(ROOT, 'docker/tool-isolation-checks.sh'), 'utf8');
     /** The flag pairs the driver starts the agent container with (dockerArgs). */
     const driverPairs = (() => {
