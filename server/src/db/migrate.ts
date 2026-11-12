@@ -282,6 +282,7 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
 
     throw new TelemetryError(
         `Migrations failed after ${attempts} attempts: ${(lastError as Error)?.message}`,
-        'MIGRATION'
+        'MIGRATION',
+        { cause: lastError }
     );
 }
