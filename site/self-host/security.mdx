@@ -129,7 +129,7 @@ The first member of an organization is its admin. Demoting the last admin is ref
 
 | Credential | Prefix | Reach |
 | --- | --- | --- |
-| Session cookie | | Everything the member can do. `HttpOnly`, `SameSite=Lax`, `Secure` when `auth.cookieSecure` is on. Only a SHA-256 is stored. |
+| Session cookie | | Everything the member can do. `HttpOnly`, `SameSite=Lax`, `Secure` on an https `PUBLIC_URL` unless `auth.cookieSecure` overrides it. Only a SHA-256 is stored. |
 | Personal access token | `fat_` | Everything its owner can do |
 | Organization access token | `oat_` | Read only, on its allowed routes |
 | MCP access and refresh tokens | `mat_`, `mrt_` | Only `/api/mcp`, within the granted scopes |
@@ -150,7 +150,7 @@ MCP is off unless you set `mcp.enabled`. It requires an `https` public URL, sinc
 
 ## Network
 
-- Terminate TLS at your Ingress. Set `auth.cookieSecure: 'true'`.
+- Terminate TLS at your Ingress. Set `publicUrl` to the https origin; the cookie is then `Secure`.
 - Runner egress is controlled by a NetworkPolicy. It works only if your CNI enforces it. Check from inside a runner pod that traffic to `169.254.169.254` and to private ranges fails.
 - IPv6 egress is not covered. Every rule is IPv4.
 - A NetworkPolicy does not restrict HTTP routes. A runner can call any public URL.
