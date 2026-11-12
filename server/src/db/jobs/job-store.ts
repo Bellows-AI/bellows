@@ -10,8 +10,8 @@
  * - `job-store-worker.ts` — heartbeat, reports, `complete` and the workflow walk.
  * - `job-store-conclusions.ts` — the staged final envelope and the board's commit of it (076).
  * - `job-store-phase-checkpoints.ts` — the post-run phase outcomes an adopter resumes from (080).
- * - `job-store-actions.ts` — member actions: create, follow up, done, reopen, stop, suspend,
- *   remove, and the wait-control pair (issue #328).
+ * - `job-store-thread-actions.ts` — member actions on a thread: create, follow up, retry, done, reopen, remove, and
+ *   the wait-control pair (issue #328); `job-store-run-control.ts` — stop, suspend, interrupt.
  * - `job-store-questions.ts` — the agent's questions (050): ask, expire, answer, and their reads.
  * - `job-store-reads.ts` — get, thread, list, and the task list.
  * - `job-store-org-resolvers.ts` — org-of-lease/job/reclaim.
@@ -27,13 +27,11 @@ import {
     editJobCommand,
     markJobDone,
     reopenJob,
-    stopJob,
-    suspendJob,
-    interruptJob,
     removeJobThread,
     cancelThreadWait,
     pokeThreadWait,
-} from './job-store-actions.js';
+} from './job-store-thread-actions.js';
+import { stopJob, suspendJob, interruptJob } from './job-store-run-control.js';
 import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
@@ -228,7 +226,7 @@ function workerMethods(
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
  */
-export { LEASE_EXPIRED_REASON } from './job-store-actions.js';
+export { LEASE_EXPIRED_REASON } from './job-store-run-control.js';
 export {
     INTERRUPTION_BUDGET,
     INTERRUPTION_WINDOW_MS,

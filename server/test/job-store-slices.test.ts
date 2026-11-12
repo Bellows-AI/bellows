@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { JobAdmissionStore } from '../src/db/jobs/job-store-admission.js';
 import type { JobClaimStore } from '../src/db/jobs/job-store-claim.js';
 import type { JobConclusionStore } from '../src/db/jobs/job-store-conclusions.js';

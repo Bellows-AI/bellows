@@ -13,7 +13,7 @@ import type { HiddenSkill, PinnedSkill } from './job-store-skill-pin.js';
 import type { JobTitleStore } from './job-store-title.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
-import type { JobActionStore } from './job-store-actions.js';
+import type { JobActionStore } from './job-store-action-types.js';
 import type { JobMergeStore } from './job-store-merge.js';
 import type { JobQuestionStore } from './job-store-questions.js';
 import type { JobReviewStore } from './job-store-reviews.js';

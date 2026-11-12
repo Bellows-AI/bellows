@@ -10,7 +10,7 @@ import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from '../evidence-policy.js';
-import { LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { LEASE_EXPIRED_REASON } from './job-store-run-control.js';
 import { interruptionsSpent, spentRule } from './job-store-interruption-budget.js';
 import { resolveClaimSkills } from './job-store-claim-skills.js';
 import {

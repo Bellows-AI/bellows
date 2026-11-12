@@ -18,7 +18,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
 | Launch resolution, `wait/cancel`, `wait/poke` | `server/src/routes/jobs/jobs.ts`, `job-workflow-resolution.ts` | `server/test/routes.jobs.test.ts` |
 | Transition inside the verdict transaction | `server/src/db/jobs/job-store-worker.ts` | `server/test-db/job-store.workflow.test.ts` |
 | Claim's `publish` flag, helper plans, cancellation fence | `server/src/db/jobs/job-store-claim.ts` | `server/test-db/job-store.workflow.test.ts` |
-| Sessions; stop/done/remove on a thread | `server/src/db/jobs/job-store-actions.ts` | `server/test-db/job-store.workflow.test.ts` |
+| Sessions; stop/done/remove on a thread | `server/src/db/jobs/job-store-thread-actions.ts` | `server/test-db/job-store.workflow.test.ts` |
 | Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql` | `server/test-db/job-store.workflow.test.ts` |
 | `review: true` node as review evidence | `server/src/db/evidence-policy.ts` | `server/test/evidence-policy.test.ts` |
 | Agent-less nodes, merge-conflict probe | `driver/src/loop/loop-agentless.ts`, `driver/src/scripts/merge-conflict-probe.cjs` | `driver/test/loop/`, `merge-conflict-probe-script.test.ts` |

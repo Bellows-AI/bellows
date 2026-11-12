@@ -14,14 +14,8 @@ import { recordReportedSession, type SessionEvidence } from './job-store-provena
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
 import { stagedFingerprint } from './job-store-staged.js';
-import {
-    exists,
-    insertWorkflowSuccessor,
-    issueVerdictReclaim,
-    liveVerdictReclaim,
-    runtimePatch,
-    stopReviewsOf,
-} from './job-store-rows.js';
+import { exists, insertWorkflowSuccessor, runtimePatch, stopReviewsOf } from './job-store-rows.js';
+import { issueVerdictReclaim, liveVerdictReclaim } from './job-store-reclaim-queue.js';
 import type {
     FailureCause,
     FailureKind,

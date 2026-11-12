@@ -6,7 +6,8 @@
  */
 
 import type { TaskTitleOrigin } from '@factory-ai/core';
-import { type CreatedRef, type CreateTarget, insertJobInTx } from './job-store-actions.js';
+import type { CreatedRef, CreateTarget } from './job-store-action-types.js';
+import { insertJobInTx } from './job-store-thread-actions.js';
 
 import type { JobStoreContext } from './job-store-types.js';
 

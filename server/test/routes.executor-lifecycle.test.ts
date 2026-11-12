@@ -2,7 +2,7 @@ import { executorMissingMessage, noExecutorMessage } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import {
     githubAuth,
     memoryAuthStore,

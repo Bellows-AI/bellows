@@ -13,7 +13,7 @@ import {
     type RepairEvidence,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
-import { followUpInTx } from '../jobs/job-store-actions.js';
+import { followUpInTx } from '../jobs/job-store-thread-actions.js';
 import type { GateReport } from '../jobs/job-store-types.js';
 
 /** The scheduler's transaction, bound to one locked batch. */
