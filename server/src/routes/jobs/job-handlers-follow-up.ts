@@ -1,7 +1,7 @@
 import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
-import type { JobActionStore } from '../../db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, body } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';

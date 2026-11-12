@@ -52,7 +52,7 @@ import {
     notFoundJob,
     runtimeVitals,
 } from './job-limits.js';
-import type { JobActionStore } from '../../db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
 import type { JobAdmissionStore } from '../../db/jobs/job-store-admission.js';
 import type { JobClaimStore } from '../../db/jobs/job-store-claim.js';
 import type { JobConclusionStore } from '../../db/jobs/job-store-conclusions.js';

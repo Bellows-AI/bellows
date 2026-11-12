@@ -1,12 +1,13 @@
 /**
  * The merge half of issue #390: what a verified `pull_request closed, merged: true` delivery does
- * to the threads published to that PR. Split from `job-store-actions.ts` because its entry point
+ * to the threads published to that PR. Split from `job-store-thread-actions.ts` because its entry point
  * is the webhook's, not a person route's — there is no caller id, no command, and the dedupe gate
  * is the delivery, not the click.
  */
 
 import type { Sql, TransactionSql } from 'postgres';
-import { backsBatchTask, queueReclaimIfThreadDone } from './job-store-rows.js';
+import { backsBatchTask } from './job-store-rows.js';
+import { queueReclaimIfThreadDone } from './job-store-reclaim-queue.js';
 import { lockRootRowsInTx, lockThreadRootInTx } from '../connection-bindings.js';
 import type { JobStoreContext } from './job-store-types.js';
 import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';

@@ -33,7 +33,7 @@ import {
     noBoard,
     notFoundJob,
 } from './job-limits.js';
-import type { JobActionStore } from '../../db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
 import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 import type { JobReclaimStore } from '../../db/jobs/job-store-reclaims.js';
 import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';

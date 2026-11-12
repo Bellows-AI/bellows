@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { InjectOptions } from 'fastify';
 import type { AuthConfig } from '../src/config.js';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';

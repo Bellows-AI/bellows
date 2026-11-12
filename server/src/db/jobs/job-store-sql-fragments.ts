@@ -18,6 +18,31 @@ export function doneFragment(q: Sql | TransactionSql, alias?: string): Fragment 
     return q`${q.unsafe(alias === undefined ? 'done_at' : `${alias}.done_at`)} is not null`;
 }
 
+/** The caller owns the thread: an admin verdict, or the thread root's `execution_user_id` is the caller (null-safe). Reads `job.root_job_id`. */
+export function authorOwnsFragment(
+    q: Sql | TransactionSql,
+    who: { orgId: string; admin: boolean; createdBy: string | null }
+): Fragment {
+    const { orgId, admin, createdBy } = who;
+    return q`(${admin}::boolean or (
+        select r.execution_user_id from job r where r.org_id = ${orgId} and r.id = job.root_job_id
+    ) is not distinct from ${createdBy})`;
+}
+
+/** No member of the thread is unfinished and none carries a Done stamp: a follow-up or retry may be queued into it. */
+export function threadIdleFragment(q: Sql | TransactionSql, orgId: string, rootJobIdColumn: string): Fragment {
+    return q`not exists (
+        select 1 from job m
+        where m.org_id = ${orgId} and m.root_job_id = ${q.unsafe(rootJobIdColumn)}
+          and not ${terminalFragment(q, 'm.status')}
+    )
+    and not exists (
+        select 1 from job d
+        where d.org_id = ${orgId} and d.root_job_id = ${q.unsafe(rootJobIdColumn)}
+          and ${doneFragment(q, 'd')}
+    )`;
+}
+
 /**
  * The wall-clock banking, shared by every settle point that ends (or supersedes) an executed
  * segment: add the segment `started_at → now()` to what the row has banked. Used inside

@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js';
 import type { DestroyRevokedSecret } from '../src/routes/connections.js';
 import { ConnectionRefusedError } from '../src/db/connection-bindings.js';
 import type { ConnectionStore, ConnectionView } from '../src/db/connection-store.js';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import {
     githubAuth,

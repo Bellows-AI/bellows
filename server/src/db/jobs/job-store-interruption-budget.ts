@@ -1,4 +1,4 @@
-/** The interruption budgets (issue #792, BEL-302); `job-store-actions.ts` re-exports them. */
+/** The interruption budgets (issue #792, BEL-302); `job-store.ts` re-exports them. */
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 
 /**

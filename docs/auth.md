@@ -82,7 +82,7 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
 - **An idempotency key is scoped to org, caller and operation**; a replay re-passes the credential check.
   `server/src/db/jobs/job-store-idempotency.ts`, `server/test-db/job-store.idempotency.test.ts`.
 - **An org admin may follow up, retry and control the wait of another member's task**; the row's `created_by` is the
-  admin, the run executes as the thread root's `execution_user_id`. `server/src/db/jobs/job-store-actions.ts`,
+  admin, the run executes as the thread root's `execution_user_id`. `server/src/db/jobs/job-store-thread-actions.ts`,
   `server/test-db/job-store.admin-actions.test.ts`.
 - **The restore reads (`checkpoint`, `transcripts`) and an attachment's content are worker routes whose credential is the job's live lease** in the body: a lost, foreign or unknown lease reads nothing, and the file must be in that job's effective set, read fresh each call (a review's lease reads only its own row's set). `server/src/routes/jobs/job-handlers-restore.ts`, `server/src/routes/jobs/job-handlers-attachment-content.ts`, `server/test/auth.enforcement.test.ts`, `server/test/routes.restore.test.ts`, `server/test/routes.attachment-content.test.ts`.
 - **The worker credential is one deployment-wide secret**, `JOB_BOARD_TOKEN` (fatal in github mode when missing or

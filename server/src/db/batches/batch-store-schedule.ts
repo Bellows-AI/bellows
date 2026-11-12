@@ -31,7 +31,7 @@ import { judgeGates } from './batch-store-gates.js';
 import { type BoardMergeRow, boardMergeColumns, boardMerging } from './batch-store-rows.js';
 import { recoverObserved, withdrawRepair } from './batch-store-observed.js';
 import { decide, failedAttentionReason, recoveriesUsed, repairInTx, type Tx } from './batch-store-repair.js';
-import { insertJobInTx, retryInTx } from '../jobs/job-store-actions.js';
+import { insertJobInTx, retryInTx } from '../jobs/job-store-thread-actions.js';
 import {
     openBatches,
     settleThreads,

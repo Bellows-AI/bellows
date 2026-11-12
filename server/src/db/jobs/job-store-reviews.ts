@@ -6,14 +6,14 @@
  * back), reads the verdict by the same key, and the thread's review evidence — what the policy
  * validator reads at completion — counts the review's row as bound to the revision the caller
  * asked about. Cancellation is the rest of the lifecycle: a Stop, the caller's verdict and a
- * removal all reach the reviews (`job-store-actions.ts`, `job-store-worker.ts`).
+ * removal all reach the reviews (`job-store-thread-actions.ts`, `job-store-run-control.ts`, `job-store-worker.ts`).
  */
 
 import { OBJECTIVE_MODE, USER_SCOPE, type JobMode } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
 import type { ReviewEvidence } from '../evidence-policy.js';
 import { readReviewEvidence } from './job-store-evidence.js';
-import { LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { LEASE_EXPIRED_REASON } from './job-store-run-control.js';
 import { buildClaimResult } from './job-store-claim.js';
 import { withClaimAttachments } from './job-store-claim-row.js';
 import { resolveClaimExecutor } from './job-store-claim-executor.js';
