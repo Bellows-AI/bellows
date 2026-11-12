@@ -1,3 +1,4 @@
+// @ts-check
 // The attempt's checkpoint (issue #775): what a replacement volume needs to continue the task. Run
 // by the task supervisor in its finalize stage, after the publish and before the report. It commits
 // the WHOLE task tree — tracked edits, deletions, untracked files; ignored paths and `.factory/`
@@ -46,47 +47,63 @@ const IDENTITY = {
     GIT_COMMITTER_EMAIL: 'checkpoint@factory.invalid',
 };
 
-const checkout = process.env.CHECKOUT;
+const checkout = /** @type {string} */ (process.env.CHECKOUT);
 const branch = process.env.BRANCH;
 const base = process.env.BASE || null;
-const outDir = process.env.OUT_DIR;
+const outDir = /** @type {string} */ (process.env.OUT_DIR);
 const opencodeDb = process.env.OPENCODE_DB || '';
 const cap = Number(process.env.CAP_BYTES || DEFAULT_CAP_BYTES);
 
+/**
+ * @param {string[]} args
+ * @param {Record<string, string>} [env]
+ * @param {import('node:child_process').ExecFileSyncOptions} [extra]
+ * @returns {string}
+ */
 const git = (args, env = {}, extra = {}) =>
-    execFileSync('git', args, {
-        cwd: checkout,
-        encoding: 'utf8',
-        env: { ...process.env, ...OFFLINE_ENV, ...env },
-        maxBuffer: MAX_BUFFER,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        ...extra,
-    }).trim();
+    /** @type {string} */ (
+        execFileSync('git', args, {
+            cwd: checkout,
+            encoding: 'utf8',
+            env: { ...process.env, ...OFFLINE_ENV, ...env },
+            maxBuffer: MAX_BUFFER,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            ...extra,
+        })
+    ).trim();
 
 // ENOENT/ENOTDIR is absence; any other errno is a failure to read, never "not there".
+/** @param {string} p */
 const size = (p) => {
     try {
         return fs.statSync(p).size;
     } catch (e) {
-        if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null;
+        if (
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOENT' ||
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOTDIR'
+        )
+            return null;
         throw e;
     }
 };
 
 // A ref or object that may legitimately be missing: git exits 1 for "not there" with --quiet; any
 // other status (a corrupt repository, a spawn failure) is a failure.
+/** @param {string[]} args */
 const optional = (args) => {
     try {
         return git(args) || null;
     } catch (e) {
-        if (e.status === 1) return null;
+        if (/** @type {{status?: number}} */ (e).status === 1) return null;
         throw e;
     }
 };
 
+/** @param {string} ref */
 const sha = (ref) => optional(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
 
 /** `git add -A` with stderr in a file: a big tree's warnings can outgrow any buffer. */
+/** @param {Record<string, string>} env */
 const addAll = (env) => {
     const errFile = path.join(outDir, ADD_ERR);
     const fd = fs.openSync(errFile, 'w');
@@ -97,7 +114,9 @@ const addAll = (env) => {
             stdio: ['ignore', 'ignore', fd],
         });
     } catch (e) {
-        throw new Error(fs.readFileSync(errFile, 'utf8').slice(-REASON_MAX_LENGTH) || String(e.message));
+        throw new Error(
+            fs.readFileSync(errFile, 'utf8').slice(-REASON_MAX_LENGTH) || String(/** @type {Error} */ (e).message)
+        );
     } finally {
         fs.closeSync(fd);
         fs.rmSync(errFile, { force: true });
@@ -147,6 +166,11 @@ const remoteRefs = () => {
         .map(([ref, objectSha]) => ({ ref, sha: objectSha }));
 };
 
+/**
+ * @param {string} tip
+ * @param {{ ref: string, sha: string }[]} prerequisites
+ * @param {string} file
+ */
 const bundle = (tip, prerequisites, file) => {
     git(['update-ref', TIP_REF, tip]);
     try {
@@ -160,6 +184,7 @@ const bundle = (tip, prerequisites, file) => {
 };
 
 /** The OpenCode database, copied through sqlite's own backup so a write-ahead log is folded in. */
+/** @param {string} file */
 const snapshot = async (file) => {
     if (!opencodeDb || size(opencodeDb) === null) return 0;
     const { DatabaseSync, backup } = require('node:sqlite');
@@ -169,7 +194,7 @@ const snapshot = async (file) => {
     } finally {
         db.close();
     }
-    return size(file);
+    return /** @type {number} */ (size(file));
 };
 
 /** A repository-free task: the session database alone, under a header whose null tip a repository restore refuses. */
@@ -229,7 +254,7 @@ const main = async () => {
     const bundleFile = path.join(outDir, 'bundle');
     const sqliteFile = path.join(outDir, 'opencode.db');
     bundle(tip, Object.values(prerequisites).filter(Boolean), bundleFile);
-    header.bundleBytes = size(bundleFile);
+    header.bundleBytes = /** @type {number} */ (size(bundleFile));
     header.sqliteBytes = await snapshot(sqliteFile);
     fs.rmSync(path.join(outDir, 'index'), { force: true });
     if (header.bundleBytes + header.sqliteBytes > cap) {
@@ -244,7 +269,9 @@ const main = async () => {
     return { ok: true, state: 'complete', cause: null, headerFile, parts };
 };
 
+/** @param {unknown} verdict */
 const say = (verdict) => process.stdout.write(`${JSON.stringify(verdict)}\n`);
+/** @param {any} e */
 const refusal = (e) => ({
     ok: false,
     reason: String((e && e.stderr) || (e && e.message) || e).slice(0, REASON_MAX_LENGTH),
