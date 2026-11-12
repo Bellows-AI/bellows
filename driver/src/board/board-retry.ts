@@ -25,6 +25,27 @@ export class BoardHttpError extends Error {
     }
 }
 
+/** Thrown into a board call the driver's lapsed lease fenced (`loop-lease.ts`). */
+export class LeaseLapsedError extends Error {
+    constructor() {
+        super('the lease lapsed while the board was unreachable');
+        this.name = 'LeaseLapsedError';
+    }
+}
+
+/** Settles with `call`, or rejects with `LeaseLapsedError` the moment `signal` aborts; the call is abandoned. */
+export function fenced<T>(signal: AbortSignal | undefined, call: () => Promise<T>): Promise<T> {
+    if (signal === undefined) return call();
+    if (signal.aborted) return Promise.reject(new LeaseLapsedError());
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = (): void => reject(new LeaseLapsedError());
+        signal.addEventListener('abort', onAbort, { once: true });
+        call()
+            .then(resolve, reject)
+            .finally(() => signal.removeEventListener('abort', onAbort));
+    });
+}
+
 /**
  * Whether a throw is worth sending again unchanged: a transport failure or a 5xx is the board being
  * briefly down; any other 4xx is its answer to this exact body, and the same body earns it again.
@@ -34,32 +55,39 @@ function retryable(e: unknown): boolean {
     return e.status >= HTTP_SERVER_ERROR || TRANSIENT_CLIENT_STATUSES.has(e.status);
 }
 
+/** Whether a retry loop has used what it was given: its attempts, or with a budget, the summed backoff. */
+const spent = (attempt: number, waitedMs: number, budgetMs?: number): boolean =>
+    budgetMs === undefined ? attempt >= BOARD_CALL_ATTEMPTS : waitedMs > budgetMs;
+
 /**
  * Retries a board call that threw (a 5xx, a dropped connection) with doubling backoff; the last
  * throw propagates. A board VERDICT — 409, 404 — is an answer and returns, so it is never retried,
  * and neither is a deterministic refusal (a 400, a 413): it throws at once (issue #820).
  * `what` opens the log line ("job <id>: the verdict was not accepted"). Without `budgetMs` the call
  * is tried `BOARD_CALL_ATTEMPTS` times; with it, until the summed backoff would pass the budget.
+ * `leaseLapsed` fences the retry on the driver's lease clock (BEL-317): no call starts once it aborts, and
+ * one in flight or a backoff is abandoned with `LeaseLapsedError`, never retried.
  */
 export async function withBoardRetry<T>(
     io: { log: (message: string) => void; sleep: (ms: number) => Promise<void> },
     what: string,
     call: () => Promise<T>,
-    { budgetMs }: { budgetMs?: number } = {}
+    { budgetMs, leaseLapsed }: { budgetMs?: number; leaseLapsed?: AbortSignal } = {}
 ): Promise<T> {
     let waitedMs = 0;
     for (let attempt = 1; ; attempt++) {
         try {
-            return await call();
+            return await fenced(leaseLapsed, call);
         } catch (e) {
+            if (e instanceof LeaseLapsedError) throw e;
             if (!retryable(e)) {
                 io.log(`${what}, not retried: ${(e as Error).message}`);
                 throw e;
             }
             const delayMs = Math.min(BOARD_CALL_BACKOFF_MS * 2 ** (attempt - 1), BOARD_CALL_MAX_BACKOFF_MS);
-            if (budgetMs === undefined ? attempt >= BOARD_CALL_ATTEMPTS : waitedMs + delayMs > budgetMs) throw e;
+            if (spent(attempt, waitedMs + delayMs, budgetMs)) throw e;
             io.log(`${what}, retrying in ${delayMs}ms: ${(e as Error).message}`);
-            await io.sleep(delayMs);
+            await fenced(leaseLapsed, () => io.sleep(delayMs));
             waitedMs += delayMs;
         }
     }

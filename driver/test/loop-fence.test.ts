@@ -336,9 +336,13 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
     it('mints the attempt one signal, never one per step', () => {
         // The gate exec, the tree probe and the gate-session cancel all take `state.signal`: a
         // controller per transport is a controller that can answer a stand-down out of step with
-        // the race that decides one (issue #472).
+        // the race that decides one (issue #472). The one other signal is the lease clock's (BEL-317):
+        // it fences board calls on the lease, and decides no stand-down by itself.
         const minting = loopSources()
-            .filter(([file, source]) => file !== 'loop-attempt.ts' && source.includes('new AbortController'))
+            .filter(
+                ([file, source]) =>
+                    file !== 'loop-attempt.ts' && file !== 'loop-lease.ts' && source.includes('new AbortController')
+            )
             .map(([file]) => file);
         expect(minting).toEqual([]);
     });

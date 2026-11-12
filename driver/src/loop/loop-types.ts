@@ -42,7 +42,7 @@ export interface LoopRuntime {
     report: (
         job: BoardJob,
         result: Parameters<Board['complete']>[1],
-        options?: { after?: Promise<void> }
+        options?: { after?: Promise<void>; leaseLapsed?: AbortSignal }
     ) => Promise<LeaseState>;
     /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`, issue #792). */
     live?: Map<string, LiveAttempt>;
