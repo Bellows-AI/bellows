@@ -45,8 +45,8 @@ const MERGE_TERMINAL_REASON = 'pr merged';
  * The PR-scoped advisory lock both merge writers serialize on (issue #390's concurrent race): a merge delivery and the
  * publishing verdict that names the same PR, so whichever commits second sees the other's rows — a verdict landing
  * after the delivery reads the ledger and applies the closure inline; a delivery landing after the verdict finds the
- * fresh `job_pr` row and closes the thread, cancelling the wait it just parked. Keyed per (org, repo, PR). Lock order
- * (BEL-161): the thread root rows first, then this lock, then each root's advisory lock; the verdict takes its root
+ * fresh `job_pr` row and closes the thread, cancelling the wait it just parked. Keyed per (org, repo, PR). Lock order:
+ * the thread root rows first, then this lock, then each root's advisory lock; the verdict takes its root
  * row first for the same reason.
  */
 export const prLockKey = (orgId: string, repo: string, prNumber: number): string => `${orgId}/${repo}/${prNumber}`;
@@ -131,7 +131,7 @@ async function closeMergedPrOnce(
 }
 
 /**
- * The merge-before-publication half (issue #390): the publishing verdict's transaction calls this
+ * The merge-before-publication half: the publishing verdict's transaction calls this
  * right after the `job_pr` row upserts — if a merge delivery already landed for the PR this
  * publication names, the closure it ordered applies HERE, in the verdict's own transaction. The
  * caller has already taken its root row and then the PR-scoped advisory lock (the serialization
@@ -203,7 +203,7 @@ async function applyMergeCloseToRoot(tx: TransactionSql, ctx: JobStoreContext, r
 }
 
 /**
- * The conditional settle every non-verdict settle point shares (issue #390): a merge-marked thread
+ * The conditional settle every non-verdict settle point shares: a merge-marked thread
  * whose LAST moving member just went terminal — by a stop, a suspend, the dead retirement, the
  * claim-time cancellation fence, or the verdict itself — closes here: the done stamp lands on
  * every terminal member when the thread carries none yet (no actor), and the worktree reclaim
@@ -265,7 +265,7 @@ async function closeMarkedThreadIfTerminal(
     return true;
 }
 
-/** Whether the thread carries the merge-closure marker (`job_merge_close`, issue #390). */
+/** Whether the thread carries the merge-closure marker (`job_merge_close`). */
 export async function mergeClosureMarkerSet(tx: TransactionSql, orgId: string, rootJobId: string): Promise<boolean> {
     const [marked] = await tx<{ one: number }[]>`
         select 1 as one from job_merge_close

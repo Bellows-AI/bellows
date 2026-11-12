@@ -62,7 +62,7 @@ const dueRows = (ctx: JobStoreContext, tx: TransactionSql, rule: Fragment): Frag
     tx`(org_id = ${ctx.orgId} and status = 'running' and lease_expires_at <= now() and ${rule})`;
 
 /**
- * The rows `due` selects, locked first (issue #821): a stage holding one is skipped, never waited
+ * The rows `due` selects, locked first: a stage holding one is skipped, never waited
  * on, so the sweep's own statement — a fresh read under the locks — sees every conclusion staged
  * before it, and a single UPDATE's re-check never decides on a snapshot older than the stage.
  */
@@ -74,11 +74,11 @@ async function lockedCandidates(tx: TransactionSql, due: Fragment): Promise<stri
 /**
  * Retire what has burned its attempts, before looking for work. Without this a command that kills
  * its worker is reclaimed every time its lease expires, forever. An expired lease is first an
- * interruption the claim records (issue #822), so only a row whose interruption budget is spent
+ * interruption the claim records, so only a row whose interruption budget is spent
  * too retires; its session stays, for the follow-up that continues it. The dead attempt's segment banks
  * here: the row ran for real before its worker went quiet, and the retirement must not erase it. A
  * stamped row never reaches this sweep — the settle in `claimJob` has already landed it `stopped`,
- * which is the verdict a stop is (issue #152): dead is for attempts that failed on their own.
+ * which is the verdict a stop is: dead is for attempts that failed on their own.
  */
 async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql): Promise<string[]> {
     const { orgId, wallTick } = ctx;
@@ -92,22 +92,22 @@ async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql)
           and not ${stagedUnderLease(tx, 'job')}
         returning id, root_job_id, ${spentRule(tx)} as rule
     `;
-    // Which rule ended each row (BEL-302): a poison job and a platform thrashing one read the same on the row.
+    // Which rule ended each row: a poison job and a platform thrashing one read the same on the row.
     for (const r of retired) {
         console.warn(`[jobs] job ${r.id} retired dead: its ${r.rule ?? 'interruption bound'} is spent`);
     }
-    // A retired caller's separate reviews (issue #549) have no one left to read them.
+    // A retired caller's separate reviews have no one left to read them.
     await stopReviewsOf(
         tx,
         { orgId, wallTick, stoppedBy: null },
         retired.map((r) => r.id)
     );
-    // The distinct retired roots, sorted: the caller settles each merge-marked thread after this commit (issue #390).
+    // The distinct retired roots, sorted: the caller settles each merge-marked thread after this commit.
     return [...new Set(retired.map((r) => r.root_job_id))].sort();
 }
 
 /**
- * The cancellation fence (issue #231): a block-wait continuation the wake sweep just made
+ * The cancellation fence: a block-wait continuation the wake sweep just made
  * claimable, whose wait was cancelled (PR close, task stop/remove) after the wake committed but
  * before this claim reached it, is settled here rather than handed out — PR-close/thread-stop
  * cancellation must win the race against a wake. Every other candidate (a workflow-less job, a
@@ -139,7 +139,7 @@ async function settleCancelledContinuation(
 }
 
 /**
- * How long a claim reserves its candidate while it prepares it (issue #822): above the plan read's
+ * How long a claim reserves its candidate while it prepares it: above the plan read's
  * worst case — two GitHub requests of up to 20 s each, each behind an installation-token mint of up
  * to 5 s (`server/src/github/app-client.ts`, `app-token.ts`). Only an optimization: the acquisition
  * re-checks everything, so a preparation that outlives it is dropped, never trusted.
@@ -171,7 +171,7 @@ const REFUSED = Symbol('refused by a budget');
  *
  * `sameThreadRunning` is the thread exclusion: `id` and `root` are the candidate row's id and
  * root_job_id, correlated expressions in the reservation, bound parameters in the acquisition. A row
- * whose thread already has another row running waits. The per-task worktree (issue #35) is keyed by
+ * whose thread already has another row running waits. The per-task worktree is keyed by
  * the thread root, so two claimed rows of one thread would run two runners and two sync jobs into the
  * same tree. The blocker is status = 'running' and nothing else: an expired lease is still a run the
  * board believes in until the claim reclaims it (the same-row reclaim, o.id <> <candidate>, is the
@@ -179,7 +179,7 @@ const REFUSED = Symbol('refused by a budget');
  * the exclusion is one indexed lookup, not a walk — and it is symmetric and terminal rows block nothing.
  *
  * `recovering` is a `running` row whose lease expired: an attempt the infrastructure lost — its
- * driver went silent (issue #822). While the interruption budget lasts, the claim that takes it over
+ * driver went silent. While the interruption budget lasts, the claim that takes it over
  * records that loss as the superseded attempt's interruption and spends no attempt, so an expiry at
  * the last allowed attempt stays recoverable. Unqualified on purpose: the reservation's only table
  * is the candidate, and the acquisition's SET reads the pre-update row.
@@ -191,7 +191,7 @@ const REFUSED = Symbol('refused by a budget');
  * root, else the branch the root was created with: every retry, follow-up and repair
  * bases on the same branch with no column to copy. Neither means the remote default.
  *
- * `ownSession` is whether the row's session was minted by one of its own attempts (issue #822),
+ * `ownSession` is whether the row's session was minted by one of its own attempts,
  * read in the acquisition's RETURNING off the post-update row. Every inherited session is copied
  * from an earlier row of the thread — a follow-up's from its parent or the workflow's primary
  * session (`followUpInTx`), a resume node's from the primary session (`insertWorkflowSuccessor`,
@@ -229,7 +229,7 @@ function claimRules({ sql, orgId }: JobStoreContext) {
  * for good.
  *
  * A row awaiting its takeover — a lost attempt, or one a draining driver handed over while its runner
- * group waits for a new holder — comes first: its takeover window is bounded (issue #831).
+ * group waits for a new holder — comes first: its takeover window is bounded.
  * Under the admission budgets new work is offered only while the global and org budgets have room
  * and only from a repo with room; a takeover of a running row needs no slot and is always offered.
  * `refused` are this poll's candidates a budget already refused.
@@ -254,7 +254,7 @@ async function reserveCandidate(
               -- A review is leased to its caller's claim in the request's own transaction (issue
               -- #774); the open queue never offers one.
               and j.review_of is null
-              -- BATCHES_ENABLED off (BEL-264): a batch task's thread is not offered, queued or running; its rows are
+              -- BATCHES_ENABLED off: a batch task's thread is not offered, queued or running; its rows are
               -- kept and offered again when the flag is on. A job outside a batch is unaffected.
               and (${batches}::boolean or not exists (
                   select 1 from batch_task bt where bt.org_id = j.org_id and bt.root_job_id = j.root_job_id
@@ -265,7 +265,7 @@ async function reserveCandidate(
               and ${sameThreadRunning(sql`j.id`, sql`j.root_job_id`)}
               and not ${stagedUnderLease(sql, 'j')}
               and j.id <> all(${refused}::uuid[])
-              -- A queued root whose thread waits on an integration is not offered (BEL-59): it has not
+              -- A queued root whose thread waits on an integration is not offered: it has not
               -- started, so no attempt is spent on it. A running row (a takeover) is never blocked.
               and not (j.status = 'queued' and exists (
                   select 1 from job_integration_requirement q
@@ -304,7 +304,7 @@ async function prepareCandidate(ctx: JobStoreContext, reserved: ReservedCandidat
 type ClaimGate = { refusal: ClaimRefusal; takeoverOnly: boolean };
 
 /**
- * New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds. A queued row is
+ * New work takes a slot in every budget; a takeover keeps the slots its row holds. A queued row is
  * REFUSED when the claim is takeover-only (the row changed under its reservation) or a budget is full.
  */
 async function slotsFor(
@@ -337,7 +337,7 @@ async function slotsFor(
 
 /**
  * Try, never wait: the acquire holds the candidate's row, and every thread-wide writer holds the root row and then
- * waits on the advisory lock or on a member row (BEL-157, BEL-81, BEL-161). So a member also tries the root row
+ * waits on the advisory lock or on a member row. So a member also tries the root row
  * (`skip locked`; the fence locks it while the claim holds the advisory lock). Busy or gone is not an answer about the
  * row, so the reservation's deferral goes back and the poll moves on. Only an explicit boolean is an answer.
  */
@@ -606,18 +606,18 @@ export async function claimJob(
     const sweepStart = performance.now();
 
     // An expired attempt that staged its conclusion is committed before anything else reads the
-    // board (issue #821): no stop settle, retirement, takeover or remote read may come first, and a
+    // board: no stop settle, retirement, takeover or remote read may come first, and a
     // staged row is invisible to each of them until it is committed — a row that expires after this
     // pass waits for the next poll.
     await commitStagedConclusions(ctx);
-    // The wake sweep (issue #231), before looking for queued work: a parked block-wait round with
+    // The wake sweep, before looking for queued work: a parked block-wait round with
     // folded deliveries becomes exactly one queued continuation here, so claimNextCandidate below
     // can find it like any other row. Each candidate wakes in its own transaction, under that
     // thread's per-root advisory lock — never inside a claim transaction, whose failure must not
     // roll back a wake that already committed for an unrelated thread.
     await sweepRuntimeWakes({ sql, orgId, prs });
     /*
-     * Settle the stops nobody could deliver, before looking for work (issue #152).
+     * Settle the stops nobody could deliver, before looking for work.
      * A `running` row stamped `cancel_requested_at` whose lease has expired is a stop
      * whose worker died before its heartbeat could carry the kill order: re-claiming
      * it would burn an attempt and spawn a container for a command the member just
@@ -630,7 +630,7 @@ export async function claimJob(
      * accepts, because the board cannot know when the run actually stopped.
      *
      * Committed on its own, deliberately OUTSIDE the claim (review of PR #153), its rows locked
-     * before the statement decides on them (issue #821, `lockedCandidates`):
+     * before the statement decides on them (`lockedCandidates`):
      * the claim's preparation — the plan read, the env resolution — awaits calls that
      * throw, and a settle that rode with them would be lost to every failed poll: the
      * stamped zombie would stay `running` and the follow-up the member queued would keep
@@ -656,14 +656,14 @@ export async function claimJob(
     });
     for (const root of [...new Set(stampedStops.map((r) => r.root_job_id))].sort()) {
         // A merge-marked thread whose last moving member was this undelivered stop closes here
-        // (issue #390) — the shared conditional settle the other settle points run. This
+        // — the shared conditional settle the other settle points run. This
         // statement is autocommit by design (above), so the settle opens its own transaction.
         await settleIfMergeClosed(ctx, root);
     }
-    // The dead retirement commits on its own for the same reason (issue #822): a preparation that
+    // The dead retirement commits on its own for the same reason: a preparation that
     // keeps failing must not keep an exhausted row `running` across every poll.
     const retiredRoots = await sql.begin((tx) => retireExhaustedAttempts(ctx, tx));
-    // A merge-marked thread whose last moving member just retired is closed by it (issue #390), per root in its own
+    // A merge-marked thread whose last moving member just retired is closed by it, per root in its own
     // transaction after the commit: the sweep holds retired rows of SEVERAL threads, and locking another root's row
     // while holding them would invert against an ascending multi-root holder (the merge webhook, a disconnect). A
     // crash between the commit and a settle leaves the marked, all-terminal thread without its done stamp or
@@ -673,7 +673,7 @@ export async function claimJob(
     ctx.metrics?.sweep(secondsSince(sweepStart));
 
     /*
-     * Reserve, prepare, acquire (issue #822). The plan read — the claim's one remote call, tens of
+     * Reserve, prepare, acquire. The plan read — the claim's one remote call, tens of
      * seconds at worst — runs between two short steps and holds no lock: a stop, a heartbeat, a
      * remove or a verdict on the candidate's thread never waits on GitHub. The reservation keeps
      * other claimers off the candidate meanwhile and, left in place by a failed preparation, is
@@ -761,7 +761,7 @@ async function resolveClaimEvidence(
     const { claimPolicy: policy, claimReviewers: reviewers } = declared;
     const stamp = policy === null ? null : tx.json(policy as never);
     // The reviewer profiles are stamped the same way: a review request is validated against the
-    // profiles as of THIS claim (issue #549), never against the repository at request time.
+    // profiles as of THIS claim, never against the repository at request time.
     const profiles = reviewers.length === 0 ? null : tx.json(reviewers as never);
     await tx`update job set policy = ${stamp}, reviewers = ${profiles} where org_id = ${orgId} and id = ${row.id}`;
     if (policy === null) return {};
@@ -863,7 +863,7 @@ export async function resolveClaimHelperPlans(
 
 /**
  * claim()'s one bundle of every workflow-shaped decision: the snapshot read, the publish flag, the
- * declared helper plans, and the master prompt they all feed (issue #244) — pulled out of
+ * declared helper plans, and the master prompt they all feed — pulled out of
  * `claimNextCandidate` purely to keep that function's own complexity readable, no behavior change.
  * Reads the snapshot for a workflow-mode member follow-up too (workflow_node null, workflow_name not): the
  * master prompt's graph-wide capabilities (publish path, review/merge-conflict blocks) still apply

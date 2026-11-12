@@ -22,7 +22,7 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
     // row whose lease is still live is stamped `cancel_requested_at` and left running:
     // the request travels on the heartbeat the worker already sends, and the settle that
     // honours it (suspend under the stamp) clears it. A RUNNING row whose lease has
-    // ALREADY expired is settled `stopped` here instead (issue #152): nobody holds the
+    // ALREADY expired is settled `stopped` here instead: nobody holds the
     // lease, so a stamp would wait for a heartbeat nobody will send — and a previous
     // holder that is still beating loses the row on its next beat (`lost`, the kill
     // order) exactly as a reclaim delivers it. The settle lands like the suspend park
@@ -32,7 +32,7 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
     // a rewrite of when it was asked. stopped_by coalesces beside it unconditionally —
     // every status this UPDATE touches is a stoppable one, so this caller acted, and the
     // first asker is the actor that survives. Under the row's lock, an expired attempt that staged its
-    // conclusion (issue #821) is committed first, its Stop stamped with it: the verdict stands, and
+    // conclusion is committed first, its Stop stamped with it: the verdict stands, and
     // the row the statement then finds terminal answers the conflict below with the committed status.
     const rows = await sql.begin(async (tx) => {
         await tx`select id from job where org_id = ${orgId} and id = ${id} for update`;
@@ -48,7 +48,7 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
         `;
         return other ? { result: 'conflict', status: other.status } : 'missing';
     }
-    // The caller's reviews go with it (issue #549): a Stop reaches every separate run it started.
+    // The caller's reviews go with it: a Stop reaches every separate run it started.
     await stopReviewsOf(sql, { orgId, wallTick, stoppedBy }, [id]);
     if (row.cancel_requested_at === null) {
         // A settled stop ends the thread's turn: its PR waits have nothing left to
@@ -56,8 +56,8 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
         if (prs) {
             await prs.cancelWaitsForRoot(row.root_job_id, 'task stopped');
         }
-        // A merge-marked thread whose last moving member just stopped is closed by that stop
-        // (issue #390): done stamp, reclaim — the shared conditional settle, a no-op on any
+        // A merge-marked thread whose last moving member just stopped is closed by that stop:
+        // done stamp, reclaim — the shared conditional settle, a no-op on any
         // thread the closure never marked.
         await settleIfMergeClosed(ctx, row.root_job_id);
     }
@@ -80,7 +80,7 @@ export async function suspendJob(
     // lease the dying worker held. The command is in the transcript now
     // (command_delivered_at), the stamp clears — the stop has happened — and the attempt is
     // handed back: a park is not a failed try, so it must never exhaust max_attempts. The park and
-    // its settle receipt (issue #821) commit together, so a replay after a lost answer gets it.
+    // its settle receipt commit together, so a replay after a lost answer gets it.
     const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'suspend', fingerprint: fingerprintOf(null) };
     return sql.begin(async (tx) => {
         if ((await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
@@ -110,7 +110,7 @@ export async function suspendJob(
         `;
         if (rows[0]) {
             // The park settles a moving row; a merge-marked thread whose last moving member just
-            // parked is closed by it (issue #390) — the shared conditional settle.
+            // parked is closed by it — the shared conditional settle.
             await settleIfMergeClosed(ctx, rows[0].root_job_id, tx);
             const answer = { result: 'ok', status: rows[0].status } as const;
             await recordReceipt(tx, key, answer);
@@ -121,12 +121,12 @@ export async function suspendJob(
 }
 
 /**
- * How long a blocked hand-back defers the next claim (BEL-160): the claim could not start because a
+ * How long a blocked hand-back defers the next claim: the claim could not start because a
  * leftover of an earlier claim is still terminating, so an immediate re-claim would only meet it again.
  */
 export const BLOCKED_RETRY_SECONDS = 60;
 
-/** The interruption the next claim records for an attempt whose lease expired (issue #822). */
+/** The interruption the next claim records for an attempt whose lease expired. */
 export const LEASE_EXPIRED_REASON = 'the lease expired: its driver went silent';
 
 export async function interruptJob(
@@ -158,7 +158,7 @@ export async function interruptJob(
         ...(nodeLoss ? { nodeLoss: true } : {}),
     });
     // Blocked and requirement spend no budget, so both are accepted past a spent one; a node loss spends only
-    // its own bound (BEL-302), accepted past a spent poison budget (see `releaseOpen`).
+    // its own bound, accepted past a spent poison budget (see `releaseOpen`).
     const open = releaseOpen(sql, { release, blocked, requirement, nodeLoss });
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
@@ -173,7 +173,7 @@ export async function interruptJob(
         fingerprint: fingerprintOf({ reason, release, claimSeq, blocked, requirement, nodeLoss }),
     };
     return sql.begin(async (tx) => {
-        // A staged conclusion is the attempt's outcome (issue #821): nothing hands it back instead.
+        // A staged conclusion is the attempt's outcome: nothing hands it back instead.
         if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
         await recordInterruptLaunch(tx, { orgId, id, leaseToken }, { release, refused, claimSeq, open }, recorded);
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
@@ -231,7 +231,7 @@ async function settleHandBack(
 }
 
 /**
- * The launch outcome an interruption proves (issue #845), decided on the row the interruption's
+ * The launch outcome an interruption proves, decided on the row the interruption's
  * update changes, locked here. A release is recorded only under the update's own conditions (a
  * spent budget or a replay records nothing); an adoption link is a fact of the adopting claim
  * whether or not the expiry already recorded the interruption, and set once.
@@ -262,7 +262,7 @@ async function recordInterruptLaunch(
 }
 
 /**
- * An interrupt whose update missed: a released one replayed answers its receipt (issue #821); an
+ * An interrupt whose update missed: a released one replayed answers its receipt; an
  * adoption already recorded answers ok again, without a second refund; otherwise the lease is
  * lost, the job gone, or the budget spent.
  */

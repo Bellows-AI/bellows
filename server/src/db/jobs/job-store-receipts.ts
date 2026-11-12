@@ -4,7 +4,7 @@ import { canonical } from './job-store-idempotency.js';
 import { exists } from './job-store-rows.js';
 
 /**
- * Durable settle receipts (issue #821; `072_job_settle_receipts.sql`): an attempt's conclusion
+ * Durable settle receipts (`072_job_settle_receipts.sql`): an attempt's conclusion
  * records the answer it gave, keyed by its lease token, in the settle's own transaction. A settle
  * whose lease-guarded update missed asks `missedSettle` before answering `lost`: the identical request
  * replays the stored answer, a different one under a concluded lease is still refused.

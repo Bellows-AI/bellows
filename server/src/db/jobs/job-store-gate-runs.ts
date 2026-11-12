@@ -1,8 +1,8 @@
 /**
- * Gate runs (issue #983; `087_job_gate_run.sql`): one row per gate execution of an attempt, written
+ * Gate runs (`087_job_gate_run.sql`): one row per gate execution of an attempt, written
  * under its lease — `running` before the gate starts, the terminal outcome after — and read back by the
  * driver's completion pass, which reuses a verified pass instead of running the gate again. The read is
- * the task thread's: a follow-up is a new job row, and it reuses its parent's pass (BEL-254).
+ * the task thread's: a follow-up is a new job row, and it reuses its parent's pass.
  */
 
 import { lockRunningAttempt, leaseRefusal } from './job-store-rows.js';

@@ -101,7 +101,7 @@ export interface JobWorkerStore {
      * user's `done_at`. The tree is the user's to free, so a thread that merely finished keeps
      * its worktree (a failed task's tree is exactly what a follow-up continues from); the
      * completing attempt reclaims only when the user has closed the thread. This is the driver's
-     * worktree-reclaim signal (issue #47), and it rides the lease-guarded complete rather than a
+     * worktree-reclaim signal, and it rides the lease-guarded complete rather than a
      * thread read so a worker credential never pulls audit data of jobs it does not hold. The
      * verdict-moment answer also closes the read-after-verdict race: a follow-up inserted after
      * the verdict commits cannot change an answer that was already given.
@@ -109,7 +109,7 @@ export interface JobWorkerStore {
      * A threadDone verdict queues the worktree reclaim claimed by the completing worker and answers
      * its id (`reclaimId`; null when another worker holds a live claim on it, or a reopen won the
      * race): the driver acks it after the removal, and the `worktree_reclaimed_at` marker follows
-     * that ack (issue #821). The answer is a settle receipt: the identical complete replayed under
+     * that ack. The answer is a settle receipt: the identical complete replayed under
      * the same lease answers it again; any other request under a concluded lease answers `lost`.
      */
     complete(
@@ -135,7 +135,7 @@ export interface JobWorkerStore {
              * reported as 0. The task statistics treat an unmeasured run as excluded, not empty.
              */
             agentTurns?: number | null;
-            /** How long `environment.setup` ran before the agent (issue #733); null when none ran. */
+            /** How long `environment.setup` ran before the agent; null when none ran. */
             setupMs?: number | null;
             /**
              * What the run did, in the agent's own last words — lifted by the same close-time
@@ -144,12 +144,12 @@ export interface JobWorkerStore {
              */
             summary?: string | null;
             /**
-             * The structured terminal reason (issue #339), validated at the route against the
+             * The structured terminal reason, validated at the route against the
              * seven known kinds. Null (or absent) is "not a failure" — the column keeps null, so
              * a success and a pre-column row read the same.
              */
             failureKind?: FailureKind | null;
-            /** The cause under a `gate`/`publish`/`helper` kind (issue #581); absent overwrites to null. */
+            /** The cause under a `gate`/`publish`/`helper` kind; absent overwrites to null. */
             failureCause?: FailureCause | null;
             /**
              * Whether the task tree changed since the attempt's startup sync, measured by the
@@ -234,7 +234,7 @@ export async function sessionReport(
     const { sessionId } = report;
     // The opencode reporter re-posts its session every sample (routes/ingest.ts): a session the row
     // already carries is no pointer write, and the answer is the lease's whether or not anything
-    // changed. The history row (issue #845) rides the same transaction, guarded by the same lease.
+    // changed. The history row rides the same transaction, guarded by the same lease.
     return sql.begin(async (tx) => {
         const held = await tx<{ session_id: string | null }[]>`
             select session_id from job
@@ -324,7 +324,7 @@ export type CompleteOutcome = Awaited<ReturnType<JobStore['complete']>>;
 
 /**
  * A complete that missed its lease-guarded update: the receipt's answer, with a reclaim order the
- * board has since acked, let lapse or handed another acquisition answered as none (issue #821) — a
+ * board has since acked, let lapse or handed another acquisition answered as none — a
  * late retry must never remove a tree under somebody else's reclaim.
  */
 async function replayComplete(
@@ -350,7 +350,7 @@ export async function completeJob(
     return ctx.sql.begin((tx) => completeInTx(tx, ctx, { id, leaseToken, result }));
 }
 
-/** Whether the attempt staged a conclusion other than this request under its lease (issue #821). */
+/** Whether the attempt staged a conclusion other than this request under its lease. */
 async function stagedApart(tx: TransactionSql, key: SettleKey): Promise<boolean> {
     const staged = await stagedFingerprint(tx, key);
     return staged !== null && staged !== key.fingerprint;
@@ -380,11 +380,11 @@ function verdictPatchOf(tx: TransactionSql, result: CompleteResult) {
     // The close-time summary, same overwrite rule: the verdict replaces whatever the
     // attempt left, it never merges with one.
     const summaryPatch = typeof summary === 'string' ? summary : null;
-    // The structured terminal reason (044, issue #339), same overwrite rule: the verdict is
+    // The structured terminal reason (044), same overwrite rule: the verdict is
     // the attempt's whole write, so an absent kind overwrites to null — a success and a
     // pre-column row read the same, "not a failure".
     const failureKindPatch = failureKind ?? null;
-    // The cause under that kind (065, issue #581), same overwrite rule.
+    // The cause under that kind (065), same overwrite rule.
     const failureCausePatch = failureCause ?? null;
     const evidencePatch = result.evidence ? tx.json(result.evidence as never) : null;
     const runtimeUpdate = context === null ? tx`runtime` : tx`coalesce(runtime, '{}'::jsonb) || ${context}`;
@@ -401,7 +401,7 @@ function verdictPatchOf(tx: TransactionSql, result: CompleteResult) {
 
 /**
  * The verdict's transaction body, shared by the driver's complete and the board's commit of a
- * staged conclusion (`job-store-conclusions.ts`, issue #821). `staged` is the commit's: the policy
+ * staged conclusion (`job-store-conclusions.ts`). `staged` is the commit's: the policy
  * the attempt staged under, which the completion check reads instead of the row's — a later claim
  * may have stamped another. Without it, a conclusion staged under the lease binds the attempt: a
  * different verdict is refused as the conflict it is.
@@ -426,7 +426,7 @@ export async function completeInTx(
         evidencePatch,
         runtimeUpdate,
     } = verdictPatchOf(tx, result);
-    // The settle receipt's fingerprint (issue #821): the whole store input, so only the identical
+    // The settle receipt's fingerprint: the whole store input, so only the identical
     // verdict replays the answer this attempt's conclusion recorded.
     const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'complete', fingerprint: fingerprintOf(result) };
     // Without a staged policy this is the driver's complete: a conclusion it staged binds it.
@@ -462,7 +462,7 @@ export async function completeInTx(
             -- finished, there is nothing left to park.
             cancel_requested_at = null,
             agent_turns = ${agentTurnsPatch},
-            -- Same overwrite rule (069, issue #733): no setup on this verdict stores null.
+            -- Same overwrite rule (069): no setup on this verdict stores null.
             setup_ms = ${setupMs},
             summary = ${summaryPatch},
             failure_kind = ${failureKindPatch},
@@ -478,7 +478,7 @@ export async function completeInTx(
             (select cancel_requested_at is not null from job where org_id = ${orgId} and id = ${id}) as stop_pending
     `;
     // The identical verdict replayed after its answer was lost answers that answer again
-    // (issue #821) — read here, after the update waited out a concurrent identical one. Any
+    // — read here, after the update waited out a concurrent identical one. Any
     // other report from a worker whose lease was concluded or reclaimed is refused, not
     // merged: the job is someone else's now, and the two runs did different work.
     if (!rows[0]) return replayComplete(tx, key);
@@ -521,14 +521,14 @@ async function settleVerdict(
     const jobRepo = row.repo;
     const stopPending = row.stop_pending;
 
-    // The root row first, ahead of the PR lock and every advisory lock below (BEL-161): a webhook holds roots then the
+    // The root row first, ahead of the PR lock and every advisory lock below: a webhook holds roots then the
     // PR lock, and this verdict may close a root through it. Exception (b): the caller's own running row landed, and
     // the rest is one thread, in order.
     await lockRootRowsInTx(tx, orgId, [rootJobId]);
-    // The caller's verdict ends its separate reviews (issue #549): one still queued or running
+    // The caller's verdict ends its separate reviews: one still queued or running
     // has nothing left to inform, so it is stopped rather than left to finish orphaned.
     await stopReviewsOf(tx, { orgId, wallTick, stoppedBy: null }, [completedId]);
-    // A review is a thread nobody marks done, and it queues no reclaim of its own (issue #774): its
+    // A review is a thread nobody marks done, and it queues no reclaim of its own: its
     // files live inside its caller's tree and leave with the caller thread's reclaim.
 
     await maybeRecordPublicationAndClose(tx, ctx, { rootJobId, jobRepo, publication: publication ?? null });
@@ -596,7 +596,7 @@ async function settleVerdict(
         threadDone = await settleIfMergeClosed(ctx, rootJobId, tx);
     }
     // A threadDone-true verdict IS the worktree-reclaim order, queued owned by this attempt's
-    // lease token in the verdict's transaction (issue #821): the driver removes the tree on this answer
+    // lease token in the verdict's transaction: the driver removes the tree on this answer
     // and acks the row, and the ack — not this verdict — stamps `worktree_reclaimed_at`, so
     // reopen never reads "tree gone" for a tree still on the volume, and a driver that dies
     // mid-removal leaves the row to the queue once its lease expires.
@@ -723,7 +723,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
     // claimed against the one-worktree guarantee.
     await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
 
-    // A merge-closed thread (issue #390) walks no further: no successor insert, no re-park into a
+    // A merge-closed thread walks no further: no successor insert, no re-park into a
     // durable wait — the PR it would wait on can never reopen. Decided on a marker read UNDER the
     // lock, never on a pre-read: a merge delivery committing while this verdict waited on the
     // lock must rest this transition too, and a pre-lock read would have answered stale. The
@@ -782,7 +782,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
     // inserting: every declared helper plan is handed `{publication}` generically
     // (`resolveClaimHelperPlans`), and a null publication is nothing the helper can act on — the
     // same "never falls back to a runnable insert" doctrine `enterRuntimeBoundary` already applies
-    // to a durable wait boundary, extended here to every block entry (issue #209).
+    // to a durable wait boundary, extended here to every block entry.
     if (entersBlockHelperNode(halted, transition) && (!prs || (await prs.publicationOf(rootJobId, tx)) === null)) {
         transition = { action: 'rest', reason: 'no_publication' };
     }
@@ -817,7 +817,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
         workflowNode: transition.node.name,
     };
     if (transition.node.runtime !== undefined) {
-        // A durable wait boundary (issue #231): this park replaces the ordinary insert below
+        // A durable wait boundary: this park replaces the ordinary insert below
         // entirely — the caller (enterRuntimeBoundary) rests the thread instead when the runtime
         // is unrecognized, no PR store is configured, or the thread has not published yet, never
         // falling back to an immediately runnable row.

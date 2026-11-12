@@ -1,7 +1,7 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 
 /**
- * The staged-conclusion reads every settle shares (issue #821; `076_job_conclusions.sql`): a row
+ * The staged-conclusion reads every settle shares (`076_job_conclusions.sql`): a row
  * whose attempt staged its final envelope under its current lease belongs to that conclusion — the
  * board commits it, and no retirement, stop, claim or other settle takes the attempt instead.
  * Imports nothing of the store, so the claim, the rows and the settles can all read it.

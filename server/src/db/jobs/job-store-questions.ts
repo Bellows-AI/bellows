@@ -1,5 +1,5 @@
 /**
- * The agent's questions (050, issue #531): the worker's report, the member's answer, the
+ * The agent's questions (050): the worker's report, the member's answer, the
  * heartbeat's delivery list and the thread reads' shape. Question text and answers are member
  * content: nothing here logs them.
  */
@@ -18,7 +18,7 @@ import type {
 /** An agent's questions and the member's answers. */
 export interface JobQuestionStore {
     /**
-     * Stores one question the agent asked (050, issue #531), pending, for the attempt holding the
+     * Stores one question the agent asked (050), pending, for the attempt holding the
      * lease. Idempotent on `(job, questionId)` (`existing`, nothing changed); an attempt holds at
      * most `QUESTIONS_PER_ATTEMPT` rows (`limit`). The lease guard and the cap count serialize on
      * the job row, so concurrent asks cannot overshoot.
