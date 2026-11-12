@@ -1,11 +1,12 @@
 import { ERROR_CODES, isRangePreset, resolveRange } from '@factory-ai/core';
 import type { DateRange, Organization, OrganizationMeta } from '@factory-ai/core';
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
 import { LOCAL_ORG_ID } from '../identifiers.js';
 import type { OrgRegistry } from '../orgs.js';
+import { sendFailure } from './error-handler.js';
 import type { StatsScope, StatsService } from '../stats-service.js';
 
 interface StatsQuery {
@@ -160,8 +161,8 @@ function resolveScope(
 
 /**
  * What to answer when the cache has nothing yet. Telemetry-off is a configuration state, not a
- * cold start; a failed read reports itself; otherwise this is the ordinary first read and the
- * client is told to poll.
+ * cold start; otherwise this is the ordinary first read and the client is told to poll. A failed
+ * read never reaches here: the handler answers it through the central classifier.
  */
 function noPayloadResponse(
     config: AppConfig,
@@ -181,19 +182,29 @@ function noPayloadResponse(
     }
 
     const fetch = service.fetchState();
-    if (fetch.state === 'error') {
-        return {
-            status: HTTP_UNAVAILABLE,
-            body: {
-                error: fetch.error?.message ?? 'Telemetry read failed',
-                code: fetch.error?.code ?? 'UNKNOWN',
-                fetch,
-            },
-        };
-    }
     // Cold start: the first read is one database query, but it may be waiting on migrations, so
     // answer 202 and let the client poll.
     return { status: HTTP_ACCEPTED, body: { fetch } };
+}
+
+/**
+ * Answers a request the cache cannot serve. A failed first read goes through the central
+ * classifier like any other store failure: a generic 503 for an outage, a generic 500 otherwise,
+ * the driver's text only in the log.
+ */
+function sendNoPayload(
+    config: AppConfig,
+    service: Pick<StatsService, 'fetchState' | 'lastFailure'>,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
+    if (config.telemetrySource !== 'off' && service.fetchState().state === 'error') {
+        const failure = service.lastFailure();
+        request.log.error({ err: failure }, 'stats read failed');
+        return sendFailure(reply, request, failure);
+    }
+    const fallback = noPayloadResponse(config, service);
+    return reply.code(fallback.status).send(fallback.body);
 }
 
 /**
@@ -283,7 +294,6 @@ export const statsRoutes =
             // good render on screen and explain itself, not blank the dashboard.
             if (payload) return reply.code(HTTP_OK).send(payload);
 
-            const fallback = noPayloadResponse(config, service);
-            return reply.code(fallback.status).send(fallback.body);
+            return sendNoPayload(config, service, request, reply);
         });
     };

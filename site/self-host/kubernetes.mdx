@@ -66,7 +66,7 @@ The render refuses to start without them, and names the missing value.
 | `mcp.enabled` | `false` | Turns on the MCP endpoint. Needs an `https` `auth.publicUrl`. See [Connect an MCP client](/mcp/connect). |
 | `integrations.jira.clientId`, `secret.atlassianClientSecret` | `''` | See [Set up Jira](/self-host/jira-app). |
 | `secret.githubWebhookSecret` | `''` | Registers the webhook route. See [Create the GitHub App](/self-host/github-app). |
-| `auth.cookieSecure` | `''` | Set `'true'` behind TLS. |
+| `auth.cookieSecure` | `''` | Empty follows `publicUrl`: `Secure` for https. Set `'true'` or `'false'` to override. |
 
 ### Model credentials
 

@@ -91,7 +91,7 @@ Create it, generate a client secret, and keep the client id and secret. Bellows 
 | Value | Environment variable | Helm value |
 | --- | --- | --- |
 | Public origin | `PUBLIC_URL` | `auth.publicUrl` |
-| Secure cookies | `COOKIE_SECURE` | `auth.cookieSecure` (`'true'` behind TLS) |
+| Secure cookies | `COOKIE_SECURE` | `auth.cookieSecure` (empty follows the https `PUBLIC_URL`) |
 | GitHub App id | `GITHUB_APP_ID` | `github.appId` |
 | App private key (PEM or base64) | `GITHUB_APP_PRIVATE_KEY`, or `GITHUB_APP_PRIVATE_KEY_FILE` for a path | `github.appPrivateKey`, or key `github-app-private-key` in `secret.existingSecret` |
 | OAuth client id | `GITHUB_OAUTH_CLIENT_ID` | `auth.oauthClientId` |

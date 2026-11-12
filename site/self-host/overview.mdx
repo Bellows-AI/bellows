@@ -71,7 +71,7 @@ flowchart LR
 | **A GitHub App** | Id and private key are required. The board refuses to start without them. See [GitHub App](/self-host/github-app). |
 | **A GitHub OAuth App** | For member sign-in. See [GitHub App](/self-host/github-app). |
 | **A model credential** | For example `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` for Claude Code, passed to runners by the driver. |
-| **A domain and TLS** | Needed for any shared deployment. Set `PUBLIC_URL` to the public https origin and `COOKIE_SECURE=1`. MCP needs an https `PUBLIC_URL`. A local trial can use `http://127.0.0.1`. |
+| **A domain and TLS** | Needed for any shared deployment. Set `PUBLIC_URL` to the public https origin; the session cookie is then `Secure` without further setting. MCP needs an https `PUBLIC_URL`. A local trial can use `http://127.0.0.1`. |
 | **Node.js 22 or newer** | Only to run `npm run secrets:init` and the CLI from a clone. |
 
 <Warning>
