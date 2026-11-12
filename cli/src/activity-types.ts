@@ -1,5 +1,5 @@
 /**
- * The gate and PR wire shapes of `GET /api/jobs/:id/activity` (issue #983), copied from the server's
+ * The gate and PR wire shapes of `GET /api/jobs/:id/activity`, copied from the server's
  * `telemetry/run-activity.ts` (the CLI imports nothing from it). `null` is "not recorded", never zero.
  */
 
