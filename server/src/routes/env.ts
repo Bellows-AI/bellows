@@ -1,8 +1,12 @@
 import {
+    CLOUD,
+    CLOUD_CREDENTIAL_MESSAGE,
+    type DeploymentMode,
     ENV_NAME,
     ENV_NAME_LIMIT,
     ENV_VALUE_LIMIT,
     ERROR_CODES,
+    forbiddenCredentialIn,
     isReservedEnvName,
     MAX_ENV_VARS_PER_SCOPE,
 } from '@factory-ai/core';
@@ -88,7 +92,7 @@ function parseVarEntry(entry: unknown): EnvVarEntry | string {
  * Structural validation for a vars list; the client's copy is UX only. Returns the list or the
  * reason it was refused — the workspace route's parseExecutors shape.
  */
-function parseVars(raw: unknown): EnvVarEntry[] | string {
+function parseVars(raw: unknown, deploymentMode: DeploymentMode): EnvVarEntry[] | string {
     const list = jsonBody(raw).vars;
     if (!Array.isArray(list)) return 'vars must be an array of { name, value, isSecret }';
     if (list.length > MAX_ENV_VARS_PER_SCOPE) {
@@ -99,6 +103,13 @@ function parseVars(raw: unknown): EnvVarEntry[] | string {
         const one = parseVarEntry(entry);
         if (typeof one === 'string') return one;
         parsed.push(one);
+    }
+    // Cloud refuses a Claude subscription OAuth token by NAME; the message never carries a value.
+    if (
+        deploymentMode === CLOUD &&
+        forbiddenCredentialIn(Object.fromEntries(parsed.map((v) => [v.name, '']))) !== null
+    ) {
+        return CLOUD_CREDENTIAL_MESSAGE;
     }
     const names = new Set(parsed.map((entry) => entry.name));
     if (names.size !== parsed.length) return 'variable names must be unique within one scope';
@@ -135,7 +146,8 @@ function repoSegmentReason(repo: Repo): string | null {
  */
 async function validatePutRepoRequest(
     request: FastifyRequest,
-    repos: OrgRuntime['repos']
+    repos: OrgRuntime['repos'],
+    deploymentMode: DeploymentMode
 ): Promise<
     { ok: true; repo: Repo; vars: EnvVarEntry[] } | { ok: false; code: string; message: string; status?: number }
 > {
@@ -143,7 +155,7 @@ async function validatePutRepoRequest(
     if (typeof repo === 'string') return { ok: false, code: ERROR_CODES.BAD_BODY, message: repo };
     const segmentReason = repoSegmentReason(repo);
     if (segmentReason) return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: segmentReason };
-    const vars = parseVars(request.body);
+    const vars = parseVars(request.body, deploymentMode);
     if (typeof vars === 'string') return { ok: false, code: varsCode(vars), message: vars };
     const visible = await checkReposVisible(repos, [repo], { subject: 'the repository' });
     if (!visible.ok) return visible;
@@ -161,7 +173,7 @@ export interface EnvRoutesDeps {
 }
 
 export const envRoutes =
-    ({ config: _config, orgs }: EnvRoutesDeps): FastifyPluginAsync =>
+    ({ config, orgs }: EnvRoutesDeps): FastifyPluginAsync =>
     async (app) => {
         /**
          * The caller's org env context, narrowed to what these routes touch — no runtime (no such
@@ -186,7 +198,7 @@ export const envRoutes =
             const rt = await runtimeOf(request);
             if (!rt) return noEnvStore(reply);
 
-            const vars = parseVars(request.body);
+            const vars = parseVars(request.body, config.deploymentMode);
             if (typeof vars === 'string') {
                 return bad(reply, varsCode(vars), vars);
             }
@@ -251,7 +263,7 @@ export const envRoutes =
             if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
-            const parsed = await validatePutRepoRequest(request, rt.repos);
+            const parsed = await validatePutRepoRequest(request, rt.repos, config.deploymentMode);
             if (!parsed.ok) return bad(reply, parsed.code, parsed.message, parsed.status);
             const { repo, vars } = parsed;
 
@@ -276,6 +288,7 @@ function varsCode(reason: string): string {
     if (reason.includes('exceeds 255 characters')) return ERROR_CODES.BAD_ENV_NAME;
     if (reason.endsWith('is not a legal environment variable name')) return ERROR_CODES.BAD_ENV_NAME;
     if (reason.endsWith('is reserved by the runner')) return ERROR_CODES.RESERVED_ENV_NAME;
+    if (reason === CLOUD_CREDENTIAL_MESSAGE) return ERROR_CODES.CLOUD_CREDENTIAL_REFUSED;
     if (reason.includes('only a secret may be left blank')) return ERROR_CODES.BAD_VALUE;
     if (reason.startsWith('variable names must be unique')) return ERROR_CODES.ENV_NAME_CONFLICT;
     return ERROR_CODES.BAD_BODY;

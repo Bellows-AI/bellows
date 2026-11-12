@@ -1,5 +1,12 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { ADMIN_ROLE, ERROR_CODES, ORG_SCOPE, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import {
+    ADMIN_ROLE,
+    type DeploymentMode,
+    ERROR_CODES,
+    ORG_SCOPE,
+    USER_SCOPE,
+    type ExecutorScope,
+} from '@factory-ai/core';
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
@@ -171,12 +178,16 @@ async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest
     return reply.code(HTTP_OK).send({ executors: loaded.value.map(selectionMetadata) });
 }
 
-async function handleCreateOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+async function handleCreateOrgExecutor(
+    { orgs, deploymentMode }: OrgExecutorRoutesDeps,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
     const ctx = await adminContext(orgs, request, reply);
     if (!ctx) return reply;
     const { store, caller } = ctx;
 
-    const fields = parseExecutorFields(jsonBody(request.body));
+    const fields = parseExecutorFields(jsonBody(request.body), deploymentMode);
     if (typeof fields === 'string') return bad(reply, executorFieldRefusal(fields), fields);
     const reason = badProfileName(fields.name);
     if (reason) return bad(reply, ERROR_CODES.BAD_EXECUTOR_NAME, `"${fields.name}": ${reason}`);
@@ -208,7 +219,11 @@ async function handleCreateOrgExecutor(orgs: OrgRegistry, request: FastifyReques
     return reply.code(HTTP_CREATED).send(saved.value.ok);
 }
 
-async function handleUpdateOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+async function handleUpdateOrgExecutor(
+    { orgs, deploymentMode }: OrgExecutorRoutesDeps,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
     const ctx = await adminContext(orgs, request, reply);
     if (!ctx) return reply;
     const { store } = ctx;
@@ -220,7 +235,7 @@ async function handleUpdateOrgExecutor(orgs: OrgRegistry, request: FastifyReques
     // here would let a caller believe they moved a profile between scopes when nothing changed.
     if ('scope' in raw) return bad(reply, ERROR_CODES.BAD_SCOPE, 'scope changes only through the scope route');
 
-    const fields = parseExecutorFields(raw);
+    const fields = parseExecutorFields(raw, deploymentMode);
     if (typeof fields === 'string') return bad(reply, executorFieldRefusal(fields), fields);
     const reason = badProfileName(fields.name);
     if (reason) return bad(reply, ERROR_CODES.BAD_EXECUTOR_NAME, `"${fields.name}": ${reason}`);
@@ -349,17 +364,24 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
  * - `POST /api/org/executors/:id/scope` — promote/demote, admin-gated; the store only ever moves
  *   the calling admin's own personal row up.
  */
+interface OrgExecutorRoutesDeps {
+    readonly orgs: OrgRegistry;
+    /** `config.deploymentMode`: cloud refuses a Claude subscription OAuth token in a config. */
+    readonly deploymentMode: DeploymentMode;
+}
+
 export const orgExecutorRoutes =
-    ({ orgs }: { orgs: OrgRegistry }): FastifyPluginAsync =>
+    (deps: OrgExecutorRoutesDeps): FastifyPluginAsync =>
     async (app) => {
+        const { orgs } = deps;
         app.get('/api/org/executors', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleListOrgExecutors(orgs, request, reply)
         );
         app.post('/api/org/executors', { bodyLimit: BODY_LIMIT }, (request, reply) =>
-            handleCreateOrgExecutor(orgs, request, reply)
+            handleCreateOrgExecutor(deps, request, reply)
         );
         app.put('/api/org/executors/:id', { bodyLimit: BODY_LIMIT }, (request, reply) =>
-            handleUpdateOrgExecutor(orgs, request, reply)
+            handleUpdateOrgExecutor(deps, request, reply)
         );
         app.delete('/api/org/executors/:id', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDeleteOrgExecutor(orgs, request, reply)

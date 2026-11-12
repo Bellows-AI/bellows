@@ -56,6 +56,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         mcp: { enabled: false },
         // The production default: a batch test opts in, so a forgotten opt-in fails loudly.
         batches: { enabled: false },
+        deploymentMode: 'self-hosted',
         ...overrides,
     };
 }

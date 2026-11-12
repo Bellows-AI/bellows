@@ -754,6 +754,15 @@ mcp_on="$(gh_render --set-string auth.publicUrl=https://board.example --set mcp.
 expect_contains 'MCP renders on under an https publicUrl' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_on")" 'value: "true"'
 expect_contains 'the trusted origins render as a comma list' "$(grep -A1 'name: MCP_TRUSTED_ORIGINS$' <<<"$mcp_on")" \
     'value: "https://a.example,https://b.example"'
+# The deployment mode: self-hosted by default; cloud refuses to render without the telemetry ingest token.
+expect_contains 'the deployment mode defaults to self-hosted' "$(grep -A1 'name: DEPLOYMENT_MODE$' <<<"$mcp_off")" \
+    'value: "self-hosted"'
+refuses 'an unknown deployment mode is refused' 'deploymentMode must be self-hosted or cloud' \
+    "${GH_SETS[@]}" --set deploymentMode=saas
+refuses 'cloud mode without an ingest token is refused' 'deploymentMode cloud requires telemetry.ingestToken' \
+    "${GH_SETS[@]}" --set deploymentMode=cloud --set-string telemetry.ingestToken=
+cloud="$(gh_render --set deploymentMode=cloud --set-string telemetry.ingestToken=ingest-token-for-the-render-test)"
+expect_contains 'cloud mode renders DEPLOYMENT_MODE' "$(grep -A1 'name: DEPLOYMENT_MODE$' <<<"$cloud")" 'value: "cloud"'
 # The artifact store: the dashboard runs as its own ServiceAccount, which carries the IRSA
 # annotation, and the s3 backend refuses to render without a bucket.
 expect_contains 'the dashboard has its own ServiceAccount' "$gh" "serviceAccountName: $RELEASE-factory-dashboard"

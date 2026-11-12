@@ -542,6 +542,10 @@ export const INHERITED_NOTE =
 /** Where credentials go instead: the member's environment, on the Workspace settings page. */
 export const CREDENTIALS_NOTE = 'Keep API keys out of this configuration — set them as environment variables in';
 
+/** Shown in Bellows Cloud only: the board refuses a Claude subscription OAuth token everywhere. */
+export const CLOUD_OAUTH_NOTE =
+    'Bellows Cloud does not accept a Claude subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN). Use your own Anthropic API key (ANTHROPIC_API_KEY) instead.';
+
 export const ADVANCED_LABEL = 'Advanced configuration';
 export const CONFIG_JSON_LABEL = 'Configuration JSON';
 /** Valid JSON is not a tested configuration, and the help says so. */

@@ -392,6 +392,19 @@ describe('a review the board leased in-band (issue #774)', () => {
         expect(t.board.completed).toEqual([]);
     });
 
+    it('launches nothing for a review the board refused at claim, and ends the row failed as config', async () => {
+        const refusal = 'CLAUDE_CODE_OAUTH_TOKEN cannot be configured in Bellows Cloud.';
+        const t = supervising({ runReview: async () => STEP() });
+        t.start({ ...REVIEW, executorRefusal: refusal });
+        await t.settled();
+        expect(t.runner.reviewed).toHaveLength(0);
+        expect(t.runner.reviewerResized).toEqual([]);
+        expect(t.board.completed).toEqual([
+            { id: REVIEW.id, status: 'failed', exitCode: null, output: refusal, failureKind: 'config' },
+        ]);
+        expect(t.state.reviews.size).toBe(0);
+    });
+
     it('ends the row failed when the step cannot be run at all', async () => {
         const t = supervising({ runReview: async () => STEP({ exitCode: 1, stdout: '', stderr: 'no repository' }) });
         t.start();

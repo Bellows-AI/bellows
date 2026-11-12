@@ -22,7 +22,7 @@ import type { JobReclaimStore } from './job-store-reclaims.js';
 import type { JobReadStore } from './job-store-reads.js';
 import type { JobWorkerStore } from './job-store-worker.js';
 import type { JobConclusionStore } from './job-store-conclusions.js';
-import type { UserRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
+import type { DeploymentMode, UserRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
 import type { AdmissionBudgets, ClaimObserver, JobAdmissionStore } from './job-store-admission.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from '../pr-lifecycle-store.js';
@@ -1046,6 +1046,8 @@ export interface CreateJobStoreDeps {
      * retry, follow-up and Done refuse one with `batches_disabled`; a job outside a batch is unchanged.
      */
     batches?: boolean;
+    /** `config.deploymentMode`, default self-hosted. Cloud refuses a claim whose effective env or profile carries a Claude subscription OAuth token. */
+    deploymentMode?: DeploymentMode;
     ready?: Promise<unknown>;
     /**
      * The env-var store's resolver, when the deployment stores runner environment. Present in
@@ -1190,6 +1192,8 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     orgId: string;
     /** The deployment's batch flag (`CreateJobStoreDeps.batches`). */
     batches: boolean;
+    /** `CreateJobStoreDeps.deploymentMode`, defaulted. */
+    deploymentMode: DeploymentMode;
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];

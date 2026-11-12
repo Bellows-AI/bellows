@@ -221,6 +221,15 @@ export {
     MAX_ENV_VARS_PER_SCOPE,
     RESERVED_ENV_NAMES,
 } from './env.js';
+export type { DeploymentMode } from './deployment-mode.js';
+export {
+    CLAUDE_CODE_OAUTH_TOKEN,
+    CLOUD,
+    CLOUD_CREDENTIAL_MESSAGE,
+    DEPLOYMENT_MODES,
+    forbiddenCredentialIn,
+    SELF_HOSTED,
+} from './deployment-mode.js';
 export type { ErrorCode } from './error-codes.js';
 export { ERROR_CODES } from './error-codes.js';
 export type { JobMode } from './job-mode.js';

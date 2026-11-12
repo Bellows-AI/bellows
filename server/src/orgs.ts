@@ -214,6 +214,7 @@ function buildOrgStores({
         prs,
         admission: config.admission,
         batches: config.batches.enabled,
+        deploymentMode: config.deploymentMode,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),
     });
     // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled

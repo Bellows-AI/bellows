@@ -69,6 +69,10 @@ The same section has **gate repair rounds**: how many times a task on this execu
 Keep API keys out of the configuration JSON. Set them as environment variables under **Settings → Workspace** (your own) or **Settings → Organization** (shared). The form links to **Workspace settings**.
 </Warning>
 
+<Note>
+Bellows Cloud does not accept a Claude subscription OAuth token. A configuration that sets `CLAUDE_CODE_OAUTH_TOKEN` anywhere, for example under `env`, is refused on save with `CLOUD_CREDENTIAL_REFUSED`, and a profile saved with one earlier fails its task before the agent starts. Nothing saved is deleted. Use your own Anthropic API key (`ANTHROPIC_API_KEY`) instead. Self-hosted boards accept the token as before.
+</Note>
+
 ## Pick an executor for a task
 
 In the **New task** composer, the **Executor** chip next to **Repository** lists every profile you can use. Suspended profiles are not listed.

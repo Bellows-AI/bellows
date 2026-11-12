@@ -404,6 +404,8 @@ export const authRoutes =
                 mcp: config.mcp.enabled,
                 // Whether batches are enabled: the SPA shows the Batches pages only when they are.
                 batches: config.batches.enabled,
+                // Where this board runs: cloud settings explain why an OAuth token is refused.
+                deploymentMode: config.deploymentMode,
             });
         });
 

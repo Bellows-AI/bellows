@@ -7,7 +7,11 @@
 
 import {
     CLAUDE_CODE,
+    CLOUD,
+    CLOUD_CREDENTIAL_MESSAGE,
+    type DeploymentMode,
     EXECUTOR_TYPES,
+    forbiddenCredentialIn,
     GITHUB_ENV_NAMES,
     executorSuspendedMessage,
     USER_SCOPE,
@@ -86,6 +90,7 @@ export async function resolveClaimExecutor(
     deps: {
         env: CreateJobStoreDeps['env'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
+        deploymentMode: DeploymentMode;
         /**
          * Set for a reviewer's claim: ONLY these member env names reach it. The
          * executor config (the agent's own runtime settings) still travels — a reviewer needs to
@@ -95,7 +100,7 @@ export async function resolveClaimExecutor(
     },
     row: { run_as: string | null; repo: string | null; executor: string | null; executor_scope: string | null }
 ): Promise<ResolvedClaimExecutor> {
-    const { env, executorConfig, grant } = deps;
+    const { env, executorConfig, deploymentMode, grant } = deps;
     const resolvedEnv = withoutGithubToken(
         env ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx) : undefined
     );
@@ -110,6 +115,7 @@ export async function resolveClaimExecutor(
     // this selection's answer.
     let executorType: ExecutorType | null = null;
     let executorRefusal: string | null = null;
+    let profileConfig: unknown;
     if (executorConfig && row.executor !== null && row.run_as !== null) {
         const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
         const configured = await executorConfig.configFor(row.run_as, row.executor, scope, tx);
@@ -123,7 +129,14 @@ export async function resolveClaimExecutor(
                 executorType = configured.type as ExecutorType;
             }
             claimEnv = mergeExecutorConfigEnv(claimEnv, configured);
+            profileConfig = configured?.config;
         }
+    }
+    // Cloud checks the EFFECTIVE env — member env and profile merged — so a token saved before cloud
+    // mode, in any scope or profile, never travels. The driver fails the task with the sentence
+    // before anything spawns; a throw here would roll the claim back and re-claim it forever.
+    if (deploymentMode === CLOUD && forbiddenCredentialIn(claimEnv, profileConfig) !== null) {
+        return { claimEnv: undefined, executorType, executorRefusal: CLOUD_CREDENTIAL_MESSAGE };
     }
     return { claimEnv, executorType, executorRefusal };
 }
