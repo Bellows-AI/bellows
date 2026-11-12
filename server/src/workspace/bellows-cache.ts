@@ -1,5 +1,5 @@
 /**
- * The `cache:` list under `environment:` in `.bellows.yaml` (issue #734): env names the driver points
+ * The `cache:` list under `environment:` in `.bellows.yaml`: env names the driver points
  * at `<member>/.cache/<owner>/<repo>/<NAME>` in the runner and gate env (driver/src/claim.ts
  * `repoCacheEnv`).
  *

@@ -28,7 +28,7 @@ export interface StartAuthorizationInput {
     /** Set to reconnect this active connection of the caller's; absent connects a new account. */
     connectionId?: string | undefined;
     returnTo?: string | undefined;
-    /** Opaque until BEL-140: echoed in the result, never used for authorization. */
+    /** Opaque until echoed in the result, never used for authorization. */
     interactionId?: string | undefined;
     /** The consent asked for; absent is `read`. What was GRANTED is the token's scope, never this. */
     access?: AuthorizationAccess | undefined;

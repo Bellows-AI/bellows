@@ -35,7 +35,7 @@ import type {
 } from './secret-store.js';
 
 /**
- * The write path of the PostgreSQL store: create, replace, delete. The BEL-64 recovery model:
+ * The write path of the PostgreSQL store: create, replace, delete. The recovery model:
  * intent record, immutable encrypted version, one-transaction compare-and-set activation. Mirrors
  * `server/test/secrets-reference-store.ts` step for step.
  */

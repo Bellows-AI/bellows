@@ -16,7 +16,7 @@ import {
 } from './auth-shared.js';
 
 /**
- * The onboarding selection screen (#125): reading the parked sign-in, listing an installation's
+ * The onboarding selection screen: reading the parked sign-in, listing an installation's
  * repos for its checkboxes, and materializing the posted choice. Split out of `auth.ts` purely to
  * keep each file under the repo's line-count ceiling.
  */
@@ -283,7 +283,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
     const { store, orgs, secret, cookieSecure, sessionDeps, listInstallationRepos } = deps;
 
     /*
-     * The selection screen's read (#125).
+     * The selection screen's read.
      *
      * Answers the parked sign-in the onboarding page is to render: who is signing in, what
      * their account can see, and what arrives pre-checked. `selected` is the stored choice —
@@ -341,7 +341,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
     });
 
     /*
-     * One installation's repos, for the screen's per-org checkboxes (#125).
+     * One installation's repos, for the screen's per-org checkboxes.
      *
      * A direct per-installation read through the App client — the org registry cannot answer
      * here, because the org rows this choice is deciding on do not exist yet. `source:
@@ -376,7 +376,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
     });
 
     /*
-     * The selection screen's write (#125).
+     * The selection screen's write.
      *
      * Materializes the posted choice and finishes the sign-in the callback parked. JSON
      * errors, not `?auth_error=` redirects — this route is reached by the SPA's fetch, not by

@@ -15,7 +15,7 @@ export interface ExecutorProfile {
     readonly createdAt: string;
     readonly updatedAt: string;
     /**
-     * The default workflow's gate-repair round limit this row launches with (issue #49): bounded
+     * The default workflow's gate-repair round limit this row launches with: bounded
      * 0-10, 3 when unset, 0 disables automatic repair. Read once at launch, frozen onto the
      * thread's root row — editing it later changes later tasks, never a running thread.
      */

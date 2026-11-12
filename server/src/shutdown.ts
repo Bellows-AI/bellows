@@ -44,7 +44,7 @@ export function createStopRegistry() {
 const MS_PER_SECOND = 1000;
 
 /**
- * The graceful close (BEL-322), under ONE wall-clock deadline: `app.close()` aborts the long-polls and refuses new
+ * The graceful close, under ONE wall-clock deadline: `app.close()` aborts the long-polls and refuses new
  * requests (503) while the open ones finish; then every loop settles its pass in flight; only then do the pools end,
  * so no query is cut mid-transaction (an interrupted one rolls back and the next pass redoes it). A failing step
  * never skips the next one; a failure or deadline overrun is thrown after the pools have been ended anyway. Calling

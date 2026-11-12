@@ -2,7 +2,7 @@
  * Runs `pass` now and then on an interval, never overlapping itself; a throwing pass is logged (by default under
  * `label`, or by `onError`) and the next tick is the retry. Shared by every background loop on the board.
  *
- * The returned stop is the shutdown half (BEL-322): it clears the timer, aborts the `signal` the running pass was
+ * The returned stop is the shutdown half: it clears the timer, aborts the `signal` the running pass was
  * handed so it ends between items, and resolves once that pass has settled, so the pool is never closed under it.
  * A stop called twice is the same promise. `immediate: false` skips the startup pass.
  */

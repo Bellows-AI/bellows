@@ -1,7 +1,7 @@
 import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
 
 /**
- * Gate runs and pull-request operations read out of an executor's own transcript (issue #983): the
+ * Gate runs and pull-request operations read out of an executor's own transcript: the
  * Claude session jsonl and the OpenCode raw export, pure and synchronous. An activity is the call
  * and, when one is paired and parses, its result. Nothing here counts anything as success on the
  * word of the agent: a call with no result, a result that does not parse, prose such as "tests

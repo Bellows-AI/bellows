@@ -198,7 +198,7 @@ interface StartOptions {
 export async function start(options: StartOptions = {}): Promise<{ close(): Promise<void> }> {
     const stops = createStopRegistry();
     const { config } = resolveConfig({ env: process.env, ...(options.github ? { github: options.github } : {}) });
-    // The orgs are the App's installations now (#99) — the process is bound to none of them, which
+    // The orgs are the App's installations now — the process is bound to none of them, which
     // is the point. The mode is what a boot should say out loud.
     console.log(
         config.auth.mode === 'github'
@@ -266,7 +266,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     //
     const artifacts = createArtifactBackend(config.artifacts);
     void prepareArtifactBackend(artifacts, (m) => console.log(`[artifacts] ${m}`));
-    // Prometheus series for the board (issue #831): the claim reports into them, `GET /api/metrics`
+    // Prometheus series for the board: the claim reports into them, `GET /api/metrics`
     // serves them, and the background loops below are wrapped with `metrics.timedPass`.
     const metrics = createServerMetrics({
         admission: config.admission,
@@ -311,7 +311,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         );
     }
 
-    // The outbound OAuth runtime (BEL-138). Jira registers when ATLASSIAN_CLIENT_ID/SECRET are set; unset, no provider is
+    // The outbound OAuth runtime. Jira registers when ATLASSIAN_CLIENT_ID/SECRET are set; unset, no provider is
     // configured and the runtime serves only the recovery of rows and the destroy of a revoked grant's secret.
     const jira = jiraRegistration(config.integrations.jira, config.integrations.callbackOrigin);
     const integrations = createIntegrationRuntime({

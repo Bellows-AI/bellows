@@ -4,7 +4,7 @@ import type { CookieSerializeOptions } from '@fastify/cookie';
 export const SESSION_COOKIE = 'factory_session';
 export const OAUTH_COOKIE = 'factory_oauth';
 /**
- * Carries the opaque token of a pending sign-in (#125) — the round-trip hop between the OAuth
+ * Carries the opaque token of a pending sign-in — the round-trip hop between the OAuth
  * callback and the selection screen's completion POST. Like the session cookie: the row holds the
  * hash, the cookie the signed value, and the signature is rejected before any database round trip.
  */
@@ -184,7 +184,7 @@ export function oauthCookieOptions(secure: boolean): CookieSerializeOptions {
 }
 
 /**
- * The pending sign-in cookie (#125). The same attributes as the state cookie, for the same
+ * The pending sign-in cookie. The same attributes as the state cookie, for the same
  * reasons — Lax because the callback is a cross-site top-level GET, root-of-auth path because
  * nothing else reads it, short-lived because a pending sign-in is single-use and its row
  * expires underneath it anyway.

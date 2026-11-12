@@ -6,7 +6,7 @@ import type { SecretIdentity } from '../secrets/secret-store.js';
  * usable resource under a grant; the grant owns the refresh chain (`version`) and the SecretStore record named by
  * `secret_ref`. These are store primitives only: no SecretStore call happens here. The lineage module
  * (`integrations/grant-lineage.ts`) takes the claim, talks to the SecretStore and then calls `finalize`, the only
- * writer of a grant's credential columns once it holds the claim. A `service` principal is reserved for BEL-143.
+ * writer of a grant's credential columns once it holds the claim. A `service` principal is reserved for a later slice.
  */
 
 export type GrantStatus = 'active' | 'reconnect_required' | 'revoked';

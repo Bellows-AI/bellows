@@ -7,7 +7,7 @@ import { pairOrRefuse } from './operation-receipts.js';
 import { validateTitleField } from './jobs/job-field-validation.js';
 
 /**
- * `POST /api/jobs/:id/agent-title` (BEL-252; docs/connections.md): the running agent names its own task. The
+ * `POST /api/jobs/:id/agent-title` (docs/connections.md): the running agent names its own task. The
  * attempt pair is the only credential (`CONNECTOR_ROUTES` in auth/plugin.ts); the write re-checks that pair
  * under its locks (`db/agent-title.ts`). A throwing check or store is 503 retryable, never a refusal and never
  * "unchanged". Nothing here carries a credential.

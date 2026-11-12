@@ -37,7 +37,7 @@ export interface GitHubIdentityClient {
     identity(accessToken: string): Promise<GitHubIdentity>;
     /**
      * The GitHub App installations this account can see, asked with the signing-in person's own
-     * token. This IS the membership decision under multi-org sign-in (#99): one installation is
+     * token. This IS the membership decision under multi-org sign-in: one installation is
      * one organization, so what this returns is exactly the orgs the caller may sign into.
      * Requires `read:org`, which the authorize URL requests unconditionally in github mode — an
      * unscoped token reports no installations and would send everybody to the install page.
@@ -66,7 +66,7 @@ export function createGitHubIdentityClient(
             url.searchParams.set('client_id', auth.clientId);
             url.searchParams.set('redirect_uri', redirectUri);
             url.searchParams.set('state', state);
-            // `read:org`, always in github mode (#99). Listing installations IS the membership
+            // `read:org`, always in github mode. Listing installations IS the membership
             // decision now, and an unscoped token reports none — every sign-in would be bounced
             // to the install page with nothing to say why. The scope is org-level only: sign-in
             // still reads no repository data, which is what the OAuth/App split is for.
@@ -133,7 +133,7 @@ export function createGitHubIdentityClient(
             // that already redirects /user redirects this too and the stub IdP needs no second knob.
             //
             // Paginated, and PAST THE CAP A LOUD FAILURE, never a prefix: the callback feeds this
-            // list to the selection step (#125) — it is what the stored choice is pruned against,
+            // list to the selection step — it is what the stored choice is pruned against,
             // what the screen offers, and what signIn materializes and sweeps from, so silently
             // truncating at GitHub's default 30-per-page would make every sign-in permanently
             // remove an enterprise-scale account's orgs beyond page one. Fail the sign-in

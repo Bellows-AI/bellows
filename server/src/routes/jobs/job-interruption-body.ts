@@ -1,6 +1,6 @@
-/** The interrupt route's body validation (issue #792, BEL-302), split out of `job-handlers-worker.ts` for its line budget. */
+/** The interrupt route's body validation, split out of `job-handlers-worker.ts` for its line budget. */
 
-/** The longest interruption reason the board records (issue #792): one driver sentence. */
+/** The longest interruption reason the board records: one driver sentence. */
 const INTERRUPTION_REASON_MAX = 500;
 
 /**

@@ -38,7 +38,7 @@ import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 import type { JobReclaimStore } from '../../db/jobs/job-store-reclaims.js';
 import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
 
-// BEL-59: the owner's answer to an open integration requirement — bind one of their own connections to the
+// the owner's answer to an open integration requirement — bind one of their own connections to the
 // thread. The store decides who owns the thread (anyone else is a 404) and the revision race (409).
 export async function handleBindConnection(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
@@ -81,7 +81,7 @@ export async function handleBindConnection(orgs: OrgRegistry, request: FastifyRe
     }
 }
 
-// Retry (issue #326): re-run the thread head's command as a FRESH attempt in the same thread — no
+// Retry: re-run the thread head's command as a FRESH attempt in the same thread — no
 // session resumed — keeping the thread and its worktree. Nothing is taken from the body — the
 // command, repo, executor and thread all come from the thread head at insert — and the store
 // decides every refusal atomically with the insert, exactly as the follow-up's does. No lease
@@ -108,7 +108,7 @@ export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, re
     return sendQueued(reply, created.value);
 }
 
-// The edit of a queued task's command (issue #329): same id, same thread, where a stop plus a
+// The edit of a queued task's command: same id, same thread, where a stop plus a
 // re-create would have burned both. The store decides every refusal atomically with the write —
 // queued rows only, author only, workflow rows refused (their command is interpolated prompt
 // text and the raw chat line was never stored) — so a row claimed as the request arrives
@@ -186,7 +186,7 @@ export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, rep
 }
 
 // The user's stop. Two fates in one answer: a queued (never started) or a
-// running row whose lease has already expired (#152) is settled `stopped` directly — the turn is
+// running row whose lease has already expired is settled `stopped` directly — the turn is
 // over — while a running row under a live lease is left running and stamped, and the WORKER
 // settles it when its next heartbeat reports the stamp (suspend lands `stopped` under the flag).
 // Either way the turn ends and the session stays, so the follow-up composer is what the member
@@ -284,7 +284,7 @@ export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, r
     return reply.code(HTTP_OK).send({ id, removed: true });
 }
 
-// The user's wait-cancel (issue #328): ends the durable PR wait a thread is parked on, so a
+// The user's wait-cancel: ends the durable PR wait a thread is parked on, so a
 // missed webhook or a changed mind does not strand the thread forever. A person's action on a
 // wait no worker holds a lease on — no lease token, actor off the session like stop/done/remove.
 // Author-scoped in the store: the woken continuation would run in the author's worktree.
@@ -304,7 +304,7 @@ export async function handleWaitCancel(orgs: OrgRegistry, request: FastifyReques
     return reply.code(HTTP_OK).send({ id, cancelled: true });
 }
 
-// The user's wait-poke (issue #328): re-evaluate the parked PR now — the wake transaction the
+// The user's wait-poke: re-evaluate the parked PR now — the wake transaction the
 // sweep runs, minus the pending gate, because webhooks are the board's only GitHub input and the
 // motivating case is one that never arrived. `woken: false` is an honest answer (nothing parked,
 // already woken, an active member), never an error.
@@ -323,7 +323,7 @@ export async function handleWaitPoke(orgs: OrgRegistry, request: FastifyRequest,
     return reply.code(HTTP_OK).send({ id, woken: result.value.woken });
 }
 
-// The user's reopening of a done task (issue #327): done's inverse. Person-gated like done/remove
+// The user's reopening of a done task: done's inverse. Person-gated like done/remove
 // — a person's verdict on a task no worker holds — and it takes no lease token for the same
 // reason. The store refuses atomically: a task that was never done, one whose worktree a reclaim
 // already removed (a follow-up would have nothing to resume in), and one whose worktree is being
@@ -442,7 +442,7 @@ const reclaimNotYours = (reply: FastifyReply) =>
 // worktree-reclaim signal, and it rides the lease-guarded complete rather than a thread read, so a
 // worker credential can never pull the audit data of jobs it does not hold (see docs/auth.md). A
 // thread that merely finished keeps its tree. `reclaimId` names the reclaim row a threadDone verdict
-// queued claimed by this worker (issue #821): the driver acks it once the tree is gone.
+// queued claimed by this worker: the driver acks it once the tree is gone.
 export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveLeasedRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
@@ -458,7 +458,7 @@ export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyReque
     if (!result.ok) return reply;
     if (result.value.result !== 'ok') {
         if (result.value.result === 'missing') return notFoundJob(reply);
-        // A conclusion the attempt staged is its outcome (issue #821): a different verdict is refused.
+        // A conclusion the attempt staged is its outcome: a different verdict is refused.
         if (result.value.result === 'conflict') return conclusionConflict(reply);
         return leaseLost(reply);
     }
@@ -475,7 +475,7 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
     if (!route) return reply;
     const { store, id } = route;
 
-    // The settle long-poll (issue #323): `?waitFor=terminal&timeout=<s>` holds the request —
+    // The settle long-poll: `?waitFor=terminal&timeout=<s>` holds the request —
     // store-side, one indexed re-read every 250ms — until the thread's chain head reaches a
     // terminal status or an open PR wait stands on it, or the (capped) timeout elapses, then
     // answers `{ result, rootJobId, headJobId, headStatus, waitReason, job }` — the explicit wait
@@ -506,9 +506,9 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
     return reply.code(HTTP_OK).send(outcome ? { ...outcome, job: job.value } : job.value);
 }
 
-// The run-activity read (issue #339): the run's own progress-over-time chart, bucketed from the
+// The run-activity read: the run's own progress-over-time chart, bucketed from the
 // session telemetry the executor already reported, beside the run's and the task's gate and PR
-// activity (issue #983), which the board records itself. A person route, like the job read it extends —
+// activity, which the board records itself. A person route, like the job read it extends —
 // the org boundary is twice: `store.get` reads the job in the caller's org, and `fetchTaskFacts`
 // resolves the task only through `job_execution.org_id` rows of that org. TELEMETRY_SOURCE=off is not
 // a refusal: gates and PRs answer, and the token figures say `unavailable`.

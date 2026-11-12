@@ -29,7 +29,7 @@ export const ARTIFACT_CAUSE = {
     streamCap: 'stream_cap',
     orgQuota: 'org_quota',
 } as const;
-/** The stream the driver's finalize stage uploads the task's git state and session on (#775). */
+/** The stream the driver's finalize stage uploads the task's git state and session on. */
 export const CHECKPOINT_STREAM = 'checkpoint';
 /** A checkpoint manifest's cause when the producer hit its cap and uploaded the header only. */
 export const CHECKPOINT_CAP_CAUSE = 'checkpoint_cap';

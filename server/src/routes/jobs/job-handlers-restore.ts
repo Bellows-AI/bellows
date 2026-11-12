@@ -19,7 +19,7 @@ import { resolveLeasedRoute } from '../route-guards.js';
 import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 
 /**
- * The restore reads (issue #775): what a driver preparing a restored task volume reads of ITS OWN
+ * The restore reads: what a driver preparing a restored task volume reads of ITS OWN
  * thread — the root's checkpoint stream and the raw Claude transcripts of every row. Each is a POST
  * authorized by the job's live lease (`leaseToken` in the body, like `review-read`): a lost or
  * foreign lease, or a job the org does not hold, reads nothing. Reads are chunk-wise — a listing

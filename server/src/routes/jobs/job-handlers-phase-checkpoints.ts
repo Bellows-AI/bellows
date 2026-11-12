@@ -20,7 +20,7 @@ const runClaimSeqOf = (value: unknown): number | null =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : null;
 
 /**
- * Records a post-run phase's outcome under the attempt's lease (issue #829): the driver that adopts
+ * Records a post-run phase's outcome under the attempt's lease: the driver that adopts
  * or takes the run over resumes after the last phase checkpointed here. `lost` and `conflict` are
  * both a 409 the writer treats as "not recorded".
  */
@@ -83,7 +83,7 @@ export async function handlePhaseCheckpoints(orgs: OrgRegistry, request: Fastify
     return reply.code(HTTP_OK).send({ checkpoints: read.value.checkpoints });
 }
 
-/** The two worker routes (080, issue #829), under the attempt's lease. */
+/** The two worker routes (080), under the attempt's lease. */
 export function phaseCheckpointRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     app.post('/api/jobs/:id/phase-checkpoint', { bodyLimit: CONCLUSION_BODY_LIMIT }, (request, reply) =>
         handlePhaseCheckpoint(orgs, request, reply)

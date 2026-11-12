@@ -42,7 +42,7 @@
  * edit away the requirement it must meet.
  *
  * A top-level `reviewers:` block declares named reviewer profiles an agent may invoke as a separate
- * run (issue #549): `- name:`, `instructions:`, and optionally `timeout:` (minutes) and
+ * run: `- name:`, `instructions:`, and optionally `timeout:` (minutes) and
  * `connections:` (a comma list of the env names the reviewer may receive — nothing else of the
  * member's env reaches it). Like `policy:`, it is read at the base branch tip, never from the task worktree.
  *

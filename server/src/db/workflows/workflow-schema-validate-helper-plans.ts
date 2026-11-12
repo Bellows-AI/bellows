@@ -8,7 +8,7 @@ import {
 } from './workflow-schema.js';
 
 /**
- * A node's `helperPlans` validation (issue #122/#207), split out of `workflow-schema-validate.ts`
+ * A node's `helperPlans` validation, split out of `workflow-schema-validate.ts`
  * purely to keep that file under the repo's line-count ceiling — no behavior change, same rules,
  * same refusal codes. `resolveHelperPlans` is the one export `parseAgentNode` calls.
  */

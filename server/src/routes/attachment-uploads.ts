@@ -9,7 +9,7 @@ import { bad } from './helpers.js';
 import { IDEMPOTENCY_REPLAYED_HEADER } from './jobs/job-idempotency.js';
 
 /**
- * Upload capabilities (BEL-248): a client that cannot send file bytes through MCP asks for a single-use, short-lived
+ * Upload capabilities: a client that cannot send file bytes through MCP asks for a single-use, short-lived
  * URL, then PUTs the file there. The PUT is an OPEN route: the capability in its path is the credential, so the route
  * resolves it itself and acts as the account that minted it. The bytes then take the same path as `POST
  * /api/attachments` (`attachment-ingest.ts`), and the file is spent exactly once by the store's own idempotency key

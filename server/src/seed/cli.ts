@@ -41,7 +41,7 @@ const DISPOSABLE = /_(seed|synthetic|demo|e2e|test)$/;
 
 const MS_PER_DAY = 86_400_000;
 const MS_PER_MINUTE = 60_000;
-/** The timed-out thread's per-bucket series shape (issue #339), steady with a deterministic wobble. */
+/** The timed-out thread's per-bucket series shape, steady with a deterministic wobble. */
 const TIMED_OUT_TOKENS_WOBBLE_STEP = 150_000;
 const TIMED_OUT_TOKENS_WOBBLE_MODULUS = 3;
 const TIMED_OUT_OUTPUT_BASE = 380_000;
@@ -102,7 +102,7 @@ const sql = postgres(config.databaseUrl, { max: 4 });
 try {
     // Seeding is an AUTH_MODE=none affair: one local organization, no GitHub anything. The
     // browser check's github-mode board signs in against the stub IdP and materializes its own
-    // installation org, so nothing to plant here for it either (#99) — unless SEED_ORGS names
+    // installation org, so nothing to plant here for it either — unless SEED_ORGS names
     // those orgs: the auth-project server then needs one stored session_branch row per stub
     // org so the stored fallback (stored-repos.ts, org-scoped) offers the seeded repository to
     // the signed-in member. Only the branch side channel is planted — no metric points and no
@@ -154,7 +154,7 @@ try {
         await sql`insert into metric_point ${sql(rows)} on conflict do nothing`;
     }
 
-    // The timed-out thread's series (issue #339): one delta row per 15-minute bucket across its
+    // The timed-out thread's series: one delta row per 15-minute bucket across its
     // wall clock, steady in every bucket — the per-bucket shape the run-activity chart reads,
     // and the "was still working" answer the timeout badge sits beside.
     for (const s of data.sessions.filter((candidate) => candidate.bucketed)) {

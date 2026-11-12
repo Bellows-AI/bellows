@@ -10,7 +10,7 @@ import { validateTitleField } from './job-field-validation.js';
 import { CONTROL_BODY_LIMIT, HTTP_CONFLICT, HTTP_FORBIDDEN, HTTP_OK, notFoundJob } from './job-limits.js';
 
 /**
- * The user's rename of a task (BEL-252; `PUT /api/jobs/:id/title`): compare-and-set on the revision the
+ * The user's rename of a task (`PUT /api/jobs/:id/title`): compare-and-set on the revision the
  * client rendered. The author or an org admin may rename; a stale revision answers the current title so the
  * dialog can show it.
  */

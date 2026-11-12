@@ -54,11 +54,11 @@ import type { OrgRegistry } from '../../orgs.js';
 export interface JobRouteDeps {
     /** The per-org runtimes; the store a request touches is the CALLER's org's. */
     orgs: OrgRegistry;
-    /** Counts each claim poll by outcome (issue #831); absent in the route tests. */
+    /** Counts each claim poll by outcome; absent in the route tests. */
     claimPoll?: (outcome: ClaimPollOutcome) => void;
 }
 
-/** The worktree-reclaim queue's routes: the driver's claim, ack and renew, and the reaper's holds lookup (issue #829). */
+/** The worktree-reclaim queue's routes: the driver's claim, ack and renew, and the reaper's holds lookup. */
 function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     const firstReclaimClaim = boardScan();
     app.post('/api/reclaims/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
@@ -91,7 +91,7 @@ export const jobRoutes =
         app.post('/api/jobs/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleClaimJob({ orgs, firstJobClaim, ...(claimPoll ? { claimPoll } : {}) }, request, reply)
         );
-        // The orphan reaper's batched lease lookup (issue #301). Static segment, registered
+        // The orphan reaper's batched lease lookup. Static segment, registered
         // beside /claim — it wins over /api/jobs/:id the same way the claim route already does.
         app.post('/api/jobs/leases', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleLeases(orgs, request, reply)
@@ -129,7 +129,7 @@ export const jobRoutes =
         app.post('/api/jobs/:id/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRetry(orgs, request, reply)
         );
-        // The edit of a queued task's command (issue #329): person-gated like the follow-up it
+        // The edit of a queued task's command: person-gated like the follow-up it
         // sits beside, no lease token — a queued task is nobody's. The command can be 16 KiB,
         // so the create body limit.
         app.patch('/api/jobs/:id', { bodyLimit: BODY_LIMIT }, (request, reply) => handleEditJob(orgs, request, reply));
@@ -142,12 +142,12 @@ export const jobRoutes =
         app.post('/api/jobs/:id/remove', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRemove(orgs, request, reply)
         );
-        // Done's inverse (issue #327): the mistake undone, while the worktree it would resume in
+        // Done's inverse: the mistake undone, while the worktree it would resume in
         // still exists. Person-gated like done, beside which it is registered.
         app.post('/api/jobs/:id/reopen', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReopen(orgs, request, reply)
         );
-        // Both control a thread parked on a durable PR wait (issue #328) — person's actions on a
+        // Both control a thread parked on a durable PR wait — person's actions on a
         // wait no worker holds a lease on, so no token and the actor off the session, exactly as
         // stop/done/remove take them. The store author-scopes both and answers the no-open-wait
         // conflict the issue mandates.
@@ -167,7 +167,7 @@ export const jobRoutes =
         phaseCheckpointRoutes(app, orgs);
         gateRunRoutes(app, orgs);
         prOperationRoutes(app, orgs);
-        // The agent's questions (050, issue #531): the driver's reports are worker
+        // The agent's questions (050): the driver's reports are worker
         // routes; the answer is a person's, and no organization token reaches it.
         app.post('/api/jobs/:id/question', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>
             handleQuestion(orgs, request, reply)
@@ -175,7 +175,7 @@ export const jobRoutes =
         app.post('/api/jobs/:id/questions/:questionId/answer', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>
             handleAnswer(orgs, request, reply)
         );
-        // A named reviewer's separate run (056, issue #549): the driver's request and its read of
+        // A named reviewer's separate run (056): the driver's request and its read of
         // the verdict, both worker routes — the agent reaches them only through the control endpoint.
         app.post('/api/jobs/:id/review', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReviewRequest(orgs, request, reply)
@@ -183,7 +183,7 @@ export const jobRoutes =
         app.post('/api/jobs/:id/review-read', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReviewRead(orgs, request, reply)
         );
-        // The restore reads (issue #775), under the live lease: the thread's checkpoint and raw transcripts.
+        // The restore reads, under the live lease: the thread's checkpoint and raw transcripts.
         registerRestoreRoutes(app, orgs);
         // Artifact uploads (070), authorized by claim sequence rather than the lease. A child scope,
         // so the raw-bytes parser reaches only the chunk route.
@@ -201,7 +201,7 @@ export const jobRoutes =
         app.get('/api/jobs/:id', (request, reply) => handleGetJob(orgs, request, reply));
         app.get('/api/jobs/:id/thread', (request, reply) => handleThread(orgs, request, reply));
         app.get('/api/jobs/:id/activity', (request, reply) => handleJobActivity(orgs, request, reply));
-        // The analysis reads over the artifact index (#768): person routes, no worker or lease.
+        // The analysis reads over the artifact index: person routes, no worker or lease.
         app.get('/api/jobs/:id/artifacts', (request, reply) => handleListArtifacts(orgs, request, reply));
         app.get('/api/jobs/:id/artifacts/read', (request, reply) => handleReadArtifacts(orgs, request, reply));
         app.get('/api/jobs', (request, reply) => handleListJobs(orgs, request, reply));

@@ -49,7 +49,7 @@ export interface AuthRouteDeps {
     store: AuthStore;
     /**
      * The per-org runtimes, for one job: invalidating an org's cached repo source when its
-     * tracked-repo allowlist is rewritten (#125), so a reselect is served on the next read
+     * tracked-repo allowlist is rewritten, so a reselect is served on the next read
      * instead of when the ten-minute TTL happens to run out.
      */
     orgs?: OrgRegistry | undefined;
@@ -62,7 +62,7 @@ export interface AuthRouteDeps {
      */
     appSlug?: (() => Promise<string>) | undefined;
     /**
-     * Repos one installation can see, for the onboarding screen (#125). Absent means the screen
+     * Repos one installation can see, for the onboarding screen. Absent means the screen
      * reports repo tracking as unavailable — the offline shape, where there is no App client to
      * ask. Built from the config when not injected: one transient per-installation client per
      * call, exactly the shape the org registry builds for a materialized org — the difference is
@@ -170,7 +170,7 @@ async function resolveCallbackCaller(
     }
     const reported = installations.map((install) => ({ id: install.id, name: install.account ?? install.id }));
     // The account's stored choice, intersected with what GitHub still reports — the membership
-    // rows ARE the stored selection (#125), and the sweep has already kept it honest. Anything
+    // rows ARE the stored selection, and the sweep has already kept it honest. Anything
     // GitHub stopped reporting drops out here.
     const stored = await ctx.store.storedSelection(who.githubUserId);
     const remembered = stored.filter((id) => reported.some((install) => install.id === id));
@@ -338,7 +338,7 @@ export const authRoutes =
         const { auth } = config;
         const resolveUser = createUserResolver({ config, store });
 
-        // The onboarding screen's repo read (#125). Not injected means built from the config —
+        // The onboarding screen's repo read. Not injected means built from the config —
         // the App arm — or absent, which the screen renders as "repo tracking unavailable".
         const appGithub = config.github;
         const defaultListing =
@@ -426,7 +426,7 @@ export const authRoutes =
             // validates it against the installations GitHub reports, and falls back to the first.
             const org = query.org && INSTALLATION_ID.test(query.org) ? query.org : undefined;
             // `reselect=1` asks to re-open the selection screen even though the account already
-            // has a stored choice (#125) — the only surface for changing it, because the GitHub
+            // has a stored choice — the only surface for changing it, because the GitHub
             // user token that enumerated the installations is discarded at sign-in and cannot be
             // re-asked outside an OAuth round trip.
             const state = encodeState(returnTo, secret, org, query.reselect === '1');
@@ -452,7 +452,7 @@ export const authRoutes =
         });
 
         /*
-         * The GitHub App setup URL lands here (#99).
+         * The GitHub App setup URL lands here.
          *
          * The operator points the App's Setup URL at `<publicUrl>/api/auth/github/setup`; GitHub
          * redirects to it after the install page. `setup_action=install` with an installation id

@@ -1,7 +1,7 @@
 /**
  * The board-owned block registry and the compiler that expands `kind: "block"` references into
- * the ordinary low-level `agent`-node graph `workflow-engine.ts` and `routes/jobs/jobs.ts` already run
- * (issue #204). `workflow-store.ts`'s `create()` is the one caller: a workflow is compiled once,
+ * the ordinary low-level `agent`-node graph `workflow-engine.ts` and `routes/jobs/jobs.ts` already run.
+ * `workflow-store.ts`'s `create()` is the one caller: a workflow is compiled once,
  * at creation, and the STORED `workflow.definition` is the expanded graph — never a live block
  * reference — so every existing consumer of a stored definition (the engine's transitions, a
  * job's frozen snapshot) keeps working unchanged and can never see a node with no `.prompt`.

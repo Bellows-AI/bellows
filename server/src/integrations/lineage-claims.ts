@@ -4,7 +4,7 @@ import type { ClaimRefusal, ClaimResult, LineageClaim, LineageCtx } from './line
 
 /**
  * The claim statements. Each is ONE update (or read) on the grant row with no other lock and no transaction held
- * after it returns, which is what keeps the BEL-59 lock order intact: nothing here is ever held while waiting.
+ * after it returns, which is what keeps the lock order intact: nothing here is ever held while waiting.
  */
 
 interface ClaimRow {

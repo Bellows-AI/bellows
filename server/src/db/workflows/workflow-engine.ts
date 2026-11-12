@@ -60,7 +60,7 @@ export interface CompletedRun {
  *                       its target, dead rows included.
  * - `command_too_large` the interpolated prompt exceeded the command cap even with bounded tails.
  * - `no_publication`     the transition would enter a block's own helper-driven node from outside
- *                       its scope with no recorded publication to hand the helper (issue #209) —
+ *                       its scope with no recorded publication to hand the helper —
  *                       never a runnable claim with a null publication, which the helper itself
  *                       cannot act on (`job-store-worker.ts`'s `runWorkflowTransition`).
  * - `blocked`           the agent reported it cannot proceed for a reason outside the repository

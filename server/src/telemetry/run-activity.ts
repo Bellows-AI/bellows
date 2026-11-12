@@ -1,5 +1,5 @@
 /**
- * The per-run activity read (issues #339, #847): one run's assigned token contributions bucketed over
+ * The per-run activity read: one run's assigned token contributions bucketed over
  * the run's segment span into figures a small chart can draw, beside the run's usage block and the
  * canonical task it belongs to. A flat line means stuck; a steady bar means working.
  *
