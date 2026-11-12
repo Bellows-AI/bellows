@@ -126,57 +126,37 @@ PODS_FILE="${TIMINGS_FILE%.tsv}.pods.tsv"
 DRIVER_LOG="${TIMINGS_FILE%.tsv}.driver-smoke.log"
 RUNNER_LOG="${TIMINGS_FILE%.tsv}.runner-smoke.log"
 printf 'phase\tseconds\tresult\tcheck\n' >"$CHECKS_FILE" || exit 1
-phase_name=''
-phase_started=$SECONDS
-check_started=$SECONDS
-lane_started=$SECONDS
-end_phase() {
-    [ -n "$phase_name" ] || return 0
-    local elapsed=$((SECONDS - phase_started))
-    printf '[timing] %s: %ss\n' "$phase_name" "$elapsed"
-    printf '%s\t%s\n' "$phase_name" "$elapsed" >>"$TIMINGS_FILE"
-    phase_name=''
-}
-begin_phase() {
-    end_phase
-    phase_name="$1"
-    phase_started=$SECONDS
-    check_started=$SECONDS
-}
-check_timing() { # check_timing <ok|FAIL> <name>
-    printf '%s\t%s\t%s\t%s\n' "$phase_name" "$((SECONDS - check_started))" "$1" "$2" >>"$CHECKS_FILE"
-    check_started=$SECONDS
-}
+. "$REPO/scripts/lane-lib.sh"
 
 save_logs() { # save_logs <label selector> <file> — every container's whole log; bounded, never fatal
     kubectl logs -l "$1" -n "$NAMESPACE" --all-containers --timestamps --prefix --tail=-1 \
         --max-log-requests=50 --request-timeout=20s >"$2" 2>&1 || true
 }
 
-ok() {
-    printf 'ok   %s\n' "$1"
-    pass=$((pass + 1))
-    check_timing ok "$1"
+lane_collect_evidence() { # lane_collect_evidence <dir> — the first FAIL's bundle: pods, events, every container's log, the job rows
+    local dir="$1"
+    kubectl get pods,events -n "$NAMESPACE" -o wide --request-timeout=20s >"$dir/kubectl-get.txt" 2>&1
+    kubectl describe pods -n "$NAMESPACE" --request-timeout=20s >"$dir/kubectl-describe.txt" 2>&1
+    save_logs "app.kubernetes.io/instance=$RELEASE" "$dir/release.log"
+    # Every job row of the lane's database, as the board saw it when the check failed.
+    bounded 20 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' \
+        psql -qtA postgres://factory:factory@127.0.0.1:5432/factory_dev \
+        -c 'select to_jsonb(j) from job j order by created_at' </dev/null >"$dir/job-rows.jsonl" 2>&1
 }
 
-bad() {
-    printf 'FAIL %s\n     %s\n' "$1" "${2:0:400}"
-    fail=$((fail + 1))
-    check_timing FAIL "$1"
-}
-
-expect_contains() { # expect_contains <name> <haystack> <needle>
-    case "$2" in
-    *"$3"*) ok "$1" ;;
-    *) bad "$1" "wanted substring '$3' in: ${2:0:200}" ;;
-    esac
-}
-
-expect_not_contains() { # expect_not_contains <name> <haystack> <needle>
-    case "$2" in
-    *"$3"*) bad "$1" "did not want '$3' in: ${2:0:200}" ;;
-    *) ok "$1" ;;
-    esac
+bounded() { # bounded <seconds> <command...> -> the command's status; killed, status 143, past the deadline (kubectl exec's request timeout does not bound a running stream)
+    local secs="$1" pid watcher rc
+    shift
+    "$@" <&0 &
+    pid=$!
+    { sleep "$secs"; kill "$pid" 2>/dev/null; } >/dev/null 2>&1 &
+    watcher=$!
+    wait "$pid"
+    rc=$?
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    return "$rc"
 }
 
 cleanup() {
@@ -1963,20 +1943,6 @@ fetch(process.argv[2], { method: process.argv[1], headers, body: process.argv[3]
     .catch(() => process.stdout.write("000"));
 ' "$@"
 }
-bounded() { # bounded <seconds> <command...> -> the command's status; killed, status 143, past the deadline (kubectl exec's request timeout does not bound a running stream)
-    local secs="$1" pid watcher rc
-    shift
-    "$@" <&0 &
-    pid=$!
-    { sleep "$secs"; kill "$pid" 2>/dev/null; } >/dev/null 2>&1 &
-    watcher=$!
-    wait "$pid"
-    rc=$?
-    kill "$watcher" 2>/dev/null
-    wait "$watcher" 2>/dev/null
-    return "$rc"
-}
-
 give_up() {
     kill "$pf_pid" 2>/dev/null
     # What the lane was standing on when it stopped: the port-forward and this release's pods.
@@ -4572,8 +4538,7 @@ begin_phase acceptance
 echo
 echo '# acceptance: the failure matrix'
 
-# The shared helpers, and the board credential the artifact read sends (scripts/acceptance-lib.sh).
-. "$REPO/scripts/acceptance-lib.sh"
+# The shared helpers, and the board credential the artifact read sends (scripts/lane-lib.sh).
 export ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}"
 ACC_N=5
 ACC_REL="/task/.lane-acc"

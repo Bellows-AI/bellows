@@ -436,8 +436,9 @@ describe('kind lane timing evidence', () => {
     it('records every check with the seconds since the one before it', () => {
         // Regexes, not literals: the shell expansion reads as a template placeholder to noTemplateCurlyInString.
         expect(script).toMatch(/CHECKS_FILE="\$\{TIMINGS_FILE%\.tsv}\.checks\.tsv"/);
+        const lib = readRepoFile('scripts/lane-lib.sh');
         for (const helper of ['ok() {', 'bad() {']) {
-            const body = script.slice(script.indexOf(helper), script.indexOf('\n}\n', script.indexOf(helper)));
+            const body = lib.slice(lib.indexOf(helper), lib.indexOf('\n}\n', lib.indexOf(helper)));
             expect(body).toContain('check_timing');
         }
     });

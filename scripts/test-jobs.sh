@@ -311,27 +311,7 @@ mkdir -p "$(dirname "$TIMINGS_FILE")" || exit 1
 printf 'phase\tseconds\n' >"$TIMINGS_FILE" || exit 1
 printf 'phase\tseconds\tresult\tcheck\n' >"$CHECKS_FILE" || exit 1
 printf 'phase\tcase\tstep\tseconds\texit\n' >"$LIFECYCLE_FILE" || exit 1
-lane_started=$SECONDS
-phase_name=''
-phase_started=$SECONDS
-check_started=$SECONDS
-end_phase() {
-    [ -n "$phase_name" ] || return 0
-    local elapsed=$((SECONDS - phase_started))
-    printf '[timing] %s: %ss\n' "$phase_name" "$elapsed"
-    printf '%s\t%s\n' "$phase_name" "$elapsed" >>"$TIMINGS_FILE"
-    phase_name=''
-}
-begin_phase() {
-    end_phase
-    phase_name="$1"
-    phase_started=$SECONDS
-    check_started=$SECONDS
-}
-check_timing() {
-    printf '%s\t%s\t%s\t%s\n' "$phase_name" "$((SECONDS - check_started))" "$1" "$2" >>"$CHECKS_FILE"
-    check_started=$SECONDS
-}
+. "$REPO/scripts/lane-lib.sh"
 lane_timed() { # lane_timed <case> <step> <command...> — preserve the command's stdout and status
     local case_name="$1" step="$2" started=$SECONDS result
     shift 2
@@ -341,18 +321,6 @@ lane_timed() { # lane_timed <case> <step> <command...> — preserve the command'
     return "$result"
 }
 work="$(mktemp -d)" || exit 1
-
-ok() {
-    check_timing ok "$1"
-    printf 'ok   %s\n' "$1"
-    pass=$((pass + 1))
-}
-
-bad() {
-    check_timing FAIL "$1"
-    printf 'FAIL %s\n     %s\n' "$1" "${2:0:400}"
-    fail=$((fail + 1))
-}
 
 watch_stalls() { # background: dump each job container alive past LANE_STALL_S once, into $work/stalls (--watch-stalls)
     local limit="${LANE_STALL_S:-120}" c started age
@@ -394,6 +362,7 @@ cleanup() {
     [ -n "$compose_pid" ] && kill "$compose_pid" 2>/dev/null
     [ -n "$mint_pid" ] && kill "$mint_pid" 2>/dev/null
     [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null
+    lane_api_stop # before the wait below: it would wait on the helper
     wait 2>/dev/null
     if needs_board; then
         docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
@@ -439,36 +408,15 @@ trap 'exit 143' TERM
     stall_watch_pid=$!
 }
 
-# --- HTTP, in node, so the script needs neither curl nor jq ----------------------------------
+# --- HTTP, in node, so the script needs neither curl nor jq: api and field live in scripts/lane-lib.sh ---
+
+lane_api_start || exit 1
 
 # BASE and AUTH_HEADER are read from the environment, so a single call can be aimed at the
 # authenticated board or carry a worker token without every existing call site growing two
 # arguments it does not use.
-api() { # api METHOD PATH [json] -> "<status>\t<body>"
-    node -e '
-const [base, method, path, body, auth] = process.argv.slice(1);
-fetch(base + path, {
-    method,
-    // A board that never answers is a refusal like any other, not a lane that hangs.
-    signal: AbortSignal.timeout(10000),
-    headers: {
-        ...(body ? { "content-type": "application/json" } : {}),
-        ...(auth ? { authorization: auth } : {}),
-    },
-    body: body || undefined,
-})
-    .then(async (r) => process.stdout.write(r.status + "\t" + (await r.text()).replace(/\s+/g, " ")))
-    .catch((e) => process.stdout.write("000\t" + e.message));
-' "$BASE" "$1" "$2" "${3:-}" "${AUTH_HEADER:-}"
-}
-
 status() { printf '%s' "${1%%$'\t'*}"; }
 body() { printf '%s' "${1#*$'\t'}"; }
-
-field() { # field <json> <key>
-    node -e 'try { const o = JSON.parse(process.argv[1] || "{}"); process.stdout.write(String(o[process.argv[2]] ?? "")); } catch { process.stdout.write(""); }' \
-        "$1" "$2"
-}
 
 expect_status() { # expect_status <name> <want> <method> <path> [json]
     local name="$1" want="$2"
@@ -489,13 +437,6 @@ expect_field() { # expect_field <name> <json> <key> <want>
     local got
     got="$(field "$2" "$3")"
     if [ "$got" = "$4" ]; then ok "$1"; else bad "$1" "$3 wanted '$4', got '$got'"; fi
-}
-
-expect_contains() { # expect_contains <name> <haystack> <needle>
-    case "$2" in
-    *"$3"*) ok "$1" ;;
-    *) bad "$1" "wanted substring '$3' in: $2" ;;
-    esac
 }
 
 create_job() { # create_job <command> [executor] [scope] -> id, recorded in $work/created-jobs for teardown
@@ -523,6 +464,25 @@ dump_container() { # dump_container <container> — its state, process tree and 
     echo "== $(timeout 10 docker inspect --format '{{.Name}} {{json .State}}' "$1" 2>&1)"
     timeout 10 docker top "$1" -o pid,ppid,stat,etime,args 2>&1
     timeout 10 docker logs --tail 40 "$1" 2>&1
+}
+
+lane_collect_evidence() { # lane_collect_evidence <dir> — the first FAIL's bundle: board and driver logs, this run's containers, the job rows
+    local dir="$1" job c
+    cp "$work"/*.log "$dir/" 2>/dev/null
+    for job in $(cat "$work/created-jobs" 2>/dev/null); do
+        {
+            echo "== job $job"
+            timeout 10 docker ps -a --filter "label=factory.job=$job" \
+                --format '{{.Names}} {{.Status}} {{.Label "factory.role"}} {{.Label "factory.claim-seq"}}' 2>&1
+            for c in $(timeout 10 docker ps -aq --filter "label=factory.job=$job" 2>/dev/null); do
+                timeout 10 docker inspect "$c" 2>&1
+                dump_container "$c"
+            done
+        } >>"$dir/containers.txt" 2>&1
+    done
+    # The disposable database of this run: every job row, as the board saw it when the check failed.
+    compose exec -T -e PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' postgres psql -U factory -d "$DB" -qtA \
+        -c 'select to_jsonb(j) from job j order by created_at' >"$dir/job-rows.jsonl" 2>&1
 }
 
 dump_stall() { # dump_stall <job-id> — what a job that never settled was still running, for the log
@@ -2908,7 +2868,6 @@ begin_phase acceptance
 echo
 echo '# acceptance: the failure matrix'
 
-. "$REPO/scripts/acceptance-lib.sh"
 ACC_N=5
 ACC_REL="/task/.lane-acc"
 export ACC_AUTH="${AUTH_HEADER:-}"
@@ -2928,7 +2887,7 @@ acc_job() { # acc_job <command> -> the new job's id (create_job records it for t
 }
 
 acc_post() { # acc_post <path> [json] -> the new job's id, empty unless the board answered 201 with one; why in $work/acc-post.refusal
-    # acceptance-lib.sh does the POST and the shape check: an id that is not a string is a refusal.
+    # lane-lib.sh does the POST and the shape check: an id that is not a string is a refusal.
     acc_post_id "$BASE" "$1" "${2-}" | tee -a "$work/created-jobs"
 }
 

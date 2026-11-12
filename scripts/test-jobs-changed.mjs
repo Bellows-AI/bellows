@@ -51,7 +51,7 @@ const RECOVERY = ['node-disruption', 'driver-kill'];
 // [pattern, phases | FULL | NONE, reason]. First match wins, so a specific file precedes its directory.
 export const RULES = [
     // --- the shared fixture: every board phase builds on it -------------------------------------
-    [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
+    [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-lib\.sh|lane-api\.mjs|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
     [/^scripts\/secrets-init\.mjs$/, NONE, 'writes secrets.env for a development checkout; pinned by server/test/secrets.environment.test.ts'],
     [/^scripts\/test-jobs-groups\.mjs$/, NONE, '--parallel scheduling only; pinned by server/test/test-jobs.groups.test.ts'],
     [/^driver\/src\/scripts\/(supervisor\.cjs|task-init\.sh|task-checkout\.cjs|git-probe\.cjs|git-harden\.cjs)$/, FULL, 'runs inside every task'],
