@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { SCRIPT_IDENTITY, git, hasGit, importEmptyCommits, makeOriginClone } from './fixtures/git-worktree-support.js';
 
 /*
- * The PR summary script (issues #82, #389): the publish flow opens the pull request with what
+ * The PR summary script: the publish flow opens the pull request with what
  * the BRANCH accomplished, not what the command asked and not whatever commit happened to start
  * the branch. Same offline discipline as the probe — a `file://` bare remote, real commits, the
  * script file itself executed — because the title selection (surviving-weight scoring over the
@@ -127,7 +127,7 @@ describe.skipIf(!hasGit())('the PR summary script', () => {
         // The publish commits the uncommitted leftovers itself, with the command's first line
         // as the subject — arriving here as BACKSTOP_TITLE. Being last, its churn survives
         // wholesale, so without the exclusion it would out-score every real commit and the PR
-        // would be titled with the prompt (issue #389).
+        // would be titled with the prompt.
         onBranch(() => {
             commit('fence.ts', lines(5), 'Fix the fence');
             commit('leftovers.txt', lines(100), 'both OK (#10)');

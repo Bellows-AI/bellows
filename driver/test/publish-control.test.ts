@@ -182,9 +182,9 @@ describe('the publish relay: what an attempt may publish', () => {
             job?: Partial<BoardJob>;
             publishGit?: LoopRuntime['runner']['publishGit'];
             token?: string | null;
-            /** Tokens shifted per ask, then `token` (BEL-253). */
+            /** Tokens shifted per ask, then `token`. */
             tokens?: (string | null)[];
-            /** Results shifted per publish, then LANDED (BEL-253). */
+            /** Results shifted per publish, then LANDED. */
             publishes?: PublishResult[];
         } = {},
         onAsk: () => void = () => {}
@@ -344,7 +344,7 @@ describe('the publish relay: what an attempt may publish', () => {
     });
 });
 
-describe('a revision-bound publish across retries (BEL-253)', () => {
+describe('a revision-bound publish across retries', () => {
     const REVISION = 'head-1:tree-1';
     const rejected = publishFailed(
         "git push: remote: Invalid username or token.\nfatal: Authentication failed for 'x'",
@@ -415,7 +415,7 @@ describe('a revision-bound publish across retries (BEL-253)', () => {
     });
 });
 
-describe('the control server: POST /gate/run (BEL-88)', () => {
+describe('the control server: POST /gate/run', () => {
     const KEY = 'root/repo';
     const gates: GateClaim['gates'] = [
         { name: 'verify', command: 'npm test', filter: true },

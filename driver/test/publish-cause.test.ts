@@ -76,7 +76,7 @@ describe('the publish failure cause (#581)', () => {
     });
 });
 
-describe('the publish retry predicate (BEL-253)', () => {
+describe('the publish retry predicate', () => {
     const failedOf = (reason: string) => publishFailed(reason, publishCauseOf(reason));
 
     it.each([

@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
- * The pr-land skill's helper (issue #729), run under /bin/sh (dash on CI, as in the runner images)
+ * The pr-land skill's helper, run under /bin/sh (dash on CI, as in the runner images)
  * against a stub `gh` on PATH. The stub answers from canned JSON and applies the script's own
  * `--jq` filter with a real jq, so the filters are exercised, not echoed back.
  */

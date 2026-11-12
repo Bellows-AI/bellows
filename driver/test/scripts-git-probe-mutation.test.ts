@@ -6,7 +6,7 @@ import { gitProbeScript } from '../src/publish/publish.js';
 import { git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The mutation guard of the gate-run record (issue #983): the probe's `MUTATED_SINCE_MS` mode answers
+ * The mutation guard of the gate-run record: the probe's `MUTATED_SINCE_MS` mode answers
  * whether any file or directory of the tree a publish would ship was touched at or after a moment —
  * which a fingerprint cannot say about a file changed and put back. The same script both executors run.
  */

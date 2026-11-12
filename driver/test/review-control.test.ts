@@ -8,7 +8,7 @@ import type { LoopRuntime } from '../src/loop/loop-types.js';
 import type { ReviewRelay, ReviewVerdict } from '../src/review/review-control.js';
 import type { SnapshotResult } from '../src/review/review-snapshot.js';
 
-/** The named-reviewer routes on the control endpoint, and the relay behind them (issue #549). */
+/** The named-reviewer routes on the control endpoint, and the relay behind them. */
 
 const OK_STATUS = 200;
 const CREATED_STATUS = 201;

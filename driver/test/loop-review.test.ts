@@ -14,8 +14,8 @@ import type { LoopRuntime } from '../src/loop/loop-types.js';
 import { config, job, ok, sleep, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
 
 /**
- * What a run's control channel carries (issue #549): the question, publish and reviewer relays, and
- * how the driver supervises a review the board leased in-band (issue #774).
+ * What a run's control channel carries: the question, publish and reviewer relays, and
+ * how the driver supervises a review the board leased in-band.
  */
 
 const JOB = {

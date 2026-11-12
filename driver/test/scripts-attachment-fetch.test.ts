@@ -203,7 +203,7 @@ describe('the attachment fetch script', () => {
         expect(names()).toEqual([`${ID_A}.txt`, 'manifest.json']);
     });
 
-    // Uid isolation (#814): the agent's tool uid and the reviewer uid read what the step's uid wrote and never change it.
+    // Uid isolation: the agent's tool uid and the reviewer uid read what the step's uid wrote and never change it.
     it('leaves the files 0444 and the directory 0555, after a first delivery and after a redelivery', async () => {
         const url = await serve();
         const first = fileOf(ID_A, 'a.txt', Buffer.from('a'));

@@ -7,7 +7,7 @@ import type { LoopRuntime } from '../src/loop/loop-types.js';
 import { config, drive, job, ok, sleep, stubBoard, stubRunner } from './fixtures/loop-stubs.js';
 
 /**
- * The attempt's one phase and one first-wins ending (issue #828): the setters' contract, the
+ * The attempt's one phase and one first-wins ending: the setters' contract, the
  * structured line each change writes, and the heartbeat reading the phase, not the ending.
  */
 
