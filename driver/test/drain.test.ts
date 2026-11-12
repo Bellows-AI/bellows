@@ -176,9 +176,42 @@ describe('the driver drain on SIGTERM', () => {
         await vi.advanceTimersByTimeAsync(10);
         await completeAsked;
         drain.onSignal();
-        await vi.advanceTimersByTimeAsync(4_000);
+        // Past the claim loop's poll sleep, so start() is waiting on the drain itself.
+        await vi.advanceTimersByTimeAsync(6_000);
         expect(startReturned).toBe(false);
         answerComplete();
+        await vi.advanceTimersByTimeAsync(10_000);
+        await started;
+        expect(startReturned).toBe(true);
+    });
+
+    it('holds start() for a bounded time under the teardown of an attempt that ended before SIGTERM', async () => {
+        const claimed = job(1);
+        const board = stubBoard([claimed]);
+        let tearing = false;
+        let finishTeardown: () => void = () => {};
+        const runner = stubRunner(async () => ok());
+        const finish = runner.finish.bind(runner);
+        runner.finish = (finished) =>
+            new Promise<void>((resolve) => {
+                tearing = true;
+                finishTeardown = () => void finish(finished).then(resolve);
+            });
+        const loop = createLoop({ board: board.board, runner, config: config(), sleep });
+        board.attach(loop);
+        let startReturned = false;
+        const started = loop.start().then(() => {
+            startReturned = true;
+        });
+        const drain = createDrain({ loop, reaper: { stop: () => {} }, handoverMs: 0, log: () => {}, exit: () => {} });
+
+        for (let i = 0; i < 20 && !tearing; i++) await vi.advanceTimersByTimeAsync(10);
+        expect(tearing).toBe(true);
+        drain.onSignal();
+        // Past the claim loop's poll sleep, so start() is waiting on the drain itself.
+        await vi.advanceTimersByTimeAsync(6_000);
+        expect(startReturned).toBe(false);
+        finishTeardown();
         await vi.advanceTimersByTimeAsync(10_000);
         await started;
         expect(startReturned).toBe(true);

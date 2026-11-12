@@ -129,7 +129,7 @@ const ENDING_SETTLE_MS = 5_000;
  * The drain's handover: the attempts in flight — registered on `rt.live`, where each
  * `runJob` reports its own — and the latch `start()` stops waiting at.
  */
-export function handoverOf(rt: LoopRuntime) {
+export function handoverOf(rt: LoopRuntime, pending: () => Promise<unknown>[] = () => []) {
     const live = new Map<string, LiveAttempt>();
     rt.live = live;
     let landed: () => void = () => {};
@@ -143,17 +143,14 @@ export function handoverOf(rt: LoopRuntime) {
          */
         async settled(): Promise<void> {
             await done;
-            // Attempts handed over, a late claim among them, are waited on to the end. One whose own
-            // ending (a verdict, a retry) began before the handover is waited on for a bounded
-            // time only: its write is the durable one, but a suspend that never answers must not
-            // hold the exit past the leases already released.
-            const entries = [...live.values()];
-            const handed = entries.filter(({ state }) => state.ending?.kind === 'handover');
-            const ending = entries.filter(({ state }) => state.ending?.kind !== 'handover');
-            await Promise.all([
-                ...handed.map(({ over }) => over),
-                Promise.race([Promise.all(ending.map(({ over }) => over)), rt.sleep(ENDING_SETTLE_MS)]),
-            ]);
+            // Attempts handed over, a late claim among them, are waited on to the end. Every other
+            // attempt still running (a verdict or a retry begun before the handover, a teardown
+            // after its end) is waited on for a bounded time only: its write is the durable one, but
+            // a call that never answers must not hold the exit past the leases already released.
+            await Promise.all(
+                [...live.values()].filter(({ state }) => state.ending?.kind === 'handover').map(({ over }) => over)
+            );
+            await Promise.race([Promise.all(pending()), rt.sleep(ENDING_SETTLE_MS)]);
         },
         async run(reason: string): Promise<void> {
             const began = Date.now();
@@ -254,7 +251,7 @@ export function createLoop({
         ...(gates ? { gates } : {}),
         ...(stopGraceMs === undefined ? {} : { stopGraceMs }),
     };
-    const handoff = handoverOf(rt);
+    const handoff = handoverOf(rt, () => [...active]);
 
     /**
      * The verdict is reported, then the task worktree is reclaimed — but only when the thread is
