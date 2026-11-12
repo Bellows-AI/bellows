@@ -133,7 +133,7 @@ export async function harness({
     /** The install-page slug, for the callback's 0-installations redirect. Absent offline. */
     appSlug?: () => Promise<string>;
     /**
-     * Repos one installation can see, for the onboarding screen's per-org checkboxes (#125).
+     * Repos one installation can see, for the onboarding screen's per-org checkboxes.
      * Absent by default, which leaves the screen reporting repo tracking as unavailable — the
      * offline shape, where there is no App client to ask.
      */

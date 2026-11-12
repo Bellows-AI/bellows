@@ -20,7 +20,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOriginPlanReader } from '../src/github/local-origin-plan.js';
 
 /*
- * The offline board's plan source (issue #799, #777): the `none` arm has no App client, so it
+ * The offline board's plan source: the `none` arm has no App client, so it
  * fetches a repository's `.bellows.yaml` from its git origin at `<base>/<owner>/<name>.git` — the
  * same shape the driver clones from — through the same validation production uses. These tests
  * stand real `file://` bare repositories in a temp dir as the origin.

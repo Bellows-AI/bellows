@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createDiscordConnector } from '../src/notifications/discord.js';
 
 /**
- * Manual check against a real test channel (BEL-132); CI never sets DISCORD_TEST_WEBHOOK_URL, so this skips.
+ * Manual check against a real test channel; CI never sets DISCORD_TEST_WEBHOOK_URL, so this skips.
  * Run: DISCORD_TEST_WEBHOOK_URL=<test channel webhook> npx vitest run server/test/notifications.discord-live.test.ts
  */
 const WEBHOOK = process.env.DISCORD_TEST_WEBHOOK_URL;

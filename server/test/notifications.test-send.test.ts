@@ -4,7 +4,7 @@ import { createConnectorRegistry } from '../src/notifications/connector.js';
 import { sendTestNotification, TEST_SEND_TIMEOUT_MS } from '../src/notifications/test-send.js';
 import { fakeConnector } from './notifications-fake-connector.js';
 
-/** BEL-177: the test send builds a made-up event of the row's first kind and sends it once, writing nothing. */
+/** the test send builds a made-up event of the row's first kind and sends it once, writing nothing. */
 const ORG = 'org-a';
 const NIL = '00000000-0000-0000-0000-000000000000';
 const PUBLIC_URL = 'https://factory.example';

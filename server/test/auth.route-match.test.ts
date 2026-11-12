@@ -18,7 +18,7 @@ import {
 import { HTTP_NOT_FOUND, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
 
 /**
- * BEL-146: the credential class follows the route the router MATCHED, not a re-parse of the URL. A
+ * the credential class follows the route the router MATCHED, not a re-parse of the URL. A
  * spelling the router maps onto a session-less handler (percent-encoding, a raw `#`, a query) must meet
  * that handler's credential, never a person's cookie.
  */

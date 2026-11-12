@@ -5,7 +5,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 /**
- * The value-import edges that keep `vitest related` narrow (issue #888): type-only imports are
+ * The value-import edges that keep `vitest related` narrow: type-only imports are
  * stripped before a test runs, so only a value import couples a file to what it imports. Each case
  * names an entry module and the directory its closure of VALUE imports must never reach; a change
  * to the unreachable side then cannot re-run the entry's importers.

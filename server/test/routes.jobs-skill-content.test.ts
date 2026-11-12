@@ -19,7 +19,7 @@ import {
 import { storeOutage } from './helpers-outage.js';
 
 /**
- * Offline: the worker's read of a pinned skill bundle (BEL-273). The lease is the credential and the row's pin is the
+ * Offline: the worker's read of a pinned skill bundle. The lease is the credential and the row's pin is the
  * access check; the job store is a stub answering that pin and the skill store a stub answering the bytes.
  */
 const track = trackApps();

@@ -404,7 +404,7 @@ describe('the task write tools', () => {
         expect(board.calls.map((c) => c.op)).toEqual(['markDone', 'markDone', 'closeTask']);
     });
 
-    it('refuses retry_task, follow_up_task and force_close_task on a batch thread with the flag off (BEL-264)', async () => {
+    it('refuses retry_task, follow_up_task and force_close_task on a batch thread with the flag off', async () => {
         const board: Board = { calls: [], created: 'batches_disabled', done: 'batches_disabled' };
         const { url } = await boot(board);
         for (const [name, args] of [

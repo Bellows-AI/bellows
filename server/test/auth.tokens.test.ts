@@ -32,7 +32,7 @@ const OAT = 'oat_';
 const track = trackApps();
 
 /** Records the author every created job carries — the audit property this whole feature guards.
- *  `waits`, when given, records the settle long-poll's holds the same way (issue #323). */
+ *  `waits`, when given, records the settle long-poll's holds the same way. */
 const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] = []): JobStore => {
     const stub: Partial<JobActionStore & JobReadStore> = {
         async create(_command, createdBy) {
@@ -82,7 +82,7 @@ describe('personal access tokens: authentication', () => {
         expect(response.statusCode).toBe(HTTP_OK);
     });
 
-    // The settle long-poll (issue #323) is the CLI client's read — the credential table applies
+    // The settle long-poll is the CLI client's read — the credential table applies
     // unchanged. A fat_ bearer walks the whole path: past the wall, through the hold (asserted on
     // the store, so a skipped hold cannot pass for a 404 the plain read would also answer), into
     // the read — the 404 is the stub's answer for an id it does not hold, never a 401.
@@ -311,7 +311,7 @@ describe('organization access tokens: allowlist and reads', () => {
             // The stub board holds no such job, so the read itself 404s — the point is the wall.
             ['GET', `/api/jobs/${JOB_ID}`, HTTP_NOT_FOUND],
             ['GET', `/api/jobs/${JOB_ID}/thread`, HTTP_OK],
-            // The run-activity read (issue #339) rides the same boundary as the thread's.
+            // The run-activity read rides the same boundary as the thread's.
             ['GET', `/api/jobs/${JOB_ID}/activity`, HTTP_NOT_FOUND],
         ];
         for (const [method, url, expected] of allowed) {

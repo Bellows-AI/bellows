@@ -23,7 +23,7 @@ import {
 } from './helpers-http.js';
 import { storeOutage } from './helpers-outage.js';
 
-/** BEL-146: the member's plan read and the commerce service's plan push, behind a credential of its own. */
+/** the member's plan read and the commerce service's plan push, behind a credential of its own. */
 const ORG = 'test-org';
 const TOKEN = 'commerce-route-token-0123456789abcdef-xyz';
 const track = trackApps();

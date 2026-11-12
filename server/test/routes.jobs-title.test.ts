@@ -6,7 +6,7 @@ import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { trackApps } from './helpers-http.js';
 import { jobStoreSlice, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
-/** the create body's optional `title` (BEL-252): normalized like a rename, origin `user`, part of the idempotency fingerprint. */
+/** the create body's optional `title`: normalized like a rename, origin `user`, part of the idempotency fingerprint. */
 const track = trackApps();
 
 interface Created {
