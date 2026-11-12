@@ -30,13 +30,11 @@ dk_supervisor() { # dk_supervisor <job id> [docker ps filter] -> the job's super
     docker ps -aq --filter "label=factory.job=$1" --filter 'label=factory.role=supervisor' ${2:+--filter "$2"}
 }
 
-dk_settled() { # dk_settled <name> <job id> <interruption> -> the checks every case shares once the job ran to its end
-    local body_json left
+dk_settled() { # dk_settled <name> <job id> -> the checks every case shares once the job ran to its end
+    # The refunded attempt and the one interruption of claim 1 are board rows, asserted on the real store in
+    # server/test-db/lane-rows.driver-kill.test.ts; here what the next claim leaves on the daemon.
+    local left
     expect_contains "$1: the next claim finishes the task" "$(await_settled "$2" "$ADOPT_S")" succeeded
-    body_json="$(body "$(api GET "/api/jobs/$2")")"
-    expect_field "$1: the killed attempt is refunded" "$body_json" attempts 1
-    [ "$(interruptions_of "$body_json")" = "1|1|$3" ] && ok "$1: one interruption records claim 1" ||
-        bad "$1: one interruption records claim 1" "count|claimSeq|reason: $(interruptions_of "$body_json")"
     left="$(dk_clean "$2")" && ok "$1: nothing of the job is left" ||
         bad "$1: nothing of the job is left" "$left"
 }
@@ -87,7 +85,7 @@ while [ -z "$k1_host2" ] && [ "$(date +%s)" -lt "$k1_until" ]; do
     [ -n "$k1_agent2" ] && k1_host2="$(runner_host "$k1_agent2")"
     [ -n "$k1_host2" ] || sleep 0.2
 done
-dk_settled k1 "$k1" "$EXPIRED"
+dk_settled k1 "$k1"
 dk_count 'k1: the agent ran once' "$LANE_DIR/$n.agent.count" 1
 k1_out="$(field "$(body "$(api GET "/api/jobs/$k1")")" output)"
 if [ -n "$k1_agent2" ] && [ -n "$k1_host2" ]; then
@@ -131,7 +129,7 @@ k2_second="$(docker ps -aq --filter "label=factory.job=$k2" --filter 'label=fact
     [ -z "$k2_second" ] && ok 'k2: no second agent is started' ||
     bad 'k2: no second agent is started' "a claim-2 agent container exists, or docker failed: $k2_second"
 lane_touch "$LANE_DIR/$n.go" || bad 'k2: the barrier is released' 'the touch failed'
-dk_settled k2 "$k2" "$EXPIRED"
+dk_settled k2 "$k2"
 expect_contains 'k2: the output names the container of claim 1' "$(field "$(body "$(api GET "/api/jobs/$k2")")" output)" "ran in ${k2_host:-unknown}"
 dk_count 'k2: the agent ran once' "$LANE_DIR/$n.agent.count" 1
 dk_count 'k2: the gates ran once' "$LANE_DIR/$n.gate.count" 1
@@ -150,13 +148,6 @@ k2d_host="$(runner_host "$k2d_runner")"
 [ -n "$k2d_runner" ] && await_released "$k2d_runner" && lane_await_file 90 "$LANE_DIR/$n.ready" &&
     ok 'k2d: the agent is running' || bad 'k2d: the agent is running' "runner '$k2d_runner'"
 kill -TERM "$driver_pid" 2>/dev/null
-k2d_handed_back() {
-    k2d_body="$(body "$(api GET "/api/jobs/$k2d")")"
-    [ "$(field "$k2d_body" status)|$(interruptions_of "$k2d_body")" = "queued|1|1|$DRAINED" ]
-}
-k2d_handed=""
-acc_until 8 k2d_handed_back && k2d_handed=1
-[ -n "$k2d_handed" ] && ok 'k2d: the drained driver hands its run back' || bad 'k2d: the drained driver hands its run back' "$(interruptions_of "$k2d_body")"
 # A drained driver ends on its own; one that does not within the deadline is killed, never waited on forever.
 driver_gone() { ! kill -0 "$driver_pid" 2>/dev/null; }
 acc_until 60 driver_gone
@@ -170,7 +161,7 @@ disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 dk_await_log "$k2d" "$TOOK_OVER" "$ADOPT_S" && ok 'k2d: the next driver takes over the running agent' ||
     bad 'k2d: the next driver takes over the running agent' "$(grep -F "job $k2d:" "$work/driver.log" | tail -5)"
 lane_touch "$LANE_DIR/$n.go" || bad 'k2d: the barrier is released' 'the touch failed'
-dk_settled k2d "$k2d" "$DRAINED"
+dk_settled k2d "$k2d"
 expect_contains 'k2d: the output names the container of claim 1' "$(field "$(body "$(api GET "/api/jobs/$k2d")")" output)" "ran in ${k2d_host:-unknown}"
 dk_count 'k2d: the agent ran once' "$LANE_DIR/$n.agent.count" 1
 stop_driver
@@ -188,7 +179,7 @@ lane_await 120 "$LANE_DIR/$n.gate.count" 1 && ok 'k4: the gate is running' || ba
 driver_kill
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 lane_touch "$LANE_DIR/$n.go" || bad 'k4: the barrier is released' 'the touch failed'
-dk_settled k4 "$k4" "$EXPIRED"
+dk_settled k4 "$k4"
 dk_count 'k4: the gate ran again, once' "$LANE_DIR/$n.gate.count" 2
 dk_count 'k4: the agent ran once' "$LANE_DIR/$n.agent.count" 1
 dk_log "$k4" "$TOOK_OVER" && ok 'k4: the next driver takes over the group whose agent exited' ||
@@ -210,7 +201,7 @@ lane_await_file 180 "$LANE_GH_DIR/lane-gh-hold.ready" && ok 'k5: the publish is 
 driver_kill
 lane_touch "$LANE_GH_DIR/lane-gh-hold.go" || bad 'k5: the hold is released' 'the touch failed'
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
-dk_settled k5 "$k5" "$EXPIRED"
+dk_settled k5 "$k5"
 k5_pushes_now="$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")"
 k5_prs_now="$(lane_count "$LANE_GH_DIR/lane-gh-prs")"
 case "$k5_pushes$k5_pushes_now" in *'?'*) k5_pushed='?' ;; *) k5_pushed=$((k5_pushes_now - k5_pushes)) ;; esac

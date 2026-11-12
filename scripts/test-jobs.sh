@@ -634,7 +634,6 @@ last_attempt() { # last_attempt <id> -> the job allowed one attempt, so an expir
 
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
 TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
-DRAINED='the driver was drained'
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
 # The adopting claim settles only once the lost driver's supervisor exits, and with no driver left to

@@ -47,10 +47,8 @@ disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 expect_contains 'the next claim settles the killed run' "$(await_settled "$killed" "$ADOPT_S")" succeeded
 killed_body="$(body "$(api GET "/api/jobs/$killed")")"
 expect_contains 'the adopted output is the first runner output' "$(field "$killed_body" output)" "ran in ${killed_host:-unknown}"
-expect_field 'the killed attempt is refunded' "$killed_body" attempts 1
-killed_int="$(interruptions_of "$killed_body")"
-[ "$killed_int" = "1|1|$EXPIRED" ] && ok 'one interruption records the expiry of claim 1' ||
-    bad 'one interruption records the expiry of claim 1' "count|claimSeq|reason: $killed_int"
+# The board rows (attempts, interruptions, the kept session) are asserted on the real store in
+# server/test-db/lane-rows.node-disruption.test.ts; this phase keeps what only a daemon shows.
 grep -qF "job $killed: $TOOK_OVER" "$work/driver.log" && ok 'the driver logs the takeover' ||
     bad 'the driver logs the takeover' "$(grep -F "job $killed:" "$work/driver.log" | tail -5)"
 adopted_runner_gone() { [ -z "$(first_runner "$killed")" ]; }
@@ -72,14 +70,6 @@ drained_host="$(runner_host "$drained_runner")"
 [ -n "$drained_runner" ] && ok 'the handover runner is running' ||
     bad 'the handover runner is running' "job: $(body "$(api GET "/api/jobs/$drained")")"
 kill -TERM "$driver_pid" 2>/dev/null
-drain_handed_back() {
-    drained_body="$(body "$(api GET "/api/jobs/$drained")")"
-    [ "$(field "$drained_body" status)|$(interruptions_of "$drained_body")" = "queued|1|1|$DRAINED" ]
-}
-handed=""
-acc_until 8 drain_handed_back && handed=1
-[ -n "$handed" ] && ok 'a drained driver hands its run back as an interruption' ||
-    bad 'a drained driver hands its run back as an interruption' "status: $(field "$drained_body" status), count|claimSeq|reason: $(interruptions_of "$drained_body")"
 wait "$driver_pid" 2>/dev/null
 driver_pid=""
 [ -n "$(first_runner "$drained" status=running)" ] && ok 'the handed-over runner is left running' ||
@@ -94,10 +84,6 @@ disruption_driver
 expect_contains 'the next claim adopts the handed-over run' "$(await_settled "$drained" "$ADOPT_S")" succeeded
 drained_body="$(body "$(api GET "/api/jobs/$drained")")"
 expect_contains 'the handed-over output is the first runner output' "$(field "$drained_body" output)" "ran in ${drained_host:-unknown}"
-expect_field 'the handed-over attempt is refunded' "$drained_body" attempts 1
-drained_int="$(interruptions_of "$drained_body")"
-[ "$drained_int" = "1|1|$DRAINED" ] && ok 'the handover and its adoption are one interruption' ||
-    bad 'the handover and its adoption are one interruption' "count|claimSeq|reason: $drained_int"
 grep -qF "job $drained: $ADOPTED" "$work/driver.log" && ok 'the driver logs the handed-over adoption' ||
     bad 'the driver logs the handed-over adoption' "$(grep -F "job $drained:" "$work/driver.log" | tail -5)"
 stop_driver
@@ -136,11 +122,6 @@ write_bellows "services:
 disruption_driver
 expect_contains 'the replacement runner settles the lost run' "$(await_settled "$lost" 120)" succeeded
 lost_body="$(body "$(api GET "/api/jobs/$lost")")"
-expect_field 'the lost attempt spends no attempt' "$lost_body" attempts 1
-lost_int="$(interruptions_of "$lost_body")"
-[ "$lost_int" = "1|1|$EXPIRED" ] && ok 'one interruption records the expiry of claim 1' ||
-    bad 'one interruption records the expiry of claim 1' "count|claimSeq|reason: $lost_int"
-expect_field 'the row keeps the lost session' "$lost_body" sessionId "$lost_session"
 expect_contains 'the replacement resumes the lost session on the kept tree' "$(field "$lost_body" output)" \
     "resumed $lost_session from $lost_session"
 expect_contains 'the replacement ran on the restored tree, not a synced one' "$(field "$lost_body" output)" upstream:0

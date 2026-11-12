@@ -49,13 +49,10 @@ driver_pid=""
 # The lease has 10 seconds on it; the stop is only an in-place landing once it has expired
 # (#152), so poll the stop until the row says stopped.
 orphan_stop_landed() { [ "$(status "$(api POST "/api/jobs/$orphan/stop" '{}')")" = 200 ]; }
-orphan_stopped=""
-acc_until 45 orphan_stop_landed && orphan_stopped=1
-if [ -n "$orphan_stopped" ] && [ "$(field "$(body "$(api GET "/api/jobs/$orphan")")" status)" = 'stopped' ]; then
-    ok 'the crashed job settles stopped with no driver alive'
-else
-    bad 'the crashed job settles stopped with no driver alive' "$(field "$(body "$(api GET "/api/jobs/$orphan")")" status)"
-fi
+# The row it lands on (stopped, finished) is asserted on the real store in server/test-db/lane-rows.orphan-reaper.test.ts;
+# here the landing is the precondition of the leak, and a stop that never lands fails the phase at once.
+acc_until 45 orphan_stop_landed ||
+    bad 'the stop lands on the crashed job once its lease expired' "status: $(field "$(body "$(api GET "/api/jobs/$orphan")")" status)"
 
 # The leak the issue exists for: terminal job, fleet still on the daemon.
 orphan_fleet="$(docker ps -aq --filter "label=factory.job=$orphan" --filter "label=factory.service")"

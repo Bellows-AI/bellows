@@ -247,7 +247,6 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('kill -9 "$driver_pid"');
         expect(phase).toContain('kill -TERM "$driver_pid"');
         expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
-        expect(SCRIPT).toContain("DRAINED='the driver was drained'");
         expect(SCRIPT).toContain("TOOK_OVER='took over the running agent of claim 1, whose driver was lost'");
         expect(phase).toContain('grep -qF "job $killed: $TOOK_OVER"');
         expect(phase).toContain('supervisor_served "$drained" 60');
@@ -258,7 +257,8 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toMatch(/done\n {4}dump_stall "\$id"\n/);
         expect(SCRIPT).toContain("'supervisor: stopped serving the steps'");
         expect(SCRIPT).toContain("ADOPTED='adopted the finished runner of claim 1, whose driver was lost'");
-        expect(phase).toContain('attempts 1');
+        // The refunded attempt and the interruption rows are asserted on the real store, not here.
+        expect(phase).toContain('server/test-db/lane-rows.node-disruption.test.ts');
     });
 
     // Issue #829: the recovery waits are the derived bound plus a margin, not the longest bound a
