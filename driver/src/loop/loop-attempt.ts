@@ -51,6 +51,15 @@ export interface ReviewSupervision {
     settled: Promise<void>;
 }
 
+/**
+ * The fate of an attempt's runner group at teardown. `end`: finished and its fence handed back. `keep`: left for
+ * the next claim to adopt, the checkout claim standing. `handover`: left for it too, the fence handed back (a drain).
+ */
+export type GroupDisposition = 'end' | 'keep' | 'handover';
+
+/** Whether the runner outlives the attempt. */
+export const groupRetained = (disposition: GroupDisposition): boolean => disposition !== 'end';
+
 export interface JobState {
     /**
      * Stops the output pump's periodic writes and waits out the one in flight (issue #773): a park
@@ -78,12 +87,12 @@ export interface JobState {
     /** Writes the line of each `phase`/`ending` change; the loop points it at its log. */
     trace: (transition: AttemptTransition) => void;
     /**
-     * True when the runner must outlive the attempt (issues #821, #828): neither the staged verdict
-     * nor the complete, nor the park or interruption, reached the board, or the attempt is
-     * left to its lease after its launch. `end`'s teardown then leaves the group and the checkout
-     * claim for the next claim to adopt.
+     * What `end`'s teardown does with the runner group (issues #821, #828): `keep` when neither the
+     * staged verdict nor the complete, nor the park or interruption, reached the board, or the attempt
+     * is left to its lease after its launch — the group and the checkout claim are left for the next
+     * claim to adopt. `conclude` settles it once, after the board call, with a drain's `handover`.
      */
-    keepGroup: boolean;
+    groupDisposition: GroupDisposition;
     /**
      * True once `runner.run` has been called. The heartbeat paces itself at `SETUP_POLL_MS` until
      * this turns — a verdict arriving during the setup phase must be answered in seconds, not a
@@ -208,7 +217,7 @@ export function newJobState(): JobState {
         endStarted: false,
         ending: null,
         trace: () => {},
-        keepGroup: false,
+        groupDisposition: 'end',
         launched: false,
         confirmLaunch: null,
         probingLaunch: false,

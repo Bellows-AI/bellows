@@ -101,7 +101,7 @@ describe('adoptStep', () => {
             refused: true,
             blocked: true,
         });
-        expect(s.state.keepGroup).toBe(true);
+        expect(s.state.groupDisposition).toBe('keep');
         expect(s.released).toEqual([]);
         expect(s.ctx.adopted).toBeUndefined();
     });
@@ -274,7 +274,7 @@ describe('taking over a live run (#829)', () => {
         expect(s.ctx.takeover).toMatchObject({ live: true, claimSeq: 4 });
         expect(s.ctx.adopted).toBeUndefined();
         expect(s.ctx.fenced).toBe(true);
-        expect(s.state.keepGroup).toBeFalsy();
+        expect(s.state.groupDisposition).toBe('end');
         expect(s.ctx.session).toEqual({ id: 'sess-prior', resume: true });
         expect(s.board.interrupted).toEqual([]);
     });
@@ -366,7 +366,7 @@ describe('taking over a live run (#829)', () => {
 
         expect(answer).toMatchObject({ halt: 'leave' });
         expect(s.claimed.groupLease).toBeUndefined();
-        expect(s.state.keepGroup).toBe(true);
+        expect(s.state.groupDisposition).toBe('keep');
         expect(s.ctx.fenced).toBe(false);
     });
 
@@ -379,7 +379,7 @@ describe('taking over a live run (#829)', () => {
         expect(answer).toMatchObject({ halt: 'leave' });
         expect(Date.now() - started).toBeGreaterThan(SUPERVISOR_REBIND_DELIVERY_MS - 10_000);
         expect(s.claimed.groupLease).toBeUndefined();
-        expect(s.state.keepGroup).toBe(true);
+        expect(s.state.groupDisposition).toBe('keep');
     });
 
     it('stands down mid-delivery keeping the group, never owning it', async () => {
@@ -396,7 +396,7 @@ describe('taking over a live run (#829)', () => {
 
         expect(answer).toBe(STOOD_DOWN);
         expect(s.claimed.groupLease).toBeUndefined();
-        expect(s.state.keepGroup).toBe(true);
+        expect(s.state.groupDisposition).toBe('keep');
     });
 
     describe('an earlier group found finished while the rebind is awaited (#928)', () => {
@@ -421,7 +421,7 @@ describe('taking over a live run (#829)', () => {
                 expect(s.ctx.takeover).toBeUndefined();
                 expect(s.ctx.fenced).toBe(true);
                 expect(s.claimed.groupLease).toBeUndefined();
-                expect(s.state.keepGroup).toBeFalsy();
+                expect(s.state.groupDisposition).toBe('end');
                 expect(s.state.launched).toBe(false);
             }
         );
@@ -432,7 +432,7 @@ describe('taking over a live run (#829)', () => {
             expect(await adoptStep(s.ctx)).toBeNull();
             expect(forget).toHaveBeenCalledTimes(1);
             expect(s.ctx.takeover).toBeUndefined();
-            expect(s.state.keepGroup).toBeFalsy();
+            expect(s.state.groupDisposition).toBe('end');
         });
 
         it('leaves it to the lease, without a third adoption, when the second adoption answers live again', async () => {
@@ -448,7 +448,7 @@ describe('taking over a live run (#829)', () => {
             expect(s.asked).toHaveLength(2);
             expect(forget).toHaveBeenCalledTimes(2);
             expect(s.claimed.groupLease).toBeUndefined();
-            expect(s.state.keepGroup).toBe(true);
+            expect(s.state.groupDisposition).toBe('keep');
             expect(s.ctx.fenced).toBe(false);
         });
 
@@ -465,7 +465,7 @@ describe('taking over a live run (#829)', () => {
             expect(Date.now() - started).toBeGreaterThan(SUPERVISOR_REBIND_DELIVERY_MS - 10_000);
             expect(s.asked).toHaveLength(1);
             expect(forget).not.toHaveBeenCalled();
-            expect(s.state.keepGroup).toBe(true);
+            expect(s.state.groupDisposition).toBe('keep');
         });
 
         it("hands every probe the wait's deadline and the attempt's stand-down", async () => {
@@ -507,7 +507,7 @@ describe('taking over a live run (#829)', () => {
             expect(await adoptStep(s.ctx)).toBe(STOOD_DOWN);
             expect(s.asked).toHaveLength(1);
             expect(forget).not.toHaveBeenCalled();
-            expect(s.state.keepGroup).toBe(true);
+            expect(s.state.groupDisposition).toBe('keep');
         });
     });
 
