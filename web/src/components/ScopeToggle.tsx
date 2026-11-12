@@ -1,45 +1,30 @@
-import type { KeyboardEvent } from 'react';
+import { Radio, RadioGroup } from '@headlessui/react';
 import type { ScopeSelection } from './RangeSelector.js';
 import { scopeWord } from '../dashboardSummary.js';
 
 const SCOPE_VALUES: readonly ScopeSelection[] = ['org', 'mine'];
 
 /**
- * The Scope group of the analytics toolbar: Organization and Personal as the shared `.tabs`
- * strip, the selected one marked by `aria-selected`. `scopeWord` supplies the tab text, the same
- * wording the rendered-data summary sentence uses. Arrow keys move the selection (roving focus).
+ * The Scope group of the analytics toolbar: Organization and Personal as a radiogroup on the
+ * shared `.tabs` skin — a filter over one view owns no panel, so it is not a tablist. Headless UI
+ * supplies `aria-checked`, the roving tabindex and the arrow keys. `scopeWord` supplies the label,
+ * the same wording the rendered-data summary sentence uses.
  *
  * Rendered only when the session reports a signed-in user — under AUTH_MODE=none there is no
  * "me", and a control that renders anyway would advertise a filter the server can never answer.
  * Absent is the honest shape there: the page reads as org-scoped, which is exactly what it is.
  */
 export function ScopeToggle({ scope, onChange }: { scope: ScopeSelection; onChange: (next: ScopeSelection) => void }) {
-    const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-        event.preventDefault();
-        const next = SCOPE_VALUES[(SCOPE_VALUES.indexOf(scope) + 1) % SCOPE_VALUES.length]!;
-        onChange(next);
-        event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(`[data-scope="${next}"]`)?.focus();
-    };
     return (
         <div className="toolbar-group">
             <span className="toolbar-label">Scope</span>
-            <div className="tabs" role="tablist" aria-label="Scope">
+            <RadioGroup className="tabs" aria-label="Scope" value={scope} onChange={onChange}>
                 {SCOPE_VALUES.map((value) => (
-                    <button
-                        key={value}
-                        type="button"
-                        role="tab"
-                        data-scope={value}
-                        aria-selected={value === scope}
-                        tabIndex={value === scope ? 0 : -1}
-                        onClick={() => onChange(value)}
-                        onKeyDown={onKeyDown}
-                    >
+                    <Radio key={value} as="button" type="button" value={value}>
                         {scopeWord(value)}
-                    </button>
+                    </Radio>
                 ))}
-            </div>
+            </RadioGroup>
         </div>
     );
 }

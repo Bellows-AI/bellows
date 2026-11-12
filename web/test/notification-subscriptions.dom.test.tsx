@@ -237,7 +237,10 @@ describe('the organization notifications on the organization page', () => {
 
         const table = await orgTable();
         await user.click(within(table).getByRole('button', { name: 'Send test notification' }));
-        expect((await screen.findByRole('alert')).textContent).toMatch(/unexpected response/i);
+        // The members read this board 404s is an alert too: the answer under test is one of several.
+        expect((await screen.findAllByRole('alert')).map((alert) => alert.textContent).join(' ')).toMatch(
+            /unexpected response/i
+        );
         expect(screen.queryByText(/delivered/i)).toBeNull();
         expect(
             (within(table).getByRole('button', { name: 'Send test notification' }) as HTMLButtonElement).disabled
@@ -438,14 +441,17 @@ describe('the compact notification rows', () => {
 });
 
 describe('the notification states are StateNote lines', () => {
-    const stateNote = () => document.querySelector('.state-note');
+    /** The note inside one named region: other sections on the page raise their own. */
+    const stateNote = (region: string) => screen.getByRole('region', { name: region }).querySelector('.state-note');
 
     it('an empty organization shows the empty note and one Add button to an admin', async () => {
         stubFetch(boardHandler(settingsBoard()));
         renderApp('/settings/organization');
 
         await screen.findByRole('region', { name: 'Organization notifications' });
-        expect(stateNote()?.textContent).toBe(`${NO_SUBSCRIPTIONS_NOTE} ${EMPTY_WRITER_NOTE}`);
+        expect(stateNote('Organization notifications')?.textContent).toBe(
+            `${NO_SUBSCRIPTIONS_NOTE} ${EMPTY_WRITER_NOTE}`
+        );
         expect(screen.getAllByRole('button', { name: ADD_SUBSCRIPTION_LABEL })).toHaveLength(1);
         expect(screen.queryByRole('table')).toBeNull();
     });
@@ -455,7 +461,7 @@ describe('the notification states are StateNote lines', () => {
         renderApp('/settings/organization');
 
         await screen.findByRole('region', { name: 'Organization notifications' });
-        expect(stateNote()?.textContent).toBe(NO_SUBSCRIPTIONS_NOTE);
+        expect(stateNote('Organization notifications')?.textContent).toBe(NO_SUBSCRIPTIONS_NOTE);
         expect(screen.queryByRole('button', { name: ADD_SUBSCRIPTION_LABEL })).toBeNull();
     });
 
@@ -464,7 +470,7 @@ describe('the notification states are StateNote lines', () => {
         renderApp('/settings/workspace');
 
         await screen.findByRole('region', { name: 'My notifications' });
-        expect(stateNote()?.textContent).toBe(`${NO_SUBSCRIPTIONS_NOTE} ${EMPTY_WRITER_NOTE}`);
+        expect(stateNote('My notifications')?.textContent).toBe(`${NO_SUBSCRIPTIONS_NOTE} ${EMPTY_WRITER_NOTE}`);
         expect(screen.getAllByRole('button', { name: ADD_SUBSCRIPTION_LABEL })).toHaveLength(1);
     });
 

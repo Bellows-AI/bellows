@@ -6,6 +6,7 @@ import { PageHeader } from '../components/PageHeader.js';
 import { ProviderMark } from '../components/ProviderMark.js';
 import { connectionState, type ConnectionState } from '../settings/integration-providers.js';
 import { useIntegrationNotice } from '../settings/useIntegrationNotice.js';
+import { StateNote } from '../components/StateNote.js';
 
 /** What a state is called, and the pill it wears: Connected is the ok lamp, Needs reconnect asks for the member. */
 export const STATE_PILL: Record<ConnectionState, { text: string; className: string }> = {
@@ -39,7 +40,7 @@ export function SettingsIntegrationsPage() {
                 actions={<Link to={BROWSE_PATH}>Browse integrations</Link>}
             />
             {notice ? <IntegrationNoticeBanner notice={notice} /> : null}
-            {read.state === 'loading' ? <p className="status">Loading integrations…</p> : null}
+            {read.state === 'loading' ? <StateNote state="loading">Loading integrations…</StateNote> : null}
             {read.state === 'error' ? (
                 <p className="status error" role="alert">
                     {read.error}

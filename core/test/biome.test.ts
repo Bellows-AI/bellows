@@ -129,6 +129,16 @@ describe('biome', () => {
         }
     });
 
+    it('keeps useExhaustiveDependencies off, with its measured reason', () => {
+        // Measured 2026-11 with `npx biome lint --only=correctness/useExhaustiveDependencies web/src`:
+        // 25 hits in 22 sites, every fix unsafe. Most are the deliberate retry-nonce and restartKey
+        // dependencies that re-run a poll or a load (`useBranches`, `useRepos`, `usePoll`, ...), which
+        // the rule calls unnecessary; applying its fix would end the retry. Re-enable only with the
+        // change that rewrites those effects, and update this count.
+        const config = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8'));
+        expect(config.linter.rules.correctness.useExhaustiveDependencies).toBe('off');
+    });
+
     it('loads every lint plugin in lint/', () => {
         const config = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8'));
         for (const plugin of [
@@ -136,6 +146,9 @@ describe('biome', () => {
             './lint/no-inline-container-scripts.grit',
             './lint/no-cross-package-imports.grit',
             './lint/no-silent-empty-read.grit',
+            './lint/no-raw-fetch.grit',
+            './lint/no-window-confirm.grit',
+            './lint/no-shared-module-spies.grit',
         ]) {
             expect(config.plugins, `${plugin} is not loaded`).toContain(plugin);
             expect(existsSync(join(root, plugin)), `${plugin} is missing`).toBe(true);
@@ -170,6 +183,15 @@ describe('biome', () => {
             'core/src/executors.ts': "export const w = 'claude-code';",
             'server/src/probe.ts': "import { z } from '../../core/src/x.js';",
             'core/src/integrations/probe.ts': "import { s } from '../../../server/src/secrets/secret-store.js';",
+            'web/src/api/probe.ts': "export const f = () => fetch('/api/x');",
+            'web/src/api/request.ts': "export const f = () => fetch('/api/x');",
+            'web/src/panels/Probe.ts': "export const f = () => window.confirm('sure?');",
+            'web/test/probe.test.ts': [
+                "import * as shared from '../src/components/probe.js';",
+                "import { vi } from 'vitest';",
+                "vi.spyOn(shared, 'run');",
+                "vi.spyOn(document, 'hidden', 'get');",
+            ].join('\n'),
         };
         // One distinctive phrase per plugin message: each plugin must hit its fixture, so a plugin
         // that loads but matches nothing fails here too.
@@ -178,6 +200,9 @@ describe('biome', () => {
             'no-inline-container-scripts': /Container script passed inline/,
             'no-shared-literals': /^Shared literal/,
             'no-silent-empty-read': /A failed read must stay inconclusive/,
+            'no-raw-fetch': /Raw fetch in the web data layer/,
+            'no-window-confirm': /window\.confirm is not testable/,
+            'no-shared-module-spies': /vi\.spyOn on a web\/src module namespace/,
         };
 
         it('has a fixture hit for every plugin in lint/', () => {
@@ -194,6 +219,24 @@ describe('biome', () => {
                 const found = await lintScratch(FIXTURES);
                 expect(found.messages.some((m) => /copy the type instead/.test(m))).toBe(true);
                 expect(found.messages.some((m) => /core imports nothing from server/.test(m))).toBe(true);
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        it(
+            'the web rules leave their own carve-outs alone: request.ts, a spy on a global, a bare confirm',
+            async () => {
+                const found = await lintScratch({
+                    'web/src/api/request.ts': "export const f = () => fetch('/api/x');",
+                    'web/src/panels/Clean.ts': 'export const confirm = () => 1;\nexport const g = () => confirm();',
+                    'web/test/clean.test.ts': [
+                        "import { vi } from 'vitest';",
+                        "vi.spyOn(document, 'hidden', 'get');",
+                        "vi.spyOn(window.history, 'replaceState');",
+                    ].join('\n'),
+                });
+                expect(found.errored).toEqual([]);
+                expect(found.messages.filter((m) => /Raw fetch|window\.confirm|vi\.spyOn on/.test(m))).toEqual([]);
             },
             BIOME_CHECK_TIMEOUT_MS
         );

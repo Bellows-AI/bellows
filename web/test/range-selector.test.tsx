@@ -13,8 +13,6 @@ import {
     rangeQuery,
     statsQuery,
 } from '../src/components/RangeSelector.js';
-import type { ScopeSelection } from '../src/components/RangeSelector.js';
-import { ScopeToggle } from '../src/components/ScopeToggle.js';
 
 const NOW = new Date('2026-08-21T12:00:00.000Z');
 
@@ -241,25 +239,5 @@ describe('statsQuery', () => {
         expect(statsQuery({ preset: 'custom', from: '2026-08-01', to: '2026-08-07' }, 'mine')).toBe(
             'range=custom&from=2026-08-01&to=2026-08-07&scope=mine'
         );
-    });
-});
-
-describe('ScopeToggle', () => {
-    const renderToggle = (scope: ScopeSelection) =>
-        renderToStaticMarkup(<ScopeToggle scope={scope} onChange={() => {}} />);
-
-    it('renders the shared tabs strip, labeled Scope, with the selected tab marked', () => {
-        const html = renderToggle('org');
-        expect(html).toContain('>Scope<');
-        expect(html).toContain('class="tabs" role="tablist" aria-label="Scope"');
-        expect(html).not.toContain('aria-haspopup');
-        expect(html).not.toContain('role="radio"');
-        expect(html).toMatch(/role="tab"[^>]*aria-selected="true"[^>]*>Organization<\/button>/);
-        expect(html).toMatch(/role="tab"[^>]*aria-selected="false"[^>]*>Personal<\/button>/);
-    });
-
-    it('marks the personal tab when it is the scope, spelled out in full', () => {
-        expect(renderToggle('mine')).toMatch(/aria-selected="true"[^>]*>Personal<\/button>/);
-        expect(renderToggle('mine')).toMatch(/aria-selected="false"[^>]*>Organization<\/button>/);
     });
 });

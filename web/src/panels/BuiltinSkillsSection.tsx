@@ -7,6 +7,7 @@ import { Icon } from '../components/Icon.js';
 import { StateNote } from '../components/StateNote.js';
 import { builtinHiddenNote, needsOf, type ConnectionsState } from '../settings/skill-rows.js';
 import { SkillViewFrame } from './SkillView.js';
+import { ScrollRegion } from '../components/ScrollRegion.js';
 
 /**
  * The Built-in section of the Skills page (BEL-272): the skills that ship with Bellows, read-only, with
@@ -216,8 +217,7 @@ export function BuiltinSkillsSection({ isAdmin }: { isAdmin: boolean }) {
             <p className="muted">{ledeOf(isAdmin)}</p>
             <SectionNotes catalog={catalog} connections={connections} missing={missing} />
             {catalog.status === 'ok' && skills.length > 0 ? (
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-                <section className="table-wrap" tabIndex={0} aria-label="Built-in skills">
+                <ScrollRegion className="table-wrap" aria-label="Built-in skills">
                     <table className="data data-compact table-cards">
                         <thead>
                             <tr>
@@ -277,7 +277,7 @@ export function BuiltinSkillsSection({ isAdmin }: { isAdmin: boolean }) {
                             })}
                         </tbody>
                     </table>
-                </section>
+                </ScrollRegion>
             ) : null}
             <p className="muted" role="status">
                 {status}

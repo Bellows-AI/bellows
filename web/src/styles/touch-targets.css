@@ -16,13 +16,14 @@
         .mobile-nav .sidenav-newtask,
         .select-trigger,
         .tabs [role='tab'],
+        .tabs [role='radio'],
         .tabs a,
         .page-header-actions button,
         table.data button {
             align-items: center;
             display: inline-flex;
-            min-height: 44px;
-            min-width: 44px;
+            min-height: var(--touch);
+            min-width: var(--touch);
         }
     }
 }

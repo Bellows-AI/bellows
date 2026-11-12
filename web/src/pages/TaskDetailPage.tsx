@@ -16,6 +16,7 @@ import { taskTitleText } from '../task-title.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
 import type { OnAnswer } from '../panels/TaskRun.js';
 import { useTasksPage } from './TasksLayout.js';
+import { StateNote } from '../components/StateNote.js';
 
 /**
  * The conversation-level actions: sending a follow-up, marking done, stopping — each guarded by
@@ -295,7 +296,7 @@ export function TaskDetailPage() {
 
     return (
         <>
-            {tasks.error ? <p className="status">{tasks.error}</p> : null}
+            {tasks.error ? <StateNote state="error">{tasks.error}</StateNote> : null}
             <TaskDetail
                 key={id ?? 'none'}
                 header={

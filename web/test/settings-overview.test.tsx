@@ -545,8 +545,8 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
             env: { loading: false, error: 'the environment read failed', data: emptyEnv },
         });
         expect(html).toContain('Workspace available');
-        expect(html).toContain('<p class="status">the workspace poll failed</p>');
-        expect(html).toContain('<p class="status">the environment read failed</p>');
+        expect(html).toMatch(/<p class="state-note error" role="alert"[^>]*>the workspace poll failed<\/p>/);
+        expect(html).toMatch(/<p class="state-note error" role="alert"[^>]*>the environment read failed<\/p>/);
     });
 
     it('names the error once on an initial failure — the item fact is the announcement', () => {

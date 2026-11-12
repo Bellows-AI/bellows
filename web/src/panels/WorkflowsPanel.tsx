@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { WorkflowResult, WorkflowSummaryView } from '../api/useWorkflows.js';
 import { taskTime } from '../format.js';
+import { StateNote } from '../components/StateNote.js';
+import { ScrollRegion } from '../components/ScrollRegion.js';
 
 /** A create draft: the name, the scope (repo is curl-only from this panel — see `useWorkflowsManagement`),
  * and the definition as raw JSON text, the way a member would paste it against the API directly. */
@@ -104,8 +106,7 @@ function WorkflowList({
     if (workflows === null) return null;
     if (workflows.length === 0) return <p className="muted">No workflows yet.</p>;
     return (
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-        <section className="table-wrap" tabIndex={0} aria-label="Workflows">
+        <ScrollRegion className="table-wrap" aria-label="Workflows">
             <table className="data">
                 <thead>
                     <tr>
@@ -131,7 +132,7 @@ function WorkflowList({
                     ))}
                 </tbody>
             </table>
-        </section>
+        </ScrollRegion>
     );
 }
 
@@ -368,8 +369,8 @@ export function WorkflowsPanel(props: WorkflowsPanelProps) {
             <p className="muted">
                 Custom processes a task can walk instead of the default prompt → gates → publish spine.
             </p>
-            {error ? <p className="status">{error}</p> : null}
-            {rowError ? <p className="status">{rowError}</p> : null}
+            {error ? <StateNote state="error">{error}</StateNote> : null}
+            {rowError ? <StateNote state="error">{rowError}</StateNote> : null}
 
             <WorkflowList
                 workflows={workflows}

@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { mockExecutors } from './executor.js';
@@ -127,6 +128,37 @@ const failureLines = (message: string) => {
     return [lines[0]!, ...received].join(' · ');
 };
 
+/** Axe findings the page has not earned yet, each narrow (a rule, and a selector when it is one
+ * element) with the reason it stands. A finding leaves the list by being fixed; an entry never
+ * widens to hide a new one, and axe itself is never switched off. */
+const AXE_KNOWN: ReadonlyArray<{ rule: string; selector?: string; reason: string }> = [
+    {
+        rule: 'aria-allowed-role',
+        selector: '#composer-prompt',
+        reason: 'the slash-skill menu is a combobox on the textarea (SlashSkillMenu.tsx), which axe does not allow',
+    },
+    {
+        rule: 'label-content-name-mismatch',
+        reason: 'nav links and inbox tabs add a count sentence to their aria-label, so the visible text is not its prefix',
+    },
+];
+
+/** One line per axe node that no AXE_KNOWN entry covers. */
+function unlistedAxeNodes(violations: Awaited<ReturnType<AxeBuilder['analyze']>>['violations']): string[] {
+    return violations.flatMap((violation) =>
+        violation.nodes
+            .filter(
+                (node) =>
+                    !AXE_KNOWN.some(
+                        (known) =>
+                            known.rule === violation.id &&
+                            (known.selector === undefined || node.target.join(' ') === known.selector)
+                    )
+            )
+            .map((node) => `${violation.id}: ${node.target.join(' ')}`)
+    );
+}
+
 const CHECK = 'matrix-check';
 const NOTE = 'matrix-note';
 
@@ -221,6 +253,25 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
         await page.keyboard.press('Escape');
         await expect(page.locator('.mobile-nav')).toHaveCount(0);
     });
+
+    for (const theme of THEMES) {
+        test(`axe finds no unlisted violation in any family at 1440, ${theme}`, async ({ page }) => {
+            describeCheck('axe-core', `every family at 1440, ${theme}`);
+            test.setTimeout(FAMILIES.length * SLOW);
+            await page.setViewportSize({ width: 1440, height: 900 });
+            await useTheme(page, theme);
+            for (const shot of FAMILIES) {
+                await openSettled(page, shot, theme);
+                const { violations } = await new AxeBuilder({ page }).analyze();
+                expect
+                    .soft(
+                        unlistedAxeNodes(violations),
+                        `${label(shot)} ${theme} at 1440: axe violations (add to AXE_KNOWN only with a reason)`
+                    )
+                    .toEqual([]);
+            }
+        });
+    }
 
     for (const width of [1440, 390] as const) {
         test(`keyboard alone reaches every control and shows focus at ${width}`, async ({ page }) => {

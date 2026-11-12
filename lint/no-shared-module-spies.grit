@@ -1,0 +1,18 @@
+language js
+
+// The web node project runs with `isolate: false`, so a `web/src` module is one instance per fork.
+// `vi.spyOn(namespace, …)` patches that instance for every later file in the fork until restored;
+// a do-nothing spy that outlives its test silences an unrelated suite. Observe a module through
+// its public API instead. Replaces the `web/test/no-shared-module-spies.test.ts` source scan.
+//
+// The spied name must be a namespace this file imported from `../src/…`; a spy on `document`,
+// `window.history` or a local object is not a shared module.
+`vi.spyOn($ns, $...)` as $call where {
+    $filename <: r".*/web/test/.*",
+    $program <: contains `import * as $ns from $source`,
+    $source <: r"^['\"](?:\.\./)+src/.*['\"]$",
+    register_diagnostic(
+        span = $call,
+        message = "vi.spyOn on a web/src module namespace outlives its test in a shared fork: observe the module through its public API."
+    )
+}

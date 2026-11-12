@@ -17,6 +17,7 @@ import { StateNote } from '../components/StateNote.js';
 import { managedHiddenNote, shadowedForMe, versionLabel } from '../settings/skill-rows.js';
 import type { SkillList } from '../settings/useSkillLists.js';
 import { StoredSkillView } from './SkillView.js';
+import { ScrollRegion } from '../components/ScrollRegion.js';
 
 /**
  * One door's stored skills as a panel: My workspace (`workspace`) or Organization (`org`). Rows are the
@@ -369,8 +370,7 @@ export function SkillsSection({
             {here && !('skill' in here) ? renderEditor?.(here) : null}
             <ListNote list={list} hasRows={rows.length > 0} />
             {rows.length > 0 ? (
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-                <section className="table-wrap" tabIndex={0} aria-label={`${title} skills`}>
+                <ScrollRegion className="table-wrap" aria-label={`${title} skills`}>
                     <table className="data data-compact table-cards">
                         <thead>
                             <tr>
@@ -385,7 +385,7 @@ export function SkillsSection({
                         </thead>
                         <tbody>{rows.map(row)}</tbody>
                     </table>
-                </section>
+                </ScrollRegion>
             ) : null}
             <p className="muted" role="status">
                 {writes.status}

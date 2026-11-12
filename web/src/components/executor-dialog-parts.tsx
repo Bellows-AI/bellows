@@ -1,5 +1,6 @@
 import type { MouseEvent } from 'react';
 import { Link } from 'react-router-dom';
+import { StateNote } from './StateNote.js';
 import { EXECUTOR_TYPES, type ExecutorType } from '@factory-ai/core';
 import {
     ADD_LABEL,
@@ -39,9 +40,9 @@ export function describedBy(ids: string, ...parts: (string | null | false)[]): s
 /** A field's own error, below its help. */
 function FieldError({ id, error }: { id: string; error: string | null }) {
     return error ? (
-        <p className="status" id={id}>
+        <StateNote state="error" id={id}>
             {error}
-        </p>
+        </StateNote>
     ) : null;
 }
 

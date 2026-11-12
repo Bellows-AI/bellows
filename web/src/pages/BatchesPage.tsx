@@ -4,6 +4,7 @@ import { summaryVerdict, VERDICT_LABEL, VERDICT_PILL, type BatchSummary } from '
 import { DataTable, type DataTableColumn } from '../components/DataTable.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
+import { StateNote } from '../components/StateNote.js';
 
 /**
  * The org's batches, newest first (docs/design-system/batches.md). A row is a link to the batch,
@@ -59,7 +60,7 @@ export function BatchesPage() {
                     {error}
                 </p>
             ) : null}
-            {loading && data === null ? <p className="status">Loading batches…</p> : null}
+            {loading && data === null ? <StateNote state="loading">Loading batches…</StateNote> : null}
             {data ? (
                 <>
                     <h2 id="batches-table-title" className="visually-hidden">

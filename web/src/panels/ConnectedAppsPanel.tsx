@@ -4,6 +4,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { StateNote } from '../components/StateNote.js';
 import { taskTime } from '../format.js';
 import { clientIdentity, scopeLabel } from '../oauth-client.js';
+import { ScrollRegion } from '../components/ScrollRegion.js';
 
 const identityOf = (grant: OAuthGrantView) => clientIdentity({ ...grant.client });
 
@@ -92,8 +93,7 @@ export function ConnectedAppsPanel({ grants, loading, error, onRevoke }: Connect
                 <StateNote state="empty">No apps are connected.</StateNote>
             ) : null}
             {grants !== null && grants.length > 0 ? (
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-                <section className="table-wrap" tabIndex={0} aria-label="Connected apps list">
+                <ScrollRegion className="table-wrap" aria-label="Connected apps list">
                     <table className="data table-cards" aria-label="Connected apps">
                         <thead>
                             <tr>
@@ -118,7 +118,7 @@ export function ConnectedAppsPanel({ grants, loading, error, onRevoke }: Connect
                             ))}
                         </tbody>
                     </table>
-                </section>
+                </ScrollRegion>
             ) : null}
             <ConfirmDialog
                 open={pending !== null}

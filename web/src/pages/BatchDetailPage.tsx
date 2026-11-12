@@ -6,6 +6,7 @@ import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { BatchDraft } from '../panels/BatchDraft.js';
 import { BatchMonitor } from '../panels/BatchMonitor.js';
+import { StateNote } from '../components/StateNote.js';
 
 /**
  * `/batches/:id`: a draft opens its editor, a started batch its monitor. The record is the
@@ -103,7 +104,7 @@ export function BatchDetailPage() {
     const { id } = useParams();
     const { data, error, loading, refresh } = useBatch(id ?? null);
 
-    if (loading && data === null) return <p className="status">Loading the batch…</p>;
+    if (loading && data === null) return <StateNote state="loading">Loading the batch…</StateNote>;
     if (data === null) {
         return (
             <>

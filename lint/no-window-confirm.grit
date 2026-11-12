@@ -1,0 +1,15 @@
+language js
+
+// The dialog contract replaced the browser confirm (`ConfirmDialog`, `TaskRemoveDialog`): focus is
+// trapped, Escape cancels, and a test can see it. A `window.confirm` renders nothing a static or
+// dom suite could catch, so the call is refused at the source. Replaces the `window.confirm`
+// source scan in `web/test/env.render.test.tsx`.
+//
+// Paths are an `or` of whole regexes, never `(a|b)` (see no-raw-fetch.grit).
+or { `window.confirm($...)`, `globalThis.confirm($...)` } as $call where {
+    $filename <: r".*/web/src/.*",
+    register_diagnostic(
+        span = $call,
+        message = "window.confirm is not testable or focus-managed: use ConfirmDialog."
+    )
+}
