@@ -121,3 +121,13 @@ Outside a full pass, the same contract applies to any doc edit:
 - Changed code with an owning doc → update the doc's **table row**, not its prose.
 - Tempted to add a paragraph → add a row, or a one-line comment at the code instead.
 - Never grow a doc past its cap to fit a new fact. If it does not fit, something in it is dead.
+- A row or bullet carries a path, and the path must resolve today. A claim with no anchor is deleted,
+  not researched; never invent one to make a row look complete.
+- **A test that pins doc prose is the enforcement, not an obstacle.** `docs.terminology`,
+  `k8s-docs`, `docs.eks-storage`, `styles` and `skills.task-control` assert literal sentences;
+  restore the sentence, never relax the test. Those suites are whitespace-sensitive — a reflow
+  breaks them.
+- **Skills and the runner agent-home guides are prompts, not docs.** `.claude/skills/`,
+  `docker/skills/`, `claude-home/CLAUDE.md`, `opencode-home/AGENTS.md`: dedupe rationale and
+  repetition, but preserve every directive, command and step order, and never leave a runtime
+  agent a back-reference to resolve.

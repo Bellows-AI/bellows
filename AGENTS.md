@@ -89,34 +89,12 @@ Metric definitions live in `../factory-stats/SPEC.md`, outside this repo.
 
 ## Writing documentation
 
-A doc's only job is to get a reader to the right file fast. Prose that explains what the code
-already says is read *instead of* the code and rots while the code does not, so the default action
-on a paragraph is **delete and link**. Every doc is one sentence of purpose, a
-`| Concern | Code | Test |` table, then `## Invariants`. 60 lines; 120 for an area with several
-independent surfaces; a runbook of literal commands is exempt from the cap, not from the rules.
-
-Only four kinds of sentence survive: **where things live** (the table), **cross-file invariants** no
-single file can state, **operational facts** with consequences outside the process, and **stated
-limits** that tell a reader to stop looking. Everything else goes — narrative how-it-works, issue
-numbers, history ("X is gone"; this repo ships no compatibility, so an absent thing needs no page),
-rationale nobody is re-litigating, example payloads and argv, restated route/env/flag tables, and
-warnings about traps a test already catches. Name the test; it is the enforcement.
-
-- **Every row and bullet carries a path, and the path must resolve today.** A claim with no anchor
-  is deleted, not researched. Never invent one to make a row look complete.
-- **Changed code with an owning doc updates that doc's table row, not its prose.** Tempted to add a
-  paragraph? Add a row, or a one-line comment at the code. Never grow a doc past its cap to fit a
-  new fact — if it does not fit, something in it is dead.
-- **A test that pins doc prose is the enforcement, not an obstacle.** `docs.terminology`,
-  `k8s-docs`, `docs.eks-storage`, `styles` and `skills.task-control` assert literal sentences;
-  restore the sentence, never relax the test. Those suites are whitespace-sensitive — a reflow
-  breaks them.
-- **Skills and the runner agent-home guides are prompts, not docs.** `.claude/skills/`,
-  `docker/skills/`, `claude-home/CLAUDE.md`, `opencode-home/AGENTS.md`: dedupe rationale and
-  repetition, but preserve every directive, command and step order, and never leave a runtime
-  agent a back-reference to resolve.
-
-The `doc-maintenance` skill states this contract in full and runs a repo-wide pass.
+A doc is a map to the code: one sentence of purpose, a `| Concern | Code | Test |` table, then
+`## Invariants`, within the line cap. Before editing any doc, skill or agent-home guide, read the
+`doc-maintenance` skill (`.claude/skills/doc-maintenance/SKILL.md`). Two rules bind even without it:
+a test that pins doc prose is the enforcement, so restore the sentence and never relax the test;
+and skills and the runner agent-home guides are prompts, so preserve every directive, command and
+step order. `core/test/docs-cap.test.ts` enforces the cap.
 
 ## Commands
 
@@ -181,17 +159,9 @@ Operational facts behind those:
   what iteration and per-PR checks use. The full default lane runs at the end of a PR series and on
   `main`, and whenever the harness or a shared runner file changed (the map says so).
   `scripts/test-jobs.sh`, `scripts/test-jobs-changed.mjs`, `docs/executor-testing.md`.
-- **Job fixtures are per run; the host is shared.** Stub image tags, the default disposable database,
-  workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
-  Postgres remains shared; worktrees set `COMPOSE_PROJECT_NAME` to the existing development stack
-  before board phases. Do not recreate Postgres or prune images while a lane is active. Board phases
-  use `PORT` through `PORT + 5` (default 8129–8134). Keep separate `test:jobs` invocations serial on one Docker
-  daemon: they share the default ports and one checkout's `dist`. `--parallel [--slots N]` is the supported
-  fan-out: it builds once and runs phase groups (`scripts/test-jobs-groups.mjs`) as runs of their own, each on
-  a ten-port slice of `PORT` with its own database and names; each driver's reaper scans only its own board's
-  containers (`factory.board`, `driver/test/docker-reaper-boards.test.ts`), so groups never reap each other.
-  Phase totals, check intervals and process logs stay under `artifacts/jobs/`; `TIMINGS_FILE` overrides
-  the output path (`server/test/test-jobs.options.test.ts`).
+- **Job fixtures are per run; the host is shared.** Keep separate `test:jobs` invocations serial on
+  one Docker daemon, and do not recreate Postgres or prune images while a lane is active; the
+  isolation rules are in [docs/executor-testing.md](docs/executor-testing.md).
 - `verify:ui` needs `factory_e2e` **and** `factory_auth_e2e` to exist; Playwright boots every
   webServer whatever `--project` says. `E2E_PORT_BASE` (default 8123) and `E2E_DB_PREFIX` let two
   worktrees run at once — one checkout cannot, since both write `web/dist` and `artifacts/`.

@@ -41,6 +41,17 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
   both pins; consolidate only when setup, branch and expected failure are identical.
 - **The focused coverage gate excludes `driver/src/index.ts`, `driver/src/scripts/` and the Postgres telemetry
   store** (`vitest.executors.config.ts`); the script suites and `test:db` cover them.
+- **Job fixtures are per run; the host is shared.** Stub image tags, the default disposable database,
+  workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
+  Postgres remains shared; worktrees set `COMPOSE_PROJECT_NAME` to the existing development stack
+  before board phases. Do not recreate Postgres or prune images while a lane is active. Board phases
+  use `PORT` through `PORT + 5` (default 8129–8134). Keep separate `test:jobs` invocations serial on one Docker
+  daemon: they share the default ports and one checkout's `dist`. `--parallel [--slots N]` is the supported
+  fan-out: it builds once and runs phase groups (`scripts/test-jobs-groups.mjs`) as runs of their own, each on
+  a ten-port slice of `PORT` with its own database and names; each driver's reaper scans only its own board's
+  containers (`factory.board`, `driver/test/docker-reaper-boards.test.ts`), so groups never reap each other.
+  Phase totals, check intervals and process logs stay under `artifacts/jobs/`; `TIMINGS_FILE` overrides
+  the output path (`server/test/test-jobs.options.test.ts`).
 
 ## What no lane covers
 
