@@ -11,7 +11,7 @@
  * - `job-store-conclusions.ts` — the staged final envelope and the board's commit of it (076).
  * - `job-store-phase-checkpoints.ts` — the post-run phase outcomes an adopter resumes from (080).
  * - `job-store-thread-actions.ts` — member actions on a thread: create, follow up, retry, done, reopen, remove, and
- *   the wait-control pair (issue #328); `job-store-run-control.ts` — stop, suspend, interrupt.
+ *   the wait-control pair; `job-store-run-control.ts` — stop, suspend, interrupt.
  * - `job-store-questions.ts` — the agent's questions (050): ask, expire, answer, and their reads.
  * - `job-store-reads.ts` — get, thread, list, and the task list.
  * - `job-store-org-resolvers.ts` — org-of-lease/job/reclaim.
