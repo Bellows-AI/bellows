@@ -26,6 +26,7 @@ Data flow: agent → OTEL collector → `POST /api/otlp/v1/metrics` → `flatten
 | Installation token, repo listing, repo source | `server/src/github/app-token.ts`, `app-client.ts`, `repo-source.ts` | `server/test/github.app-token.test.ts`, `server/test/repo-source.test.ts` |
 | Range parsing, filtering, bucketing | `core/src/range.ts` (`parseRange` lives in `server/src/routes/stats.ts`) | `core/test/range.test.ts` |
 | The shared payload contract the SPA imports | `core/src/types.ts` | `core/test/metrics.invariants.test.ts` |
+| The SPA's request layer: every `web/src/api` fetch is `request()` (401 to the gate once, refusal parsed, a non-JSON or mis-shaped body an error, a throw a message); every poll is `usePoll` (abortable chain, URL-keyed answer, visibility refetch); no query library | `web/src/api/request.ts`, `web/src/api/usePoll.ts`, `web/src/api/unauthenticated.ts` | `web/test/request.dom.test.tsx`, `web/test/usePoll.dom.test.tsx` |
 
 Then: [api.md](api.md) · [auth.md](auth.md) · [organizations.md](organizations.md) ·
 [repos.md](repos.md) · [configuration.md](configuration.md) · [date-range.md](date-range.md) ·

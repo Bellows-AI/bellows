@@ -1,6 +1,7 @@
 import { ADMIN_ROLE, type Role } from '@factory-ai/core';
-import { useCallback, useEffect, useState } from 'react';
-import { refusalOf } from './refusal.js';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { request } from './request.js';
+import { reportUnauthenticated, subscribeUnauthenticated } from './unauthenticated.js';
 
 export interface Session {
     /** The `/api/auth/me` union's signed-in arm; the anonymous answer is `{ authenticated: false }`. */
@@ -31,52 +32,17 @@ export interface Session {
 export const roleLabel = (role: Role): string => (role === ADMIN_ROLE ? 'Admin' : 'Member');
 
 /**
- * How an expired session reaches the gate.
- *
- * `useStats` polls every two seconds while a fetch is running, so a session expiring in the
- * middle of a poll is not an edge case — any tab left open overnight meets an expired session on
- * its next request. The
- * 401 arrives at the data layer, but the thing that has to react to it is the gate, and they have no
- * component relationship: the gate renders the tree that contains the poll.
- *
- * A Set rather than a single slot, because more than one `useSession` instance can be mounted at
- * once (the shell reads the session for the user menu, and the settings and environment pages read
- * it for themselves). A single slot let the second mount steal it and the first unmount silence the
- * gate for both.
- */
-const listeners = new Set<() => void>();
-
-/** The status code that means "the session is gone" — every data hook checks for it and hands the
- * gate the news via {@link reportUnauthenticated} rather than rendering it as its own error. */
-export const HTTP_STATUS_UNAUTHORIZED = 401;
-
-export function reportUnauthenticated(): void {
-    for (const listener of listeners) listener();
-}
-
-/** Registers a 401 listener; returns the unsubscribe. The effect below is one caller of it. */
-export function subscribeUnauthenticated(listener: () => void): () => void {
-    listeners.add(listener);
-    return () => {
-        listeners.delete(listener);
-    };
-}
-
-/**
  * Signs the caller out: POSTs the logout route — never GET, which the server refuses as CSRF-able —
  * then fires the same broadcast a 401 does, so every mounted `useSession` re-checks `/api/auth/me`,
  * hears "nobody", and the gate returns. Fired even when the POST itself fails: the re-check is what
  * decides what the screen shows, and a dead network re-checks into an error, not a stale session.
  */
 export async function signOut(): Promise<void> {
-    try {
-        await fetch('/api/auth/logout', { method: 'POST' });
-    } catch {
-        // The POST only fails when the network itself is down; the re-check below reports that as
-        // an error rather than this promise rejecting into an unhandled one.
-    } finally {
-        reportUnauthenticated();
-    }
+    const result = await request('/api/auth/logout', { method: 'POST', empty: true });
+    // The POST only fails when the network itself is down (or the session is already gone, which
+    // `request` has already broadcast); the re-check reports that as an error, not as a rejection.
+    if (!result.ok && result.unauthenticated) return;
+    reportUnauthenticated();
 }
 
 export interface UseSession {
@@ -96,28 +62,39 @@ export function useSession(): UseSession {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    // One check at a time: a newer check aborts the one in flight, so an older answer (a slow
+    // re-check landing after a sign-out's) can never overwrite the newer one, and an unmounted
+    // hook never sets state.
+    const inFlight = useRef<AbortController | null>(null);
     const check = useCallback(async () => {
-        try {
-            // No `credentials: 'include'`: the default `same-origin` already sends the cookie, and
-            // 'include' would drag CORS into a same-origin app for nothing.
-            const response = await fetch('/api/auth/me');
-            if (!response.ok) {
-                setError((await refusalOf(response, 'Could not check the session')).error);
-            } else {
-                const payload = (await response.json()) as MeResponse;
-                setSession(payload.authenticated ? payload : null);
-                setError(null);
-            }
-        } catch (e) {
-            setError((e as Error).message);
-        } finally {
-            setLoading(false);
+        inFlight.current?.abort();
+        const own = new AbortController();
+        inFlight.current = own;
+        // No `credentials: 'include'`: the default `same-origin` already sends the cookie, and
+        // 'include' would drag CORS into a same-origin app for nothing. `ungated`: this IS the
+        // gate's probe, so a 401 here is a refusal to show, not news that would re-run the probe.
+        const result = await request<MeResponse>('/api/auth/me', {
+            signal: own.signal,
+            ungated: true,
+            verb: 'Could not check the session',
+        });
+        if (own.signal.aborted) return;
+        if (result.ok) {
+            setSession(result.value.authenticated ? result.value : null);
+            setError(null);
+        } else {
+            setError(result.error);
         }
+        setLoading(false);
     }, []);
 
     useEffect(() => {
         void check();
-        return subscribeUnauthenticated(() => void check());
+        const off = subscribeUnauthenticated(() => void check());
+        return () => {
+            off();
+            inFlight.current?.abort();
+        };
     }, [check]);
 
     return { session, loading, error };

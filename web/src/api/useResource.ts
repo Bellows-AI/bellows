@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 /**
  * The fetch-once-and-refetch-on-demand read shared by the settings hooks (`useEnv`,
@@ -16,32 +15,19 @@ export function useResource<Body, T>(url: string, select: (body: Body) => T) {
 
     const load = useCallback(
         async (signal: AbortSignal) => {
-            try {
-                const response = await fetch(url, { signal });
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    // Handed to the gate rather than rendered as a banner — every later request
-                    // would 401 too, so a banner would never clear.
-                    reportUnauthenticated();
-                    setLoading(false);
-                    return;
-                }
-                if (!response.ok) {
-                    setError((await refusalOf(response)).error);
-                    setLoading(false);
-                    return;
-                }
-                const body = (await response.json()) as Body;
-                // A read that was superseded (a newer refresh, or a write that adopted its own
-                // rows) must never land: its answer is older than what the page already holds.
-                if (signal.aborted) return;
-                setData(select(body));
+            const result = await request<Body>(url, { signal });
+            // A read that was superseded (a newer refresh, or a write that adopted its own rows) must
+            // never land, nor touch loading or error: its answer is older than what the page holds.
+            if (signal.aborted) return;
+            if (result.ok) {
+                setData(select(result.value));
                 setError(null);
-            } catch (e) {
-                if (signal.aborted) return;
-                setError((e as Error).message);
-            } finally {
-                setLoading(false);
+            } else if (!result.unauthenticated) {
+                // A 401 is handed to the gate rather than rendered as a banner: every later request
+                // would 401 too, so a banner would never clear.
+                setError(result.error);
             }
+            setLoading(false);
         },
         [url, select]
     );

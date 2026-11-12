@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-    HIDDEN_REFRESH_MS,
-    nextStatsPollDelay,
-    POLL_MS,
-    refetchOnVisible,
-    VISIBLE_REFRESH_MS,
-} from '../src/api/useStats.js';
+import { HIDDEN_REFRESH_MS, nextStatsPollDelay, POLL_MS, VISIBLE_REFRESH_MS } from '../src/api/useStats.js';
+import { refetchOnVisible } from '../src/api/usePoll.js';
 
 /**
  * The stats poll's cadence. The regression it pins: a 200 used to end the chain, so a dashboard
