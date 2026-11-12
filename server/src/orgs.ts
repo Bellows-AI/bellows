@@ -120,7 +120,7 @@ export type OrgRegistryDeps = {
     config: AppConfig;
     /** The object store behind each org's artifact index; absent (route tests), no org has one. */
     artifacts?: ArtifactBackend;
-    /** What each org's job store reports about its claims (issue #831). */
+    /** What each org's job store reports about its claims. */
     claimMetrics?: ClaimObserver;
 } & (
     | {
@@ -389,7 +389,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
         const repos = createRepoSource({
             client,
             stored: () => storedRepoNames({ sql, orgId, ready }),
-            // The onboarding screen's per-org choice (#125): the installation report intersected
+            // The onboarding screen's per-org choice: the installation report intersected
             // with `tracked_repo`. Empty table = track everything, so a deployment that never
             // narrows reads exactly as it did before the screen existed.
             allowlist: () => trackedRepos({ sql, orgId, ready }),

@@ -11,6 +11,7 @@ import {
     type ObservationResult,
     type RefreshHint,
 } from './db/batches/batch-store-observation.js';
+import { startIntervalLoop } from './interval-loop.js';
 import { GitHubReadError } from './github/pr-read.js';
 
 /**
@@ -189,26 +190,6 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
     };
 }
 
-/** Runs `pass` once now and then on an interval; a pass never overlaps the previous one and never throws. */
-function startTicker(failure: string, pass: () => Promise<void>, intervalMs: number): () => void {
-    let running = false;
-    const tick = async () => {
-        if (running) return;
-        running = true;
-        try {
-            await pass();
-        } catch (e) {
-            console.error(`${failure}: ${(e as Error).message}`);
-        } finally {
-            running = false;
-        }
-    };
-    void tick();
-    const timer = setInterval(() => void tick(), intervalMs);
-    timer.unref();
-    return () => clearInterval(timer);
-}
-
 /**
  * Observes every org's due batch PRs once now and then on an interval, the shape of the reconciler:
  * a pass never overlaps the previous one and never throws. Returns the stop.
@@ -216,11 +197,16 @@ function startTicker(failure: string, pass: () => Promise<void>, intervalMs: num
 export function startBatchPrObserver(
     orgs: { observeBatchPrs(): Promise<void> },
     intervalMs = BATCH_OBSERVE_TICK_MS
-): () => void {
-    return startTicker('[batches] observe failed', () => orgs.observeBatchPrs(), intervalMs);
+): () => Promise<void> {
+    return startIntervalLoop('batches', () => orgs.observeBatchPrs(), intervalMs, {
+        onError: (e) => console.error(`[batches] observe failed: ${e.message}`),
+    });
 }
 
 /** The single-task PR follower's cadence, the same shape; it runs whether or not batches are enabled. */
-export function startPrFollower(orgs: { followPrs(): Promise<void> }, intervalMs = BATCH_OBSERVE_TICK_MS): () => void {
-    return startTicker('[pr-follow] pass failed', () => orgs.followPrs(), intervalMs);
+export function startPrFollower(
+    orgs: { followPrs(): Promise<void> },
+    intervalMs = BATCH_OBSERVE_TICK_MS
+): () => Promise<void> {
+    return startIntervalLoop('pr-follow', () => orgs.followPrs(), intervalMs);
 }

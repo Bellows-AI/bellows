@@ -29,7 +29,7 @@ import { GATE_CONTAINER, REVIEWER_CONTAINER, type StepResult } from '../supervis
 import { gateImageOf } from '../supervisor-plan.js';
 
 /**
- * The kubernetes half of the gates (issue #773): a gate is a supervised step in the attempt's pod,
+ * The kubernetes half of the gates: a gate is a supervised step in the attempt's pod,
  * whose gate sidecar runs it (`k8s-podspec.ts`), and the sidecar is resized in place between the
  * agent's run and the verify. No Job, Secret or pod of its own.
  */
@@ -44,7 +44,7 @@ export async function runGateInGroup(
     return runGateStep(await stepHostFor(deps, job), job, gate, signal);
 }
 
-/** One review in the caller's group, made on demand like a gate's (issue #774). */
+/** One review in the caller's group, made on demand like a gate's. */
 export async function runReviewInGroup(deps: K8sDeps, run: ReviewRun, signal?: AbortSignal): Promise<StepResult> {
     const result = await runReviewSteps(await stepHostFor(deps, run.caller), run, signal);
     if (!reviewIsLost(result, signal)) return result;
@@ -87,8 +87,7 @@ async function readSidecar(deps: K8sDeps, caller: BoardJob, options: K8sRequestO
             options
         );
         const read = podsOf(listed, 'listing the reviewer pod');
-        if (read.kind !== 'value')
-            return { state: null, why: read.kind === 'inconclusive' ? read.reason : 'no pod listed', restarts: null };
+        if (read.kind !== 'value') return { state: null, why: read.reason, restarts: null };
         const pod = livePodOfItems(read.value);
         const status = pod?.status?.initContainerStatuses?.find((s) => s.name === REVIEWER_CONTAINER);
         const found = { ...(pod?.metadata?.name ? { pod: pod.metadata.name } : {}) };
@@ -161,13 +160,13 @@ async function resizeSidecar(
     }
 }
 
-/** Resizes the gate sidecar (issue #773); false for a group with no gate. */
+/** Resizes the gate sidecar; false for a group with no gate. */
 export async function resizeGateSidecar(deps: K8sDeps, job: BoardJob, phase: GateSizing): Promise<boolean> {
     if (!gateImageOf(job)) return false;
     return resizeSidecar(deps, job, GATE_CONTAINER, gateRequests(deps.config, phase));
 }
 
-/** Resizes the reviewer sidecar (issue #774); false for a claim that lists no reviewer profile. */
+/** Resizes the reviewer sidecar; false for a claim that lists no reviewer profile. */
 export async function resizeReviewerSidecar(deps: K8sDeps, job: BoardJob, phase: ReviewerSizing): Promise<boolean> {
     if (!job.reviewerProfiles?.length) return false;
     return resizeSidecar(deps, job, REVIEWER_CONTAINER, reviewerRequests(deps.config, phase));

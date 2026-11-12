@@ -11,7 +11,7 @@ import { useTestDb } from './harness.js';
 import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
 
 /**
- * Durable block waits against a real database (issue #231): a workflow transition into a node
+ * Durable block waits against a real database: a workflow transition into a node
  * carrying a private `runtime` descriptor parks in `workflow_round` instead of inserting a
  * runnable job, and the claim preamble's wake sweep is what turns folded GitHub deliveries into
  * exactly one claimable continuation. `workflow-block-runtime.test.ts` covers the dispatcher's pure
@@ -531,7 +531,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         const reclaimed = (await store.claim('worker-2', 60)) as Claim;
         expect(reclaimed).not.toBeNull();
         expect(reclaimed.id).toBe(claim.id);
-        // The expiry is the lost attempt's interruption (issue #822): the claim sequence moves.
+        // The expiry is the lost attempt's interruption: the claim sequence moves.
         expect(reclaimed).toMatchObject({ attempts: 1, claimSeq: 2 });
 
         const rounds = await roundRows(root);

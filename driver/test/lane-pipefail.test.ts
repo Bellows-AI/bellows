@@ -53,7 +53,7 @@ describe('lane scripts under pipefail', () => {
             expect.arrayContaining([
                 'scripts/test-k8s.sh',
                 'scripts/test-jobs.sh',
-                'scripts/acceptance-lib.sh',
+                'scripts/lane-lib.sh',
                 'docker/claude-executor/test.sh',
                 'docker/opencode-executor/test.sh',
                 'docker/tool-isolation-checks.sh',

@@ -19,7 +19,7 @@ import { waitForLockWaiters } from './lock-wait.js';
 import { expireLease, legacyConnection, oauthConnection, testOrg, testUser } from './fixtures.js';
 
 /**
- * BEL-59 slice 3: a task's connections are bindings on its thread root. Create resolves them (explicit
+ * A task's connections are bindings on its thread root. Create resolves them (explicit
  * ids, the unambiguous personal default) in the create transaction; the claim never offers a queued
  * root whose required provider has no live binding, and spends no attempt on it.
  */

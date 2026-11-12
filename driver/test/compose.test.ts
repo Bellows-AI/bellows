@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
- * What pins the compose driver to the working tree (issue #174). The compose `driver` service
+ * What pins the compose driver to the working tree. The compose `driver` service
  * used to build the baked `runtime` stage of docker/driver.Dockerfile — `driver/dist` inside the
  * image — so a plain `docker compose up` or restart kept running whatever publisher code was
  * baked last, and `/fix N` PRs went out without the closing keyword the current source appends.
@@ -106,7 +106,9 @@ describe('the driver image stages', () => {
         // runs. `dev` must sit before it, runtime must still bake dist and run it, and nothing
         // may follow runtime — a stage appended after it would silently become what ships.
         const dev = driverDockerfile.indexOf('FROM deps AS dev');
-        const runtime = driverDockerfile.indexOf('FROM mirror.gcr.io/library/node:24-alpine AS runtime');
+        const runtime = driverDockerfile.search(
+            /^FROM mirror\.gcr\.io\/library\/node:24-alpine@sha256:[0-9a-f]{64} AS runtime$/m
+        );
         expect(dev).toBeGreaterThan(-1);
         expect(runtime).toBeGreaterThan(dev);
         expect(driverDockerfile.slice(runtime).match(/^FROM/gm)).toHaveLength(1);

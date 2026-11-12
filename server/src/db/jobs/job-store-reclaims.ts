@@ -1,5 +1,5 @@
-// The worktree-reclaim queue's worker half (issue #41): claim, ack and renew, each under the
-// acquisition's own token (issue #821).
+// The worktree-reclaim queue's worker half: claim, ack and renew, each under the
+// acquisition's own token.
 import { lockThreadInTx, lockThreadRootInTx } from '../connection-bindings.js';
 import type { JobStore, JobStoreContext, ReclaimClaim, ReclaimRenewal } from './job-store-types.js';
 

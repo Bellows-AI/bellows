@@ -7,7 +7,7 @@ import { expectRowFits } from './connected-apps.js';
 import { throughSignIn } from './signin.js';
 
 /**
- * The MCP consent screen and the connected-apps panel (BEL-103), in a real browser against the auth board with
+ * The MCP consent screen and the connected-apps panel, in a real browser against the auth board with
  * `MCP_ENABLED` on (playwright.config.ts): a dynamically registered client runs the authorize round trip, the member
  * allows or denies on `/oauth/consent`, and Disconnect on the account page makes the next MCP call 401.
  *

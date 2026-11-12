@@ -5,7 +5,7 @@ import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
 
-/** BEL-61: 098 adds what an authorization asked for and the `site-mismatch` ending, expand only. */
+/** 098 adds what an authorization asked for and the `site-mismatch` ending, expand only. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);

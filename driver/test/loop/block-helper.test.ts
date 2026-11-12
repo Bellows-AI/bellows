@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
-import type { RunOutcome, RunSession } from '../../src/runner.js';
+import type { GroupTakenAway, RunOutcome, RunSession } from '../../src/runner.js';
 import type { HelperPlan, HelperResult } from '../../src/helpers.js';
 import { StepChannelClosed, StepTimedOut } from '../../src/step-control.js';
 import type { LoopRuntime } from '../../src/loop/loop-types.js';
@@ -190,19 +190,25 @@ describe('block-helper steps (issue #207)', () => {
         }
     );
 
-    // BEL-302: a lost helper supervisor is a node loss only on the executor's confirmation that the group was taken away.
-    it.each<[string, () => Error, () => Promise<boolean>, boolean]>([
+    // a lost helper supervisor is a node loss only on the executor's confirmation that the group was taken away.
+    it.each<[string, () => Error, () => Promise<GroupTakenAway>, Record<string, true>]>([
         [
             'a closed channel with the group confirmed taken away',
             () => new StepChannelClosed('the helper'),
-            async () => true,
-            true,
+            async () => 'taken',
+            { nodeLoss: true },
         ],
         [
             'a closed channel with the group still there',
             () => new StepChannelClosed('the helper'),
-            async () => false,
-            false,
+            async () => 'kept',
+            {},
+        ],
+        [
+            'a closed channel whose read could not tell',
+            () => new StepChannelClosed('the helper'),
+            async () => 'unknown',
+            { blocked: true },
         ],
         [
             'a closed channel whose read failed',
@@ -210,33 +216,36 @@ describe('block-helper steps (issue #207)', () => {
             async () => {
                 throw new Error('apiserver unreachable');
             },
-            false,
+            { blocked: true },
         ],
         [
             'a step answered too late, whatever the executor says',
             () => new StepTimedOut('step-1'),
-            async () => true,
-            false,
+            async () => 'taken',
+            {},
         ],
-    ])('flags a helper whose supervisor was lost only when confirmed: %s', async (_name, lost, taken, flagged) => {
-        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase: 'pre' })] }]);
-        const runner = stubRunner(async () => ok());
-        runner.runHelper = async () => {
-            throw lost();
-        };
-        runner.groupTakenAway = taken;
+    ])(
+        'flags a helper whose supervisor was lost only when confirmed, and holds the budget when unread: %s',
+        async (_name, lost, taken, flags) => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase: 'pre' })] }]);
+            const runner = stubRunner(async () => ok());
+            runner.runHelper = async () => {
+                throw lost();
+            };
+            runner.groupTakenAway = taken;
 
-        await drive({ ...board, runner });
+            await drive({ ...board, runner });
 
-        expect(board.board.interrupted).toEqual([
-            {
-                id: job(1).id,
-                reason: expect.stringContaining('infrastructure loss'),
-                release: true,
-                ...(flagged ? { nodeLoss: true } : {}),
-            },
-        ]);
-    });
+            expect(board.board.interrupted).toEqual([
+                {
+                    id: job(1).id,
+                    reason: expect.stringContaining('infrastructure loss'),
+                    release: true,
+                    ...flags,
+                },
+            ]);
+        }
+    );
 
     it('flags a run the executor saw taken away, and the loss of one it did not', async () => {
         for (const flagged of [true, false]) {
@@ -352,7 +361,7 @@ describe('block-helper steps (issue #207)', () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         await started;
 
-        // The helper was handed the stand-down's signal and it fired (issue #488): cancelled, not only raced.
+        // The helper was handed the stand-down's signal and it fired: cancelled, not only raced.
         expect(seen?.aborted).toBe(true);
         expect(runCalls).toEqual([]);
         expect(released).toEqual([job(1).id]);
@@ -388,7 +397,7 @@ describe('block-helper steps (issue #207)', () => {
                 [{ ok: true, output: { decided: 'up-to-date' }, control: 'conclude' }]
             );
             // A conclusion is a setup refusal like any other, and no runner is coming to release
-            // the checkout claim (issue #469).
+            // the checkout claim.
             const released: string[] = [];
             runner.releaseFence = async (fencedJob) => {
                 released.push(fencedJob.id);

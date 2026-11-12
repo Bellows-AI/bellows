@@ -13,7 +13,7 @@ import { mergeCalls, type EventRow } from '../src/db/jobs/job-store-activity-rec
 import { activityWorld, minute } from './helpers-activity.js';
 
 /**
- * The run-activity bucketing (issues #339, #847): a run's ALREADY-assigned contributions placed into
+ * The run-activity bucketing: a run's ALREADY-assigned contributions placed into
  * buckets over the run's segment span. Temporality, ownership and run assignment are core's
  * (core/test/usage-reduce.test.ts, token-contributions tests); what is pinned here is that the
  * buckets add back to the run's usage and that an unmeasured type is never drawn as zero.

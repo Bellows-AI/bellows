@@ -1,5 +1,5 @@
 #!/bin/sh
-# The agent container's entrypoint (issue #814), in front of the CLI's own. The driver starts this
+# The agent container's entrypoint, in front of the CLI's own. The driver starts this
 # container as root with every capability dropped but CAP_SETUID and CAP_SETGID, and
 # no-new-privileges. As root this starts the tool broker — the one process that keeps those two, so
 # the CLI's commands run as the tool uid (factory-tool.cjs) — and then drops for good to the CLI's

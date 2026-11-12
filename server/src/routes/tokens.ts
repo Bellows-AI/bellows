@@ -8,8 +8,8 @@ import { bad, body as jsonBody, guard } from './helpers.js';
 import { resolveCallerRoute } from './route-guards.js';
 
 /**
- * Access-token management for the settings page (#70): a member's personal tokens (`fat_`), and
- * the organization's tokens (`oat_`). Both mint into the org the caller is signed into (#99) —
+ * Access-token management for the settings page: a member's personal tokens (`fat_`), and
+ * the organization's tokens (`oat_`). Both mint into the org the caller is signed into —
  * installation access is membership, so every member is the same trust level and the org-token
  * routes carry no admin gate.
  *
@@ -46,7 +46,7 @@ export const tokenRoutes =
     ({ store }: TokenRoutesDeps): FastifyPluginAsync =>
     async (app) => {
         /**
-         * Every route scopes to the CALLER's org (#99): a personal token is minted into the org
+         * Every route scopes to the CALLER's org: a personal token is minted into the org
          * the caller is signed into, and an org token into the org of the admin... of the member
          * who mints it — installation access is membership and there are no roles above member,
          * so the org-token routes lost their admin gate with the roster that fed it.

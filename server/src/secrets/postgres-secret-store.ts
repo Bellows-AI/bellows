@@ -24,7 +24,7 @@ import type {
 } from './secret-store.js';
 
 /**
- * The PostgreSQL `SecretStore` (docs/secrets.md): the BEL-64 recovery model over `postgres-secret-repo.ts`,
+ * The PostgreSQL `SecretStore` (docs/secrets.md): the recovery model over `postgres-secret-repo.ts`,
  * with AES-256-GCM envelopes (`secret-envelope.ts`) under keys that live outside the database
  * (`secret-keys.ts`). Where a payload lives is the `PayloadStore` seam (`secret-payloads.ts`); the database
  * store (`database-payloads.ts`) is the one this file composes. The behavioural twin is the test-only reference store (`server/test/secrets-reference-store.ts`).

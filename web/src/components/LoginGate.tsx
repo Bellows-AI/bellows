@@ -41,7 +41,7 @@ function decodedPath(pathname: string): string {
  */
 export function LoginGate({ children }: { children: ReactNode }) {
     const { pathname } = useLocation();
-    // The attachment upload page (BEL-248) is signed-out by design: the single-use link in its fragment is the
+    // The attachment upload page is signed-out by design: the single-use link in its fragment is the
     // credential. Matched the way the router matches (a trailing slash included), and before any session call, so
     // the page neither waits for nor sends the cookie.
     if (matchPath({ path: UPLOAD_PAGE_ROUTE, end: true }, decodedPath(pathname))) return <>{children}</>;

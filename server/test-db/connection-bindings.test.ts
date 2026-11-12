@@ -12,7 +12,7 @@ import { createConnectionStore, type ConnectionStore } from '../src/db/connectio
 import { useTestDb } from './harness.js';
 import { legacyConnection, oauthConnection, testOrg, testUser } from './fixtures.js';
 
-/** BEL-59: how a task's connections are chosen (explicit, personal default, requirement) and how they grow. */
+/** how a task's connections are chosen (explicit, personal default, requirement) and how they grow. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const OTHER_ORG = testOrg();

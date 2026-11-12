@@ -3,7 +3,7 @@ import { BoardHttpError } from './board-retry.js';
 import type { Board, BoardJob } from './board.js';
 
 /**
- * The two reads of a thread's checkpoint (issue #775): the pointer, and one chunk of its stream.
+ * The two reads of a thread's checkpoint: the pointer, and one chunk of its stream.
  * Both run under the live lease (`POST /api/jobs/:id/checkpoint`, `/checkpoint/chunk`). Copied from
  * `server/src/db/restore-types.ts` rather than imported: this package depends on nothing.
  */

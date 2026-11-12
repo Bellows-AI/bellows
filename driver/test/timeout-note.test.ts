@@ -4,7 +4,7 @@ import type { GateRunNote, TimeoutActivity } from '../src/timeout-note.js';
 
 /**
  * The kill note a timed-out run leaves in the output tail. It must let a reader tell — without
- * raw SQL against three sources (issue #339) — a run that hung from one that was still working
+ * raw SQL against three sources — a run that hung from one that was still working
  * when the wall clock ran out: the age of the last output, the ad-hoc gates' latest verdicts,
  * and the agent's last activity line.
  */

@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { QueueTaskInput } from '../api/useTasks.js';
+import type { QueueTaskInput } from '../api/taskWrites.js';
 import { trackedRepos } from '../api/useRepos.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { TaskComposer, TaskComposerSkeleton } from '../panels/TaskComposer.js';
 import { composerExecutorOptions } from '../workspace/executors.js';
 import { useTasksPage } from './TasksLayout.js';
+import { StateNote } from '../components/StateNote.js';
 
 /**
  * `/tasks/new`: the big guided composer, open by default, where a task is written and started.
@@ -52,7 +53,7 @@ export function TaskComposerPage() {
     return (
         <>
             <PageHeader eyebrow="Tasks" title="New task" />
-            {tasks.error ? <p className="status">{tasks.error}</p> : null}
+            {tasks.error ? <StateNote state="error">{tasks.error}</StateNote> : null}
             {sessionLoading ? (
                 <TaskComposerSkeleton />
             ) : (

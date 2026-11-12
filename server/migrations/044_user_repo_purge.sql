@@ -1,4 +1,4 @@
--- The manual purge (issue #92): a member deletes ONE orphaned checkout, deliberately, after a
+-- The manual purge: a member deletes ONE orphaned checkout, deliberately, after a
 -- confirmation that names what is lost (uncommitted work, local factory/<root> branches).
 --
 -- `purging` is a fifth clone status, and it is a stamp a single dashboard process owns — exactly

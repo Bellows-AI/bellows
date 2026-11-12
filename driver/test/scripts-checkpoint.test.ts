@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { SCRIPT_IDENTITY, git, hasGit, makeOrigin, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The checkpoint script (issue #775): at an attempt's finalize it commits the whole task tree through
+ * The checkpoint script: at an attempt's finalize it commits the whole task tree through
  * a throwaway index, bundles that commit against what the remote already has, and snapshots the
  * OpenCode session database. Real git on a real partial clone made by the sync script; the script
  * FILE is what runs, as in the container.

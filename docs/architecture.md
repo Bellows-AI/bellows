@@ -18,6 +18,7 @@ Data flow: agent → OTEL collector → `POST /api/otlp/v1/metrics` → `flatten
 | Concern | Code | Test |
 | --- | --- | --- |
 | Boot wiring and start order | `server/src/main.ts` | `server/test/helpers-harness.ts` drives `buildApp` |
+| Graceful shutdown: `start()` returns `{ close }`; SIGTERM/SIGINT run it under one 10 s deadline (abort the long-polls via `request.closing`, `app.close()`, settle every loop's pass, end both pools) and exit 0, or 1 on overrun | `server/src/shutdown.ts`, `interval-loop.ts`, `app.ts`, `index.ts` | `server/test-db/shutdown.test.ts`, `server/test/shutdown.test.ts`, `server/test/interval-loop.test.ts` |
 | Per-org runtimes (repo source, telemetry, stats cache, stores) | `server/src/orgs.ts` | `server/test/orgs.test.ts` |
 | `JobStore` is the intersection of one interface per concern, each beside its implementation; a handler asks `storeFor<keyof JobQuestionStore>` for the slice it calls; the value-import edges that keep `vitest related` narrow | `server/src/db/jobs/job-store-types.ts`, `server/src/routes/jobs/job-context.ts`, `server/src/routes/route-guards.ts` | `server/test/job-store-slices.test.ts`, `server/test/import-boundaries.test.ts` |
 | Read-time aggregation and the cache slot | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |
@@ -25,6 +26,7 @@ Data flow: agent → OTEL collector → `POST /api/otlp/v1/metrics` → `flatten
 | Installation token, repo listing, repo source | `server/src/github/app-token.ts`, `app-client.ts`, `repo-source.ts` | `server/test/github.app-token.test.ts`, `server/test/repo-source.test.ts` |
 | Range parsing, filtering, bucketing | `core/src/range.ts` (`parseRange` lives in `server/src/routes/stats.ts`) | `core/test/range.test.ts` |
 | The shared payload contract the SPA imports | `core/src/types.ts` | `core/test/metrics.invariants.test.ts` |
+| The SPA's request layer: every `web/src/api` fetch is `request()` (401 to the gate once, refusal parsed, a non-JSON or mis-shaped body an error, a throw a message); every poll is `usePoll` (abortable chain, URL-keyed answer, visibility refetch); no query library | `web/src/api/request.ts`, `web/src/api/usePoll.ts`, `web/src/api/unauthenticated.ts` | `web/test/request.dom.test.tsx`, `web/test/usePoll.dom.test.tsx` |
 
 Then: [api.md](api.md) · [auth.md](auth.md) · [organizations.md](organizations.md) ·
 [repos.md](repos.md) · [configuration.md](configuration.md) · [date-range.md](date-range.md) ·

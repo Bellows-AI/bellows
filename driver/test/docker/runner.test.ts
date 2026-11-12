@@ -338,7 +338,7 @@ describe('the docker runner', () => {
         expect(outcome).toMatchObject({ exitCode: 1, started: true });
     });
 
-    // A runner container removed under the run (issue #560) — `docker rm -f` by hand, a host
+    // A runner container removed under the run — `docker rm -f` by hand, a host
     // cleanup — exits the attached start 137, but the agent never ended it: the driver's own kill
     // only kills, so a container the daemon no longer knows is an infrastructure loss.
     it('reads a runner container removed mid-run as an infrastructure loss', async () => {
@@ -364,7 +364,7 @@ describe('the docker runner', () => {
         });
     });
 
-    // BEL-302: a removed container is the platform taking the run away; a supervisor that exited badly is not.
+    // a removed container is the platform taking the run away; a supervisor that exited badly is not.
     it('flags a runner container removed mid-run as a node loss', async () => {
         const exec = (args: string[]) =>
             args[0] === 'inspect'
@@ -407,7 +407,7 @@ describe('the docker runner', () => {
         expect(outcome).not.toHaveProperty('infraNodeLoss');
     });
 
-    // An agent that died before it wrote agent.exit (#920) leaves its supervisor waiting out the start or heartbeat
+    // An agent that died before it wrote agent.exit leaves its supervisor waiting out the start or heartbeat
     // window: the supervisor cannot see the container, so the driver names it once the daemon confirms it over.
     describe.each([
         ['exited', '{"Status":"exited","Running":false,"StartedAt":"2026-01-01T00:00:00Z","ExitCode":1}', true],
@@ -500,7 +500,7 @@ describe('the docker runner', () => {
         expect(outcome).not.toHaveProperty('infraLoss');
     });
 
-    // The full-log accumulator (issue #325): everything the stream printed, tail-kept at the
+    // The full-log accumulator: everything the stream printed, tail-kept at the
     // artifact cap — the artifact the loop uploads at close, of which the verdict's rolling tail
     // is only the end. The refused-start path carries neither.
     it('carries the full log on the outcome, capped tail-true, beside the unchanged report tail', async () => {
@@ -656,7 +656,7 @@ describe('the docker runner', () => {
         expect(tails).toEqual(['step one\n', 'step one\nwarn\n']);
     });
 
-    /** The agent container's own start is the only launch proof: a refused start still prints (issue #845). */
+    /** The agent container's own start is the only launch proof: a refused start still prints. */
     it('proves the agent started from the container StartedAt, never from output', async () => {
         const startedAts = ['2026-10-25T07:00:00.123Z', '0001-01-01T00:00:00Z', ''];
         const seen: string[][] = [];
@@ -705,7 +705,7 @@ describe('the docker runner', () => {
     });
 
     /**
-     * The attempt's service fleet rides the same sample (issue #60): the dashboard can answer
+     * The attempt's service fleet rides the same sample: the dashboard can answer
      * "did db come up" while the run is going. The read is scoped by the job AND lease label —
      * the attempt-scoping every other per-attempt call leans on — and requires the
      * `factory.service` key, so the runner and gate containers never answer it. `-a` so exited
@@ -800,7 +800,7 @@ describe('the docker runner', () => {
     });
 
     /**
-     * The dead half of the fleet (issue #423): an exited or dead service, with the daemon's exit
+     * The dead half of the fleet: an exited or dead service, with the daemon's exit
      * code and reason and the container's last log lines — stdout and stderr both, because an
      * entrypoint's `chown` refusal lands on stderr. Read over the sample's own label scoping; a
      * running service is never inspected.
@@ -977,7 +977,7 @@ describe('the docker runner', () => {
         });
     });
 
-    // The agent reaches ad-hoc gates through the control socket (BEL-88): a gated job whose claim
+    // The agent reaches ad-hoc gates through the control socket: a gated job whose claim
     // resolves to nothing carries no gate pair, only the runner's own attempt pair.
     it('writes no gate pair into the env file of a gated job whose claim env is empty', async () => {
         let fileBody: string | null = null;
@@ -1076,7 +1076,7 @@ describe('the docker runner', () => {
     });
 });
 
-describe('groupTakenAway: the daemon confirms the task group was removed (BEL-302)', () => {
+describe('groupTakenAway: the daemon confirms the task group was removed', () => {
     const inspected = (answer: () => Promise<{ stdout: string }>) => {
         const asked: string[][] = [];
         const runner = dockerRunner((args: string[]) => {
@@ -1093,7 +1093,7 @@ describe('groupTakenAway: the daemon confirms the task group was removed (BEL-30
         async (stderr) => {
             const { runner, asked } = inspected(refused(stderr));
 
-            expect(await runner.groupTakenAway?.(job, signal())).toBe(true);
+            expect(await runner.groupTakenAway?.(job, signal())).toBe('taken');
             expect(asked[0]).toContain(supervisorName(job));
         }
     );
@@ -1101,12 +1101,35 @@ describe('groupTakenAway: the daemon confirms the task group was removed (BEL-30
     it.each([
         ['a running supervisor', async () => ({ stdout: '{"Running":true}' })],
         ['a supervisor that exited (a crash is its own, not the node)', async () => ({ stdout: '{"Running":false}' })],
-        ['a daemon that cannot be reached', refused('Cannot connect to the Docker daemon')],
-        ['an answer that is not JSON', async () => ({ stdout: 'garbled' })],
-        ['an empty answer', async () => ({ stdout: '' })],
-    ])('does not confirm it from %s', async (_name, answer) => {
+    ])('reads the group as kept from %s', async (_name, answer) => {
         const { runner } = inspected(answer);
 
-        expect(await runner.groupTakenAway?.(job, signal())).toBe(false);
+        expect(await runner.groupTakenAway?.(job, signal())).toBe('kept');
+    });
+
+    it.each([
+        ['an answer that is not JSON', async () => ({ stdout: 'garbled' })],
+        ['an empty answer', async () => ({ stdout: '' })],
+        ['a null state', async () => ({ stdout: 'null' })],
+        ['an array state', async () => ({ stdout: '[]' })],
+        ['a daemon that cannot be reached', refused('Cannot connect to the Docker daemon')],
+        ['a daemon error that is not "no such"', refused('Error response from daemon: boom')],
+        [
+            'an inspect killed at its timeout',
+            () => Promise.reject(Object.assign(new Error('timed out'), { killed: true })),
+        ],
+    ])('answers unknown from %s, never kept', async (_name, answer) => {
+        const { runner } = inspected(answer);
+
+        expect(await runner.groupTakenAway?.(job, signal())).toBe('unknown');
+    });
+
+    it('answers unknown for an attempt that already stood down', async () => {
+        const down = new AbortController();
+        down.abort();
+
+        expect(await inspected(async () => ({ stdout: '{}' })).runner.groupTakenAway?.(job, down.signal)).toBe(
+            'unknown'
+        );
     });
 });

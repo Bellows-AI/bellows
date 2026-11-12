@@ -1,5 +1,5 @@
 /**
- * The `builtin/merge-conflict-autofix` block (issue #122): reconciles an existing task's pull
+ * The `builtin/merge-conflict-autofix` block: reconciles an existing task's pull
  * request with its current base branch. Two nodes:
  *
  * - `repair` (entry, `session: fresh`, `gates: false`) declares a single PRE helper,
@@ -7,8 +7,8 @@
  *   a deterministic script that fetches the PR's recorded base (the structured publication
  *   identity issue #202 records, injected generically by `resolveClaimHelperPlans` — this
  *   descriptor names no PR field itself). The probe DECIDES two of its three verdicts itself and
- *   `conclude`s (issue #230) with the marker as the job's output, so no agent session ever starts
- *   for them (issue #503): `MERGE-UP-TO-DATE` (the branch already contains its base) and
+ *   `conclude`s with the marker as the job's output, so no agent session ever starts
+ *   for them: `MERGE-UP-TO-DATE` (the branch already contains its base) and
  *   `MERGE-REBASED` (a clean rebase). Only a real conflict continues to the agent, which gets a
  *   fresh session — not the whole task history — and reads the probe's
  *   `.factory/merge-conflict-probe.json` for `conflictingPaths`, since the generic helper

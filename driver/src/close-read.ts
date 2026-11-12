@@ -68,7 +68,7 @@ function streamTagOf(line: string): { stream: string; marker: boolean } | null {
  * Splits the readout's stdout into its export streams: every line tagged with a `stream` belongs
  * to that stream and is kept verbatim; a `{stream,truncated:true}` marker only sets the flag.
  * Undefined when no stream line was printed — a readout that exported nothing. `headCut`: the
- * stdout is a tail the transport kept (issue #825), so the first stream it shows lost its head.
+ * stdout is a tail the transport kept, so the first stream it shows lost its head.
  */
 export function parseOpencodeExport(stdout: string, headCut = false): OpencodeExport | undefined {
     const lines: Record<string, string[]> = { raw: [], normalized: [] };

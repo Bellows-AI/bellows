@@ -25,7 +25,7 @@ import {
 } from './jira-rig.js';
 
 /**
- * BEL-61 slice 2: the Jira connect flow end to end on a database. The real runtime is composed as main.ts does it,
+ * The Jira connect flow end to end on a database. The real runtime is composed as main.ts does it,
  * with the real Jira hooks pointed at a scripted Atlassian: the only boundary faked.
  */
 const enabled = Boolean(process.env.DATABASE_URL);

@@ -8,7 +8,7 @@ import { startRow, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
- * BATCHES_ENABLED off (BEL-264): a batch's thread is unreachable through the task paths. The rows a
+ * BATCHES_ENABLED off: a batch's thread is unreachable through the task paths. The rows a
  * batch left are kept — the flag only stops them being claimed, retried, followed up or force-closed —
  * and a job outside a batch behaves the same either way.
  */

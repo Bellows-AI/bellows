@@ -17,7 +17,7 @@ import { resolveLeasedRoute, resolveJobRoute } from '../route-guards.js';
 import type { JobQuestionStore } from '../../db/jobs/job-store-questions.js';
 
 /**
- * The agent's questions (050, issue #531). The question text and the answers are member content:
+ * The agent's questions (050). The question text and the answers are member content:
  * nothing here logs them — the failure logs below carry the error alone.
  */
 

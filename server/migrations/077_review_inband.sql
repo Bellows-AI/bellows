@@ -1,4 +1,4 @@
--- In-band reviews (issue #774): a review is leased to its caller's claim in the request's own
+-- In-band reviews: a review is leased to its caller's claim in the request's own
 -- transaction, never offered to the open claim queue.
 --
 --   review_caller_seq  the caller's claim_seq the review is leased under. A caller that is

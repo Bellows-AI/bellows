@@ -1,4 +1,4 @@
-import { JSON_HEADERS } from '@factory-ai/core';
+import { request } from './request.js';
 /**
  * The one organization switch. The app bar's selector and the mobile drawer's both call this —
  * the switch is a server-side session change, and on success the reload makes every org-scoped
@@ -7,13 +7,7 @@ import { JSON_HEADERS } from '@factory-ai/core';
  * renders it back on the org the session still holds.
  */
 export function switchOrg(orgId: string): void {
-    void fetch('/api/auth/org', {
-        method: 'POST',
-        headers: JSON_HEADERS,
-        body: JSON.stringify({ orgId }),
-    })
-        .then((response) => {
-            if (response.ok) window.location.reload();
-        })
-        .catch(() => {});
+    void request('/api/auth/org', { method: 'POST', body: { orgId }, empty: true }).then((result) => {
+        if (result.ok) window.location.reload();
+    });
 }

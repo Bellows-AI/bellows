@@ -1,5 +1,6 @@
 import type { BoardJob, ReviewAnswer, ReviewClaim } from '../board/board.js';
 import { withBoardRetry } from '../board/board-retry.js';
+import { leaseClock, leasedBeat } from './loop-lease.js';
 import { openReviewExport } from './loop-export.js';
 import { attachReviewInputs } from './loop-inputs.js';
 import { applyHeartbeatVerdict, down, type JobState, newReviewStop, settling } from './loop-attempt.js';
@@ -15,7 +16,7 @@ import { controlTokenOf, type ReviewExporter } from '../supervised-steps.js';
 import type { StepResult } from '../supervisor-contract.js';
 
 /**
- * The agent's named-reviewer invocation (issue #549): `POST /review` and `GET /review/<key>` on the
+ * The agent's named-reviewer invocation: `POST /review` and `GET /review/<key>` on the
  * control endpoint, relayed to the board. The agent names a key and a profile. Everything that
  * makes the result trustworthy is the DRIVER's, never the agent's:
  *
@@ -28,7 +29,7 @@ import type { StepResult } from '../supervisor-contract.js';
  *   claimed, runs the review as a thread of its own with only that profile's grants, and answers
  *   the thread's review evidence — which this relay adopts as `job.review`, so the end-of-run
  *   publish and the draft publish judge the review that actually ran, not the claim-time state.
- *   A review the board just created or re-leased comes back with its CLAIM (issue #774), and this
+ *   A review the board just created or re-leased comes back with its CLAIM, and this
  *   driver supervises it (`superviseReview`) in the caller's own task group — no queue, no slot.
  *
  * Fenced like the publish relay: a stood-down or finished attempt asks for nothing. A Stop that is
@@ -102,7 +103,7 @@ interface StopCause {
 }
 
 /**
- * Supervises one review the board leased to this driver, in the caller's task group (issue #774):
+ * Supervises one review the board leased to this driver, in the caller's task group:
  * the reviewer container is sized up, the review runs as supervised steps (restore, then the
  * executor), the review row is heartbeat under its OWN lease, and the row is completed with the
  * step's output — a timeout fails the row (`timeout`), never the caller. Tracked in the caller's
@@ -231,19 +232,26 @@ async function beatReview(
     const { review, stop, cause } = supervision;
     const every = Math.max(MIN_BEAT_MS, Math.floor((rt.config.leaseSeconds * MS_PER_SECOND) / BEAT_DIVISOR));
     let over = false;
+    // The review's own lease clock: a board that stays unreachable for a lease ends the review,
+    // its row left to the lease like any other lost one.
+    const clock = leaseClock(rt.config.leaseSeconds * MS_PER_SECOND, Date.now(), () => {
+        rt.log(`review ${review.id}: lease lapsed, board unreachable; the review stands down`);
+        stop.abort();
+    });
     void ended.then(() => {
         over = true;
+        clock.stop();
     });
     while (!over) {
         await Promise.race([rt.sleep(every), ended]);
         if (over) return;
-        const verdict = await rt.board
-            .heartbeat(review, AbortSignal.timeout(heartbeatPeriodMs(rt.config)))
-            .catch((e: Error) => {
-                // A beat that errors or times out is retried on the next one, within the lease.
-                rt.log(`review ${review.id}: the heartbeat failed: ${e.message}`);
-                return null;
-            });
+        const verdict = await leasedBeat(clock, () =>
+            rt.board.heartbeat(review, AbortSignal.timeout(heartbeatPeriodMs(rt.config)))
+        ).catch((e: Error) => {
+            // A beat that errors or times out is retried on the next one, within the lease.
+            rt.log(`review ${review.id}: the heartbeat failed: ${e.message}`);
+            return null;
+        });
         if (verdict === null) continue;
         if (verdict === 'lost' || verdict === 'removed') stop.abort();
         else if (verdict.cancelRequested) {

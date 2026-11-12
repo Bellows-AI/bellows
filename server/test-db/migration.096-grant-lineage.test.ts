@@ -5,7 +5,7 @@ import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
 
-/** BEL-138: 096 adds the grant lineage columns, expand only: an old pod's grant writes still work. */
+/** 096 adds the grant lineage columns, expand only: an old pod's grant writes still work. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);

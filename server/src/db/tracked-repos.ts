@@ -1,7 +1,7 @@
 import type { Sql } from 'postgres';
 
 /**
- * The org's tracked-repo allowlist (#125) — the onboarding screen's per-org checkbox answer.
+ * The org's tracked-repo allowlist — the onboarding screen's per-org checkbox answer.
  *
  * No rows means the org tracks EVERYTHING its installation reports: the default, and the reason a
  * confirm-with-everything-checked writes nothing. The org's repo source intersects its

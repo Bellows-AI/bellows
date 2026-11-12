@@ -59,7 +59,7 @@ export async function createRunner(
     // on): a follow-up resumes its session's conversation, so the delta each read reports is
     // bounded to what THIS run wrote.
     // The reaper may have deleted the task volume since the group was made, and the mount would make an
-    // empty one (#775): a gone volume goes with the group and the env file, thrown as an interruption.
+    // empty one: a gone volume goes with the group and the env file, thrown as an interruption.
     try {
         await assertTaskVolumeIsOurs(execDocker, job);
     } catch (e) {

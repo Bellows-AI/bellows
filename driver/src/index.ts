@@ -42,19 +42,23 @@ if (missing.length === config.passEnv.length) {
     console.warn(`[driver] none of ${config.passEnv.join(', ')} are set; runners will have no credential`);
 }
 
-// The series every call below reports into; served only when DRIVER_METRICS_PORT is set (issue #831).
+// The series every call below reports into; served only when DRIVER_METRICS_PORT is set.
 const metrics = createDriverMetrics({ boardUrl: config.boardUrl });
 const board = createBoard({
     url: config.boardUrl,
     leaseSeconds: config.leaseSeconds,
     token: config.boardToken,
     fetch: metrics.fetch,
+    onMalformedClaim: (fields) => {
+        console.error(`[driver] the board delivered a malformed claim (${fields.join(', ')}); left to its lease`);
+        metrics.malformedClaim(fields);
+    },
 });
 // EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on
 // the first claim: a driver asked for kubernetes outside a cluster should say so at startup.
 const request = config.executor === 'kubernetes' ? inClusterRequest() : null;
 // The supervised-step channel: the broker the runners submit steps to and the gate server's control
-// endpoint serves them from (issue #771), and the endpoint a runner opens a supervisor-only token on
+// endpoint serves them from, and the endpoint a runner opens a supervisor-only token on
 // for a group with no attempt (a terminal reclaim). `gates` is bound below; both read it lazily.
 const steps = createStepBroker(metrics.step);
 const endpoint: SupervisorEndpoint = {
@@ -79,11 +83,11 @@ const runner =
               checkpoints: board,
           });
 
-// The gate machinery is one on both executors (issue #773): every gate and the setup run in the
+// The gate machinery is one on both executors: every gate and the setup run in the
 // attempt's own task group, the declared image as a gate container beside the supervisor, as one
 // supervised step each — the runner makes the group, the loop does not. The endpoint is NOT opened
 // here — the server listens lazily on the first launched attempt (it also carries the run-control
-// channel, issue #442).
+// channel).
 const manager = createSupervisedGateManager({ config, runner });
 const gates: GateStack = {
     manager,
@@ -99,12 +103,12 @@ const loop = createLoop({
     log: (m) => console.log(`[driver] ${m}`),
 });
 
-// The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
+// The orphan reaper: the periodic watcher that reaps service objects whose owning
 // job can no longer use them — the fleet of a terminal, dead, board-unknown or superseded
 // attempt, whose own teardown never ran. Independent of any claim: its deletes are board-gated
 // and attempt-scoped, so it can share the executor with the fence without ever racing it, and
 // it is idempotent, so every replica may run one. Zero interval is the off switch.
-// A not-whole thread's volume is exported before it is deleted (issue #938): the arms run the one-shot
+// A not-whole thread's volume is exported before it is deleted: the arms run the one-shot
 // exporter, and this opener hands it a relay through the gate server on the board's behalf.
 const exporting = { open: createVolumeExportOpener({ board, gates, log: (m) => console.log(`[driver] ${m}`) }) };
 const reaper = createReaper({
@@ -128,7 +132,7 @@ if (config.reapIntervalMs > 0) reaper.start();
 
 // Stop claiming, then drain. A second signal is the escape hatch, since a drain waits for a job
 // that may have half an hour left on it. A drain that outlasts DRIVER_HANDOVER_MS hands its runs
-// over (issue #792): their leases go back as interruptions, claimable at once, and their runners
+// over: their leases go back as interruptions, claimable at once, and their runners
 // stay up for the next claim — rather than the SIGKILL landing with every lease still held.
 let stopping = false;
 let handedOver = false;

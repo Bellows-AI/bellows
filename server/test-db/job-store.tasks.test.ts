@@ -425,7 +425,7 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
         expect(page.items[0]).toMatchObject({ id: root, headRunId: head, status: 'running' });
     });
 
-    // A retry is a thread member with no parent (issue #326): it folds into its task, never a second one.
+    // A retry is a thread member with no parent: it folds into its task, never a second one.
     it('folds a parentless retry row into its thread', async () => {
         const root = await craft({ status: 'failed', createdMinutesAgo: 60, finishedMinutesAgo: 55 });
         const retry = await craft({ root, status: 'running', createdMinutesAgo: 10 });
@@ -535,10 +535,10 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
             'executor',
             // The stamped scope beside the label (issue 391) — selection metadata, still bounded.
             'executorScope',
-            // The thread's newest run, so a status is never read off the root (#613).
+            // The thread's newest run, so a status is never read off the root.
             'headRunId',
             'id',
-            // Whether any run of the thread holds an answerable agent question (#537).
+            // Whether any run of the thread holds an answerable agent question.
             'needsAnswer',
             'repo',
             'status',

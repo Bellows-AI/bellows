@@ -1,4 +1,4 @@
--- Notification subscriptions (BEL-131): who an org wants told about a notification_event. Org-owned rows; a
+-- Notification subscriptions: who an org wants told about a notification_event. Org-owned rows; a
 -- per-user subscription later adds a nullable user_id (an expansion), the org-owned rows staying NULL as
 -- docs/organizations.md says. event_kinds mirrors 102's kind check and NOTIFICATION_KINDS in core: a new kind
 -- touches all three. No FK to notification_event: a subscription is configuration, an event is a record.

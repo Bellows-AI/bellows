@@ -343,7 +343,7 @@ test.describe('the responsive shell', () => {
     });
 });
 
-test.describe('the appbar identity controls (BEL-226)', () => {
+test.describe('the appbar identity controls', () => {
     const LONG_ORG = 'An Extraordinarily Long Organization Name That Would Crowd The Account Menu Entirely';
 
     /** Serve the stats payload with a long organization name, whatever the seeded one is. */

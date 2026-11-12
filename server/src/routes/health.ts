@@ -10,7 +10,7 @@ type MigrationState = 'pending' | 'done' | 'failed';
  * Probing either from here would make the compose healthcheck fail during the ~1 minute the
  * migrations retry through, and restart the container that was about to succeed.
  *
- * It names no organization any more (#99): there is no configured one to name, and finding the
+ * It names no organization any more: there is no configured one to name, and finding the
  * directory's would need the database, which this route deliberately never touches.
  *
  * `/api/ready` is the other question: has the schema landed? It answers 503 until the migrations

@@ -1,4 +1,4 @@
-/** The restore reads' shapes (issue #775), apart from `job-store-types.ts` to keep that file under its line budget. */
+/** The restore reads' shapes, apart from `job-store-types.ts` to keep that file under its line budget. */
 
 /** The root row's checkpoint pointer (078): which finalized `checkpoint` stream holds the thread's newest state. */
 export interface CheckpointPointer {
@@ -11,7 +11,7 @@ export interface CheckpointPointer {
     finalizedAt: Date;
 }
 
-/** What a live lease may read of its own thread when the driver restores (issue #775). */
+/** What a live lease may read of its own thread when the driver restores. */
 export interface RestoreScope {
     root: string;
     /** Null when no checkpoint has ever finalized for the thread. */

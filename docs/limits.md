@@ -28,7 +28,7 @@ reporting a number as measured, or "fixing" anything listed here.
 
 ## Measured versus assumed
 
-- The EBS task volume class in [kubernetes.md](kubernetes.md) is unobserved: `scripts/test-k8s.sh` refuses every
+- The EBS task volume class in [kubernetes-limits.md](kubernetes-limits.md) is unobserved: `scripts/test-k8s.sh` refuses every
   non-kind context, so no Factory release has been installed on EKS, and `ReadWriteOncePod` on the EBS CSI
   driver and a real runner write are unwatched. See [eks-runbook.md](eks-runbook.md).
 - Driver loss and node drain on both executors: `scripts/test-jobs.sh --phase driver-kill` and

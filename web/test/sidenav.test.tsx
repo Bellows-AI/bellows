@@ -76,7 +76,7 @@ const navigation = (
 });
 
 describe('SideNav', () => {
-    it('shows the stored title on the task row, the full text as title=, and the id fallback for a blank prompt (BEL-252)', () => {
+    it('shows the stored title on the task row, the full text as title=, and the id fallback for a blank prompt', () => {
         const stored = summary({
             title: 'Fix the login crash',
             titleOrigin: 'user',
@@ -106,13 +106,13 @@ describe('SideNav', () => {
         expect(html).toContain('Dashboard');
         expect(html).toContain('Settings');
         expect(html).toContain('Tasks');
-        // The old sections are gone: their pages live under the Settings tree now (#150).
+        // The old sections are gone: their pages live under the Settings tree now.
         expect(html).not.toContain('href="/workspace"');
         expect(html).not.toContain('href="/env"');
     });
 
     it('orders the primary navigation Dashboard → Tasks → Settings', () => {
-        // Observe → act → configure (#159): the report first, the work second, the
+        // Observe → act → configure: the report first, the work second, the
         // configuration last. Account is not here at all — it lives in the user menu.
         const html = render('/');
         expect(html.indexOf('href="/"')).toBeLessThan(html.indexOf('href="/tasks"'));

@@ -11,7 +11,7 @@ import { STOOD_DOWN } from './loop-types.js';
 import { stepLost } from '../step-control.js';
 
 /**
- * The loop's own two ends of the block-helper transport (issue #207, extended by #230's conclude
+ * The loop's own two ends of the block-helper transport (extended by #230's conclude
  * control and composite helper programs): when a declared pre/post helper runs, fenced by the same
  * lease/stop state as sync/gates/publish. Split from `loop-run.ts` purely to keep that file under
  * the linter's per-file line budget (`noExcessiveLinesPerFile` in biome.json) — the same seam `loop-gates.ts` already draws for the gate phase.
@@ -24,7 +24,7 @@ import { stepLost } from '../step-control.js';
  * Runs the job's declared PRE block-helper steps, in the order the claim carries them, fenced by
  * the same lease/stop state every setup step races against. A required pre-helper that fails
  * answers a NAMED failure without ever launching the agent — the loop's own contract for this
- * phase. A pre-helper that succeeds with `control: 'conclude'` (issue #230) answers a conclusion:
+ * phase. A pre-helper that succeeds with `control: 'conclude'` answers a conclusion:
  * the job is done right here — no agent, no gates, no post-helpers, no publish. A job with no
  * declared pre-helpers pays no extra work at all — the ordinary case for every workflow-less and
  * `agent`-node task today (docs/workflows.md: no producer wires a real plan onto a claim yet).
@@ -94,7 +94,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
  * this generic transport must not encode.
  * Any stand-down (`down(state)`) ends it with STOOD_DOWN: a stopped, lost or removed attempt has no
  * verdict to contribute, and the caller stands the attempt down rather than publishing; so does a
- * lost supervisor, after its interruption settled the attempt. `conclude` (issue #230) is valid
+ * lost supervisor, after its interruption settled the attempt. `conclude` is valid
  * only for a PRE helper — a post-helper naming it fails the verdict with a NAMED reason, exactly
  * like any other post-helper failure, rather than being silently ignored.
  */
@@ -154,7 +154,7 @@ type InterruptHalt = Extract<SetupHalt, { halt: 'interrupt' }>;
 
 /**
  * One declared plan run to its result, or STOOD_DOWN when the attempt is down — or an interrupt halt
- * when its supervisor was lost mid-step (`stepLost`, issue #826). That is an infrastructure
+ * when its supervisor was lost mid-step (`stepLost`). That is an infrastructure
  * interruption, never a helper failure: the caller ends the attempt on it, and the receipt and the
  * task's checkout stay on the task volume for the claim that takes the job over. Any other throw is
  * rethrown.

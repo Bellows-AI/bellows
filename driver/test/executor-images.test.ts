@@ -175,7 +175,7 @@ describe('the executor branch reporter', () => {
         // and the close-time sample with it.
         expect(entry).not.toMatch(new RegExp(`^exec ${cli} `, 'm'));
         // TERM/INT reaching PID 1 is forwarded to every child — CLI, reporter and, in the
-        // opencode image (the only one that ships it, #68), the rate-limit watch — without
+        // opencode image (the only one that ships it), the rate-limit watch — without
         // that, a `docker stop` leaves the CLI running until the runtime's forced kill.
         expect(entry).toMatch(/^trap \w+ TERM INT$/m);
         // `wait` returns 128+signal when the trap interrupts it, indistinguishable from a child
@@ -282,7 +282,7 @@ describe('the executor branch reporter', () => {
 });
 
 /*
- * The transcript store redirect (issue #55): when the driver hands the headless run a
+ * The transcript store redirect: when the driver hands the headless run a
  * FACTORY_TRANSCRIPT_DIR, the entrypoint moves CLAUDE_CONFIG_DIR onto the task volume
  * BEFORE the seed block — the settings.json-keyed seed then runs against the thread dir, so the
  * baked hooks and every baked setting ride along (the spec's "baked runner configuration
@@ -401,7 +401,7 @@ const CONTAINER_GUARD_NAMES = [
 ];
 // Budgets for the cases below that run a real entrypoint under /bin/sh. One such run boots four
 // node processes serially plus a git or two; the original 10s/5s were measured on an idle box and
-// expired under the contention of a full run while passing in the next (issue #403). These are the
+// expired under the contention of a full run while passing in the next. These are the
 // same kind of per-spawn allowance core/test/biome.test.ts carries, and well under its 300s. They
 // bound a hang, not a slow machine: a case that genuinely needs this much is a stall to report,
 // not a budget to raise again.
@@ -737,7 +737,7 @@ describe('the entrypoint git credential', () => {
     it.each(ENTRYPOINTS)('%s clears the cached token as the run ends', (entrypoint) => {
         const entry = read(entrypoint);
         expect(entry).toContain('GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"');
-        // As the tool uid, which owns the cache (issue #814): through the tool shell.
+        // As the tool uid, which owns the cache: through the tool shell.
         expect(entry).toMatch(
             /"\$\{SHELL:-\/bin\/sh\}" -c 'node "\$1" clear' clear "\$GITHUB_CREDENTIAL" 2>\/dev\/null \|\| true\nexit "\$STATUS"\n$/
         );
@@ -888,7 +888,7 @@ describe('the opencode entrypoint resumed session', () => {
         CASE_TIMEOUT_MS
     );
 
-    // A retry is a fresh run in its task's directory and database (issue #822): the newest root
+    // A retry is a fresh run in its task's directory and database: the newest root
     // session there is an earlier attempt's until opencode creates this run's, so the entrypoint
     // names it for the reporter BEFORE the CLI starts — a fresh run only, never a handed id.
     it('names the session that predates a fresh run before the CLI starts', () => {
@@ -1100,7 +1100,7 @@ describe('the skills and the allowlist agree on the gate and control commands (i
     });
 });
 
-// Issue #841: context-mode's executions cannot run as the agent's tool uid (#814) — its shell
+// Issue #841: context-mode's executions cannot run as the agent's tool uid — its shell
 // runtime writes each script to a 0700 directory only the CLI uid reads, its other runtimes spawn
 // as the CLI uid — so neither image bakes it until they can.
 describe('the runner images carry no context-mode', () => {
@@ -1167,8 +1167,8 @@ describe('the opencode-executor managed config', () => {
  */
 describe('the shared executor skills', () => {
     const SKILLS = 'docker/skills';
-    // claude's skills are root-owned and managed (#1024): one tree, found by the CLI beside its managed
-    // settings; opencode's global skills directory is root-owned too (#452).
+    // claude's skills are root-owned and managed: one tree, found by the CLI beside its managed
+    // settings; opencode's global skills directory is root-owned too.
     const IMAGES = [
         {
             dockerfile: 'docker/claude-executor/Dockerfile',
@@ -1189,7 +1189,7 @@ describe('the shared executor skills', () => {
     // plain run. The managed tree is the only place the CLI finds them, so the path is one.
     it('gives claude its skills as managed skills at one path, with no copy in the config home', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
-        // BEL-286: the managed path is a link to the per-run view the entrypoint fills with the visible built-ins.
+        // the managed path is a link to the per-run view the entrypoint fills with the visible built-ins.
         expect(dockerfile).toContain('ln -s /tmp/.factory-skills /etc/claude-code/.claude/skills');
         const entrypoint = read('docker/claude-executor/entrypoint.sh');
         expect(entrypoint).toContain('HIDDEN_VIEW=/tmp/.factory-skills');
@@ -1284,7 +1284,7 @@ describe('the shared executor skills', () => {
         expect(existsSync(join(ROOT, `${SKILLS}/factory-jira/jira.cjs`))).toBe(true);
     });
 
-    // BEL-252: after a successful issue read the jira skill hands the issue's subject to the title helper, only on
+    // after a successful issue read the jira skill hands the issue's subject to the title helper, only on
     // exit 0, never renaming the Jira issue; the title skill states the same rule without naming a provider.
     it('the jira skill sets the task title only after a successful issue read, and the title skill stays provider-neutral', () => {
         const jira = read(`${SKILLS}/factory-jira/SKILL.md`);
@@ -1299,7 +1299,7 @@ describe('the shared executor skills', () => {
         expect(title).not.toMatch(/Jira|Linear/);
     });
 
-    // BEL-252: the agent names its task with the board's agent-title route; the pair helper is baked beside the skills.
+    // the agent names its task with the board's agent-title route; the pair helper is baked beside the skills.
     it('the task-title skill names its helper at the fixed path, never an env title, and both images ship it', () => {
         const text = read(`${SKILLS}/factory-task-title/SKILL.md`);
         expect(text).toContain('node /usr/local/share/factory-skills/factory-task-title/task-title.cjs');
@@ -1336,7 +1336,7 @@ describe('the shared executor skills', () => {
         }
     });
 
-    it('ships the credential broker client one shared file, root-owned and executable, in both images (BEL-60)', () => {
+    it('ships the credential broker client one shared file, root-owned and executable, in both images', () => {
         expect(read('docker/executor-common/credential-broker.cjs').length).toBeGreaterThan(0);
         for (const image of ['claude', 'opencode']) {
             const dockerfile = read(`docker/${image}-executor/Dockerfile`);
@@ -1360,14 +1360,12 @@ describe('the shared executor skills', () => {
 
     it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {
         expect(existsSync(join(ROOT, '.opencode/skills'))).toBe(false);
-        expect(readdirSync(join(ROOT, '.claude/skills'))).toEqual(
-            expect.arrayContaining(['fix', 'openspec-propose', 'openspec-apply-change'])
-        );
+        expect(readdirSync(join(ROOT, '.claude/skills'))).toEqual(expect.arrayContaining(['fix', 'doc-maintenance']));
     });
 });
 
 /*
- * The PR boundary (issues #82, #573): an agent may open and update a pull request itself — the
+ * The PR boundary: an agent may open and update a pull request itself — the
  * driver's publish reuses it. These pins keep the INSTRUCTIONS from teaching a publication denial
  * or a green-gate precondition.
  */
@@ -1530,7 +1528,7 @@ describe('the opencode-executor permission policy', () => {
         CASE_TIMEOUT_MS
     );
 
-    // BEL-273: the directory the driver installed the claim's pinned org and workspace skills in joins
+    // the directory the driver installed the claim's pinned org and workspace skills in joins
     // `skills.paths` (which beats the project and global skills) and gets its own external_directory allow.
     it(
         'adds the pinned skills directory to skills.paths and allows it, keeping what the config already had',
@@ -1575,7 +1573,7 @@ describe('the opencode-executor permission policy', () => {
         CASE_TIMEOUT_MS
     );
 
-    // BEL-286: the built-ins the task does not list are denied by name, written last so a member config that allows the
+    // the built-ins the task does not list are denied by name, written last so a member config that allows the
     // name cannot win; a list that is not a list of built-in names ends the run before the CLI starts.
     it(
         'denies each hidden built-in skill last, over a member config that allows it',
@@ -1792,7 +1790,7 @@ describe('the opencode-executor permission policy', () => {
  * that was reachable at the hostname the injected DATABASE_URL named — a guessed address refused
  * is the wrong address, not an outage. These pins keep the instruction in both guides: look up the
  * injected env first, reach declared `.bellows.yaml` services by their declared name, which
- * resolves to `127.0.0.1` in the task's group (issue #773).
+ * resolves to `127.0.0.1` in the task's group.
  */
 describe('the executor infrastructure-access guide', () => {
     const GUIDES = ['docker/claude-executor/claude-home/CLAUDE.md', 'docker/opencode-executor/opencode-home/AGENTS.md'];
@@ -1824,7 +1822,7 @@ describe('the claude guide on denied commands', () => {
 });
 
 /*
- * The baked Stop hook is a prompt hook, and one without a usable model fails open (issue #226), so
+ * The baked Stop hook is a prompt hook, and one without a usable model fails open, so
  * the entrypoint turns its placeholder into the run's model: $ANTHROPIC_MODEL, else the merged
  * settings' `model`, else no `model` key at all. Run for real under /bin/sh against a sandbox
  * settings.json that carries the baked hook.
@@ -1871,7 +1869,7 @@ describe('the claude entrypoint Stop-hook model', () => {
     });
 });
 
-// The gate server refuses an ad-hoc run of a gate whose `timeout:` outlasts the call (issue #576);
+// The gate server refuses an ad-hoc run of a gate whose `timeout:` outlasts the call;
 // the agent must hear that before it spends a turn retrying the 422.
 describe('the ad-hoc gate limit in the agent instructions', () => {
     it.each(['docker/skills/factory-gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
@@ -1913,9 +1911,9 @@ describe('the gate filter and the pre-push gate run in the agent instructions (i
     );
 });
 
-// BEL-88: the agent holds no gate URL or token; `factory-gate` asks the control socket, and the guides key the
+// the agent holds no gate URL or token; `factory-gate` asks the control socket, and the guides key the
 // "no gates here" directive off what it reports. Every directive that says what to do then stays.
-describe('the no-gates and retry directives in the agent instructions (BEL-88)', () => {
+describe('the no-gates and retry directives in the agent instructions', () => {
     const NO_GATES = [
         [
             'docker/skills/factory-gates/SKILL.md',
@@ -2053,7 +2051,7 @@ describe('the agent launcher (issue #814)', () => {
                 spawnSync('grep', ['-rl', 'BELLOWS_CONTROL_TOKEN', join(ROOT, dir)], { encoding: 'utf8' }).stdout
             ).toBe('');
         }
-        // The skills reach it through `factory-control` (#1061), which dials the proxy's own socket.
+        // The skills reach it through `factory-control`, which dials the proxy's own socket.
         expect(read('docker/executor-common/factory-control.cjs')).toContain(`'${proxy.SOCKET}'`);
         for (const skill of ['docker/skills/factory-review/SKILL.md', 'docker/skills/factory-github/SKILL.md']) {
             expect(read(skill)).toContain('factory-control ');
@@ -2243,5 +2241,82 @@ describe("the runner images' npm undici", () => {
             expect(start).toBeGreaterThan(dockerfile.indexOf('RUN npm install -g npm@'));
             expect(start).toBeLessThan(dockerfile.indexOf('ARG GH_VERSION='));
         }
+    });
+});
+
+// An image that downloads "whatever is latest" and a FROM that follows a moving tag are builds two
+// runs of the same commit cannot reproduce, and a swapped upstream artifact arrives unnoticed.
+// Binaries are pinned by version AND checksum per architecture; base images by index digest.
+describe('the images pin what they download and what they start from', () => {
+    const DOCKERFILES = [
+        'docker/Dockerfile',
+        'docker/driver.Dockerfile',
+        'docker/claude-executor/Dockerfile',
+        'docker/opencode-executor/Dockerfile',
+    ];
+    const EXECUTORS = ['docker/claude-executor/Dockerfile', 'docker/opencode-executor/Dockerfile'];
+    // acli, gh and the layer between them: the instructions both executors must spell identically
+    // (BuildKit keys a layer on them, not on the comments, which each image words for itself).
+    const sharedBlock = (file: string) => {
+        const text = read(file);
+        const start = text.indexOf('ARG TARGETARCH\n');
+        const end = text.indexOf('/usr/local/libexec/gh --version\n', start);
+        if (start < 0 || end < 0) return '';
+        return text
+            .slice(start, end)
+            .split('\n')
+            .filter((line) => !line.startsWith('#'))
+            .join('\n');
+    };
+    const argValue = (block: string, name: string) => new RegExp(`^ARG ${name}=(\\S+)$`, 'm').exec(block)?.[1];
+
+    it('downloads no `latest` artifact', () => {
+        for (const file of DOCKERFILES) expect(read(file), file).not.toMatch(/\/latest\//);
+    });
+
+    it('pins acli and gh by version and a sha256 per architecture, byte-identical in both images', () => {
+        const claude = sharedBlock(EXECUTORS[0]!);
+        expect(claude).not.toBe('');
+        expect(sharedBlock(EXECUTORS[1]!)).toBe(claude);
+        expect(argValue(claude, 'ACLI_VERSION')).toMatch(/^\d+\.\d+\.\d+/);
+        for (const name of ['ACLI_SHA256_amd64', 'ACLI_SHA256_arm64', 'GH_SHA256_amd64', 'GH_SHA256_arm64']) {
+            expect(argValue(claude, name), name).toMatch(/^[0-9a-f]{64}$/);
+        }
+    });
+
+    it('verifies every curl download against its architecture checksum before it is unpacked or installed', () => {
+        for (const file of EXECUTORS) {
+            const runs = (read(file).match(/^RUN (?:[^\n]*\\\n)*[^\n]*$/gm) ?? []).filter((run) =>
+                run.includes('curl')
+            );
+            expect(runs.length, file).toBeGreaterThanOrEqual(2);
+            for (const run of runs.filter((r) => /acli|gh_/.test(r))) {
+                const check = run.indexOf('sha256sum -c');
+                expect(check, `${file}: ${run.slice(0, 60)}`).toBeGreaterThan(run.indexOf('curl'));
+                expect(check).toBeLessThan(run.search(/&& (tar|mv|chmod) /));
+                expect(run).toMatch(/\$\{?(ACLI|GH)_SHA256_(amd64|arm64)\}?|"\$sha"/);
+                expect(run).toContain('$TARGETARCH');
+            }
+        }
+    });
+
+    it('starts every external FROM at an index digest, leaving stage references alone', () => {
+        for (const file of DOCKERFILES) {
+            const refs = [...read(file).matchAll(/^FROM (\S+)/gm)].map((m) => m[1]!).filter((ref) => ref.includes('/'));
+            expect(refs.length, file).toBeGreaterThan(0);
+            for (const ref of refs) expect(ref, file).toMatch(/:[\w.-]+@sha256:[0-9a-f]{64}$/);
+        }
+    });
+
+    it('runs the driver runtime stage as the node user', () => {
+        const runtime = read('docker/driver.Dockerfile').split(/^FROM .* AS runtime$/m)[1]!;
+        const users = [...runtime.matchAll(/^USER (\S+)$/gm)].map((m) => m[1]);
+        expect(users.at(-1)).toBe('node');
+        expect(runtime.indexOf('USER node')).toBeLessThan(runtime.indexOf('CMD '));
+    });
+
+    it('lets the compose driver, which holds the docker socket, stay root', () => {
+        const block = /^ {4}driver:\n((?: {8}.*\n|\n)+)/m.exec(read('docker-compose.yml'))?.[1];
+        expect(block).toMatch(/^ {8}user: ['"]?0['"]?$/m);
     });
 });

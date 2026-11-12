@@ -1,4 +1,4 @@
--- Durable settle receipts (issue #821). An attempt's conclusion — complete, suspend, requeue or a
+-- Durable settle receipts. An attempt's conclusion — complete, suspend, requeue or a
 -- released interrupt — records the answer it gave in the settle's own transaction, keyed by the
 -- attempt's lease token: one conclusion per attempt. The identical request replayed after its
 -- response was lost (same operation, same fingerprint) answers the stored result; any other

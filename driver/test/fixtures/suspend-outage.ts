@@ -1,5 +1,5 @@
 /**
- * A real driver process through a board outage on suspend (issue #820), run by
+ * A real driver process through a board outage on suspend, run by
  * `loop-containment.test.ts` as its own Node child: job 1 is stopped in setup and every suspend of
  * it fails, job 2 runs to its verdict. The process must outlive the loop with no unhandled
  * rejection — Node exits 1 on one — and say what it saw on stdout.

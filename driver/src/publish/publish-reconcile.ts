@@ -2,7 +2,7 @@ import { type Ledger, readLedger, writeLedger } from '../operation-ledger.js';
 import type { RunPublishStep } from './publish.js';
 
 /**
- * Publication reconciliation (issue #771). A publish is a chain of effects on a remote — the push,
+ * Publication reconciliation. A publish is a chain of effects on a remote — the push,
  * then the pull request — and each can land while its answer is lost (a timeout, a dropped channel,
  * a supervisor that died after the remote accepted). Retrying blind would push or open twice, and a
  * retry that only trusts the local tree would never open a pull request whose push already landed.

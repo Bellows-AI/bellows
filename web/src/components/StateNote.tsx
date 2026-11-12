@@ -7,16 +7,16 @@ export type StateNoteState = 'loading' | 'empty' | 'error';
  * an error is an alert, and empty is plain text — so a failed or unconfirmed read is always
  * said as an error and never passes for "nothing here".
  */
-export function StateNote({ state, children }: { state: StateNoteState; children: ReactNode }) {
+export function StateNote({ state, id, children }: { state: StateNoteState; id?: string; children: ReactNode }) {
     if (state === 'error') {
         return (
-            <p className="state-note error" role="alert">
+            <p className="state-note error" role="alert" id={id}>
                 {children}
             </p>
         );
     }
     return (
-        <p className="state-note" role={state === 'loading' ? 'status' : undefined}>
+        <p className="state-note" role={state === 'loading' ? 'status' : undefined} id={id}>
             {children}
         </p>
     );

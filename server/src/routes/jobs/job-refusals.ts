@@ -39,7 +39,7 @@ export const followUpRefusal = (reply: FastifyReply, reason: FollowUpRefusal) =>
 export const retryRefusal = (reply: FastifyReply, reason: RetryRefusal) =>
     finishedTaskRefusal(reply, reason, 'retry it');
 
-/** The refusal answers both wait-control verbs (issue #328) share; the ok paths differ per route. */
+/** The refusal answers both wait-control verbs share; the ok paths differ per route. */
 export type WaitControlRefusal = 'missing' | 'forbidden' | 'no_wait';
 
 export function waitControlRefusal(reply: FastifyReply, reason: WaitControlRefusal) {

@@ -2,7 +2,7 @@ import type { BoardJob } from '../board/board.js';
 import type { RunOutcome } from '../runner.js';
 
 /**
- * An agent-less workflow node (issue #503: the claim's `agent: false`) runs no runner session — its
+ * An agent-less workflow node (the claim's `agent: false`) runs no runner session — its
  * work is the declared pre-helpers, then the gates and the publish the loop already runs after any
  * clean run. This is the clean run it stands in for: exit 0, nothing said, nothing scraped, so the
  * ledger sees an agent that finished and the gates and publish decide the verdict.

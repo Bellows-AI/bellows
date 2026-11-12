@@ -1,14 +1,16 @@
 /**
  * The merge half of issue #390: what a verified `pull_request closed, merged: true` delivery does
- * to the threads published to that PR. Split from `job-store-actions.ts` because its entry point
+ * to the threads published to that PR. Split from `job-store-thread-actions.ts` because its entry point
  * is the webhook's, not a person route's — there is no caller id, no command, and the dedupe gate
  * is the delivery, not the click.
  */
 
 import type { Sql, TransactionSql } from 'postgres';
-import { backsBatchTask, queueReclaimIfThreadDone } from './job-store-rows.js';
+import { backsBatchTask } from './job-store-rows.js';
+import { queueReclaimIfThreadDone } from './job-store-reclaim-queue.js';
 import { lockRootRowsInTx, lockThreadRootInTx } from '../connection-bindings.js';
 import type { JobStoreContext } from './job-store-types.js';
+import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
 
 /** The merged-PR close the webhook and the observer drive. */
 export interface JobMergeStore {
@@ -43,8 +45,8 @@ const MERGE_TERMINAL_REASON = 'pr merged';
  * The PR-scoped advisory lock both merge writers serialize on (issue #390's concurrent race): a merge delivery and the
  * publishing verdict that names the same PR, so whichever commits second sees the other's rows — a verdict landing
  * after the delivery reads the ledger and applies the closure inline; a delivery landing after the verdict finds the
- * fresh `job_pr` row and closes the thread, cancelling the wait it just parked. Keyed per (org, repo, PR). Lock order
- * (BEL-161): the thread root rows first, then this lock, then each root's advisory lock; the verdict takes its root
+ * fresh `job_pr` row and closes the thread, cancelling the wait it just parked. Keyed per (org, repo, PR). Lock order:
+ * the thread root rows first, then this lock, then each root's advisory lock; the verdict takes its root
  * row first for the same reason.
  */
 export const prLockKey = (orgId: string, repo: string, prNumber: number): string => `${orgId}/${repo}/${prNumber}`;
@@ -129,7 +131,7 @@ async function closeMergedPrOnce(
 }
 
 /**
- * The merge-before-publication half (issue #390): the publishing verdict's transaction calls this
+ * The merge-before-publication half: the publishing verdict's transaction calls this
  * right after the `job_pr` row upserts — if a merge delivery already landed for the PR this
  * publication names, the closure it ordered applies HERE, in the verdict's own transaction. The
  * caller has already taken its root row and then the PR-scoped advisory lock (the serialization
@@ -191,7 +193,7 @@ async function applyMergeCloseToRoot(tx: TransactionSql, ctx: JobStoreContext, r
     await tx`
         update job set done_at = coalesce(done_at, now())
         where org_id = ${orgId} and root_job_id = ${rootJobId}
-          and status in ('succeeded','failed','dead','stopped')
+          and ${terminalFragment(tx)}
     `;
 
     // The shared reclaim rule: queues only when EVERY member is terminal — a member still
@@ -201,7 +203,7 @@ async function applyMergeCloseToRoot(tx: TransactionSql, ctx: JobStoreContext, r
 }
 
 /**
- * The conditional settle every non-verdict settle point shares (issue #390): a merge-marked thread
+ * The conditional settle every non-verdict settle point shares: a merge-marked thread
  * whose LAST moving member just went terminal — by a stop, a suspend, the dead retirement, the
  * claim-time cancellation fence, or the verdict itself — closes here: the done stamp lands on
  * every terminal member when the thread carries none yet (no actor), and the worktree reclaim
@@ -243,8 +245,8 @@ async function closeMarkedThreadIfTerminal(
 
     const [thread] = await tx<{ total: number; terminal: number; done: number }[]>`
         select count(*)::int as total,
-               count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal,
-               count(*) filter (where done_at is not null)::int as done
+               count(*) filter (where ${terminalFragment(tx)})::int as terminal,
+               count(*) filter (where ${doneFragment(tx)})::int as done
         from job
         where org_id = ${orgId} and root_job_id = ${rootJobId}
     `;
@@ -256,14 +258,14 @@ async function closeMarkedThreadIfTerminal(
         await tx`
             update job set done_at = coalesce(done_at, now())
             where org_id = ${orgId} and root_job_id = ${rootJobId}
-              and status in ('succeeded','failed','dead','stopped')
+              and ${terminalFragment(tx)}
         `;
     }
     await queueReclaimIfThreadDone(tx, ctx.orgId, rootJobId);
     return true;
 }
 
-/** Whether the thread carries the merge-closure marker (`job_merge_close`, issue #390). */
+/** Whether the thread carries the merge-closure marker (`job_merge_close`). */
 export async function mergeClosureMarkerSet(tx: TransactionSql, orgId: string, rootJobId: string): Promise<boolean> {
     const [marked] = await tx<{ one: number }[]>`
         select 1 as one from job_merge_close

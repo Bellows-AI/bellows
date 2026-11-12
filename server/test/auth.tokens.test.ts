@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { InjectOptions } from 'fastify';
 import type { AuthConfig } from '../src/config.js';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -19,6 +19,7 @@ import {
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -31,7 +32,7 @@ const OAT = 'oat_';
 const track = trackApps();
 
 /** Records the author every created job carries — the audit property this whole feature guards.
- *  `waits`, when given, records the settle long-poll's holds the same way (issue #323). */
+ *  `waits`, when given, records the settle long-poll's holds the same way. */
 const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] = []): JobStore => {
     const stub: Partial<JobActionStore & JobReadStore> = {
         async create(_command, createdBy) {
@@ -81,7 +82,7 @@ describe('personal access tokens: authentication', () => {
         expect(response.statusCode).toBe(HTTP_OK);
     });
 
-    // The settle long-poll (issue #323) is the CLI client's read — the credential table applies
+    // The settle long-poll is the CLI client's read — the credential table applies
     // unchanged. A fat_ bearer walks the whole path: past the wall, through the hold (asserted on
     // the store, so a skipped hold cannot pass for a 404 the plain read would also answer), into
     // the read — the 404 is the stub's answer for an id it does not hold, never a 401.
@@ -310,7 +311,7 @@ describe('organization access tokens: allowlist and reads', () => {
             // The stub board holds no such job, so the read itself 404s — the point is the wall.
             ['GET', `/api/jobs/${JOB_ID}`, HTTP_NOT_FOUND],
             ['GET', `/api/jobs/${JOB_ID}/thread`, HTTP_OK],
-            // The run-activity read (issue #339) rides the same boundary as the thread's.
+            // The run-activity read rides the same boundary as the thread's.
             ['GET', `/api/jobs/${JOB_ID}/activity`, HTTP_NOT_FOUND],
         ];
         for (const [method, url, expected] of allowed) {
@@ -477,7 +478,7 @@ describe('organization access tokens: lifecycle and validation', () => {
         const personal = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
         const org = store.seedAccessToken(ORG, 'org');
         const outage = async (): Promise<never> => {
-            throw new Error('getaddrinfo EAI_AGAIN factory-state-postgres');
+            throw storeOutage('getaddrinfo EAI_AGAIN factory-state-postgres');
         };
         store.findPersonalToken = outage;
         store.findOrgToken = outage;

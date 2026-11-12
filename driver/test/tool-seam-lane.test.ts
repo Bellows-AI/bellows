@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
+import { REPO_ROOT as ROOT, readLaneScript } from './fixtures/repo-files.js';
 
 /*
  * The uid seam of the tool-isolation lane (epic #1025). The lane needs docker and the real CLIs;
@@ -286,7 +285,7 @@ describe('the seam lane’s verdicts', () => {
 });
 
 describe('the seam lane’s wiring', () => {
-    const script = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+    const script = readLaneScript('scripts/test-jobs.sh');
     it('drives both real CLIs through the scripted-tools endpoint and the verdicts of this module', () => {
         expect(script).toContain('fake-model-endpoint.mjs --steps');
         expect(script).toContain('scripts/tool-seam-lane.mjs verdict');

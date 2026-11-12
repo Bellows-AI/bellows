@@ -10,7 +10,7 @@ import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 import { testSecretStore } from './env-secrets-harness.js';
 
-/** BEL-59: the grant is the unit that owns a refresh lineage; connections reference it. */
+/** the grant is the unit that owns a refresh lineage; connections reference it. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const OTHER_ORG = testOrg();
@@ -194,7 +194,7 @@ describe.skipIf(!enabled)('connection grants', () => {
         expect(row!.revoked_at).not.toBeNull();
     });
 
-    it('a service principal grant is refused by the store (reserved for BEL-143)', async () => {
+    it('a service principal grant is refused by the store (reserved for later)', async () => {
         const result = await grants.attachGrantConnection({
             principal: { kind: 'service', serviceId: 'svc-1' },
             provider: 'jira',

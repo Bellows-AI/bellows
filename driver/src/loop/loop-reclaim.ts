@@ -1,5 +1,6 @@
 import type { Board, BoardJob, Reclaim, ReclaimAck, ReclaimRenewal } from '../board/board.js';
 import { withBoardRetry } from '../board/board-retry.js';
+import { type LeaseClock, leaseClock } from './loop-lease.js';
 import type { DriverConfig } from '../config.js';
 import type { Runner } from '../runner.js';
 import type { ReclaimResult } from '../publish/publish.js';
@@ -11,16 +12,16 @@ const MIN_RENEW_PERIOD_MS = 1_000;
 const RENEW_PERIOD_DIVISOR = 3;
 
 /**
- * The worktree-reclaim queue's worker half (issue #41), split out of `loop.ts` for the same
- * line-count reason `runJob` was (#223): the drain loop stays in the loop, and everything one
- * claimed row does — the removal, the orphaned-claim proof and reap (issue #344), the throttled
+ * The worktree-reclaim queue's worker half, split out of `loop.ts` for the same
+ * line-count reason `runJob` was: the drain loop stays in the loop, and everything one
+ * claimed row does — the removal, the orphaned-claim proof and reap, the throttled
  * failure logging, the ack — lives here.
  */
 
 /**
  * A `BoardJob` synthesised from a claimed reclaim row, for the same runner call a terminal
  * thread's report() uses: the thread's identity — its root id, repo label and workspace path — is
- * all the tree is filed under. The acquisition's own token rides as the lease token (issue #821),
+ * all the tree is filed under. The acquisition's own token rides as the lease token,
  * which is what makes the removal hold the checkout against a live attempt's startup sync under
  * kubernetes (the claim ConfigMap is keyed by the job id, and its holder data carries the lease
  * token) — and what fences a later acquisition of the same row from this one's claim. No agent
@@ -98,7 +99,7 @@ export async function reclaimStillOwned(ctx: RenewContext, owned: ReclaimOwnersh
 }
 
 /**
- * Runs `work` — a removal — under the row's renewed lease (issue #821): renewed once before it
+ * Runs `work` — a removal — under the row's renewed lease: renewed once before it
  * starts, and the work never started unless that renew answers held, then at the heartbeat's pace
  * until it settles. Each renew is bounded by the period. A thrown renew is logged and tried again
  * next period; `lost` or `missing` is logged once and stops the renewing, but never aborts a
@@ -110,7 +111,34 @@ export async function whileReclaimRenewed<T>(
     owned: ReclaimOwnership,
     work: () => Promise<T>
 ): Promise<Renewed<T>> {
-    if (!(await reclaimStillOwned(ctx, owned))) return { held: false };
+    // The renewal's own lease clock: a board that stays unreachable for a lease no longer owns
+    // this row to this driver, so the removal in flight is abandoned to settle unacked.
+    let lapse: () => void = () => {};
+    const lapsed = new Promise<'lapsed'>((resolve) => {
+        lapse = () => resolve('lapsed');
+    });
+    const clock = leaseClock(ctx.config.leaseSeconds * MS_PER_SECOND, Date.now(), lapse);
+    try {
+        return await renewedWhile(ctx, owned, work, { clock, lapsed });
+    } finally {
+        clock.stop();
+    }
+}
+
+async function renewedWhile<T>(
+    ctx: RenewContext,
+    owned: ReclaimOwnership,
+    work: () => Promise<T>,
+    { clock, lapsed }: { clock: LeaseClock; lapsed: Promise<'lapsed'> }
+): Promise<Renewed<T>> {
+    const firstSentAt = Date.now();
+    const first = await Promise.race([reclaimStillOwned(ctx, owned), lapsed]);
+    if (first === 'lapsed') {
+        ctx.log(`reclaim ${owned.id}: lease lapsed, board unreachable; the removal never started`);
+        return { held: false };
+    }
+    if (!first) return { held: false };
+    clock.renewed(firstSentAt);
     let settled = false;
     const running = work();
     const settle = running.then(
@@ -127,15 +155,23 @@ export async function whileReclaimRenewed<T>(
         for (;;) {
             await Promise.race([ctx.sleep(every, settle), settle]);
             if (settled) return;
+            const sentAt = Date.now();
             const answer = await renewOnce(ctx, owned, every);
             if (settled) return;
+            if (answer === 'held') clock.renewed(sentAt);
             if (answer === 'lost' || answer === 'missing') {
                 ctx.log(`reclaim ${owned.id}: the renew answered ${answer}; the removal in flight is left to settle`);
                 return;
             }
         }
     })();
-    return { held: true, value: await running };
+    const outcome = await Promise.race([running, lapsed]);
+    if (outcome === 'lapsed') {
+        settled = true;
+        ctx.log(`reclaim ${owned.id}: lease lapsed, board unreachable; the removal is left unacked to the lease`);
+        return { held: false };
+    }
+    return { held: true, value: outcome };
 }
 
 /** Everything one claimed reclaim row needs from the loop. `failureLog` is the loop's own throttle state. */
@@ -171,7 +207,7 @@ function ackOwned(ctx: VerdictReclaimContext, what: string, owned: ReclaimOwners
 }
 
 /**
- * A threadDone verdict's reclaim (issue #821): the row is the completing attempt's, under its
+ * A threadDone verdict's reclaim: the row is the completing attempt's, under its
  * lease token — the job's tree removed under the renewed lease and acked under that token. A
  * refusal, a throw or a refused ack is logged and leaves the row to its lease. Never throws.
  */

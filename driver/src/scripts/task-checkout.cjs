@@ -1,4 +1,5 @@
-// The startup sync of the task's own checkout (issue #775): make `/task/<repo>` — an independent
+// @ts-check
+// The startup sync of the task's own checkout: make `/task/<repo>` — an independent
 // clone on the task volume, no shared base clone and no linked worktree — reflect the remote
 // default, so every run starts from the code, and the declared gates, that main actually has. One
 // execFileSync per git call: no value can become a command. One JSON verdict on stdout:
@@ -31,7 +32,7 @@
 //                 the fetch carries `-c http.followRedirects=initial`, which permits same-host
 //                 redirects only, never a hop to another host or scheme.
 //
-// REVIEW mode, set by REVIEW_REF (issue #549): a named reviewer's claim. The review has no session
+// REVIEW mode, set by REVIEW_REF: a named reviewer's claim. The review has no session
 // and no earlier tree, so its worktree is a linked worktree of the task's checkout:
 //   REPO        — the task's checkout, where the review's worktree is created FROM;
 //   WORKTREE    — the review's own tree; BRANCH its branch, created AT REVIEW_REF on the first
@@ -44,7 +45,7 @@
 // works whether or not the previous run left uncommitted edits; the edits are stashed for the
 // rebase and reapplied on the new base. Git exits 0 even when the reapplied STASH conflicts (the
 // rebase itself succeeded), so the script re-checks for unmerged entries. A conflict is HANDED
-// OVER, never refused (issue #661): the conflicted rebase (or the markers, the stash retained for
+// OVER, never refused: the conflicted rebase (or the markers, the stash retained for
 // recovery) is left in the tree and the verdict is `{ok:true, conflicts:[paths]}`, so the driver
 // starts the run with the conflicting paths in its turn context and the agent resolves them. A
 // tree a previous attempt left conflicted — a rebase in progress, or unmerged entries — is handed
@@ -67,29 +68,41 @@ const path = require('node:path');
 const review = Boolean(process.env.REVIEW_REF);
 const reviewRef = process.env.REVIEW_REF;
 // `let`: a fresh tree is built beside its final path (`createTree`), and these point at the build while it is.
-let repo = review ? process.env.REPO : process.env.CHECKOUT;
-let wt = review ? process.env.WORKTREE : process.env.CHECKOUT;
-const remote = process.env.REMOTE;
-const branch = process.env.BRANCH;
+let repo = /** @type {string} */ (review ? process.env.REPO : process.env.CHECKOUT);
+let wt = /** @type {string} */ (review ? process.env.WORKTREE : process.env.CHECKOUT);
+const remote = /** @type {string} */ (process.env.REMOTE);
+const branch = /** @type {string} */ (process.env.BRANCH);
 const restore = process.env.RESTORE === '1';
 const baseBranch = process.env.BASE_BRANCH || '';
 const GIT_ERROR_MAX_LENGTH = 200;
 const SYNC_ERROR_MAX_LENGTH = 300;
 const FACTORY_STATE_EXCLUDE = '/.factory/';
 
+/** @param {...string} a */
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
+/** @param {...string} a */
 const inw = (...a) => execFileSync('git', a, { cwd: wt, encoding: 'utf8' }).trim();
 // A command that can lazily fetch missing blobs of a partial clone (checkout, rebase, and the stash it
 // reapplies) talks to the remote like the clone and the fetch do, so it runs under the same helper.
+/** @param {...string} a */
 const inwFetching = (...a) => inw(...withCredentials(...a));
+/**
+ * @param {any} e
+ * @param {number} max
+ */
 const detail = (e, max) => String((e && e.stderr) || (e && e.message) || e).slice(0, max);
 // ENOENT/ENOTDIR is absence; any other errno is a failure to read, never "not there".
+/** @param {string} p */
 const exists = (p) => {
     try {
         fs.statSync(p);
         return true;
     } catch (e) {
-        if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false;
+        if (
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOENT' ||
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOTDIR'
+        )
+            return false;
         throw e;
     }
 };
@@ -104,9 +117,15 @@ const FINGERPRINT_MAX_BUFFER = 268_435_456; // 256 MiB: a large diff must not re
 // entry is read here, not by `hash-object`, which throws on a dangling symlink or a nested repo:
 // a symlink hashes its target, a nested repo recurses (it may have no commit yet), anything that
 // is not a regular file hashes its type alone.
+/**
+ * @param {string} cwd
+ * @param {import('node:crypto').Hash} hash
+ * @param {boolean} nested
+ */
 const hashTree = (cwd, hash, nested) => {
     const fs = require('node:fs');
     const path = require('node:path');
+    /** @param {string[]} args */
     const read = (args) => execFileSync('git', args, { cwd, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER });
     const hasCommit = () => {
         try {
@@ -131,6 +150,7 @@ const hashTree = (cwd, hash, nested) => {
         else hash.update('o');
     }
 };
+/** @param {string} cwd */
 const fingerprintOf = (cwd) => {
     try {
         const hash = require('node:crypto').createHash('sha256');
@@ -150,16 +170,28 @@ const unmergedPaths = () =>
  * Whether a path is there: false ONLY on ENOENT/ENOTDIR. Any other error (EACCES, EIO, ...) means
  * the path could not be read, which is no evidence of absence — it throws, never answers "absent".
  */
+/** @param {string} p */
 function present(p) {
     try {
         fs.statSync(p);
         return true;
     } catch (e) {
-        if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false;
-        throw new Error('unreadable ' + p + ': ' + (e.code || e.message));
+        if (
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOENT' ||
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOTDIR'
+        )
+            return false;
+        throw new Error(
+            'unreadable ' +
+                p +
+                ': ' +
+                // biome-ignore format: each cast must stay on its own operand
+                (/** @type {NodeJS.ErrnoException} */ (e).code || /** @type {Error} */ (e).message)
+        );
     }
 }
 const REBASE_DIRS = ['rebase-merge', 'rebase-apply'];
+/** @param {string} name */
 const rebaseDir = (name) => {
     const resolved = inw('rev-parse', '--git-path', name);
     return path.isAbsolute(resolved) ? resolved : path.resolve(wt, resolved);
@@ -187,6 +219,7 @@ const ensureIdentity = () => {
     inw('config', '--local', 'user.name', 'factory-ai');
     inw('config', '--local', 'user.email', 'factory-ai@users.noreply.github.com');
 };
+/** @param {string[]} [conflicts] */
 const synced = (conflicts) =>
     console.log(
         JSON.stringify({
@@ -205,6 +238,10 @@ const handOver = () => {
 // import it, so the literals are pinned by scripts-task-checkout.test.ts): no retry fixes any of them.
 const KIND_BRANCH_UNRESTORABLE = 'branch_unrestorable';
 const KIND_MISSING_BASE_BRANCH = 'missing_base_branch';
+/**
+ * @param {string} r
+ * @param {string} [kind]
+ */
 const fail = (r, kind) => {
     if (!restore && startedRebase) {
         try {
@@ -213,15 +250,22 @@ const fail = (r, kind) => {
     }
     console.log(JSON.stringify(kind ? { ok: false, reason: r, kind } : { ok: false, reason: r }));
 };
+/**
+ * @param {string} r
+ * @param {string} [kind]
+ */
 const refuse = (r, kind) => {
     fail(r, kind);
     process.exit(0);
 };
 
 /** Where a tree is built before it is moved to `final`: a dot-name beside it, which no repo directory can be. */
+/** @param {string} final */
 const buildDirOf = (final) => path.join(path.dirname(final), '.' + path.basename(final) + '.sync');
+/** @param {string} dir */
 const discardTree = (dir) => fs.rmSync(dir, { recursive: true, force: true });
 // The build in progress, removed if the script leaves before it is moved into place.
+/** @type {string | null} */
 let building = null;
 // Whether this sync began a rebase: only that one is aborted on failure, never one the run left.
 let startedRebase = false;
@@ -246,6 +290,7 @@ const missingIndex = () => {
 };
 
 /** The clone or the fetch, under the claim's credential helper when it carries a token. */
+/** @param {...string} args */
 const withCredentials = (...args) =>
     process.env.CRED_HELPER
         ? ['-c', 'credential.helper=' + process.env.CRED_HELPER, '-c', 'http.followRedirects=initial', ...args]
@@ -269,6 +314,7 @@ const excludeFactoryState = () => {
 };
 
 /** Whether the fetched remote has the named ref (`origin/<name>`); false for a repository with no commits. */
+/** @param {string} name */
 const hasRemoteRef = (name) => {
     try {
         git('rev-parse', '--verify', '--quiet', 'refs/remotes/origin/' + name);
@@ -279,12 +325,13 @@ const hasRemoteRef = (name) => {
 };
 
 /** Whether the tree has the local branch; only git's exit 1 is "no", any other failure is not an answer and throws. */
+/** @param {string} name */
 const hasLocalRef = (name) => {
     try {
         inw('rev-parse', '--verify', '--quiet', 'refs/heads/' + name);
         return true;
     } catch (e) {
-        if (e && e.status === 1) return false;
+        if (e && /** @type {{status?: number}} */ (e).status === 1) return false;
         throw e;
     }
 };
@@ -334,7 +381,7 @@ const addReviewWorktree = () => {
         try {
             git('worktree', 'add', build, branch);
         } catch {
-            git('worktree', 'add', '-b', branch, build, reviewRef);
+            git('worktree', 'add', '-b', branch, build, /** @type {string} */ (reviewRef));
         }
         git('worktree', 'move', build, wt);
     } catch (e) {
@@ -416,6 +463,7 @@ const defaultBranch = () => {
 };
 
 /** Refuses a credentialed fetch or clone over anything but an https origin. */
+/** @param {boolean} present */
 const assertCredentialedOrigin = (present) => {
     if (!process.env.CRED_HELPER) return;
     const origin = present ? git('remote', 'get-url', 'origin') : remote;
@@ -430,6 +478,7 @@ const assertCredentialedOrigin = (present) => {
 };
 
 /** Clones the remote (partial, no checkout) into `dest`, under the claim's credential helper. */
+/** @param {string} dest */
 const cloneInto = (dest) =>
     execFileSync(
         'git',
@@ -449,6 +498,10 @@ const cloneInto = (dest) =>
     );
 
 /** Rebases an existing tree onto the base, on the named branch it stands on (the task branch from its base or a detached HEAD); a conflicted tree is handed over. */
+/**
+ * @param {string} base
+ * @param {boolean} hasBase
+ */
 const rebaseExisting = (base, hasBase) => {
     // An existing tree over an empty remote has no new base to rebase onto: it is left as it is.
     if (!hasBase) return synced();

@@ -1,6 +1,5 @@
-import { CONTENT_TYPE_HEADER, JSON_HEADERS, type SkillSource, SKILL_SOURCES } from '@factory-ai/core';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { CONTENT_TYPE_HEADER, type SkillSource, SKILL_SOURCES } from '@factory-ai/core';
+import { request, type RequestOptions, type RequestResult } from './request.js';
 
 /**
  * The skills' client half: the org and workspace stores (`/api/<door>/skills`), the built-in switches and
@@ -84,7 +83,6 @@ export interface SkillRefusal {
 
 export type SkillResult<T> = ({ ok: true } & T) | SkillRefusal;
 
-const SESSION_EXPIRED = 'Your session expired';
 const HTTP_STATUS_NO_CONTENT = 204;
 const ZIP_CONTENT_TYPE = 'application/zip';
 const ZIP_HEADERS = { [CONTENT_TYPE_HEADER]: ZIP_CONTENT_TYPE };
@@ -158,58 +156,44 @@ const unexpected = (what: string): SkillRefusal => ({
     error: `Could not ${what}: unexpected response shape.`,
 });
 
-/** The refusal of a failed response: its sentence, `code` and `reason` as sent; a 401 reports the session. */
-const refused = async (response: Response, verb: string): Promise<SkillRefusal> => {
-    if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-        reportUnauthenticated();
-        return { ok: false, error: SESSION_EXPIRED };
-    }
-    const sent = (await response
-        .clone()
-        .json()
-        .catch(() => ({}))) as { reason?: unknown };
-    const refusal = await refusalOf(response, verb);
-    return typeof sent.reason === 'string' ? { ok: false, ...refusal, reason: sent.reason } : { ok: false, ...refusal };
+/** A failed request as a skill refusal: its sentence, `code` and `reason` as sent. */
+const refused = (failed: Extract<RequestResult<unknown>, { ok: false }>): SkillRefusal => {
+    const { error, code, body } = failed;
+    return {
+        ok: false,
+        error,
+        ...(code ? { code } : {}),
+        ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}),
+    };
 };
 
 /** One request: a failed one is its refusal, an ok one is handed to `parse`, which returns the result or null for a bad shape. */
 const call = async <T>(
     verb: string,
     url: string,
-    init: RequestInit | undefined,
-    parse: (response: Response) => Promise<SkillResult<T> | null>
+    init: RequestOptions<unknown>,
+    parse: (body: unknown) => SkillResult<T> | null
 ): Promise<SkillResult<T>> => {
-    try {
-        const response = await fetch(url, init);
-        if (!response.ok) return await refused(response, `Could not ${verb}`);
-        return (await parse(response)) ?? unexpected(verb);
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+    const result = await request<unknown>(url, { ...init, verb: `Could not ${verb}` });
+    if (!result.ok) return refused(result);
+    return parse(result.value) ?? unexpected(verb);
 };
 
-const bodyOf = async (response: Response): Promise<Record<string, unknown>> => {
-    const body: unknown = await response.json();
-    return isRecord(body) ? body : {};
-};
+const bodyOf = (body: unknown): Record<string, unknown> => (isRecord(body) ? body : {});
 
-const skillOf = async (response: Response): Promise<SkillResult<{ skill: StoredSkill }> | null> => {
-    const { skill } = await bodyOf(response);
+const skillOf = (body: unknown): SkillResult<{ skill: StoredSkill }> | null => {
+    const { skill } = bodyOf(body);
     return isStoredSkill(skill) ? { ok: true, skill } : null;
 };
 
-const json = (method: string, body: unknown): RequestInit => ({
-    method,
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-});
+const json = (method: 'POST' | 'PUT', body: unknown): RequestOptions<unknown> => ({ method, body });
 
 const base = (door: SkillDoor) => `/api/${door}/skills`;
 const itemUrl = (door: SkillDoor, id: string) => `${base(door)}/${encodeURIComponent(id)}`;
 
 export const listSkills = (door: SkillDoor) =>
-    call<{ skills: StoredSkill[] }>('load the skills', base(door), undefined, async (response) => {
-        const { skills } = await bodyOf(response);
+    call<{ skills: StoredSkill[] }>('load the skills', base(door), {}, (body) => {
+        const { skills } = bodyOf(body);
         return Array.isArray(skills) && skills.every(isStoredSkill) ? { ok: true, skills } : null;
     });
 
@@ -217,9 +201,9 @@ export const getSkill = (door: SkillDoor, id: string) =>
     call<{ skill: StoredSkill; skillMd: string; files: SkillFile[] }>(
         'load the skill',
         itemUrl(door, id),
-        undefined,
-        async (response) => {
-            const { skill, skillMd, files } = await bodyOf(response);
+        {},
+        (body) => {
+            const { skill, skillMd, files } = bodyOf(body);
             return isStoredSkill(skill) && typeof skillMd === 'string' && Array.isArray(files) && files.every(isFile)
                 ? { ok: true, skill, skillMd, files }
                 : null;
@@ -230,16 +214,15 @@ export const getBuiltin = (name: string) =>
     call<{ builtin: BuiltinSkill }>(
         'load the built-in skill',
         `/api/skills/builtin/${encodeURIComponent(name)}`,
-        undefined,
-        async (response) => {
-            const body: unknown = await response.json();
+        {},
+        (body) => {
             return isBuiltin(body) ? { ok: true, builtin: body } : null;
         }
     );
 
 export const listCatalog = () =>
-    call<{ skills: CatalogSkill[] }>('load the catalog', '/api/skills', undefined, async (response) => {
-        const { skills } = await bodyOf(response);
+    call<{ skills: CatalogSkill[] }>('load the catalog', '/api/skills', {}, (body) => {
+        const { skills } = bodyOf(body);
         return Array.isArray(skills) && skills.every(isCatalogSkill) ? { ok: true, skills } : null;
     });
 
@@ -273,37 +256,41 @@ export const setBuiltinEnabled = (name: string, enabled: boolean) =>
         'switch the built-in skill',
         `/api/org/skills/builtin/${encodeURIComponent(name)}/enabled`,
         json('PUT', { enabled }),
-        async (response) => {
-            const body = await bodyOf(response);
+        (answer) => {
+            const body = bodyOf(answer);
             return typeof body.name === 'string' && typeof body.enabled === 'boolean'
                 ? { ok: true, name: body.name, enabled: body.enabled }
                 : null;
         }
     );
 
-export const deleteSkill = (door: SkillDoor, id: string) =>
-    call<object>('delete the skill', itemUrl(door, id), { method: 'DELETE' }, async (response) =>
-        response.status === HTTP_STATUS_NO_CONTENT ? { ok: true } : null
-    );
+export const deleteSkill = async (door: SkillDoor, id: string): Promise<SkillResult<object>> => {
+    const result = await request(itemUrl(door, id), {
+        method: 'DELETE',
+        verb: 'Could not delete the skill',
+        empty: true,
+    });
+    if (!result.ok) return refused(result);
+    return result.status === HTTP_STATUS_NO_CONTENT ? { ok: true } : unexpected('delete the skill');
+};
 
 export const promote = (id: string) =>
     call('promote the skill', `${itemUrl('workspace', id)}/scope`, json('POST', { scope: 'org' }), skillOf);
 
 /** Fetches the zip, then clicks an object-URL anchor. A non-200 is the refusal: an error body is never saved as a file. */
 export const downloadZip = async (door: SkillDoor, id: string, name: string): Promise<SkillResult<object>> => {
-    try {
-        const response = await fetch(`${itemUrl(door, id)}/zip`);
-        if (!response.ok) return await refused(response, 'Could not download the skill');
-        const url = URL.createObjectURL(await response.blob());
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = `${name}.zip`;
-        document.body.append(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
-        URL.revokeObjectURL(url);
-        return { ok: true };
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+    const result = await request<Blob>(`${itemUrl(door, id)}/zip`, {
+        blob: true,
+        verb: 'Could not download the skill',
+    });
+    if (!result.ok) return refused(result);
+    const url = URL.createObjectURL(result.value);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${name}.zip`;
+    document.body.append(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    return { ok: true };
 };

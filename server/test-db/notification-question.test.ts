@@ -15,7 +15,7 @@ import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 
 /**
- * BEL-135: task.question fires once per question a running agent asks and a person can still answer.
+ * task.question fires once per question a running agent asks and a person can still answer.
  * Answering, closing or expiring the question never emits again (docs/notifications.md).
  */
 const enabled = Boolean(process.env.DATABASE_URL);

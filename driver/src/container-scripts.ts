@@ -33,10 +33,10 @@ export const supervisorScript = script('supervisor.cjs');
 /** The `git` every supervised step runs, execution-capable checkout config neutralized: see scripts/git-harden.cjs. */
 export const gitHardenScript = script('git-harden.cjs');
 
-/** The attempt's checkpoint at finalize (issue #775): see scripts/checkpoint.cjs. */
+/** The attempt's checkpoint at finalize: see scripts/checkpoint.cjs. */
 export const checkpointScript = script('checkpoint.cjs');
 
-/** The task tree rebuilt from the thread's checkpoint on a replacement volume (issue #775): see scripts/checkpoint-restore.cjs. */
+/** The task tree rebuilt from the thread's checkpoint on a replacement volume: see scripts/checkpoint-restore.cjs. */
 export const checkpointRestoreScript = script('checkpoint-restore.cjs');
 
 /** The live cache probe: see scripts/opencode-cache-probe.cjs. */
@@ -64,7 +64,7 @@ export const gateLoopArgv = (): string[] => [
     gateGithubScript,
 ];
 
-/** The reviewer container's loop over the review mailbox (issue #774): see scripts/review-loop.sh. */
+/** The reviewer container's loop over the review mailbox: see scripts/review-loop.sh. */
 export const reviewLoopScript = script('review-loop.sh');
 
 /** The reviewer container's command on both executors: the loop, running each request's executor entrypoint argv. */

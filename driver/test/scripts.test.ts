@@ -160,7 +160,7 @@ describe('the container scripts', () => {
         );
     });
 
-    // The github-review-reconcile block's two helpers (issue #133) are COMPOSED bodies, never a
+    // The github-review-reconcile block's two helpers are COMPOSED bodies, never a
     // single file's content — driver/src/review/review-helpers.ts assembles each from real adapter files
     // plus the unmodified review-collect.cjs/review-reply.cjs, joined with the bare `{ }` blocks
     // that keep the embedded script's own top-level names from colliding with the adapter's own.

@@ -18,7 +18,7 @@ export const OCTET_STREAM_CONTENT_TYPE = 'application/octet-stream';
  */
 export const LEASE_LOST_CODE = 'LEASE_LOST';
 export const NOT_FOUND_CODE = 'NOT_FOUND';
-/** A settle under a lease whose attempt staged a different conclusion (issue #821). */
+/** A settle under a lease whose attempt staged a different conclusion. */
 export const CONCLUSION_CONFLICT_CODE = 'CONCLUSION_CONFLICT';
 
 /** What the kubernetes API requires of a PATCH body that is a JSON merge patch. */

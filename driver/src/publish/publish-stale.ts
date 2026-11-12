@@ -4,13 +4,13 @@ import type { PublishStep, RunPublishStep } from './publish.js';
 const STALE_INFO = /stale info/;
 
 /**
- * Pushes with a lease, recovering from a stale one (issue #500). Something outside the runner can
+ * Pushes with a lease, recovering from a stale one. Something outside the runner can
  * push the task branch between turns, leaving the checkout's tracking ref behind: the bare lease
  * then refuses a push that is fine. On that refusal alone, refresh the tracking ref and look —
  * a remote head HEAD already contains retries as a fast-forward, a remote head HEAD lacks fails
  * naming its SHA, because forcing would discard the outside push. The fetch runs the repository's
  * hooks, so HEAD must still be `sha` — the commit the publish validated and records — before the
- * retry pushes it (issue #825).
+ * retry pushes it.
  */
 export async function pushWithLease(
     step: RunPublishStep,

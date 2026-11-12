@@ -1,4 +1,4 @@
--- Sign-in onboarding (#125): the pending round trip and the per-org repo allowlist.
+-- Sign-in onboarding: the pending round trip and the per-org repo allowlist.
 --
 -- The OAuth code is single-use, so the selection screen cannot re-exchange it: the identity and
 -- the installation report survive the hop in a ROW, keyed by the hash of an opaque token held in
@@ -25,7 +25,7 @@ create table if not exists pending_sign_in (
 );
 create index if not exists pending_sign_in_expiry on pending_sign_in (expires_at);
 
--- The repos an organization tracks (#125): the onboarding screen's per-org checkbox answer.
+-- The repos an organization tracks: the onboarding screen's per-org checkbox answer.
 -- NO rows = every repository the installation reports — today's behavior, and the reason a
 -- confirm-with-everything-checked writes nothing. Org-owned with org_id leading, per 005's rule;
 -- the rows die with the organization, whose repo scope they are.

@@ -45,12 +45,12 @@ export type FailureClass = { kind: 'infra' } | { kind: 'repairable' } | { kind: 
 
 /** The infrastructure failure kinds: the run did not get to judge the work. */
 const INFRA_KINDS: readonly string[] = ['timeout', 'cache_lost', 'services', 'runner_error'];
-/** The coarse kinds whose `failure_cause` decides (issue #581): a failed gate, publish or helper. */
+/** The coarse kinds whose `failure_cause` decides: a failed gate, publish or helper. */
 const CAUSED_KINDS: readonly string[] = ['gate', 'publish', 'helper'];
 const CONFIGURATION_KINDS: readonly string[] = ['config', 'policy'];
 /** Causes an agent can fix in its own checkout: a failed check, a stale or conflicting branch. */
 const REPAIRABLE_CAUSES: readonly string[] = ['verification', 'conflict'];
-/** Causes a fresh run can clear: a lost transport, an environment fault that failed a gate (issue #653). */
+/** Causes a fresh run can clear: a lost transport, an environment fault that failed a gate. */
 const INFRA_CAUSES: readonly string[] = ['transport', 'environment'];
 /** Causes no retry or repair can fix: a refused credential, a bad configuration. */
 const CONFIGURATION_CAUSES: readonly string[] = ['denied', 'config'];
@@ -270,7 +270,7 @@ export function batchNextAction(input: {
 
 /**
  * A task neither finished nor failed in a live batch: moving, so wait — unless cancelled, which in a
- * live batch is a person's force-close (#676). That is never retried, so a required one is past only
+ * live batch is a person's force-close. That is never retried, so a required one is past only
  * by cancelling the batch, and an optional one asks for nothing.
  */
 function unsettledAction(batchId: string, task: { execution: string; required: boolean }): BatchNextAction {

@@ -1,4 +1,4 @@
-// What the capacity phases' sampler read (issue #831).
+// What the capacity phases' sampler read.
 //
 //   node scripts/lane-capacity-samples.mjs <samples> <kill epoch> <takeover epoch> [budget] [end epoch]
 //

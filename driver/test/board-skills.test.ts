@@ -65,7 +65,7 @@ describe('the board skill content read', () => {
     });
 });
 
-describe('skillHiddenOf (BEL-286)', () => {
+describe('skillHiddenOf', () => {
     const entry = (over: Record<string, unknown> = {}) => ({
         name: 'factory-jira',
         source: 'builtin',

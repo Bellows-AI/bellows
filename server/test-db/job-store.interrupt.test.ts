@@ -439,7 +439,7 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
 
 /**
  * A hand-back the claim could not even start because a leftover of an earlier claim is still
- * terminating (BEL-160): it waits for the leftover, so it spends no budget, no attempt and never
+ * terminating: it waits for the leftover, so it spends no budget, no attempt and never
  * retires the job, and the next claim is deferred rather than immediate.
  */
 describe.skipIf(!enabled)('a blocked hand-back waits outside the interruption budget — database', () => {
@@ -508,7 +508,7 @@ describe.skipIf(!enabled)('a blocked hand-back waits outside the interruption bu
 });
 
 /**
- * BEL-302: an attempt lost to the node (a drained driver, an evicted runner) is flagged `nodeLoss` by the
+ * an attempt lost to the node (a drained driver, an evicted runner) is flagged `nodeLoss` by the
  * driver and never spends the poison budget; it has a far looser bound of its own. Lease expiries are written
  * by the server, unflagged, and keep counting.
  */

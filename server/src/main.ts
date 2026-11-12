@@ -38,6 +38,7 @@ import { productionConnectors } from './notifications/registry.js';
 import { createCommercePlanWriter } from './db/commerce-plan-writer.js';
 import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
 import type { SecretDiagnostic } from './secrets/secret-store.js';
+import { createClose, createStopRegistry, type Track } from './shutdown.js';
 
 /** One registry: the subscription routes validate against it and delivery sends through it. */
 const connectors = productionConnectors();
@@ -51,14 +52,23 @@ function startDeliveries({
     orgs,
     metrics,
     ready,
+    track,
 }: {
     config: AppConfig;
     orgs: OrgRegistry;
     metrics: ServerMetrics;
     ready: Promise<unknown>;
+    track: Track;
 }): void {
-    startCommerceDelivery({ commerce: config.commerce, orgs, metrics, ready });
-    startNotificationDelivery({ connectors, publicUrl: config.integrations.callbackOrigin, orgs, metrics, ready });
+    startCommerceDelivery({ commerce: config.commerce, orgs, metrics, ready, track });
+    startNotificationDelivery({
+        connectors,
+        publicUrl: config.integrations.callbackOrigin,
+        orgs,
+        metrics,
+        ready,
+        track,
+    });
 }
 
 /** The stores the MCP surface adds: the OAuth server's, and the single-use attachment upload capabilities'. */
@@ -80,6 +90,7 @@ function startCollectors({
     metrics,
     oauth,
     uploadCapabilities,
+    track,
 }: {
     sql: Sql;
     ready: Promise<unknown>;
@@ -89,21 +100,64 @@ function startCollectors({
     metrics: ServerMetrics;
     oauth: OAuthStore;
     uploadCapabilities: UploadCapabilityStore;
+    track: Track;
 }): void {
     void ready.then(() =>
-        startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
+        track(() =>
+            startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
+        )
     );
     const { sweepTemps } = artifacts;
-    if (sweepTemps) startTempSweep(sweepTemps, { log: (m) => console.log(`[artifacts] ${m}`) });
-    void ready.then(() => startAttachmentSweep({ sql, ready, artifacts, config: config.artifacts, metrics }));
+    if (sweepTemps) track(() => startTempSweep(sweepTemps, { log: (m) => console.log(`[artifacts] ${m}`) }));
     void ready.then(() =>
-        startSkillSweep({ sql, ready, artifacts, metrics, retentionDays: config.artifacts.retentionDays })
+        track(() => startAttachmentSweep({ sql, ready, artifacts, config: config.artifacts, metrics }))
+    );
+    void ready.then(() =>
+        track(() => startSkillSweep({ sql, ready, artifacts, metrics, retentionDays: config.artifacts.retentionDays }))
     );
     // Expired codes, consent transactions and grant families; only a board that serves MCP ever writes them.
     if (config.mcp.enabled)
         void ready.then(() =>
-            startOAuthSweep(oauth, metrics.timedPass, undefined, () => uploadCapabilities.purgeExpired())
+            track(() => startOAuthSweep(oauth, metrics.timedPass, undefined, () => uploadCapabilities.purgeExpired()))
         );
+}
+
+/** The PR-driven batch loops and the adoption of what a lost pod left mid-exchange: every replica, after the migrations. */
+function startRecovery({
+    config,
+    orgs,
+    metrics,
+    ready,
+    integrations,
+    track,
+}: {
+    config: AppConfig;
+    orgs: OrgRegistry;
+    metrics: ServerMetrics;
+    ready: Promise<unknown>;
+    integrations: ReturnType<typeof createIntegrationRuntime>;
+    track: Track;
+}): void {
+    // Dispatch survives a missed callback or a restart: the first pass runs now, then on an interval. The batch
+    // loops start only when BATCHES_ENABLED; the single-task PR follower always does (docs/batches.md).
+    void ready.then(() =>
+        track(() =>
+            startBatchLoops({
+                batchesEnabled: config.batches.enabled,
+                orgs,
+                timedPass: (loop, fn) => metrics.timedPass(loop, fn),
+            })
+        )
+    );
+
+    // What a lost board pod left mid-exchange or mid-persistence is adopted on every replica; each row is re-checked.
+    void ready.then(() =>
+        track(() =>
+            startIntegrationRecovery((signal) =>
+                metrics.timedPass('integration_recover', () => recoverIntegrations(integrations, { signal }))
+            )
+        )
+    );
 }
 
 /** The attempt checks behind the runner credential routes, and the lanes' optional mint and revoke stand-ins. */
@@ -141,9 +195,10 @@ interface StartOptions {
  * passes the code-only `none` arm for the harnesses that run with no credential and no network, and
  * `offline-mint.ts` adds the lanes' stand-in runner-token mint to it.
  */
-export async function start(options: StartOptions = {}): Promise<void> {
+export async function start(options: StartOptions = {}): Promise<{ close(): Promise<void> }> {
+    const stops = createStopRegistry();
     const { config } = resolveConfig({ env: process.env, ...(options.github ? { github: options.github } : {}) });
-    // The orgs are the App's installations now (#99) — the process is bound to none of them, which
+    // The orgs are the App's installations now — the process is bound to none of them, which
     // is the point. The mode is what a boot should say out loud.
     console.log(
         config.auth.mode === 'github'
@@ -211,7 +266,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
     //
     const artifacts = createArtifactBackend(config.artifacts);
     void prepareArtifactBackend(artifacts, (m) => console.log(`[artifacts] ${m}`));
-    // Prometheus series for the board (issue #831): the claim reports into them, `GET /api/metrics`
+    // Prometheus series for the board: the claim reports into them, `GET /api/metrics`
     // serves them, and the background loops below are wrapped with `metrics.timedPass`.
     const metrics = createServerMetrics({
         admission: config.admission,
@@ -256,7 +311,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         );
     }
 
-    // The outbound OAuth runtime (BEL-138). Jira registers when ATLASSIAN_CLIENT_ID/SECRET are set; unset, no provider is
+    // The outbound OAuth runtime. Jira registers when ATLASSIAN_CLIENT_ID/SECRET are set; unset, no provider is
     // configured and the runtime serves only the recovery of rows and the destroy of a revoked grant's secret.
     const jira = jiraRegistration(config.integrations.jira, config.integrations.callbackOrigin);
     const integrations = createIntegrationRuntime({
@@ -299,26 +354,12 @@ export async function start(options: StartOptions = {}): Promise<void> {
     // not awaited: a cold database must not hold `listen()`.
     void ready.then(() => orgs.warmAll()).catch((e: Error) => console.error(`[orgs] warm failed: ${e.message}`));
 
-    // Dispatch survives a missed callback or a restart: the first pass runs now, then on an interval. The batch
-    // loops start only when BATCHES_ENABLED; the single-task PR follower always does (docs/batches.md).
-    void ready.then(() =>
-        startBatchLoops({
-            batchesEnabled: config.batches.enabled,
-            orgs,
-            timedPass: (loop, fn) => metrics.timedPass(loop, fn),
-        })
-    );
+    startCollectors({ sql, ready, secrets, artifacts, config, metrics, ...mcp, track: stops.add });
+    startRecovery({ config, orgs, metrics, ready, integrations, track: stops.add });
 
-    startCollectors({ sql, ready, secrets, artifacts, config, metrics, ...mcp });
-
-    // What a lost board pod left mid-exchange or mid-persistence is adopted on every replica; each row is re-checked.
-    void ready.then(() =>
-        startIntegrationRecovery((signal) =>
-            metrics.timedPass('integration_recover', () => recoverIntegrations(integrations, { signal }))
-        )
-    );
-
-    startDeliveries({ config, orgs, metrics, ready });
+    startDeliveries({ config, orgs, metrics, ready, track: stops.add });
 
     await app.listen({ port: config.port, host: config.host });
+
+    return { close: createClose({ app, stops, pools: [sql, secretSql] }) };
 }

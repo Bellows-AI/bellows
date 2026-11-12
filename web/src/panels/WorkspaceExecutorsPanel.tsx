@@ -4,6 +4,7 @@ import { Avatar } from '../components/Avatar.js';
 import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
 import { ADD_LABEL, executorTypeLabel } from '../workspace/executors.js';
+import { ScrollRegion } from '../components/ScrollRegion.js';
 
 /**
  * One row per configured personal executor — each with the Edit action that reopens the dialog on
@@ -82,8 +83,7 @@ export function WorkspaceExecutorsPanel({
                     No personal executors. Add one, or select an organization executor for a new task.
                 </p>
             ) : (
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-                <section className="table-wrap" tabIndex={0} aria-label="Executors">
+                <ScrollRegion className="table-wrap" aria-label="Executors">
                     <table className="data data-compact table-cards">
                         <thead>
                             <tr>
@@ -140,7 +140,7 @@ export function WorkspaceExecutorsPanel({
                             ))}
                         </tbody>
                     </table>
-                </section>
+                </ScrollRegion>
             )}
         </section>
     );

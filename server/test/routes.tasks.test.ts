@@ -4,6 +4,7 @@ import type { JobStore, TaskListFilters, TaskListResponse, TaskSummary } from '.
 import { encodeCursor } from '../src/db/task-summary.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 const track = trackApps();
 
@@ -66,7 +67,7 @@ const taskStub = (options: { fail?: boolean } = {}): TaskStub => {
     const stub = {
         asked: [] as TaskListFilters[],
         async listTasks(filters: TaskListFilters): Promise<TaskListResponse> {
-            if (options.fail) throw new Error('database is down');
+            if (options.fail) throw storeOutage('database is down');
             stub.asked.push(filters);
             return ANSWER;
         },

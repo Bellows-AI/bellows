@@ -34,7 +34,10 @@
         "./lint/no-shared-literals.grit",
         "./lint/no-inline-container-scripts.grit",
         "./lint/no-cross-package-imports.grit",
-        "./lint/no-silent-empty-read.grit"
+        "./lint/no-silent-empty-read.grit",
+        "./lint/no-raw-fetch.grit",
+        "./lint/no-window-confirm.grit",
+        "./lint/no-shared-module-spies.grit"
     ],
     "assist": {
         "enabled": false
@@ -221,16 +224,6 @@
         },
         {
             "includes": ["driver/src/k8s/k8s-podspec.ts", "driver/src/scripts/supervisor.cjs"],
-            "linter": {
-                "rules": {
-                    "style": {
-                        "noExcessiveLinesPerFile": "off"
-                    }
-                }
-            }
-        },
-        {
-            "includes": ["web/src/api/useTasks.ts"],
             "linter": {
                 "rules": {
                     "style": {

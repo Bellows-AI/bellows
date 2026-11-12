@@ -1,4 +1,5 @@
-// The merge-conflict-autofix block's deterministic preflight (issue #122): runs as a PRE
+// @ts-check
+// The merge-conflict-autofix block's deterministic preflight: runs as a PRE
 // block-helper (issue #207's transport) in the task worktree — the docker/kubernetes transports
 // both set the container's working directory to it, so every git call below runs against
 // process.cwd() with no REPO/WORKTREE env needed, unlike the sync's own git-worktree.cjs. One
@@ -9,8 +10,8 @@
 // follows, and that agent is how the issue's "invoke an agent only when conflicts need judgment"
 // prompt reads this verdict.
 //
-// Input (HELPER_INPUT, issue #207): {"publication": {repo, prNumber, prUrl, headBranch,
-// baseBranch} | null} — the thread's structured PR identity (issue #202), injected generically by
+// Input (HELPER_INPUT): {"publication": {repo, prNumber, prUrl, headBranch,
+// baseBranch} | null} — the thread's structured PR identity, injected generically by
 // the board's resolveClaimHelperPlans. No publication recorded for this thread is a hard
 // precondition failure: there is nothing here to reconcile.
 //
@@ -24,7 +25,7 @@
 // Verdicts, three shapes only — a "stale/refused" checkout state (wrong branch, no publication)
 // is instead an ok:false helper FAILURE: the row fails without ever spawning the agent, and the
 // next trigger of this block re-probes fresh, which is what the issue's "abort safely and
-// re-probe" asks for. The first two need no agent (issue #503): the probe answers
+// re-probe" asks for. The first two need no agent: the probe answers
 // control:"conclude" with the workflow marker as the last line of its output.
 //   up-to-date  — the branch already contains its base branch's tip. No rebase attempted.
 //                 Concludes MERGE-UP-TO-DATE.
@@ -51,6 +52,7 @@ const REBASED_MARKER = 'MERGE-REBASED';
 // publish.ts's CREDENTIAL_HELPER is: git appends the credential operation to this value verbatim.
 const CREDENTIAL_HELPER = '! f(){ printf "username=x-access-token\\n"; printf "password=%s\\n" "$GITHUB_TOKEN"; }; f';
 
+/** @param {object} line */
 const emit = (line) => {
     console.log(JSON.stringify(line));
     try {
@@ -62,18 +64,33 @@ const emit = (line) => {
     }
 };
 
+/** @param {object | string} output */
 const ok = (output) => emit({ schema: SCHEMA, version: VERSION, ok: true, output });
 // The two outcomes the probe already decided leave no judgment for an agent: the job concludes
 // here, the workflow marker the last line of its output so the board's marker edges read it
 // exactly as they read an agent's.
+/**
+ * @param {string} summary
+ * @param {string} marker
+ */
 const conclude = (summary, marker) =>
     emit({ schema: SCHEMA, version: VERSION, ok: true, output: summary + '\n' + marker, control: 'conclude' });
+/**
+ * @param {string} reason
+ * @param {string} error
+ */
 const fail = (reason, error) => emit({ schema: SCHEMA, version: VERSION, ok: false, reason, error });
 
+/** @param {string[]} a */
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim();
+/** @param {any} e a caught value, opaque */
 const errText = (e) => String((e && e.stderr) || (e && e.message) || e).slice(0, ERROR_MAX_LENGTH);
 
-/** { ok: true, publication } or { ok: false } — a refusal already emitted. */
+/**
+ * { ok: true, publication } or { ok: false } — a refusal already emitted.
+ * @typedef {{ repo: string, headBranch: string, baseBranch: string }} Publication
+ * @returns {{ ok: false } | { ok: true, publication: Publication }}
+ */
 function resolvePublication() {
     let input;
     try {
@@ -93,6 +110,8 @@ function resolvePublication() {
  * Asserts the worktree stands on the PR's own head branch, and clears any mid-rebase state a
  * previous, unfinished attempt left — never trust it, always start this probe from a clean tree.
  * { ok: true } or { ok: false } — a refusal already emitted.
+ * @param {Publication} publication
+ * @returns {{ ok: boolean }}
  */
 function ensureCleanCheckout(publication) {
     try {
@@ -132,7 +151,11 @@ function ensureCleanCheckout(publication) {
     return { ok: true };
 }
 
-/** Fetches the PR's recorded base, authenticated when a token is available. { ok } or a refusal. */
+/**
+ * Fetches the PR's recorded base, authenticated when a token is available. { ok } or a refusal.
+ * @param {Publication} publication
+ * @returns {{ ok: boolean }}
+ */
 function fetchBase(publication) {
     const token = process.env.GITHUB_TOKEN;
     try {
@@ -191,6 +214,8 @@ const unmergedPaths = () =>
  * pressure) is never disguised as a conflict for the repair agent to "resolve": whatever state
  * remains is aborted and `{ conflicted: false, error }` is returned, so the caller can fail the
  * helper outright and let the block's own `repair -> repair` retry edge do its job.
+ * @param {string} base
+ * @returns {{ conflicted: boolean, paths?: string[], error?: string }}
  */
 function attemptRebase(base) {
     try {
@@ -216,7 +241,10 @@ function attemptRebase(base) {
     return { conflicted: false, paths: [] };
 }
 
-/** Reconciles HEAD against the fetched base: up to date, cleanly rebased, or left conflicted. */
+/**
+ * Reconciles HEAD against the fetched base: up to date, cleanly rebased, or left conflicted.
+ * @param {string} base
+ */
 function reconcile(base) {
     let baseSha;
     let headSha;

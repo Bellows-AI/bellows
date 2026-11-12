@@ -34,6 +34,7 @@ import {
     HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 const TOOL_NAMES = [
     'accept_batch_task',
@@ -200,7 +201,7 @@ async function boot(
     const oauth: Pick<OAuthStore, 'findAccessToken'> = {
         async findAccessToken(hash): Promise<McpCaller | null> {
             seen.lookups += 1;
-            if (failLookup) throw new Error('connection refused');
+            if (failLookup) throw storeOutage('connection refused');
             const audience = known.get(hash.toString('hex'));
             if (!audience || lapsed.has(hash.toString('hex'))) return null;
             return {
@@ -251,7 +252,7 @@ describe('the endpoint, github mode', () => {
             new ModernTransport(board.url, { requestInit: { headers: bearer() }, fetch: fetchRecording })
         );
         expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-        // The registry is 40 tools: BEL-248's create_attachment_upload is the last addition (docs/mcp.md).
+        // The registry is 40 tools: create_attachment_upload is the last addition (docs/mcp.md).
         expect(TOOL_NAMES).toHaveLength(40);
         expect(client.getServerVersion()?.name).toBe('factory');
         // The request headers of the modern era name the revision on every call, so none went out as 2025-11-25.
@@ -494,6 +495,8 @@ describe('a client that disconnects', () => {
         let release!: () => void;
         const started = new Promise<void>((resolve) => (release = resolve));
         const app = track(Fastify());
+        // buildApp's decoration, which a bare instance lacks: the board is not closing.
+        app.decorateRequest('closing', { getter: () => new AbortController().signal });
         const store = memoryAuthStore();
         const caller = store.seedMember(ORG, 'octocat', 'admin');
         app.addHook('onRequest', async (request) => {

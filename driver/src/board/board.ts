@@ -3,7 +3,7 @@ import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
 import { type AttachmentContent, attachmentCalls, type ClaimAttachment } from './board-attachments.js';
-import { claimOf } from './board-claim.js';
+import { claimOf, parseClaim } from './board-claim.js';
 import { type ClaimSkills, skillCalls } from './board-skills.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
@@ -33,7 +33,7 @@ export interface ServiceStatus {
     image: string;
     state: string;
     /**
-     * Why a dead service died (issue #487), read once when the sampler first sees it dead: the
+     * Why a dead service died, read once when the sampler first sees it dead: the
      * exit code, the platform's word for the ending, its last log lines, and the fix a known
      * signature points at. Absent while the service lives.
      */
@@ -65,12 +65,12 @@ export interface BoardJob extends ClaimSkills {
     maxAttempts: number;
     /**
      * Whether a loss of this attempt ends the job: its attempts and the board's interruption budget
-     * are both spent (issue #822). Only then does an attempt that cannot run report what ends it.
+     * are both spent. Only then does an attempt that cannot run report what ends it.
      */
     lastAttempt: boolean;
     /**
      * The board's claim sequence for this row: bumped by every claim and never refunded, unlike
-     * `attempts` (issue #559). What the kubernetes checkout claim orders contenders by.
+     * `attempts`. What the kubernetes checkout claim orders contenders by.
      */
     claimSeq: number;
     leaseToken: string;
@@ -87,7 +87,7 @@ export interface BoardJob extends ClaimSkills {
      */
     executorRefusal: string | null;
     /**
-     * Why the task's selected skills cannot run (issue #545): a skill the board lacks, or a
+     * Why the task's selected skills cannot run: a skill the board lacks, or a
      * connection its environment does not authorize — env NAMES only, never a value. The loop
      * fails the task `config` with this sentence before any runner starts, on docker and
      * kubernetes alike.
@@ -101,7 +101,7 @@ export interface BoardJob extends ClaimSkills {
      */
     planRefusal: string | null;
     /**
-     * The board-owned Factory execution context (issue #244) — the master-prompt.ts renderer's
+     * The board-owned Factory execution context — the master-prompt.ts renderer's
      * text, delivered through the executor's own system-instruction channel, never concatenated
      * into `command`. Read defensively as `?? null`, like every board field: a board that predates
      * the feature, or a render failure, both mean the loop must refuse the launch explicitly
@@ -109,14 +109,14 @@ export interface BoardJob extends ClaimSkills {
      */
     masterPrompt: string | null;
     /**
-     * This claim's node and Factory-managed capabilities (issue #509), delivered per turn
+     * This claim's node and Factory-managed capabilities, delivered per turn
      * (master-prompt.ts) so `masterPrompt` stays the same for every claim of a thread. Absent when
      * the board sent no non-empty string.
      */
     turnContext?: string;
     /**
      * Set when this claim resumes a session: a follow-up its parent's, or a takeover or handover the
-     * row's own attempt's (issue #822). The runner restores that session rather than starting one,
+     * row's own attempt's. The runner restores that session rather than starting one,
      * and the tree is restored, not synced (`claimContinuesSession`). Read defensively as `?? null`.
      */
     resumeSessionId: string | null;
@@ -129,14 +129,14 @@ export interface BoardJob extends ClaimSkills {
     followUp: boolean;
     /**
      * Whether `resumeSessionId` was minted by an attempt of this row rather than inherited from an
-     * earlier row of the thread (issue #822): only such a session can have been lost before the
+     * earlier row of the thread: only such a session can have been lost before the
      * CLI's first write, so only its resume may start the id anew (`runner-plan.ts`). False when
      * there is no session.
      */
     ownSession: boolean;
     /**
      * Whether this claim continues, in its session, the interrupted attempt it supersedes — a
-     * takeover or a handover (issue #822). The agent's prompt alone is framed as a continuation
+     * takeover or a handover. The agent's prompt alone is framed as a continuation
      * (`continuation.ts`); `command` is what every claim of the attempt carries, so the runner's
      * adoption mark, helper receipts and commit title read the same text on each.
      */
@@ -165,15 +165,15 @@ export interface BoardJob extends ClaimSkills {
     workspacePath: string | null;
     /**
      * The id of the thread's ROOT job — the job itself, unless it is a follow-up, and then the
-     * chain's first job. The task worktree (issue #35) is keyed by it, so every attempt of a task
+     * chain's first job. The task worktree is keyed by it, so every attempt of a task
      * and every follow-up resuming its session lands in the same tree, branched off the remote
      * default. Read defensively like everything else here: a board that predates the field omits
      * it, and the job is then its own root — the correct answer for every non-follow-up.
      */
     rootJobId?: string | null;
     /**
-     * The generation of the thread's task volume this attempt runs on, and the restore still owed to it
-     * (issue #775). Set by the driver's runner once the claim has found, adopted or created the volume,
+     * The generation of the thread's task volume this attempt runs on, and the restore still owed to it.
+     * Set by the driver's runner once the claim has found, adopted or created the volume,
      * never read off the wire.
      */
     taskGeneration?: number | undefined;
@@ -216,7 +216,7 @@ export interface BoardJob extends ClaimSkills {
      */
     services?: readonly ServiceSpec[];
     /**
-     * The names of the reviewer profiles the caller's thread may ask (issue #774); the task pod holds a
+     * The names of the reviewer profiles the caller's thread may ask; the task pod holds a
      * reviewer container exactly when this is non-empty. Absent: none.
      */
     reviewerProfiles?: readonly string[];
@@ -234,7 +234,7 @@ export interface BoardJob extends ClaimSkills {
      * before spawn, never by the board, which is why it sits beside `env` rather than inside it:
      * the reserved-name filter that keeps a member's claim env from spoofing the name must not
      * strip the driver's own. It is no runner env: the agent asks for a gate through the control
-     * socket (`POST /gate/run`) and holds neither a gate URL nor a token (BEL-88).
+     * socket (`POST /gate/run`) and holds neither a gate URL nor a token.
      */
     gateEnv?: Record<string, string>;
     /**
@@ -245,12 +245,12 @@ export interface BoardJob extends ClaimSkills {
      * its own token.
      */
     supervisorEnv?: Record<string, string>;
-    /** The lease the group's objects were made under, set by the LOOP on a takeover (#829); unset: `leaseToken`'s own. */
+    /** The lease the group's objects were made under, set by the LOOP on a takeover; unset: `leaseToken`'s own. */
     groupLease?: string;
     /** Set by `ownGroup` alone: the lease that holds the checkout claim when `leaseToken` names the group's. */
     claimHolder?: string;
     /**
-     * How long this attempt's `environment.setup` ran before the agent started (issue #733) — set
+     * How long this attempt's `environment.setup` ran before the agent started — set
      * by the LOOP, never by the board; the runner's deadline is the run budget less it.
      */
     setupMs?: number;
@@ -268,12 +268,12 @@ export interface BoardJob extends ClaimSkills {
      */
     publish?: boolean;
     /**
-     * `false` when the claimed workflow node launches no agent (issue #503): the loop runs the
+     * `false` when the claimed workflow node launches no agent: the loop runs the
      * node's helpers, gates and publish without a runner session. Absent means an agent node.
      */
     agent?: false;
     /**
-     * Declared pre/post block-helper steps for this row's node (issue #207) — an expanded
+     * Declared pre/post block-helper steps for this row's node — an expanded
      * workflow `block` node's runtime plan, when its compiler produced one. Read defensively like
      * every board field added after launch: absent on a board that predates the field, and on
      * every claim of a workflow-less or `agent`-node task, which is the ordinary case — nothing
@@ -298,7 +298,7 @@ export type { ConnectionOutcome, RequirementAnswer, RequirementVerdict } from '.
 export type BoardJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
 /**
- * One row of the batched lease lookup the orphan reaper sweeps with (issue #301): the job's
+ * One row of the batched lease lookup the orphan reaper sweeps with: the job's
  * status and its CURRENT lease token, or null when the row holds no live lease — the answer
  * that marks every labelled object of the job as a dead attempt's.
  */
@@ -306,7 +306,7 @@ export interface BoardLease {
     id: string;
     status: BoardJobStatus;
     leaseToken: string | null;
-    /** On a thread's ROOT row only (issue #775): what its task volume is decided on. */
+    /** On a thread's ROOT row only: what its task volume is decided on. */
     thread?: BoardThreadFacts;
 }
 
@@ -374,7 +374,7 @@ export interface ReviewRequest {
 }
 
 /**
- * A named reviewer's claim (issues #549, #774), handed to the caller's driver in-band with the review
+ * A named reviewer's claim, handed to the caller's driver in-band with the review
  * it created or re-leased: the snapshot ref the reviewer's worktree starts from and the wall-clock
  * budget its profile grants. The reviewer runs inside the caller's task pod, with no publish or
  * question relay, no gates and no publication — the board decided that when it built the claim.
@@ -382,7 +382,7 @@ export interface ReviewRequest {
 export type ReviewClaim = BoardJob & { reviewRun: { profile: string; ref: string; timeoutMinutes: number } };
 
 /**
- * One review as the board reports it (issue #549): the review row's own status, the verdict read
+ * One review as the board reports it: the review row's own status, the verdict read
  * from its output's final marker (`none` until a succeeded run ends on one), its findings, the
  * revision it is bound to, and the THREAD's review evidence as the policy validator sees it now —
  * which the loop adopts as `job.review`. Copied from the board's `ReviewView`; no `core` import.
@@ -410,7 +410,7 @@ export type ReviewAnswer =
     | { result: 'lost' | 'removed' };
 
 /**
- * The structured terminal reason of a run (issue #339): what class of ending the verdict records,
+ * The structured terminal reason of a run: what class of ending the verdict records,
  * reported with the verdict and stored by the board as `job.failure_kind`. Null — the field off
  * the wire — means "not a failure": a success, or a row older than the column. Copied here rather
  * than imported because this package depends on nothing.
@@ -431,7 +431,7 @@ export type FailureKind =
     | 'runner_error';
 
 /**
- * What lies under a `gate`, `publish` or `helper` failure (issue #581), stored as
+ * What lies under a `gate`, `publish` or `helper` failure, stored as
  * `job.failure_cause`: the board recovers by it — a conflict or a failed check is repaired, a
  * transport loss or an environment fault retried, a refusal or bad configuration left to a person,
  * `unknown` never guessed. Copied here rather than imported because this package depends on nothing.
@@ -517,7 +517,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
         manifest: ArtifactManifest
     ): Promise<'stored' | 'duplicate' | 'conflict' | 'rejected'>;
     /**
-     * What the board holds as the thread's checkpoint (issue #775), read under the live lease. Throws
+     * What the board holds as the thread's checkpoint, read under the live lease. Throws
      * on a lease the board no longer honours and on an answer it cannot read: never a guess.
      */
     checkpoint(job: BoardJob): Promise<CheckpointRead>;
@@ -527,7 +527,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
     attachmentContent: AttachmentContent;
     /** One pinned skill bundle's tar under `job`'s lease, sha256 verified; null when the version is not in its pin (see board-skills.ts). */
     skillContent: AttachmentContent;
-    /** The thread's raw Claude transcript streams (issue #775), read under the live lease like `checkpoint`. */
+    /** The thread's raw Claude transcript streams, read under the live lease like `checkpoint`. */
     transcripts(job: BoardJob): Promise<TranscriptStream[]>;
     /** One chunk of one such stream, its sha256 verified; null when the board has no such chunk. */
     transcriptChunk(
@@ -546,7 +546,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
     /** Reads the review asked for under `key` and the thread's review evidence (`POST /api/jobs/:id/review-read`). */
     readReview(job: BoardJob, key: string): Promise<ReviewAnswer>;
     /**
-     * Claims one row of the removed-thread queue put there by a Remove (issue #41): the thread's
+     * Claims one row of the removed-thread queue put there by a Remove: the thread's
      * rows are gone and the tree is this worker's to take down. Null means the queue is empty.
      * The claim leases the row so the reclaim that follows holds the checkout against a live
      * attempt's startup sync for its duration.
@@ -606,7 +606,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
-     * Records an attempt the infrastructure interrupted (issue #792), with its attempt refunded:
+     * Records an attempt the infrastructure interrupted, with its attempt refunded:
      * `release` hands the claim back claimable at once, else this claim adopted the attempt
      * `claimSeq` names and keeps its lease. `exhausted` once the job's interruption budget is
      * spent — nothing changed, and the caller treats the attempt as it did before; `lost` when
@@ -616,7 +616,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
     /** Tells the board the task lacks a connection its helper needs (docs/connections.md); a throw is no answer. */
     requireConnection(job: BoardJob, provider: string, target?: string): Promise<RequirementVerdict>;
     /**
-     * Asks the board what it thinks of a batch of job ids (issue #301): each known id's status
+     * Asks the board what it thinks of a batch of job ids: each known id's status
      * and CURRENT lease token. Unknown ids are ABSENT from the answer — that absence is the
      * board saying "no such job here", which is exactly the fact a reaper acts on. Null — a
      * refused, failed, or malformed answer — means "the board cannot answer", and the reaper
@@ -634,7 +634,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
      * `reclaimId` — the worktree reclaim the board queued, claimed by this worker, when EVERY job
      * of the task's thread is terminal ('succeeded'/'failed'/'dead'/'stopped') AND the user has
      * closed the thread (a `done_at` on some member), in the SAME lease-guarded transaction as the
-     * verdict (issues #47, #821). The worker removes the tree and acks that id; the board marks the
+     * verdict. The worker removes the tree and acks that id; the board marks the
      * tree reclaimed only on the ack. A follow-up still queued or running keeps it null; so does a
      * thread that finished but was never declared done — a failed task's tree is exactly what its
      * next turn continues from, and the tree is the user's to free. The answer is a settle receipt:
@@ -649,17 +649,17 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
             contextTokens?: number | null;
             contextCostUsd?: number | null;
             agentTurns?: number | null;
-            /** How long `environment.setup` ran before the agent (issue #733); absent when none ran. */
+            /** How long `environment.setup` ran before the agent; absent when none ran. */
             setupMs?: number;
             summary?: string | null;
             /**
-             * The structured terminal reason (issue #339): why a failed run failed — the timeout
+             * The structured terminal reason: why a failed run failed — the timeout
              * kill, a cache loss, a blocked agent, a failed gate, an unlanded publish, a failed
              * helper, or the runner erroring. Absent when the run succeeded, so the board stores null and the
              * row stays queryable as "not a failure".
              */
             failureKind?: FailureKind;
-            /** What lies under a `gate`, `publish` or `helper` kind (issue #581); null and absent stay off the wire. */
+            /** What lies under a `gate`, `publish` or `helper` kind; null and absent stay off the wire. */
             failureCause?: FailureCause | null;
             /**
              * Whether the task tree differs from the one the startup sync left, read only after
@@ -683,8 +683,8 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
         }
     ): Promise<{ state: LeaseState; reclaimId: string | null; conflict?: true }>;
     /**
-     * Stages the attempt's final envelope under its lease before the verdict and the teardown
-     * (issue #821): the very body `complete` sends, so the board fingerprints both alike, with the
+     * Stages the attempt's final envelope under its lease before the verdict and the teardown:
+     * the very body `complete` sends, so the board fingerprints both alike, with the
      * lease renewed beside it. The board commits it should the lease expire before the complete
      * lands. `lost` when the lease is not this attempt's, `conflict` when it staged another,
      * `removed` when the thread is gone; any other failure throws for the retry.
@@ -818,7 +818,7 @@ function createPost({ url, token, fetch }: { url: string; token: string | undefi
     };
 }
 
-/** The two named-reviewer calls (issue #549): both lease-fenced, both reading a 400 as the board's refusal. */
+/** The two named-reviewer calls: both lease-fenced, both reading a 400 as the board's refusal. */
 function reviewCalls(post: ReturnType<typeof createPost>): Pick<Board, 'requestReview' | 'readReview'> {
     const allow = [HTTP_BAD_REQUEST];
     return {
@@ -838,9 +838,13 @@ export function createBoard({
     leaseSeconds,
     token,
     fetch = globalThis.fetch,
+    onMalformedClaim = (fields: string[]) =>
+        console.error(`[driver] the board delivered a malformed claim (${fields.join(', ')}); left to its lease`),
 }: {
     url: string;
     leaseSeconds: number;
+    /** Told the names of the fields that made a claim malformed; the claim is then left to its lease. */
+    onMalformedClaim?: (fields: string[]) => void;
     /**
      * The shared board secret, when the board requires one. Empty against a board with AUTH_MODE=none.
      *
@@ -858,7 +862,11 @@ export function createBoard({
         async claim(worker) {
             const response = await post('/api/jobs/claim', { worker, leaseSeconds });
             if (response.status === HTTP_NO_CONTENT) return null;
-            return claimOf((await response.json()) as Partial<BoardJob>);
+            const parsed = parseClaim(await response.json().catch(() => null));
+            if ('claim' in parsed) return parsed.claim;
+            // Never a verdict on an unconfirmed read: the job is left to its lease.
+            onMalformedClaim(parsed.malformed);
+            return null;
         },
 
         async heartbeat(job, signal) {

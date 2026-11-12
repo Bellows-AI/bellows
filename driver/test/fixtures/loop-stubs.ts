@@ -36,6 +36,7 @@ import type { ReviewRelay } from '../../src/review/review-control.js';
 import type { SnapshotResult } from '../../src/review/review-snapshot.js';
 import type {
     AdoptedRun,
+    GroupTakenAway,
     LiveRun,
     DeadService,
     Read,
@@ -80,7 +81,7 @@ export const job = (n: number, resumeSessionId: string | null = null): BoardJob 
 
 export interface BoardStub extends Board {
     completed: ({ id: string } & Parameters<Board['complete']>[1])[];
-    /** Every phase checkpoint the loop wrote (issue #829), in write order. */
+    /** Every phase checkpoint the loop wrote, in write order. */
     phaseCheckpointsWritten: {
         id: string;
         leaseToken: string;
@@ -91,20 +92,20 @@ export interface BoardStub extends Board {
     }[];
     /** The run claim sequence of every phase checkpoint read the loop made, with the job's lease token. */
     phaseCheckpointReads: { id: string; leaseToken: string; runClaimSeq: number }[];
-    /** Every gate-run row the loop wrote (issue #983), in write order. */
+    /** Every gate-run row the loop wrote, in write order. */
     gateRunsWritten: GateRunWrite[];
     /** The run claim sequence of every gate-run read the loop made. */
     gateRunReads: { id: string; leaseToken: string }[];
-    /** Every PR operation the loop recorded (issue #983), with the lease token it wrote under. */
+    /** Every PR operation the loop recorded, with the lease token it wrote under. */
     prOperationsWritten: { id: string; leaseToken: string; write: PrOperationWrite }[];
-    /** The final envelopes the loop staged before each verdict (issue #821). */
+    /** The final envelopes the loop staged before each verdict. */
     staged: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
     /** Whether each session report claimed post-launch evidence, in report order. */
     sessionEvidence: boolean[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
-    /** The interrupted attempts the loop reported (issue #792). */
+    /** The interrupted attempts the loop reported. */
     interrupted: ({ id: string } & Interruption)[];
     /** Every runtime connection ask the loop relayed to the board, in order. */
     connectionAsks: { id: string; provider: string; target?: string }[];
@@ -114,11 +115,11 @@ export interface BoardStub extends Board {
     githubAsks: string[];
     reclaimGrants: Reclaim[];
     reclaimAcks: string[];
-    /** The token every ack rode under, in ack order (issue #821). */
+    /** The token every ack rode under, in ack order. */
     reclaimAckTokens: string[];
-    /** Every reclaim renew the loop sent, with the token it rode under (issue #821). */
+    /** Every reclaim renew the loop sent, with the token it rode under. */
     reclaimRenewals: { id: string; token: string }[];
-    /** Every question report the loop sent (issue #226) — ids only, never text. */
+    /** Every question report the loop sent — ids only, never text. */
     questionsReported: string[];
     /** Every artifact chunk and manifest the loop sent, with the claim sequence each rode under. */
     artifactChunks: { id: string; claimSeq: number; stream: string; offset: number; text: string }[];
@@ -149,34 +150,34 @@ export function stubBoard(
         reclaims?: Reclaim[];
         ackReclaimLease?: 'ok' | 'lost' | 'missing';
         failAckReclaim?: boolean;
-        /** Acks that throw before one lands — a response lost on the way back (issue #821). */
+        /** Acks that throw before one lands — a response lost on the way back. */
         failAckReclaimTimes?: number;
-        /** The board's answer to a reclaim renew; held when absent (issue #821). */
+        /** The board's answer to a reclaim renew; held when absent. */
         renewReclaim?: (id: string, token: string, signal?: AbortSignal) => Promise<ReclaimRenewal>;
         githubToken?: string | null;
-        /** Answers shifted per GitHub token ask, falling back to `githubToken` (BEL-253). */
+        /** Answers shifted per GitHub token ask, falling back to `githubToken`. */
         githubTokens?: (string | null)[];
-        /** The board's answer to a question report (issue #226); held when absent. */
+        /** The board's answer to a question report; held when absent. */
         questionVerdict?: QuestionVerdict;
         /** Every artifact call throws, as a board that is down does. */
         artifactsDown?: boolean;
-        /** The board's answer to an interruption report (issue #792); held when absent. */
+        /** The board's answer to an interruption report; held when absent. */
         interruptVerdict?: LeaseState | 'exhausted';
         /** The board's answer to a runtime connection ask; `waiting` when absent. */
         connectionVerdict?: RequirementVerdict | (() => Promise<RequirementVerdict>);
         /** Every heartbeat answers `requirementWait: true`: an adopter of an attempt that asked. */
         requirementWait?: boolean;
-        /** The board's answer to a phase checkpoint read (issue #829); null (unreadable) when absent. */
+        /** The board's answer to a phase checkpoint read; null (unreadable) when absent. */
         phaseCheckpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);
-        /** The board's answer to a phase checkpoint write (issue #829); `throw` models a board that throws. */
+        /** The board's answer to a phase checkpoint write; `throw` models a board that throws. */
         phaseCheckpointWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
-        /** The board's answer to a gate-run read (issue #983); null (unreadable) when absent. */
+        /** The board's answer to a gate-run read; null (unreadable) when absent. */
         gateRuns?: GateRunRecord[] | null | ((signal?: AbortSignal) => Promise<GateRunRecord[] | null>);
-        /** The board's answer to a gate-run write (issue #983). */
+        /** The board's answer to a gate-run write. */
         gateRunWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
-        /** The board's answer to a PR-operation write (issue #983). */
+        /** The board's answer to a PR-operation write. */
         prOperation?: 'ok' | 'lost' | 'rejected' | 'throw';
-        /** The board's answer to a staged conclusion (issue #821); held when absent. */
+        /** The board's answer to a staged conclusion; held when absent. */
         stageAnswer?: Awaited<ReturnType<Board['stageConclusion']>>;
     } = {}
 ): { board: BoardStub; attach: (loop: Loop) => void } {
@@ -394,31 +395,31 @@ export function stubRunner(
         /** What the runner proves of the agent container's start; a normal run's default is proven. */
         agentStarted?: boolean;
         publish?: PublishResult | null;
-        /** Results shifted per `publishGit`, falling back to `publish` (BEL-253). */
+        /** Results shifted per `publishGit`, falling back to `publish`. */
         publishSequence?: PublishResult[];
         sync?: SyncResult | null;
         syncError?: Error;
         reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null | undefined;
-        /** Answers popped per reclaimWorktree call, falling back to `reclaim` (issue #344). */
+        /** Answers popped per reclaimWorktree call, falling back to `reclaim`. */
         reclaimSequence?: ReclaimResult[];
         /** The post-gate tree probe's answer, recorded in `probed`; absent probes as unknown (null). */
         probeTree?: string | null | (() => string | null);
-        /** The gate-run tree probes (issue #983); absent probes as unknown. */
+        /** The gate-run tree probes; absent probes as unknown. */
         gateTree?: (sinceMs: number | null) => TreeProbe;
-        /** The pre-gate no-change read (issue #1020); absent reads as a changed tree, a function may throw. */
+        /** The pre-gate no-change read; absent reads as a changed tree, a function may throw. */
         noChange?: boolean | (() => Promise<boolean>);
-        /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
+        /** The dead-service probe; every call is counted in `deadServiceProbes`. */
         deadServices?: () => Promise<DeadService[]>;
-        /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
+        /** The pre-gate fleet restart; every call is recorded in `restartedServices`. */
         restartServices?: (signal: AbortSignal) => Promise<void>;
-        /** One review step's answer (issue #774); absent throws. */
+        /** One review step's answer; absent throws. */
         runReview?: (
             caller: BoardJob,
             review: ReviewClaim,
             session: RunSession | null,
             control: ReviewControl
         ) => Promise<StepResult>;
-        /** A finished runner of an earlier claim to adopt (issue #792); absent finds none. */
+        /** A finished runner of an earlier claim to adopt; absent finds none. */
         adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | LiveRun | null>;
     } = {}
 ): Runner & {
@@ -439,13 +440,13 @@ export function stubRunner(
     startedServices: string[];
     /** The runtime budget pause/resume requests, by job id and paused state. */
     paused: { id: string; paused: boolean }[];
-    /** Every gate resize the loop asked for (issue #773), in order. */
+    /** Every gate resize the loop asked for, in order. */
     resized: GateSizing[];
-    /** Every reviewer resize (issue #774), in order. */
+    /** Every reviewer resize, in order. */
     reviewerResized: ReviewerSizing[];
-    /** Every review the loop ran in a caller's group (issue #774). */
+    /** Every review the loop ran in a caller's group. */
     reviewed: { caller: BoardJob; review: BoardJob; session: RunSession | null }[];
-    /** Every holder binding the loop wrote to a group's supervisor (#829), in order. */
+    /** Every holder binding the loop wrote to a group's supervisor, in order. */
     rebound: { group: BoardJob; binding: SupervisorBinding }[];
     /** Every attempt the loop abandoned to the next holder. */
     abandoned: BoardJob[];
@@ -575,7 +576,7 @@ export function stubRunner(
             runner.reviewerResized.push(phase);
             return false;
         },
-        /** Every review the loop ran in a caller's group (issue #774), replaced by a test that scripts one. */
+        /** Every review the loop ran in a caller's group, replaced by a test that scripts one. */
         reviewed: [] as { caller: BoardJob; review: BoardJob; session: RunSession | null }[],
         rebound: [] as { group: BoardJob; binding: SupervisorBinding }[],
         abandoned: [] as BoardJob[],
@@ -585,13 +586,13 @@ export function stubRunner(
         async rebind(group: BoardJob, binding: SupervisorBinding): Promise<void> {
             runner.rebound.push({ group, binding });
         },
-        /** A prior group's supervisor is serving until a test scripts otherwise (#928). */
+        /** A prior group's supervisor is serving until a test scripts otherwise. */
         async supervisorServing(): Promise<Read<boolean>> {
             return { kind: 'value', value: true };
         },
-        /** The group is never confirmed taken away until a test scripts otherwise (BEL-302). */
-        async groupTakenAway(): Promise<boolean> {
-            return false;
+        /** The group is confirmed kept until a test scripts otherwise. */
+        async groupTakenAway(): Promise<GroupTakenAway> {
+            return 'kept';
         },
         async runReview(
             caller: BoardJob,
@@ -686,14 +687,14 @@ export function stubGateStack(
         controlOpened: [] as string[],
         /** Each exporter token granted, beside the supervisor token it belongs to. */
         exportersGranted: [] as [string, string][],
-        /** The review-bound exporter tokens open right now, by token (issue #774). */
+        /** The review-bound exporter tokens open right now, by token. */
         boundExporters: new Map<string, ExportRelay>(),
         stopsRaised: [] as string[],
         killsRaised: [] as string[],
         deadNotes: [] as [string, string | null][],
         controlClosed: [] as string[],
         controlDeparted: [] as { token: string; forMs: number }[],
-        /** The real control state per open token (issue #226): questions run through the real code. */
+        /** The real control state per open token: questions run through the real code. */
         controls: new Map<string, ControlEntry>(),
         acquired: [] as string[],
         /** The env-file body each acquire was handed. */
@@ -708,7 +709,7 @@ export function stubGateStack(
         quiesced: [] as string[],
         advertised: '',
         ran: { key: '', names: [] as string[] },
-        /** Every pre-agent `runSetup` call's options (issue #733), in order. */
+        /** Every pre-agent `runSetup` call's options, in order. */
         setups: [] as GateRunOptions[],
         manager: {
             acquire: async (key: string, _image: string, envBody: string) => {
@@ -745,7 +746,7 @@ export function stubGateStack(
                 stack.quiesced.push(token);
                 await options.quiesce?.(token);
             },
-            // The run-control channel (issue #442) is opt-in: a stack without it models a driver
+            // The run-control channel is opt-in: a stack without it models a driver
             // whose endpoint could not open, where a Stop kills at once.
             openControl: (token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay) => {
                 if (!options.control) throw new Error('no control endpoint in this stub');

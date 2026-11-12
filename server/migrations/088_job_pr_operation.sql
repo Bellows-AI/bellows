@@ -1,4 +1,4 @@
--- PR operations (issue #983): one row per managed publish operation of a job, written by the driver
+-- PR operations: one row per managed publish operation of a job, written by the driver
 -- under its lease at the moment the operation ran — never derived from a verdict afterwards.
 --
 --   operation_id  minted by the driver per operation; the replay key. A retried write or a replayed

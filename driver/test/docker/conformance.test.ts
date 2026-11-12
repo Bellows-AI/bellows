@@ -374,7 +374,7 @@ describe('docker waits for the supervisor of a started group to make contact (#8
             expect(d.calls.some((a) => a[0] === 'rm' && a.includes(supervisorName(repoJob)))).toBe(true);
         });
 
-        // BEL-302: a removed container is the platform's doing; one that exited is the supervisor's own end.
+        // a removed container is the platform's doing; one that exited is the supervisor's own end.
         it('flags a supervisor seen running and then removed as a node loss', async () => {
             const { thrown } = await lostSync((read) => (read < 3 ? '{"Running":true}' : GONE));
 

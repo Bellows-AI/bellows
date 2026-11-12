@@ -13,7 +13,7 @@ import {
     type RepairEvidence,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
-import { followUpInTx } from '../jobs/job-store-actions.js';
+import { followUpInTx } from '../jobs/job-store-thread-actions.js';
 import type { GateReport } from '../jobs/job-store-types.js';
 
 /** The scheduler's transaction, bound to one locked batch. */
@@ -124,7 +124,7 @@ export async function repairInTx(
 
 /**
  * The wait reason of a failed run that needs a person: the question it left, the budget it spent,
- * or the kind and cause it failed with when neither was recognized (issue #581).
+ * or the kind and cause it failed with when neither was recognized.
  */
 export function failedAttentionReason(
     reason: AttentionReason,

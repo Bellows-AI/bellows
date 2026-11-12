@@ -1,9 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { readRepoFile as read } from './fixtures/repo-files.js';
+import { readLaneScript as read } from './fixtures/repo-files.js';
 
 /*
- * The lanes' recovery cases run their job at max_attempts 1 (issue #822), where an expiry spending
+ * The lanes' recovery cases run their job at max_attempts 1, where an expiry spending
  * an attempt would retire it dead. The cap is a psql update neither lane can run here, so these pins
  * are the bytes that keep it checked: `last_attempt` answers non-zero unless the update returned the
  * job's id, and every caller turns that into a check of its own — a cap that did not land fails the

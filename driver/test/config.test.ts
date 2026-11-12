@@ -50,7 +50,7 @@ describe('the driver config: basics', () => {
 
     // RUNNER_SKIP_PERMISSIONS decides whether an agent may edit and run things unsupervised. A
     // typo in it must not read as "on". RUNNER_DO_NOT_DISRUPT: node churn must not redo a
-    // two-hour run (issue #362), so it opts every pod the driver specs out of voluntary
+    // two-hour run, so it opts every pod the driver specs out of voluntary
     // disruption. Off by default — an undisruptable pod pins its node for as long as the run
     // lasts, and an operator on on-demand nodes may not want that.
     it.each([

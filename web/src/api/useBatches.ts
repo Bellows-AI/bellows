@@ -1,8 +1,7 @@
-import { ERROR_CODES, JSON_HEADERS, type BatchPlan, type BatchPlanIssue } from '@factory-ai/core';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ERROR_CODES, type BatchPlan, type BatchPlanIssue } from '@factory-ai/core';
 import { BATCH_RUNNING, type BatchRecord, type BatchReportView, type BatchSummary } from '../batch-model.js';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request, type RequestOptions } from './request.js';
+import { usePoll } from './usePoll.js';
 
 /**
  * The batch routes as the SPA calls them (docs/batches.md): the board is the only scheduler, so
@@ -39,34 +38,28 @@ export interface BatchFailure {
 
 export type BatchResult<T> = { ok: true; data: T } | BatchFailure;
 
+/** What a batch request takes: the method, the JSON body and any extra header (the idempotency key). */
+type BatchSend = Pick<RequestOptions<unknown>, 'method' | 'body' | 'headers'>;
+
 /** One batch request. A 401 goes to the gate like every other read; a refusal carries its code and issues. */
-async function send<T>(path: string, init: RequestInit = {}, signal?: AbortSignal): Promise<BatchResult<T>> {
-    try {
-        const response = await fetch(path, { ...init, ...(signal ? { signal } : {}) });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false, error: 'Sign in again to continue', code: ERROR_CODES.UNAUTHENTICATED };
-        }
-        if (!response.ok) {
-            const body = (await response
-                .clone()
-                .json()
-                .catch(() => ({}))) as { issues?: BatchPlanIssue[] };
-            const refusal = await refusalOf(response, 'The board refused the request');
-            return { ok: false, ...refusal, ...(body.issues ? { issues: body.issues } : {}) };
-        }
-        return { ok: true, data: (await response.json()) as T };
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+async function send<T>(path: string, init: BatchSend = {}): Promise<BatchResult<T>> {
+    const result = await request<T>(path, { verb: 'The board refused the request', ...init });
+    if (result.ok) return { ok: true, data: result.value };
+    const issues = result.body?.issues as BatchPlanIssue[] | undefined;
+    return {
+        ok: false,
+        error: result.unauthenticated ? 'Sign in again to continue' : result.error,
+        ...(result.unauthenticated ? { code: ERROR_CODES.UNAUTHENTICATED } : result.code ? { code: result.code } : {}),
+        ...(issues ? { issues } : {}),
+    };
 }
 
 const batchPath = (id: string) => `/api/batches/${encodeURIComponent(id)}`;
 const taskPath = (id: string, key: string) => `${batchPath(id)}/tasks/${encodeURIComponent(key)}`;
-const post = (body: unknown = {}, key?: string): RequestInit => ({
+const post = (body: unknown = {}, key?: string): BatchSend => ({
     method: 'POST',
-    headers: { ...JSON_HEADERS, ...(key ? { [IDEMPOTENCY_KEY_HEADER]: key } : {}) },
-    body: JSON.stringify(body),
+    body,
+    ...(key ? { headers: { [IDEMPOTENCY_KEY_HEADER]: key } } : {}),
 });
 
 /** The batch writes: each answers the board's record (or a write receipt), never a guess at the next state. */
@@ -74,11 +67,7 @@ export const batchActions = {
     create: (plan: BatchPlan, key: string) =>
         send<{ id: string; version: number }>('/api/batches', post({ plan }, key)),
     replace: (id: string, version: number, plan: BatchPlan) =>
-        send<{ id: string; version: number }>(batchPath(id), {
-            method: 'PUT',
-            headers: JSON_HEADERS,
-            body: JSON.stringify({ version, plan }),
-        }),
+        send<{ id: string; version: number }>(batchPath(id), { method: 'PUT', body: { version, plan } }),
     validate: (id: string) => send<{ valid: boolean; version: number }>(`${batchPath(id)}/validate`, post()),
     start: (id: string, version: number, key: string) =>
         send<BatchRecord>(`${batchPath(id)}/start`, post({ version }, key)),
@@ -96,50 +85,15 @@ export interface Polled<T> {
 }
 
 /**
- * One read, repeated every `BATCH_POLL_MS` while `keepPolling` says so. A stale answer from a
- * previous `path` never lands: each effect owns an abort controller, and a changed path resets
- * the data so another batch's rows are never shown under this one's heading.
+ * One read, repeated every `BATCH_POLL_MS` while `keepPolling` says so (an error always re-arms). A stale
+ * answer from a previous `path` never lands, and a changed path resets the data so another batch's rows
+ * are never shown under this one's heading: both are `usePoll`'s.
  */
 function usePolled<T>(path: string | null, keepPolling: (data: T) => boolean): Polled<T> {
-    const [data, setData] = useState<T | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const [loading, setLoading] = useState(path !== null);
-    const [nonce, setNonce] = useState(0);
-    const refresh = useCallback(() => setNonce((n) => n + 1), []);
-    const keep = useRef(keepPolling);
-    keep.current = keepPolling;
-
-    useEffect(() => {
-        setData(null);
-        setError(null);
-        setLoading(path !== null);
-    }, [path]);
-
-    useEffect(() => {
-        if (path === null) return;
-        const ack = new AbortController();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const tick = async () => {
-            const result = await send<T>(path, {}, ack.signal);
-            if (ack.signal.aborted) return;
-            setLoading(false);
-            if (result.ok) {
-                setData(result.data);
-                setError(null);
-                if (keep.current(result.data)) timer = setTimeout(() => void tick(), BATCH_POLL_MS);
-            } else {
-                setError(result.error);
-                timer = setTimeout(() => void tick(), BATCH_POLL_MS);
-            }
-        };
-        void tick();
-        return () => {
-            ack.abort();
-            clearTimeout(timer);
-        };
-    }, [path, nonce]);
-
-    return { data, error, loading, refresh };
+    const polled = usePoll<T>(path, {
+        next: (outcome) => (outcome.kind === 'ok' && !keepPolling(outcome.value) ? null : BATCH_POLL_MS),
+    });
+    return { data: polled.data, error: polled.error, loading: polled.loading, refresh: polled.refresh };
 }
 
 /** The org's batches, newest first. Polled: a batch another member started is a row the list should grow. */

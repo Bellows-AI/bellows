@@ -9,6 +9,7 @@ import {
     type SkillVersionInfo,
 } from '../src/db/skill-store.js';
 import type { SkillBundle } from '../src/skills/skill-bundle.js';
+import { storeOutage } from './helpers-outage.js';
 
 export interface MemorySkillStore extends SkillStore {
     /** Makes a version's object absent, as a lost object store key would. */
@@ -43,7 +44,7 @@ export function memorySkillStore(): MemorySkillStore {
     let versionReadsBroken = false;
     let loginOf: (id: string) => string | undefined = () => undefined;
     const check = () => {
-        if (broken) throw new Error('database is down');
+        if (broken) throw storeOutage('database is down');
     };
     const recordOf = (row: Row): SkillRecord => ({
         id: row.id,

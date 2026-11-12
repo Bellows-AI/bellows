@@ -1,5 +1,5 @@
 /**
- * The phase-boundary fault harness (issue #828, slice 1): one fresh attempt per cell, a fault — a
+ * The phase-boundary fault harness (slice 1): one fresh attempt per cell, a fault — a
  * Stop, a lost lease, a Remove, a drain's handover or an exception — injected at one boundary of the
  * attempt from inside the stub that hosts it, and the attempt's ordered board/runner/gate calls
  * checked against the attempt-level invariants:
@@ -18,7 +18,7 @@
  * - The interrupt `adoptStep` records for an EARLIER claim (`release: false`) is no conclusion.
  * - A handover's released interrupt is that attempt's conclusion; the attempt itself reports none.
  * - `leave` has no conclusion, so I4 is vacuous for it — and for lost and removed.
- * - A verdict's durable acknowledgement is its accepted stage (#821: a recovering claim commits it),
+ * - A verdict's durable acknowledgement is its accepted stage (a recovering claim commits it),
  *   the complete only when nothing was staged.
  * - A Stop while the agent runs drains cooperatively: the run returns and the attempt parks.
  * - A plain pre-helper exception leaves the lease with a group the sync created but no agent run in
@@ -536,7 +536,7 @@ async function attempt(script: Script): Promise<Observed & { seams: Set<string> 
 function expectedOf(boundary: Boundary, fault: Fault): Expected {
     if (CONCLUDING.includes(boundary)) return { conclusion: 'verdict', finishes: 1 };
     if (fault === 'stop') return { conclusion: 'suspend', finishes: 1 };
-    // A lost lease past the launch leaves the runner to the new holder's adoption (#828); a removal finishes it.
+    // A lost lease past the launch leaves the runner to the new holder's adoption; a removal finishes it.
     if (fault === 'lost' && LAUNCHED.includes(boundary)) return { conclusion: 'none', finishes: 0, retain: true };
     if (fault === 'lost' || fault === 'removed') return { conclusion: 'none', finishes: 1 };
     if (fault === 'handover') return { conclusion: 'interrupt:release', finishes: 0 };

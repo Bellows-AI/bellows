@@ -1,15 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
     DEFAULT_FILTERS,
-    fetchDepthPages,
     firstPageError,
     inboxFiltersFromSearch,
     inboxQueryString,
-    MAX_REFRESH_DEPTH,
-    refreshLanding,
     type TaskNavigation,
     type TaskSummary,
 } from '../src/api/useTasks.js';
+import { fetchDepthPages, MAX_REFRESH_DEPTH, refreshLanding } from '../src/api/taskPages.js';
 
 /** One running task row, as the task-summary read model serves it. */
 const summary = (id: string): TaskSummary => ({

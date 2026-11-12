@@ -8,6 +8,7 @@ never utilities, and every color it renders resolves through a token.
 | Entry, import order, cascade | `web/src/styles.css` | `web/test/styles.test.ts` |
 | Tokens — both `:root` blocks, the `@theme` blocks | `web/src/styles/tokens.css` | `web/test/styles.test.ts` |
 | Self-hosted faces (Inter sans, Plex Mono) | `web/src/styles/fonts.css`, `web/public/fonts/` | `web/test/styles.test.ts` |
+| Type (`--text-*`), space (`--space-*`) and touch (`--touch`) tokens; px literals outside `tokens.css` only ever drop, breakpoints pinned | `web/src/styles/tokens.css` | `web/test/styles.test.ts` |
 | Mono identifier primitive `.mono` (SHAs, ids, tokens, branch names; no generic cell or `.status`) | `web/src/styles/primitives.css` | `web/test/styles.test.ts` |
 | Type scale, bare content link, 36px control floor | `web/src/styles/base.css` | `e2e/polish.spec.ts` |
 | Shared primitives (shell, panels, pills, fields, buttons, selectors, dialogs, tables) | `web/src/styles/primitives.css` | `e2e/polish.spec.ts` |
@@ -26,40 +27,23 @@ never utilities, and every color it renders resolves through a token.
 | Component interaction under jsdom + Testing Library (the `dom` project) | `web/test/dom.tsx`, `vitest.config.ts` | `web/test/*.dom.test.tsx` |
 | Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` (`npm run verify:ui:nightly`) |
 | Specimen sections (Surfaces, Type, Icons, Actions, Data, Forms, States, Tokens), one icon per `ICON_NAMES`, token explorer over `tokens.css` | `e2e/specimen/main.tsx`, `e2e/specimen/tokens.tsx`, `e2e/specimen/matrix.ts` (`GROUPS`, `SECTIONS`) | `e2e/specimen.spec.ts` (`specimen documentation`) |
-| Every route family's overflow at 4 widths in one theme; rendered contrast in both themes | — | `e2e/matrix.spec.ts` |
+| Every route family's overflow at 4 widths in one theme; rendered contrast in both themes; axe-core in both themes, its open findings listed in `AXE_KNOWN` | — | `e2e/matrix.spec.ts` |
 | DOM regression matrix (`@nightly`, no screenshots): major routes plus batches list, draft and monitor in both themes at 1440 and 390 held to fit, no NaN text and a clean console; held reads are never an alert, every refused read (dashboard `StatusBanner` included) announces as one | `web/src/components/StatusBanner.tsx` | `e2e/state-matrix.spec.ts`, `web/test/dashboard-telemetry.test.tsx` |
 
 ## Invariants
 
-- The import order in `styles.css` **is** the cascade. `touch-targets.css` imports after every
-  region, so the shared 44px floor outranks a lane's own control rules at equal specificity —
-  pinned by `web/test/styles.test.ts`.
-- Color literals live only in the two `:root` blocks of `tokens.css`; a token with no call site
-  fails the suite, and `@theme inline` exposure is not a call site.
-- Every class a shipped stylesheet defines must be named in this document or a lane doc under
-  `docs/design-system/`, **and** have a caller literal under `web/src` or `e2e/specimen`. Every
-  file under `web/src/{components,panels,pages,charts}` needs a row in those same documents.
-  `web/test/styles.test.ts` is the enforcement for all three.
-- A lane PR edits its own region file and its own lane doc; primitives, tokens and the contracts
-  below change here. Each region file ends with that lane's 44px compact-shell segment; shell-wide
-  controls belong to `touch-targets.css`, and `web/test/styles.test.ts` holds the owner map and the
-  lists' disjointness.
-- Status color carries one meaning everywhere: blue is your turn, green the machine working or
-  finished well, red failed, grey parked, amber warnings only, purple a question and only on the Question notification event tag. The text label always renders and
-  the icon is `aria-hidden`. The per-state maps are `TONE` in `web/src/panels/TaskHeader.tsx` and
-  `STATE_PILL` in `web/src/pages/TaskInboxPage.tsx`, keyed by `taskTone` in `web/src/task-tree.ts`.
+- The import order in `styles.css` **is** the cascade. `touch-targets.css` imports after every region, so the shared 44px floor outranks a lane's own control rules at equal specificity — pinned by `web/test/styles.test.ts`.
+- Color literals live only in the two `:root` blocks of `tokens.css`; a token with no call site fails the suite, and `@theme inline` exposure is not a call site.
+- Every class a shipped stylesheet defines must be named in this document or a lane doc under `docs/design-system/`, **and** have a caller literal under `web/src` or `e2e/specimen`. Every file under `web/src/{components,panels,pages,charts}` needs a row in those same documents. `web/test/styles.test.ts` is the enforcement for all three.
+- A lane PR edits its own region file and its own lane doc; primitives, tokens and the contracts below change here. Each region file ends with that lane's 44px compact-shell segment; shell-wide controls belong to `touch-targets.css`, and `web/test/styles.test.ts` holds the owner map and the lists' disjointness.
+- Status color carries one meaning everywhere: blue is your turn, green the machine working or finished well, red failed, grey parked, amber warnings only, purple a question and only on the Question notification event tag. The text label always renders and the icon is `aria-hidden`. The per-state maps are `TONE` in `web/src/panels/TaskHeader.tsx` and `STATE_PILL` in `web/src/pages/TaskInboxPage.tsx`, keyed by `taskTone` in `web/src/task-tree.ts`.
 - Surface tiers: flat = `--surface` + `--line` (`panel-flat`), soft = `--surface-soft` (the resting `panel`, borderless; `bad` keeps its border), raised = `--surface-raised` (dialogs, popovers, composer). `web/test/styles.test.ts`, `e2e/specimen/main.tsx`.
-- The light washes are opaque tints mixed into `--surface-raised`; the dark ones are translucent.
-  `e2e/polish.spec.ts` measures every pill, chip and banner on raised, canvas and sunken in both
-  themes — a translucent light wash drops below AA on the light canvas.
+- The light washes are opaque tints mixed into `--surface-raised`; the dark ones are translucent. `e2e/polish.spec.ts` measures every pill, chip and banner on raised, canvas and sunken in both themes — a translucent light wash drops below AA on the light canvas.
 - `--on-*` is foreground-on-a-fill: a new text-bearing fill needs one in the same change.
-- Decorative by contract and below 3:1 on purpose: `--chart-grid` and the `--line`/`--line-strong`
-  hairlines. Meaning never rides on tint alone.
+- Decorative by contract and below 3:1 on purpose: `--chart-grid` and the `--line`/`--line-strong` hairlines. Meaning never rides on tint alone.
 - Decision-bearing text never renders under 12px. The one exception is `.tick` at 11px.
-- One ambient animation exists — the breathing run/stop lamp — and there are no CSS transitions.
-  Under `prefers-reduced-motion` the lamp stills at full strength, so no state rides on movement.
-- Fonts are self-hosted: the CSP is `font-src 'self'` and `verify:ui` runs offline, so a remote
-  font link falls back silently exactly where faces are checked.
+- One ambient animation exists — the breathing run/stop lamp — and there are no CSS transitions. Under `prefers-reduced-motion` the lamp stills at full strength, so no state rides on movement.
+- Fonts are self-hosted: the CSP is `font-src 'self'` and `verify:ui` runs offline, so a remote font link falls back silently exactly where faces are checked.
 - The icon set is frozen (`ICON_NAMES`, pinned by `icon.test.tsx`); a lane that needs a glyph asks for a foundation change. Sizes: nav 20, inline and action 16, banner 24.
 - One primary call to action per view (`button.primary`); every other action is `tertiary` or `icon-button`. `e2e/specimen/main.tsx`.
 - A surface renders only fields and actions the API payload carries; a missing value reads as `StateNote` or an em dash, never invented data. `e2e/state-matrix.spec.ts`, `e2e/org-states.spec.ts`.
@@ -67,13 +51,9 @@ never utilities, and every color it renders resolves through a token.
 
 ## Stated limits
 
-- The specimen sheet is test-only: it is served by `e2e/specimen/vite.config.ts` and never built
-  into `web/dist`. `npm run verify:ui:nightly` writes its shots to `artifacts/ui/` (gitignored); none are
-  committed.
-- A popover never flips above its trigger — `useDownwardAnchor` omits floating-ui's `flip`
-  deliberately and caps the panel to the space below.
-- `visually-hidden`, `token-once`, `mobile-nav-org` and the per-section hooks panels carry beside
-  `panel` are markup hooks with no stylesheet rule. Do not style one without a row here.
+- The specimen sheet is test-only: it is served by `e2e/specimen/vite.config.ts` and never built into `web/dist`. `npm run verify:ui:nightly` writes its shots to `artifacts/ui/` (gitignored); none are committed.
+- A popover never flips above its trigger — `useDownwardAnchor` omits floating-ui's `flip` deliberately and caps the panel to the space below.
+- `visually-hidden`, `token-once`, `mobile-nav-org` and the per-section hooks panels carry beside `panel` are markup hooks with no stylesheet rule. Do not style one without a row here.
 
 ## Shared classes
 
@@ -103,12 +83,13 @@ Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-preci
 `usage-variants`, `usage-child-row`, `usage-diagnostics`, `usage-state-note`.
 
 Shared state line: `state-note` (+ `error`) via `StateNote.tsx` — loading `role=status`, error `role=alert`, empty plain; `web/test/state-note.dom.test.tsx`.
+Scrollable table or log wells: `ScrollRegion.tsx` (focusable, named); `web/test/scroll-region.dom.test.tsx`.
 
 ## Shared UI units
 
 `AppBar.tsx`, `AppShell.tsx`, `Avatar.tsx`, `ConfirmDialog.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
 `MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`, `RouteError.tsx`,
-`SideNav.tsx`, `StateNote.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
+`ScrollRegion.tsx`, `SideNav.tsx`, `StateNote.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
 `SettingsLayout.tsx`, `TasksLayout.tsx` (`web/src/pages/`).
 
 ## Lanes

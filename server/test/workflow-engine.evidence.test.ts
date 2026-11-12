@@ -6,7 +6,7 @@ import {
     GATE_FIX_ENTRY_NODE as DEFAULT_ENTRY_NODE,
 } from '../test-db/gate-fix-workflow.js';
 
-/** Edges fire on the run's own verdict, never on stale gates, a failed run's marker, or a dead service (#428). */
+/** Edges fire on the run's own verdict, never on stale gates, a failed run's marker, or a dead service. */
 const failedGate = (output: string): EngineRow['gates'] => [{ name: 'test', status: 'failed', exitCode: 1, output }];
 const REPAIR = 'review-reconciliation--repair';
 const MERGE_REPAIR = 'merge-conflict-autofix--repair';

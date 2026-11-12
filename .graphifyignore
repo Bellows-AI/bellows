@@ -7,11 +7,10 @@ package.json
 biome.json
 tsconfig*.json
 
-# design screenshots, the docs site and archived specs dominated the hyperedges and drowned the
+# design screenshots and the docs site dominated the hyperedges and drowned the
 # code communities; keep the graph on the implementation and its live docs
 docs/ui-designer/
 docs-site/
-openspec/changes/archive/
 
 # tests - concentrate the graph on core implementation, not test scaffolding
 test/

@@ -106,7 +106,7 @@ describe('the tracked-repo allowlist (#125)', () => {
     });
 
     it('invalidate() re-reads the listing (and with it the allowlist) on the next list', async () => {
-        // A selection change (#125) rewrites tracked_repo under a runtime whose cache may hold a
+        // A selection change rewrites tracked_repo under a runtime whose cache may hold a
         // ten-minute-old produce; completion invalidates so the next read cannot keep serving the
         // pre-choice truth.
         let clock = 1_000;

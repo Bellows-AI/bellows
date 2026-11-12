@@ -40,12 +40,12 @@ export interface DriverConfig {
     /** Deployment image for each task-selected executor type. CLI choice comes from the claim. */
     executorImages: Readonly<Record<ExecutorType, string>>;
     /**
-     * The task volume a new thread gets (issue #775): kubernetes only, since docker volumes take
+     * The task volume a new thread gets: kubernetes only, since docker volumes take
      * no class, mode or size. `storageClass` null is the cluster default.
      */
     taskVolume: { storageClass: string | null; accessMode: string; size: string };
     /**
-     * How long a thread's task volume outlives its last finalize (issue #775): `taskVolumeTtlMs` when
+     * How long a thread's task volume outlives its last finalize: `taskVolumeTtlMs` when
      * everything the thread left is whole, `taskVolumeBoundMs` (the longer) when a checkpoint is
      * truncated or an artifact is still pending. The reaper alone deletes it.
      */
@@ -53,7 +53,7 @@ export interface DriverConfig {
     taskVolumeBoundMs: number;
     /**
      * How many sweep rounds the reaper tries to upload a not-whole thread's unacknowledged transcript
-     * bytes before it deletes the volume anyway and logs the loss (issue #938).
+     * bytes before it deletes the volume anyway and logs the loss.
      */
     taskVolumeExportAttempts: number;
     /** Where a task's checkout is cloned from: `<cloneBase>/<owner>/<name>.git`. */
@@ -225,19 +225,19 @@ export interface DriverConfig {
     reapGraceMs: number;
     /**
      * How long a draining driver lets its in-flight runs finish before it hands them over
-     * (DRIVER_HANDOVER_MS, issue #792): each attempt still running is then reported to the board as
+     * (DRIVER_HANDOVER_MS): each attempt still running is then reported to the board as
      * an interruption — refunded, claimable at once — and its runner is left alive for the next
      * claim, instead of the drain being SIGKILLed with the lease held. `0` hands over at once.
      */
     handoverMs: number;
     /**
      * How long past its lease a released group waits for a newer holder to find and bind it
-     * (DRIVER_REBIND_GRACE_MS, #829); `takeoverBoundMs` is the lease plus this. The default suits a
+     * (DRIVER_REBIND_GRACE_MS); `takeoverBoundMs` is the lease plus this. The default suits a
      * driver replaced by a scheduler; the lanes shorten it so a waited-out takeover costs seconds.
      */
     rebindGraceMs: number;
     /**
-     * The floor of a lost driver's group's orphan bound (DRIVER_ORPHAN_MIN_MS, #950), above the long poll
+     * The floor of a lost driver's group's orphan bound (DRIVER_ORPHAN_MIN_MS), above the long poll
      * (`stepWaitMs`) a live driver answers inside. The default is the production contract; a lane that
      * compresses the lease lowers it, and `loadDriverConfig` refuses a floor the lease cannot hold.
      */
@@ -258,7 +258,7 @@ export interface DriverConfig {
     runnerResources: RunnerResources;
     /**
      * The gate pods' and the docker gate container's resources (GATE_CPU_REQUEST /
-     * GATE_MEMORY_REQUEST / GATE_CPU_LIMIT / GATE_MEMORY_LIMIT, issue #507): a gate runs the
+     * GATE_MEMORY_REQUEST / GATE_CPU_LIMIT / GATE_MEMORY_LIMIT): a gate runs the
      * whole test suite where a runner mostly waits on a model, so it is sized on its own. Each
      * unset slot falls back to the matching runnerResources slot.
      */
@@ -267,7 +267,7 @@ export interface DriverConfig {
      * The nodeSelector every pod this driver specs lands with, under the kubernetes executor
      * (RUNNER_NODE_SELECTOR, a JSON object). The chart's own pods get theirs from the top-level
      * `nodeSelector` value; these are the runner node group's — the tainted, IMDS-hardened nodes
-     * agent-written code is meant to land on and nothing else (issue #361). Null (unset) places
+     * agent-written code is meant to land on and nothing else. Null (unset) places
      * pods wherever the task volume claim can attach, as before. Docker has no twin: the daemon
      * decides placement, there is nothing to forward.
      */
@@ -348,6 +348,10 @@ const DEFAULT_REAP_INTERVAL_MS = 300_000;
 const DEFAULT_REAP_GRACE_MS = 600_000;
 /** The default TASK_VOLUME_EXPORT_ATTEMPTS: three rounds, then the volume goes and the loss is logged. */
 export const DEFAULT_TASK_VOLUME_EXPORT_ATTEMPTS = 3;
+const MS_PER_MINUTE = 60_000;
+const EXPORT_GIVE_UP_MIN_SPAN_MINUTES = 15;
+/** The least time between a thread's first failed export and the delete that gives its transcript bytes up. */
+export const EXPORT_GIVE_UP_MIN_SPAN_MS = EXPORT_GIVE_UP_MIN_SPAN_MINUTES * MS_PER_MINUTE;
 /** The upper bound on TASK_VOLUME_EXPORT_ATTEMPTS. */
 const MAX_TASK_VOLUME_EXPORT_ATTEMPTS = 100;
 /** The default TASK_VOLUME_TTL_MS: a day of idleness after a whole thread's last finalize. */
@@ -659,7 +663,7 @@ const RESOURCE_SLOTS = [
 ] as const;
 
 /**
- * The orphan floor and the step long poll (#950), checked against the lease: `orphanConfigFault` refuses a pair the lease
+ * The orphan floor and the step long poll, checked against the lease: `orphanConfigFault` refuses a pair the lease
  * cannot hold, and the lease-wide check applies only where the production floor was lowered (the chart always sets the default).
  */
 function loadOrphanBound(env: NodeJS.ProcessEnv, leaseSeconds: number): { orphanMinMs: number; stepWaitMs: number } {

@@ -1,4 +1,4 @@
--- Skills a job row's CLI must not list (BEL-286). `skill_hidden` is the array of `{name, source, reason, connection?}`
+-- Skills a job row's CLI must not list. `skill_hidden` is the array of `{name, source, reason, connection?}`
 -- (`source`: builtin | org | workspace; `reason`: switched_off | needs_connection, naming the missing `connection`)
 -- decided once when the row's skills are pinned, in the same transaction and after the task's bindings: a create and a
 -- follow-up decide it, a retry, a workflow successor and a durable-wake row copy it, a reviewer row decides it with no

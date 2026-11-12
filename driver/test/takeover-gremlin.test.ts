@@ -1,5 +1,5 @@
 /**
- * Gremlins against the takeover simulation (#829, #922): seeded random faults at random points of a run,
+ * Gremlins against the takeover simulation: seeded random faults at random points of a run,
  * and the invariants every run owes (`fixtures/gremlin.ts`). A failure prints its seed and event trace;
  * `GREMLIN_SEED=<n>` replays that one run, `GREMLIN_RUNS=<n>` raises the count for a local soak.
  */
@@ -64,7 +64,7 @@ describe('takeover gremlins', () => {
     );
 
     // A host too loaded to play the faults on time runs a drain's handover and a kill of the same driver
-    // together (#932): the kill leaves the handover nothing to settle on, and the run must still end.
+    // together: the kill leaves the handover nothing to settle on, and the run must still end.
     it('a driver killed while it hands over does not hold the run', async () => {
         const overlap = [
             { at: 50, kind: 'handover' as const, restartMs: 186 },
@@ -77,7 +77,7 @@ describe('takeover gremlins', () => {
     }, 60_000);
 
     // A heartbeat that hangs for the glitch can by itself delay the next beat past the
-    // lease, load or not: such a loss is the board's right, not an interruption nobody injected (#932).
+    // lease, load or not: such a loss is the board's right, not an interruption nobody injected.
     it('a lease a hung heartbeat outlasts is not blamed on the product', async () => {
         const glitch = { at: 1_300, kind: 'glitch' as const, ops: ['heartbeat'], mode: 'timeout' as const, forMs: 800 };
         // Nothing else happens: this one only keeps the run going past the glitch.

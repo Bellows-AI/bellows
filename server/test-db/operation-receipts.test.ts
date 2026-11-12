@@ -7,7 +7,7 @@ import { useTestDb } from './harness.js';
 import { attachJira, bindConnections, newRoot } from './integration-store-faults.js';
 
 /**
- * BEL-61: the durable receipt of one runner-side write (docs/connections.md). A receipt is the thread
+ * the durable receipt of one runner-side write (docs/connections.md). A receipt is the thread
  * root's, keyed by a logical operation key; its status moves only through guarded single statements.
  */
 const enabled = Boolean(process.env.DATABASE_URL);

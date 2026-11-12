@@ -153,7 +153,7 @@ const PERSON_ROUTES: readonly (readonly [string, string])[] = [
     ['GET', `/api/workflows/${JOB_ID}`],
     ['PUT', `/api/workflows/${JOB_ID}`],
     ['GET', '/api/workflow-blocks'],
-    // The task read model (#157): a person's inbox view over the same board. A worker token
+    // The task read model: a person's inbox view over the same board. A worker token
     // reading every task summary of the board would be the thread-read hole again, one level up.
     ['GET', '/api/tasks'],
     ['GET', '/api/workspace'],
@@ -174,7 +174,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // route verifies itself — so the session hook must not demand a cookie of it.
     ['/api/github/webhook', 'open'],
     ['/api/auth/github/callback', 'open'],
-    // The onboarding screen's read and write (#125): the pending cookie IS the credential
+    // The onboarding screen's read and write: the pending cookie IS the credential
     // here — these run before any session exists, which is the whole point of the step.
     ['/api/auth/github/pending', 'open'],
     ['/api/auth/github/pending/installations/123/repos', 'open'],
@@ -201,30 +201,30 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // hand — and all fall through to 'user'.
     ['/api/jobs/:id/follow-up', 'user'],
     ['/api/jobs/:id/retry', 'user'],
-    // The user's rename of a task title (BEL-252): a person's action.
+    // The user's rename of a task title: a person's action.
     ['/api/jobs/:id/title', 'user'],
-    // The owner binds a connection of their own to the thread (BEL-59): a person's action, never a worker's.
+    // The owner binds a connection of their own to the thread: a person's action, never a worker's.
     ['/api/jobs/:id/connections', 'user'],
     // The same owner declines a provider the thread asked for; the runner's own ask is a worker route.
     ['/api/jobs/:id/requirements/:provider/dismiss', 'user'],
     ['/api/jobs/:id/requirements', 'worker'],
     ['/api/jobs/:id/done', 'user'],
-    // Reopen (issue #327) is done's inverse and a person's verdict the same way: a worker
+    // Reopen is done's inverse and a person's verdict the same way: a worker
     // token un-closing tasks it never held would move audit rows for no run it owns.
     ['/api/jobs/:id/reopen', 'user'],
     // Stop and remove are person's actions too. The driver is told to stop through the
     // heartbeat it already holds, never through a stop route of its own; and a worker token
-    // removing the audit rows of jobs it never held would be the thread-read hole (#47) again.
+    // removing the audit rows of jobs it never held would be the thread-read hole again.
     ['/api/jobs/:id/stop', 'user'],
     ['/api/jobs/:id/remove', 'user'],
-    // Both control a thread parked on a durable PR wait (issue #328) — person's actions on
+    // Both control a thread parked on a durable PR wait — person's actions on
     // the wait a worker holds no lease on, so they fall through to 'user' like the above.
     ['/api/jobs/:id/wait/cancel', 'user'],
     ['/api/jobs/:id/wait/poke', 'user'],
     ['/api/jobs/claim', 'worker'],
-    // The Prometheus scrape (#831): the shared board secret, never a session.
+    // The Prometheus scrape: the shared board secret, never a session.
     ['/api/metrics', 'worker'],
-    // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, and
+    // The orphan reaper's batched lease lookup: org-less like the claim, and
     // read-only — a worker token answers facts, it never moves rows.
     ['/api/jobs/leases', 'worker'],
     // The worktree-reclaim queue POST /remove feeds: the driver polls it and acks each
@@ -237,14 +237,14 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/suspend', 'worker'],
     ['/api/jobs/:id/interrupt', 'worker'],
     ['/api/jobs/:id/complete', 'worker'],
-    // The staged final envelope (issue #821): the same body as complete, under the same lease.
+    // The staged final envelope: the same body as complete, under the same lease.
     ['/api/jobs/:id/conclusion', 'worker'],
     ['/api/jobs/:id/phase-checkpoint', 'worker'],
     ['/api/jobs/:id/phase-checkpoints', 'worker'],
-    // The gate-run record (issue #983): the driver's own writes and its one read, under the lease.
+    // The gate-run record: the driver's own writes and its one read, under the lease.
     ['/api/jobs/:id/gate-run', 'worker'],
     ['/api/jobs/:id/gate-runs', 'worker'],
-    // One row per managed PR operation (issue #983), written by the driver under the lease.
+    // One row per managed PR operation, written by the driver under the lease.
     ['/api/jobs/:id/pr-operation', 'worker'],
     ['/api/jobs/:id/output', 'worker'],
     // Both are the driver's gate machinery — the state reports after each gate runs and the
@@ -252,29 +252,29 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // gate state unstored: under AUTH_MODE=github both fell through to 'user' and answered the
     // worker token 401, while the gates themselves ran and passed unseen.
     ['/api/jobs/:id/gates', 'worker'],
-    // The agent's questions (050, issue #531): the driver reports a question and expires it under
+    // The agent's questions (050): the driver reports a question and expires it under
     // its lease; the member's answer is a person's act, so it falls through to 'user' — and is
     // outside the org-token allowlist.
     ['/api/jobs/:id/question', 'worker'],
     ['/api/jobs/:id/questions/:questionId/answer', 'user'],
-    // A named reviewer's separate run (056, issue #549): the driver's request and its read of the
+    // A named reviewer's separate run (056): the driver's request and its read of the
     // verdict, both under the caller's lease — worker routes, never a person's or an org token's.
     ['/api/jobs/:id/review', 'worker'],
     ['/api/jobs/:id/review-read', 'worker'],
     ['/api/jobs/:id/artifact/chunk', 'worker'],
     ['/api/jobs/:id/artifact/manifest', 'worker'],
-    // The restore reads (issue #775): the thread's checkpoint and raw transcripts, under the live lease.
+    // The restore reads: the thread's checkpoint and raw transcripts, under the live lease.
     ['/api/jobs/:id/checkpoint', 'worker'],
     ['/api/jobs/:id/checkpoint/chunk', 'worker'],
     ['/api/jobs/:id/transcripts', 'worker'],
     ['/api/jobs/:id/transcripts/chunk', 'worker'],
     // The task's input files, fetched by the runner under the live lease.
     ['/api/jobs/:id/attachments/:attachmentId/content', 'worker'],
-    // A task's pinned skill bundles, fetched by the runner under the live lease (BEL-273).
+    // A task's pinned skill bundles, fetched by the runner under the live lease.
     ['/api/jobs/:id/skills/:versionId/content', 'worker'],
     // The thread read is a person's again: it carries commands, output and session ids of the
     // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
-    // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
+    // The driver's one use for it (the worktree-reclaim terminality) rides the
     // lease-guarded complete response as 'threadDone' instead.
     ['/api/jobs/:id/thread', 'user'],
     // The person-side read of a run: its activity. A worker token reading it would be the
@@ -282,7 +282,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/activity', 'user'],
     ['/api/jobs/:id/artifacts', 'user'],
     ['/api/jobs/:id/artifacts/read', 'user'],
-    // The Jira proxy is gone (BEL-61): nothing under /connectors/ takes the attempt pair any more, so the path is an
+    // The Jira proxy is gone: nothing under /connectors/ takes the attempt pair any more, so the path is an
     // unmatched person-side URL like any other and answers 404 unauthenticated-or-not.
     ['/api/jobs/:id/connectors/jira/rest/api/3/myself', 'user'],
     // The runner's GitHub credential (docs/connections.md): the same class — the attempt's pair in
@@ -290,13 +290,13 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/credentials/github', 'connector'],
     // Revoking that token at the end of the attempt: the same class, and a pair-only match on the board.
     ['/api/jobs/:id/credentials/github/revoke', 'connector'],
-    // The managed-connection broker (BEL-60): the same class, one segment deeper.
+    // The managed-connection broker: the same class, one segment deeper.
     ['/api/jobs/:id/credentials/connections/:connectionId', 'connector'],
-    // The runner seam (BEL-61): the helper's connection list and its durable operation receipts, the same class.
+    // The runner seam: the helper's connection list and its durable operation receipts, the same class.
     ['/api/jobs/:id/credentials/connections', 'connector'],
     ['/api/jobs/:id/operations', 'connector'],
     ['/api/jobs/:id/operations/:receiptId', 'connector'],
-    // The agent's own title write (BEL-252): the attempt pair alone, the same class.
+    // The agent's own title write: the attempt pair alone, the same class.
     ['/api/jobs/:id/agent-title', 'connector'],
     // A member's own uploads: a person's act, so 'user' (an organization token is refused).
     ['/api/attachments', 'user'],
@@ -316,13 +316,13 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/integrations/:provider/authorizations', 'user'],
     ['/api/integrations/:provider/callback', 'user'],
     ['/api/otlp/v1/logs', 'ingest'],
-    // BEL-146: a member reads their org's plan; the commerce service's push has its own credential class,
+    // a member reads their org's plan; the commerce service's push has its own credential class,
     // and the anchored pattern gives nothing else under /api/commerce that class.
     ['/api/commerce', 'user'],
     ['/api/commerce/orgs/:orgId/plan', 'commerce'],
     ['/api/commerce/orgs/:orgId/plan/x', 'user'],
     ['/api/commerce/orgs/:orgId', 'user'],
-    // BEL-104: the MCP endpoint answers to its own gate (Origin/Host, then an audience-bound mat_), anchored to the one path.
+    // the MCP endpoint answers to its own gate (Origin/Host, then an audience-bound mat_), anchored to the one path.
     ['/api/mcp', 'mcp'],
     ['/api/mcp/x', 'user'],
     // The OAuth authorization server: the public endpoints are open, the consent routes are the cookie session.

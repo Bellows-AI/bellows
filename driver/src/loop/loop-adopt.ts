@@ -7,7 +7,7 @@ import { awaitFirstContact, controlTokenOf } from '../supervised-steps.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../supervisor-contract.js';
 
 /**
- * Adopts the finished runner an earlier claim left behind (issue #792) — before the sync, which
+ * Adopts the finished runner an earlier claim left behind — before the sync, which
  * would rewrite the tree that run left. A read that fails is no verdict: the attempt is left to its
  * lease, and the next claim adopts what survived. The earlier attempt is recorded as an interruption
  * under this claim's lease, best-effort (`recordAdopted`): the step answers it as data and
@@ -27,10 +27,10 @@ export async function adoptStep(
         // The sweep after the adoption met leftovers still deleting: the earlier run stays for the
         // next claim, and the group (when live) is not this attempt's to end.
         if (e instanceof LeftoverTerminating) {
-            state.keepGroup = true;
+            state.groupDisposition = 'keep';
             return blockedHalt(e);
         }
-        // A read run that could not be secured (issue #821), or an earlier run that could not be read at
+        // A read run that could not be secured, or an earlier run that could not be read at
         // all, is no reason to run afresh over its tree: an unconfirmed read never licenses the sweep.
         const why =
             e instanceof AdoptionBlocked ? 'could not adopt the finished runner' : 'could not read an earlier runner';
@@ -45,7 +45,7 @@ export async function adoptStep(
     if ('live' in run) {
         if (!retaken) return takeOver(ctx, run);
         // The group answered live again after it was found finished: not a third try, the lease decides.
-        state.keepGroup = true;
+        state.groupDisposition = 'keep';
         run.forget();
         return { halt: 'leave', log: 'the earlier group answered live again after it ended, leaving it to the lease' };
     }
@@ -64,14 +64,14 @@ export async function recordAdopted(ctx: AttemptCtx, { reason, claimSeq }: Adopt
         .catch((e: Error) => rt.log(`job ${job.id}: could not record the adopted interruption: ${e.message}`));
 }
 
-/** The wait for the rebound supervisor ended because the earlier group is confirmed finished (#928). */
+/** The wait for the rebound supervisor ended because the earlier group is confirmed finished. */
 class EarlierGroupEnded extends Error {}
 
 /**
- * Takes over the agent a lost driver left RUNNING (issue #829): the supervisor's binding is rewritten
+ * Takes over the agent a lost driver left RUNNING: the supervisor's binding is rewritten
  * to this claim, and only a first poll of the new endpoint within `SUPERVISOR_REBIND_DELIVERY_MS` proves it
  * took, or the earlier group is confirmed finished meanwhile (`supervisorServing`: it stopped serving, so it will
- * never poll the new endpoint), when the claim adopts it once more as a finished runner. Until then the attempt owns nothing (`groupLease` unset, `keepGroup` set), so every way out of it
+ * never poll the new endpoint), when the claim adopts it once more as a finished runner. Until then the attempt owns nothing (`groupLease` unset, the group kept), so every way out of it
  * leaves the group to the next claim. No sync, setup or go order follows: the run carries on.
  */
 async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion | AdoptedRecord | null> {
@@ -83,7 +83,7 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
     const gates = rt.gates;
     if (!gates) return leave('could not take over the running agent: no run-control endpoint to deliver the claim to');
     ctx.takeover = run;
-    state.keepGroup = true;
+    state.groupDisposition = 'keep';
     try {
         const binding = {
             claimSeq: job.claimSeq,
@@ -123,7 +123,7 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
             );
             run.forget();
             delete ctx.takeover;
-            state.keepGroup = false;
+            state.groupDisposition = 'end';
             return adoptStep(ctx, { retaken: true });
         }
         return leave(`could not reach the running agent: ${(e as Error).message}`);
@@ -133,7 +133,7 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
     job.groupLease = run.prior.leaseToken;
     ctx.session = run.session ? { id: run.session, resume: true } : null;
     ctx.fenced = true;
-    state.keepGroup = false;
+    state.groupDisposition = 'end';
     // The agent runs: every exit before `launchRun` retains, stops or kills it as a launched attempt's.
     state.launched = true;
     const reason = `took over the running agent of claim ${run.claimSeq}, whose driver was lost`;

@@ -4,7 +4,7 @@ import { skillCatalog } from '../../skills.js';
 import { bindingsOf, requirementsOf } from '../connection-bindings.js';
 
 /**
- * The org and workspace skill versions a job row's task runs with (BEL-273, docs/skills.md): every enabled, live skill
+ * The org and workspace skill versions a job row's task runs with (docs/skills.md): every enabled, live skill
  * its principal sees, resolved once when the row is made and carried unchanged by every row that continues it.
  */
 export interface PinnedSkill {
@@ -15,7 +15,7 @@ export interface PinnedSkill {
 }
 
 /**
- * A skill the row's CLI must not list (BEL-286, docs/skills.md): switched off by an admin or its owner, or needing a
+ * A skill the row's CLI must not list (docs/skills.md): switched off by an admin or its owner, or needing a
  * connection the task does not hold (`connection` names it).
  */
 export interface HiddenSkill {
@@ -59,7 +59,7 @@ type Verdict = (
 ) => HiddenSkill | null;
 
 /**
- * Decides, for one job row, which skills are pinned and which are hidden (BEL-286). Run inside the row's transaction
+ * Decides, for one job row, which skills are pinned and which are hidden. Run inside the row's transaction
  * AFTER its bindings are written, so a task that just bound Jira holds it. A switched-off skill is hidden; so is one
  * whose required connection is neither bound (whatever the connection's status) nor an open requirement, unless the
  * task selected it: a selection goes through the preflight and the open-requirement flow instead. A failed read
@@ -144,7 +144,7 @@ export async function recordSkillDecisionInTx(
     `;
 }
 
-/** A created root's decision: the creator's workspace, the task's own selection and its bindings (BEL-273, BEL-286). */
+/** A created root's decision: the creator's workspace, the task's own selection and its bindings. */
 export const recordCreateDecisionInTx = (
     tx: TransactionSql,
     row: {

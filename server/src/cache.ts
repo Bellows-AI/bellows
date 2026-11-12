@@ -13,7 +13,7 @@ export interface Cache<T> {
     /**
      * Ages the entry past its TTL without dropping it: `isStale()` turns true, so the next read
      * re-produces — while `peek()` keeps serving the last good value until that lands. An
-     * external fact changed underneath the cache (a rewritten allowlist, #125); this is how the
+     * external fact changed underneath the cache (a rewritten allowlist); this is how the
      * cache is told without a window in which readers see nothing. A refresh already in flight is
      * discarded rather than published, so it cannot re-validate the pre-invalidation value.
      */

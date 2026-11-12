@@ -72,7 +72,7 @@ describe('the tasks pages', () => {
         expect(html).toContain('<h1>New task</h1>');
         expect(html).toContain('page-header-eyebrow');
         expect(html).not.toContain('<h2>Tasks</h2>');
-        // No routine description repeating what the composer itself shows (#571).
+        // No routine description repeating what the composer itself shows.
         expect(html).not.toContain('page-header-description');
     });
 
@@ -188,7 +188,7 @@ describe('TaskComposer', () => {
         // labelledby that points outside it, so each select carries its name directly (issue 190).
         // The workflow select renders only once a workflows list exists, so this render carries one.
         // The chip shows only its value, so the name carries the field AND the visible value
-        // (label in name, #571): a speech-input member can say what they see.
+        // (label in name): a speech-input member can say what they see.
         const withWorkflows = renderComposer({
             repos: [],
             executors: [{ name: 'main', type: 'claude', scope: 'user' }],

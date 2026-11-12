@@ -7,7 +7,7 @@ ingress half held; 1, 2 (the EBS task volume class), 6 and 7's job half were not
 
 ## 1. Cluster prerequisites
 
-Reasoning: [docs/kubernetes.md](kubernetes.md), "EKS prerequisites".
+Reasoning: [docs/kubernetes-limits.md](kubernetes-limits.md), "EKS prerequisites".
 
 - EKS ≥ 1.33, EC2 Linux nodes. **Fargate is out entirely** — no NetworkPolicy, no metrics API.
 - VPC CNI add-on with `enableNetworkPolicy: true`.
@@ -19,7 +19,7 @@ Reasoning: [docs/kubernetes.md](kubernetes.md), "EKS prerequisites".
 
 ## 2. Storage: an EBS class for the task volumes
 
-Prerequisites: [docs/kubernetes.md](kubernetes.md#eks-prerequisites). Install the EBS CSI driver add-on, create this
+Prerequisites: [docs/kubernetes-limits.md](kubernetes-limits.md#eks-prerequisites). Install the EBS CSI driver add-on, create this
 StorageClass, then set `taskVolume.storageClass: ebs-gp3`:
 
 ```yaml

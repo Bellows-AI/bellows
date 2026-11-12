@@ -9,7 +9,7 @@ import { useSkillLists, type SkillList } from '../settings/useSkillLists.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
- * The Skills section of the settings tree (BEL-272): the member's own skills and the organization's,
+ * The Skills section of the settings tree: the member's own skills and the organization's,
  * beside the built-ins. This page loads the two stored lists and owns which inline editor is open;
  * `SkillsSection` renders one door of them.
  */

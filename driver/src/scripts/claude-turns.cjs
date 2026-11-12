@@ -1,3 +1,4 @@
+// @ts-check
 // The close-time claude-code read: how many assistant response cycles the run's ROOT
 // conversation took, and what the run's last words were — both read from the transcript the run
 // wrote onto the task volume while it lived (FACTORY_TRANSCRIPT_DIR is the runner's
@@ -32,11 +33,12 @@ const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
 
 // The agent's blocked report: the final text's LAST non-empty line, when it starts with the
 // marker — read before the summary collapses the lines, so a mention mid-message never counts.
+/** @param {string} text */
 const blockedOf = (text) => {
     const last =
         text
             .split('\n')
-            .map((line) => line.trim())
+            .map((/** @type {string} */ line) => line.trim())
             .filter(Boolean)
             .pop() ?? '';
     return last.startsWith(BLOCKED_MARKER)

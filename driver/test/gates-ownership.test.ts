@@ -22,10 +22,10 @@ const nextBodyRead = (): Promise<void> =>
     });
 
 /**
- * The gate environment's owner (issue #436): release and cancel act only for the attempt the
+ * The gate environment's owner: release and cancel act only for the attempt the
  * checkout is filed under, a cancelled or hung-up ad-hoc request leaves nothing running, and one
- * attempt's end never touches another's gate. Every gate runs in its own attempt's task group
- * (issue #773), so the runner below records whose group each gate was asked of.
+ * attempt's end never touches another's gate. Every gate runs in its own attempt's task group,
+ * so the runner below records whose group each gate was asked of.
  */
 
 const KEY = '55555555-5555-4555-8555-555555555555/factory';

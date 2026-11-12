@@ -1,5 +1,6 @@
 import { batchWaitResult, ERROR_CODES, type BatchWaitResult } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { abortableSleep } from '../../abortable-sleep.js';
 import { UUID } from '../../identifiers.js';
 import {
     BATCH_CREATE,
@@ -91,7 +92,11 @@ export async function handleGet(orgs: OrgRegistry, request: FastifyRequest, repl
     const held = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'batch wait failed'),
-        () => holdUntilSettled(ctx.store, record.id, wait.value!.timeoutMs, () => reply.raw.destroyed)
+        () =>
+            holdUntilSettled(ctx.store, record.id, wait.value!.timeoutMs, {
+                gone: () => reply.raw.destroyed,
+                closing: request.closing,
+            })
     );
     if (!held.ok) return reply;
     const settled = await loadBatch(ctx, request, reply);
@@ -116,12 +121,12 @@ export async function handleReport(orgs: OrgRegistry, request: FastifyRequest, r
     return reply.code(HTTP_OK).send(report.value);
 }
 
-/** Reconciles on every beat, so a batch settles for a waiter whether or not anything else is running. */
+/** Reconciles on every beat (and answers `timeout` at once when the board is closing), so a batch settles for a waiter whether or not anything else is running. */
 async function holdUntilSettled(
     store: BatchStore,
     id: string,
     timeoutMs: number,
-    gone: () => boolean
+    { gone, closing }: { gone: () => boolean; closing: AbortSignal }
 ): Promise<BatchWaitResult | typeof BATCH_WAIT_TIMEOUT> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -129,8 +134,8 @@ async function holdUntilSettled(
         const result = progress && batchWaitResult(progress);
         if (result) return result;
         const remaining = deadline - Date.now();
-        if (remaining <= 0 || gone()) return BATCH_WAIT_TIMEOUT;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(BATCH_WAIT_POLL_MS, remaining)));
+        if (remaining <= 0 || gone() || closing.aborted) return BATCH_WAIT_TIMEOUT;
+        await abortableSleep(Math.min(BATCH_WAIT_POLL_MS, remaining), closing);
     }
 }
 

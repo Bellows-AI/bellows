@@ -25,7 +25,7 @@ import { useTestDb } from './harness.js';
 import { buildWorld, grant, okGrant, type OAuthWorld } from './oauth-rig.js';
 
 /**
- * The attachment handoff over real stores (BEL-248): a capability minted through MCP, spent by a plain HTTP PUT, and
+ * The attachment handoff over real stores: a capability minted through MCP, spent by a plain HTTP PUT, and
  * the resulting file bound by `create_task`. `server/test/mcp.attachment-upload.test.ts` holds the in-memory twin.
  */
 const enabled = Boolean(process.env.DATABASE_URL);

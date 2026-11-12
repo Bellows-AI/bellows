@@ -37,9 +37,9 @@ import { waitForLockWaiters } from './lock-wait.js';
 import type { PostgresHarness } from './secrets-postgres-harness.js';
 
 /**
- * BEL-138 slice 3: the authorization transaction as module functions. There is no HTTP route in this change, so the
+ * The authorization transaction as module functions. There is no HTTP route in this change, so the
  * callback validation (user binding, return path, replay, expiry) is exercised by calling the functions directly,
- * the way BEL-61's thin handlers will.
+ * the way the thin handlers will.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();

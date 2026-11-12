@@ -3,7 +3,7 @@ import { parseLastJsonLine } from './json-parse.js';
 import { REVIEW_HELPER_DESCRIPTORS } from './review/review-helpers.js';
 
 /**
- * The generic block-helper transport (issue #207): one allowlisted, board-owned script an
+ * The generic block-helper transport: one allowlisted, board-owned script an
  * expanded workflow `block` node may declare to run before or after its agent turn — a runtime
  * plan naming a helper id and validated/bounded JSON input, never arbitrary shell or an image.
  * Docker and kubernetes execute the same plan through the same `Runner.runHelper` seam (declared in
@@ -48,8 +48,8 @@ export interface HelperPlan {
 
 /**
  * What one helper run carries beyond its plan, as the transports take it: the fresh GitHub token a
- * github-writing helper runs with, the attempt's stand-down signal that cancels it (issue #488), and
- * the logical effect it performs — the same on every claim of the job (`helperEffectId`, issue #826).
+ * github-writing helper runs with, the attempt's stand-down signal that cancels it, and
+ * the logical effect it performs — the same on every claim of the job (`helperEffectId`).
  */
 export interface HelperCall {
     token?: string | undefined;
@@ -82,7 +82,7 @@ const FAILURE_REASONS: readonly HelperFailureReason[] = [
 ];
 
 /**
- * A successful pre-run helper's explicit control outcome (issue #230): `continue` (the default —
+ * A successful pre-run helper's explicit control outcome: `continue` (the default —
  * absent from the wire verdict reads the same way) runs the node's agent turn as before;
  * `conclude` completes the claimed job through the ordinary board completion path without ever
  * launching the agent, running gates, running post-helpers, or publishing. Valid only on a
@@ -128,7 +128,7 @@ const MERGE_CONFLICT_PROBE_OUTPUT_CAP_KB = 16;
 const NOOP_OUTPUT_CAP_BYTES = NOOP_OUTPUT_CAP_KB * BYTES_PER_KB;
 
 /**
- * The merge-conflict-autofix block's preflight (issue #122): bounded past a real conflict's worth
+ * The merge-conflict-autofix block's preflight: bounded past a real conflict's worth
  * of paths (CONFLICTING_PATHS_MAX in the script itself), far under any concern for the argv/env
  * value it travels as.
  */
@@ -162,7 +162,7 @@ const DESCRIPTORS: readonly HelperDescriptor[] = [
         version: 1,
         outputCapBytes: MERGE_CONFLICT_PROBE_OUTPUT_CAP_BYTES,
     },
-    // The github-review-reconcile block's own helpers (issue #133), registered the same additive
+    // The github-review-reconcile block's own helpers, registered the same additive
     // way — driver/src/review/review-helpers.ts owns their script assembly and caps.
     ...REVIEW_HELPER_DESCRIPTORS,
 ];
@@ -271,7 +271,7 @@ export function helperInputValue(plan: HelperPlan): string {
 }
 
 /**
- * One step of a composite helper program (issue #230): which registered SCRIPT helper it
+ * One step of a composite helper program: which registered SCRIPT helper it
  * invokes — never another composite, nesting is refused at registry-validation time below — and
  * whether that step writes to GitHub, minted its own fresh token exactly when that step runs, the
  * same "fresh write-token" rule every other github-writing helper follows.
@@ -306,7 +306,7 @@ export interface CompositeDescriptor {
 export const MAX_COMPOSITE_STEPS = 8;
 
 /**
- * The one neutral fixture composite (issue #230): two `noop` steps, proving sequencing (two
+ * The one neutral fixture composite: two `noop` steps, proving sequencing (two
  * distinct child calls), intermediate planning (`planStepInput` transforms the previous step's
  * output rather than passing it through untouched) and output propagation, with `finalize`
  * deciding `conclude` vs. `continue` purely from the composite's own declared input — so a test
@@ -441,7 +441,7 @@ export type InvokeChild = (childPlan: HelperPlan, childIndex: number) => Promise
 
 /**
  * Runs one declared plan to its final result. A plain script plan is a single call through
- * `invokeChild`, unchanged from before this issue. A composite plan (issue #230) resolves the
+ * `invokeChild`, unchanged from before this issue. A composite plan resolves the
  * registered descriptor and sequences it via `runComposite`.
  */
 export async function runHelperPlan(plan: HelperPlan, invokeChild: InvokeChild): Promise<HelperResult | null> {

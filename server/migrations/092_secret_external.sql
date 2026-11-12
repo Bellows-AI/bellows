@@ -1,4 +1,4 @@
--- BEL-137: where a secret version's payload lives (server/src/secrets/secret-payloads.ts, docs/secrets.md).
+-- where a secret version's payload lives (server/src/secrets/secret-payloads.ts, docs/secrets.md).
 -- 091 held every payload as an AES envelope in the row. A version now names its `storage`:
 --
 --   database  the envelope is in `envelope`, under `key_id` (every row 091 wrote).

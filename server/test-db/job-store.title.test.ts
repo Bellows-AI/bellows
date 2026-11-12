@@ -7,7 +7,7 @@ import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 
 /**
- * a task's title lives on the thread root (BEL-252): set at create or by a rename, never carried by a
+ * a task's title lives on the thread root: set at create or by a rename, never carried by a
  * follow-up, retry or successor, and every write leaves one audit row.
  */
 const enabled = Boolean(process.env.DATABASE_URL);

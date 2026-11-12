@@ -8,7 +8,7 @@ import type { ServerMetrics } from '../src/metrics.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { fakeConnector } from './notifications-fake-connector.js';
 
-/** BEL-129: the deliverer takes one lease at a time, settles each send and releases the lease on every exit. */
+/** the deliverer takes one lease at a time, settles each send and releases the lease on every exit. */
 const PUBLIC_URL = 'https://board.example.test';
 
 const eventRow = (n: number): NotificationEventRow => ({
@@ -216,6 +216,7 @@ describe('startNotificationDelivery', () => {
             orgs: orgs as unknown as OrgRegistry,
             metrics: m,
             ready: Promise.resolve(),
+            track: (start) => void start(),
         });
         await vi.advanceTimersByTimeAsync(120_000);
 
@@ -235,6 +236,7 @@ describe('startNotificationDelivery', () => {
             orgs: orgs as unknown as OrgRegistry,
             metrics: m,
             ready: Promise.resolve(),
+            track: (start) => void start(),
         });
         await vi.advanceTimersByTimeAsync(120_000);
 
@@ -254,6 +256,7 @@ describe('startNotificationDelivery', () => {
             orgs: orgs as unknown as OrgRegistry,
             metrics: m,
             ready: Promise.resolve(),
+            track: (start) => void start(),
         });
         await vi.advanceTimersByTimeAsync(10);
 
@@ -278,6 +281,7 @@ describe('startNotificationDelivery', () => {
             orgs: orgs as unknown as OrgRegistry,
             metrics: m,
             ready: Promise.resolve(),
+            track: (start) => void start(),
         });
         await vi.advanceTimersByTimeAsync(10);
 

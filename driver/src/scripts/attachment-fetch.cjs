@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 // Delivers a task's input files into a directory: each file of the claim's list is read from the control
 // endpoint's `/input/<delivery>/<id>` route and lands at `<id><ext>`, behind a `manifest.json` written last.
@@ -42,22 +43,39 @@ const SHA256 = /^[0-9a-f]{64}$/;
 
 class Unavailable extends Error {}
 
+/** @typedef {{ id: string, name?: string, mediaType?: string, size: number, sha256: string, originJobId?: string }} Entry */
+/** @typedef {{ url: string | undefined, token: string | undefined, delivery: string, timeoutMs: number }} Source */
+
+/** @param {string | Buffer} bytes */
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+/** @param {string} file */
 const readIfFile = (file) => {
     try {
         return fs.readFileSync(file);
     } catch (e) {
-        if (e.code === 'ENOENT' || e.code === 'ENOTDIR' || e.code === 'EISDIR') return null;
+        if (
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOENT' ||
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOTDIR' ||
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'EISDIR'
+        )
+            return null;
         throw e;
     }
 };
-/** Whether `file` holds exactly the bytes of `entry`. */
+/**
+ * Whether `file` holds exactly the bytes of `entry`.
+ * @param {string} file
+ * @param {Entry} entry
+ */
 const holds = (file, entry) => {
     const bytes = readIfFile(file);
     return bytes !== null && bytes.length === entry.size && sha256(bytes) === entry.sha256;
 };
 
-/** The one extension a delivered file keeps: decided by its validated media type, never by its display name. */
+/**
+ * The one extension a delivered file keeps: decided by its validated media type, never by its display name.
+ * @type {Record<string, string>}
+ */
 const EXTENSIONS = {
     'image/png': '.png',
     'image/jpeg': '.jpg',
@@ -68,8 +86,13 @@ const EXTENSIONS = {
     'text/markdown': '.md',
     'text/csv': '.csv',
 };
-const pathOf = (entry) => entry.id + (EXTENSIONS[entry.mediaType] || '');
+/** @param {Entry} entry */
+const pathOf = (entry) => entry.id + (EXTENSIONS[/** @type {string} */ (entry.mediaType)] || '');
 
+/**
+ * @param {string | undefined} raw
+ * @returns {Entry[]}
+ */
 const listOf = (raw) => {
     const list = JSON.parse(raw || '');
     if (!Array.isArray(list)) throw new Error('MANIFEST is not a list');
@@ -81,9 +104,14 @@ const listOf = (raw) => {
     return list;
 };
 
-/** One file's bytes from the control endpoint, checked against the claim's digest. */
+/**
+ * One file's bytes from the control endpoint, checked against the claim's digest.
+ * @param {Entry} entry
+ * @param {Source} source
+ */
 const readFile = async (entry, source) => {
     let response;
+    /** @type {Buffer | undefined} */
     let bytes;
     try {
         response = await fetch(`${source.url}/input/${encodeURIComponent(source.delivery)}/${entry.id}`, {
@@ -92,16 +120,16 @@ const readFile = async (entry, source) => {
         });
         if (response.ok) bytes = Buffer.from(await response.arrayBuffer());
     } catch (e) {
-        throw new Error(`the control endpoint could not be read for ${entry.id}: ${e.message}`);
+        throw new Error(`the control endpoint could not be read for ${entry.id}: ${/** @type {Error} */ (e).message}`);
     }
     if (UNAVAILABLE_STATUSES.has(response.status)) {
         throw new Unavailable(`the board does not serve ${entry.id} (${response.status})`);
     }
     if (!response.ok) throw new Error(`the control endpoint answered ${response.status} for ${entry.id}`);
-    if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256) {
+    if (/** @type {Buffer} */ (bytes).length !== entry.size || sha256(/** @type {Buffer} */ (bytes)) !== entry.sha256) {
         throw new Unavailable(`the bytes of ${entry.id} do not match the claim's sha256`);
     }
-    return bytes;
+    return /** @type {Buffer} */ (bytes);
 };
 
 /** What this script leaves the target directory at: the next delivery reopens only a directory it sealed itself. */
@@ -113,10 +141,14 @@ const READ_ONLY_MODE = 0o444;
 const EXTRACT_TIMEOUT_MS = 300_000;
 const EXTRACT_ENV_DROPPED = ['RESTORE_URL', 'RESTORE_TOKEN', 'MANIFEST', 'EXTRACT_SCRIPT'];
 
-/** Runs the extract script over `target` in a child that never sees the control endpoint's bearer. */
+/**
+ * Runs the extract script over `target` in a child that never sees the control endpoint's bearer.
+ * @param {string} target
+ */
 const extract = (target) => {
     const code = process.env.EXTRACT_SCRIPT;
     if (!code) return;
+    /** @type {NodeJS.ProcessEnv} */
     const env = { ...process.env, TARGET_DIR: target };
     for (const name of EXTRACT_ENV_DROPPED) delete env[name];
     const run = spawnSync(process.execPath, ['--no-warnings', '-e', code], {
@@ -131,7 +163,7 @@ const extract = (target) => {
         .pop();
     let verdict = null;
     try {
-        verdict = JSON.parse(last);
+        verdict = JSON.parse(/** @type {string} */ (last));
     } catch {}
     if (run.error || !verdict || !verdict.ok) {
         throw new Error(
@@ -140,7 +172,11 @@ const extract = (target) => {
     }
 };
 
-/** Removes everything in `dir` that is not in `keep`: stale files and staging directories. */
+/**
+ * Removes everything in `dir` that is not in `keep`: stale files and staging directories.
+ * @param {string} dir
+ * @param {Set<string>} keep
+ */
 const sweep = (dir, keep) => {
     for (const name of fs.readdirSync(dir)) {
         if (!keep.has(name)) fs.rmSync(path.join(dir, name), { recursive: true, force: true });
@@ -187,8 +223,10 @@ async function main() {
     return { ok: true, files: list.length, fetched: missing.length };
 }
 
+/** @param {object} verdict */
 const say = (verdict) => process.stdout.write(JSON.stringify(verdict) + '\n');
 
+/** @param {any} e */
 const failure = (e) => {
     const reason = String((e && e.message) || e);
     return e instanceof Unavailable

@@ -5,7 +5,7 @@ import { claimPathFor, namespace, routed, runner } from '../fixtures/k8s-suite.j
 import { drive, job, stubBoard } from '../fixtures/loop-stubs.js';
 
 /*
- * BEL-160: a takeover sweep that meets a leftover pod stuck terminating (its node gone) is handed
+ * a takeover sweep that meets a leftover pod stuck terminating (its node gone) is handed
  * back to the board as a blocked interruption, never left to the lease — the real loop over the
  * real kubernetes runner, only the cluster's API faked.
  */

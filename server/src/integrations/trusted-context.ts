@@ -26,11 +26,11 @@ function mint(orgId: string, principal: Principal, initiator: Initiator): Truste
 export const isTrustedContext = (value: unknown): value is TrustedIntegrationContext =>
     typeof value === 'object' && value !== null && minted.has(value);
 
-/** A signed-in person: BEL-61's routes call this with the caller the auth plugin resolved for the request. */
+/** A signed-in person: the person-facing routes call this with the caller the auth plugin resolved for the request. */
 export const contextOfSession = (caller: { user: { id: string } }, orgId: string): TrustedIntegrationContext =>
     mint(orgId, { kind: 'user', userId: caller.user.id }, { kind: 'user', userId: caller.user.id });
 
-/** A lease-verified task attempt acting as the thread's execution user (BEL-60's callers). */
+/** A lease-verified task attempt acting as the thread's execution user. */
 export const contextOfExecution = (input: {
     orgId: string;
     executionUserId: string;
@@ -43,6 +43,6 @@ export const contextOfExecution = (input: {
         { kind: 'job', jobId: input.jobId, attempt: input.attempt }
     );
 
-/** A service principal. Minting it is allowed; resolving a credential for it is refused until BEL-143. */
+/** A service principal. Minting it is allowed; resolving a credential for it is refused until it is supported. */
 export const contextOfService = (input: { orgId: string; serviceId: string }): TrustedIntegrationContext =>
     mint(input.orgId, { kind: 'service', serviceId: input.serviceId }, { kind: 'user', userId: input.serviceId });

@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * The github-review-reconcile block's reply adapter (issue #133) — MIDDLE half, run between the
+ * The github-review-reconcile block's reply adapter — MIDDLE half, run between the
  * embedded review-collect.cjs and review-reply.cjs (driver/src/review/review-helpers.ts assembles the
  * five pieces — review-collect-probe-prelude.cjs, review-collect.cjs, this file,
  * review-reply.cjs, review-reply-probe-postlude.cjs — at driver load time). The `reply` node
@@ -80,7 +80,7 @@ function __rrpGeneralTarget(intent) {
 
 /**
  * The (up to two) plan targets one `thread:` intent produces: a reply, and/or a resolve. Each is
- * reconciled on its own (issue #826): a run lost between the two writes owes only the resolve.
+ * reconciled on its own: a run lost between the two writes owes only the resolve.
  */
 function __rrpThreadTargets(thread, id, intent, replied) {
     const targets = [];
@@ -119,7 +119,7 @@ function __rrpThreadTargets(thread, id, intent, replied) {
 
 /**
  * One digest-presented intent -> zero or more plan targets, validated against LIVE collection ids.
- * A reply whose marker the live PR already carries is never planned again (issue #826): the run
+ * A reply whose marker the live PR already carries is never planned again: the run
  * that wrote it may have been lost before anyone heard.
  */
 function __rrpTargetsFor(intent, live) {

@@ -18,7 +18,7 @@ import { resolveLeasedRoute } from '../route-guards.js';
 import type { JobReviewStore } from '../../db/jobs/job-store-reviews.js';
 
 /**
- * Independent reviewer invocation (issue #549): the driver's request for a named reviewer's
+ * Independent reviewer invocation: the driver's request for a named reviewer's
  * separate run, and its read of the verdict. Both are worker routes, lease-fenced like every
  * worker write. The revision and the ref are what the DRIVER measured and snapshotted — the agent
  * names a key and a profile, never a revision.

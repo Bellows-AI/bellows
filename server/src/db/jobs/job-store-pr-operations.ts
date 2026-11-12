@@ -1,5 +1,5 @@
 /**
- * PR operations (issue #983; `088_job_pr_operation.sql`): one row per managed publish operation of an
+ * PR operations (`088_job_pr_operation.sql`): one row per managed publish operation of an
  * attempt, written by the driver under its lease when the operation ran. Idempotent on the operation
  * id the driver minted, so a replayed write adds nothing.
  */

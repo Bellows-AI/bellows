@@ -35,7 +35,7 @@ import {
 } from './k8s-transport.js';
 
 /**
- * The kubernetes arm of the reaper's export-before-delete (issue #938): the one-shot exporter Job
+ * The kubernetes arm of the reaper's export-before-delete: the one-shot exporter Job
  * (`volumeExportJobSpec`) over the thread's newest task volume claim. One absolute deadline covers the claim
  * read, the create, every poll and the delete; the Job's `activeDeadlineSeconds` ends it on its own below
  * that. Only the relay's proof says `drained`, never the Job's status.

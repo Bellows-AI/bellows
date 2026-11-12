@@ -11,7 +11,7 @@ import {
     parseOpencodeRunOutcome,
     readOpencodeWithRetries,
 } from '../close-read.js';
-import type { RunOutcome, RunSession, Runner } from '../runner.js';
+import type { GroupTakenAway, RunOutcome, RunSession, Runner } from '../runner.js';
 import { adoptFinishedRunner, supervisorServing } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from '../close-read.js';
 import { killedOutcome, ledgerOf, RunnerAbandoned, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
@@ -201,7 +201,7 @@ const adoptionReads = closeReadsOver(readerJobReadout);
 
 // The docker runner samples `docker stats`; the twin here is the metrics API, read from the
 // runner's own pod. Every failure (no pod yet, no metrics-server, a blink) answers null for the
-// NUMBERS: "no fresh sample", never an error. The services are the pod's own sidecars (issue #773),
+// NUMBERS: "no fresh sample", never an error. The services are the pod's own sidecars,
 // read off its status before and independently of the metrics API, so a cluster with no
 // metrics-server still reports them.
 async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
@@ -254,7 +254,7 @@ async function agentStarted(deps: K8sDeps, job: BoardJob): Promise<boolean> {
 }
 
 // The same contract as `docker kill ... .catch(() => undefined)`: a kill that finds nothing is the
-// ordinary end of a finished run. The group is ended the acknowledged way (issue #821) — its
+// ordinary end of a finished run. The group is ended the acknowledged way — its
 // Secrets, then its Job, confirmed gone — and the checkout claim goes back only on that
 // confirmation; a kill whose end cannot be confirmed leaves the Job suspended and keeps the claim.
 async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
@@ -402,7 +402,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // exports its transcript — the exporter, created together by the attempt's first step (the
     // sync) or, for an attempt that never synced, here. A pod the cluster refuses is infrastructure,
     // thrown like any refused runner Job, never a run that silently loses its record. The declared
-    // services are the pod's own sidecars (issue #773), waited ready by the loop's setup
+    // services are the pod's own sidecars, waited ready by the loop's setup
     // (`startServices`) before its gate environment, and reached on the pod's loopback by name.
     const { startedAt, resumed } = await ensureGroup(deps, job, session);
 
@@ -418,7 +418,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         },
         () => undefined
     );
-    // A group taken over from a lost driver (#829) was released by it: the agent already runs, in the
+    // A group taken over from a lost driver was released by it: the agent already runs, in the
     // sizing and under the order its first driver gave, and nothing here creates or releases it.
     // The agent's run is the gate sidecar's idle phase: its requests come down until the verify.
     if (!resumed) await resizeGateSidecar(deps, job, 'idle').then(() => orderGo(host, job));
@@ -560,7 +560,7 @@ async function syncCheckout(
 }
 
 /**
- * The terminal reclaim is an acknowledged no-op (issue #775): the thread's tree lives on its own task
+ * The terminal reclaim is an acknowledged no-op: the thread's tree lives on its own task
  * volume, which only the reaper may delete, so there is no linked worktree to remove.
  */
 async function reclaimWorktree(): Promise<ReclaimResult> {
@@ -630,18 +630,19 @@ export function createKubernetesRunner(
         finish: (job: BoardJob) => finishGroup(deps, job),
         reclaimWorktree,
         // The loop's hand-back of the checkout claim (`loop-fence.ts`) for an attempt that ends
-        // without a group's end to give it back: a group still live keeps it for its `finish`
-        // (issue #821), one whose end is unconfirmed keeps it for good.
+        // without a group's end to give it back: a group still live keeps it for its `finish`,
+        // one whose end is unconfirmed keeps it for good.
         releaseFence: async (job: BoardJob) => {
             await releaseClaimAfterGroupEnd(deps, job);
         },
-        // A lost supervisor is a node loss only when its pod is confirmed taken away; no doubt counts (BEL-302).
-        groupTakenAway: (job: BoardJob, signal: AbortSignal) =>
+        // A lost supervisor is a node loss only when its pod is confirmed taken away; no doubt counts,
+        // and a read that settles nothing is `unknown`, never "kept".
+        groupTakenAway: (job: BoardJob, signal: AbortSignal): Promise<GroupTakenAway> =>
             signal.aborted
-                ? Promise.resolve(false)
+                ? Promise.resolve('unknown')
                 : runnerPodTakenAway(
                       withSignal(boundedBy(deps, Date.now() + GROUP_TAKEN_AWAY_READ_MS), signal),
                       runnerName(job)
-                  ).catch(() => false),
+                  ).catch((): GroupTakenAway => 'unknown'),
     });
 }

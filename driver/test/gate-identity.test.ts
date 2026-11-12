@@ -4,7 +4,7 @@ import { gateIdentity } from '../src/gate-identity.js';
 import { boardJob } from './fixtures/board-job.js';
 
 /**
- * The gate identity of the gate-run record (issue #983): what a run's reuse must agree on besides the
+ * The gate identity of the gate-run record: what a run's reuse must agree on besides the
  * tree — the command, its timeout, the image, setup, cache, services and the env — as one keyed hash,
  * so a changed env VALUE changes it and no raw value is ever stored.
  */

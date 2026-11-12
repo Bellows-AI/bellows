@@ -11,7 +11,7 @@ import {
 import { throughSignIn } from './signin.js';
 
 /**
- * Who may continue a task (#281, F3), against a real sign-in: the board refuses a follow-up from
+ * Who may continue a task (F3), against a real sign-in: the board refuses a follow-up from
  * anyone but the thread's owner or an org admin, so the page offers the composer to those accounts. The session is the stub IdP's real one, read back from `/api/auth/me` — never
  * a fixture id — and the thread is routed with its author set to self. Another member's and a
  * null author's refusal are web/test/task-detail.render.test.tsx's; the board's 403 inside the

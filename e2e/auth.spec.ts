@@ -8,7 +8,7 @@ import { throughSignIn } from './signin.js';
  *
  * dashboard.spec.ts stays on the open board and is untouched: it is the visual regression check and
  * should not churn over an auth change. This file is the one that proves the gate, the round trip,
- * the selection screen (#125) and the sign-out, and it runs against its own server with
+ * the selection screen and the sign-out, and it runs against its own server with
  * AUTH_MODE=github.
  *
  * The stub reports TWO installations and the run's identity is fresh (playwright.config.ts). No
@@ -120,8 +120,8 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
     };
     expect(body.user.login).toBe('e2e-user');
     // The chosen installation was materialized as the member's organization — the org, the
-    // membership and the session's binding to it, no invite anywhere in the flow (#99). This
-    // account is the installation's FIRST member, so its membership lands `admin` (#410).
+    // membership and the session's binding to it, no invite anywhere in the flow. This
+    // account is the installation's FIRST member, so its membership lands `admin`.
     expect(body.role).toBe('admin');
     expect(body.mode).toBe('github');
     expect(body.organization).toEqual({ id: kept.id, name: kept.account });

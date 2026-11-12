@@ -8,7 +8,7 @@ import type { WorkflowDefinition, WorkflowNode } from '../src/db/workflows/workf
 /**
  * The generic settle rule (issue #133's resolution of the "who calls finishWait" question): a
  * pure-ish unit suite against a fake `JobStorePrs`, no database involved.
- * `job-store.block-wait.test.ts` (issue #231) and this block's own DB suite cover the same rule
+ * `job-store.block-wait.test.ts` and this block's own DB suite cover the same rule
  * wired into a real transaction; this file pins the SCOPE arithmetic and the transition-branch
  * decisions in isolation.
  */

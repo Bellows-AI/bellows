@@ -4,7 +4,7 @@ import { type CommercePlanWriter, createCommercePlanWriter, type PlanPush } from
 import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
 
-/** BEL-146: the inbound plan push is stored once, newest version wins, and the write decides the org exists. */
+/** the inbound plan push is stored once, newest version wins, and the write decides the org exists. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const db = useTestDb({ orgs: [ORG] });

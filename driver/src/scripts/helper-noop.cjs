@@ -1,7 +1,8 @@
+// @ts-check
 'use strict';
 
 /*
- * The one shipped block-helper fixture (issue #207): echoes its bounded HELPER_INPUT back as its
+ * The one shipped block-helper fixture: echoes its bounded HELPER_INPUT back as its
  * output, under the versioned verdict every helper answers with. It exists to prove the transport
  * — argv/env secrecy, the output cap, cleanup, failure semantics — end to end on both executors
  * with no real board-owned side effect; a real helper (#122/#133's own files) answers the same

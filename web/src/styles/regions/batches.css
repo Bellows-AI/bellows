@@ -12,7 +12,7 @@
         display: inline-flex;
         font-weight: 600;
         min-height: 40px;
-        padding: 0 16px;
+        padding: 0 var(--space-4);
         text-decoration: none;
     }
 
@@ -24,28 +24,28 @@
     .batch-editor {
         display: flex;
         flex-direction: column;
-        gap: 16px;
+        gap: var(--space-4);
     }
 
     /* The form: fields in a responsive grid, each a label above its control. */
     .batch-form,
     .batch-field-row {
         display: grid;
-        gap: 12px 16px;
+        gap: var(--space-3) var(--space-4);
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        margin-bottom: 12px;
+        margin-bottom: var(--space-3);
     }
 
     .batch-field,
     .batch-field label {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: var(--space-1);
         min-width: 0;
     }
 
     .batch-field {
-        font-size: 13px;
+        font-size: var(--text-sm);
         font-weight: 600;
     }
 
@@ -54,7 +54,7 @@
     }
 
     .batch-problem {
-        font-size: 13px;
+        font-size: var(--text-sm);
         font-weight: 400;
         margin: 0;
     }
@@ -62,9 +62,9 @@
     .batch-check {
         align-items: center;
         display: flex;
-        font-size: 13px;
-        gap: 8px;
-        margin: 8px 0;
+        font-size: var(--text-sm);
+        gap: var(--space-2);
+        margin: var(--space-2) 0;
     }
 
     /* A task in the editor is a divided row inside its stage, never a card inside a card. */
@@ -73,31 +73,31 @@
         border-top: 1px solid var(--line);
         margin: 0;
         min-width: 0;
-        padding: 12px 0;
+        padding: var(--space-3) 0;
     }
 
     .batch-task-edit legend {
         font-weight: 600;
-        padding: 0 8px;
+        padding: 0 var(--space-2);
     }
 
     .batch-actions {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: var(--space-2);
     }
 
     .batch-stage {
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: var(--space-3);
     }
 
     /* A stage is a flat row on the page canvas, in the editor and the monitor alike. */
     .batch-stage {
         border-top: 1px solid var(--line);
-        padding: 16px 0;
+        padding: var(--space-4) 0;
     }
 
     .batch-stage.is-active {
@@ -115,7 +115,7 @@
         align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 8px 16px;
+        gap: var(--space-2) var(--space-4);
         justify-content: space-between;
     }
 
@@ -126,7 +126,7 @@
     /* A stage's tasks run in parallel: cards side by side, wrapping before they squeeze. */
     .batch-tasks {
         display: grid;
-        gap: 12px;
+        gap: var(--space-3);
         grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
         list-style: none;
         margin: 0;
@@ -139,16 +139,16 @@
         border-radius: var(--radius-lg);
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: var(--space-2);
         min-width: 0;
-        padding: 12px 16px;
+        padding: var(--space-3) var(--space-4);
     }
 
     .batch-task-head {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: var(--space-2);
     }
 
     .batch-task p {
@@ -163,63 +163,63 @@
     .batch-links {
         display: flex;
         flex-wrap: wrap;
-        gap: 4px 16px;
+        gap: var(--space-1) var(--space-4);
     }
 
     .batch-wait {
         color: var(--ink-muted);
-        font-size: 13px;
+        font-size: var(--text-sm);
     }
 
     /* A person's turn: the gate callout wears the accent edge, the "your turn" color. */
     .batch-gate {
         border-left: 3px solid var(--accent);
-        font-size: 13px;
-        padding-left: 12px;
+        font-size: var(--text-sm);
+        padding-left: var(--space-3);
     }
 
     .batch-origin {
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: var(--text-xs);
     }
 
     .batch-review-stages {
-        margin: 12px 0 0;
+        margin: var(--space-3) 0 0;
         padding-left: 20px;
     }
 
     .batch-backlink {
-        margin: 0 0 12px;
+        margin: 0 0 var(--space-3);
     }
 
     /* Token usage: a section above the stages and a compact block per task card. The model rows sit
        behind a disclosure and scroll inside their own wrap, so no width reaches the page. */
     .batch-usage .usage-figures {
-        margin-bottom: 8px;
+        margin-bottom: var(--space-2);
     }
 
     .batch-task-usage {
-        margin: 8px 0;
+        margin: var(--space-2) 0;
         min-width: 0;
     }
 
     .batch-task-usage .usage-figures {
-        gap: 8px;
+        gap: var(--space-2);
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .batch-task-usage .usage-figure dd {
-        font-size: 14px;
+        font-size: var(--text-base);
     }
 
     .batch-usage-more {
-        margin-top: 8px;
+        margin-top: var(--space-2);
         min-width: 0;
     }
 
     .batch-usage-more summary {
         cursor: pointer;
-        font-size: 13px;
+        font-size: var(--text-sm);
     }
 
     /* ── batches touch targets (44px, issue 189) ── */
@@ -228,18 +228,18 @@
         .batch-actions button {
             align-items: center;
             display: inline-flex;
-            min-height: 44px;
-            min-width: 44px;
+            min-height: var(--touch);
+            min-width: var(--touch);
         }
 
         .batch-field input,
         .batch-field select,
         .batch-field textarea {
-            min-height: 44px;
+            min-height: var(--touch);
         }
 
         .batch-check {
-            min-height: 44px;
+            min-height: var(--touch);
         }
     }
 }

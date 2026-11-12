@@ -1,4 +1,4 @@
--- Execution provenance (issue #845, epic #842): one row per claim, written in the claim's own
+-- Execution provenance: one row per claim, written in the claim's own
 -- transaction, that outlives the operational job it describes. Minimal attribution only — opaque
 -- ids, a repository label and two identities; never a prompt, a credential or profile data.
 --
@@ -129,7 +129,7 @@ create trigger job_execution_give_up after update of status, claim_seq on job
     for each row when (old.status is distinct from new.status or old.claim_seq is distinct from new.claim_seq)
     execute function job_execution_give_up();
 
--- Backfill (issue #845): a job that predates this table gets an execution row only for a claim its
+-- Backfill: a job that predates this table gets an execution row only for a claim its
 -- retained row proves happened — its current `claim_seq` and every `claimSeq` its `interruptions`
 -- name — and the session pointer it still holds, filed against the current claim. Never a boundary,
 -- a launch outcome, a resumed flag or an overwritten session. Idempotent: a row that exists stays.

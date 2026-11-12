@@ -6,6 +6,7 @@ import type { Job } from '../api/useJobs.js';
 import { tokens, wallClock } from '../format.js';
 import { type TaskTone, taskStatusLabel, taskTone } from '../task-tree.js';
 import { taskTitleText } from '../task-title.js';
+import { StateNote } from '../components/StateNote.js';
 
 /** Each tone's status pill (plan §1.2): accent is the user's turn, bad a failure, ok a live run,
  * done parked or finished — the label carries the meaning, the tone only reinforces it. */
@@ -116,10 +117,10 @@ export function RecentTasksPanel({ jobs, error, now }: { jobs: Job[] | null; err
                     </Link>
                 ) : null}
             </div>
-            {error !== null ? <p className="alert">The board could not be read — {error}.</p> : null}
+            {error !== null ? <StateNote state="error">The board could not be read — {error}.</StateNote> : null}
             {jobs === null ? (
                 error === null ? (
-                    <p className="muted">Loading…</p>
+                    <StateNote state="loading">Loading…</StateNote>
                 ) : null
             ) : (
                 <DataTable

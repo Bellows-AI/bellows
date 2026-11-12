@@ -108,7 +108,7 @@ function validateWrite(fields: Record<string, unknown>): Checked<GateRunWrite> {
 }
 
 /**
- * Records one gate execution under the attempt's lease (issue #983): the running row before the gate
+ * Records one gate execution under the attempt's lease: the running row before the gate
  * starts and the terminal row after. `lost` and `conflict` are both a 409 the writer treats as "not
  * recorded" — and for the running row, as a refusal to start the gate.
  */
@@ -149,7 +149,7 @@ export async function handleGateRuns(orgs: OrgRegistry, request: FastifyRequest,
     return reply.code(HTTP_OK).send({ runs: read.value.runs });
 }
 
-/** The two worker routes (087, issue #983), under the attempt's lease. */
+/** The two worker routes (087), under the attempt's lease. */
 export function gateRunRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     app.post('/api/jobs/:id/gate-run', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
         handleGateRun(orgs, request, reply)

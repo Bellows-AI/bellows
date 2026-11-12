@@ -1,4 +1,4 @@
-// OpenCode's step boundary for a cooperative Stop (issue #442). Baked as a plugin: when the stop
+// OpenCode's step boundary for a cooperative Stop. Baked as a plugin: when the stop
 // marker the mailbox agent (ctl-agent.cjs) writes exists, it aborts the session at the end of a model step (the
 // step-finish part) or after a tool call, so no further model request is made. Reads only the
 // marker — never the control credential. Aborting is the chosen mechanism because throwing from

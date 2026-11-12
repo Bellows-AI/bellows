@@ -1,5 +1,5 @@
 /**
- * The PR-operation record's board call (issue #983). Split out of `board.ts` for its line budget;
+ * The PR-operation record's board call. Split out of `board.ts` for its line budget;
  * `createBoard` is the only importer. It never throws: a write the board did not take is "not
  * recorded", and the publish that already landed its PR goes on.
  */

@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { RUNNER_TOKEN_PERMISSIONS } from './github/app-token.js';
 import { start } from './main.js';
+import { closeOnSignal } from './shutdown.js';
 
 /*
  * The lanes' entry (scripts/test-jobs.sh, scripts/test-k8s.sh --cluster): the offline board of
@@ -14,7 +15,7 @@ const LANE_TOKEN_SECONDS = 303;
 const MS_PER_SECOND = 1000;
 const TOKEN_BYTES = 16;
 
-await start({
+const { close } = await start({
     github: { mode: 'none' },
     githubMint: async (_orgId, repo) => ({
         token: `lane_${randomBytes(TOKEN_BYTES).toString('hex')}`,
@@ -25,3 +26,4 @@ await start({
     // No GitHub behind a lane token: the revoke the runner's clear asks has nothing to call.
     githubRevoke: async () => 'revoked',
 });
+closeOnSignal(close);

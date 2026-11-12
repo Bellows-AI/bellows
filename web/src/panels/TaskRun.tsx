@@ -9,6 +9,7 @@ import { AttachmentHistory } from './AttachmentList.js';
 import { TaskConnect } from './TaskConnect.js';
 import { TaskQuestion } from './TaskQuestion.js';
 import { TaskSection } from './TaskSection.js';
+import { ScrollRegion } from '../components/ScrollRegion.js';
 
 /**
  * One output well: a clipped log a keyboard user can actually reach. The wrapping section names
@@ -29,10 +30,9 @@ function OutputWell({
 }) {
     return (
         <section className="run-well" aria-label={label}>
-            {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable */}
-            <pre className={gate ? 'chat-output gate-output' : 'chat-output'} tabIndex={0} ref={liveRef}>
+            <ScrollRegion as="pre" className={gate ? 'chat-output gate-output' : 'chat-output'} ref={liveRef}>
                 {text}
-            </pre>
+            </ScrollRegion>
         </section>
     );
 }

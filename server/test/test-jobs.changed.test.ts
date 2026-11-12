@@ -1,13 +1,14 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { readLaneScript } from './fixtures/lane-script.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const MAP = join(ROOT, 'scripts/test-jobs-changed.mjs');
-const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+const SCRIPT = readLaneScript('scripts/test-jobs.sh');
 
 interface Decision {
     file: string;

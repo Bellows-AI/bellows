@@ -41,7 +41,7 @@ export interface InstallationRef {
 }
 
 /**
- * A sign-in parked between the OAuth callback and the selection screen (#125).
+ * A sign-in parked between the OAuth callback and the selection screen.
  *
  * The OAuth code is single-use, so the identity and the installation report must survive the hop
  * while the person spends time choosing; this is what they survive in. Only its hash is stored —
@@ -57,7 +57,7 @@ export interface PendingSignIn {
 /**
  * An authenticated request's subject: who, in which organization, and what they may do there.
  *
- * The org is a property of the caller (#99), resolved fresh on every request: a session carries
+ * The org is a property of the caller, resolved fresh on every request: a session carries
  * its org in the row, a personal token in its own row — and each is
  * re-checked through the org_membership join, so a GitHub-side removal at the next sign-in ends
  * every credential's reach immediately.
@@ -100,7 +100,7 @@ export interface OrgTokenIdentity {
 
 export interface AuthStore {
     /**
-     * Binds a GitHub identity to an account and materializes the SELECTION (#125): every
+     * Binds a GitHub identity to an account and materializes the SELECTION: every
      * installation the caller passes becomes an organization row (id = the installation id, name
      * = the account login) and a membership of it. The caller — the route — has already
      * intersected the account's choice with what GitHub reported this sign-in; this layer trusts
@@ -111,7 +111,7 @@ export interface AuthStore {
      * cases with one predicate: an installation GitHub stopped reporting (the propagation the
      * security property needs), and an installation the account tracks no longer (the opt-out).
      * Both mean "this account does not reach here any more", and a pre-#99 legacy org is
-     * reported by nothing, ever, so it is always in the swept set (#123) — the directory is the
+     * reported by nothing, ever, so it is always in the swept set — the directory is the
      * installations, and a membership outside the selection is residue, not a switchable org.
      */
     signIn(identity: GitHubIdentity, orgId: string, installations: readonly InstallationRef[]): Promise<Caller>;
@@ -122,7 +122,7 @@ export interface AuthStore {
      */
     storedSelection(githubUserId: number): Promise<string[]>;
     /**
-     * Parks an identity and its installation report for the selection screen (#125). Returns the
+     * Parks an identity and its installation report for the selection screen. Returns the
      * opaque token for the pending cookie; only its sha-256 is stored — completing a pending
      * sign-in mints a session, so the row is a bearer credential at rest.
      */
@@ -316,7 +316,7 @@ function buildIdentityMethods(
             `;
             const userId = users[0]!.id;
 
-            // One installation = one organization (#99). The id IS the installation id, so the row
+            // One installation = one organization. The id IS the installation id, so the row
             // is stable across account renames; the name is a label, re-derived on every sign-in.
             //
             // One multi-row statement each, not two per installation: this runs on EVERY sign-in,
@@ -359,7 +359,7 @@ function buildIdentityMethods(
             // GitHub does not report is gone, and with it — through the joins the reads run —
             // this account's sessions' and tokens' reach into that org. Any org, not only known
             // installations: a legacy (pre-#99) org is reported by nothing, ever, so leaving it
-            // out of the sweep would list the same account under both ids forever (#123).
+            // out of the sweep would list the same account under both ids forever.
             await sql`
                 delete from org_membership
                 where user_id = ${userId}
@@ -373,7 +373,7 @@ function buildIdentityMethods(
 
         async storedSelection(githubUserId) {
             await gate();
-            // The membership rows ARE the stored choice (#125): what the account selected at its
+            // The membership rows ARE the stored choice: what the account selected at its
             // last onboarding, already pruned by the sweep to what it may still reach.
             const rows = await sql<{ org_id: string }[]>`
                 select m.org_id from org_membership m
@@ -453,7 +453,7 @@ function buildIdentityMethods(
     };
 }
 
-/** The org's tracked-repo allowlist (#125): the onboarding screen's per-org narrowing. */
+/** The org's tracked-repo allowlist: the onboarding screen's per-org narrowing. */
 function buildTrackedRepoMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'trackedRepos' | 'replaceTrackedRepos'> {
     return {
         async trackedRepos(orgId) {

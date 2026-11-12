@@ -10,7 +10,7 @@ import { useSettingsPage } from './SettingsLayout.js';
  * summary once it has landed. Split out of `SettingsWorkspacePage` so its own loading/data check
  * does not add to the page's cognitive complexity. */
 function WorkspaceEnvEditor({ env }: { env: UseEnv }) {
-    if (env.loading && !env.data) return <p className="status">Loading environment…</p>;
+    if (env.loading && !env.data) return <StateNote state="loading">Loading environment…</StateNote>;
     if (!env.data) return null;
     return (
         <EnvVarsSection

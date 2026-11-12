@@ -3,9 +3,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * BEL-273 class guard: a job row made by any path other than create and follow-up must still carry a skill pin
+ * Class guard: a job row made by any path other than create and follow-up must still carry a skill pin
  * (docs/skills.md). Every `insert into job` under `src/db` names `skill_pin` in its column list, so a new insert path
- * cannot silently default to an empty pin. BEL-286 adds the same rule for `skill_hidden`, the row's visibility decision.
+ * cannot silently default to an empty pin. The same rule holds for `skill_hidden`, the row's visibility decision.
  */
 const DB = new URL('../src/db/', import.meta.url).pathname;
 

@@ -1,4 +1,4 @@
--- Notifications: personal subscriptions (BEL-177). A nullable user_id on notification_subscription: org rows keep
+-- Notifications: personal subscriptions. A nullable user_id on notification_subscription: org rows keep
 -- NULL, a personal row names its owner and is deleted with the user. A personal row matches an event only when the
 -- user is the event's actor or its author, and still a member of the org. The author of task.ready / task.blocked /
 -- task.question is not stored on the event (102/105/106/107 insert neither column), so the fan-out derives it from

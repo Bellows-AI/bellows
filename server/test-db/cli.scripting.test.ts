@@ -20,7 +20,7 @@ import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 
 /**
- * The CLI's scripting contract (#596) against the real board: the CLI's own `run` over HTTP to a
+ * The CLI's scripting contract against the real board: the CLI's own `run` over HTTP to a
  * listening app on a migrated `_test` database, a personal token for the person, the shared board
  * secret for the worker side. No driver, no runner — the worker's calls are made here by hand.
  */

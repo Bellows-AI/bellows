@@ -1,5 +1,5 @@
 /**
- * The generic workflow-block runtime dispatcher (issue #231): turns a block's declared wait
+ * The generic workflow-block runtime dispatcher: turns a block's declared wait
  * boundary — `WorkflowNode.runtime`, attached by `workflow-blocks/index.ts`'s compiler — into
  * durable park/wake behavior built on #202's PR-lifecycle primitives (`enterWait`/`claimReview`,
  * `pr-lifecycle-store.ts`). Dispatch is by allowlisted runtime id only, never by a user-provided
@@ -152,7 +152,7 @@ export async function wakeOneRound(
 ): Promise<string | null> {
     const { sql, orgId, prs, actor } = ctx;
     return sql.begin(async (tx) => {
-        // The root row, then the thread lock (BEL-161): a merge close holds the wait rows below after taking the root
+        // The root row, then the thread lock: a merge close holds the wait rows below after taking the root
         // row, so waiting on them while holding only the advisory lock is the inverted order. A removed root is not woken.
         if (!(await lockThreadRootInTx(tx, orgId, rootJobId))) return null;
 

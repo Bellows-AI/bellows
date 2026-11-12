@@ -51,9 +51,9 @@ declare module 'fastify' {
 /** Routes the driver reaches, and no browser ever does. */
 const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/claim$/,
-    // The Prometheus scrape (issue #831): names no row, so no org — like the lease lookup below.
+    // The Prometheus scrape: names no row, so no org — like the lease lookup below.
     /^\/api\/metrics$/,
-    // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, since the
+    // The orphan reaper's batched lease lookup: org-less like the claim, since the
     // shared secret names no org and the id list spans them.
     /^\/api\/jobs\/leases$/,
     /^\/api\/reclaims\/(claim|holds)$/,
@@ -67,12 +67,12 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // Artifact uploads: the shared secret authenticates the driver, the claim sequence in the
     // request authorizes the attempt (job-handlers-artifacts.ts), and no lease is consulted.
     /^\/api\/jobs\/[^/]+\/artifact\/(chunk|manifest)$/,
-    // The restore reads (issue #775): the thread's checkpoint and raw transcripts, authorized by the
+    // The restore reads: the thread's checkpoint and raw transcripts, authorized by the
     // job's live lease in the body (job-handlers-restore.ts) — the lease is the credential.
     /^\/api\/jobs\/[^/]+\/(checkpoint|transcripts)(\/chunk)?$/,
     // A task's input files, fetched by the runner under the job's live lease (job-handlers-attachment-content.ts).
     /^\/api\/jobs\/[^/]+\/attachments\/[^/]+\/content$/,
-    // A task's pinned org and workspace skill bundles, fetched the same way (job-handlers-skill-content.ts, BEL-273).
+    // A task's pinned org and workspace skill bundles, fetched the same way (job-handlers-skill-content.ts).
     /^\/api\/jobs\/[^/]+\/skills\/[^/]+\/content$/,
 ];
 
@@ -93,10 +93,10 @@ const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
 const CONNECTOR_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/[^/]+\/credentials\/github(\/revoke)?$/,
     /^\/api\/jobs\/[^/]+\/credentials\/connections\/[^/]+$/,
-    // The runner seam (BEL-61): the helper's connection list and its operation receipts.
+    // The runner seam: the helper's connection list and its operation receipts.
     /^\/api\/jobs\/[^/]+\/credentials\/connections$/,
     /^\/api\/jobs\/[^/]+\/operations(\/[^/]+)?$/,
-    // The agent's own title write (BEL-252).
+    // The agent's own title write.
     /^\/api\/jobs\/[^/]+\/agent-title$/,
 ];
 
@@ -116,7 +116,7 @@ const ORG_TOKEN_ROUTES: readonly (readonly [string, RegExp])[] = [
     ['GET', /^\/api\/jobs$/],
     ['GET', /^\/api\/jobs\/[^/]+$/],
     ['GET', /^\/api\/jobs\/[^/]+\/thread$/],
-    // The run's progress-over-time read (issue #339) — a board read beside the thread's, over
+    // The run's progress-over-time read — a board read beside the thread's, over
     // the session the org's own job row names, so it rides the same boundary.
     ['GET', /^\/api\/jobs\/[^/]+\/activity$/],
 ];
@@ -159,13 +159,13 @@ const OPEN_ROUTES: readonly RegExp[] = [
     // The OAuth authorization server's public endpoints (docs/auth.md): a client has no credential until it has
     // been through them. The authorize endpoint reads the session cookie itself, as `/api/auth/me` does.
     /^\/api\/oauth\/(authorize(\/resume)?|token|revoke|register)$/,
-    // An attachment upload capability (BEL-248): the unguessable, single-use, short-lived path segment IS the
+    // An attachment upload capability: the unguessable, single-use, short-lived path segment IS the
     // credential, resolved by the route itself against the store. A bridged call is refused on it like any open route.
     /^\/api\/attachments\/uploads\/[^/]+$/,
 ];
 
 /**
- * The commerce service's plan push (BEL-146; docs/commerce.md): answered to `COMMERCE_TOKEN`, in both auth
+ * The commerce service's plan push (docs/commerce.md): answered to `COMMERCE_TOKEN`, in both auth
  * modes. Anchored so no other `/api/commerce/...` path inherits the class.
  */
 const COMMERCE_ROUTES: readonly RegExp[] = [/^\/api\/commerce\/orgs\/[^/]+\/plan$/];
@@ -297,7 +297,7 @@ export function createUserResolver({ config, store }: AuthPluginDeps) {
         // Verified before the database is touched, so a flood of forged cookies costs a hash rather
         // than a query each.
         const token = unsign(signed, auth.sessionSecret);
-        // The org comes back FROM the session row (#99) — a property of the caller, re-checked
+        // The org comes back FROM the session row — a property of the caller, re-checked
         // through the membership join inside.
         return token ? store.findSession(hashToken(token)) : null;
     };
@@ -712,7 +712,7 @@ export const callerOf = (request: FastifyRequest): Caller | null =>
     request.auth?.kind === 'user' ? request.auth.caller : null;
 
 /**
- * The organization a request is scoped to — the org each kind of principal carries (#99).
+ * The organization a request is scoped to — the org each kind of principal carries.
  *
  * `LOCAL_ORG_ID` answers for `request.auth === null`, which is only reachable when no auth hook is
  * registered at all: the route-test mode, where the app is built without a store and every route

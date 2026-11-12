@@ -1,4 +1,4 @@
--- Commerce groundwork (BEL-146; docs/commerce.md): the plan an external commerce service pushed for an
+-- Commerce groundwork (docs/commerce.md): the plan an external commerce service pushed for an
 -- organization, and the outbox of execution-usage reports the board owes that service. Both tables are
 -- written only when COMMERCE_ENABLED is true; with it off they stay empty. New tables only.
 --

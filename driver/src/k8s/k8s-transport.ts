@@ -103,7 +103,7 @@ export const DIAGNOSIS_BODY_CHARS = 500;
 /**
  * Whether a 400 is the API server's own pre-handler malformed-request answer — Go's `net/http`
  * writes a bare `400 Bad Request` (optionally `: <explanation>`) before any kubernetes handler
- * runs, so it names the request bytes or the connection, never the API (issue #308: observed on
+ * runs, so it names the request bytes or the connection, never the API (observed on
  * both GETs and POSTs, with nothing in the apiserver logs). A genuine API refusal is a JSON
  * `Status` object — `reason: BadRequest`/`Invalid` — and never matches. Deliberately narrow:
  * widening it to "any non-JSON 400" would retry permanent kubelet refusals (the log endpoint's
@@ -222,7 +222,7 @@ export function expectOk(res: K8sResponse, what: string): void {
 }
 
 /**
- * A POST's refusal, under the same transient-400 rule `readVerdict` applies to a GET (issue #308):
+ * A POST's refusal, under the same transient-400 rule `readVerdict` applies to a GET:
  * the API server's pre-handler plain-text `400 Bad Request` is connection damage, never this
  * Job's verdict — it THROWS, and the caller's catch arm leaves the job to its lease. A genuine
  * JSON `Status` refusal answers the message, as before. `null` is success.
@@ -332,7 +332,7 @@ export interface K8sDeps {
     /** The board's checkpoint read, for a continuing claim whose task volume is gone (`task-restore.ts`). */
     checkpoints?: Pick<Board, 'checkpoint'>;
     /**
-     * The supervised-step channel (issue #771) every sync, probe, snapshot, publish and helper runs
+     * The supervised-step channel every sync, probe, snapshot, publish and helper runs
      * through, and the endpoint a supervisor-only group (a terminal reclaim) is served on. Absent,
      * each such step is refused naming the missing channel — never run some other way.
      */
@@ -375,9 +375,9 @@ const STREAM_BUFFER_TAIL = ARTIFACT_LIMIT;
  * Reads one answer's body. Only a pod log (`sliding`) is kept within the stream buffer: buffering a
  * multi-megabyte log whole would be exactly the unbounded string the docker runner's cap exists to
  * avoid, and only its tail survives downstream. Every other answer is structured and read whole —
- * a cut JSON body could only parse wrong (issue #825). `prefix` is the body's start, kept apart:
+ * a cut JSON body could only parse wrong. `prefix` is the body's start, kept apart:
  * once the tail has slid past it, the `400 Bad Request` line readVerdict and postRefusal classify
- * on (issue #308) would be gone from the diagnosis log and the body alike.
+ * on would be gone from the diagnosis log and the body alike.
  */
 function collectBody(
     res: IncomingMessage,
@@ -447,7 +447,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
     // Read once: the CA does not rotate, and reading it here is what makes a pod without its
     // projected ServiceAccount volume fail at startup instead of on every claim.
     const ca = readFile(`${serviceAccountDir}/ca.crt`, 'utf8');
-    // One dedicated agent with keep-alive OFF (issue #308): Node's global agent keeps sockets
+    // One dedicated agent with keep-alive OFF: Node's global agent keeps sockets
     // alive, and a request written onto a connection the apiserver has just idle-closed is
     // answered — before any kubernetes handler runs — with the plain-text `400 Bad Request` the
     // driver saw seven times in twelve hours. A fresh connection per request costs a TLS
@@ -504,7 +504,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                         res,
                         sliding,
                         (response, prefix) => {
-                            // The diagnosis line (issue #308): method, path, status and the API's own
+                            // The diagnosis line: method, path, status and the API's own
                             // words — the body IS the diagnosis.
                             const diagnosis = refusalDiagnosis(method, path, response.status, prefix);
                             if (diagnosis !== null) log(diagnosis);
@@ -533,14 +533,14 @@ export interface K8sJobStatus {
 
 export interface K8sPod {
     metadata?: { name?: string; deletionTimestamp?: string | null };
-    /** The containers as specced: what names a sidecar's image when its status does not (#773). */
+    /** The containers as specced: what names a sidecar's image when its status does not. */
     spec?: { initContainers?: { name?: string; image?: string }[] };
     status?: {
         phase?: string;
         /** The pod-level ending — `Evicted` and its message — when no container recorded one. */
         reason?: string;
         message?: string;
-        /** `DisruptionTarget` is the control plane's mark on a pod it is taking away (issue #560). */
+        /** `DisruptionTarget` is the control plane's mark on a pod it is taking away. */
         conditions?: { type?: string; status?: string; reason?: string; message?: string }[];
         containerStatuses?: K8sContainerStatus[];
         /** The init containers', sidecars included (#773 D10): one held on its image holds the whole pod. */
@@ -612,7 +612,7 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
- * One GET's answer as a typed read (#869): the value `shape` makes of the body, `absent` on a 404,
+ * One GET's answer as a typed read: the value `shape` makes of the body, `absent` on a 404,
  * or `inconclusive` — a non-2xx answer, a body that is not JSON, a `Status` object (the apiserver's
  * refusal wearing a 2xx) or a body that is not the shape asked for. Never `{}` or `null` invented.
  */
@@ -645,6 +645,26 @@ export function readAnswer<T>(
         ? { kind: 'inconclusive', reason: `${what} answered an unexpected shape` }
         : { kind: 'value', value };
 }
+
+/** A collection read's answer: a list has no `absent`, because a collection URL that answers 404 names no missing object. */
+export type ListRead<T> = Exclude<Read<T>, { kind: 'absent' }>;
+
+/**
+ * A collection GET's answer as a typed read: `readAnswer` with a 404 inconclusive. A list of
+ * pods or Jobs the apiserver cannot serve (a missing namespace, a path it does not know) is no
+ * proof that nothing is there, and no caller may delete or free on it.
+ */
+export function readListAnswer<T>(
+    response: K8sResponse,
+    what: string,
+    shape: (value: unknown) => T | null | Refused
+): ListRead<T> {
+    return listOnly(readAnswer(response, what, shape), what);
+}
+
+/** A typed read of a collection: `absent` (a 404) becomes `inconclusive`, the other answers are unchanged. */
+export const listOnly = <T>(read: Read<T>, what: string): ListRead<T> =>
+    read.kind === 'absent' ? { kind: 'inconclusive', reason: `${what} answered 404 for a collection` } : read;
 
 /*
  * The runner vitals under kubernetes. `docker stats` has no direct twin here; the metrics API

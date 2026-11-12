@@ -32,7 +32,7 @@ export function executorFieldRefusal(message: string): ErrorCode {
 }
 
 /**
- * One entry's gate-repair round limit (issue #49): optional, a whole number in 0..10, the code
+ * One entry's gate-repair round limit: optional, a whole number in 0..10, the code
  * default when absent. A refusal message starts with `gateFixRounds` so the code mapping can name
  * it — the same prefix convention the executor-type refusal uses.
  */

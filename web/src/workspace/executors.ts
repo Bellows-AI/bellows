@@ -72,7 +72,7 @@ export type ValidExecutor = {
     name: string;
     type: ExecutorType;
     config: object;
-    /** The default workflow's gate-repair round limit this executor launches tasks with (#49). */
+    /** The default workflow's gate-repair round limit this executor launches tasks with. */
     gateFixRounds: number;
 };
 
@@ -84,7 +84,7 @@ export type ExecutorValidation =
     | { ok: false; error: string; field: ExecutorField };
 
 /**
- * The gate-repair round limit field (#49): a bounded nonnegative integer, the code default when
+ * The gate-repair round limit field: a bounded nonnegative integer, the code default when
  * the field is left blank. UX only — the server re-validates authoritatively and the database's
  * check constraint is the final word — but the dialog's live error keeps an out-of-range value
  * from ever reaching the PUT.
@@ -552,7 +552,7 @@ export const RUNNER_MANAGED_NOTE = 'The runner manages these settings, so they w
 /** Why Save is disabled on an edit that changed nothing. */
 export const NO_CHANGES_REASON = 'No changes to save.';
 
-/** What the gate-repair field decides; tied to the number input with aria-describedby (#49). */
+/** What the gate-repair field decides; tied to the number input with aria-describedby. */
 export const GATE_FIX_ROUNDS_HELP =
     'How many rounds a task on this executor may spend automatically repairing a failed gate (0 turns repair off). The limit is fixed when the task is created.';
 

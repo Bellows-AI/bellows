@@ -4,6 +4,7 @@ import { UUID } from '../identifiers.js';
 import type { OrgRegistry } from '../orgs.js';
 import { flattenMetrics } from '../telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../telemetry/store.js';
+import { sendFailure } from './error-handler.js';
 import { storeFor } from './jobs/job-context.js';
 import { SESSION_ID } from './jobs/job-limits.js';
 import { CLAUDE_CODE, CONTENT_TYPE_HEADER, OPENCODE } from '@factory-ai/core';
@@ -20,7 +21,6 @@ const HTTP_OK = 200;
 const HTTP_ACCEPTED = 202;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
-const HTTP_UNAVAILABLE = 503;
 
 const isJson = (type: string | undefined) => typeof type === 'string' && /^application\/json\b/.test(type);
 
@@ -45,7 +45,7 @@ function branchReport(body: unknown): SessionBranchReport | null {
 }
 
 /**
- * An opencode report's session, recorded on the attempt its pair names (issue #822): opencode mints
+ * An opencode report's session, recorded on the attempt its pair names: opencode mints
  * its own id and the driver learns it only at close, so a run lost mid-flight would leave its
  * takeover nothing to resume. The write is the driver's own lease-guarded session report — the
  * pair is the credential, and an attempt no longer live, or a session the attempt already
@@ -79,7 +79,7 @@ export const ingestRoutes =
                 // 5xx is the ONE signal that means "resend". Reserve it for a genuine
                 // write failure, which is exactly the case a retry can fix.
                 request.log.error({ err: e }, 'otlp insert failed');
-                return reply.code(HTTP_UNAVAILABLE).send({ error: (e as Error).message });
+                return sendFailure(reply, request, e);
             }
 
             // 200 with an empty partialSuccess is the OTLP success shape. A body we could
@@ -114,7 +114,7 @@ export const ingestRoutes =
                 await recordLiveSession(orgs, request, report);
             } catch (e) {
                 request.log.error({ err: e }, 'session branch upsert failed');
-                return reply.code(HTTP_UNAVAILABLE).send({ error: (e as Error).message });
+                return sendFailure(reply, request, e);
             }
             return reply.code(HTTP_ACCEPTED).send({ ok: true });
         });

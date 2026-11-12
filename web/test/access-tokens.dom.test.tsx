@@ -7,7 +7,7 @@ import { AccessTokensPanel } from '../src/panels/AccessTokensPanel.js';
 import './dom.js';
 
 /**
- * Revoking a personal access token asks first (BEL-212): the confirmation names the token, Cancel
+ * Revoking a personal access token asks first: the confirmation names the token, Cancel
  * and Escape send nothing and return focus to the Revoke button that opened it, and only the
  * confirm calls `onRevoke`. The revoke semantics themselves are `useAccessTokens`'.
  */

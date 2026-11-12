@@ -1,5 +1,5 @@
 /**
- * The `builtin/github-review-reconcile` block (issue #133): after a PR opens, waits without
+ * The `builtin/github-review-reconcile` block: after a PR opens, waits without
  * occupying an executor, collects every supported review surface deterministically, addresses and
  * publishes at most `maxRounds` repair rounds, and replies to exactly the feedback addressed.
  *
@@ -9,7 +9,7 @@
  *   `runtime: pr-delivery-wait` boundary — issue #231) both declare ONE pre-helper,
  *   `review-collect-probe` (driver/src/review/review-helpers.ts, wrapping issue #201's unmodified
  *   `review-collect.cjs`): a deterministic fetch-and-decide step that answers, as a PRE-helper
- *   `conclude` (issue #230, so neither node ever launches an agent turn):
+ *   `conclude` (so neither node ever launches an agent turn):
  *     - `REVIEW-CLEAN`      nothing requires attention (approved, or no feedback/no reviewer/no
  *                           head check still running);
  *     - `REVIEW-WAIT`       a reviewer is requested, changes were requested, or a head check (a

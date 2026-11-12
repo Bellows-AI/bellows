@@ -182,7 +182,7 @@ describe('row counts', () => {
     });
 });
 
-describe('the shared structured/.env draft (BEL-262)', () => {
+describe('the shared structured/.env draft', () => {
     let counter = 0;
     const nextId = () => {
         counter += 1;

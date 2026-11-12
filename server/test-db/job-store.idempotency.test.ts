@@ -231,7 +231,7 @@ describe.runIf(enabled)('mutation idempotency (#589)', () => {
             const input = idem('follow-up', freshKey());
 
             const first = await store.createFollowUp(parent.id, 'again', user, input);
-            // Eligibility is the THREAD's (#698), and the follow-up is now queued in it, so a
+            // Eligibility is the THREAD's, and the follow-up is now queued in it, so a
             // keyless repeat is refused...
             expect(await store.createFollowUp(parent.id, 'again', user)).toBe('not_finished');
             // ...but the keyed repeat finds the row it already made.

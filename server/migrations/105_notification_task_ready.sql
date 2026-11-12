@@ -1,4 +1,4 @@
--- Notifications: task.ready narrowed to what the board shows as Needs review (BEL-133). A succeeded row is a
+-- Notifications: task.ready narrowed to what the board shows as Needs review. A succeeded row is a
 -- ready event only when it is the thread's head (no newer row in its thread, so a node whose verdict queued
 -- its successor in the same transaction is not), is not a review job (review_of) and is not already done
 -- (done_at); an open PR wait does not suppress it, the board counts that thread under Needs review too.

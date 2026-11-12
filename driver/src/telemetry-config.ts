@@ -1,5 +1,5 @@
 /**
- * Each executor's telemetry config file, rendered by the driver (issue #452). The file decides
+ * Each executor's telemetry config file, rendered by the driver. The file decides
  * where telemetry goes and whether prompt and tool bodies ride along, so the agent (uid 1000) must
  * not own it — and the entrypoint runs as that same uid, so it cannot be the one to write the
  * endpoint in. The driver renders the file instead and delivers it root-owned and 0444 into a
@@ -35,7 +35,7 @@ export function claudeManagedSettings(endpoint: string): string {
             OTEL_LOG_USER_PROMPTS: '0',
             OTEL_LOG_ASSISTANT_RESPONSES: '0',
             OTEL_LOG_TOOL_DETAILS: '0',
-            // The tool shell (issue #814): managed outranks the checkout's own settings, so no
+            // The tool shell: managed outranks the checkout's own settings, so no
             // project can point the CLI's commands back at a shell that runs them as its own uid.
             CLAUDE_CODE_SHELL: TOOL_SHELL,
             SHELL: TOOL_SHELL,
@@ -55,7 +55,7 @@ export function claudeManagedSettings(endpoint: string): string {
                 'Bash(npm i *)',
                 'Bash(npm ci)',
                 'Bash(npm ci *)',
-                // The skills' gate-server and run-control commands (#1061): fixed destinations, never a curl.
+                // The skills' gate-server and run-control commands: fixed destinations, never a curl.
                 'Bash(factory-gate *)',
                 'Bash(factory-control *)',
                 'Edit(//tmp/**)',
@@ -177,7 +177,7 @@ export function telemetryConfigK8s(
     const items = [{ key: file, path: file }];
     return {
         // The one file, not the directory: a mount over /etc/claude-code would hide the image's managed
-        // skills beside it (issue #1024), which docker keeps because its copy lands the file alone.
+        // skills beside it, which docker keeps because its copy lands the file alone.
         mount: { name, mountPath: `${dir}/${file}`, subPath: file, readOnly: true },
         volume: { name, secret: { secretName, items, defaultMode: READ_ONLY } },
     };

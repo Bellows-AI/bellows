@@ -1,5 +1,5 @@
 /**
- * The post-run phase checkpoints' two board calls (issue #829). Split out of `board.ts` for its
+ * The post-run phase checkpoints' two board calls. Split out of `board.ts` for its
  * line budget; `createBoard` is the only importer. Neither throws: a write the board did not take
  * and a read it did not answer are both "no checkpoint", and the caller runs the phase again.
  */
@@ -45,7 +45,7 @@ function rowOf(raw: unknown): PhaseCheckpoint | null {
 
 export interface PhaseCheckpointBoard {
     /**
-     * Records a post-run phase's outcome on the board under the lease (issue #829), for the run
+     * Records a post-run phase's outcome on the board under the lease, for the run
      * `runClaimSeq` started. Never throws: `lost` when the lease is not this attempt's, `rejected`
      * for anything else the board did not take — the run goes on either way.
      */

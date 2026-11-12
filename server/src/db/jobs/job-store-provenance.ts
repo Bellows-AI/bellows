@@ -1,7 +1,7 @@
 import type { TransactionSql } from 'postgres';
 
 /**
- * Execution provenance (issue #845): the durable record of a claim, written in the claim's own
+ * Execution provenance: the durable record of a claim, written in the claim's own
  * transaction so a claim and its record commit or roll back together. Rows live in
  * `job_execution` / `job_execution_session` (085) with no foreign key to the job: removing a task
  * never erases them.
@@ -96,7 +96,7 @@ export async function recordReportedSession(
 }
 
 /**
- * What an interruption proves about the claim it ends or adopts (issue #845). `refused`: the
+ * What an interruption proves about the claim it ends or adopts. `refused`: the
  * runner never started, so the claim's launch is `refused`. `adopts`: this claim adopted the
  * runner of that earlier claim — it is `adopted`, linked to the original, and creates no
  * execution of its own. Only a `requested` launch moves (a launched attempt stays `observed`),

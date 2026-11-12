@@ -12,7 +12,7 @@ import { trackApps } from './helpers-http.js';
 import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig, jobStoreSlice } from './helpers.js';
 
 /**
- * The analysis reads over the artifact index (#768): pagination across chunks, attempts and
+ * The analysis reads over the artifact index: pagination across chunks, attempts and
  * sessions; the partial, truncated and deleted states; and the org boundary. The store is an
  * in-memory twin of `ArtifactStore`'s read half; `server/test-db/artifact-read.test.ts` runs the
  * same reads against the real index.

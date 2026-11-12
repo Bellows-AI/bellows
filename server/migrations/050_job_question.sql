@@ -1,4 +1,4 @@
--- Questions the agent asks during a run (issue #531, part of #226): one row per AskUserQuestion
+-- Questions the agent asks during a run: one row per AskUserQuestion
 -- tool call of one attempt, reported by the driver, answered by a member, and handed back to the
 -- driver through the heartbeat.
 --

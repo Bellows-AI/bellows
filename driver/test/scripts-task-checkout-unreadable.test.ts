@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { GIT_FIXTURE_CONFIG, ROOT, hasGit, runScript } from './fixtures/git-worktree-support.js';
 
 /*
- * A permission error is no evidence of absence (#869): a path the script could not read must fail the
+ * A permission error is no evidence of absence: a path the script could not read must fail the
  * sync with an `unreadable` reason, never be treated as missing and written over.
  */
 describe.skipIf(!hasGit() || process.getuid?.() === 0)('the task checkout sync over a path it cannot read', () => {

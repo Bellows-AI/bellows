@@ -1,5 +1,5 @@
 -- Workflow definitions: the process a task walks, owned by the board instead of baked into runner
--- prompts (issue #94). A definition is a graph of `agent` nodes — each holding only its prompt
+-- prompts. A definition is a graph of `agent` nodes — each holding only its prompt
 -- template and its session policy — joined by deterministic edges (verdict, gate-failure, or an
 -- output-tail marker), with per-edge loop bounds. Checkout/sync, gates and publish stay driver
 -- machinery the graph references by outcome; they are deliberately NOT nodes.

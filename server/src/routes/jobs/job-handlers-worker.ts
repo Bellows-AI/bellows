@@ -52,7 +52,7 @@ import {
     notFoundJob,
     runtimeVitals,
 } from './job-limits.js';
-import type { JobActionStore } from '../../db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
 import type { JobAdmissionStore } from '../../db/jobs/job-store-admission.js';
 import type { JobClaimStore } from '../../db/jobs/job-store-claim.js';
 import type { JobConclusionStore } from '../../db/jobs/job-store-conclusions.js';
@@ -168,7 +168,7 @@ async function checkedTarget(
 }
 
 /**
- * The create body's `skills` names, resolved through the one catalog at the task's base branch (BEL-270). Refuses
+ * The create body's `skills` names, resolved through the one catalog at the task's base branch. Refuses
  * with `404 UNKNOWN_SKILL` only a name the catalog and a CONFIRMED repository read both lack; a read that failed,
  * timed out or could not parse that name's directory accepts it (the claim and the runner are the backstops). True
  * once the refusal has landed on `reply`.
@@ -238,7 +238,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     if (!skillsField.ok) return bad(reply, ERROR_CODES.BAD_SKILLS, skillsField.message);
     const skills = skillsField.value;
     // What the create asks for, as the client spelled it: the key's fingerprint, so the same key
-    // with a changed body is refused rather than replayed (issue #589).
+    // with a changed body is refused rather than replayed.
     const idempotency = createIdempotencyOf(request, reply, fields);
     if (!idempotency.ok) return reply;
 
@@ -516,7 +516,7 @@ export async function handleConclusion(orgs: OrgRegistry, request: FastifyReques
     return reply.code(HTTP_OK).send({ id, status: parsed.value.status });
 }
 
-// An attempt the infrastructure interrupted (issue #792): handed back claimable at once with its
+// An attempt the infrastructure interrupted: handed back claimable at once with its
 // attempt refunded (`release`), or recorded by the claim that adopted it. Lease-guarded; a spent
 // interruption budget is a 409 of its own, and the driver then treats the attempt as before.
 export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
@@ -547,7 +547,7 @@ export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest
 }
 
 /*
- * The orphan reaper's one board route (issue #301): a batched "what does the board think of these
+ * The orphan reaper's one board route: a batched "what does the board think of these
  * job ids" — each known id's status and CURRENT lease, absent for the ids it does not know. The
  * shared secret authenticates the driver, not an org, so like the claim this is offered every
  * org's board and the answers merge by id; uuids cannot collide across orgs. Unlike every other

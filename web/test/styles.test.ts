@@ -165,7 +165,7 @@ const literalClassTokens = (path: string, text: string): { tokens: Set<string>; 
     return { tokens, prefixes };
 };
 
-/** The compact-shell 44px floor is owned where the control is owned (#321): shared controls in
+/** The compact-shell 44px floor is owned where the control is owned: shared controls in
  * `styles/touch-targets.css` — the components layer's last file, so the floor still outranks
  * every equal-specificity rule — and each lane's controls in that lane's own trailing segment,
  * so a lane adds a target by editing only its own file. The lists are disjoint; the ownership
@@ -381,7 +381,7 @@ describe('the stylesheet', () => {
         expect(body('.usage-groups')).toMatch(/border-(top|bottom):\s*1px solid var\(--line\)/);
         // The 40px icon disc is gone with its rules.
         expect(rules(css).some(([prelude]) => /\.usage-disc/.test(prelude))).toBe(false);
-        expect(body('.usage-caption')).toMatch(/font-size:\s*13px/);
+        expect(body('.usage-caption')).toMatch(/font-size:\s*var\(--text-sm\)/);
         // The six-measure grid is gone with its rules.
         expect(rules(css).some(([prelude]) => /\.usage-(measure|tokens)\b/.test(prelude))).toBe(false);
     });
@@ -401,6 +401,62 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(literal.map((m) => m[0])).toEqual([]);
     });
 
+    // The same ratchet as colour: type, space and the touch floor are tokens, and the
+    // literals outside `tokens.css` may only drop. Lower a ceiling when a change removes a hit.
+    describe('type, space and touch tokens', () => {
+        const SPACE_SCALE = [4, 8, 12, 16, 24, 32, 48];
+        /** The off-scale px values a spacing declaration (padding, margin, gap) still spells. */
+        const OFF_SCALE_CEILING = 115;
+        const outsideTokens = () => stripComments(shippedCss());
+        const spacingValues = (css: string) =>
+            [...css.matchAll(/(?:^|[\s;{])(?:padding|margin|gap|row-gap|column-gap)(?:-[a-z]+)*:([^;}]+)/gm)].map(
+                (m) => m[1]!
+            );
+
+        it('defines the type, space and touch tokens', () => {
+            const tokens = readFileSync(join(webSrc, 'styles/tokens.css'), 'utf8');
+            for (const name of ['--text-xs', '--text-sm', '--text-base', '--space-1', '--space-4', '--touch']) {
+                expect(tokens, name).toMatch(new RegExp(`${name}:\\s*\\d+px`));
+            }
+        });
+
+        it('spells no font-size in px: every size is a --text token or inherits', () => {
+            const literal = [...outsideTokens().matchAll(/font-size:\s*\d+px/g)];
+            expect(literal.map((m) => m[0])).toEqual([]);
+        });
+
+        it('spells no 4/8-scale spacing in px: the scale is --space tokens', () => {
+            const onScale = spacingValues(outsideTokens()).flatMap((value) =>
+                [...value.matchAll(/(?<![\w.-])(\d+)px/g)]
+                    .map((m) => Number(m[1]))
+                    .filter((px) => SPACE_SCALE.includes(px))
+            );
+            expect(onScale).toEqual([]);
+        });
+
+        it('only ever lowers the off-scale spacing literals', () => {
+            const offScale = spacingValues(outsideTokens()).flatMap((value) =>
+                [...value.matchAll(/(?<![\w.-])(\d+)px/g)]
+                    .map((m) => Number(m[1]))
+                    .filter((px) => !SPACE_SCALE.includes(px))
+            );
+            expect(offScale.length).toBeLessThanOrEqual(OFF_SCALE_CEILING);
+        });
+
+        it('sets every 44px target from --touch', () => {
+            const literal = [...outsideTokens().matchAll(/(?:min-height|min-width|height|width):\s*44px/g)];
+            expect(literal.map((m) => m[0])).toEqual([]);
+        });
+
+        it('repeats only the known breakpoints in a media query (CSS cannot read a token there)', () => {
+            const BREAKPOINTS = [640, 900, 901, 1024];
+            const queried = [...outsideTokens().matchAll(/@media[^{]*\((?:min|max)-width:\s*(\d+)px\)/g)].map((m) =>
+                Number(m[1])
+            );
+            expect(queried.filter((px) => !BREAKPOINTS.includes(px))).toEqual([]);
+        });
+    });
+
     it('gives the settings column room for a table row and lays an icon button on one line', () => {
         const css = stripComments(shippedCss());
         const body = (selector: string) => rules(css).find(([prelude]) => prelude === selector)?.[1] ?? '';
@@ -415,8 +471,13 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         // narrowest plot's mono ticks sit at 11px, with collision checked by the overflow
         // matrix — it must stay exercised, not silently grow or shrink.
         const css = stripComments(shippedCss());
+        // A size is a `--text-*` token, read back as the px its token defines.
+        const textPx = new Map([...css.matchAll(/--text-([\w-]+):\s*(\d+)px/g)].map((m) => [m[1]!, m[2]!] as const));
         const sizes = rules(css)
-            .map(([prelude, body]) => [prelude, body.match(/font-size:\s*(\d+(?:\.\d+)?)px/)?.[1]] as const)
+            .map(([prelude, body]) => {
+                const token = body.match(/font-size:\s*var\(--text-([\w-]+)\)/)?.[1];
+                return [prelude, token === undefined ? undefined : textPx.get(token)] as const;
+            })
             .filter(([, size]) => size !== undefined)
             .map(([prelude, size]) => [prelude, Number(size)] as const);
         const MIN_TICK_FONT_PX = 11;
@@ -477,7 +538,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             return blockSpans(css, /@media \(max-width: 900px\)\s*\{/g, 'compact-shell media block never closes').some(
                 ([start, end]) => {
                     const block = css.slice(start, end);
-                    const floor = block.search(/min-height:\s*44px/);
+                    const floor = block.search(/min-height:\s*var\(--touch\)/);
                     return [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(
                         (match) =>
                             floor >= 0 &&
@@ -504,7 +565,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
 
     it('clears 44px touch targets across the compact shell (#189)', () => {
         // Each control clears the floor through its OWN owner's compact-shell segment — the
-        // shared list for shared controls, the lane's trailing segment for lane controls (#321).
+        // shared list for shared controls, the lane's trailing segment for lane controls.
         // A new mobile-visible control joins its owner's list, never a one-off rule.
         const cssByRel = new Map(readShipped().map((f) => [f.rel, stripComments(f.text)] as const));
         const assignments: Array<[string, string]> = [
@@ -518,7 +579,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         const rulesWith44 = (css: string) =>
             blockSpans(css, /@media \(max-width: 900px\)\s*\{/g, 'compact-shell media block never closes').flatMap(
                 ([start, end]) =>
-                    [...css.slice(start, end).matchAll(/([^{}]+)\{[^{}]*min-height:\s*44px[^{}]*\}/g)].map(
+                    [...css.slice(start, end).matchAll(/([^{}]+)\{[^{}]*min-height:\s*var\(--touch\)[^{}]*\}/g)].map(
                         (match) => [match[1]!, match[0]] as [string, string]
                     )
             );
@@ -615,7 +676,9 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
         expect(body('button.tertiary')).toMatch(/background\s*:\s*transparent/);
         expect(body('button.icon-button')).toMatch(/min-width\s*:\s*36px/);
-        expect(body(".tabs [role='tab'][aria-selected='true']")).toContain('var(--accent)');
+        const selected = all.find(([prelude]) => prelude.includes(".tabs [role='tab'][aria-selected='true']"));
+        expect(selected?.[1]).toContain('var(--accent)');
+        expect(selected?.[0]).toContain(".tabs [role='radio'][aria-checked='true']");
         for (const variant of ['button.tertiary', 'button.icon-button']) {
             const hover = all.find(([prelude]) => prelude.includes(`${variant}:hover:not(:disabled)`));
             expect(hover?.[1], `${variant} hover fill`).toContain('var(--surface-hover)');
@@ -679,7 +742,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.composer-context .select-trigger')).not.toMatch(/border|background/);
     });
 
-    it('focus on the chat input brightens its border and never resizes it (BEL-261; not the RED, see the e2e)', () => {
+    it('focus on the chat input brightens its border and never resizes it (not the RED, see the e2e)', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         const focusRules = rules(css).filter(
             ([prelude]) => /:focus(-within|-visible)?\b/.test(prelude) && /chat-input/.test(prelude)
@@ -692,7 +755,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         }
     });
 
-    it('task detail: the conversation is the one scroll region, the composer docks under it (BEL-263)', () => {
+    it('task detail: the conversation is the one scroll region, the composer docks under it', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/task-detail.css'), 'utf8'));
         const all = rules(css);
         const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
@@ -706,12 +769,12 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.task-follow-up')).not.toMatch(/overflow/);
     });
 
-    it('both composers share one chat input recipe, not a copy per composer (BEL-263)', () => {
+    it('both composers share one chat input recipe, not a copy per composer', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         // No composer restyles the shared input: no rule reaches into it from either page.
         const perComposer = rules(css).filter(([p]) => /\.(task-compose|task-follow-up)\b[^,{]*\.chat-input/.test(p));
         expect(perComposer).toEqual([]);
-        // Focus keeps a visible ring on the field itself (BEL-266), drawn on the border, never `outline: none`.
+        // Focus keeps a visible ring on the field itself, drawn on the border, never `outline: none`.
         const focus = rules(css).find(([p]) => /\.chat-input-field:focus-visible/.test(p));
         expect(focus?.[1]).toMatch(/outline:\s*1px solid var\(--line-strong\)/);
         expect(focus?.[1]).toMatch(/outline-offset:\s*-1px/);
@@ -924,14 +987,14 @@ describe('the style system file ownership (#321)', () => {
             expect(
                 css.slice(...blocks[blocks.length - 1]!),
                 `${rel}'s last compact-shell block is its touch-target segment`
-            ).toMatch(/min-height:\s*44px/);
+            ).toMatch(/min-height:\s*var\(--touch\)/);
         }
     });
 });
 
 describe('the design-system inventory', () => {
     // Both assertions read the design-system docs — this document plus every lane doc beside it
-    // (docs/design-system/*.md), which is where a lane's rows live (#321) — so the inventory is
+    // (docs/design-system/*.md), which is where a lane's rows live — so the inventory is
     // enforced, not aspirational: a new UI unit or a new class fails the suite until one of them
     // names it.
     const regionDocDir = fileURLToPath(new URL('../../docs/design-system', import.meta.url));
@@ -1026,7 +1089,7 @@ describe('the design-system inventory', () => {
     });
 });
 
-describe('the inline variables editor (BEL-262)', () => {
+describe('the inline variables editor', () => {
     const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
     const all = rules(css);
     const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';

@@ -6,7 +6,7 @@ import { TaskActivity } from '../src/panels/TaskActivity.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
 /**
- * The task activity summary (issues #339, #530): the latest run's pulse by token type, and the
+ * The task activity summary: the latest run's pulse by token type, and the
  * thread's counts, as ONE button that opens the statistics modal. Props in, markup out — the hook
  * is the page's. The modal's open interaction (click, Enter, Space, Escape, focus return) lives in
  * `web/test/task-detail.dom.test.tsx`; effects and portals never run under `renderToStaticMarkup`.

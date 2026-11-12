@@ -1,3 +1,4 @@
+// @ts-check
 // The publish probe: one read-only answer about a checkout, JSON on stdout, no shell — every
 // git call is execFileSync, so no path or branch name can become a command. Printed values
 // decide the publish flow; none of them are secrets.
@@ -22,17 +23,23 @@ const repo = process.env.REPO;
 // 126, the real git never run. A module that cannot load runs the shim at its absolute path, never `git` by name; a
 // shim that is also gone is a spawn failure, 126. Without the supervisor's env the call is plain `git`, as before.
 const REFUSED_EXIT = 126;
+/** @type {{ runCall: (args: string[], options: object) => any } | null | undefined} */
 let hardenModule;
 const loadedHarden = () => {
     if (hardenModule === undefined) {
         try {
-            hardenModule = require(process.env.GIT_HARDEN_MODULE);
+            hardenModule = require(/** @type {string} */ (process.env.GIT_HARDEN_MODULE));
         } catch {
             hardenModule = null;
         }
     }
     return hardenModule;
 };
+/**
+ * @param {string[]} args
+ * @param {import('node:child_process').ExecFileSyncOptions} options
+ * @returns {any} the output: a Buffer or a string, as the options' `encoding` says
+ */
 const runGit = (args, options) => {
     const env = options.env ?? process.env;
     if (!env.GIT_HARDEN_REAL || !env.GIT_HARDEN_MODULE) return execFileSync('git', args, options);
@@ -42,9 +49,10 @@ const runGit = (args, options) => {
     try {
         return execFileSync(shim, args, options);
     } catch (error) {
-        if (error.status != null || error.signal) throw error;
-        process.stderr.write(`git: ${error.message}\n`);
-        throw Object.assign(error, { status: REFUSED_EXIT });
+        const failure = /** @type {Error & { status?: number | null, signal?: string | null }} */ (error);
+        if (failure.status != null || failure.signal) throw error;
+        process.stderr.write(`git: ${failure.message}\n`);
+        throw Object.assign(failure, { status: REFUSED_EXIT });
     }
 };
 // The tree fingerprint (spelled identically in git-worktree.cjs, whose startup sync prints the
@@ -58,9 +66,16 @@ const FINGERPRINT_MAX_BUFFER = 268_435_456; // 256 MiB: a large diff must not re
 // entry is read here, not by `hash-object`, which throws on a dangling symlink or a nested repo:
 // a symlink hashes its target, a nested repo recurses (it may have no commit yet), anything that
 // is not a regular file hashes its type alone.
+/**
+ * @param {string} cwd
+ * @param {import('node:crypto').Hash} hash
+ * @param {boolean} nested
+ * @returns {void}
+ */
 const hashTree = (cwd, hash, nested) => {
     const fs = require('node:fs');
     const path = require('node:path');
+    /** @param {string[]} args */
     const read = (args) => runGit(args, { cwd, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER });
     const hasCommit = () => {
         try {
@@ -85,6 +100,7 @@ const hashTree = (cwd, hash, nested) => {
         else hash.update('o');
     }
 };
+/** @param {string} cwd */
 const fingerprintOf = (cwd) => {
     try {
         const hash = require('node:crypto').createHash('sha256');
@@ -95,7 +111,7 @@ const fingerprintOf = (cwd) => {
         return null;
     }
 };
-// The content key (issue #983): the tree a gate run saw, as file contents alone — the git tree id of
+// The content key: the tree a gate run saw, as file contents alone — the git tree id of
 // the work tree as `git add -A` would stage it, `.factory/` excluded, plus each nested repository's
 // own key (a submodule, an untracked repo). HEAD is not part of it, so a publish committing the same
 // bytes keeps it. Built in a throwaway index and object directory (the repo's objects read through
@@ -112,7 +128,16 @@ const ISOLATED = ['-c', 'core.splitIndex=false', '-c', 'core.fsmonitor=false', '
 // would see differently: line-ending or encoding conversion, a clean filter driver a path names, a checkout
 // that does not record modes or symlinks or folds case, an index entry git is told not to look at
 // (assume-unchanged, skip-worktree), or a split index whose shared half a stage would write.
+/**
+ * @param {(args: string[], extra?: object) => Buffer} read
+ * @param {(args: string[]) => string} text
+ * @returns {boolean}
+ */
 const hidesChanges = (read, text) => {
+    /**
+     * @param {string} key
+     * @param {string} [type]
+     */
     const config = (key, type) => {
         try {
             return text(['config', ...(type ? ['--type', type] : []), '--get', key]).toLowerCase();
@@ -154,12 +179,23 @@ const hidesChanges = (read, text) => {
     }
     return false;
 };
+/**
+ * @param {string} cwd
+ * @param {import('node:crypto').Hash} hash
+ * @returns {string}
+ */
 const contentTreeOf = (cwd, hash) => {
     const fs = require('node:fs');
     const os = require('node:os');
     const path = require('node:path');
+    /**
+     * @param {string[]} args
+     * @param {object} [extra]
+     * @returns {Buffer}
+     */
     const read = (args, extra = {}) =>
         runGit(args, { cwd, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER, ...extra });
+    /** @param {string[]} args */
     const text = (args) => read(args).toString('utf8').trim();
     if (hidesChanges(read, text)) throw new Error('a staged blob could hide a change');
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'content-key-'));
@@ -168,7 +204,7 @@ const contentTreeOf = (cwd, hash) => {
         try {
             fs.copyFileSync(path.resolve(cwd, text(['rev-parse', '--git-path', 'index'])), index);
         } catch (e) {
-            if (e.code !== 'ENOENT') throw e;
+            if (/** @type {NodeJS.ErrnoException} */ (e).code !== 'ENOENT') throw e;
         }
         const objects = path.join(tmp, 'objects');
         fs.mkdirSync(objects);
@@ -214,6 +250,7 @@ const contentTreeOf = (cwd, hash) => {
         fs.rmSync(tmp, { recursive: true, force: true });
     }
 };
+/** @param {string} cwd */
 const contentKeyOf = (cwd) => {
     try {
         const hash = require('node:crypto').createHash('sha256');
@@ -227,6 +264,11 @@ const contentKeyOf = (cwd) => {
 // the fingerprint cannot see a file changed and put back, the mtime can. A path that is gone is
 // skipped — its directory's mtime records the removal; any other read failure is true. A nested
 // repository (a submodule, an untracked repo) is walked the same way, recursively.
+/**
+ * @param {string} cwd
+ * @param {number} sinceMs
+ * @returns {boolean}
+ */
 const mutatedSince = (cwd, sinceMs) => {
     try {
         const fs = require('node:fs');
@@ -258,7 +300,7 @@ const mutatedSince = (cwd, sinceMs) => {
                     return true;
                 }
             } catch (e) {
-                if (e.code !== 'ENOENT') return true;
+                if (/** @type {NodeJS.ErrnoException} */ (e).code !== 'ENOENT') return true;
             }
         }
         return false;
@@ -267,6 +309,11 @@ const mutatedSince = (cwd, sinceMs) => {
     }
 };
 const CONFLICTING_PATHS_MAX = 50;
+/**
+ * @type {{ cloned: boolean, branch: string, defaultBranch: string, dirty: boolean, unpushed: number,
+ *   hasIdentity: boolean, fingerprint: string | null, content: string | null, mutatedSince?: boolean,
+ *   noChange: boolean, conflicts: string[], rebasing: boolean }}
+ */
 const out = {
     cloned: false,
     branch: '',
@@ -281,6 +328,7 @@ const out = {
     rebasing: false,
 };
 try {
+    /** @param {string[]} a */
     const git = (...a) => runGit(a, { cwd: repo, encoding: 'utf8' }).trim();
     git('rev-parse', '--is-inside-work-tree');
     out.cloned = true;
@@ -299,10 +347,11 @@ try {
     } catch {
         out.unpushed = 0;
     }
-    out.fingerprint = fingerprintOf(repo);
-    out.content = contentKeyOf(repo);
+    out.fingerprint = fingerprintOf(/** @type {string} */ (repo));
+    out.content = contentKeyOf(/** @type {string} */ (repo));
     const sinceMs = Number(process.env.MUTATED_SINCE_MS);
-    if (process.env.MUTATED_SINCE_MS && Number.isFinite(sinceMs)) out.mutatedSince = mutatedSince(repo, sinceMs);
+    if (process.env.MUTATED_SINCE_MS && Number.isFinite(sinceMs))
+        out.mutatedSince = mutatedSince(/** @type {string} */ (repo), sinceMs);
     // No change: nothing uncommitted AND no diff of HEAD against the base (exit 0 of --quiet). A
     // missing base ref, a failed status or any other error leaves it false: unknown is never a skip.
     try {
@@ -316,7 +365,7 @@ try {
         .slice(0, CONFLICTING_PATHS_MAX);
     out.rebasing = ['rebase-merge', 'rebase-apply'].some((name) => {
         const resolved = git('rev-parse', '--git-path', name);
-        return require('node:fs').existsSync(require('node:path').resolve(repo, resolved));
+        return require('node:fs').existsSync(require('node:path').resolve(/** @type {string} */ (repo), resolved));
     });
     out.hasIdentity = (() => {
         try {

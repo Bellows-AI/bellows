@@ -1,5 +1,5 @@
 /**
- * A compressed world for driver loss, takeover and adoption (#829). Real: the claim loop, the gate
+ * A compressed world for driver loss, takeover and adoption. Real: the claim loop, the gate
  * server and step broker (the supervisor's control endpoint), `supervisor.cjs` and the binding it
  * follows, `settleEnd`'s callers, the takeover and adoption decisions of `loop-adopt.ts`. Played:
  * the board (`server/src/db/jobs/job-store-claim.ts` semantics, copied as shapes: a claim of an expired
@@ -82,7 +82,7 @@ export const scaled = (by: number): Timing => ({
 });
 
 /**
- * The kind lane's 15 s lease (#950) in real time, not divided down: the orphan bound, long poll and heartbeat come from
+ * The kind lane's 15 s lease in real time, not divided down: the orphan bound, long poll and heartbeat come from
  * the production derivation (`loadDriverConfig` and `orphanBoundMs`) at the lane's `DRIVER_*` values, so a floor the lease
  * cannot hold throws here rather than passing a hand-copied number. The rebind grace is the lane's 30 s floor and the
  * refresh two 5 s kubelet syncs; the control and claim polls keep their production 5 s.

@@ -1,4 +1,4 @@
-// A scripted, Anthropic-compatible model endpoint for the real agent CLIs (issue #442).
+// A scripted, Anthropic-compatible model endpoint for the real agent CLIs.
 //
 //   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools] [--probe-files a,b,…] [--steps '<json>'] [--skill-sentinel TEXT[,TEXT…]]
 //
@@ -11,7 +11,7 @@
 // keep from growing. `GET /control` plays the driver's run-control endpoint: it answers
 // `{"stop":true}` from the moment the first agent request arrives — never in the question modes.
 //
-// `--ask` is the AskUserQuestion mode (issue #226): the first agent reply is an AskUserQuestion
+// `--ask` is the AskUserQuestion mode: the first agent reply is an AskUserQuestion
 // tool call (one question, options Red and Blue), `POST /question` records the question, and
 // `GET /question/<id>` plays the board — pending on the first poll, then answered "Blue". The
 // request after the tool call must carry, in any of its messages, a tool_result for the tool call
@@ -25,19 +25,19 @@
 // first time and `{"ok": true}` after, and is not an agent request. The next agent request then
 // calls AskUserQuestion, and the run goes on as in `--ask`. `GET /hooks` counts the evaluations.
 //
-// `--kill-tools` is the tool-isolation mode (issue #814): each scripted Bash call is
+// `--kill-tools` is the tool-isolation mode: each scripted Bash call is
 // `kill -TERM 1 2>/dev/null; kill -KILL -1 2>/dev/null; echo FACTORY_TOOL_OK; touch step-N` — it signals
 // everything its uid may, then reports — and `GET /control` never raises a Stop, so the run must end
 // on its own. `GET /tool-results` counts the tool calls whose result came back carrying
 // FACTORY_TOOL_OK: a tool killed with the CLI, or a CLI killed by its tool, never reports one.
 //
-// `--probe-files a,b,…` is the skill-helper mode (issue #1006): the one scripted Bash call opens each path
+// `--probe-files a,b,…` is the skill-helper mode: the one scripted Bash call opens each path
 // in turn as the tool uid and prints one `PROBE <n> <outcome>` line each (1-based, in the order given;
 // outcome `open`, `denied` for "Permission denied", or `other: <error>`), then FACTORY_TOOL_OK; like --kill-tools it never raises a Stop. The
 // tool's cwd is not writable by the tool uid, so the outcome travels in the result: `GET /tool-results`
 // returns it as `text`.
 //
-// `--steps '[{"tool":"Bash","input":{"command":"…"}},…]'` is the scripted-tools mode (issue #1025): model request N
+// `--steps '[{"tool":"Bash","input":{"command":"…"}},…]'` is the scripted-tools mode: model request N
 // calls the N-th step's tool (matched by name, case-insensitively, among the tools the CLI offers) with that input,
 // and the request after the last step answers `done`. Unlike the modes above it can call any tool — the CLI's own
 // Read, Write, Skill — so a lane can drive the seam between the CLI's file tools and its Bash tool. `GET /steps`
@@ -45,7 +45,7 @@
 // "Base directory for this skill" line of each skill the Skill tool loaded; like --kill-tools it
 // never raises a Stop.
 //
-// `--skill-sentinel TEXT[,TEXT…]` is the skill mode (BEL-270, BEL-273): whatever else the run does, `GET /skills-seen`
+// `--skill-sentinel TEXT[,TEXT…]` is the skill mode: whatever else the run does, `GET /skills-seen`
 // returns `{seen, seenSentinels, agentRequests}` — `seenSentinels` lists each TEXT that any agent request's body (system
 // prompt, tool descriptions, messages) carried, i.e. each one the CLI told the model about in a skill description;
 // `seen` is true once any did; `sentinelCounts` maps each TEXT to its occurrences in the one agent request that carried

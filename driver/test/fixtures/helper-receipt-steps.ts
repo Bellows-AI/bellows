@@ -1,7 +1,7 @@
 import type { StepRequest, StepResult } from '../../src/supervisor-contract.js';
 
 /**
- * The supervisor side of a receipted helper (issue #826), shared by the executor suites: an empty
+ * The supervisor side of a receipted helper, shared by the executor suites: an empty
  * receipt ledger that takes every write, and a reply helper that answers it replied.
  */
 const REPLIED_VERDICT = JSON.stringify({

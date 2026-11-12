@@ -41,6 +41,7 @@ const workflow = (path: string) => load<Workflow>(path);
 const CI = '.github/workflows/ci.yml';
 const RELEASE = '.github/workflows/release-image.yml';
 const NIGHTLY = '.github/workflows/ui-nightly.yml';
+const LANES = '.github/workflows/lanes-nightly.yml';
 const MIRROR = '.github/workflows/mirror-images.yml';
 
 // yaml parses with the 1.2 core schema, so the `on:` key stays the string 'on' rather than
@@ -82,6 +83,116 @@ describe('ci workflows', () => {
         expect('workflow_call' in on).toBe(true);
     });
 
+    // A merge queue builds each candidate on the queue's own branch and needs the required checks to
+    // report on `merge_group`; the repository setting that turns the queue on is the maintainer's.
+    // e2e stays post-merge only (never on a pull request, and not in the queue either).
+    // helm lint and the template assertions read the rendered chart, which vitest over the YAML text never does.
+    it('renders the chart on every pull request with a checksum-pinned helm and the offline lane', () => {
+        const job = workflow(CI).jobs.chart!;
+        expect(job, 'ci.yml has no chart job').toBeTruthy();
+        expect(job.if).toBeUndefined();
+        const pins = (path: string, env: Record<string, string> | undefined) => ({
+            path,
+            version: env?.HELM_VERSION,
+            sha: env?.HELM_SHA256,
+        });
+        const release = Object.values(workflow(RELEASE).jobs).find((j) => j.env?.HELM_SHA256)!;
+        expect(pins(CI, job.env).version).toBe(release.env!.HELM_VERSION);
+        expect(pins(CI, job.env).sha).toBe(release.env!.HELM_SHA256);
+        const script = runs(job).join('\n');
+        expect(script).toContain('sha256sum -c -');
+        expect(runs(job)).toContain('scripts/test-k8s.sh');
+        expect(script).not.toContain('--cluster');
+        expect(job.steps!.some((step) => step.uses?.startsWith('azure/setup-helm'))).toBe(false);
+    });
+
+    // The heavy lanes run off the merge path, on the phases that exist today: a renamed phase fails here, not at 03:00.
+    it('runs the kind lane and the docker lane nightly, on phases test-k8s.sh and test-jobs.sh define', () => {
+        const doc = workflow(LANES);
+        expect(Object.keys(triggers(doc)).sort()).toEqual(['schedule', 'workflow_dispatch']);
+        const k8sPhases = /case "\$PHASE" in ([a-z|-]+\) ;;)/
+            .exec(read('scripts/test-k8s.sh'))![1]!
+            .replace(/\) ;;$/, '')
+            .split('|')
+            .filter((phase) => phase !== 'all' && phase !== 'bench');
+        const kind = doc.jobs.kind!;
+        expect((kind.strategy as { matrix: { phase: string[] } }).matrix.phase).toEqual(k8sPhases);
+        expect(runs(kind).join('\n')).toContain('scripts/test-k8s.sh --cluster --phase "$PHASE"');
+        expect(runs(kind).join('\n')).toContain('sha256sum -c -');
+        expect(runs(kind)).toContain('sh scripts/kind-cluster.sh create ci');
+        const create = kind.steps!.find((step) => step.run?.includes('kind-cluster.sh create'))!;
+        expect(create.env!.LAYOUT).toMatch(/matrix\.phase == 'drain' && 'drain'/);
+
+        const jobsPhases = /valid_phase\(\) \{\s+case "\$1" in\s+([a-z|-]+)\)/
+            .exec(read('scripts/test-jobs.sh'))![1]!
+            .split('|');
+        const hostNetworking = ['compose-driver', 'question-round-trip'];
+        for (const phase of hostNetworking) expect(jobsPhases).toContain(phase);
+        const run = runs(doc.jobs.jobs!).find((r) => r.includes('npm run test:jobs'))!;
+        const named = run.split(/\s+/).at(-1)!.split(',');
+        expect(named).toEqual(jobsPhases.filter((phase) => !hostNetworking.includes(phase)));
+    });
+
+    it('uploads the lane evidence bundles and alerts through one issue on a red night, with no secret', () => {
+        const doc = workflow(LANES);
+        const uploads = (name: string) =>
+            doc.jobs[name]!.steps!.filter((s) => s.uses?.startsWith('actions/upload-artifact@'));
+        expect(uploads('kind').map((s) => s.with!.path)).toEqual(['artifacts/k8s/evidence-*']);
+        expect(uploads('jobs').map((s) => s.with!.path)).toEqual(['artifacts/jobs/evidence-*']);
+        const notify = doc.jobs['notify-red-nightly']!;
+        expect(new Set(needs(notify))).toEqual(new Set(['kind', 'jobs']));
+        expect(notify.if).toContain('failure()');
+        expect(notify.permissions).toEqual({ issues: 'write' });
+        const script = runs(notify).join('\n');
+        for (const call of ['gh issue list', 'gh issue comment', 'gh issue create', '--title "$TITLE"']) {
+            expect(script).toContain(call);
+        }
+        expect((notify as Job & { env: Record<string, string> }).env.GH_TOKEN).toContain('github.token');
+    });
+
+    // docs/ci.md names the one limit that keeps two phases out of the nightly docker lane.
+    it('states the nightly lane limit in docs/ci.md', () => {
+        const doc = read('docs/ci.md').replace(/\s+/g, ' ');
+        expect(doc).toContain(
+            'The nightly docker lane leaves out the compose-driver and question-round-trip phases of `scripts/test-jobs.sh`:'
+        );
+    });
+
+    it('validates a merge-queue candidate with validate and test-db, never e2e', () => {
+        const doc = workflow(CI);
+        expect('merge_group' in triggers(doc)).toBe(true);
+        expect(doc.jobs.validate!.if).toBeUndefined();
+        expect(doc.jobs['test-db']!.if).toBeUndefined();
+        expect(doc.jobs.e2e!.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main'");
+    });
+
+    // A red main used to be noticed by whoever looked next. One issue, found by its fixed title, takes a
+    // comment per red run instead of a new issue; the only credential is github.token.
+    it('opens or comments on one issue when a push to main goes red, with no secret', () => {
+        const doc = workflow(CI);
+        const job = doc.jobs['notify-red-main']!;
+        expect(job, 'ci.yml has no notify-red-main job').toBeTruthy();
+        expect(new Set(needs(job))).toEqual(new Set(['validate', 'test-db', 'chart', 'e2e']));
+        expect(job.if).toContain('failure()');
+        expect(job.if).toContain("github.ref == 'refs/heads/main'");
+        expect(job.if).toContain("github.event_name == 'push'");
+        expect(job.permissions).toEqual({ issues: 'write' });
+        expect(job.steps!.some((step) => step.uses?.startsWith('actions/checkout'))).toBe(false);
+        const script = runs(job).join('\n');
+        expect(script).toContain('gh issue list');
+        expect(script).toContain('gh issue comment');
+        expect(script).toContain('gh issue create');
+        expect(script).toContain('--title "$TITLE"');
+        expect((job as Job & { env: Record<string, string> }).env.GH_TOKEN).toContain('github.token');
+        expect(read(CI)).not.toContain('secrets.');
+        // A called workflow cannot hold more than its caller grants, or the release run fails to start.
+        expect(workflow(RELEASE).jobs.validate!.permissions).toEqual({
+            contents: 'read',
+            packages: 'read',
+            issues: 'write',
+        });
+    });
+
     // Path filters never reach a `workflow_call`, but `[skip ci]` on the tagged commit would skip
     // the tag's push workflow outright.
     it('still validates the release tag through the called workflow', () => {
@@ -121,7 +232,7 @@ describe('ci workflows', () => {
     // A failing job reports its step name, so an unnamed step hides the gate that broke; the
     // validation steps carry their command verbatim as the name.
     it('names every step after the command it runs', () => {
-        for (const path of [CI, RELEASE, NIGHTLY]) {
+        for (const path of [CI, RELEASE, NIGHTLY, LANES]) {
             for (const job of Object.values(workflow(path).jobs)) {
                 for (const step of runSteps(job)) {
                     expect(step.name, `${path}: unnamed step running: ${step.run}`).toBeTruthy();
@@ -134,7 +245,7 @@ describe('ci workflows', () => {
     });
 
     it('runs on the node major the runtime image ships', () => {
-        const imageMajor = /FROM mirror\.gcr\.io\/library\/node:(\d+)-alpine AS runtime/.exec(
+        const imageMajor = /FROM mirror\.gcr\.io\/library\/node:(\d+)-alpine@sha256:[0-9a-f]{64} AS runtime/.exec(
             read('docker/Dockerfile')
         )?.[1];
         expect(imageMajor).toBeTruthy();
@@ -202,7 +313,7 @@ describe('ci workflows', () => {
         expect(mirror.permissions).toEqual({});
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
-        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault']);
+        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault', 'pin-digests']);
         expect(job.env!.SOURCE).toBe(composePostgres());
         expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
@@ -214,6 +325,23 @@ describe('ci workflows', () => {
         expect(commands).toContain("tr 'A-Z' 'a-z'");
         expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
         expect(read(MIRROR)).not.toMatch(/secrets\./);
+    });
+
+    // The base images and the chart's collector are pinned by digest (scripts/pin-digests.sh); a pin
+    // nobody refreshes is a stale image, so the weekly run re-resolves them and opens a pull request.
+    // Write access is on that one job: the others only push images.
+    it('re-pins the base image digests weekly through a pull request, with write access on that job only', () => {
+        const mirror = workflow(MIRROR);
+        const job = mirror.jobs['pin-digests']!;
+        expect(job.permissions).toEqual({ contents: 'write', 'pull-requests': 'write' });
+        for (const [name, other] of Object.entries(mirror.jobs)) {
+            if (name !== 'pin-digests')
+                expect(other.permissions, name).toEqual({ contents: 'read', packages: 'write' });
+        }
+        const commands = runs(job).join('\n');
+        expect(commands).toContain('sh scripts/pin-digests.sh');
+        expect(commands).toContain('gh pr create');
+        expect(read('scripts/pin-digests.sh')).toContain('imagetools inspect');
     });
 
     it('pins the moto emulator to an exact release, opt-in under the secrets-aws compose profile', () => {
@@ -458,6 +586,19 @@ describe('ci workflows', () => {
         expect(mirror!.run).not.toMatch(/collector-contrib:[\d.]+/);
     });
 
+    // The chart renders `repo:tag@sha256:…` under the registry prefix; a mirror copy made by tag
+    // alone can hold a different manifest list than the digest names, and the node then answers
+    // ImagePullBackOff. The copy reads the digest from the chart too and is made from it.
+    it('mirrors the collector by the digest the chart pins', () => {
+        const manifest = workflow(RELEASE).jobs.manifest!;
+        const mirror = runSteps(manifest).find((step) => step.run.includes('opentelemetry-collector-contrib'))!;
+        expect(mirror.run).toContain('digest:');
+        expect(mirror.run).toMatch(/imagetools create -t "\$REGISTRY\/[^"]+" "[^"]*@\$[^"]+"/);
+        expect(read('charts/factory/values.yaml')).toMatch(
+            /repository: otel\/opentelemetry-collector-contrib\n(?: {8}#[^\n]*\n)* {8}tag: '[\d.]+'\n(?: {8}#[^\n]*\n)* {8}digest: 'sha256:[0-9a-f]{64}'/
+        );
+    });
+
     // A release nobody can resolve by version is a release only this repository can install. The
     // chart goes to the same registry as the images, under `<owner>/charts` so it does not collide
     // with the `factory-ai` image package in the same namespace.
@@ -513,7 +654,7 @@ describe('ci workflows', () => {
     // `github.token` is the installation token the run already carries. Nothing on either path is
     // a credential somebody has to mint, store and rotate.
     it('needs no configured secret on the validation or publish path', () => {
-        for (const path of [CI, RELEASE, NIGHTLY]) {
+        for (const path of [CI, RELEASE, NIGHTLY, LANES]) {
             expect(read(path), `${path} reads a repository secret`).not.toMatch(/secrets\./);
         }
         expect(read(RELEASE)).toMatch(/\$\{\{ github\.token \}\}/);
@@ -523,6 +664,7 @@ describe('ci workflows', () => {
         // packages: read is the postgres service's pull from the GHCR mirror.
         expect(workflow(CI).permissions, CI).toEqual({ contents: 'read', packages: 'read' });
         expect(workflow(NIGHTLY).permissions, NIGHTLY).toEqual({ contents: 'read', packages: 'read' });
+        expect(workflow(LANES).permissions, LANES).toEqual({ contents: 'read' });
         // Packages for the push, security-events for the scan's SARIF, and no contents: write —
         // so a release can never move a ref.
         expect(workflow(RELEASE).permissions, RELEASE).toEqual({
@@ -533,7 +675,9 @@ describe('ci workflows', () => {
         // The OIDC token mints an npm publish credential, so exactly one job may request it, and
         // that job holds nothing else of the workflow's.
         const scoped = Object.entries(workflow(RELEASE).jobs).filter(([, job]) => job.permissions !== undefined);
+        // The other scoped job is the called CI: it may not exceed its caller, and its red-main alert needs issues.
         expect(Object.fromEntries(scoped.map(([name, job]) => [name, job.permissions]))).toEqual({
+            validate: { contents: 'read', packages: 'read', issues: 'write' },
             npm: { contents: 'read', 'id-token': 'write' },
         });
     });

@@ -1,4 +1,4 @@
-# The agent's tool isolation (issue #814), checked in a built executor image under the driver's own
+# The agent's tool isolation, checked in a built executor image under the driver's own
 # agent flags: root, every capability dropped but the launch pair, no-new-privileges. Sourced by
 # docker/claude-executor/test.sh and docker/opencode-executor/test.sh after their build, with IMAGE
 # set; counts into their `pass` and `fail`.

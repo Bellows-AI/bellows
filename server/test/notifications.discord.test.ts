@@ -17,7 +17,7 @@ import {
     unknownWebhook,
 } from './fake-discord.js';
 
-/** BEL-132: the Discord connector against a local fake of Discord's webhook route. No real Discord is ever called. */
+/** the Discord connector against a local fake of Discord's webhook route. No real Discord is ever called. */
 const ID = '123456789012345678';
 const TOKEN = 'abc_DEF-ghi0123';
 const URL_OK = `https://discord.com/api/webhooks/${ID}/${TOKEN}`;

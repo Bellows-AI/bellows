@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 
 // The hardened `git` every driver-side step runs (the shim the task supervisor puts first on its
@@ -34,12 +35,18 @@ const DIFF_COMMANDS = new Set(['diff', 'log', 'show']);
 const PROTOCOLS = 'https:http:git:file';
 const CONFIG_MAX_BUFFER = 67_108_864;
 
-/** Pinned whatever the trusted config says. */
+/**
+ * Pinned whatever the trusted config says.
+ * @type {[string, string][]}
+ */
 const PINNED = [
     ['core.fsmonitor', 'false'],
     ['core.hooksPath', '/dev/null'],
 ];
-/** Pinned to the trusted value when there is one, else to this. */
+/**
+ * Pinned to the trusted value when there is one, else to this.
+ * @type {[string, string][]}
+ */
 const INERT = [
     ['core.pager', 'cat'],
     ['core.editor', 'true'],
@@ -61,6 +68,7 @@ const INERT = [
  * when the trusted config does not set it. Only a variable the checkout itself defines is pinned: an
  * empty `filter.<name>.process` is a filter that fails, which would also silence a trusted `clean`.
  */
+/** @type {Record<string, Record<string, string>>} */
 const FAMILIES = {
     filter: { clean: '', smudge: '', process: '', required: 'false' },
     // A checkout-defined driver pinned to `true` yields an empty diff: fail-closed, and `--no-ext-diff` rarely lets it run.
@@ -76,9 +84,17 @@ const FAMILIES = {
 const REFUSED = /^remote\..+\.(receivepack|uploadpack|vcs)$/;
 const CREDENTIAL_HELPER = /^credential\.(?:.+\.)?helper$/;
 
-/** `git config --list -z --show-scope` output as `{ scope, key, value }` entries. */
+/** @typedef {{ scope: string, key: string, value: string }} ConfigEntry */
+/** @typedef {Error & { status?: number | null, signal?: string | null, stderr?: string }} ExecError */
+
+/**
+ * `git config --list -z --show-scope` output as `{ scope, key, value }` entries.
+ * @param {Buffer} buffer
+ * @returns {ConfigEntry[]}
+ */
 function parseList(buffer) {
     const fields = buffer.toString('utf8').split('\0');
+    /** @type {ConfigEntry[]} */
     const entries = [];
     for (let i = 0; i + 1 < fields.length; i += 2) {
         const [key, ...rest] = fields[i + 1].split('\n');
@@ -87,7 +103,12 @@ function parseList(buffer) {
     return entries;
 }
 
-/** The last trusted value of `key`, or undefined. Keys compare as git prints them: lower-cased but for the subsection. */
+/**
+ * The last trusted value of `key`, or undefined. Keys compare as git prints them: lower-cased but for the subsection.
+ * @param {ConfigEntry[]} entries
+ * @param {string} key
+ * @returns {string | undefined}
+ */
 function trustedValue(entries, key) {
     let found;
     for (const entry of entries) {
@@ -96,12 +117,20 @@ function trustedValue(entries, key) {
     return found;
 }
 
-/** The keys of the checkout's own config that make a call refused, in the order read. */
+/**
+ * The keys of the checkout's own config that make a call refused, in the order read.
+ * @param {ConfigEntry[]} entries
+ * @returns {string[]}
+ */
 function refusalsOf(entries) {
     return entries.filter((e) => CHECKOUT_SCOPES.has(e.scope) && REFUSED.test(e.key.toLowerCase())).map((e) => e.key);
 }
 
-/** The `-c` pair that pins one variable the checkout defines of a family that takes any name, or null. */
+/**
+ * The `-c` pair that pins one variable the checkout defines of a family that takes any name, or null.
+ * @param {ConfigEntry} entry
+ * @returns {[string, string] | null}
+ */
 function familyPair(entry) {
     const first = entry.key.indexOf('.');
     const last = entry.key.lastIndexOf('.');
@@ -118,8 +147,11 @@ function familyPair(entry) {
 /**
  * The `-c` pairs that harden one call, given the config it would read. Pure: `entries` is
  * the parsed `git config --list --includes --show-scope`.
+ * @param {ConfigEntry[]} entries
+ * @returns {[string, string][]}
  */
 function hardeningPairs(entries) {
+    /** @type {[string, string][]} */
     const pairs = [];
     for (const [key, inert] of INERT) pairs.push([key, trustedValue(entries, key) ?? inert]);
     pairs.push(...PINNED);
@@ -145,8 +177,11 @@ function hardeningPairs(entries) {
 /**
  * Splits the caller's argv at its subcommand: the global options before it (what the config read
  * must repeat, so it reads the same repository) and the subcommand's index.
+ * @param {string[]} args
+ * @returns {{ repeated: string[], index: number }}
  */
 function globalOptions(args) {
+    /** @type {string[]} */
     const repeated = [];
     let i = 0;
     for (; i < args.length; i += 1) {
@@ -165,10 +200,15 @@ function globalOptions(args) {
     return { repeated, index: i };
 }
 
-/** `git`'s own environment pinned: editors, pager, external diff, and the protocols a remote may speak. */
+/**
+ * `git`'s own environment pinned: editors, pager, external diff, and the protocols a remote may speak.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {NodeJS.ProcessEnv}
+ */
 function hardenedEnv(env) {
     // `core.gitProxy` is first-match-wins across the config files, so the checkout's beats a `-c`; the
     // environment variable outranks every file, and an empty one means no proxy.
+    /** @type {NodeJS.ProcessEnv} */
     const next = { ...env, GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_PAGER: 'cat', GIT_PROXY_COMMAND: '' };
     delete next.GIT_EXTERNAL_DIFF;
     delete next.GIT_SSH;
@@ -180,6 +220,10 @@ function hardenedEnv(env) {
 /**
  * The hardened argv and environment for one call of `git` with `args`, or throws when the config
  * the call would read cannot be read.
+ * @param {string} realGit
+ * @param {string[]} args
+ * @param {{ cwd?: string, env: NodeJS.ProcessEnv }} options
+ * @returns {{ argv: string[], env: NodeJS.ProcessEnv }}
  */
 function harden(realGit, args, options) {
     const env = options.env;
@@ -209,6 +253,8 @@ function harden(realGit, args, options) {
  * One call's hardened plan: the real git to run, its argv and its environment. `GIT_HARDEN_REAL` names the git
  * and, with `GIT_HARDEN_MODULE`, never reaches what runs. Throws, with the line a refusal prints in `stderr`,
  * when there is no real git or the config the call would read cannot be read or names a command to run.
+ * @param {string[]} args
+ * @param {{ cwd: string | undefined, env: NodeJS.ProcessEnv }} options
  */
 function planCall(args, options) {
     const real = options.env.GIT_HARDEN_REAL;
@@ -220,7 +266,9 @@ function planCall(args, options) {
     try {
         return { real, ...harden(real, args, { cwd: options.cwd, env }) };
     } catch (error) {
-        throw Object.assign(error, { stderr: `git: refused, ${error.message}` });
+        throw Object.assign(/** @type {Error} */ (error), {
+            stderr: `git: refused, ${/** @type {Error} */ (error).message}`,
+        });
     }
 }
 
@@ -228,8 +276,11 @@ function planCall(args, options) {
  * `execFileSync(git, args, options)` hardened in this process, for a caller that cannot afford the shim's node start
  * per call (the publish probe). Same contract as the shim: the config is read again for this call, a refusal prints the
  * shim's line on stderr and throws with `status` 126 before any git work runs, and so does a git that does not start.
+ * @param {string[]} args
+ * @param {import('node:child_process').ExecFileSyncOptions & { cwd?: string }} options
  */
 function runCall(args, options) {
+    /** @param {string} line */
     const refused = (line) => {
         process.stderr.write(`${line}\n`);
         return Object.assign(new Error(line), { status: REFUSED_EXIT });
@@ -238,13 +289,14 @@ function runCall(args, options) {
     try {
         plan = planCall(args, { cwd: options.cwd, env: options.env ?? process.env });
     } catch (error) {
-        throw refused(error.stderr);
+        throw refused(/** @type {ExecError} */ (error).stderr ?? '');
     }
     try {
         return execFileSync(plan.real, plan.argv, { ...options, env: plan.env });
     } catch (error) {
         // Neither an exit nor a signal: the git did not start, which the shim reports as a refusal too.
-        if (error.status == null && !error.signal) throw refused(`git: ${error.message}`);
+        const failure = /** @type {ExecError} */ (error);
+        if (failure.status == null && !failure.signal) throw refused(`git: ${failure.message}`);
         throw error;
     }
 }
@@ -255,7 +307,7 @@ function main() {
     try {
         plan = planCall(process.argv.slice(2), { cwd: process.cwd(), env: process.env });
     } catch (error) {
-        process.stderr.write(`${error.stderr}\n`);
+        process.stderr.write(`${/** @type {ExecError} */ (error).stderr}\n`);
         return REFUSED_EXIT;
     }
     const real = plan.real;

@@ -3,6 +3,7 @@ import type { FastifyReply } from 'fastify';
 import type { Repo } from '../config.js';
 import { fullName } from '../identifiers.js';
 import type { OrgRuntime } from '../orgs.js';
+import { sendFailure } from './error-handler.js';
 
 const HTTP_UNAVAILABLE = 503;
 
@@ -110,7 +111,8 @@ export async function checkReposVisible(
 }
 
 /**
- * Every store call funnels through here: a failure is a 503, matching the ingest routes.
+ * Every store call funnels through here: a failure is answered by `sendFailure` (a generic 503 for an
+ * outage, a 500 with a request id for anything else), matching the ingest routes.
  *
  * The result is wrapped rather than nullable because several store methods return null for a
  * perfectly good answer — no work waiting, no such job — and a bare null could not tell that from
@@ -125,7 +127,7 @@ export async function guard<T>(
         return { ok: true, value: await run() };
     } catch (e) {
         log(e as Error);
-        await reply.code(HTTP_UNAVAILABLE).send({ error: (e as Error).message, code: ERROR_CODES.UNAVAILABLE });
+        await sendFailure(reply, reply.request, e);
         return { ok: false };
     }
 }

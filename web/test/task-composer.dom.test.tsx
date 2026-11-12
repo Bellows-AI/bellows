@@ -637,7 +637,7 @@ describe('the composer base branch and skill menu', () => {
         });
     });
 
-    it('has no Title field: the title is derived from the prompt (BEL-261)', async () => {
+    it('has no Title field: the title is derived from the prompt', async () => {
         openComposer(reposReply(['web']), undefined, board);
         await screen.findByLabelText('What should the agent do?');
         expect(screen.queryByLabelText('Title (optional)')).toBeNull();
@@ -645,7 +645,7 @@ describe('the composer base branch and skill menu', () => {
         expect(document.querySelector('.composer-title')).toBeNull();
     });
 
-    it('sends no title key with a filled prompt (BEL-261)', async () => {
+    it('sends no title key with a filled prompt', async () => {
         const user = userEvent.setup();
         const { launches } = openComposer(reposReply(['web']), undefined, board);
         const prompt = await screen.findByLabelText('What should the agent do?');

@@ -1,3 +1,4 @@
+import { closeOnSignal } from './shutdown.js';
 import { start } from './main.js';
 
 /*
@@ -10,4 +11,5 @@ import { start } from './main.js';
  * reachable from the environment: the only configuration there is the App, and an operator who
  * wants a deployment that fetches nothing is out of luck on purpose.
  */
-await start({ github: { mode: 'none' } });
+const { close } = await start({ github: { mode: 'none' } });
+closeOnSignal(close);

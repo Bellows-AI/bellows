@@ -6,7 +6,7 @@ import type { PublishStep } from '../src/publish/publish.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
 import { gitReviewSnapshotScript, reviewRefOf, snapshotTree } from '../src/review/review-snapshot.js';
 
-/** The review snapshot step and the claim rules a named reviewer's run follows (issue #549). */
+/** The review snapshot step and the claim rules a named reviewer's run follows. */
 
 const USER = '44444444-4444-4444-8444-444444444444';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';

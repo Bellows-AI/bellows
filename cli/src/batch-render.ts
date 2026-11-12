@@ -146,7 +146,7 @@ function observationLines(task: BatchReportTask, now: number): string[] {
 }
 
 function renderReportTask(task: BatchReportTask, now: number): string[] {
-    // Cancelled while the batch is live means a person force-closed the task's thread (#676).
+    // Cancelled while the batch is live means a person force-closed the task's thread.
     const execution =
         task.execution === TASK_CANCELLED && task.closedAt !== null ? 'cancelled by a person' : task.execution;
     const lines = [

@@ -1,5 +1,5 @@
 /**
- * What an independent reviewer (issue #549) is told. Pure: the profile's frozen spec and the task's
+ * What an independent reviewer is told. Pure: the profile's frozen spec and the task's
  * command in, the system prompt and the first message out. The reviewer is its own thread, so
  * these never read the caller's master prompt — it owns none of the caller's capabilities
  * (publishing, questions, gates), and the text must not promise it any.

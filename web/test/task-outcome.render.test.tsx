@@ -172,7 +172,7 @@ describe('TaskOutcome', () => {
         });
         expect(html).toContain('Repository');
         expect(html).toContain('acme/web');
-        // The payload still carries the path; the page no longer prints it (#777).
+        // The payload still carries the path; the page no longer prints it.
         expect(html).not.toContain('Worktree');
         expect(html).not.toContain('repos/web');
         expect(html).toContain('Executor');

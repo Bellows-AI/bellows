@@ -200,7 +200,7 @@ export async function projectJiraConnectionInTx(db: Db, orgId: string, rootJobId
 }
 
 /**
- * The lock order of every thread writer (BEL-59, BEL-161): batch row -> thread root rows (`for no key update`,
+ * The lock order of every thread writer: batch row -> thread root rows (`for no key update`,
  * ascending ids) -> the PR lock -> the advisory lock of each held root (re-entrant) -> member rows -> grant ->
  * connection -> child inserts. A blocking wait on a thread's advisory lock is only made by a transaction that already
  * holds that root's row, so no transaction waits on an advisory lock held by another order-following one. Two

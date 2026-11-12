@@ -190,7 +190,7 @@ The driver reads only the environment. It has no database access and talks to th
 | `DRIVER_REAP_GRACE_MS` | | `600000` | Minimum age of an object before the reaper may act on it. |
 | `TASK_VOLUME_TTL_MS` | | `86400000` (1 day) | How long a task volume is kept after the last attempt, when everything it holds is whole. Up to 1 year. |
 | `TASK_VOLUME_BOUND_MS` | | `604800000` (7 days) | The same, when a checkpoint is truncated or an artifact is pending. |
-| `TASK_VOLUME_EXPORT_ATTEMPTS` | | `3` | Failed transcript exports tolerated before the volume is deleted anyway. `1` to `100`. |
+| `TASK_VOLUME_EXPORT_ATTEMPTS` | | `3` | Failed transcript exports tolerated before the volume is deleted anyway; the first and the last failure must also be at least 15 minutes apart, so a short outage never costs a transcript. `1` to `100`. |
 
 ### Gates and metrics
 

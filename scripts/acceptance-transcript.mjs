@@ -1,6 +1,6 @@
 // Reads a job's whole artifact stream from the board and judges it against the stub's records
 // (scripts/k8s-stub.sh `factory-stub-transcript-<n>`), for the kubernetes and docker acceptance
-// phases (scripts/acceptance-lib.sh). argv: <artifacts url> <session> <first> <last> [lossy|before-loss];
+// phases (scripts/lane-lib.sh). argv: <artifacts url> <session> <first> <last> [lossy|before-loss];
 // env ACC_AUTH is the Authorization header value, when the board wants one.
 // Prints "exact", "bad: <why>" or "unread: <why>"; a read that failed is never a negative verdict.
 // "before-loss" is the check made before a runner is removed: it prints "short" only when the store is

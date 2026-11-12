@@ -1,5 +1,5 @@
 /**
- * The driver's Prometheus series (issue #831): what it spends on the board, the cluster API, the
+ * The driver's Prometheus series: what it spends on the board, the cluster API, the
  * docker daemon, its supervised steps and its orphan reaper, on either executor. Every label value is
  * from a closed vocabulary (an endpoint pattern, a verb, a resource kind, a docker command, an
  * outcome) — never a job, lease, pod, org or repo id. docs/telemetry.md.
@@ -20,6 +20,8 @@ export interface DriverMetrics {
     fetch: typeof globalThis.fetch;
     k8s(request: K8sRequest, client: Client): K8sRequest;
     docker(exec: ExecDocker, client: Client): ExecDocker;
+    /** A claim the board delivered that failed validation; the label is the first offending field. */
+    malformedClaim(fields: readonly string[]): void;
     step(kind: StepKind, outcome: StepOutcome, seconds: number): void;
     reaper: ReaperObserver;
 }
@@ -201,6 +203,11 @@ function instruments(registry: Registry) {
             SWEEP_BUCKETS
         ),
         scanned: registry.counter('factory_driver_reaper_scanned_total', 'Objects the reaper scanned.', ['what']),
+        malformedClaim: registry.counter(
+            'factory_driver_malformed_claims_total',
+            'Claims the board delivered that failed validation and were left to their lease.',
+            ['field']
+        ),
         volumeExport: registry.counter(
             'factory_driver_reaper_volume_export_total',
             'Reaper re-exports of a not-whole thread before its volume is deleted; lost is a volume deleted after its last attempt failed.',
@@ -246,6 +253,7 @@ export function createDriverMetrics(deps: { boardUrl: string; fetch?: typeof glo
                 throw e;
             }
         },
+        malformedClaim: (fields) => m.malformedClaim.inc({ field: fields[0] ?? OTHER }),
         step: (kind, outcome, seconds) => m.step.observe(seconds, { kind, outcome }),
         reaper: {
             sweep: (outcome, seconds) => m.sweep.observe(seconds, { outcome }),

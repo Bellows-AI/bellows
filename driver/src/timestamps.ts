@@ -1,5 +1,5 @@
 /**
- * Creation times a reap is decided on (#869): each parser answers epoch millis for a timestamp in
+ * Creation times a reap is decided on: each parser answers epoch millis for a timestamp in
  * exactly the platform's spelling and a real calendar moment, and null for anything else — `"0"`,
  * a bare date, a day the calendar lacks (`02-31`, which `Date` would roll into March). A reap never
  * rests on a date that was guessed.

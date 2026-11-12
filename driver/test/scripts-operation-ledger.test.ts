@@ -7,7 +7,7 @@ import { containerScript } from '../src/container-scripts.js';
 
 /**
  * The operation ledger (scripts/operation-ledger.cjs): the persisted identity a retried or adopted
- * publish (issue #771) or block-helper effect (issue #826) reads before it repeats anything. Run for
+ * publish or block-helper effect reads before it repeats anything. Run for
  * real, as the supervisor runs it: `node -e <script>` with the operation in its environment.
  */
 const SCRIPT = containerScript('operation-ledger.cjs');

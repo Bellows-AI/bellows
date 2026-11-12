@@ -388,7 +388,7 @@ describe('POST /api/github/webhook: PR families (036) — no-op guards', () => {
     });
 });
 
-/** Records the merged-close handoff — the one job-store call a merge delivery makes (issue #390). */
+/** Records the merged-close handoff — the one job-store call a merge delivery makes. */
 function mergeCloseStub() {
     const closed: { repo: string; prNumber: number; deliveryId: string }[] = [];
     const store = {

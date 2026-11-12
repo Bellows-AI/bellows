@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { reportUnauthenticated, signOut, subscribeUnauthenticated } from '../src/api/useSession.js';
+import { reportUnauthenticated, subscribeUnauthenticated } from '../src/api/unauthenticated.js';
+import { signOut } from '../src/api/useSession.js';
 
 /**
  * The 401 broadcast, pinned at the module level because the suite has no DOM: more than one

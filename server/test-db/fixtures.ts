@@ -72,7 +72,7 @@ export const expireLease = (sql: Sql, id: string) =>
 
 /**
  * Fills the job's interruption record to the budget, so its next lease expiry spends an attempt
- * the way it did before recovery accounting (issue #822). Negative claim sequences never match a
+ * the way it did before recovery accounting. Negative claim sequences never match a
  * real claim's.
  */
 export const spendInterruptionBudget = (sql: Sql, id: string) =>
@@ -85,8 +85,8 @@ export const spendInterruptionBudget = (sql: Sql, id: string) =>
     `;
 
 /**
- * Appends `count` interruptions to the job's record, each stamped now and flagged `nodeLoss` when asked
- * (BEL-302), so a suite can stand at any point of either budget. Negative claim sequences never match a
+ * Appends `count` interruptions to the job's record, each stamped now and flagged `nodeLoss` when asked,
+ * so a suite can stand at any point of either budget. Negative claim sequences never match a
  * real claim's.
  */
 export const recordInterruptions = (sql: Sql, id: string, count: number, { nodeLoss = false } = {}) =>
@@ -137,7 +137,7 @@ export const holdLock = async (
     };
 };
 
-/** Lapses the claim reservation a failed or abandoned preparation left (issue #822), as waiting it out would. */
+/** Lapses the claim reservation a failed or abandoned preparation left, as waiting it out would. */
 export const lapseDeferral = (sql: Sql, id: string) =>
     sql`update job set claim_deferred_until = now() - interval '1 second' where id = ${id}`;
 

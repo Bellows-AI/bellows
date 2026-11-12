@@ -5,7 +5,8 @@ import type { NavigateFunction } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
 import type { Job } from '../api/useJobs.js';
 import { useThreadActivity } from '../api/useJobActivity.js';
-import type { SubmittedFiles, UseTasks } from '../api/useTasks.js';
+import type { SubmittedFiles } from '../api/taskWrites.js';
+import type { UseTasks } from '../api/useTasks.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { BatchBacklink } from '../components/BatchBacklink.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
@@ -15,6 +16,7 @@ import { taskTitleText } from '../task-title.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
 import type { OnAnswer } from '../panels/TaskRun.js';
 import { useTasksPage } from './TasksLayout.js';
+import { StateNote } from '../components/StateNote.js';
 
 /**
  * The conversation-level actions: sending a follow-up, marking done, stopping — each guarded by
@@ -183,7 +185,7 @@ function useTaskRemoval(id: string | null, tasks: UseTasks, latest: Job | null, 
 }
 
 /**
- * The rename dialog's own state (BEL-252). Saving sends the revision the page rendered; a stale answer keeps
+ * The rename dialog's own state. Saving sends the revision the page rendered; a stale answer keeps
  * the dialog open on the board's current title and retries on ITS revision. A saved rename re-arms the thread
  * poll — a terminal task's poll has stopped, so without that refetch its header would keep the old name.
  * Reset per task by the same generation rule as `useTaskRemoval`.
@@ -294,7 +296,7 @@ export function TaskDetailPage() {
 
     return (
         <>
-            {tasks.error ? <p className="status">{tasks.error}</p> : null}
+            {tasks.error ? <StateNote state="error">{tasks.error}</StateNote> : null}
             <TaskDetail
                 key={id ?? 'none'}
                 header={

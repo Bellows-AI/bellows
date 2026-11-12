@@ -20,7 +20,7 @@ import {
 } from '../src/loop/loop-fence.js';
 import { StepChannelClosed, StepTimedOut, StepTokenUnanswered } from '../src/step-control.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import type { RunOutcome } from '../src/runner.js';
+import type { GroupTakenAway, RunOutcome } from '../src/runner.js';
 import { LeftoverTerminating } from '../src/runner.js';
 import type { AttemptCtx, SetupHalt } from '../src/loop/loop-types.js';
 
@@ -97,8 +97,8 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
 }
 
 /**
- * Every ending runs the same way (issue #828): the durable board call first, then the heartbeat is
- * quiesced, the group ends, and the checkout claim goes back last (issue #469) — so the board is told
+ * Every ending runs the same way: the durable board call first, then the heartbeat is
+ * quiesced, the group ends, and the checkout claim goes back last — so the board is told
  * before anything is destroyed. A stand-down parks a stopped turn and then says what the board said;
  * a conclusion says why it ended and reports it.
  */
@@ -247,7 +247,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         }
     );
 
-    // BEL-160: a sweep blocked by leftovers still deleting is no failure of the attempt.
+    // a sweep blocked by leftovers still deleting is no failure of the attempt.
     describe('a sweep blocked by a terminating leftover', () => {
         const blocked = new LeftoverTerminating('the leftover pod p on node n is still terminating after its delete');
         const expected = {
@@ -327,7 +327,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('keeps the helper steps pure — they answer data and settle for nobody', () => {
         // The pre-helper runs inside setup and is the other setup module, so a settlement or a
-        // release of its own is a fence it should not own (issue #472).
+        // release of its own is a fence it should not own.
         const helpers = loopSources().find(([file]) => file === 'loop-helpers.ts')?.[1] ?? '';
         expect(helpers.match(/await (ctx\.)?settle\(\)/g) ?? []).toEqual([]);
         expect(helpers.match(/releaseFence/g) ?? []).toEqual([]);
@@ -336,16 +336,20 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
     it('mints the attempt one signal, never one per step', () => {
         // The gate exec, the tree probe and the gate-session cancel all take `state.signal`: a
         // controller per transport is a controller that can answer a stand-down out of step with
-        // the race that decides one (issue #472).
+        // the race that decides one. The one other signal is the lease clock's:
+        // it fences board calls on the lease, and decides no stand-down by itself.
         const minting = loopSources()
-            .filter(([file, source]) => file !== 'loop-attempt.ts' && source.includes('new AbortController'))
+            .filter(
+                ([file, source]) =>
+                    file !== 'loop-attempt.ts' && file !== 'loop-lease.ts' && source.includes('new AbortController')
+            )
             .map(([file]) => file);
         expect(minting).toEqual([]);
     });
 
     it('leaves the phase files no second stand-down path and no phase-level check of their own', () => {
         // What remains of `down(state)` are re-checks after an await INSIDE a step (loop-gates,
-        // loop-helpers); a phase boundary asks `standDown` (issue #488).
+        // loop-helpers); a phase boundary asks `standDown`.
         const phaseFiles = ['loop-run.ts', 'loop-post-run.ts', 'loop-phase-checkpoints.ts'];
         const sources = loopSources().filter(([file]) => phaseFiles.includes(file));
         expect(sources.map(([file]) => file).sort()).toEqual([...phaseFiles].sort());
@@ -419,7 +423,7 @@ describe('one abort signal per attempt (issue #472)', () => {
     });
 });
 
-describe('node loss is flagged on structured evidence only (BEL-302)', () => {
+describe('node loss is flagged on structured evidence only', () => {
     afterEach(() => {
         vi.useRealTimers();
     });
@@ -433,7 +437,10 @@ describe('node loss is flagged on structured evidence only (BEL-302)', () => {
 
     it('leaves an interruption decision unflagged by default, and flags it on request', () => {
         expect(interruptDecision('the daemon refused', null)).not.toHaveProperty('nodeLoss');
-        expect(interruptDecision('the pod was evicted', null, false, true)).toMatchObject({ nodeLoss: true });
+        expect(interruptDecision('the pod was evicted', null, false, { nodeLoss: true })).toMatchObject({
+            nodeLoss: true,
+        });
+        expect(interruptDecision('lost', null, false, { blocked: true })).toMatchObject({ blocked: true });
     });
 
     it('carries the flag of an interrupt halt onto its decision, and none otherwise', () => {
@@ -463,7 +470,7 @@ describe('node loss is flagged on structured evidence only (BEL-302)', () => {
     });
 
     describe('a lost supervisor', () => {
-        const withRunner = (taken: (() => Promise<boolean>) | undefined) => {
+        const withRunner = (taken: (() => Promise<GroupTakenAway>) | undefined) => {
             const { ctx } = fencedAttempt();
             const read = taken ? vi.fn(taken) : undefined;
             (ctx.rt.runner as unknown as { groupTakenAway?: unknown }).groupTakenAway = read;
@@ -472,44 +479,50 @@ describe('node loss is flagged on structured evidence only (BEL-302)', () => {
         const closed = () => new StepChannelClosed('the step answered');
 
         it('is flagged when the executor confirms the group was taken away', async () => {
-            const { ctx, read } = withRunner(async () => true);
+            const { ctx, read } = withRunner(async () => 'taken');
 
             expect(await supervisorLossFlag(ctx, closed())).toEqual({ nodeLoss: true });
             expect(read).toHaveBeenCalledWith(ctx.job, expect.any(AbortSignal));
         });
 
         it('is not flagged while the group is still there', async () => {
-            const { ctx } = withRunner(async () => false);
+            const { ctx } = withRunner(async () => 'kept');
 
             expect(await supervisorLossFlag(ctx, closed())).toEqual({});
         });
 
-        it('is not flagged when the read fails', async () => {
+        it('is blocked, spending no budget, when the executor answers unknown', async () => {
+            const { ctx } = withRunner(async () => 'unknown');
+
+            expect(await supervisorLossFlag(ctx, closed())).toEqual({ blocked: true });
+        });
+
+        it('is blocked when the read fails', async () => {
             const { ctx } = withRunner(async () => {
                 throw new Error('the apiserver answered 503');
             });
 
-            expect(await supervisorLossFlag(ctx, closed())).toEqual({});
+            expect(await supervisorLossFlag(ctx, closed())).toEqual({ blocked: true });
         });
 
-        it('is not flagged when the runner cannot tell', async () => {
+        it('is blocked when the runner cannot tell', async () => {
             const { ctx } = withRunner(undefined);
 
-            expect(await supervisorLossFlag(ctx, closed())).toEqual({});
+            expect(await supervisorLossFlag(ctx, closed())).toEqual({ blocked: true });
         });
 
-        it('is not flagged when the read outlasts its deadline', async () => {
+        it('is blocked when the read outlasts its deadline', async () => {
             vi.useFakeTimers();
-            const { ctx } = withRunner(() => new Promise<boolean>(() => {}));
+            const { ctx } = withRunner(() => new Promise<GroupTakenAway>(() => {}));
 
             const flagged = supervisorLossFlag(ctx, closed());
             await vi.advanceTimersByTimeAsync(GROUP_TAKEN_AWAY_READ_MS);
 
-            expect(await flagged).toEqual({});
+            expect(await flagged).toEqual({ blocked: true });
         });
 
         it('is not flagged when the attempt stands down mid-read', async () => {
-            const { ctx } = withRunner(() => new Promise<boolean>(() => {}));
+            const { ctx } = withRunner(() => new Promise<GroupTakenAway>(() => {}));
 
             const flagged = supervisorLossFlag(ctx, closed());
             ctx.state.abortNow();
@@ -521,7 +534,7 @@ describe('node loss is flagged on structured evidence only (BEL-302)', () => {
             ['a step answered too late', () => new StepTimedOut('step-1')],
             ['an unanswered token ask', () => new StepTokenUnanswered()],
         ])('is never flagged for %s, and the executor is not asked', async (_name, make) => {
-            const { ctx, read } = withRunner(async () => true);
+            const { ctx, read } = withRunner(async () => 'taken');
 
             expect(await supervisorLossFlag(ctx, make())).toEqual({});
             expect(read).not.toHaveBeenCalled();

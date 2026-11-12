@@ -2,13 +2,13 @@
  * The attempt's fences and the decisions that end it. The kubernetes checkout claim the attempt
  * holds is handed back here and nowhere else; every ending is DATA (`EndDecision`) built here and
  * landed by `end` (`loop-conclusion.ts`), so no path can forget half of its own settlement (issue
- * #472, steps 3 and 4 of #433, #828).
+ * #472, steps 3 and 4 of #433).
  */
 
 import { down, type JobState, raceStep } from './loop-attempt.js';
 import { lostOf } from './loop-phase.js';
 import type { BoardJob } from '../board/board.js';
-import { LeftoverTerminating, type RunOutcome } from '../runner.js';
+import { type GroupTakenAway, LeftoverTerminating, type RunOutcome } from '../runner.js';
 import { SYNC_FAILURE_KINDS, withConflictContext, type SyncResult } from '../publish/publish.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
 import { type StartupCause, StartupRefused, transientStartup } from '../startup-cause.js';
@@ -50,7 +50,7 @@ function startupHalt(cause: StartupCause, detail: string, nodeLoss?: true): Setu
 }
 
 /**
- * A sweep that ran out its bound with every leftover already deleting (BEL-160): handed back, before
+ * A sweep that ran out its bound with every leftover already deleting: handed back, before
  * anything of this claim launched, as an interruption outside the board's budget. The board defers
  * the next claim; nothing here is a failure of the attempt.
  */
@@ -74,7 +74,7 @@ export function syncThrewHalt(e: unknown): SetupHalt {
 /**
  * A run that threw, past its stand-down: a group the platform refused to start for a proven cause ran
  * nothing and is decided; any other throw is left to the lease — its runner may survive for the next
- * claim to adopt, and no runner ever launched would release the claim otherwise (issue #469).
+ * claim to adopt, and no runner ever launched would release the claim otherwise.
  */
 export function thrownRunDecision(job: BoardJob, e: unknown): EndDecision {
     if (e instanceof StartupRefused) return setupDecision(startupHaltOf(e));
@@ -126,7 +126,7 @@ export function releaseAbandonedSync(rt: LoopRuntime, job: BoardJob, syncing: Pr
         .catch(() => {});
 }
 
-/** `releaseAbandonedSync`'s twin for an abandoned adoption (issue #792): one that lands adopted holds the claim. */
+/** `releaseAbandonedSync`'s twin for an abandoned adoption: one that lands adopted holds the claim. */
 export function releaseAbandonedAdoption(rt: LoopRuntime, job: BoardJob, adopting: Promise<unknown>): void {
     void adopting
         .then((run) => {
@@ -149,7 +149,7 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
     if (!down(state)) return null;
     // A drain's handover is an interruption: released to the next claim, whose runner is never finished.
     if (state.ending?.kind === 'handover') {
-        // Only a SIGTERM drains a driver, and no job can send its own driver one: the platform took the node (BEL-302).
+        // Only a SIGTERM drains a driver, and no job can send its own driver one: the platform took the node.
         return {
             kind: 'interrupt',
             reason: state.handoverReason ?? 'the driver was drained',
@@ -188,7 +188,7 @@ const requirementDecision = (state: JobState, beforeInterrupt?: () => Promise<vo
 
 /**
  * A setup conclusion as the ending it decides: a fault or a conclusion lands its verdict, an
- * interrupt hands the attempt back as an interruption, a leave leaves it to the lease (issue #469).
+ * interrupt hands the attempt back as an interruption, a leave leaves it to the lease.
  */
 export function setupDecision(halt: SetupHalt): EndDecision {
     switch (halt.halt) {
@@ -234,35 +234,41 @@ export const interruptDecision = (
     reason: string,
     exitCode: number | null,
     refused = false,
-    nodeLoss = false
+    { nodeLoss = false, blocked = false }: { nodeLoss?: boolean; blocked?: boolean } = {}
 ): EndDecision => ({
     kind: 'interrupt',
     reason,
     exitCode,
     ...(refused ? { refused: true as const } : {}),
     ...(nodeLoss ? { nodeLoss: true as const } : {}),
+    ...(blocked ? { blocked: true as const } : {}),
 });
 
 /** The bound on the read that asks the executor whether a lost supervisor's group was taken away. */
 export const GROUP_TAKEN_AWAY_READ_MS = 15_000;
 
 /**
- * Whether a lost supervisor is a node loss (BEL-302): only a closed channel can be — a step answered too late
- * or a token ask left unanswered is a hang, never node evidence — and only when the executor confirms the
- * group was taken away. An error, a timeout, a stand-down mid-read, an answer other than a plain yes, or a
- * runner that cannot tell is no confirmation: the interruption counts against the poison budget as before.
+ * What a lost supervisor is: only a closed channel can be a node loss — a step answered too late
+ * or a token ask left unanswered is a hang, never node evidence. The executor's answer decides: `taken` is a node
+ * loss, `kept` (the group is confirmed still there) leaves the interruption counting against the poison budget,
+ * and `unknown` — an error, a timeout, a runner that cannot tell — is `blocked`: an unconfirmed read never
+ * licenses a negative verdict, so the hand-back spends no budget. A stand-down mid-read flags nothing.
  */
-export async function supervisorLossFlag(ctx: AttemptCtx, e: unknown): Promise<{ nodeLoss?: true }> {
+export async function supervisorLossFlag(ctx: AttemptCtx, e: unknown): Promise<{ nodeLoss?: true; blocked?: true }> {
     if (!(e instanceof StepChannelClosed)) return {};
     const { rt, job, state } = ctx;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<false>((resolve) => {
-        timer = setTimeout(() => resolve(false), GROUP_TAKEN_AWAY_READ_MS);
+    const expired = new Promise<GroupTakenAway>((resolve) => {
+        timer = setTimeout(() => resolve('unknown'), GROUP_TAKEN_AWAY_READ_MS);
     });
-    const asked = (async () => (await rt.runner.groupTakenAway(job, state.signal)) === true)().catch(() => false);
+    const asked = (async (): Promise<GroupTakenAway> => await rt.runner.groupTakenAway(job, state.signal))().catch(
+        (): GroupTakenAway => 'unknown'
+    );
     try {
         const answered = await raceStep(state.signal, Promise.race([asked, expired]));
-        return answered?.value === true ? { nodeLoss: true } : {};
+        if (answered === null || answered === undefined) return {};
+        if (answered.value === 'taken') return { nodeLoss: true };
+        return answered.value === 'unknown' ? { blocked: true } : {};
     } finally {
         clearTimeout(timer);
     }
@@ -280,12 +286,9 @@ export function unreportedDecision(outcome: RunOutcome): EndDecision | null {
         return setupDecision(startupHalt(outcome.startupCause, outcome.output.trim()));
     }
     if (outcome.infraLoss) {
-        return interruptDecision(
-            `infrastructure loss: ${outcome.infraLoss}`,
-            outcome.exitCode,
-            false,
-            outcome.infraNodeLoss === true
-        );
+        return interruptDecision(`infrastructure loss: ${outcome.infraLoss}`, outcome.exitCode, false, {
+            nodeLoss: outcome.infraNodeLoss === true,
+        });
     }
     return why === null ? null : interruptDecision(why, outcome.exitCode, true);
 }

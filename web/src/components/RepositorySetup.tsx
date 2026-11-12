@@ -4,6 +4,7 @@ import { Icon } from './Icon.js';
 import { StateNote } from './StateNote.js';
 import { commitDate } from '../format.js';
 import { NOT_AVAILABLE, repoKey } from './repository-setup.js';
+import { ScrollRegion } from './ScrollRegion.js';
 
 /**
  * The presentational halves of the repository page: the notices over the list, the searchable
@@ -59,9 +60,9 @@ export function RepositoryListNotices({ cachedError, fetchedAt, listNotice }: Re
         <>
             {listNotice ? <StateNote state={listNotice.state}>{listNotice.text}</StateNote> : null}
             {cachedError ? (
-                <p className="status">
+                <StateNote state="error">
                     Showing a cached list{fetchedAt ? ` from ${commitDate(fetchedAt)}` : ''}: {cachedError}
-                </p>
+                </StateNote>
             ) : null}
         </>
     );
@@ -115,12 +116,12 @@ function RepositoryRow({
 /** The list's empty postures: no match for the query, or an installation that reports nothing. */
 function RepositoryListEmpty({ loaded, repos, search }: { loaded: boolean; repos: number; search: string }) {
     if (!loaded) return null;
-    if (repos) return <p className="status">No repositories match “{search}”</p>;
+    if (repos) return <StateNote state="empty">No repositories match “{search}”</StateNote>;
     return (
-        <p className="status">
+        <StateNote state="empty">
             This GitHub App is not installed on any repositories yet. Ask an administrator to update the installation on
             GitHub.
-        </p>
+        </StateNote>
     );
 }
 
@@ -157,8 +158,7 @@ export function RepositorySetupList({
                 ) : null}
             </div>
             {shown.length ? (
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-                <section className="table-wrap" aria-label="Repositories" tabIndex={0}>
+                <ScrollRegion className="table-wrap" aria-label="Repositories">
                     <table className="data data-compact repo-table">
                         <thead>
                             <tr>
@@ -180,7 +180,7 @@ export function RepositorySetupList({
                             ))}
                         </tbody>
                     </table>
-                </section>
+                </ScrollRegion>
             ) : (
                 <RepositoryListEmpty loaded={loaded} repos={repos.length} search={search} />
             )}

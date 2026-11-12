@@ -57,7 +57,7 @@ async function resolveNamedWorkflow(
 }
 
 /**
- * The launch contract's one branch (issue #543): a named `workflow` resolves; an omitted one
+ * The launch contract's one branch: a named `workflow` resolves; an omitted one
  * resolves nothing, and the task is created in objective mode with its command untouched.
  */
 export async function resolveLaunchWorkflow(

@@ -1,4 +1,5 @@
-// The review snapshot (issue #549): freezes the task worktree's CURRENT state — HEAD plus every
+// @ts-check
+// The review snapshot: freezes the task worktree's CURRENT state — HEAD plus every
 // uncommitted and untracked file, `.factory/` excluded — as one commit under a ref of the shared
 // clone, so a reviewer's own worktree can start from exactly the tree it was asked about while the
 // agent keeps editing. One execFileSync per git call, no shell: no value can become a command. One
@@ -27,7 +28,12 @@ const SNAPSHOT_PATHSPEC = ['--', ':/', ':(top,exclude).factory'];
 const REASON_MAX_LENGTH = 300;
 const MAX_BUFFER = 268_435_456; // 256 MiB: a large tree must not read as a failed snapshot
 
+/** @param {any} e */
 const reasonOf = (e) => String((e && e.stderr) || (e && e.message) || e).slice(0, REASON_MAX_LENGTH);
+/**
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} [env]
+ */
 const git = (args, env) =>
     execFileSync('git', args, {
         cwd: repo,

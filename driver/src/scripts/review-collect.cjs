@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 
 /*
@@ -5,7 +6,7 @@
  * bounded, versioned JSON verdict — the state future review reconciliation reads, and the reply
  * planner validates against. One execFileSync per gh call, direct argv only: no shell, no
  * interpolation, no value can become a command. The credential rides gh's own env (GH_TOKEN or
- * GITHUB_TOKEN) and never appears in argv, in an error, or on stdout (issue #201).
+ * GITHUB_TOKEN) and never appears in argv, in an error, or on stdout.
  *
  * Environment:
  *   REPO  owner/name of the repository;
@@ -18,7 +19,7 @@
  * deduped by GitHub id, capped, and stable-sorted, so the same upstream state always produces the
  * same bytes. `addressed` is the sorted keys whose Factory reply marker any general or inline
  * comment carries, read before the caps — a thread reply is an inline comment too — so whether an
- * item was already answered never depends on which rows a section kept (issue #826).
+ * item was already answered never depends on which rows a section kept.
  * REST carries the bulk (numeric ids, full bodies, diff hunks, --paginate); GraphQL carries what REST
  * does not expose: review-thread node ids, their resolved state, the PR's review decision and its
  * head commit. `pendingChecks` counts the head's check runs not yet completed (a review bot is
@@ -63,17 +64,39 @@ const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   }
 }`;
 
+/**
+ * @typedef {{ owner: string, repo: string, number: number }} Ref
+ * @typedef {{ bodies: number, diffHunks: number, threads: number }} Counts
+ * @typedef {{ sections: string[], bodies: number, diffHunks: number, threads: number, total: boolean }} Truncation
+ */
+
+/** @param {unknown} v */
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+/** @param {unknown} v */
 const str = (v) => (typeof v === 'string' ? v : null);
+/** @param {any} o a parsed GitHub row */
 const login = (o) => (o && typeof o.user === 'object' && o.user !== null ? str(o.user.login) : null);
+/** @param {any} o */
 const present = (o) => o && typeof o === 'object' && o !== null;
 
+/**
+ * @param {string | undefined} repo
+ * @param {string | undefined} pr
+ * @returns {Ref | null}
+ */
 function validateRef(repo, pr) {
-    const m = /^([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)$/.exec(repo);
-    if (!m || !/^\d{1,9}$/.test(pr)) return null;
+    const m = /^([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)$/.exec(/** @type {string} */ (repo));
+    if (!m || !/^\d{1,9}$/.test(/** @type {string} */ (pr))) return null;
     return { owner: m[1], repo: m[2], number: Number(pr) };
 }
 
+/**
+ * @param {string} text
+ * @param {number} max
+ * @param {Counts} counts
+ * @param {'bodies' | 'diffHunks'} key
+ * @returns {string}
+ */
 function truncated(text, max, counts, key) {
     const chars = [...text];
     if (chars.length <= max) return text;
@@ -81,7 +104,11 @@ function truncated(text, max, counts, key) {
     return `${chars.slice(0, max).join('')}${TRUNCATED_MARKER}`;
 }
 
-/** Cap + dedupe by GitHub id; a capped section records its name so the answer says so. */
+/**
+ * Cap + dedupe by GitHub id; a capped section records its name so the answer says so.
+ * @param {any[]} rows
+ * @param {{ map: (row: any) => any, limit: number, ts: Truncation, name: string }} options
+ */
 function section(rows, { map, limit, ts, name }) {
     const seen = new Set();
     const out = [];
@@ -100,8 +127,16 @@ function section(rows, { map, limit, ts, name }) {
     return out;
 }
 
+/**
+ * @param {any} a
+ * @param {any} b
+ */
 const byId = (a, b) => a.id - b.id || String(a.id).localeCompare(String(b.id));
 
+/**
+ * @param {any} a
+ * @param {any} b
+ */
 const sortThread = (a, b) => {
     const da = a.comments[0] && a.comments[0].databaseId !== null ? a.comments[0].databaseId : null;
     const db = b.comments[0] && b.comments[0].databaseId !== null ? b.comments[0].databaseId : null;
@@ -111,6 +146,10 @@ const sortThread = (a, b) => {
     return da - db || a.id.localeCompare(b.id);
 };
 
+/**
+ * @param {any} a
+ * @param {any} b
+ */
 const sortComment = (a, b) => {
     if (a.databaseId === null && b.databaseId === null) return a.id.localeCompare(b.id);
     if (a.databaseId === null) return 1;
@@ -118,6 +157,10 @@ const sortComment = (a, b) => {
     return a.databaseId - b.databaseId || a.id.localeCompare(b.id);
 };
 
+/**
+ * @param {any} row
+ * @param {Counts} counts
+ */
 const asComment = (row, counts) => ({
     id: num(row && row.id),
     author: login(row),
@@ -130,6 +173,10 @@ const asComment = (row, counts) => ({
     reviewId: null,
 });
 
+/**
+ * @param {any} row
+ * @param {Counts} counts
+ */
 const asLine = (row, counts) => ({
     id: num(row && row.id),
     author: login(row),
@@ -142,6 +189,10 @@ const asLine = (row, counts) => ({
     reviewId: num(row && row.pull_request_review_id),
 });
 
+/**
+ * @param {any} row
+ * @param {Counts} counts
+ */
 const asReview = (row, counts) => ({
     id: num(row && row.id),
     author: login(row),
@@ -151,8 +202,13 @@ const asReview = (row, counts) => ({
     commitId: str(row && row.commit_id),
 });
 
-/** Every key a Factory reply marker names in `rows`' full bodies. */
+/**
+ * Every key a Factory reply marker names in `rows`' full bodies.
+ * @param {any[]} rows
+ * @returns {Set<string>}
+ */
 function addressedKeys(rows) {
+    /** @type {Set<string>} */
     const keys = new Set();
     for (const row of rows) {
         for (const match of (str(row && row.body) ?? '').matchAll(ADDRESSED_MARKER)) keys.add(match[1]);
@@ -160,7 +216,12 @@ function addressedKeys(rows) {
     return keys;
 }
 
-/** REST-backed sections: general PR comments, reviews, and inline (diff) comments. */
+/**
+ * REST-backed sections: general PR comments, reviews, and inline (diff) comments.
+ * @param {Ref} ref
+ * @param {Truncation} ts
+ * @param {Counts} counts
+ */
 function fetchRestSections(ref, ts, counts) {
     const pulls = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
     const issues = `repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
@@ -189,18 +250,20 @@ function fetchRestSections(ref, ts, counts) {
     return { general, reviews, inline, addressed };
 }
 
+/** @param {Ref} ref */
 function fetchRequestedReviewers(ref) {
     const pulls = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
     const requested = JSON.parse(gh(['api', `${pulls}/requested_reviewers`]));
     const users = (present(requested) && Array.isArray(requested.users) ? requested.users : [])
-        .map((u) => str(u && u.login))
-        .filter((u) => u !== null);
+        .map(/** @param {any} u */ (u) => str(u && u.login))
+        .filter(/** @param {any} u */ (u) => u !== null);
     const teams = (present(requested) && Array.isArray(requested.teams) ? requested.teams : [])
-        .map((t) => str(t && t.name))
-        .filter((t) => t !== null);
+        .map(/** @param {any} t */ (t) => str(t && t.name))
+        .filter(/** @param {any} t */ (t) => t !== null);
     return { users, teams };
 }
 
+/** @param {Ref} ref */
 function fetchThreadsGql(ref) {
     return JSON.parse(
         gh([
@@ -218,17 +281,24 @@ function fetchThreadsGql(ref) {
     );
 }
 
-/** One review thread's comments, capped and recorded in `ts`/`counts` when truncated. */
+/**
+ * One review thread's comments, capped and recorded in `ts`/`counts` when truncated.
+ * @param {any} node
+ * @param {Truncation} _ts
+ * @param {Counts} counts
+ */
 function threadComments(node, _ts, counts) {
     const comments = (node.comments && Array.isArray(node.comments.nodes) ? node.comments.nodes : [])
-        .filter((c) => c && typeof c.id === 'string')
-        .map((c) => ({
-            id: c.id,
-            databaseId: num(c.databaseId),
-            author: c.author && c.author !== null ? str(c.author.login) : null,
-            body: truncated(str(c.body) ?? '', BODY_MAX, counts, 'bodies'),
-            createdAt: str(c.createdAt),
-        }))
+        .filter(/** @param {any} c */ (c) => c && typeof c.id === 'string')
+        .map(
+            /** @param {any} c */ (c) => ({
+                id: c.id,
+                databaseId: num(c.databaseId),
+                author: c.author && c.author !== null ? str(c.author.login) : null,
+                body: truncated(str(c.body) ?? '', BODY_MAX, counts, 'bodies'),
+                createdAt: str(c.createdAt),
+            })
+        )
         .sort(sortComment);
     const totalComments = num(node.comments && node.comments.totalCount);
     if (comments.length > THREAD_COMMENTS_LIMIT || (totalComments !== null && totalComments > comments.length)) {
@@ -238,7 +308,12 @@ function threadComments(node, _ts, counts) {
     return comments;
 }
 
-/** Cap the thread list to THREADS_LIMIT, recording the truncation in `ts` when it bites. */
+/**
+ * Cap the thread list to THREADS_LIMIT, recording the truncation in `ts` when it bites.
+ * @param {any[]} threads
+ * @param {number | null} totalThreads
+ * @param {Truncation} ts
+ */
 function capThreads(threads, totalThreads, ts) {
     if (threads.length > THREADS_LIMIT || (totalThreads !== null && totalThreads > threads.length)) {
         if (threads.length > THREADS_LIMIT) threads.length = THREADS_LIMIT;
@@ -246,22 +321,29 @@ function capThreads(threads, totalThreads, ts) {
     }
 }
 
-/** Review threads, the PR's review decision and its head commit, read via GraphQL. */
+/**
+ * Review threads, the PR's review decision and its head commit, read via GraphQL.
+ * @param {Ref} ref
+ * @param {Truncation} ts
+ * @param {Counts} counts
+ */
 function fetchThreads(ref, ts, counts) {
     const gql = fetchThreadsGql(ref);
     const pr = gql && gql.data && gql.data.repository && gql.data.repository.pullRequest;
     const nodes = pr && pr.reviewThreads && Array.isArray(pr.reviewThreads.nodes) ? pr.reviewThreads.nodes : [];
 
     const threads = nodes
-        .filter((node) => node && typeof node.id === 'string')
-        .map((node) => ({
-            id: node.id,
-            isResolved: node.isResolved === true,
-            isOutdated: node.isOutdated === true,
-            path: str(node.path),
-            line: num(node.line),
-            comments: threadComments(node, ts, counts),
-        }));
+        .filter(/** @param {any} node */ (node) => node && typeof node.id === 'string')
+        .map(
+            /** @param {any} node */ (node) => ({
+                id: node.id,
+                isResolved: node.isResolved === true,
+                isOutdated: node.isOutdated === true,
+                path: str(node.path),
+                line: num(node.line),
+                comments: threadComments(node, ts, counts),
+            })
+        );
 
     const totalThreads = pr && pr.reviewThreads ? num(pr.reviewThreads.totalCount) : null;
     capThreads(threads, totalThreads, ts);
@@ -269,17 +351,25 @@ function fetchThreads(ref, ts, counts) {
     return { threads, decision: pr ? str(pr.reviewDecision) : null, headOid: pr ? str(pr.headRefOid) : null };
 }
 
-/** How many of the head commit's check runs are not yet completed; 0 without a head. */
+/**
+ * How many of the head commit's check runs are not yet completed; 0 without a head.
+ * @param {Ref} ref
+ * @param {string | null} headOid
+ */
 function fetchPendingChecks(ref, headOid) {
     if (!headOid || !/^[0-9a-f]{40}$/.test(headOid)) return 0;
     const runs = JSON.parse(
         gh(['api', `repos/${ref.owner}/${ref.repo}/commits/${headOid}/check-runs?filter=latest&per_page=100`])
     );
     const list = present(runs) && Array.isArray(runs.check_runs) ? runs.check_runs : [];
-    return list.filter((r) => r && r.status !== 'completed').length;
+    return list.filter(/** @param {any} r */ (r) => r && r.status !== 'completed').length;
 }
 
-/** Bound the serialized verdict to TOTAL_OUTPUT_BYTES, collapsing to a `total` truncation. */
+/**
+ * Bound the serialized verdict to TOTAL_OUTPUT_BYTES, collapsing to a `total` truncation.
+ * @param {object} out
+ * @param {Ref} ref
+ */
 function boundOutput(out, ref) {
     const serialized = JSON.stringify(out);
     if (Buffer.byteLength(serialized, 'utf8') <= TOTAL_OUTPUT_BYTES) return serialized;
@@ -299,6 +389,7 @@ function collect() {
         return refusal('missing credential: GH_TOKEN or GITHUB_TOKEN must be set', ref);
     }
 
+    /** @type {Truncation} */
     const ts = { sections: [], bodies: 0, diffHunks: 0, threads: 0, total: false };
     const counts = { bodies: 0, diffHunks: 0, threads: 0 };
 
@@ -336,6 +427,7 @@ function collect() {
     return boundOutput(out, ref);
 }
 
+/** @param {string[]} args */
 function gh(args) {
     return execFileSync('gh', args, {
         env: process.env,
@@ -345,6 +437,10 @@ function gh(args) {
     });
 }
 
+/**
+ * @param {unknown} error
+ * @param {Ref | null} ref
+ */
 function refusal(error, ref) {
     const text = String(error);
     const bounded = text.length > ERROR_MAX ? `${text.slice(0, ERROR_MAX)}${TRUNCATED_MARKER}` : text;
@@ -354,7 +450,7 @@ function refusal(error, ref) {
 try {
     const out = collect();
     if (typeof out === 'string') process.stdout.write(`${out}\n`);
-} catch (e) {
+} catch (/** @type {any} */ e) {
     const ref = validateRef(process.env.REPO, process.env.PR);
     const message = (e && e.stderr && String(e.stderr)) || (e && e.message && String(e.message)) || String(e);
     process.stdout.write(`${refusal(message, ref)}\n`);

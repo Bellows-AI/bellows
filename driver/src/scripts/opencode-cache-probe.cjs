@@ -1,3 +1,4 @@
+// @ts-check
 // The live cache probe: the newest root session's newest completed assistant turns, read-only,
 // while a run is LIVE (sqlite's WAL serves a reader beside a writer). The driver polls this
 // every CACHE_WATCH_POLL_MS and kills a run whose provider stopped serving prompt cache — the
@@ -18,13 +19,15 @@ const { DatabaseSync } = require('node:sqlite');
 const TURNS = Number(process.env.CACHE_WATCH_TURNS);
 
 try {
-    const db = new DatabaseSync(process.env.OPENCODE_DB, { readOnly: true });
+    const db = new DatabaseSync(/** @type {string} */ (process.env.OPENCODE_DB), { readOnly: true });
     const s = db.prepare('select id from session where parent_id is null order by time_created desc limit 1').get();
     if (s && s.id) {
-        const msgs = db.prepare('select data from message where session_id=? order by id desc limit 12').all(s.id);
+        const msgs = db
+            .prepare('select data from message where session_id=? order by id desc limit 12')
+            .all(/** @type {string} */ (s.id));
         const turns = [];
         for (const m of msgs) {
-            const d = JSON.parse(m.data);
+            const d = JSON.parse(/** @type {string} */ (m.data));
             if (d.role !== 'assistant') continue;
             const t = d.time || {};
             if (!t.completed) continue;

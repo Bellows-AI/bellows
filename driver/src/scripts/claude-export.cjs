@@ -1,3 +1,4 @@
+// @ts-check
 // The continuous claude-code transcript exporter: runs beside the agent as its own container of the run's pod
 // (docker: its container group), under the task supervisor, over the same volume, tails every session file under
 // <CLAUDE_TRANSCRIPT_DIR>/projects and uploads byte-range chunks of it, cut at record boundaries, through the
@@ -7,7 +8,7 @@
 // Environment (set by the driver; paths and literals, no credential):
 //   CLAUDE_TRANSCRIPT_DIR  — the thread's transcript directory (the runner's CLAUDE_CONFIG_DIR).
 //   EXPORT_CONTROL_SOCKET  — the task supervisor's relay socket in FACTORY_EXPORT_DIR: it adds this
-//                            exporter's token and follows whichever driver holds the run (issue #829),
+//                            exporter's token and follows whichever driver holds the run,
 //                            so this process holds no credential. A socket not there yet is retried.
 //   BELLOWS_CONTROL_URL / BELLOWS_CONTROL_TOKEN — one-shot mode only (a review's close-time export,
 //                            run by the holder itself): the endpoint and the token it issued.
@@ -70,13 +71,17 @@ const EXIT_OK = 0;
 const NEWLINE = 0x0a;
 const SESSION = /^[A-Za-z0-9._-]{1,128}$/;
 
+/**
+ * @param {string} name
+ * @param {number} fallback
+ */
 const positive = (name, fallback) => {
     const value = Number(process.env[name]);
     return Number.isFinite(value) && value > 0 ? value : fallback;
 };
 const DIR = process.env.CLAUDE_TRANSCRIPT_DIR;
 const EXPORT_DIR = process.env.FACTORY_EXPORT_DIR;
-// One-shot mode (a review's close-time export, issue #774): no mailbox and no drain order. The
+// One-shot mode (a review's close-time export): no mailbox and no drain order. The
 // closing state and cause come from the env, and the exporter drains what is there, closes and exits.
 const ONCE = process.env.EXPORT_ONCE;
 const CONTROL_SOCKET = process.env.EXPORT_CONTROL_SOCKET;
@@ -95,8 +100,15 @@ const READ_BYTES = READ_MIB * MIB;
 // Bytes read ahead of the acknowledged point: past this the file itself is the spool and reading pauses.
 const HELD_MAX = 2 * RECORD_MAX;
 
+/** @typedef {{ offset: number, body: Buffer }} Inflight */
+/** @typedef {{ file: string, fd: number, session: string, ino: number, base: number, pos: number, acked: number, size: number, stopCause: string | null, permanent: boolean, rotations: number, truncated: boolean, held: Buffer, inflight: Inflight | null, since: number | null, retryAt: number, failures: number }} Track */
+/** @typedef {{ state: string, cause: string | null }} Drain */
+/** @typedef {{ status: number, json: any }} Answer */
+
+/** @type {Map<string, Track>} */
 const tracks = new Map();
 const startedAt = new Date().toISOString();
+/** @type {{ drain: Drain | null, lastStateAt: number, lastReported: string, outageSince: number | null, unreachableSince: number | null, spoolFull: boolean }} */
 const progress = {
     drain: null,
     lastStateAt: 0,
@@ -106,15 +118,24 @@ const progress = {
     spoolFull: false,
 };
 
+/** @param {number} ms */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const UNREACHABLE = { status: 0, json: {} };
 
 // One request, answered or not within its bound: a connect to a vanished pod IP never fails by itself.
+/**
+ * @param {string} method
+ * @param {string} target
+ * @param {string | Buffer} [body]
+ * @returns {Promise<Answer>}
+ */
 const send = (method, target, body) =>
     new Promise((resolve) => {
         let settled = false;
+        /** @type {import('node:http').ClientRequest | null} */
         let req = null;
+        /** @param {Answer} answer */
         const settle = (answer) => {
             if (settled) return;
             settled = true;
@@ -130,13 +151,16 @@ const send = (method, target, body) =>
             REQUEST_TIMEOUT_MS + Math.ceil(bytes / MIB) * MS_PER_MIB
         );
         // Over the relay socket the exporter sends no credential: the supervisor attaches the token.
+        /** @type {Record<string, string | number>} */
         const headers = CONTROL_SOCKET ? {} : { authorization: `Bearer ${TOKEN}` };
         if (body) headers['content-length'] = bytes;
+        /** @param {import('node:http').IncomingMessage} res */
         const onResponse = (res) => {
             // A response cut by the timer's destroy errors here, not on the request.
             res.on('error', () => settle(UNREACHABLE));
+            /** @type {Buffer[]} */
             const parts = [];
-            res.on('data', (part) => parts.push(part));
+            res.on('data', (/** @type {Buffer} */ part) => parts.push(part));
             res.on('end', () => {
                 let json = {};
                 try {
@@ -157,6 +181,12 @@ const send = (method, target, body) =>
 
 // One call, with the clocks the give-up windows read: a dead endpoint starts the outage, a driver
 // that did not answer at all (from when the request was sent) the unreachable one; an answer stops each.
+/**
+ * @param {string} method
+ * @param {string} target
+ * @param {string | Buffer} [body]
+ * @returns {Promise<Answer>}
+ */
 const request = async (method, target, body) => {
     const sentAt = Date.now();
     const answer = await send(method, target, body);
@@ -166,6 +196,7 @@ const request = async (method, target, body) => {
     return answer;
 };
 
+/** @param {number} code */
 const bail = (code) => {
     writeStatus({ done: true, gone: true });
     process.exit(code);
@@ -183,23 +214,27 @@ const abandonDrain = () => {
     }
 };
 
-const statePath = (session) => path.join(DIR, 'export-state', `${session}.json`);
+/** @param {string} session */
+const statePath = (session) => path.join(/** @type {string} */ (DIR), 'export-state', `${session}.json`);
 
 // Null only when there is no state; one that is there but unreadable or misshapen says `unreadable`.
+/** @param {string} session */
 const loadState = (session) => {
     let state;
     try {
         state = JSON.parse(fs.readFileSync(statePath(session), 'utf8'));
     } catch (e) {
-        return e?.code === 'ENOENT' ? null : { unreadable: true };
+        return /** @type {NodeJS.ErrnoException} */ (e)?.code === 'ENOENT' ? null : { unreadable: true };
     }
     const { ino, base, acked, stopCause } = state ?? {};
+    /** @param {any} value */
     const whole = (value) => Number.isSafeInteger(value) && value >= 0;
     return [ino, base, acked].every(whole) && acked >= base && (stopCause === null || typeof stopCause === 'string')
         ? state
         : { unreadable: true };
 };
 
+/** @param {Track} track */
 const saveState = (track) => {
     const file = statePath(track.session);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -210,6 +245,10 @@ const saveState = (track) => {
     fs.renameSync(tmp, file);
 };
 
+/**
+ * @param {string} dir
+ * @param {(entry: import('node:fs').Dirent) => boolean} keep
+ */
 const listDir = (dir, keep) => {
     try {
         return fs.readdirSync(dir, { withFileTypes: true }).filter(keep);
@@ -218,13 +257,16 @@ const listDir = (dir, keep) => {
     }
 };
 
+/** @param {string} dir */
 const listJsonl = (dir) => listDir(dir, (e) => e.name.endsWith('.jsonl')).map((e) => e.name);
 
 // Every session file the CLI keeps: projects/<dir>/<session>.jsonl and, in the newer layout, its
 // subagents' own files under projects/<dir>/<session>/subagents/. Each is a session of its own.
 const discover = () => {
-    const projects = path.join(DIR, 'projects');
+    const projects = path.join(/** @type {string} */ (DIR), 'projects');
+    /** @type {string[]} */
     const found = [];
+    /** @param {import('node:fs').Dirent} e */
     const isDir = (e) => e.isDirectory();
     for (const dir of listDir(projects, isDir)) {
         const root = path.join(projects, dir.name);
@@ -237,6 +279,12 @@ const discover = () => {
     return found;
 };
 
+/**
+ * @param {string} file
+ * @param {number} fd
+ * @param {import('node:fs').Stats} stat
+ * @returns {Track}
+ */
 const blankTrack = (file, fd, stat) => ({
     file,
     fd,
@@ -260,12 +308,14 @@ const blankTrack = (file, fd, stat) => ({
 // Where an unseen file starts: whole, from offset 0. A session file with no saved state is exported whole
 // whatever its age, since a byte sent twice is harmless (the checkpoint restore tolerates identical
 // overlap) and a byte skipped is lost.
+/** @param {Track} track */
 const firstSight = (track) => {
     track.pos = 0;
     track.acked = 0;
     saveState(track);
 };
 
+/** @param {string} file */
 const open = (file) => {
     if (!SESSION.test(path.basename(file, '.jsonl'))) return null;
     let fd;
@@ -292,12 +342,15 @@ const open = (file) => {
     return track;
 };
 
+/** @param {Track} track */
 const unacked = (track) =>
     track.size - track.pos + track.held.length + (track.inflight ? track.inflight.body.length : 0);
 
+/** @param {Track} track */
 const heldBytes = (track) => track.held.length + (track.inflight ? track.inflight.body.length : 0);
 
 // Reads what the file has grown by into `held`.
+/** @param {Track} track */
 const growHeld = (track) => {
     while (track.pos < track.size && heldBytes(track) < HELD_MAX) {
         const buf = Buffer.alloc(Math.min(READ_BYTES, track.size - track.pos));
@@ -311,6 +364,7 @@ const growHeld = (track) => {
 
 // Drained to this file's end: if the path now names another file, this one was rotated away (its
 // descriptor stayed valid, so every byte of it has been read) and the new one follows.
+/** @param {Track} track */
 const followRotation = (track) => {
     let now;
     try {
@@ -328,6 +382,7 @@ const followRotation = (track) => {
     track.rotations += 1;
 };
 
+/** @param {Track} track */
 const readMore = (track) => {
     let stat;
     try {
@@ -348,6 +403,10 @@ const readMore = (track) => {
 
 // How much of `held` the next chunk takes: whole records only, up to FLUSH_BYTES (a larger record is
 // its own chunk, and one above RECORD_MAX is cut), or 0 when nothing is due yet.
+/**
+ * @param {Track} track
+ * @param {boolean} force
+ */
 const chunkEnd = (track, force) => {
     const held = track.held;
     let whole = held.lastIndexOf(NEWLINE) + 1;
@@ -355,7 +414,7 @@ const chunkEnd = (track, force) => {
         whole = RECORD_MAX;
         track.truncated = true;
     }
-    const due = whole >= FLUSH_BYTES || Date.now() - track.since >= FLUSH_MS || force;
+    const due = whole >= FLUSH_BYTES || Date.now() - /** @type {number} */ (track.since) >= FLUSH_MS || force;
     if (whole === 0 || !due) return 0;
     let end = whole;
     if (whole > FLUSH_BYTES) {
@@ -369,6 +428,10 @@ const chunkEnd = (track, force) => {
     return end;
 };
 
+/**
+ * @param {Track} track
+ * @param {boolean} force
+ */
 const cut = (track, force) => {
     if (track.inflight || track.held.length === 0) return;
     const end = chunkEnd(track, force);
@@ -378,8 +441,10 @@ const cut = (track, force) => {
     track.held = track.held.subarray(end);
 };
 
+/** @param {Track} track */
 const ack = (track) => {
-    track.acked = track.inflight.offset + track.inflight.body.length;
+    track.acked =
+        /** @type {Inflight} */ (track.inflight).offset + /** @type {Inflight} */ (track.inflight).body.length;
     track.inflight = null;
     track.since = unacked(track) > 0 ? Date.now() : null;
     saveState(track);
@@ -390,23 +455,35 @@ const ack = (track) => {
 // prefix of the bytes held, those bytes are stored: ack them and carry on after them. Anything else is a
 // different chunk at that offset, which stops the stream. Limit, stated: a recorded chunk as long as or longer
 // than the held bytes stops it too, though the held bytes may be its prefix.
+/**
+ * @param {Track} track
+ * @param {Answer} answer
+ */
 const recordedPrefix = (track, answer) => {
     const { recorded } = answer.json;
-    const body = track.inflight.body;
+    const body = /** @type {Inflight} */ (track.inflight).body;
     if (!recorded || !Number.isSafeInteger(recorded.length) || typeof recorded.sha256 !== 'string') return 0;
     if (recorded.length < 1 || recorded.length >= body.length) return 0;
     const digest = crypto.createHash('sha256').update(body.subarray(0, recorded.length)).digest('hex');
     return digest === recorded.sha256 ? recorded.length : 0;
 };
 
+/**
+ * @param {Track} track
+ * @param {number} length
+ */
 const continueAfter = (track, length) => {
-    const { offset, body } = track.inflight;
+    const { offset, body } = /** @type {Inflight} */ (track.inflight);
     track.acked = offset + length;
     track.inflight = { offset: offset + length, body: body.subarray(length) };
     track.failures = 0;
     saveState(track);
 };
 
+/**
+ * @param {Track} track
+ * @param {Answer} answer
+ */
 const stopStream = (track, answer) => {
     // A cap refusal is the board's say-so, anything else is permanent: either way the bytes stay on
     // the volume, the stream stops uploading, and the manifest says why.
@@ -415,12 +492,14 @@ const stopStream = (track, answer) => {
     ack(track);
 };
 
+/** @param {Track} track */
 const retryLater = (track) => {
     track.failures += 1;
     track.retryAt =
         Date.now() + Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.min(track.failures, BACKOFF_MAX_STEP));
 };
 
+/** @param {Track} track */
 const upload = async (track) => {
     if (!track.inflight || Date.now() < track.retryAt) return;
     if (track.stopCause) {
@@ -446,6 +525,7 @@ const upload = async (track) => {
 
 const vitals = () => {
     let pendingBytes = 0;
+    /** @type {number | null} */
     let oldest = null;
     for (const track of tracks.values()) {
         const bytes = unacked(track);
@@ -457,6 +537,7 @@ const vitals = () => {
     return { pendingBytes, oldestUnackedMs: oldest === null ? 0 : Math.max(0, Date.now() - oldest) };
 };
 
+/** @param {boolean} done */
 const report = async (done) => {
     const { pendingBytes, oldestUnackedMs } = vitals();
     const spoolFull = pendingBytes > SPOOL_MAX;
@@ -476,8 +557,9 @@ const report = async (done) => {
 };
 
 // One session's closing record: what the drain says, unless the stream itself ended another way.
+/** @param {Track} track */
 const manifestOf = (track) => {
-    const { drain } = progress;
+    const { drain } = /** @type {{ drain: Drain }} */ (progress);
     let state = drain.state;
     let terminalCause = drain.cause;
     if (track.truncated) {
@@ -531,6 +613,7 @@ const tick = async () => {
 // Nothing in flight, nothing unread, and no whole record held back.
 const settled = () => [...tracks.values()].every((t) => !t.inflight && t.size === t.pos && t.held.indexOf(NEWLINE) < 0);
 
+/** @param {string} file */
 const readText = (file) => {
     try {
         return fs.readFileSync(file, 'utf8');
@@ -540,6 +623,7 @@ const readText = (file) => {
 };
 
 // What the supervisor reads of this exporter: the vitals, whether it finished, whether its token is gone.
+/** @param {{ done?: boolean, gone?: boolean }} [options] */
 function writeStatus({ done = false, gone = false } = {}) {
     if (!EXPORT_DIR) return;
     const { pendingBytes, oldestUnackedMs } = vitals();

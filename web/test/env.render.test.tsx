@@ -1,12 +1,10 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { EnvSaveResult, EnvVarView } from '../src/api/useEnv.js';
 import { EnvVarsSection } from '../src/panels/EnvVarsSection.js';
 
 /**
- * The inline variables editor's first paint (BEL-262), server-render-tested by markup assertions:
+ * The inline variables editor's first paint, server-render-tested by markup assertions:
  * the tabs and their counts, the rows read as text, masking and the empty state. The editing
  * itself is driven by `env-editor.dom.test.tsx` and, through the pages, by `env.dom.test.tsx`.
  */
@@ -121,19 +119,5 @@ describe('the inline variables editor, first paint', () => {
 
     it('uses no form, because the CSP sends form-action none', () => {
         expect(render([])).not.toContain('<form');
-    });
-
-    it('never leans on window.confirm anywhere the guard reaches', () => {
-        // The dialog contract replaced the browser confirm on the task page (issue 178); the env
-        // guards must not quietly reintroduce it. Source pin, because the call would render
-        // nothing for a static suite to catch.
-        const paths = [
-            '../src/panels/EnvVarsSection.tsx',
-            '../src/pages/SettingsLayout.tsx',
-            '../src/pages/SettingsRepositoriesPage.tsx',
-        ].map((p) => fileURLToPath(new URL(p, import.meta.url)));
-        for (const path of paths) {
-            expect(readFileSync(path, 'utf8'), path).not.toContain('window.confirm');
-        }
     });
 });

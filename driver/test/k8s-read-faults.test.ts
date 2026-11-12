@@ -1,11 +1,11 @@
 /**
- * Every read of the kubernetes runner's destructive and verdict paths, replayed faulted (issue #869):
+ * Every read of the kubernetes runner's destructive and verdict paths, replayed faulted:
  * the fence and its sweep, a contended claim, the group's end, the reaper's two verdicts, an
  * adoption of a finished and of a finalizing runner, a run's verdict and the dead-service probe. The
  * engine and its rules are `fixtures/read-faults.ts`; each scenario's world is "something there",
  * so every read that guards a delete or a verdict answers non-empty when clean.
  *
- * Every path reads typed (#869): a cell that holds is a plain test, and nothing is pinned. The stopAgent and kill of a kubernetes runner
+ * Every path reads typed: a cell that holds is a plain test, and nothing is pinned. The stopAgent and kill of a kubernetes runner
  * (`k8s-runner.ts`) are not replayed here — their docker twins are.
  */
 import { randomUUID } from 'node:crypto';
@@ -156,6 +156,18 @@ const teardownHeld: Build<K8sRequest> = async (tap, alias) => {
     };
 };
 
+/** K-G1: a lost supervisor's pod is live: the group is kept, and no read that fails may call it taken away. */
+const groupKept: Build<K8sRequest> = async (tap, alias) => {
+    const job = freshJob();
+    aliasPair(alias, job, 'lease');
+    const pod = podOf(`${runnerJobName(job)}-xxxxx`, 'Running', {}, []);
+    const { request } = serverFor(job, (method, path) =>
+        isGet(method, path, `${PODS}?`) && selector(path).includes('job-name=') ? list([pod]) : undefined
+    );
+    const runner = runnerOf(tap(request));
+    return async () => ((await runner.groupTakenAway(job, new AbortController().signal)) === 'taken' ? ['taken'] : []);
+};
+
 /** A reaper round over `request`, the board answering `leases` for every id. */
 const reaperOver = (request: K8sRequest, leases: Parameters<typeof createReaper>[0]['board']['leases']) =>
     createReaper({
@@ -170,7 +182,7 @@ const reaperOver = (request: K8sRequest, leases: Parameters<typeof createReaper>
         log: () => {},
     });
 
-/** K-R1: a live job's superseded lease left an unread finished runner (its sidecars end with it, issue #773). */
+/** K-R1: a live job's superseded lease left an unread finished runner (its sidecars end with it). */
 const reaperSuperseded: Build<K8sRequest> = async (tap, alias) => {
     const job = freshJob();
     const old = randomUUID();
@@ -289,7 +301,7 @@ const runVerdict: Build<K8sRequest> = async (tap, alias) => {
     return async () => runVerdicts(await runner.run(job, session));
 };
 
-/** K-D1: the attempt's one declared service runs, a sidecar of its task pod (issue #773). */
+/** K-D1: the attempt's one declared service runs, a sidecar of its task pod. */
 const deadService: Build<K8sRequest> = async (tap, alias) => {
     const job = { ...freshJob(), services: [{ name: 'db', image: 'postgres:17', environment: [] }] };
     aliasPair(alias, job, 'lease');
@@ -382,6 +394,8 @@ scenario(
     {}
 );
 
+scenario('the group-taken-away read on a live pod (K-G1)', groupKept, { writes: [] }, {});
+
 scenario('the sync fence on a claim a live lease holds (K-FH)', fenceHeld, { writes: [`POST ${API}/configmaps`] }, {});
 
 scenario('the group end while a writer pod still runs (K-T1)', teardownHeld, { writes: secretsOf('lease') }, {});
@@ -390,7 +404,7 @@ scenario(
     'the reaper on a superseded lease with an unread runner (K-R1)',
     reaperSuperseded,
     { writes: [] },
-    // The Job list is the arm's only read (a service is a sidecar of its Job, issue #773): a list
+    // The Job list is the arm's only read (a service is a sidecar of its Job): a list
     // read as no runner Job names no group, so the superseded one is simply not reaped.
     {}
 );
@@ -440,7 +454,7 @@ scenario('a run whose agent failed under a live pod (K-V1)', runVerdict, { write
 scenario('the dead-service probe of a running service (K-D1)', deadService, { writes: [] }, {});
 
 /**
- * K-VX (issue #938): the reaper's export of a not-whole thread's volume claim, then its delete. A faulted read
+ * K-VX: the reaper's export of a not-whole thread's volume claim, then its delete. A faulted read
  * of the export (the claim presence, the pod's phase) must end in a kept claim, never a delete.
  */
 const volumeExportOf =

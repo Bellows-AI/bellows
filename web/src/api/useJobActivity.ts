@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { TaskUsage, Tokens, UsageBlock } from '@factory-ai/core';
 import type { Job } from './useJobs.js';
+import { request } from './request.js';
 
 /** The four token types the board reports apart; `null` is a type never measured, never zero. */
 export type TokenTypes = Tokens;
@@ -115,16 +116,14 @@ export function useThreadActivity(jobs: readonly Job[] | null): ThreadActivity {
         if (key === '') return;
         const controller = new AbortController();
         const newest = key.split(',').pop()!.split('|')[0]!;
-        void (async () => {
-            try {
-                const response = await fetch(`/api/jobs/${newest}/activity`, { signal: controller.signal });
-                const answer: RunActivity = response.ok ? ((await response.json()) as JobActivity) : 'unavailable';
-                setAnswers((previous) => ({ ...previous, [newest]: answer }));
-            } catch {
-                // Aborted mid-flight (the thread changed): the new fetch owns the state.
-                // A network failure that is not an abort keeps the last answer.
-            }
-        })();
+        void request<JobActivity>(`/api/jobs/${newest}/activity`, { signal: controller.signal }).then((result) => {
+            // Aborted mid-flight (the thread changed): the new fetch owns the state. A network failure
+            // that is not an abort keeps the last answer; an HTTP answer that is not the activity is a refusal.
+            if (result.aborted) return;
+            if (!result.ok && result.status === undefined) return;
+            const answer: RunActivity = result.ok ? result.value : 'unavailable';
+            setAnswers((previous) => ({ ...previous, [newest]: answer }));
+        });
         return () => controller.abort();
     }, [key]);
 

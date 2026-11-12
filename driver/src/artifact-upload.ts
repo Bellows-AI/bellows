@@ -39,7 +39,7 @@ export const ARTIFACT_STREAM = {
     log: 'log',
     transcript: 'transcript',
     rawTranscript: 'transcript-raw',
-    /** The attempt's checkpoint (issue #775): a header line, a git bundle and the OpenCode snapshot, binary. */
+    /** The attempt's checkpoint: a header line, a git bundle and the OpenCode snapshot, binary. */
     checkpoint: 'checkpoint',
 } as const;
 

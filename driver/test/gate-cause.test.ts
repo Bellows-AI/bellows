@@ -84,7 +84,7 @@ const JEST_CONSOLE_NOISE = [
     jestSummary(1),
 ].join('\n');
 const FILE_FAILED_TO_LOAD = [' Test Files  1 failed | 411 passed (412)', '      Tests  5603 passed (5603)'].join('\n');
-/** npm writing a package cache on an NFS volume another client changed under it (issue #789). */
+/** npm writing a package cache on an NFS volume another client changed under it. */
 const NPM_STALE_HANDLE = [
     'added 935 packages in 3m',
     'npm error code UNKNOWN',

@@ -76,7 +76,7 @@ describe('readAnswer', () => {
         expect(job(`{${uid},"status":{}}`).kind).toBe('value');
         expect(job(`{${uid}}`).kind).toBe('inconclusive');
         expect(job(`{${uid},"status":"done"}`).kind).toBe('inconclusive');
-        // A Job that cannot say which incarnation it is proves nothing about one (#869).
+        // A Job that cannot say which incarnation it is proves nothing about one.
         expect(job('{"status":{"succeeded":1}}').kind).toBe('inconclusive');
         expect(job('{"metadata":{},"status":{}}').kind).toBe('inconclusive');
     });
@@ -107,6 +107,16 @@ describe('the typed list reader', () => {
     it('reads a list of named entries as their value', async () => {
         const entry = { metadata: { name: 'a', uid: 'u', labels: { k: 'v' } }, status: { phase: 'Running' } };
         expect(await read(JSON.stringify({ items: [entry] }))).toEqual({ kind: 'value', value: [entry] });
+    });
+
+    it('reads a 404 for a collection as inconclusive, never absent', async () => {
+        const answered = await readTypedList(
+            deps('{"kind":"Status","reason":"NotFound"}', 404),
+            '/pods',
+            'listing the pods',
+            { entry: asNamed, once: true }
+        );
+        expect(answered).toEqual({ kind: 'inconclusive', reason: 'listing the pods answered 404 for a collection' });
     });
 
     it.each([

@@ -1,4 +1,4 @@
--- The reclaim queue's lease becomes a persisted, granted expiry (review of #54).
+-- The reclaim queue's lease becomes a persisted, granted expiry.
 --
 -- 020 leased task_reclaim through claimed_at plus whatever leaseSeconds the POLLING worker passed:
 -- the expiry was re-measured on every poll, so a holder granted 300 seconds could lose its row to

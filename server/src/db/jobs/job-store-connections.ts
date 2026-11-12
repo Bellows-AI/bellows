@@ -1,5 +1,5 @@
 /**
- * The writes that bind a task's connections (BEL-59), each inside the caller's transaction: at create, on a
+ * The writes that bind a task's connections, each inside the caller's transaction: at create, on a
  * follow-up, through the owner's bind route, and the claim's check that a required integration is still bound.
  * The stores they call are `connection-bindings.ts`; this file is only where the job store's rows meet them.
  */
@@ -30,7 +30,7 @@ export type BindConnectionResult =
     | { ok: false; reason: 'missing' | 'stale-revision' | 'not-authorized' | 'duplicate' };
 
 /**
- * The create's connections (BEL-59), in the create transaction: a refusal or a failed read rolls the row
+ * The create's connections, in the create transaction: a refusal or a failed read rolls the row
  * back, so a task and its requirements commit together. A task with no author cannot bind or default:
  * naming a connection is refused and a required provider stays a requirement.
  */
@@ -69,7 +69,7 @@ export async function bindOnCreate(
 }
 
 /**
- * A follow-up's `connections` (BEL-59), appended to the thread root's bindings in the follow-up's transaction.
+ * A follow-up's `connections`, appended to the thread root's bindings in the follow-up's transaction.
  * The revision is read here, after the advisory lock and the insert, never taken from the request: the
  * follow-up names what to add, not which bindings it saw. A refusal rolls the follow-up row back.
  */
@@ -216,7 +216,7 @@ export async function recordUnboundRequirements(
     rootJobId: string
 ): Promise<boolean> {
     // Under the thread lock the bind route also takes: the unbound read and the requirement write are one step.
-    // The acquire holds its candidate row already (and, for a member, the root row via `skip locked`, BEL-161): it
+    // The acquire holds its candidate row already (and, for a member, the root row via `skip locked`): it
     // never waits for the root row here, and the requirement insert needs only KEY SHARE on it.
     await lockThreadInTx(tx, rootJobId);
     const [root] = await tx<

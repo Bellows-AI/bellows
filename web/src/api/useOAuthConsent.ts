@@ -1,8 +1,6 @@
-import { JSON_HEADERS } from '@factory-ai/core';
 import { useCallback, useEffect, useState } from 'react';
 import type { OAuthClientView } from '../oauth-client.js';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 /** What the consent routes report of the transaction the authorize redirect opened. */
 export interface ConsentRequest {
@@ -29,23 +27,20 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_BAD_REQUEST = 400;
 
 /** A decision's answer: the redirect to follow, or why not; `closed` when the server no longer holds the request. */
-async function readDecision(response: Response): Promise<{ result: DecisionResult; closed: boolean }> {
-    if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-        reportUnauthenticated();
-        return { result: { ok: false, error: 'Your session expired' }, closed: false };
-    }
-    if (!response.ok) {
-        const { error } = await refusalOf(response, 'Could not send your answer');
-        return {
-            result: { ok: false, error },
-            closed: response.status === HTTP_BAD_REQUEST || response.status === HTTP_NOT_FOUND,
-        };
-    }
-    const body = (await response.json()) as { redirect?: unknown };
-    if (typeof body.redirect !== 'string') {
-        return { result: { ok: false, error: 'The server sent no way back to the app.' }, closed: false };
-    }
-    return { result: { ok: true, redirect: body.redirect }, closed: false };
+async function sendDecision(approve: boolean, body: unknown): Promise<{ result: DecisionResult; closed: boolean }> {
+    const answer = await request<{ redirect: string }>(`/api/oauth/consent/${approve ? 'approve' : 'deny'}`, {
+        method: 'POST',
+        body,
+        verb: 'Could not send your answer',
+        guard: (parsed): parsed is { redirect: string } =>
+            typeof (parsed as { redirect?: unknown } | null)?.redirect === 'string',
+        malformed: 'The server sent no way back to the app.',
+    });
+    if (answer.ok) return { result: { ok: true, redirect: answer.value.redirect }, closed: false };
+    return {
+        result: { ok: false, error: answer.error },
+        closed: answer.status === HTTP_BAD_REQUEST || answer.status === HTTP_NOT_FOUND,
+    };
 }
 
 /**
@@ -61,27 +56,14 @@ export function useOAuthConsent(id: string | null, csrf: string | null) {
                 setState({ phase: 'gone' });
                 return;
             }
-            try {
-                const response = await fetch(`/api/oauth/consent/${encodeURIComponent(id)}`, signal ? { signal } : {});
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    reportUnauthenticated();
-                    return;
-                }
-                if (response.status === HTTP_NOT_FOUND) {
-                    setState({ phase: 'gone' });
-                    return;
-                }
-                if (!response.ok) {
-                    setState({
-                        phase: 'failed',
-                        error: (await refusalOf(response, 'Could not load the request')).error,
-                    });
-                    return;
-                }
-                setState({ phase: 'ready', request: (await response.json()) as ConsentRequest });
-            } catch (e) {
-                if (!signal?.aborted) setState({ phase: 'failed', error: (e as Error).message });
-            }
+            const result = await request<ConsentRequest>(`/api/oauth/consent/${encodeURIComponent(id)}`, {
+                ...(signal ? { signal } : {}),
+                verb: 'Could not load the request',
+            });
+            if (result.aborted || result.unauthenticated) return;
+            if (result.ok) setState({ phase: 'ready', request: result.value });
+            else if (result.status === HTTP_NOT_FOUND) setState({ phase: 'gone' });
+            else setState({ phase: 'failed', error: result.error });
         },
         [id]
     );
@@ -96,19 +78,10 @@ export function useOAuthConsent(id: string | null, csrf: string | null) {
     const decide = useCallback(
         async (approve: boolean, orgId?: string): Promise<DecisionResult> => {
             if (!id || !csrf) return { ok: false, error: 'This request is missing its security token.' };
-            try {
-                const response = await fetch(`/api/oauth/consent/${approve ? 'approve' : 'deny'}`, {
-                    method: 'POST',
-                    headers: JSON_HEADERS,
-                    body: JSON.stringify(approve ? { id, csrf, orgId } : { id, csrf }),
-                });
-                const { result, closed } = await readDecision(response);
-                // The server closed the request (spent, expired, tampered): re-read so the page shows the truth.
-                if (closed) void load();
-                return result;
-            } catch (e) {
-                return { ok: false, error: (e as Error).message };
-            }
+            const { result, closed } = await sendDecision(approve, approve ? { id, csrf, orgId } : { id, csrf });
+            // The server closed the request (spent, expired, tampered): re-read so the page shows the truth.
+            if (closed) void load();
+            return result;
         },
         [id, csrf, load]
     );

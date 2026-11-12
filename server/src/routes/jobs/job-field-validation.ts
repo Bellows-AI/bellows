@@ -85,7 +85,7 @@ export function validateCommandField(raw: unknown): { ok: true; value: string } 
     return { ok: true, value: raw };
 }
 
-/** A task title (BEL-252), normalized the one way every writer shares; absent or null means none given. */
+/** A task title, normalized the one way every writer shares; absent or null means none given. */
 export function validateTitleField(raw: unknown): { ok: true; value: string | null } | { ok: false; message: string } {
     if (raw === undefined || raw === null) return { ok: true, value: null };
     const result = normalizeTaskTitle(raw);
@@ -127,7 +127,7 @@ export function validateExecutorScopeField(
 }
 
 /**
- * The skills a task selects (issue #545): absent or null means none. A well-formed name list —
+ * The skills a task selects: absent or null means none. A well-formed name list —
  * bounded, no duplicates — is this function's business; whether each name is installed is the
  * caller's, which holds the catalog.
  */
@@ -193,7 +193,7 @@ export function buildWorkflowSelection(
     const definition = found.definition;
     // The declared parameters are code-enforced, not prompt-discipline: a parametrized workflow
     // must never launch on a guess, so a missing or malformed value refuses HERE — a 400 to the
-    // composer, not a runner improvising (issue #127).
+    // composer, not a runner improvising.
     const checked = checkWorkflowParams(definition, workflowParams);
     if (!checked.ok) return { ok: false, code: checked.refusal.code, message: checked.refusal.message };
     const entry = nodeOf(definition, definition.entry);
@@ -240,7 +240,7 @@ export interface CompleteFields {
 }
 
 /**
- * The structured terminal reasons a verdict may name (issue #339). The route is the value
+ * The structured terminal reasons a verdict may name. The route is the value
  * boundary: anything not in this list is refused, so the stored column is always one of these
  * spellings or null — "not a failure".
  */
@@ -260,7 +260,7 @@ export const FAILURE_KINDS: readonly FailureKind[] = [
     'runner_error',
 ];
 
-/** The causes a `gate`, `publish` or `helper` failure may name (issue #581), and only those kinds. */
+/** The causes a `gate`, `publish` or `helper` failure may name, and only those kinds. */
 export const FAILURE_CAUSES: readonly FailureCause[] = [
     'verification',
     'conflict',
@@ -336,7 +336,7 @@ function badAgentTurns(agentTurns: unknown): boolean {
     );
 }
 
-// How long `environment.setup` ran before the agent (issue #733): optional, absent means none ran.
+// How long `environment.setup` ran before the agent: optional, absent means none ran.
 // A non-negative safe integer of milliseconds, so the bigint column always takes it.
 function badSetupMs(setupMs: unknown): boolean {
     return setupMs !== undefined && setupMs !== null && (!Number.isSafeInteger(setupMs) || (setupMs as number) < 0);
@@ -523,8 +523,8 @@ export function validatePublication(
 }
 
 /**
- * The verdict a complete body carries, parsed once for `complete` and the staged conclusion alike
- * (issue #821): the board fingerprints the parsed value, so the two routes must never parse apart.
+ * The verdict a complete body carries, parsed once for `complete` and the staged conclusion alike:
+ * the board fingerprints the parsed value, so the two routes must never parse apart.
  */
 export function validateVerdictBody(
     fields: Record<string, unknown>
@@ -570,7 +570,7 @@ export function validateListQuery(query: {
 }
 
 /**
- * The settle long-poll's query (issue #323): `waitFor` takes the one value `terminal`, and
+ * The settle long-poll's query: `waitFor` takes the one value `terminal`, and
  * `timeout` is whole seconds `1..${WAIT_TIMEOUT_MAX_S}` — smaller is refused, larger is clamped
  * to the server-side cap rather than refused, since the ask is "as long as you allow". Absent,
  * `timeout` waits the default. A value without `waitFor=terminal` is refused — there is no

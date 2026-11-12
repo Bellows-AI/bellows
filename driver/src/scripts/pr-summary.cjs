@@ -1,9 +1,10 @@
+// @ts-check
 'use strict';
 
 /*
  * The PR summary: one JSON line {title, body} describing what the task branch did, for the
  * publish flow to open the pull request with. The driver never sees the commits — they live
- * only in the task worktree — and the job command is a prompt, not a summary (issue #82: a PR
+ * only in the task worktree — and the job command is a prompt, not a summary (a PR
  * titled "try again?" is the failure this replaces; issue #389: a title copied from the
  * branch's FIRST commit names its setup, not its outcome).
  *
@@ -13,9 +14,9 @@
  *         back — a summary is decoration, never worth failing a publish that already pushed.
  *   BACKSTOP_TITLE  the driver's plan.title — the subject of the commit the publish itself just
  *         created from the uncommitted leftovers. Commits with that subject are excluded from
- *         the title selection: the prompt is never authoritative (issue #389).
+ *         the title selection: the prompt is never authoritative.
  *
- * The title is SELECTED, not copied (issue #389): every commit is scored by how much of its
+ * The title is SELECTED, not copied: every commit is scored by how much of its
  * churn survives in the branch's final diff against BASE — a commit whose changes were
  * reverted or superseded scores nothing — and the heaviest survivor names the PR, the earliest
  * winning a tie (so a branch whose commits all tie reads exactly as the old first-subject
@@ -47,11 +48,15 @@ const FIELD_SEPARATOR = '\u001f';
 const NUMSTAT_BINARY = '-';
 /**
  * A test file: a `tests?`/`__tests__` path segment, a `.test.`/`.spec.` double extension, or
- * a `test_*` basename. The two dominant conventions, deliberately not a per-language matrix
- * (issue #389): a misclassified layout only tilts which surviving commit names the PR.
+ * a `test_*` basename. The two dominant conventions, deliberately not a per-language matrix:
+ * a misclassified layout only tilts which surviving commit names the PR.
  */
 const TEST_FILE = /(^|\/)(tests?|__tests__)(\/|$)|\.(test|spec)\.[^/]+$|(^|\/)test_[^/]*$/i;
 
+/**
+ * @param {string[]} args
+ * @returns {string}
+ */
 function git(args) {
     return execFileSync('git', args, {
         cwd: process.cwd(),
@@ -62,8 +67,16 @@ function git(args) {
     });
 }
 
-/** `adds\tdels\tpath` rows (binary rows spell `-\t-\t`); churn is adds+dels, path is the rest. */
+/** @typedef {[string, number]} ChurnRow */
+/** @typedef {{ subject: string, files: ChurnRow[] }} Commit */
+
+/**
+ * `adds\tdels\tpath` rows (binary rows spell `-\t-\t`); churn is adds+dels, path is the rest.
+ * @param {string} numstat
+ * @returns {ChurnRow[]}
+ */
 function churnRows(numstat) {
+    /** @type {ChurnRow[]} */
     const files = [];
     for (const row of numstat.split('\n')) {
         const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(row);
@@ -80,8 +93,11 @@ function churnRows(numstat) {
  * subject and its per-file churn, newest first as git prints them. A merge shows no numstat
  * (weight zero downstream); a subject with embedded newlines contributes its first line, the
  * same line `--format=%s` alone would have shown.
+ * @param {string} logOutput
+ * @returns {Commit[]}
  */
 function parseCommits(logOutput) {
+    /** @type {Commit[]} */
     const commits = [];
     for (const record of logOutput.split(RECORD_SEPARATOR)) {
         const lines = record.split('\n').filter((line) => line.trim());
@@ -100,6 +116,9 @@ function parseCommits(logOutput) {
  * final diff still changes, the smaller of the two churns. The min is what keeps reverted or
  * superseded work from advertising itself, and keeps a commit from outscoring the final diff
  * it actually left behind. Split by test-ness: the source half earns the source tier.
+ * @param {ChurnRow[]} files
+ * @param {Map<string, number>} finalChurn
+ * @returns {{ source: number, tests: number }}
  */
 function survivingSplit(files, finalChurn) {
     let source = 0;
@@ -116,18 +135,22 @@ function survivingSplit(files, finalChurn) {
 }
 
 /**
- * The title rule (issue #389): among commits whose surviving weight is positive, prefer those
+ * The title rule: among commits whose surviving weight is positive, prefer those
  * that changed source in the final diff; the heaviest survivor names the PR, earliest on a
  * tie. An all-test branch falls back to its test commits; a branch with no measurable churn
  * at all (empty commits, merges only) falls back to every commit — the old first-subject
  * behavior. Single-commit branches always resolve to their only subject.
  *
  * BACKSTOP_TITLE (set by the driver to plan.title) names the publish's OWN just-created
- * commit — its subject is the command's first line, and the prompt is never authoritative
- * (issue #389): commits whose subject normalizes to it are excluded from every pool. When it
+ * commit — its subject is the command's first line, and the prompt is never authoritative:
+ * commits whose subject normalizes to it are excluded from every pool. When it
  * is the branch's only commit the selection answers null and the driver's plan.title fallback
  * lands anyway — the same string it would have been. The commit itself keeps its place in the
  * body's commit list.
+ * @param {Commit[]} commits
+ * @param {Map<string, number>} finalChurn
+ * @param {string | null} backstop
+ * @returns {string | null}
  */
 function selectTitle(commits, finalChurn, backstop) {
     const eligible = backstop ? commits.filter((commit) => normalizeTitle(commit.subject) !== backstop) : commits;
@@ -158,6 +181,8 @@ const CONTROL_C1_END = 0x9f;
  * Control characters stripped (a subject can carry a \r), trimmed, then truncated on CODE
  * POINTS — a multi-byte character at the boundary must not become a lone surrogate in a PR
  * title. Empty after cleaning means no title: the caller falls back per half.
+ * @param {string} subject
+ * @returns {string | null}
  */
 function normalizeTitle(subject) {
     const cleaned = [...subject]
@@ -179,8 +204,10 @@ function summarize() {
     const base = (process.env.BASE ?? '').trim();
     if (!base) return { title: null, body: null };
 
+    /** @type {Commit[]} */
     let commits;
     let shortstat;
+    /** @type {string | null} */
     let title = null;
     try {
         const log = git(['log', '--numstat', '--format=%x1e%H%x1f%s', `${base}..HEAD`]);

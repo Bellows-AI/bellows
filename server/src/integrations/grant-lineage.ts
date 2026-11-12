@@ -29,7 +29,7 @@ import type { LineageKind } from '../db/connection-grants.js';
  * One grant is one refresh lineage. Whoever holds the lineage CLAIM (a lease token on the grant row) may
  * exchange the refresh token and persist what comes back; everyone else gets an immediate `refresh-in-progress`.
  * Every statement is a single UPDATE on the grant row and the exchange and every SecretStore call run with NO
- * transaction open, so no database lock is held across a provider call (the BEL-59 lock order puts the grant row
+ * transaction open, so no database lock is held across a provider call (the lock order puts the grant row
  * after the thread root and advisory locks and before the connection, and this code never takes more than it).
  *
  * New credentials live in exactly one place before they are stored: the memory of the process that exchanged

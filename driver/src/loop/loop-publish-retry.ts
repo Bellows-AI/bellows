@@ -1,5 +1,5 @@
 /**
- * The publish push itself and its retry (BEL-253), shared by the end-of-run publish
+ * The publish push itself and its retry, shared by the end-of-run publish
  * (`loop-post-run.ts`) and the agent's draft publish (`loop-publish.ts`). Its own module because
  * `loop-publish.ts` cannot import `loop-verdict.ts` without an import cycle through `loop-gates.ts`.
  */
@@ -20,9 +20,9 @@ import { stepLost } from '../step-control.js';
 
 /**
  * Pushes the branch and opens the PR. A lost supervisor (`stepLost`) is thrown, never a failed publish:
- * the caller hands the attempt back as an interruption (#925). Deliberately NOT raced against the stand-down and not
+ * the caller hands the attempt back as an interruption. Deliberately NOT raced against the stand-down and not
  * abortable: a push already in flight is not a thing the driver can take back, and half a push is
- * worse than a fenced one. The caller fences before asking for the token instead (issue #472).
+ * worse than a fenced one. The caller fences before asking for the token instead.
  */
 export async function publishBranch(
     rt: LoopRuntime,
@@ -38,7 +38,7 @@ export async function publishBranch(
         });
 }
 
-/** How many times one publish asks for a token and pushes (BEL-253). */
+/** How many times one publish asks for a token and pushes. */
 export const PUBLISH_TRIES = 3;
 const PUBLISH_FIRST_BACKOFF_MS = 2000;
 /** The wait before the second and third try. */
@@ -63,7 +63,7 @@ async function probeOf(rt: LoopRuntime, job: BoardJob, signal: AbortSignal): Pro
 /**
  * Keeps a revision-bound publish bound to the CONTENT it was assessed on across tries: a try that committed a
  * dirty tree moved HEAD, and with it the fingerprint the revision names, though not the files (a content key
- * survives a publish commit, issue #983). `next()` answers the options for the next try — the revision moved to
+ * survives a publish commit). `next()` answers the options for the next try — the revision moved to
  * the new fingerprint only when the checkout reads the same content; an unreadable or different tree keeps the
  * original binding, so `publishCheckout` refuses it as stale. Unbound publishes never probe.
  */
@@ -88,8 +88,8 @@ async function bindingOf(
 
 /**
  * `publishBranch` with a NEW token ask per try, retried while `publishRetryable` says a fresh token or a
- * moment's wait may land it (BEL-253). `down` fences before every retry's ask and between each ask and its
- * push, as the single try always did (issue #472); the backoff is cut short by a stand-down. `stepLost` propagates.
+ * moment's wait may land it. `down` fences before every retry's ask and between each ask and its
+ * push, as the single try always did; the backoff is cut short by a stand-down. `stepLost` propagates.
  */
 export async function publishWithRetry(
     ctx: { rt: LoopRuntime; job: BoardJob; state: JobState },

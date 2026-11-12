@@ -1,6 +1,6 @@
--- Batches (issue #578): an ordered plan of stages of parallel tasks across one or more repository
+-- Batches: an ordered plan of stages of parallel tasks across one or more repository
 -- targets. A batch is a DRAFT until it is started; start freezes the resolved plan into the same
--- rows and queues no work (dispatch is #579, PR binding and merges #580).
+-- rows and queues no work (dispatch, PR binding and merges come later).
 --
 --   batch         the plan's settings and its lifecycle: `version` is bumped by every draft write, and
 --                 both the whole-draft replace and the freeze are conditional on it.

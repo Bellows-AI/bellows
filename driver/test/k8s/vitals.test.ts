@@ -122,8 +122,8 @@ describe('the runner vitals', () => {
     });
 
     /**
-     * The attempt's services ride the same sample (issue #60), read off the task pod's own sidecar
-     * statuses (issue #773). THE kubernetes regression this exists for: a cluster with no
+     * The attempt's services ride the same sample, read off the task pod's own sidecar
+     * statuses. THE kubernetes regression this exists for: a cluster with no
      * metrics-server (kind, for one) must not silence them — the sample carries null vitals beside
      * real service states rather than skipping the flush. A job that declared nothing reports
      * exactly what it reported before.

@@ -219,7 +219,7 @@ describe('settleEnd', () => {
         });
     });
 
-    describe('which losses are the platform taking the node (BEL-302)', () => {
+    describe('which losses are the platform taking the node', () => {
         it('flags a runner the executor saw vanish', () => {
             expect(settleEnd({ ...END, vanished: VANISHED })).toMatchObject({
                 infraLoss: VANISHED,

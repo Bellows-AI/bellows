@@ -1,8 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { readLaneScript } from './fixtures/lane-script.js';
 import { MASTER_PROMPT_LIMIT } from '../src/db/master-prompt.js';
 import { boundedTail, tailMatches } from '../src/db/workflows/workflow-schema.js';
 
@@ -13,8 +11,7 @@ import { boundedTail, tailMatches } from '../src/db/workflows/workflow-schema.js
  * marker past that cut and the thread rested before publish. This runs the stub's exact shell over the
  * walk with the largest master prompt the board sends, so the margin is measured here, not in the lane.
  */
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+const SCRIPT = readLaneScript('scripts/test-jobs.sh');
 
 const stubCommand = (): string => {
     const line = SCRIPT.split('\n').find((l) => l.endsWith('>"$work/Dockerfile.ok"'));

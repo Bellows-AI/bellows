@@ -119,7 +119,7 @@ describe('the export relay', () => {
         relay.report({ pendingBytes: 2_000_000_000, oldestUnackedMs: 9, spoolFull: true, done: false });
         relay.report({ pendingBytes: 2_000_000_001, oldestUnackedMs: 10, spoolFull: true, done: false });
         expect(run.spoolFull).toBe(true);
-        // Failure evidence, not an ending (issue #828): the attempt still concludes with its verdict.
+        // Failure evidence, not an ending: the attempt still concludes with its verdict.
         expect(ctx.state.ending).toBeNull();
         await vi.waitFor(() => expect(stopAgent).toHaveBeenCalledTimes(1));
         // The kill order for the supervisor, then the bounded wait for the pod to wind down: the

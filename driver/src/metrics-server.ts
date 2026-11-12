@@ -4,7 +4,7 @@ import { CONTENT_TYPE_HEADER } from './http.js';
 import { CONTENT_TYPE } from './prometheus.js';
 
 /**
- * The driver's own scrape listener (issue #831): `GET /metrics`, behind `Authorization: Bearer
+ * The driver's own scrape listener: `GET /metrics`, behind `Authorization: Bearer
  * $JOB_BOARD_TOKEN` when one is configured. Separate from the gate server, which is ephemeral and
  * serves run control: a runner can reach this port, and holds no board token. `config.ts` refuses a
  * port with no token on a non-loopback host.

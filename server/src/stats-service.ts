@@ -247,7 +247,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             const entry = cache.peek();
             if (!entry) return null;
 
-            // No scoping filter any more (#99): the per-user repo scope retired with auto-join,
+            // No scoping filter any more: the per-user repo scope retired with auto-join,
             // and the caller's organization is chosen by the route resolving the caller, not by
             // filtering the repo list here. The whole snapshot is this org's.
             const all = repoNames();

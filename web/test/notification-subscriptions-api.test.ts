@@ -9,7 +9,7 @@ import {
     updateSubscription,
     type SubscriptionInput,
 } from '../src/api/notificationSubscriptions.js';
-import { subscribeUnauthenticated } from '../src/api/useSession.js';
+import { subscribeUnauthenticated } from '../src/api/unauthenticated.js';
 
 /**
  * The notification subscriptions' client half: each scope's base path, the strict list and result

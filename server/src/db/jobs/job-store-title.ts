@@ -1,12 +1,13 @@
 /**
- * The user's rename of a task title (BEL-252; `125_job_title.sql`). The title lives on the thread ROOT, so a
+ * The user's rename of a task title (`125_job_title.sql`). The title lives on the thread ROOT, so a
  * rename by any member's id writes the root. One conditional UPDATE carries every precondition (same org, the
  * revision the caller rendered, the task's author or an org admin) and bumps the revision; the audit row commits
  * with it. On zero rows ONE classification read says why — and a failed read throws, it never answers `missing`.
  */
 
 import type { TaskTitleOrigin } from '@factory-ai/core';
-import { type CreatedRef, type CreateTarget, insertJobInTx } from './job-store-actions.js';
+import type { CreatedRef, CreateTarget } from './job-store-action-types.js';
+import { insertJobInTx } from './job-store-thread-actions.js';
 
 import type { JobStoreContext } from './job-store-types.js';
 

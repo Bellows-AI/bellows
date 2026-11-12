@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { bindingWriteArgv, bindingWriteScript } from '../src/container-scripts.js';
 import { SUPERVISOR_BINDING } from '../src/supervisor-contract.js';
 
-/** The docker executor's binding write (#829), run for real against a temp directory. */
+/** The docker executor's binding write, run for real against a temp directory. */
 const write = (dir: string, body: string, size = Buffer.byteLength(body), args?: string[]) =>
     spawnSync('sh', ['-c', bindingWriteScript, 'binding-write', ...(args ?? [dir, String(size)])], {
         input: body,

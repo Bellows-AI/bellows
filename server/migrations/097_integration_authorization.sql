@@ -1,4 +1,4 @@
--- Outbound OAuth authorization transactions (BEL-138): one row per person-initiated connect or reconnect, from the
+-- Outbound OAuth authorization transactions: one row per person-initiated connect or reconnect, from the
 -- authorize URL to the activated connection. Expand only (docs/persistence.md): a new table, no existing writer.
 --
 -- The state itself is never stored, only its hash; the PKCE verifier is nulled the moment the row is consumed. A row
@@ -19,7 +19,7 @@ create table if not exists integration_authorization (
     grant_id uuid,
     grant_claim uuid,
     expected_account_id text,
-    -- Opaque until BEL-140: no foreign key, never used for authorization.
+    -- Opaque until a later authorization step: no foreign key, never used for authorization.
     interaction_id uuid,
     state_hash text not null unique,
     pkce_verifier text,

@@ -70,7 +70,7 @@ import { exportEnv, exportsTranscript } from '../transcript-export.js';
  * (`supervisor-contract.ts`) mounted exactly as the pod mounts them — the agent gets `in` read-only
  * and `out`, the exporter the workspace and `export`, the gate the workspace and `gate`, the
  * supervisor all of them, and no container but the supervisor and the exporter holds the control pair. A claim that
- * lists reviewer profiles adds the reviewer container and its review mailbox (issue #774). The agent's end does not end
+ * lists reviewer profiles adds the reviewer container and its review mailbox. The agent's end does not end
  * the group: the supervisor drains the exporter and finalizes first, and the runner waits for it
  * (`awaitSupervisor`). The group is the pod's twin, and `k8s-podspec.ts` its other half.
  */
@@ -113,14 +113,14 @@ export const reachDriverArgs = (config: DriverConfig): string[] => [
     ...(config.network ? ['--network', config.network] : []),
 ];
 
-/** Each declared service's name on the group's loopback (issue #773): the supervisor's hosts file, which the group shares. */
+/** Each declared service's name on the group's loopback: the supervisor's hosts file, which the group shares. */
 const serviceHostArgs = (config: DriverConfig, job: BoardJob): string[] =>
     groupServices(config, job).flatMap(({ name }) => ['--add-host', `${name}:${SERVICE_ADDRESS}`]);
 
 /**
  * The supervisor's `docker create` argv — pure and exported, the part worth pinning. All the
  * mailboxes, the member's workspace and no claim env; the control pair rides an env file, never
- * argv. It holds the group's network namespace (issue #773): the agent, the gate and the services
+ * argv. It holds the group's network namespace: the agent, the gate and the services
  * join it (`groupNetworkArgs`), and its hosts file names each declared service on loopback.
  */
 export function supervisorCreateArgs(
@@ -143,7 +143,7 @@ export function supervisorCreateArgs(
         // publish, the helpers) work on the task checkout.
         ...taskMountArgs(job),
         ...mailboxesOf(group.reviewing === true).flatMap((box) => mailboxMountArgs(job, box, 'rw')),
-        // The holder binding (#829): the supervisor's alone, written by the driver over `docker exec`.
+        // The holder binding: the supervisor's alone, written by the driver over `docker exec`.
         '--mount',
         `type=volume,src=${bindingVolumeName(job)},target=${SUPERVISOR_BINDING.dir}`,
         '--entrypoint',
@@ -174,13 +174,13 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob): string[
 }
 
 /**
- * The gate container's `docker create` argv (issue #773) — the declared image, running the gate loop
+ * The gate container's `docker create` argv — the declared image, running the gate loop
  * over the gate mailbox (`scripts/gate-loop.sh`), the pod's gate sidecar's twin. It writes the
  * shared task worktree as the uid:gid every other writer on that tree uses, with a HOME that uid can
  * write; its working directory is the image's own, since each request names its worktree. No `-w`
  * into the mailbox: on an image without that directory the daemon would create it in the volume as
  * root before the supervisor's image could give the volume its owner. No claim env
- * and no credential: those ride each request. Sized by GATE_* (issue #507), in its supervisor's
+ * and no credential: those ride each request. Sized by GATE_*, in its supervisor's
  * network namespace — the registry a setup installs from, and the declared services on loopback.
  */
 export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: string): string[] {
@@ -205,7 +205,7 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
 }
 
 /**
- * The reviewer container's `docker create` argv (issue #774) — the executor image running the review
+ * The reviewer container's `docker create` argv — the executor image running the review
  * loop over the review mailbox (`scripts/review-loop.sh`), the pod's reviewer sidecar's twin. Its own
  * uid in the gate's group, in its supervisor's network namespace. The member tree is read-only (the
  * shared clone and the review's worktree are in it) but for its HOME, a fixed directory of that tree
@@ -270,7 +270,7 @@ async function createWithEnvFile(
 
 /**
  * What the group holds beyond its supervisor: an exporter for a run that exports its transcript,
- * and no agent at all for a node that launches none (issue #503) — whose group still serves the
+ * and no agent at all for a node that launches none — whose group still serves the
  * sync, the probe and the publish.
  */
 export function groupShape(
@@ -330,7 +330,7 @@ async function createGate(deps: GroupDeps, job: BoardJob): Promise<void> {
     }
 }
 
-/** The reviewer container, created after the supervisor whose network namespace it joins (issue #774); none without profiles. */
+/** The reviewer container, created after the supervisor whose network namespace it joins; none without profiles. */
 async function createReviewer(deps: GroupDeps, job: BoardJob): Promise<void> {
     if (!groupShape(job, null).reviewing) return;
     try {
@@ -370,7 +370,7 @@ export async function startGroup(execDocker: ExecDocker, job: BoardJob, session:
 /**
  * Waits for the supervisor to finalize and exit — the drain, the manifests, the report — and
  * answers its exit status; null when it did not end in `ms`, or its container is gone. Rejects when
- * the daemon could not say, or answered anything but a status (#824): that is no confirmation the
+ * the daemon could not say, or answered anything but a status: that is no confirmation the
  * supervisor is past finalizing. The
  * group is the agent's to outlive, so this is read after the agent's close, never before.
  */
@@ -434,7 +434,7 @@ export async function closeEndOf(
         code: number | null;
         output: string;
         reported: Promise<SupervisorReport | null>;
-        /** Called once the close is no refused start and before the wait: the agent container is over (#920). */
+        /** Called once the close is no refused start and before the wait: the agent container is over. */
         onAgentOver?: () => Promise<void>;
     }
 ): Promise<{ proven: ClosedState | null; report: SupervisorReport | null; supervisorExit: number | null }> {
@@ -471,7 +471,7 @@ export async function removeGroup(execDocker: ExecDocker, job: BoardJob): Promis
 }
 
 /**
- * Writes `binding` into the supervisor's binding volume (#829): the body rides stdin of one
+ * Writes `binding` into the supervisor's binding volume: the body rides stdin of one
  * `docker exec`, never argv. Resolves only on a confirmed write; any rejection means "maybe
  * written". The error is fixed text: the exec's own message quotes the argv and the stderr.
  */
@@ -496,7 +496,7 @@ export async function rebindGroup(
 
 /**
  * Whether the group's supervisor container is confirmed over: `exited`/`dead`, or gone (`No such object`).
- * A daemon error, a timeout, an unparsable answer or any other status is no end (#967).
+ * A daemon error, a timeout, an unparsable answer or any other status is no end.
  */
 async function supervisorEnded(execDocker: ExecDocker, job: BoardJob, signal?: AbortSignal): Promise<boolean> {
     let out: string;
@@ -532,7 +532,7 @@ interface GroupWatchDeps {
 
 /**
  * Records the group under `held` and watches it for its whole life, from its supervisor's first contact: a supervisor container that
- * exits or vanishes under steps still waiting on it releases them at once (#967). `held` is the lease
+ * exits or vanishes under steps still waiting on it releases them at once. `held` is the lease
  * the group is recorded under, `job` the attempt whose steps it serves.
  */
 export function rememberGroup(deps: GroupWatchDeps, job: BoardJob, group: GroupState, held: string): void {
@@ -550,6 +550,6 @@ export function rememberGroup(deps: GroupWatchDeps, job: BoardJob, group: GroupS
 export interface GroupState {
     startedAt: string;
     session: RunSession | null;
-    /** Taken over from a lost driver (#829): this runner created none of it, and orders no `go`. */
+    /** Taken over from a lost driver: this runner created none of it, and orders no `go`. */
     resumed?: boolean;
 }

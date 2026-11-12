@@ -38,7 +38,7 @@ function publishDue(job: BoardJob, ledger: Ledger): boolean {
 
 /**
  * What this ledger publishes: the end-of-run publish, a draft of finished work the services or
- * gates alone failed — kept recoverable rather than stranded (issues #560, #573) — or nothing.
+ * gates alone failed — kept recoverable rather than stranded — or nothing.
  */
 export function publishModeOf(job: BoardJob, ledger: Ledger): 'publish' | 'draft' | null {
     if (publishDue(job, ledger)) return 'publish';
@@ -81,9 +81,9 @@ export interface FinishCtx {
     job: BoardJob;
     outcome: RunOutcome;
     failure: GateFailure | null;
-    /** The declared services found dead before the gates, which skipped them (issue #423). */
+    /** The declared services found dead before the gates, which skipped them. */
     deadServices: readonly DeadService[];
-    /** The services found dead before the gates and restarted for them (issue #560): noted, never faults. */
+    /** The services found dead before the gates and restarted for them: noted, never faults. */
     recoveredServices: readonly DeadService[];
     helperFailure: HelperFailureReport | null;
     published: PublishResult | null;
@@ -131,7 +131,7 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, ledger: Ledger): string
 }
 
 /**
- * What the verdict says about `environment.setup` (issue #733): on a timeout, how much of the run
+ * What the verdict says about `environment.setup`: on a timeout, how much of the run
  * budget it took — the kill note's budget is what was left; and a failure no gate pass reported.
  */
 function setupNotes(rt: LoopRuntime, finish: FinishCtx): string {
@@ -146,13 +146,13 @@ export const setupSpentNote = (config: { jobTimeoutMs: number }, job: BoardJob):
         ? `[driver] ${job.setupMs}ms of the ${config.jobTimeoutMs}ms run budget went to environment.setup`
         : '';
 
-/** How long `environment.setup` ran before the agent (issue #733); absent when none ran. */
+/** How long `environment.setup` ran before the agent; absent when none ran. */
 const setupMsOf = (job: BoardJob): { setupMs?: number } =>
     typeof job.setupMs === 'number' ? { setupMs: job.setupMs } : {};
 
 /**
  * Lands the run's final verdict after any publish attempt: staged, completed, then the attempt torn
- * down (`end`, issue #821). A verdict is decided once and never rewritten (issue #820).
+ * down (`end`). A verdict is decided once and never rewritten.
  */
 export async function reportFinish(ctx: AttemptCtx, finish: FinishCtx): Promise<void> {
     const body = verdictOf(ctx.rt, finish);
@@ -191,7 +191,7 @@ function verdictOf(rt: LoopRuntime, finish: FinishCtx): VerdictBody {
         output,
         ...runReadsOf(outcome),
         ...setupMsOf(job),
-        // The structured failure reason (issue #339); a success reports no kind at all.
+        // The structured failure reason; a success reports no kind at all.
         ...(failureKind ? { failureKind } : {}),
         ...(failureCause ? { failureCause } : {}),
         ...(finish.treeChanged !== null ? { treeChanged: finish.treeChanged } : {}),

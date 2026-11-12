@@ -99,7 +99,7 @@ function RequestDetails({
 }
 
 /**
- * The consent screen an MCP client's authorize request ends on (BEL-103; docs/auth.md). The transaction id and its
+ * The consent screen an MCP client's authorize request ends on (docs/auth.md). The transaction id and its
  * CSRF value arrive in the fragment. Allow and Deny are the same size and weight: declining is as easy as agreeing.
  * Each is a `fetch` that answers the redirect to follow, because the CSP keeps `form-action 'none'`.
  */

@@ -31,7 +31,7 @@ import { judgeGates } from './batch-store-gates.js';
 import { type BoardMergeRow, boardMergeColumns, boardMerging } from './batch-store-rows.js';
 import { recoverObserved, withdrawRepair } from './batch-store-observed.js';
 import { decide, failedAttentionReason, recoveriesUsed, repairInTx, type Tx } from './batch-store-repair.js';
-import { insertJobInTx, retryInTx } from '../jobs/job-store-actions.js';
+import { insertJobInTx, retryInTx } from '../jobs/job-store-thread-actions.js';
 import {
     openBatches,
     settleThreads,
@@ -74,7 +74,7 @@ export interface ScheduleDeps {
     stop?: StopThread | undefined;
     close?: CloseThread | undefined;
     revisionOf?: RevisionOf | undefined;
-    /** Whether the org's GitHub App is installed (BEL-286): the `github` connection a skill may require. */
+    /** Whether the org's GitHub App is installed: the `github` connection a skill may require. */
     githubApp?: boolean | undefined;
     /** The clock the deadline and the retry backoff are read against; absent is the wall clock. Tests move it. */
     now?: (() => Date) | undefined;
@@ -158,7 +158,7 @@ interface MovingTask {
     head_id: string | null;
     status: string | null;
     failure_kind: string | null;
-    /** What lies under a gate, publish or helper failure (065, issue #581). */
+    /** What lies under a gate, publish or helper failure (065). */
     failure_cause: string | null;
     /** The newest question still waiting for an answer, which only a running job can receive. */
     pending_question: string | null;
@@ -483,7 +483,7 @@ async function pass(deps: ScheduleDeps, id: string, revisions: Map<string, strin
 }
 
 /**
- * The gates, then what each task's PR shows after a successful run (issue #581). The cancellation
+ * The gates, then what each task's PR shows after a successful run. The cancellation
  * fence: a merge observed after cancel or completion passes nothing. An expired batch still records
  * merges that land, so the report shows them, but recovers nothing.
  */

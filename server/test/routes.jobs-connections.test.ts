@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { ConnectionRefusedError } from '../src/db/connection-bindings.js';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { JobWorkerStore } from '../src/db/jobs/job-store-worker.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, jobStoreSlice, testConfig } from './helpers.js';
@@ -15,9 +15,10 @@ import {
     HTTP_OK,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 /**
- * Offline: how the job routes carry a task's `connections` (BEL-59) — the create and follow-up
+ * Offline: how the job routes carry a task's `connections` — the create and follow-up
  * fields, the idempotency fingerprint, and the owner route that satisfies a requirement. Who may
  * bind what is the store's (server/test-db/job-store.connection-bindings.test.ts).
  */
@@ -256,7 +257,7 @@ describe('POST /api/jobs/:id/requirements (the runner asks for a connection)', (
     });
 
     it('answers a store that throws 503, never a verdict', async () => {
-        const { instance } = await bootWorker(new Error('database down'));
+        const { instance } = await bootWorker(storeOutage('database down'));
         const res = await ask(instance, { leaseToken: TOKEN, provider: 'jira' });
         expect(res.statusCode).toBe(503);
     });
@@ -309,7 +310,7 @@ describe('POST /api/jobs/:id/requirements/:provider/dismiss', () => {
     it('answers a store that throws 503', async () => {
         const { instance, cookie } = await boot({
             async dismissRequirement() {
-                throw new Error('database down');
+                throw storeOutage('database down');
             },
         });
         expect((await dismiss(instance, cookie)).statusCode).toBe(503);

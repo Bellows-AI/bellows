@@ -9,7 +9,7 @@ import { bad, guard } from '../helpers.js';
 import { HTTP_CONFLICT, HTTP_CREATED, HTTP_FORBIDDEN, HTTP_PAYLOAD_TOO_LARGE } from './job-limits.js';
 
 /**
- * The request side of durable mutation idempotency (issue #589; docs/jobs.md): the key header,
+ * The request side of durable mutation idempotency (docs/jobs.md): the key header,
  * its validation, the canonical request fingerprint, and the answer a replay gets. The store owns
  * the scope (org, caller, operation) and the retention.
  */

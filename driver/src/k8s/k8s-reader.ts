@@ -4,7 +4,7 @@ import { FINISHED_PHASES } from './k8s-adopt.js';
 import { deleteJob, jobPodsPath } from './k8s-auxspec.js';
 import { asPod } from './k8s-pod-shapes.js';
 import { jobsPath, readerJobSpec, runnerName } from './k8s-podspec.js';
-import { ABSENT, readJobPodVerdict, readJobStatus, readList, timedOutOf } from './k8s-poll.js';
+import { readJobPodVerdict, readJobStatus, readList, timedOutOf } from './k8s-poll.js';
 import { boundedBy, HTTP_ERROR_STATUS, POLL_MS, withSignal } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import { pollFor } from '../poll.js';
@@ -51,7 +51,7 @@ export async function readViaReaderJob(
     const groupPodsPath = jobPodsPath(deps.config.k8sNamespace, runnerName(job));
     const groupOver = await pollFor(poll, async () => {
         const pods = await readList(live, groupPodsPath, `listing ${what}'s group pods`, { entry: asPod, once: true });
-        const over = pods === ABSENT || pods.every((pod) => FINISHED_PHASES.includes(pod.status?.phase ?? ''));
+        const over = pods.every((pod) => FINISHED_PHASES.includes(pod.status?.phase ?? ''));
         return over ? true : undefined;
     });
     if (groupOver === undefined) return timedOut;

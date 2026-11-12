@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { JobConclusionStore } from '../src/db/jobs/job-store-conclusions.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import type { JobWorkerStore } from '../src/db/jobs/job-store-worker.js';

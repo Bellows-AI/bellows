@@ -44,15 +44,17 @@ forget. Usage: include "factory.imageReference" (list $ .Values.driver.executorI
 {{- end -}}
 
 {{/*
-An image reference from `{repository, tag}`, the repository under the registry prefix
+An image reference from `{repository, tag, digest}`, the repository under the registry prefix
 (factory.imageReference) and the tag defaulting to the chart's appVersion — so a chart version
 names the exact build it deploys, and an upgrade to a new build changes the pod spec and rolls the
-pods. Usage: include "factory.image" (list $ .Values.dashboard.image)
+pods. A `digest` is appended after the tag (`repo:tag@sha256:…`), and it is what the node resolves.
+Usage: include "factory.image" (list $ .Values.dashboard.image)
 */}}
 {{- define "factory.image" -}}
 {{- $root := index . 0 -}}
 {{- $image := index . 1 -}}
-{{- printf "%s:%s" (include "factory.imageReference" (list $root $image.repository)) (default $root.Chart.AppVersion $image.tag) -}}
+{{- $ref := printf "%s:%s" (include "factory.imageReference" (list $root $image.repository)) (default $root.Chart.AppVersion $image.tag) -}}
+{{- if $image.digest }}{{ printf "%s@%s" $ref $image.digest }}{{ else }}{{ $ref }}{{ end -}}
 {{- end -}}
 
 {{/*

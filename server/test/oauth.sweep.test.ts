@@ -32,7 +32,7 @@ describe('startOAuthSweep', () => {
         await vi.advanceTimersByTimeAsync(1000);
         expect(oauth.purgeExpired).toHaveBeenCalledTimes(3);
         expect(oauth.deleteUnusedClients).toHaveBeenCalled();
-        stop();
+        await stop();
         await vi.advanceTimersByTimeAsync(5000);
         expect(oauth.purgeExpired).toHaveBeenCalledTimes(3);
     });

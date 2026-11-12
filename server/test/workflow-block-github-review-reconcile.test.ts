@@ -9,7 +9,7 @@ import type {
 } from '../src/db/workflows/workflow-schema.js';
 
 /**
- * The `builtin/github-review-reconcile` block's own expansion (issue #133) — what
+ * The `builtin/github-review-reconcile` block's own expansion — what
  * `workflow-block-compiler.test.ts` covers generically with fake descriptors, pinned here against
  * the real one: node/edge shape, namespacing, the `maxRounds` bound, the durable wait boundary, and
  * a pure orchestration walk of the expanded graph through the real transition engine.

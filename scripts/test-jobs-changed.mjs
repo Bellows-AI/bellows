@@ -51,7 +51,11 @@ const RECOVERY = ['node-disruption', 'driver-kill'];
 // [pattern, phases | FULL | NONE, reason]. First match wins, so a specific file precedes its directory.
 export const RULES = [
     // --- the shared fixture: every board phase builds on it -------------------------------------
-    [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
+    [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-lib\.sh|lane-api\.mjs|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
+    // One file per phase (scripts/lanes/jobs): a phase file runs that phase; the fixture the services phases share runs them all.
+    [/^scripts\/lanes\/jobs\/service-fixture\.sh$/, ['services', 'orphan-reaper', 'node-disruption'], 'the service fixture three phases build on'],
+    ...PHASES.map((phase) => [new RegExp(`^scripts/lanes/jobs/${phase}\\.sh$`), [phase], 'its own phase file']),
+    [/^scripts\/lanes\/k8s\/[a-z-]+\.sh$/, NONE, 'kubernetes lane phases, covered by test:k8s'],
     [/^scripts\/secrets-init\.mjs$/, NONE, 'writes secrets.env for a development checkout; pinned by server/test/secrets.environment.test.ts'],
     [/^scripts\/test-jobs-groups\.mjs$/, NONE, '--parallel scheduling only; pinned by server/test/test-jobs.groups.test.ts'],
     [/^driver\/src\/scripts\/(supervisor\.cjs|task-init\.sh|task-checkout\.cjs|git-probe\.cjs|git-harden\.cjs)$/, FULL, 'runs inside every task'],
@@ -64,7 +68,7 @@ export const RULES = [
     [/^(server|core)\/(src|migrations)\//, FULL, 'the board every phase boots'],
 
     // --- docker executor, specific concerns ------------------------------------------------------
-    [/^driver\/src\/(loop\/loop-adopt|loop\/loop-reclaim|loop\/loop-fence|adopt-skeleton|task-restore|reclaim-calls|kill-ledger|loop\/loop-ledger|operation-ledger)\.ts$/, RECOVERY, 'adoption and takeover'],
+    [/^driver\/src\/(loop\/loop-adopt|loop\/loop-reclaim|loop\/loop-fence|loop\/loop-lease|loop\/loop-race|adopt-skeleton|task-restore|reclaim-calls|kill-ledger|loop\/loop-ledger|operation-ledger)\.ts$/, RECOVERY, 'adoption and takeover'],
     [/^driver\/src\/scripts\/(checkpoint\.cjs|checkpoint-restore\.cjs|binding-write\.sh|operation-ledger\.cjs)$/, [...RECOVERY, 'driver'], 'checkpoints and the ledger'],
     [/^driver\/src\/(supervisor-contract|supervisor-plan|supervised-steps|step-control|control-channel|docker\/docker-mailbox|docker\/docker-group|docker\/docker-group-probe|group-watch|termination|startup-cause)\.ts$/, ['driver', ...RECOVERY], 'task supervisor protocol'],
     [/^driver\/src\/(run-deadline|docker\/docker-run-timers|timeout-note)\.ts$/, ['run-deadline'], 'run deadline'],
@@ -115,13 +119,13 @@ export const RULES = [
     [/^scripts\/lane-capacity-samples\.mjs$/, ['capacity'], 'capacity verdict'],
     [/^scripts\/acceptance-[a-z-]+\.(mjs|sh)$/, ['acceptance'], 'failure-matrix acceptance helpers'],
     [/^scripts\/k8s-stub\.sh$/, ['acceptance'], 'the stub agent the docker acceptance phase builds and runs'],
-    [/^scripts\/(test-k8s\.sh|kind-cluster[a-z-]*\.(sh|yaml)|k8s-[a-z-]+\.(mjs|sh)|bench-summary\.mjs|mcp-kind-client\.mjs|release\.sh|lint-changed\.sh|test-changed\.mjs|gate-jq\.sh)$/, NONE, 'not part of the docker lane'],
+    [/^scripts\/(test-k8s\.sh|kind-cluster[a-z-]*\.(sh|yaml)|k8s-[a-z-]+\.(mjs|sh)|bench-summary\.mjs|mcp-kind-client\.mjs|release\.sh|lint-changed\.sh|test-changed\.mjs|gate-jq\.sh|pin-digests\.sh)$/, NONE, 'not part of the docker lane'],
 
     [/^(docker-compose\.yml|package\.json|package-lock\.json|tsconfig(\.base)?\.json|VERSION|Makefile|\.dockerignore)$/, FULL, 'what the lane builds and boots'],
 
     // --- outside the lane's inputs ----------------------------------------------------------------
     [/^e2e\/stub-idp\.mjs$/, ['mcp'], 'the mcp phase signs its member in through it'],
-    [/^(web|e2e|docs|openspec|charts|lint|cli|plugins|\.github|\.claude|\.claude-plugin|\.opencode|\.factory)\//, NONE, 'not executed by the docker lane'],
+    [/^(web|e2e|docs|charts|lint|cli|plugins|\.github|\.claude|\.claude-plugin|\.opencode|\.factory)\//, NONE, 'not executed by the docker lane'],
     [/(^|\/)(test|test-db)\//, NONE, 'unit and integration tests'],
     [/^[^/]+\.(md|json|yaml|yml|ts|config\.ts)$|^(LICENSE|VERSION|Makefile|\.[a-z]+)$/, NONE, 'repo-level config and documents'],
 ];

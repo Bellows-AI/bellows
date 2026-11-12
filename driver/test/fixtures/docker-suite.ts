@@ -59,19 +59,19 @@ export const job: BoardJob = {
 
 export const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', timedOut: false });
 
-/** A daemon call that never answers and rejects only when its own `signal` aborts (#869). */
+/** A daemon call that never answers and rejects only when its own `signal` aborts. */
 export const hangsUntilAborted = (options?: { signal?: AbortSignal }): Promise<never> =>
     new Promise((_resolve, reject) => {
         options?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
     });
 
-/** A daemon call that never answers: it fails only at its own `timeout`, as execFile kills a stalled child (#869). */
+/** A daemon call that never answers: it fails only at its own `timeout`, as execFile kills a stalled child. */
 export const hangsUntilTimeout = (options?: { timeout?: number }): Promise<never> =>
     new Promise((_resolve, reject) => {
         if (options?.timeout !== undefined) setTimeout(() => reject(new Error('timed out')), options.timeout);
     });
 
-/** The runner's env-file verbs held in memory: a run that touches them waits on no real disk (#905). */
+/** The runner's env-file verbs held in memory: a run that touches them waits on no real disk. */
 export const memoryFiles = (): RunnerFiles => ({ writeFile: async () => undefined, rm: async () => undefined });
 
 /**
@@ -136,7 +136,7 @@ export const SESSION = '33333333-3333-4333-8333-333333333333';
 
 export const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 
-/** A declared service's `docker run` (issue #773): detached, labelled with its service name. */
+/** A declared service's `docker run`: detached, labelled with its service name. */
 export const isServiceRun = (args: string[]): boolean =>
     args[0] === 'run' && args.some((arg) => arg.startsWith('factory.service='));
 
@@ -162,7 +162,7 @@ export function fakeChild(stdout: string, stderr: string, code: number | null): 
     return child;
 }
 
-/** The adoption's listing of the job's runners (#829): the one `ps` whose format opens with the container name. */
+/** The adoption's listing of the job's runners: the one `ps` whose format opens with the container name. */
 export const isAdoptListing = (args: string[]): boolean =>
     args[0] === 'ps' && (args[args.indexOf('--format') + 1] ?? '').startsWith('{{.Names}}');
 
@@ -192,7 +192,7 @@ export function chunkedChild(chunks: Buffer[], code = 0): ChildProcess {
 export const CUT_SHORT = [Buffer.concat([Buffer.from('ok'), Buffer.from('€').subarray(0, 2)])];
 
 /**
- * `body` then a `€` split across two chunks after its first byte (issue #825): decoded chunk by
+ * `body` then a `€` split across two chunks after its first byte: decoded chunk by
  * chunk, each half would read as U+FFFD.
  */
 export const splitEuro = (body: string): Buffer[] => {

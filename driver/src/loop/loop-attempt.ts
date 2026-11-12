@@ -3,6 +3,7 @@ import { deadServiceNote } from './loop-ledger.js';
 import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from '../runner.js';
 import type { DeadService } from '../runner.js';
 import type { RuntimeSample } from '../runner.js';
+import { type LeaseClock, leasedBeat } from './loop-lease.js';
 import { lostOf, recordEnding } from './loop-phase.js';
 import type { AttemptPhase, AttemptTransition, Ending } from './loop-phase.js';
 import type { LoopRuntime } from './loop-types.js';
@@ -17,7 +18,7 @@ import type { TimeoutActivity } from '../timeout-note.js';
 const PROGRESS_MS = 2_000;
 /**
  * The longest a park waits out a progress write in flight, by the wall clock: a board that never
- * answers it costs that tail, never the park (issue #773).
+ * answers it costs that tail, never the park.
  */
 const OUTPUT_DRAIN_MS = 5_000;
 /** How often the drain looks again while a write is in flight. */
@@ -27,7 +28,7 @@ const OUTPUT_DRAIN_TICK_MS = 50;
  * How often the heartbeat polls while the attempt is still SETTING UP — before the runner exists.
  * The run phase paces its beats at a third of the lease (100s at the default), which would leave a
  * Stop issued while the dashboard says "Waiting for the executor…" unobserved for a minute and a
- * half — through the whole checkout sync and gate-environment boot (issue #126). The setup phase
+ * half — through the whole checkout sync and gate-environment boot. The setup phase
  * polls at this pace instead, so a stop there is answered — the attempt stands down without
  * spawning — within one period, and the row settles `stopped` right away.
  */
@@ -35,12 +36,12 @@ const SETUP_POLL_MS = 2_000;
 /**
  * How often a launched attempt's heartbeat polls — and so how soon a Stop is seen — when that is
  * sooner than a lease third. Also the pace the task supervisor reads the control endpoint at
- * (handed to it as `SUPERVISOR_CONTROL_MS`). Not configurable (issue #442).
+ * (handed to it as `SUPERVISOR_CONTROL_MS`). Not configurable.
  */
 export { RUN_CONTROL_POLL_MS };
 /**
  * How long a draining attempt (a Stop raised on the control endpoint, the agent finishing its
- * current model step) gets before the hard kill lands. Not configurable (issue #442).
+ * current model step) gets before the hard kill lands. Not configurable.
  */
 export const STOP_GRACE_MS = 300_000;
 
@@ -50,15 +51,24 @@ export interface ReviewSupervision {
     settled: Promise<void>;
 }
 
+/**
+ * The fate of an attempt's runner group at teardown. `end`: finished and its fence handed back. `keep`: left for
+ * the next claim to adopt, the checkout claim standing. `handover`: left for it too, the fence handed back (a drain).
+ */
+export type GroupDisposition = 'end' | 'keep' | 'handover';
+
+/** Whether the runner outlives the attempt. */
+export const groupRetained = (disposition: GroupDisposition): boolean => disposition !== 'end';
+
 export interface JobState {
     /**
-     * Stops the output pump's periodic writes and waits out the one in flight (issue #773): a park
+     * Stops the output pump's periodic writes and waits out the one in flight: a park
      * lands the row terminal, and a write it overtook would be refused and its tail lost.
      */
     drainOutput: () => Promise<void>;
     /**
      * Where the attempt is, moved only through `transition` (`loop-phase.ts`). `concluding` is from
-     * the moment it stages its verdict until it is torn down (issue #821): the heartbeat keeps
+     * the moment it stages its verdict until it is torn down: the heartbeat keeps
      * renewing the lease the verdict needs, and an ending recorded meanwhile acts on nothing — the
      * staged conclusion is the attempt's outcome, and the board commits it.
      */
@@ -77,20 +87,20 @@ export interface JobState {
     /** Writes the line of each `phase`/`ending` change; the loop points it at its log. */
     trace: (transition: AttemptTransition) => void;
     /**
-     * True when the runner must outlive the attempt (issues #821, #828): neither the staged verdict
-     * nor the complete, nor the park or interruption, reached the board, or the attempt is
-     * left to its lease after its launch. `end`'s teardown then leaves the group and the checkout
-     * claim for the next claim to adopt.
+     * What `end`'s teardown does with the runner group: `keep` when neither the
+     * staged verdict nor the complete, nor the park or interruption, reached the board, or the attempt
+     * is left to its lease after its launch — the group and the checkout claim are left for the next
+     * claim to adopt. `conclude` settles it once, after the board call, with a drain's `handover`.
      */
-    keepGroup: boolean;
+    groupDisposition: GroupDisposition;
     /**
      * True once `runner.run` has been called. The heartbeat paces itself at `SETUP_POLL_MS` until
      * this turns — a verdict arriving during the setup phase must be answered in seconds, not a
-     * beat period — and at the lease's third afterwards (issue #126).
+     * beat period — and at the lease's third afterwards.
      */
     launched: boolean;
     /**
-     * Reports this claim's launch as observed (issue #845) once something proves the runner ran:
+     * Reports this claim's launch as observed once something proves the runner ran:
      * its first output, its first runtime sample, or a finished outcome. Null where this claim
      * launched nothing (adopted, taken over, agent-less) or has no session to name; the report is
      * made once, and a failed one is logged, never a failed run.
@@ -101,7 +111,7 @@ export interface JobState {
     /** The attempt's gate-endpoint token once its gate session booted — where the sampler tells the agent a service died. */
     gateToken: string | null;
     /**
-     * Why an ad-hoc gate found the attempt's supervisor lost while the agent ran (issue #773): the
+     * Why an ad-hoc gate found the attempt's supervisor lost while the agent ran: the
      * attempt is interrupted once its run is over, never given a verdict. Null while none did.
      */
     gateLoss: string | null;
@@ -135,7 +145,7 @@ export interface JobState {
     /** The grace deadline's timer while draining; cleared when the attempt settles. */
     graceTimer: ReturnType<typeof setTimeout> | null;
     /**
-     * The reviews this attempt supervises, by key (issue #774): each runs in this attempt's task
+     * The reviews this attempt supervises, by key: each runs in this attempt's task
      * group and ends with it. A key already here starts no second supervisor (`loop-review.ts`).
      */
     reviews: Map<string, ReviewSupervision>;
@@ -160,7 +170,7 @@ export interface JobState {
      * The one signal every slow step is raced against (`raceStep`) and the one handed to the
      * transports that take one (the docker checkout sync's client, the gates re-read, the helpers, the gate
      * environment's start, the gate exec, the tree probe), so a stand-down cancels in-flight work
-     * instead of leaving each step its own controller (issues #472, #488). The publish is the one
+     * instead of leaving each step its own controller. The publish is the one
      * slow call with no signal: a push cannot be recalled.
      */
     signal: AbortSignal;
@@ -170,10 +180,16 @@ export interface JobState {
     /** Resolves when a `handover` ending wins (`handOver`, `loop.ts`): the run in flight is abandoned there. */
     handedOver: Promise<void>;
     signalHandover: () => void;
+    /**
+     * The attempt's own lease clock: lapses one lease after the last acknowledged beat's SEND
+     * time, whether or not a beat is still in flight, and its signal fences the conclusion's board calls.
+     * Armed by `armLeaseClock` once the attempt exists; inert (never lapses) until then.
+     */
+    leaseExpiry: LeaseClock;
 }
 
 /**
- * The stop of one review the attempt supervises (issue #774): its own controller, so a refused
+ * The stop of one review the attempt supervises: its own controller, so a refused
  * heartbeat on the review's row ends that review alone, aborted too when the attempt stands down.
  * Minted here beside the attempt's one signal, never in the supervision.
  */
@@ -201,7 +217,7 @@ export function newJobState(): JobState {
         endStarted: false,
         ending: null,
         trace: () => {},
-        keepGroup: false,
+        groupDisposition: 'end',
         launched: false,
         confirmLaunch: null,
         probingLaunch: false,
@@ -227,6 +243,7 @@ export function newJobState(): JobState {
         handoverReason: null,
         handedOver,
         signalHandover,
+        leaseExpiry: { signal: new AbortController().signal, renewed: () => {}, stop: () => {} },
     };
 }
 
@@ -313,42 +330,7 @@ export function stopIfDraining(state: JobState): void {
     if (state.draining) recordEnding(state, 'stop');
 }
 
-/** The loser side of every setup race: the stand-down resolved, the step did not. */
-const RACE_LOST = Symbol('raceStep: the stand-down won');
-
-/**
- * Races one slow setup step against the attempt's stand-down, so a Stop (or a lost lease, or a
- * Remove) observed while the driver is "waiting for the executor" ends the wait within a
- * heartbeat's setup poll instead of the step's own unbounded duration (issue #126). Answers null
- * when the stand-down won and the step is STILL RUNNING: the caller stands the attempt down and
- * the step is abandoned to its own cleanup — which is why a rejection is swallowed here, the
- * abandoned step's finally is the only cleanup it needs and its verdict is nobody's business
- * anymore. A step that finished first answers `{ value }` even when the stand-down landed in the
- * same instant — the caller's own flag check decides.
- */
-export async function raceStep<T>(signal: AbortSignal, step: Promise<T>): Promise<{ value: T } | null> {
-    // A side-band subscriber, so the loser of the race can never become an unhandled rejection:
-    // subscribing neither consumes the step from the race nor changes its result. First, because
-    // the check below abandons the step with nobody left to read it — and an abandoned step that
-    // rejects must not take the driver with it.
-    step.catch(() => {});
-    // Already stood down: never even wait for the step, which is still running with nobody left
-    // to read it.
-    if (signal.aborted) return null;
-    let onAbort: () => void = () => {};
-    const lost = new Promise<typeof RACE_LOST>((resolve) => {
-        onAbort = () => resolve(RACE_LOST);
-        signal.addEventListener('abort', onAbort, { once: true });
-    });
-    try {
-        const outcome: T | typeof RACE_LOST = await Promise.race([step, lost] as const);
-        return outcome === RACE_LOST ? null : { value: outcome };
-    } finally {
-        // The attempt has as many steps as it has phases, and each subscribes: without this the
-        // signal would keep every step that finished first alive until the attempt ends.
-        signal.removeEventListener('abort', onAbort);
-    }
-}
+export { raceStep } from './loop-race.js';
 
 /**
  * A Stop on a launched attempt: raised once on the control endpoint, with the grace deadline
@@ -425,8 +407,8 @@ export const settling = (state: JobState): boolean => state.draining || state.re
 
 /**
  * Whether a heartbeat verdict may no longer act on the attempt: a handed-over attempt's runner
- * belongs to the next claim (issue #792), and a concluding one's outcome is staged — only the
- * teardown that follows its verdict ends it (issue #821).
+ * belongs to the next claim, and a concluding one's outcome is staged — only the
+ * teardown that follows its verdict ends it.
  */
 const beyondVerdicts = (state: JobState): boolean => state.ending?.kind === 'handover' || state.phase === 'concluding';
 
@@ -515,10 +497,10 @@ export async function applyHeartbeatVerdict(
 
 /**
  * Whether the heartbeat still beats: until the attempt ends or stands down — except while it concludes,
- * when it renews the lease the verdict needs until the quiesce, whatever ending was recorded (issue #828).
+ * when it renews the lease the verdict needs until the quiesce, whatever ending was recorded.
  */
 const renewing = (state: JobState): boolean =>
-    state.phase !== 'ended' && (state.phase === 'concluding' || !down(state));
+    state.phase !== 'ended' && !state.leaseExpiry.signal.aborted && (state.phase === 'concluding' || !down(state));
 
 /** Whether the output pump still writes: until the attempt ends or loses its lease. */
 const pumping = (state: JobState): boolean => state.phase !== 'ended' && !lostOf(state);
@@ -530,7 +512,9 @@ async function beat(rt: LoopRuntime, job: BoardJob, state: JobState, complained:
     try {
         // Bounded by a lease third (one beat period): a request the board never answers must not stall the
         // beats past the lease. An aborted beat throws below and is inconclusive, never a verdict.
-        verdict = await board.heartbeat(job, AbortSignal.timeout(heartbeatPeriodMs(rt.config)));
+        verdict = await leasedBeat(state.leaseExpiry, () =>
+            board.heartbeat(job, AbortSignal.timeout(heartbeatPeriodMs(rt.config)))
+        );
         complained = false;
     } catch (e) {
         // A board that is briefly unreachable is not a lost lease. Keep working: the
@@ -551,15 +535,15 @@ async function beat(rt: LoopRuntime, job: BoardJob, state: JobState, complained:
  * Beats until the run finishes.
  *
  * The beat comes FIRST, not after a full period: the stop flag is read the moment the attempt
- * exists, so the first observation never waits out a whole lease third (issue #126). The pace
+ * exists, so the first observation never waits out a whole lease third. The pace
  * is `SETUP_POLL_MS` while the runner has not spawned — the phase a stop must interrupt in
  * seconds — and a third of the lease once it has.
  *
  * A 409 means the lease was reclaimed while this container was still working: the job belongs
  * to another worker now, so this one is killed rather than left to finish and report. The board
  * would refuse the report anyway — but by then the two runs have both been writing to the same
- * checkout, which is the thing actually worth preventing. A 404 means the thread was REMOVED
- * (issue #41): same kill, and nothing left to park against or report to. A Stop — the board
+ * checkout, which is the thing actually worth preventing. A 404 means the thread was REMOVED:
+ * same kill, and nothing left to park against or report to. A Stop — the board
  * answers `cancelRequested` on a still-held beat — kills the container too, and the board
  * settles the run `stopped` when the park lands: the turn ends, and the session survives for
  * the follow-up that continues the conversation.
@@ -567,7 +551,7 @@ async function beat(rt: LoopRuntime, job: BoardJob, state: JobState, complained:
 export function heartbeat(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
     const { config, sleep } = rt;
     // Once launched, never slower than the control poll: a Stop reaches the agent within one
-    // `RUN_CONTROL_POLL_MS` however long the lease is (issue #442).
+    // `RUN_CONTROL_POLL_MS` however long the lease is.
     const every = Math.min(RUN_CONTROL_POLL_MS, heartbeatPeriodMs(config));
     return (async () => {
         let complained = false;
@@ -625,14 +609,14 @@ function buildRuntimeReport(sample: RuntimeSample, latest: string): RuntimeRepor
  */
 interface OutputPump {
     latest: string | null;
-    /** Epoch ms of the last CHANGED tail — the freshness fact a timeout note keys on (issue #339). */
+    /** Epoch ms of the last CHANGED tail — the freshness fact a timeout note keys on. */
     lastOutputAt: number | null;
     sent: string | null;
     sample: RuntimeSample | null;
     sentSample: RuntimeSample | null;
     sampling: boolean;
     complained: boolean;
-    /** Each service the sampler saw die and what it read of its ending, by name (issue #487). */
+    /** Each service the sampler saw die and what it read of its ending, by name. */
     dead: Map<string, DeadService>;
     /** The progress write in flight, or the last one settled: every write chains on it, so none overtakes another. */
     writing: Promise<unknown>;
@@ -648,7 +632,7 @@ function serialFlush(rt: LoopRuntime, job: BoardJob, pump: OutputPump): Promise<
 }
 
 /**
- * Carries a dead service's exit, reason, log tail and hint (issue #487) into the fleet the sample
+ * Carries a dead service's exit, reason, log tail and hint into the fleet the sample
  * reports, read once — the first sample that sees it dead, before the teardown deletes the logs —
  * and tells the agent through the gate endpoint when one is newly dead. A probe that cannot read
  * the fleet costs the detail, never the sample.
@@ -779,7 +763,7 @@ async function flushIfChanged(rt: LoopRuntime, job: BoardJob, pump: OutputPump):
 /**
  * Starts the output pump and answers its two handles: `push`, the callback the runner hands its
  * newest tail to (unchanged from before), and `snapshot`, the liveness read a timed-out run's
- * kill note is built from (issue #339). The stamp lands only when the tail CHANGED — kubernetes's
+ * kill note is built from. The stamp lands only when the tail CHANGED — kubernetes's
  * repeated identical log polls must not fake freshness.
  */
 export function watchOutput(

@@ -3,7 +3,7 @@ import { MAX_FILES_PER_REQUEST } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { AttachmentRefusedError } from '../src/db/jobs/job-store-attachments.js';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { githubAuth, jobStoreSlice, memoryAuthStore, signedIn, staticRegistry, testConfig } from './helpers.js';

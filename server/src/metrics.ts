@@ -1,5 +1,5 @@
 /**
- * The board's Prometheus series (issue #831). Every label value comes from a closed vocabulary — a
+ * The board's Prometheus series. Every label value comes from a closed vocabulary — a
  * route pattern, a status class, an outcome, an admission scope — never an org, repo, job, lease or
  * user id, so the series stay bounded and a scrape with the shared worker credential cannot name a
  * tenant. docs/telemetry.md.

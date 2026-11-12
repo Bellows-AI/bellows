@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The MCP client of the `mcp` phase of `scripts/test-k8s.sh --cluster` (BEL-108): one pass against the chart's board
+// The MCP client of the `mcp` phase of `scripts/test-k8s.sh --cluster`: one pass against the chart's board
 // through the port-forward, as a client behind the ingress would reach it. No identity provider runs on kind, so the
 // access token is minted into the database by the lane (the way it mints a personal access token) and this script
 // presents it; the OAuth dance itself is exercised by `scripts/mcp-phase-client.mjs` on the docker lane.

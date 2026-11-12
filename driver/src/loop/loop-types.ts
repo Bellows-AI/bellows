@@ -30,21 +30,21 @@ export interface LoopRuntime {
     runner: Runner;
     config: DriverConfig;
     gates?: GateStack;
-    /** Overrides `STOP_GRACE_MS` — a test seam, never set in production (issue #442). */
+    /** Overrides `STOP_GRACE_MS` — a test seam, never set in production. */
     stopGraceMs?: number;
     log: (message: string) => void;
     sleep: (ms: number) => Promise<void>;
     reclaims: Map<string, Promise<void>>;
     /**
      * Reports a verdict; a verdict-time worktree reclaim it orders waits for `after` — the
-     * attempt's teardown (issue #821) — before it removes the tree.
+     * attempt's teardown — before it removes the tree.
      */
     report: (
         job: BoardJob,
         result: Parameters<Board['complete']>[1],
-        options?: { after?: Promise<void> }
+        options?: { after?: Promise<void>; leaseLapsed?: AbortSignal }
     ) => Promise<LeaseState>;
-    /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`, issue #792). */
+    /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`). */
     live?: Map<string, LiveAttempt>;
 }
 
@@ -57,14 +57,14 @@ export interface LiveAttempt {
 
 /**
  * Everything a setup step or the run phase needs about the one attempt it belongs to. Shared
- * between `loop-run.ts` and `loop-helpers.ts` (the block-helper steps, issue #207) rather than
+ * between `loop-run.ts` and `loop-helpers.ts` (the block-helper steps) rather than
  * defined in either — both need it, and neither should import runtime state from the other.
  */
 export interface AttemptCtx {
     rt: LoopRuntime;
     job: BoardJob;
     state: JobState;
-    /** Stops the heartbeat (issue #821); `end` (`loop-conclusion.ts`) is the only caller, once. */
+    /** Stops the heartbeat; `end` (`loop-conclusion.ts`) is the only caller, once. */
     quiesce: () => Promise<void>;
     /** The attempt's one ending (`end`, `loop-conclusion.ts`): the first call decides, later calls await it. */
     ended?: Promise<LeaseState | null>;
@@ -76,7 +76,7 @@ export interface AttemptCtx {
      * Whether this attempt holds the kubernetes checkout claim: taken by a successful sync, handed
      * to the runner at launch, and given back by `handBackFence` (`loop-fence.ts`) and by nothing
      * else — a refusal that ends an attempt no runner ever reached would otherwise hold the claim
-     * for the life of the cluster (issue #469).
+     * for the life of the cluster.
      */
     fenced: boolean;
     /** The task tree's fingerprint the startup sync answered; null when unknown. */
@@ -84,7 +84,7 @@ export interface AttemptCtx {
     /** The tree the run left, probed before the gates (`verifyRun`); the close-time gate reuse compares against it. */
     treeAfter?: string | null;
     /**
-     * The session the attempt runs: the task group (issue #771) is created by the sync, before the
+     * The session the attempt runs: the task group is created by the sync, before the
      * agent, and its agent container is specced for this session.
      */
     session: RunSession | null;
@@ -93,13 +93,13 @@ export interface AttemptCtx {
     /** A services start the stand-down abandoned, settling late: `end` releases what it started unless the runner is retained. */
     abandonedServices?: Promise<void>;
     /**
-     * The finished runner of an earlier claim this attempt adopted (issue #792): its outcome is the
+     * The finished runner of an earlier claim this attempt adopted: its outcome is the
      * run, so no sync, pre-helper or launch follows — the tree is the one that run left.
      */
     adopted?: AdoptedRun;
-    /** The live run of an earlier claim this attempt took over (#829): no sync, setup or launch order follows. */
+    /** The live run of an earlier claim this attempt took over: no sync, setup or launch order follows. */
     takeover?: LiveRun;
-    /** The post-run phase checkpoints (#829), opened by `verifyRun` before the gates and used by the phases after. */
+    /** The post-run phase checkpoints, opened by `verifyRun` before the gates and used by the phases after. */
     phases?: PhaseChain;
 }
 
@@ -116,9 +116,9 @@ export type VerdictBody = Parameters<Board['complete']>[1];
  * - `leave` — infrastructure, not a verdict: the claim stays with its lease and the lease decides
  *   (a sync that threw).
  * - `interrupt` — a refusal this driver makes while alive (a services start the daemon or cluster
- *   refused, issue #822): handed back as an interruption carrying `reason` (`interruptDecision`),
+ *   refused): handed back as an interruption carrying `reason` (`interruptDecision`),
  *   left to the lease only when that does not land. No verdict.
- * - `concluded` — the job really is done (a pre-run helper's `control: 'conclude'`, issue #230),
+ * - `concluded` — the job really is done (a pre-run helper's `control: 'conclude'`),
  *   reported `succeeded` with no agent, no gates, no post-helper and no publish.
  */
 export type SetupHalt =
@@ -134,7 +134,7 @@ export type SetupHalt =
 export type SetupConclusion = SetupHalt | typeof STOOD_DOWN;
 
 /**
- * An earlier claim's attempt the adoption found and took over (issue #792): a durable record
+ * An earlier claim's attempt the adoption found and took over: a durable record
  * `runPhases` performs for the step — an interruption `release: false`, under this claim's lease —
  * and no ending.
  */
@@ -145,7 +145,7 @@ export interface AdoptedRecord {
 }
 
 /**
- * How one attempt ends, as data (issue #828): `end` (`loop-conclusion.ts`) lands the durable call
+ * How one attempt ends, as data: `end` (`loop-conclusion.ts`) lands the durable call
  * for it, then quiesces and tears down. A path decides; it never acts.
  *
  * - `verdict` — stage, then report (`log` said first, when there is one).
@@ -165,7 +165,7 @@ export type EndDecision =
           blocked?: true;
           /** The agent's helper asked for a connection the task lacks: released outside the budget, held by the board. */
           requirement?: true;
-          /** The platform took the attempt away, on the executor's structured evidence (BEL-302): outside the poison budget. */
+          /** The platform took the attempt away, on the executor's structured evidence: outside the poison budget. */
           nodeLoss?: true;
           /** The work that must land while the lease still lets it, before the hand-back (the output tail, the session). */
           beforeInterrupt?: () => Promise<void>;

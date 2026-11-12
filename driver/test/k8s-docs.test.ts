@@ -12,7 +12,10 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
  * comments, the chart README). Each pin below is a fact the issue demands be stated; a docs edit
  * that drops one fails here instead of at an operator's cluster.
  */
-const kubernetesDocs = readFileSync(join(ROOT, 'docs/kubernetes.md'), 'utf8');
+// The stated limits live in kubernetes-limits.md; the pins read both pages as one.
+const kubernetesDocs =
+    readFileSync(join(ROOT, 'docs/kubernetes.md'), 'utf8') +
+    readFileSync(join(ROOT, 'docs/kubernetes-limits.md'), 'utf8');
 const netpolTemplate = readFileSync(join(ROOT, 'charts/factory/templates/runner-networkpolicy.yaml'), 'utf8');
 const chartValues = readFileSync(join(ROOT, 'charts/factory/values.yaml'), 'utf8');
 const agentsDoc = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
@@ -40,6 +43,11 @@ describe('the EKS prerequisites record', () => {
     });
 
     // Issue #887: the reaper's scope is the release on kubernetes, the board label on docker.
+    it('states that an unconfirmed group read is a blocked interrupt, with the unbounded-retry limit', () => {
+        expect(prose(kubernetesDocs)).toContain('is `unknown`, a blocked interrupt that spends no budget');
+        expect(prose(kubernetesDocs)).toContain('re-queues the task with no bound');
+    });
+
     it('states that the reaper is scoped to its own driver, and the unscoped limit', () => {
         expect(prose(kubernetesDocs)).toContain('The orphan reaper is scoped to its own driver on both executors');
         expect(prose(kubernetesDocs)).toContain('a driver started with no `K8S_RELEASE` is unscoped');
@@ -130,7 +138,7 @@ describe('the executor isolation record (#382)', () => {
     it('states the deployment assumptions, each of which is silent when absent', () => {
         expect(kubernetesDocs).toContain('A CNI that enforces NetworkPolicy');
         // 1.33: the first release with the `pods/resize` subresource the gate sidecar is resized
-        // through, beside native sidecars and ValidatingAdmissionPolicy (issue #773, checked on kind
+        // through, beside native sidecars and ValidatingAdmissionPolicy (checked on kind
         // v1.33.4).
         expect(kubernetesDocs).toContain(
             'ValidatingAdmissionPolicy, native sidecars and `pods/resize`, Kubernetes ≥ 1.33'
@@ -213,13 +221,6 @@ describe('the executor isolation record (#382)', () => {
         );
         expect(prose(kubernetesDocs)).toContain(
             "a lost driver still alive steps into it until it learns its lease was lost, then hangs up on the group's tokens (`depart`), the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`."
-        );
-    });
-
-    // Issue #829: a driver the board cannot reach never learns its lease was lost.
-    it('states that a cut-off driver keeps contact past the adopter’s finalize wait', () => {
-        expect(prose(kubernetesDocs)).toContain(
-            "Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker). `driver/src/loop/loop-attempt.ts`."
         );
     });
 

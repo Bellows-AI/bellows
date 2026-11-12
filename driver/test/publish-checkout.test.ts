@@ -47,7 +47,7 @@ const DIRTY_ON_MAIN = {
     hasIdentity: false,
 };
 const ON_TASK_BRANCH = { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, dirty: false };
-/** What the PR summarizer answers (issue #82): what the branch did, not what was asked. */
+/** What the PR summarizer answers: what the branch did, not what was asked. */
 const SUMMARY = { title: 'Fix the sync re-claim fence', body: '## Commits\n\n- Fix the sync re-claim fence' };
 
 const LANDED = {
@@ -110,7 +110,7 @@ const transport = (
         }
         if (step.label === 'git write-tree') return { stdout: `${opts.trees?.staged ?? TREE}\n` };
         if (step.label === 'git rev-parse HEAD^{tree}') return { stdout: `${opts.trees?.committed ?? TREE}\n` };
-        // The publication's own identity (issue #771): the commit it pushes, and its ledger — pinned
+        // The publication's own identity: the commit it pushes, and its ledger — pinned
         // in publish-reconcile.test.ts; here they only have to answer.
         if (step.label === 'git rev-parse HEAD') return { stdout: `${'a'.repeat(40)}\n` };
         if (step.label === 'publication ledger') return { stdout: '{}\n' };
@@ -195,9 +195,9 @@ describe('the publish workflow', () => {
         expect(push).toContain('--force-with-lease');
         expect(push.join(' ')).toContain('credential.helper=');
         expect(JSON.stringify(t.steps)).not.toContain('t0k-3n');
-        // The PR speaks for the work (issue #82): the summarizer reads the branch with literal
+        // The PR speaks for the work: the summarizer reads the branch with literal
         // envs only — the BASE and the backstop commit's subject, which must never win the title
-        // (issue #389) — and its title, issue ref appended, heads the PR over its body.
+        // — and its title, issue ref appended, heads the PR over its body.
         expect(t.find('pr summary')).toMatchObject({
             entrypoint: 'node',
             env: false,
@@ -339,14 +339,14 @@ describe('the publish workflow', () => {
         expect(t.labels()).toEqual(['probe']);
     });
 
-    it('fails the publish, naming the probe, when the probe cannot run (BEL-314)', async () => {
+    it('fails the publish, naming the probe, when the probe cannot run', async () => {
         const t = transport({}, { fail: (s) => (s.label === 'probe' ? 'boom' : null) });
 
         expect(await publish(t)).toMatchObject({ ok: false, reason: expect.stringContaining('probe: boom') });
         expect(t.labels()).toEqual(['probe']);
     });
 
-    it('lets a lost probe step propagate as the attempt’s interruption (BEL-314)', async () => {
+    it('lets a lost probe step propagate as the attempt’s interruption', async () => {
         const t = transport({});
         const lost = new StepChannelClosed('its step was answered');
         const run: typeof t.run = async (s) => {
@@ -366,7 +366,7 @@ describe('the publish workflow', () => {
         expect(t.steps).toEqual([]);
     });
 
-    // Revision-bound evidence (issue #548): a publish bound to a revision pushes only that tree.
+    // Revision-bound evidence: a publish bound to a revision pushes only that tree.
     it('refuses a publish bound to a revision the checkout no longer holds, after the probe alone', async () => {
         const t = transport({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
 
@@ -383,7 +383,7 @@ describe('the publish workflow', () => {
 });
 
 /**
- * The publish's own git steps run the repository's hooks (issue #825): a bound publish ships only
+ * The publish's own git steps run the repository's hooks: a bound publish ships only
  * the content its evidence assessed, so a hook that moves it — the switch's post-checkout, the
  * commit's pre- or post-commit — is refused stale, nothing pushed. The staging runs hook-free, so
  * the staged tree is the verified content the commit is held to.
@@ -484,7 +484,7 @@ describe('a failed publish step', () => {
     });
 });
 
-// The summary is decoration, never worth the publish (issue #82): the command-derived plan
+// The summary is decoration, never worth the publish: the command-derived plan
 // title and the plain body are the fallback.
 describe('the PR summary', () => {
     const created = async (opts: Parameters<typeof transport>[1]) => {

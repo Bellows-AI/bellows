@@ -12,6 +12,7 @@ import { UsageBreakdown } from './usage/UsageBreakdown.js';
 import { UsageDiagnostics } from './usage/UsageDiagnostics.js';
 import { UsageStateNote } from './usage/UsageStateNote.js';
 import { figure, TOKEN_TYPE_LABELS, UNASSIGNED_SENTENCES, USAGE_TOKEN_TYPES } from './usage/usage-format.js';
+import { ScrollRegion } from './ScrollRegion.js';
 
 /** What a figure cell says while its run's telemetry is still being fetched. */
 const LOADING = 'Loading…';
@@ -273,8 +274,7 @@ export function TaskStatsDialog({ open, stats, onClose }: { open: boolean; stats
                     ) : null}
                     <section>
                         <h3>Runs</h3>
-                        {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable */}
-                        <section className="task-stats-runs" aria-label="Per-run breakdown" tabIndex={0}>
+                        <ScrollRegion className="task-stats-runs" aria-label="Per-run breakdown">
                             <table>
                                 <thead>
                                     <tr>
@@ -295,7 +295,7 @@ export function TaskStatsDialog({ open, stats, onClose }: { open: boolean; stats
                                     ))}
                                 </tbody>
                             </table>
-                        </section>
+                        </ScrollRegion>
                     </section>
                     {stats.taskOwned === null ? null : <TaskOwned block={stats.taskOwned} />}
                     {usage === null ? null : (

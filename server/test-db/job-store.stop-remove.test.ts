@@ -477,7 +477,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         sql`update job set started_at = now() - (${RAN_MINUTES} * interval '1 minute') where id = ${id}`;
 
     // A stop nobody delivers — the driver died before its heartbeat could carry the kill order —
-    // must not re-issue the run (issue #152): the claim settles the stamped row `stopped` instead
+    // must not re-issue the run: the claim settles the stamped row `stopped` instead
     // of handing it to a new attempt, and the session the stopped run kept is what the follow-up
     // continues. Re-claiming would clear the session and spawn a container for a command the
     // member just cancelled.
@@ -505,7 +505,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
     });
 
     // Exhausted attempts do not change the verdict: a stamped row is a park, not a failure, so
-    // the dead-retirement sweep must never land it `dead` (issue #152) — the label is wrong and
+    // the dead-retirement sweep must never land it `dead` — the label is wrong and
     // the UI would read the task as over rather than stopped-and-continuable.
     it('lands a stamped exhausted run stopped, not dead, when the claim retires it', async () => {
         const id = await craft();
@@ -525,7 +525,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
     });
 
     // Nobody holds an expired lease, so the stop lands in place rather than waiting for a
-    // heartbeat nobody will send (issue #152). A previous holder that is still beating renews
+    // heartbeat nobody will send. A previous holder that is still beating renews
     // its lease and gets today's stamp-and-202 path instead — and one that lost the row gets
     // the heartbeat's 'lost' kill order, exactly as a reclaim delivers it.
     it("settles the stop in place when the run's lease is already gone", async () => {
@@ -609,7 +609,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
 
         // And the failed claim's own candidate is back to queued, attempt unburned — the
-        // rollback still guards exactly the half-claim it always did — and deferred (issue #822),
+        // rollback still guards exactly the half-claim it always did — and deferred,
         // so the follow-up queued meanwhile goes first; once the deferral lapses it is claimed.
         expect(await store.get(fresh)).toMatchObject({ status: 'queued', attempts: 0 });
         expect((await store.claim('w3', LEASE_SECONDS))?.id).toBe(followUp.id);

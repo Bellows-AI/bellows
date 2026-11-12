@@ -94,7 +94,7 @@ describe('the runner job spec', () => {
 
     // Issue #452: the managed settings come from the per-attempt Secret, mounted read-only and
     // 0444 over /etc/claude-code/managed-settings.json — root-owned in the pod, so the agent (uid 1000)
-    // cannot rewrite the scope that outranks every other. The file, not the directory (issue #1024):
+    // cannot rewrite the scope that outranks every other. The file, not the directory:
     // the image's managed skills sit beside it.
     it('mounts the rendered managed settings read-only from the attempt Secret for a claude-code runner', () => {
         const s = spec();
@@ -123,7 +123,7 @@ describe('the runner job spec', () => {
             '/home/factory-tool/.cache/node-compile-cache',
             '/etc/gitconfig',
             '/etc/claude-code/.claude/skills',
-            '/tmp/.factory-skills', // BEL-286: the per-run listing view the claude entrypoint builds
+            '/tmp/.factory-skills', // the per-run listing view the claude entrypoint builds
             '/usr/local/share/factory-skills',
         ];
         for (const pod of [spec(), runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null)]) {
@@ -154,7 +154,7 @@ describe('the runner job spec', () => {
         });
     });
 
-    // Executor parity for the task worktree (issue #35): a repo job starts in the thread's
+    // Executor parity for the task worktree: a repo job starts in the thread's
     // worktree here exactly as the docker runner does — same WORKDIR rule, one code path on the
     // board side.
     it('starts a repo job in its task worktree', () => {
@@ -354,7 +354,7 @@ describe('the runner job spec', () => {
         expect(JSON.stringify(container.env)).not.toContain('shh');
     });
 
-    // Run-control and ad-hoc gate traffic go through the supervisor's relays (BEL-88), so neither
+    // Run-control and ad-hoc gate traffic go through the supervisor's relays, so neither
     // a BELLOWS_CONTROL_* nor a BELLOWS_GATE_* name reaches the runner's env.
     it('puts no gate pair in the runner env, though the job carries its registration key', () => {
         const controlled: BoardJob = {
@@ -581,7 +581,7 @@ describe('resources on every pod the driver specs', () => {
     // The runner's pod is sized by its agent: the supervisor and the exporter beside it are small
     // scripts, and a request on each would multiply the pod's reservation by three.
     const SIDECARS: readonly PodName[] = ['the task supervisor', 'the transcript exporter'];
-    // The gate sidecar is sized by GATE_* and resized in place (issue #773): its own pins below.
+    // The gate sidecar is sized by GATE_* and resized in place: its own pins below.
     const SIZED_POD_NAMES = POD_NAMES.filter((name) => !SIDECARS.includes(name) && name !== 'the gate sidecar');
 
     it.each(SIDECARS)('leaves %s unsized: the pod is sized by its agent', (name) => {

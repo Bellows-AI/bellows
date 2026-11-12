@@ -27,7 +27,7 @@ function gateEntryCore(entry: Record<string, unknown>): Pick<GateReport, 'name' 
     return { name, status, exitCode: (exitCode as number | undefined) ?? null };
 }
 
-/** The execution a gate entry is, and, for a gate not launched, the pass it is served from (issue #983). */
+/** The execution a gate entry is, and, for a gate not launched, the pass it is served from. */
 function gateEntryRecord(entry: Record<string, unknown>): Pick<GateReport, 'executionId' | 'reused'> | string {
     const { executionId, reused } = entry;
     if (executionId !== undefined && (typeof executionId !== 'string' || !UUID.test(executionId))) {

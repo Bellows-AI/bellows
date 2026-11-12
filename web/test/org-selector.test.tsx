@@ -42,7 +42,7 @@ describe('OrgSelector', () => {
         // A disabled control with no explanation reads as a bug or as a permissions problem.
         const html = render(CONFIG);
         expect(html).toContain('one organization');
-        // The ORG_ID phrasing is gone with the variable itself (#99).
+        // The ORG_ID phrasing is gone with the variable itself.
         expect(html).not.toContain('ORG_ID');
     });
 

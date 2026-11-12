@@ -2,7 +2,7 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
 import { BINDABLE_PROVIDERS } from '../../db/connection-bindings.js';
-import type { JobActionStore } from '../../db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
 import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, guard } from '../helpers.js';

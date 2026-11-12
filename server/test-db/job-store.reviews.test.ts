@@ -10,7 +10,7 @@ import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflo
 import { useTestDb } from './harness.js';
 import { randomGithubId, spendInterruptionBudget, testOrg, withoutTransitionGuard } from './fixtures.js';
 
-/** Independent reviewer invocation (issue #549) on a real database: the SQL is what is under test. */
+/** Independent reviewer invocation on a real database: the SQL is what is under test. */
 
 const enabled = Boolean(process.env.DATABASE_URL);
 

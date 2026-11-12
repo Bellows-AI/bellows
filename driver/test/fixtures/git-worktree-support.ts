@@ -88,7 +88,7 @@ export function importEmptyCommits(cwd: string, branch: string, count: number): 
     execFileSync('git', ['fast-import', '--quiet'], { cwd, input: `${stream}done\n` });
 }
 
-/** The script's verdict: `conflicts` rides an ok sync that left a conflict for the agent (issue #661). */
+/** The script's verdict: `conflicts` rides an ok sync that left a conflict for the agent. */
 export interface SyncVerdict {
     ok: boolean;
     reason: string | null;

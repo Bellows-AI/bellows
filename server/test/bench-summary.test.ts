@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /*
- * scripts/bench-summary.mjs turns the benchmark phase's per-cell files into one TSV row per cell
- * (issue #831): a read that failed or a counter that went down is `?`, never 0, a bucket bound past the
+ * scripts/bench-summary.mjs turns the benchmark phase's per-cell files into one TSV row per cell:
+ * a read that failed or a counter that went down is `?`, never 0, a bucket bound past the
  * last one is `?`, and no column names a cause. Absent or partial evidence (a pod's scrape, a metric family, a
  * task row) leaves a figure `?`; rates use each scrape's own answer time; per-task rates integrate the tasks
  * that ran in the window; saturation is judged on unrounded values.

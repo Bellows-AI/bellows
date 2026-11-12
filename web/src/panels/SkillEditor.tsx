@@ -1,4 +1,5 @@
 import { ERROR_CODES, MAX_SKILL_BYTES, MAX_SKILL_FILE_BYTES, MAX_SKILL_FILES } from '@factory-ai/core';
+import { Tab, TabGroup, TabList, TabPanel, TabPanels } from '@headlessui/react';
 import { useEffect, useId, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import {
     createSkill,
@@ -16,7 +17,7 @@ import { useGuardedDraft, useUnsavedChanges } from '../components/UnsavedChanges
 import type { SkillEditorTarget } from './SkillsSection.js';
 
 /**
- * The inline skill editor (BEL-272): write SKILL.md, upload a .zip, edit a stored skill's SKILL.md, or
+ * The inline skill editor: write SKILL.md, upload a .zip, edit a stored skill's SKILL.md, or
  * upload a new version. One card at a time, so one guarded draft id. A refusal is shown inline with the
  * server's own words and the draft is kept; the zip is posted whole, and SKILL.md names the skill.
  */
@@ -425,17 +426,11 @@ export function SkillEditor({
             </EditorFrame>
         );
     }
+    const TABS = ['write', 'zip'] as const;
     const tabs = (
-        <div className="tabs" role="tablist">
-            {(['write', 'zip'] as const).map((value) => (
-                <button
-                    key={value}
-                    type="button"
-                    role="tab"
-                    aria-selected={tab === value}
-                    disabled={busy}
-                    onClick={() => setTab(value)}
-                >
+        <TabList className="tabs">
+            {TABS.map((value) => (
+                <Tab key={value} disabled={busy}>
                     {value === 'write' ? (
                         'Write SKILL.md'
                     ) : (
@@ -444,30 +439,36 @@ export function SkillEditor({
                             Upload .zip
                         </>
                     )}
-                </button>
+                </Tab>
             ))}
-        </div>
+        </TabList>
     );
     return (
-        <EditorFrame
-            title={door === 'org' ? 'New organization skill' : 'New skill'}
-            tabs={tabs}
-            busy={busy}
-            onClose={() => void requestClose()}
-        >
-            {/* Hidden, not unmounted: a half-written draft survives a look at the zip tab. */}
-            <div hidden={tab !== 'write'}>
-                <WritePanel
-                    door={door}
-                    skill={null}
-                    initialMd={template('')}
-                    onClose={onClose}
-                    onChanged={onChanged}
-                    onReload={onClose}
-                    onBusy={setBusy}
-                />
-            </div>
-            {tab === 'zip' ? <ZipPanel door={door} onChanged={onChanged} onBusy={setBusy} /> : null}
-        </EditorFrame>
+        <TabGroup selectedIndex={TABS.indexOf(tab)} onChange={(index) => setTab(TABS[index]!)}>
+            <EditorFrame
+                title={door === 'org' ? 'New organization skill' : 'New skill'}
+                tabs={tabs}
+                busy={busy}
+                onClose={() => void requestClose()}
+            >
+                <TabPanels>
+                    {/* Kept mounted, only hidden: a half-written draft survives a look at the zip tab. */}
+                    <TabPanel unmount={false}>
+                        <WritePanel
+                            door={door}
+                            skill={null}
+                            initialMd={template('')}
+                            onClose={onClose}
+                            onChanged={onChanged}
+                            onReload={onClose}
+                            onBusy={setBusy}
+                        />
+                    </TabPanel>
+                    <TabPanel>
+                        <ZipPanel door={door} onChanged={onChanged} onBusy={setBusy} />
+                    </TabPanel>
+                </TabPanels>
+            </EditorFrame>
+        </TabGroup>
     );
 }

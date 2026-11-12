@@ -68,7 +68,7 @@ describe.skipIf(!enabled)('access tokens', () => {
         const resolved = await store.findPersonalToken(hashToken('fat_a'));
         expect(resolved).toMatchObject({
             user: { id: caller.user.id, login: 'token-user' },
-            // This account is the org's FIRST member, so its membership lands `admin` (#410);
+            // This account is the org's FIRST member, so its membership lands `admin`;
             // the token acts as its user, through the same join.
             role: 'admin',
             org: { id: ORG, name: ORG },

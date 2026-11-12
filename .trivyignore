@@ -33,5 +33,5 @@ CVE-2026-109869
 # v0.60.0 and gh's trunk with v0.61.0; the fix is v0.62.0, so there is no gh to upgrade to. The
 # worst case is a gh process the agent itself runs inside its own runner hanging on crafted input;
 # no service in the images runs gh. Revisit 2026-11-24, or when a gh release builds with x/net
-# v0.62.0 or later: bump GH_VERSION in both executor Dockerfiles and drop this line (BEL-309).
+# v0.62.0 or later: bump GH_VERSION in both executor Dockerfiles and drop this line.
 CVE-2026-78661

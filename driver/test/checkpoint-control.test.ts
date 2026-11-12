@@ -7,7 +7,7 @@ import { createControlChannel, type ControlChannel } from '../src/control-channe
 import type { CheckpointRelay } from '../src/export-control.js';
 
 /**
- * The control channel's checkpoint routes (issue #775): the task supervisor, at finalize, puts the
+ * The control channel's checkpoint routes: the task supervisor, at finalize, puts the
  * checkpoint's bytes and its closing record here and the loop forwards them to the board's
  * `checkpoint` stream. Only the supervisor's token opens them; the bytes are binary and kept exact.
  */

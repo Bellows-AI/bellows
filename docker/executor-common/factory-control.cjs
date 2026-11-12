@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * `factory-control <verb> …`: the run-control socket calls the baked skills make (issue #1061).
+ * `factory-control <verb> …`: the run-control socket calls the baked skills make.
  *
  *   publish                     POST /publish         the draft publication (the factory-github skill)
  *   review <key> <profile>      POST /review          ask a named reviewer (the factory-review skill)

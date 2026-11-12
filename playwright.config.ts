@@ -184,7 +184,7 @@ export default defineConfig({
                 // even where no driver ever connects.
                 JOB_BOARD_TOKEN: 'an-e2e-board-secret-of-at-least-32-chars',
                 PUBLIC_URL: `http://127.0.0.1:${AUTH_PORT}`,
-                // The MCP authorization server (BEL-103): an http loopback PUBLIC_URL needs a loopback bind.
+                // The MCP authorization server: an http loopback PUBLIC_URL needs a loopback bind.
                 MCP_ENABLED: 'true',
                 HOST: '127.0.0.1',
                 // The three overrides that point the exchange at the stub. Environment only — and
@@ -193,7 +193,7 @@ export default defineConfig({
                 GITHUB_OAUTH_AUTHORIZE_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/authorize`,
                 GITHUB_OAUTH_TOKEN_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/access_token`,
                 GITHUB_OAUTH_USER_URL: `http://127.0.0.1:${IDP_PORT}/user`,
-                // The Jira connect flow (BEL-61) against the same stub's /atlassian/* endpoints; the
+                // The Jira connect flow against the same stub's /atlassian/* endpoints; the
                 // board logs loudly when an override is in use, like the GitHub ones above.
                 ATLASSIAN_CLIENT_ID: 'stub-atlassian-client-id',
                 ATLASSIAN_CLIENT_SECRET: 'stub-atlassian-client-secret',
@@ -201,7 +201,7 @@ export default defineConfig({
                 ATLASSIAN_TOKEN_URL: `http://127.0.0.1:${IDP_PORT}/atlassian/oauth/token`,
                 ATLASSIAN_API_URL: `http://127.0.0.1:${IDP_PORT}/atlassian/api`,
                 // First sign-in materializes the installation the stub reports as the member's
-                // organization — the half of the flow most worth driving in a browser (#99).
+                // organization — the half of the flow most worth driving in a browser.
                 // The seed's stored-repo rows land under these orgs (same ids the stub IdP
                 // reports as installations), so the repositories page's org-scoped stored
                 // fallback offers the seeded repository to the signed-in member.

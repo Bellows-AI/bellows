@@ -1,5 +1,5 @@
 -- The PR lifecycle: persistent evidence that a task's work reached GitHub, and the durable, wait
--- side-channel the GitHub webhook operates (issue #202). Three tables, one concern: making the
+-- side-channel the GitHub webhook operates. Three tables, one concern: making the
 -- board's threads answer to what their PRs and review traffic do WITHOUT a driver polling for it.
 --
 -- WHY A ROW, NOT A JOIN: the driver's completion report already carries the publication's identity

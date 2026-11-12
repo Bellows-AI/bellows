@@ -127,7 +127,7 @@ describe('publishing the produced work', () => {
     });
 
     /*
-     * The per-task workspace (issue #35): one `git worktree` of the job's repo, branched off the
+     * The per-task workspace: one `git worktree` of the job's repo, branched off the
      * remote default, per task THREAD. Keyed by the thread's ROOT job id — stable across attempts
      * of the same job, and shared by follow-ups, because a follow-up resumes the parent session
      * and a session is only coherent in the tree it ran in. The clone itself stays pristine.
@@ -260,7 +260,7 @@ describe('publishing the produced work', () => {
     });
 
     // A claim that CONTINUES a session — a follow-up — is mid-task, and git operations that touch
-    // the remote belong to the task's beginning and end (issue #58). Its sync is a RESTORE: the
+    // the remote belong to the task's beginning and end. Its sync is a RESTORE: the
     // step runs with RESTORE=1 and carries NO claim env at all (restore talks only to the local
     // clone — nothing to credential), and the fetch's helper code is absent even beside a token.
     it('restores a claim that continues a session instead of syncing it', async () => {
@@ -287,7 +287,7 @@ describe('publishing the produced work', () => {
         expect(fresh?.env).toMatchObject({ GITHUB_TOKEN: 't0k-3n' });
     });
 
-    // The terminal reclaim (issue #775): the thread's tree lives on its own task volume, which only the
+    // The terminal reclaim: the thread's tree lives on its own task volume, which only the
     // reaper deletes, so the reclaim is an acknowledged no-op — no group, no step, no daemon call.
     it.each([
         ['a job with a repository', { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }],
@@ -495,7 +495,7 @@ describe('publishing the produced work', () => {
         expect(steps.steps().length).toBeGreaterThan(0);
         for (const step of steps.steps()) {
             if (step.argv.some((x) => x.includes('shortstat'))) {
-                // The summarizer (issue #82) is anchored like every git step — the task
+                // The summarizer is anchored like every git step — the task
                 // worktree as its working directory, never the image default, where git would find
                 // no repo and the summary would silently degrade to the command title. Pinned
                 // explicitly, because its failure mode is the quiet one.
@@ -663,7 +663,7 @@ describe('publishing the produced work', () => {
             failStderr?: string;
             summary?: Record<string, unknown>;
             exec?: (args: string[]) => Promise<{ stdout: string }>;
-            /** What a bound publish's staged and committed trees read (issue #825); default both one tree. */
+            /** What a bound publish's staged and committed trees read; default both one tree. */
             trees?: { staged?: string; committed?: string };
         } = {}
     ) => {
@@ -679,7 +679,7 @@ describe('publishing the produced work', () => {
             if (argv.includes('HEAD^{tree}')) return ok(`${opts.trees?.committed ?? 't'.repeat(40)}\n`);
             if (argv.includes('rev-parse')) return ok(`${'a'.repeat(40)}\n`);
             // The probe's marker rides INSIDE the -e script string; the git steps carry their
-            // subcommand as a standalone argv element. The PR summarizer (issue #82) is the
+            // subcommand as a standalone argv element. The PR summarizer is the
             // second node step — told apart by the git argv its script embeds.
             if (argv.some((a) => a.includes('execFileSync'))) {
                 if (argv.some((a) => a.includes('shortstat'))) return ok(JSON.stringify(opts.summary ?? SUMMARY));
@@ -711,7 +711,7 @@ describe('publishing the produced work', () => {
         hasIdentity: false,
     };
 
-    /** What the PR summarizer answers (issue #82): what the branch did, not what was asked. */
+    /** What the PR summarizer answers: what the branch did, not what was asked. */
     const SUMMARY = { title: 'Fix the sync re-claim fence', body: '## Commits\n\n- Fix the sync re-claim fence' };
 
     const argvsOf = (steps: ReturnType<typeof fakeSteps>): string[][] => steps.steps().map((step) => step.argv);

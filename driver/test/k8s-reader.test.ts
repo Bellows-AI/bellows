@@ -1,6 +1,6 @@
 /**
  * A finished group has no supervisor left to answer a step, so an adoption's close-time readouts run
- * as a one-shot reader Job over the task volume (#775). The Job is the readout's only holder of the
+ * as a one-shot reader Job over the task volume. The Job is the readout's only holder of the
  * volume: the group's pod is terminal, which a ReadWriteOncePod claim does not count.
  */
 import { describe, expect, it } from 'vitest';

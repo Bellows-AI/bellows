@@ -17,7 +17,7 @@ import {
 } from './tasks-fixtures.js';
 import './dom.js';
 
-/** The statistics modal's states (issue #848): which run it charts, and what it says when it has no figures. */
+/** The statistics modal's states: which run it charts, and what it says when it has no figures. */
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
@@ -87,7 +87,7 @@ describe('TaskStatsDialog', () => {
     });
 });
 
-/** Gate and PR activity in the modal (issue #983): counts by outcome, the reused attribution, PR links, "—" for unknowns. */
+/** Gate and PR activity in the modal: counts by outcome, the reused attribution, PR links, "—" for unknowns. */
 describe('TaskStatsDialog gate and PR activity', () => {
     const task = taskUsage(A, [runUsage(A, 'run', tokens)]);
     const answered = (gates = NO_GATES, prs = NO_PRS) => ({

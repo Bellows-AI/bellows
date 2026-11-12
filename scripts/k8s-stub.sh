@@ -3,7 +3,7 @@
 set -eu
 echo "${CLAUDE_CODE_CONFIG_CONTENT:-none}"
 echo "$@"
-# `factory-stub-mark` (issue #822): the first run marks the worktree's git-ignored .factory/ and goes
+# `factory-stub-mark`: the first run marks the worktree's git-ignored .factory/ and goes
 # on; a run that finds the mark — a replacement on the tree a lost runner left — says so and ends.
 case "$*" in
 *factory-stub-mark*)
@@ -14,7 +14,7 @@ case "$*" in
     mkdir -p "$WORKDIR/.factory" && echo "${HOSTNAME:-stub}" >"$WORKDIR/.factory/stub-mark"
     ;;
 esac
-# `factory-stub-commit` (issue #829): one commit of a file on the task branch, so the publish after the run
+# `factory-stub-commit`: one commit of a file on the task branch, so the publish after the run
 # has something to push; made before any wait, so a driver killed at the wait finds it already there.
 case "$*" in
 *factory-stub-commit*)
@@ -23,14 +23,14 @@ case "$*" in
     git -C "$WORKDIR" -c user.name=lane -c user.email=lane@localhost commit -q -m lane-commit
     ;;
 esac
-# `factory-stub-change` (issue #1020): one file written into the task tree. A task that changes nothing
+# `factory-stub-change`: one file written into the task tree. A task that changes nothing
 # skips its close-time gates, so a lane that counts gate runs needs an agent that leaves a change.
 case "$*" in
 *factory-stub-change*)
     echo change >"$WORKDIR/lane-change"
     ;;
 esac
-# `factory-stub-transcript-<n>` (issue #779): the session file the
+# `factory-stub-transcript-<n>`: the session file the
 # real CLI writes under the runner's transcript store (projects/<working dir with every non-alphanumeric
 # as '-'>/<session>.jsonl) topped up to <n> claude JSONL records, so a replacement run on the same volume
 # adds none, as a resumed session would not repeat its history; then `stub-transcript-ready` beside it, so a lane that holds the run at a
@@ -54,7 +54,7 @@ case "$*" in
     echo "transcript $session_file records $have"
     ;;
 esac
-# `factory-stub-skills` (BEL-273): what the pinned-skill installer left under the task volume, as this agent reads it:
+# `factory-stub-skills`: what the pinned-skill installer left under the task volume, as this agent reads it:
 # one `skills <name> <sha256>` line per skill the manifest owns and one `helper <path> open|denied` line per helper
 # file. A resumed run prints the same set only if the pin, not the live skill, decided what it holds.
 case "$*" in
@@ -62,7 +62,7 @@ case "$*" in
     skills_dir=/task/.factory/skills-root/.claude/skills
     node -e 'const owned = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).owned;
 for (const name of Object.keys(owned).sort()) console.log(`skills ${name} ${owned[name]}`);' "$skills_dir/.factory-skills.json"
-    # BEL-286: one `hidden <name>` line per built-in the plan told this runner not to list, from its env.
+    # one `hidden <name>` line per built-in the plan told this runner not to list, from its env.
     printf '%s\n' "${FACTORY_HIDDEN_SKILLS:-}" | tr ',' '\n' | while IFS= read -r hidden; do [ -n "$hidden" ] && echo "hidden $hidden"; done
     for helper in "$skills_dir"/*/ref/helper.txt; do
         if cat "$helper" >/dev/null 2>&1; then echo "helper ${helper#"$skills_dir"/} open"; else echo "helper ${helper#"$skills_dir"/} denied"; fi
@@ -87,7 +87,7 @@ for (const name of Object.keys(owned).sort()) console.log(`skills ${name} ${owne
     fi
     ;;
 esac
-# `factory-stub-services` (issue #773): the names a task pod's hosts file puts on its loopback, then
+# `factory-stub-services`: the names a task pod's hosts file puts on its loopback, then
 # a TCP connect to each declared service of the services lane, retried while one still boots.
 reach() { # reach <host> <port>
     node -e '
@@ -103,11 +103,11 @@ const once = () => {
 };
 once();' "$1" "$2"
 }
-# `factory-stub-stop` (issue #770): a wait below ends cleanly on the supervisor's Stop, as the real
+# `factory-stub-stop`: a wait below ends cleanly on the supervisor's Stop, as the real
 # CLI's stop hook does.
 stoppable=''
 case "$*" in *factory-stub-stop*) stoppable=1 ;; esac
-# `factory-stub-ask-<seconds>` (issue #770): after <seconds> of run budget, one question to the
+# `factory-stub-ask-<seconds>`: after <seconds> of run budget, one question to the
 # supervisor through the agent's mailbox, as claude-bridge.cjs asks it, then the answer polled until
 # settled; the run goes on to any wait.
 case "$*" in
@@ -156,7 +156,7 @@ for arg in "$@"; do
         break
         ;;
     *factory-stub-title*)
-        # `factory-stub-title` (BEL-252): the agent names its task through the task-title helper on the attempt
+        # `factory-stub-title`: the agent names its task through the task-title helper on the attempt
         # pair of the pod's env (the supervisor's control socket relays the lease it follows now).
         title_exit=0
         FACTORY_CONTROL_SOCKET="$FACTORY_CTL_OUT/control.sock" node /usr/local/bin/task-title.cjs 'Lane agent title' >/tmp/title.out 2>/tmp/title.err || title_exit=$?
@@ -180,7 +180,7 @@ for arg in "$@"; do
         break
         ;;
     *factory-stub-review*)
-        # `factory-stub-review` (issue #774): ask the declared `audit` reviewer for key `rv-k` on the
+        # `factory-stub-review`: ask the declared `audit` reviewer for key `rv-k` on the
         # control endpoint and wait for its verdict. A re-claimed run asks the same key again.
         node -e '
 const http = require("node:http");
@@ -211,7 +211,7 @@ const call = (method, path, body) => new Promise((resolve, reject) => {
         break
         ;;
     *factory-stub-sleep-*)
-        # `factory-stub-sleep-<seconds>` (issue #831): holds a slot for a fixed time and ends, writing no
+        # `factory-stub-sleep-<seconds>`: holds a slot for a fixed time and ends, writing no
         # barrier file, so the benchmark phase needs no `kubectl exec` while it measures.
         seconds="${arg##*factory-stub-sleep-}"
         seconds="${seconds%%[!0-9]*}"
@@ -221,7 +221,7 @@ const call = (method, path, body) => new Promise((resolve, reject) => {
         break
         ;;
     *factory-stub-pass-*)
-        # The pass of an agent that must not wait (issue #829): its ready file, so a lane counts the runs.
+        # The pass of an agent that must not wait: its ready file, so a lane counts the runs.
         release="${arg##*factory-stub-pass-}"
         release="${release%%[!a-zA-Z0-9_./-]*}"
         [ -n "$release" ] || exit 1
@@ -236,7 +236,7 @@ const call = (method, path, body) => new Promise((resolve, reject) => {
         : > "$release.ready-${HOSTNAME:-stub}"
         echo "waiting in ${HOSTNAME:-stub}"
         wait_seconds="${FACTORY_STUB_TIMEOUT_SECONDS:-120}"
-        # `factory-stub-patient` (issue #829): a takeover case holds the agent past a kubelet Secret refresh.
+        # `factory-stub-patient`: a takeover case holds the agent past a kubelet Secret refresh.
         case "$*" in *factory-stub-patient*) wait_seconds=900 ;; esac
         deadline=$(($(date +%s) + wait_seconds))
         while [ ! -f "$release" ]; do
@@ -255,7 +255,7 @@ const call = (method, path, body) => new Promise((resolve, reject) => {
         ;;
     esac
 done
-# `factory-stub-fail` (issue #779): the run ends non-zero, after any records and wait above.
+# `factory-stub-fail`: the run ends non-zero, after any records and wait above.
 # `factory-stub-fail-once`: only the first run on the task volume does; a retry finds the mark and passes.
 case "$*" in
 *factory-stub-fail-once*)

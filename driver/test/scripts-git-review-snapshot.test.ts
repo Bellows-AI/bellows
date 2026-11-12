@@ -7,7 +7,7 @@ import { hasGit, pathOf } from './fixtures/scripts-support.js';
 
 /**
  * The review snapshot script, against real git — the artifact the snapshot container runs when an
- * agent asks for a reviewer (issue #549). What it must never do is move anything the agent has:
+ * agent asks for a reviewer. What it must never do is move anything the agent has:
  * HEAD, the branch, the real index and the working files stay exactly as they were; only a ref is
  * written, once.
  */

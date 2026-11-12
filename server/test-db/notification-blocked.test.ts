@@ -12,7 +12,7 @@ import { startRow, testOrg, testUser } from './fixtures.js';
 import { batchPlan, headOf as sharedHeadOf, prTask, rootOf, startBatch } from './batch-fixtures.js';
 
 /**
- * BEL-134: task.blocked fires only when a person must act. A plain thread's failure emits when nothing
+ * task.blocked fires only when a person must act. A plain thread's failure emits when nothing
  * recovers it (notification-events.test.ts); a batch task emits once its durable `attention` is set,
  * on the thread head, never for a failure the batch retries or repairs by itself.
  */

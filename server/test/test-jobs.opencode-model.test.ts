@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -12,7 +12,10 @@ import { describe, expect, it } from 'vitest';
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
 /** The script with comment lines blanked, so prose naming a model is not read as config. */
-const CODE = SCRIPT.replace(/^[ \t]*#.*$/gm, (comment) => ' '.repeat(comment.length));
+const LANES = join(ROOT, 'scripts/lanes/jobs');
+/** The dispatcher plus every phase body: the configs live in the phase files, the helper in the dispatcher. */
+const ALL = [SCRIPT, ...readdirSync(LANES).map((name) => readFileSync(join(LANES, name), 'utf8'))].join('\n');
+const CODE = ALL.replace(/^[ \t]*#.*$/gm, (comment) => ' '.repeat(comment.length));
 
 const CONSTANT = /^LANE_OPENCODE_MODEL=([a-z0-9-]+)$/m;
 const HELPER = /^lane_opencode_config\(\) \{[^\n]*\n[\s\S]*?\n\}\n/m;

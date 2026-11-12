@@ -1,6 +1,4 @@
-import { JSON_HEADERS } from '@factory-ai/core';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 /**
  * The connections' client half: the caller's own list and the disconnect (a `DELETE`) of
@@ -53,29 +51,19 @@ const isConnectionView = (row: unknown): row is ConnectionView => {
     );
 };
 
-const SESSION_EXPIRED = 'Your session expired';
-
 /** The caller's visible connections, or the refusal's message. */
 export const listConnections = async (): Promise<
     { ok: true; connections: ConnectionView[] } | { ok: false; error: string }
 > => {
-    try {
-        const response = await fetch('/api/connections');
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false, error: SESSION_EXPIRED };
-        }
-        if (!response.ok) {
-            return { ok: false, error: (await refusalOf(response, 'Could not load the connections')).error };
-        }
-        const rows: unknown = ((await response.json()) as { connections?: unknown }).connections;
-        if (!Array.isArray(rows) || !rows.every(isConnectionView)) {
-            return { ok: false, error: 'Could not load the connections: unexpected response shape.' };
-        }
-        return { ok: true, connections: rows };
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+    const result = await request<{ connections: ConnectionView[] }>('/api/connections', {
+        verb: 'Could not load the connections',
+        guard: (body): body is { connections: ConnectionView[] } => {
+            const rows = (body as { connections?: unknown } | null)?.connections;
+            return Array.isArray(rows) && rows.every(isConnectionView);
+        },
+        malformed: 'Could not load the connections: unexpected response shape.',
+    });
+    return result.ok ? { ok: true, connections: result.value.connections } : { ok: false, error: result.error };
 };
 
 /**
@@ -87,25 +75,18 @@ export const startAuthorization = async (
     provider: string,
     input: StartAuthorizationInput & { returnTo: string }
 ): Promise<{ ok: true; authorizeUrl: string } | { ok: false; error: string }> => {
-    try {
-        const response = await fetch(`/api/integrations/${encodeURIComponent(provider)}/authorizations`, {
+    const result = await request<{ authorizeUrl: string }>(
+        `/api/integrations/${encodeURIComponent(provider)}/authorizations`,
+        {
             method: 'POST',
-            headers: JSON_HEADERS,
-            body: JSON.stringify(input),
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false, error: SESSION_EXPIRED };
+            body: input,
+            verb: 'Could not start the connection',
+            guard: (body): body is { authorizeUrl: string } =>
+                typeof (body as { authorizeUrl?: unknown } | null)?.authorizeUrl === 'string',
+            malformed: 'Could not start the connection: unexpected response.',
         }
-        if (!response.ok)
-            return { ok: false, error: (await refusalOf(response, 'Could not start the connection')).error };
-        const { authorizeUrl } = (await response.json()) as { authorizeUrl?: unknown };
-        if (typeof authorizeUrl !== 'string')
-            return { ok: false, error: 'Could not start the connection: unexpected response.' };
-        return { ok: true, authorizeUrl };
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+    );
+    return result.ok ? { ok: true, authorizeUrl: result.value.authorizeUrl } : { ok: false, error: result.error };
 };
 
 /**
@@ -118,19 +99,17 @@ const HTTP_STATUS_NO_CONTENT = 204;
 const HTTP_STATUS_NOT_FOUND = 404;
 
 export const deleteConnection = async (id: string): Promise<DisconnectResult> => {
-    try {
-        const response = await fetch(`/api/connections/${id}`, { method: 'DELETE' });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { kind: 'failed', error: SESSION_EXPIRED };
-        }
-        if (response.status === HTTP_STATUS_NO_CONTENT) return { kind: 'disconnected' };
-        if (response.status === HTTP_STATUS_NOT_FOUND) return { kind: 'gone' };
-        const refusal = await refusalOf(response, 'Could not disconnect the connection');
-        return { kind: 'failed', error: response.ok ? 'Could not confirm the disconnect.' : refusal.error };
-    } catch (e) {
-        return { kind: 'failed', error: (e as Error).message };
+    const result = await request(`/api/connections/${id}`, {
+        method: 'DELETE',
+        verb: 'Could not disconnect the connection',
+        empty: true,
+    });
+    if (!result.ok) {
+        return result.status === HTTP_STATUS_NOT_FOUND ? { kind: 'gone' } : { kind: 'failed', error: result.error };
     }
+    return result.status === HTTP_STATUS_NO_CONTENT
+        ? { kind: 'disconnected' }
+        : { kind: 'failed', error: 'Could not confirm the disconnect.' };
 };
 
 /** Returns the refusal's message, or null when the task's thread now holds the connection. */
@@ -139,38 +118,22 @@ export const bindTaskConnection = async (
     connectionId: string,
     bindingRevision: number
 ): Promise<string | null> => {
-    try {
-        const response = await fetch(`/api/jobs/${jobId}/connections`, {
-            method: 'POST',
-            headers: JSON_HEADERS,
-            body: JSON.stringify({ connectionId, bindingRevision }),
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return SESSION_EXPIRED;
-        }
-        if (!response.ok) return (await refusalOf(response, 'Could not bind the connection')).error;
-        return null;
-    } catch (e) {
-        return (e as Error).message;
-    }
+    const result = await request(`/api/jobs/${jobId}/connections`, {
+        method: 'POST',
+        body: { connectionId, bindingRevision },
+        verb: 'Could not bind the connection',
+        empty: true,
+    });
+    return result.ok ? null : result.error;
 };
 
 /** Returns the refusal's message, or null when the requirement is dismissed ("Continue without it"). */
 export const dismissRequirement = async (jobId: string, provider: string): Promise<string | null> => {
-    try {
-        const response = await fetch(`/api/jobs/${jobId}/requirements/${encodeURIComponent(provider)}/dismiss`, {
-            method: 'POST',
-            headers: JSON_HEADERS,
-            body: '{}',
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return SESSION_EXPIRED;
-        }
-        if (!response.ok) return (await refusalOf(response, 'Could not continue without the connection')).error;
-        return null;
-    } catch (e) {
-        return (e as Error).message;
-    }
+    const result = await request(`/api/jobs/${jobId}/requirements/${encodeURIComponent(provider)}/dismiss`, {
+        method: 'POST',
+        body: {},
+        verb: 'Could not continue without the connection',
+        empty: true,
+    });
+    return result.ok ? null : result.error;
 };

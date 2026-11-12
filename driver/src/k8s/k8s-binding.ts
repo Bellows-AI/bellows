@@ -7,7 +7,7 @@ import { SUPERVISOR_BINDING, type SupervisorBinding } from '../supervisor-contra
 import { bindingBody } from '../supervisor-plan.js';
 
 /**
- * Writes `binding` into the attempt Secret's binding key (#829): the kubelet refreshes it into the
+ * Writes `binding` into the attempt Secret's binding key: the kubelet refreshes it into the
  * supervisor's optional read-only volume. A merge patch of that one key; the answer is discarded
  * unread and the errors are fixed text, since both would quote the token. Resolves only on a 2xx;
  * any rejection means "maybe written" — a 404 proves nothing about the group.

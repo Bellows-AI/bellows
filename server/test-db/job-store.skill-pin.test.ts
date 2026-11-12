@@ -19,7 +19,7 @@ import { testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
- * BEL-273: a job row pins every enabled org skill and the creator’s workspace skills at the versions current when it is made, and every path that makes a row
+ * a job row pins every enabled org skill and the creator’s workspace skills at the versions current when it is made, and every path that makes a row
  * carries or re-resolves that pin (docs/skills.md). Each case takes its own organization, so no case claims another's
  * queued row.
  */

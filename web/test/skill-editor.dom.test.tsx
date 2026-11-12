@@ -411,6 +411,25 @@ describe('the Skills zip upload', () => {
         expect(editor.getByLabelText('SKILL.md')).toBeTruthy();
     });
 
+    it('the tab strip is one tablist: arrow keys move focus, and each tab owns a labelled tabpanel', async () => {
+        const user = userEvent.setup();
+        mount(store());
+        renderApp('/settings/skills');
+
+        const editor = await openNew(user);
+        expect(editor.getAllByRole('tablist')).toHaveLength(1);
+        const write = editor.getByRole('tab', { name: 'Write SKILL.md' });
+        const zip = editor.getByRole('tab', { name: 'Upload .zip' });
+        expect(write.getAttribute('tabindex')).toBe('0');
+        expect(zip.getAttribute('tabindex')).toBe('-1');
+        expect(editor.getByRole('tabpanel', { name: 'Write SKILL.md' })).toBeTruthy();
+
+        write.focus();
+        await user.keyboard('{ArrowRight}');
+        expect(document.activeElement).toBe(zip);
+        expect(editor.getByRole('tabpanel', { name: 'Upload .zip' })).toBeTruthy();
+    });
+
     it('Upload new version (.zip) posts the file to the skill’s versions route', async () => {
         const user = userEvent.setup();
         const row = skill('workspace', 'mine');

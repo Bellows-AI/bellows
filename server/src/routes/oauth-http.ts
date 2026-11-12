@@ -22,7 +22,7 @@ export const OAUTH_PATHS = {
     revokeGrant: '/api/oauth/grants/:id/revoke',
 } as const;
 
-/** The SPA page that renders the consent screen (BEL-103); the transaction travels in its fragment, never to a server. */
+/** The SPA page that renders the consent screen; the transaction travels in its fragment, never to a server. */
 export const CONSENT_PAGE_PATH = '/oauth/consent';
 
 export const HTTP_BAD_REQUEST = 400;

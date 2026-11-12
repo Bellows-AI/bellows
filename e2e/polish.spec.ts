@@ -307,7 +307,7 @@ test.describe('polish (issue 189)', () => {
     });
 });
 
-test('data cells and status lines read in Inter with tabular figures, never mono (BEL-221)', async ({ page }) => {
+test('data cells and status lines read in Inter with tabular figures, never mono', async ({ page }) => {
     let cells = 0;
     for (const route of ['/', '/settings/organization']) {
         await page.goto(route);

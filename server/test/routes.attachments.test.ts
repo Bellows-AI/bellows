@@ -19,7 +19,7 @@ import { buildApp } from '../src/app.js';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import type { ObjectStore } from '../src/artifacts/object-store.js';
 import { createAttachmentStore } from '../src/attachments/attachment-store.js';
-import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { memoryAttachmentRows, pdfBytes, pngBytes } from './helpers-attachments.js';

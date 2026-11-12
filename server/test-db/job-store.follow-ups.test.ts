@@ -150,7 +150,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     });
 
     /*
-     * The per-task worktree (issue #35) is keyed by the thread's ROOT job id, so every attempt
+     * The per-task worktree is keyed by the thread's ROOT job id, so every attempt
      * and every follow-up of one task lands in the same tree. The claim is where the board
      * tells the driver which thread it is handing out.
      */
@@ -317,7 +317,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         });
     });
 
-    // A STOPPED parent's follow-up claim carries the same pair (issue #152): the stop kept the
+    // A STOPPED parent's follow-up claim carries the same pair: the stop kept the
     // session, and the follow-up is the restart-with-a-new-prompt — the claim resumes exactly
     // the conversation the user ended.
     it('hands a follow-up claim of a stopped task the parent session and the command to deliver', async () => {
@@ -413,7 +413,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(second!.command.endsWith('New instruction:\n\nagain')).toBe(true);
     });
 
-    // A root whose lease expired is recovered in its own session (issue #822), and the follow-up
+    // A root whose lease expired is recovered in its own session, and the follow-up
     // after it continues that same conversation.
     it('continues the session a recovered root resumed', async () => {
         const { id } = await mustCreate(store.create('drive me', null, { repo: null, executor: null }));
@@ -479,7 +479,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     });
 
     /**
-     * Done is what frees the tree (issue #47, revised): a thread that failed or finished keeps
+     * Done is what frees the tree (revised): a thread that failed or finished keeps
      * its worktree until the user closes it. The done queues the reclaim itself when the thread
      * is already terminal; a thread still moving waits for its last completing verdict, which
      * finds the done in place (the case pinned in the done-ness describe below).
@@ -550,7 +550,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     });
 
     /**
-     * Reopen (issue #327) is done's inverse: it clears the stamp every member carries and
+     * Reopen is done's inverse: it clears the stamp every member carries and
      * withdraws a reclaim that has not run yet, so a task closed by mistake can be followed up
      * again. Once the tree is gone there is nothing for a follow-up to resume in, and the
      * `worktree_reclaimed_at` marker on the root is what says so — the queue row alone could not,
@@ -715,7 +715,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(await store.markDone(root, null)).toMatchObject({ status: 'succeeded' });
 
             // The thread's last completing verdict answers threadDone with a reclaim row claimed
-            // by its worker; the marker follows the ack, not the verdict (issue #821).
+            // by its worker; the marker follows the ack, not the verdict.
             const claim = await store.claim('w1', LEASE_SECONDS);
             expect(claim?.id).toBe(followUp.id);
             const verdict = await store.complete(followUp.id, claim!.leaseToken, {
@@ -733,7 +733,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     });
 
     /**
-     * The verdict's answer to the driver's worktree reclaim (issue #47, revised): whether the
+     * The verdict's answer to the driver's worktree reclaim (revised): whether the
      * thread is DONE — every member terminal AND the user's done on one of them — computed in
      * the same transaction as the verdict itself. A thread that merely finished keeps its tree;
      * this is the credential fix too — the driver used to read the answer off
@@ -756,7 +756,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         it('answers false while a follow-up is still queued, even with no done', async () => {
             const root = await finishWithSession('drive me');
             // Two adjustments on one parent: the shape the thread walk already contemplates.
-            // No write path queues it — a follow-up refuses a busy thread (#698) — so the second
+            // No write path queues it — a follow-up refuses a busy thread — so the second
             // is crafted.
             const first = await mustFollowUp(root, 'first adjustment', null);
             const [second] = await sql<{ id: string }[]>`

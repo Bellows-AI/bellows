@@ -15,7 +15,7 @@ export interface KillLedger {
     /** Aborts when this driver ends the attempt (`note`, either kind); fresh again after `forget`. */
     signal(job: BoardJob): AbortSignal;
     /**
-     * Aborts `abandoned(job)`: the attempt left its group to the next holder (#829). No kill, so
+     * Aborts `abandoned(job)`: the attempt left its group to the next holder. No kill, so
      * `was`/`signal` are untouched — the group is not this driver's to end, only its timers and polls are.
      */
     abandon(job: BoardJob): void;

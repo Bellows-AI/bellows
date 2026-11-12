@@ -28,7 +28,7 @@ import { assertWorktreeResolvable, runnerPlan } from '../runner-plan.js';
 import { agentMailboxArgs, agentRoleArgs, boardLabelArgs, groupNetworkArgs } from './docker-mailbox.js';
 
 /**
- * The docker twin of the kubernetes pod hardening (issue #382), on EVERY container this driver
+ * The docker twin of the kubernetes pod hardening, on EVERY container this driver
  * runs — the runner, the gates, the readouts, the sync, the reclaim, the publish steps, the block
  * helpers and the declared services. Kubernetes is the primary executor, but docker is the one a
  * developer runs agent-written code under on their own machine, against a daemon that is root on
@@ -47,7 +47,7 @@ import { agentMailboxArgs, agentRoleArgs, boardLabelArgs, groupNetworkArgs } fro
 export const containerHardeningArgs = (): string[] => ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges'];
 
 /**
- * The agent container's start (issue #814): root, with the two capabilities its tool broker keeps,
+ * The agent container's start: root, with the two capabilities its tool broker keeps,
  * on top of `containerHardeningArgs`. factory-launch drops both, and root, before the CLI starts.
  */
 export const agentLaunchArgs = (): string[] => [
@@ -142,7 +142,7 @@ function serviceRow(line: string): ServiceStatus | null {
 }
 
 /**
- * How a service container ended, off `docker inspect --format '{{json .State}}'` (issue #423):
+ * How a service container ended, off `docker inspect --format '{{json .State}}'`:
  * the exit code, and the reason — `OOMKilled` when the kernel killed it, else the daemon's own
  * error, else null. Pure and exported for the pinning; garbage answers both null.
  */
@@ -230,7 +230,7 @@ export const envFilePath = (job: BoardJob): string => {
 };
 
 /**
- * A resource block's caps — the runner's (issue #360), the gate container's (issue #507): the
+ * A resource block's caps — the runner's, the gate container's: the
  * configured limits as docker's own flags, the memory request as the soft `--memory-reservation`
  * floor. Quantities are translated once, in
  * config.ts — the same values the kubernetes pod specs render verbatim. There is no cpu-request
@@ -290,7 +290,7 @@ export function dockerArgs(
 ): string[] {
     const { envFile } = options;
     /*
-     * The run happens in the job's task worktree (issue #35) — one per task thread, branched off
+     * The run happens in the job's task worktree — one per task thread, branched off
      * the remote default — when the job names a repository, and at the member root when it does
      * not (a command-only job names no repo, so no worktree exists; the root is where it always
      * started, and the argv stays byte-identical for it). Asserted from the same line the
@@ -298,7 +298,7 @@ export function dockerArgs(
      */
     assertWorktreeResolvable(job);
     // `create`, not `run`: the runner is started attached only once its managed settings are in
-    // (issue #452, see createRunnerContainer in docker-runner-support.ts).
+    // (see createRunnerContainer in docker-runner-support.ts).
     const args = [
         'create',
         ...containerHardeningArgs(),
@@ -315,7 +315,7 @@ export function dockerArgs(
         `${JOB_LABEL}=${job.id}`,
         '--label',
         `${LEASE_LABEL}=${job.leaseToken}`,
-        // What the claim that supersedes a dead driver adopts this run by (issue #792).
+        // What the claim that supersedes a dead driver adopts this run by.
         '--label',
         `${CLAIM_SEQ_MARK}=${job.claimSeq}`,
         ...(session ? ['--label', `${SESSION_MARK}=${session.id}`] : []),
@@ -339,7 +339,7 @@ export function dockerArgs(
         // The GitHub helper's token cache, in memory and the agent's own (docs/connections.md):
         // never on the task volume, gone with the container.
         '--tmpfs',
-        // The tool uid's: git and gh run as it (issue #814).
+        // The tool uid's: git and gh run as it.
         `${CREDENTIAL_CACHE_DIR}:rw,noexec,nosuid,size=${CREDENTIAL_CACHE_SIZE.docker},mode=0700,uid=${TOOL_UID}`,
     ];
 
@@ -349,7 +349,7 @@ export function dockerArgs(
 
     pushRunnerCredentialArgs(args, config, job, envFile);
 
-    // The group supervisor's network namespace (issue #773), as a pod's containers share one: its
+    // The group supervisor's network namespace, as a pod's containers share one: its
     // RUNNER_NETWORK carries telemetry and the driver's gate endpoint out, and its hosts file maps
     // `host.docker.internal` (automatic on Docker Desktop, not on Linux) and every declared service,
     // on loopback. docker refuses --add-host and a second --network beside it.

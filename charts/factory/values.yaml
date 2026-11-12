@@ -16,7 +16,7 @@ global:
     # Prefixes every image reference this chart renders — dashboard, driver, collector and both
     # executor images — with one registry, so the registry decision cannot be half-applied: the
     # executor images reach the driver as opaque env strings, and setting two of four values by
-    # hand is what leaves every runner pod in ImagePullBackOff (#358). Empty (the kind story): every
+    # hand is what leaves every runner pod in ImagePullBackOff. Empty (the kind story): every
     # repository/value is used verbatim and side-loaded images resolve under IfNotPresent.
     # database.waitImage is NOT prefixed — it is a full reference an operator sets whole.
     imageRegistry: ''
@@ -36,14 +36,18 @@ dashboard:
         # Empty uses the chart's appVersion, so a chart version names the exact build it deploys
         # and an upgrade to a new build changes the pod spec — an untagged image never would.
         tag: ''
+        # Optional `sha256:…`, appended after the tag. Empty for the images this release builds: their
+        # digest does not exist until the release pushes them, so they stay addressed by appVersion
+        # (docs/ci.md).
+        digest: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
     # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp). Every
     # replica is still replaced by Recreate, so two versions never share the schema mid-upgrade.
     replicas: 1
     # Above one replica, a stopping pod sleeps this long before SIGTERM so the Service and the load
-    # balancer stop routing to it first (the server exits at once on SIGTERM). Below the pod's 30 s
-    # termination grace period; 0 turns it off. At one replica it is not rendered.
+    # balancer stop routing to it first; the server then closes gracefully within 10 s. The pod's
+    # termination grace period is this plus 15 s. Below 30; 0 turns it off. At one replica it is not rendered.
     preStopSeconds: 15
     port: 8080
     # The code-only no-fetch entry (server/dist/offline.js): nothing is fetched or cloned and the
@@ -160,7 +164,7 @@ database:
     # retries with backoff, rather than a pod parked in Init forever with nothing in its events.
     waitTimeoutSeconds: 300
 
-# The volume each root thread gets for its checkout, transcripts and caches (issue #775): one
+# The volume each root thread gets for its checkout, transcripts and caches: one
 # claim per thread, created by the driver and mounted at /task. Not ReadWriteMany: only that
 # thread's pods mount it. ReadWriteOncePod keeps a second pod off it; a provisioner without it
 # (kind's local-path) takes ReadWriteOnce. storageClass empty is the cluster default; on EKS name an
@@ -178,7 +182,7 @@ taskVolume:
     # exporter never had acknowledged; after this many failed rounds it deletes anyway and logs the loss.
     exportAttempts: '3'
 
-# A namespace LimitRange (issue #454): a pod created WITHOUT limits — by anything, not only the
+# A namespace LimitRange: a pod created WITHOUT limits — by anything, not only the
 # driver — inherits these instead of running unbounded. A container's own limits win. It applies
 # to every container in the namespace, the dashboard and driver included, so keep the defaults
 # above what those pods burst to.
@@ -319,6 +323,7 @@ driver:
     image:
         repository: factory-driver
         tag: ''
+        digest: ''
     imagePullPolicy: IfNotPresent
     # Safe above one: each driver claims under its own pod name (DRIVER_WORKER), advertises its OWN
     # pod IP as the gate endpoint, and the re-claim fence's checkout claim keeps two drivers off
@@ -341,11 +346,11 @@ driver:
     pollMs: '5000'
     leaseSeconds: '300'
     # What a run's group whose agent went waits for a newer holder, beyond the lease, before it ends
-    # (DRIVER_REBIND_GRACE_MS, issue #829): the next claim must find the group and bind it. A lane
+    # (DRIVER_REBIND_GRACE_MS): the next claim must find the group and bind it. A lane
     # that compresses time shortens it; production keeps the default.
     rebindGraceMs: '240000'
     # The floor of a lost driver's group's orphan bound, and the GET /step long poll it must outlast by
-    # 5 s (DRIVER_ORPHAN_MIN_MS / DRIVER_STEP_WAIT_MS, issue #950). A lane that compresses the lease lowers
+    # 5 s (DRIVER_ORPHAN_MIN_MS / DRIVER_STEP_WAIT_MS). A lane that compresses the lease lowers
     # both; the driver refuses a lowered floor the lease cannot hold (lease >= orphan + lease / 3).
     orphanMinMs: '30000'
     stepWaitMs: '15000'
@@ -355,7 +360,7 @@ driver:
     # worktree before running a whole suite needs more than the ten-minute default. A gate's own
     # `.bellows.yaml` `timeout:` overrides this one, capped by jobTimeoutMs.
     gateTimeoutMs: '600000'
-    # The orphan reaper (issue #301): how often the driver sweeps service objects whose owning
+    # The orphan reaper: how often the driver sweeps service objects whose owning
     # job can no longer use them (DRIVER_REAP_INTERVAL_MS), and how old an object must be before
     # the sweep may act on it (DRIVER_REAP_GRACE_MS). '0' on the interval disables the reaper —
     # the grace cannot be usefully zero below the default teardown span, but the knob exists.
@@ -391,7 +396,7 @@ driver:
     services: '1'
     # RUNNER_DO_NOT_DISRUPT: annotate every pod the driver specs — runners, aux Jobs, declared
     # services — so Karpenter consolidation and cluster-autoscaler scale-down leave a running job
-    # alone (issue #362), instead of evicting it mid-run for the work to be redone silently under
+    # alone, instead of evicting it mid-run for the work to be redone silently under
     # a higher `attempts`. Empty is off, and off is deliberate: an undisruptable pod pins its node
     # for as long as the run lasts — up to jobTimeoutMs, two hours by default — so an operator
     # running only on-demand nodes may not want it. It does not stop an explicit `kubectl drain`.
@@ -411,6 +416,9 @@ collector:
         # Pinned, never `latest`: the collector's config keys move between releases, and an
         # unpinned image is whichever version a node happened to cache first.
         tag: '0.161.0'
+        # The manifest-list digest of that tag, which the release mirrors under the registry prefix
+        # by digest (.github/workflows/release-image.yml). scripts/pin-digests.sh re-resolves it.
+        digest: 'sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1'
     imagePullPolicy: IfNotPresent
     resources:
         requests:
@@ -455,7 +463,7 @@ isolation:
     allowedCidrs: []
 
 runner:
-    # Where agent-written code lands (issue #361): the driver forwards these to every pod it specs —
+    # Where agent-written code lands: the driver forwards these to every pod it specs —
     # runner, gate, sync, reclaim, publish, helper, service — as JSON (RUNNER_NODE_SELECTOR /
     # RUNNER_TOLERATIONS / RUNNER_AFFINITY). The standard cloud shape is a tainted, IMDS-hardened
     # runner node group that nothing else schedules onto, so the App key's node never runs agent
@@ -481,7 +489,7 @@ runner:
     # RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST / RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT
     # (kubernetes quantities: "500m", "1Gi"). Requests keep a runner fleet Burstable rather than
     # BestEffort so the autoscaler (Karpenter, Cluster Autoscaler) can size for it — a zero-request
-    # pod schedules onto any free pod slot and provisions nothing. Limits (issue #454) bound a
+    # pod schedules onto any free pod slot and provisions nothing. Limits bound a
     # runaway or hostile run so it cannot starve the node, the board, the driver or sibling tasks;
     # they are generous because a memory limit turns a big build into an OOM kill mid-work — raise
     # them on a cloud install with big builds. In override files, use requests: null / limits: null
@@ -493,7 +501,7 @@ runner:
         limits:
             cpu: '4'
             memory: 8Gi
-    # The gate Jobs' own requests and limits (issue #507), forwarded as GATE_CPU_REQUEST /
+    # The gate Jobs' own requests and limits, forwarded as GATE_CPU_REQUEST /
     # GATE_MEMORY_REQUEST / GATE_CPU_LIMIT / GATE_MEMORY_LIMIT. A gate runs the whole test suite
     # while the runner mostly waits on a model, and a 500m floor starves vitest's workers into
     # RPC timeouts on a busy node. Each unset slot falls back to `resources` above — the limits

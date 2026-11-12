@@ -1,19 +1,19 @@
 /**
- * Independent reviewer invocation (issue #549), the store half. A review is a job row of its OWN
+ * Independent reviewer invocation, the store half. A review is a job row of its OWN
  * thread — `root_job_id` is its own id — linked to the caller by `review_of`, so it never contends
  * with the caller for the thread's one running row and runs in a worktree of its own. The caller
  * asks under a key (`(caller, key)` is unique: a retried or reclaimed caller gets the same review
  * back), reads the verdict by the same key, and the thread's review evidence — what the policy
  * validator reads at completion — counts the review's row as bound to the revision the caller
  * asked about. Cancellation is the rest of the lifecycle: a Stop, the caller's verdict and a
- * removal all reach the reviews (`job-store-actions.ts`, `job-store-worker.ts`).
+ * removal all reach the reviews (`job-store-thread-actions.ts`, `job-store-run-control.ts`, `job-store-worker.ts`).
  */
 
 import { OBJECTIVE_MODE, USER_SCOPE, type JobMode } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
 import type { ReviewEvidence } from '../evidence-policy.js';
 import { readReviewEvidence } from './job-store-evidence.js';
-import { LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { LEASE_EXPIRED_REASON } from './job-store-run-control.js';
 import { buildClaimResult } from './job-store-claim.js';
 import { withClaimAttachments } from './job-store-claim-row.js';
 import { resolveClaimExecutor } from './job-store-claim-executor.js';
@@ -38,7 +38,7 @@ import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../workflows/work
 /** Named-profile reviews an agent requests and reads back. */
 export interface JobReviewStore {
     /**
-     * Starts a named reviewer's separate run over the revision the caller names (issue #549),
+     * Starts a named reviewer's separate run over the revision the caller names,
      * under the caller's live lease. Idempotent on `(caller, key)`: a retried or reclaimed caller
      * gets the stored review back (`existing`), never a second run. The profile must be one the
      * repository declared when the caller was claimed (`unknown_profile`); a workflow thread's
@@ -198,7 +198,7 @@ function refusalOf(
 }
 
 /**
- * The review row, born leased to the caller's claim: it never waits in the open queue (issue #774).
+ * The review row, born leased to the caller's claim: it never waits in the open queue.
  * `id` and `root_job_id` are the SAME uuid, as a task's root row is: the review is its own thread.
  */
 async function insertReview(
@@ -211,7 +211,7 @@ async function insertReview(
         select command from job where org_id = ${orgId} and id = ${caller.root_job_id}
     `;
     const { command } = reviewerPrompts(spec, root?.command ?? '');
-    // A reviewer pins no stored skill and holds no bindings: only the built-ins are decided (BEL-286).
+    // A reviewer pins no stored skill and holds no bindings: only the built-ins are decided.
     const { hidden } = await decideSkillVisibilityInTx(tx, { orgId, githubApp, selected: [], stored: null });
     await tx`
         insert into job (
@@ -304,7 +304,7 @@ interface ReviewClaimRow {
 }
 
 /**
- * A running review's claim (issue #549, #774): the row is its own thread, leased under the profile's
+ * A running review's claim: the row is its own thread, leased under the profile's
  * frozen spec. What it does NOT carry is the point — no minted GitHub token and no member env
  * beyond the profile's `connections`, no gates, no publish, no helpers, no policy to enforce on
  * itself — and what it does carry that others do not is the profile's own system prompt and

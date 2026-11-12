@@ -5,7 +5,7 @@
 postgres:
     # The same plain Postgres container compose runs. The key keeps the name `postgres`
     # because `<release>-postgres` is the object name values-local.yaml, the Makefile and
-    # scripts/test-k8s.sh all reach for; the extension itself is gone (#371).
+    # scripts/test-k8s.sh all reach for; the extension itself is gone.
     image: postgres:17
     user: factory
     password: factory

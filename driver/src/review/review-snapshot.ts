@@ -4,7 +4,7 @@ import { parseLastJsonLine } from '../json-parse.js';
 import { type PublishStep, type RunPublishStep, checkoutDir } from '../publish/publish.js';
 
 /**
- * The review snapshot (issue #549): the step that freezes the task worktree's current state under
+ * The review snapshot: the step that freezes the task worktree's current state under
  * a ref of the shared clone, so a named reviewer's own worktree starts from exactly the tree it was
  * asked about while the agent keeps editing. One PublishStep, so it runs over either executor's
  * transport — a `docker run --rm` or a kubernetes aux Job — and the two cannot drift. The script

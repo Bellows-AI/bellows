@@ -1,5 +1,5 @@
 /**
- * Durable idempotency for the create, follow-up and retry mutations (issue #589). The key is
+ * Durable idempotency for the create, follow-up and retry mutations. The key is
  * stamped on the job row the mutation inserted, inside the same transaction, so a response lost
  * after commit is recovered by repeating the request: the lookup finds the row and answers its id.
  */

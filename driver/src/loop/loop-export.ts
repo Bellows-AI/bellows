@@ -60,7 +60,7 @@ const checkpointRef = (job: BoardJob): ArtifactStreamRef => ({
 });
 
 /**
- * The relay behind the control token's checkpoint routes (issue #775): the supervisor's finalize
+ * The relay behind the control token's checkpoint routes: the supervisor's finalize
  * stage puts the checkpoint's bytes and its closing record here and they go on to the board's
  * `checkpoint` stream. The claim sequence that authorizes them is the job's own, read here — the
  * supervisor names none — so a superseded attempt's checkpoint is the board's to refuse.
@@ -163,7 +163,7 @@ export function drainTranscriptExport(ctx: AttemptCtx, outcome: RunOutcome): voi
 }
 
 /**
- * The close-time export of one in-band review (issue #774, amendment B5): an exporter token on the
+ * The close-time export of one in-band review (amendment B5): an exporter token on the
  * CALLER's control channel, bound to a relay that sends under the REVIEW row's identity (its id and
  * claim sequence), so the reviewer's transcript and totals belong to the review row and never to the
  * caller's attempt. A claude-code review streams through the token; an opencode review's readout is
@@ -196,14 +196,14 @@ export function openReviewExport(
     return { exporter, close: () => rt.gates?.server.revokeExporter(token) };
 }
 
-/** The cause the reaper's one-shot exporter closes its manifests with (issue #938): any other cause is a stream it did not drain. */
+/** The cause the reaper's one-shot exporter closes its manifests with: any other cause is a stream it did not drain. */
 export const VOLUME_EXPORT_CAUSE = 'reaper_export';
 
 /** Whether a re-export over a task volume uploaded everything its volume held, or why that is not proven. */
 export type VolumeExportProof = { drained: true } | { drained: false; why: string };
 
 /**
- * One re-export's door to the board (issue #938): the control endpoint's URL and the exporter token the
+ * One re-export's door to the board: the control endpoint's URL and the exporter token the
  * one-shot exporter is handed (`BELLOWS_CONTROL_URL`, `BELLOWS_CONTROL_TOKEN`), what the relay saw, and
  * the single revoke. The exporter's exit code proves nothing (a drain it gave up on exits 0).
  */

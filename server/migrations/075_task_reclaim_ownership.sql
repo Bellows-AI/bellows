@@ -1,4 +1,4 @@
--- Per-acquisition reclaim ownership (issue #821): every acquisition of a task_reclaim row — a queue
+-- Per-acquisition reclaim ownership: every acquisition of a task_reclaim row — a queue
 -- claim, or a threadDone verdict taking it for the completing attempt — writes a claim_token of its
 -- own, and the ack and the renew are fenced by it. The row id stays the work order's name; the
 -- token says WHICH acquisition holds it, so a driver whose lease ran out and was re-offered can

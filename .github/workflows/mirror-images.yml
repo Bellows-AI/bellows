@@ -119,3 +119,31 @@ jobs:
                       grep -q toomanyrequests /tmp/err || exit 1
                   done
                   exit 1
+
+    # The base images and the chart's collector are pinned by digest, and a pin nobody refreshes is a
+    # stale image: the weekly run re-resolves them and opens a pull request for a person to merge.
+    # The only job with write access. The branch is pushed with the run token, which does not
+    # trigger CI on the pull request it opens; a maintainer's re-push or close-and-reopen does.
+    pin-digests:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: write
+            pull-requests: write
+        steps:
+            - uses: actions/checkout@v4
+            - name: re-resolve the pinned digests
+              run: sh scripts/pin-digests.sh
+            - name: open a pull request when a digest moved
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  git diff --quiet && { echo 'every pinned digest is current'; exit 0; }
+                  BRANCH=pin-digests/$(date -u +%Y-%m-%d)
+                  git config user.name 'github-actions[bot]'
+                  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+                  git switch -c "$BRANCH"
+                  git commit -am 'Images: re-pin base image and collector digests'
+                  git push origin "$BRANCH"
+                  gh pr create --head "$BRANCH" --title 'Images: re-pin base image and collector digests' \
+                      --body 'Weekly `scripts/pin-digests.sh` run: the pinned digests moved. Review the diff, then merge.'

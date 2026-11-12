@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * Issue #1006: the claude executor's CLAUDE_CONFIG_DIR is 0700 and node-owned, while the agent's
- * shell runs as the tool uid (#814). A skill helper invoked through the config directory is EACCES
+ * shell runs as the tool uid. A skill helper invoked through the config directory is EACCES
  * there, so every helper under docker/skills/ is installed at a fixed root-owned path in both
  * images and its SKILL.md names that path.
  */

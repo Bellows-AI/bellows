@@ -13,7 +13,7 @@ import {
 import { pathOf } from './fixtures/scripts-support.js';
 
 /**
- * The reviewer's start of the task checkout script (issue #549): a named reviewer is its own
+ * The reviewer's start of the task checkout script: a named reviewer is its own
  * thread, so its tree is created on its own branch AT the snapshot ref the caller's run froze —
  * restore mode, no fetch, no rebase — never at the remote default.
  */

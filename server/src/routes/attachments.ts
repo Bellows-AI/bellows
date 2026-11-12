@@ -129,7 +129,7 @@ export const attachmentRoutes =
     }: {
         orgs: OrgRegistry;
         maxInFlight?: number | undefined;
-        /** The upload capabilities (BEL-248); with it the upload-request routes and the capability PUT exist. */
+        /** The upload capabilities; with it the upload-request routes and the capability PUT exist. */
         uploads?: UploadCapabilityStore | undefined;
         /** The board's public origin, which an upload URL handed to a client is rooted at; null where it has none. */
         origin?: string | null | undefined;

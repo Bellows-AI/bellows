@@ -59,6 +59,7 @@ import {
     testConfig,
     TEST_JOB_BOARD_TOKEN,
 } from './helpers.js';
+import { storeOutage } from './helpers-outage.js';
 
 const track = trackApps();
 
@@ -85,7 +86,7 @@ interface StoreStub extends JobStore {
         executor: string | null;
         executorScope: string | null;
     }[];
-    /** The skills each create was handed (issue #545), parallel to `created`. */
+    /** The skills each create was handed, parallel to `created`. */
     skillSelections: (readonly string[] | undefined)[];
     /** The workflow triple the create was handed, when one resolved — empty in objective mode. */
     workflowTargets: {
@@ -128,7 +129,7 @@ interface StoreStub extends JobStore {
     }[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     retries: { id: string; createdBy: string | null }[];
-    /** The idempotency input each create, follow-up and retry was handed, in call order (#589). */
+    /** The idempotency input each create, follow-up and retry was handed, in call order. */
     idempotencies: (IdempotencyInput | undefined)[];
     edited: { id: string; command: string; caller: string | null }[];
     markedDone: { id: string; doneBy: string | null }[];
@@ -145,13 +146,13 @@ interface StoreStub extends JobStore {
     reclaimRenewals: { id: string; token: string; leaseSeconds: number }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
     leased: { ids: string[]; threads?: true }[];
-    /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
+    /** The long-poll holds the route requested, with the timeout it was given. */
     waits: { id: string; timeoutMs: number }[];
     recordsRead: string[][];
     /** The question reports and answers the routes handed the store (050). */
     asked: { id: string; questionId: string; questions: AskedQuestion[] }[];
     answered: { id: string; questionId: string; answers: Record<string, string>; answeredBy: string | null }[];
-    /** The named-reviewer requests and reads the routes handed the store (056, issue #549). */
+    /** The named-reviewer requests and reads the routes handed the store (056). */
     reviewRequests: { id: string; request: ReviewRequest }[];
     reviewReads: { id: string; key: string }[];
 }
@@ -205,9 +206,9 @@ function stubStore(
         retry?: RetryRefusal | BatchesDisabledRefusal;
         /** What the store answers a queued-command edit with; ok echoes the new command back. */
         edit?: EditCommandResult;
-        /** The store recognizes the request's key: it answers the row already made (#589). */
+        /** The store recognizes the request's key: it answers the row already made. */
         replayed?: boolean;
-        /** The store finds the request's key already used for a different request (#589). */
+        /** The store finds the request's key already used for a different request. */
         keyReused?: boolean;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch' | BatchesDisabledRefusal;
         /** Where the board says the suspend landed, on the 'ok' path. */
@@ -218,7 +219,7 @@ function stubStore(
         pokeWait?: PokeWaitResult;
         reopen?: ReopenResult;
         reclaimClaim?: ReclaimClaim | null;
-        /** The org's demand on the cluster, which orders the job claim scan (issue #831). */
+        /** The org's demand on the cluster, which orders the job claim scan. */
         demand?: OrgDemand;
         ackReclaim?: 'ok' | 'lost' | 'missing';
         renewReclaim?: ReclaimRenewal;
@@ -232,14 +233,14 @@ function stubStore(
         /** The lease rows the store answers a batched lookup with; absent means none. */
         leaseRows?: { id: string; status: JobStatus; leaseToken: string | null }[];
         /**
-         * What `waitForSettle` answers (issue #323); null → 404. A function may delay to model
+         * What `waitForSettle` answers; null → 404. A function may delay to model
          * the store's hold — the route must await it, never answer first.
          */
         waitFor?: (id: string, timeoutMs: number) => Promise<SettleOutcome | null>;
     } = {}
 ): StoreStub {
     const boom = () => {
-        if (options.fail) throw new Error('database is down');
+        if (options.fail) throw storeOutage('database is down');
     };
     const reuse = () => {
         if (options.keyReused) throw new IdempotencyKeyReusedError();
@@ -950,7 +951,7 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(jobs.created).toEqual([]);
     });
 
-    // Objective mode (issue #543): a body without a workflow field resolves nothing — the named
+    // Objective mode: a body without a workflow field resolves nothing — the named
     // workflow store is not read, no workflow target reaches the store, and the command is raw.
     it('creates an objective-mode task with the raw command, reading no workflows, when the body names none', async () => {
         const jobs = stubStore();
@@ -1339,7 +1340,7 @@ describe('POST /api/jobs/claim', () => {
         const down = (reason: string): StoreStub => {
             const store = stubStore();
             store.claim = async () => {
-                throw new Error(reason);
+                throw storeOutage(reason);
             };
             return store;
         };
@@ -1368,7 +1369,7 @@ describe('POST /api/jobs/claim', () => {
         expect(second.json().command).toBe('from-b');
     });
 
-    // Every replica orders the scan from the boards' rows (issue #831): the org with fewer running
+    // Every replica orders the scan from the boards' rows: the org with fewer running
     // tasks is offered first on every poll, never only on the poll a rotation happens to start there.
     it('offers the board with fewer running tasks first on every poll', async () => {
         const fromA: Claim = { ...claim, command: 'from-a' };
@@ -1408,7 +1409,7 @@ describe('POST /api/jobs/claim', () => {
         expect(scanned).toEqual(['org-b', 'org-a']);
     });
 
-    // A poll whose claim the global budget refused admits nothing from later boards (issue #831): every later
+    // A poll whose claim the global budget refused admits nothing from later boards: every later
     // board is claimed takeover-only, which needs no slot, whatever its demand read said.
     it('claims the later boards takeover-only after a claim was refused by the global budget', async () => {
         const modes: Record<string, boolean | undefined> = {};
@@ -1587,7 +1588,7 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
     it('answers 503 when any board throws', async () => {
         const failing = stubStore();
         failing.leases = async () => {
-            throw new Error('database is down');
+            throw storeOutage('database is down');
         };
         const instance = await harnessOfBoards([
             ['org-a', failing],
@@ -1805,7 +1806,7 @@ describe('POST /api/jobs/:id/output', () => {
      * The attempt's vitals ride beside the tail: the "is it stuck or working" answer. A full object
      * is validated and passed through; its absence (or an explicit null) means "no sample this
      * round", which the store reads as leave-the-last-one-alone — never as a clearance. The
-     * attempt's `.bellows.yaml` services (issue #60) ride the same object, and null numbers are
+     * attempt's `.bellows.yaml` services ride the same object, and null numbers are
      * honest data beside them — a cluster with no metrics-server still reports its fleet.
      */
     it('passes the runtime vitals beside the tail, and nothing when there is no sample', async () => {
@@ -1887,7 +1888,7 @@ describe('POST /api/jobs/:id/output', () => {
         expect(store.progressed).toHaveLength(1);
     });
 
-    // A dead service's ending (issue #487) rides the fleet: the exit, the reason, the log tail
+    // A dead service's ending rides the fleet: the exit, the reason, the log tail
     // (bounded to its END), the hint — and a malformed one is refused like any other bad field.
     it('passes a dead service ending through, bounding the log tail to its last lines', async () => {
         const store = stubStore({ verdict: 'ok' });
@@ -2219,7 +2220,7 @@ describe('POST /api/jobs/:id/interrupt', () => {
         });
     });
 
-    it('passes a node-loss release through to the store (BEL-302)', async () => {
+    it('passes a node-loss release through to the store', async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
 
@@ -2866,7 +2867,7 @@ describe('POST /api/jobs/:id/follow-up', () => {
     });
 });
 
-describe('a batch thread while BATCHES_ENABLED is off (BEL-264)', () => {
+describe('a batch thread while BATCHES_ENABLED is off', () => {
     const DISABLED = { code: 'BATCHES_DISABLED' };
 
     it("answers a follow-up on it 404 BATCHES_DISABLED, the batch routes' answer", async () => {
@@ -2920,7 +2921,7 @@ describe('POST /api/jobs/:id/retry', () => {
 });
 
 describe('PATCH /api/jobs/:id', () => {
-    // The queued task's command is editable in place (issue #329): same id, same thread, no
+    // The queued task's command is editable in place: same id, same thread, no
     // stop-and-recreate. The store decides every refusal atomically with the write.
     it('edits a queued task\u2019s command', async () => {
         const store = stubStore();
@@ -3014,7 +3015,7 @@ describe('POST /api/jobs/:id/done', () => {
     };
 
     it.each([{}, { force: true }])(
-        'answers 404 BATCHES_DISABLED for done %j on a batch thread with the flag off, and closes nothing (BEL-264)',
+        'answers 404 BATCHES_DISABLED for done %j on a batch thread with the flag off, and closes nothing',
         async (payload) => {
             const { instance, calls } = await harnessWithBatches(stubStore({ done: 'batches_disabled' }), CLOSED);
             const response = await post(instance, `/api/jobs/${ID}/done`, payload);
@@ -3107,8 +3108,8 @@ describe('POST /api/jobs/:id/complete', () => {
 
     // The verdict-moment done-ness of the job's whole thread — every member terminal AND the
     // user's done — computed in the store's complete transaction and relayed verbatim: the
-    // driver's worktree reclaim (issue #47) decides on this instead of reading the thread back.
-    // The reclaim row a threadDone verdict queued rides beside it (issue #821).
+    // driver's worktree reclaim decides on this instead of reading the thread back.
+    // The reclaim row a threadDone verdict queued rides beside it.
     it('answers the 200 body with the thread done-ness and its reclaim, true and false', async () => {
         const reclaimId = '00000000-0000-4000-8000-0000000000aa';
         const finished = await harnessWith(stubStore({ verdict: 'ok', threadDone: true, reclaimId }));
@@ -3123,8 +3124,8 @@ describe('POST /api/jobs/:id/complete', () => {
     });
 
     // What rides the verdict into the store: the close-time summary (truncated, blank → null), the
-    // context the run reached, the agent-turn count, the structured failure kind (issue #339; a dead
-    // `.bellows.yaml` service is its own kind, issue #423) and the driver's post-gate tree read.
+    // context the run reached, the agent-turn count, the structured failure kind (a dead
+    // `.bellows.yaml` service is its own kind) and the driver's post-gate tree read.
     // Absent stores null — unmeasured, never zero or an empty string.
     it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
         ['the run summary, bounded', { summary: 'x'.repeat(600) }, { summary: 'x'.repeat(512) }],

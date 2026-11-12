@@ -21,7 +21,7 @@ export type Special = (
 ) => K8sResponse | Promise<K8sResponse> | undefined;
 
 /**
- * The thread's task volume claims (issue #775), emulated the way the apiserver arbitrates them: a GET
+ * The thread's task volume claims, emulated the way the apiserver arbitrates them: a GET
  * lists none until a POST stores the claim (a list is by the root label), and a second POST of the same name answers 409. Answers
  * `undefined` for any path that is not a claim's, so a suite's own routes stay in charge of the rest.
  */
@@ -91,7 +91,7 @@ export function k8sApiserver({ namespace, podName }: { namespace: string; podNam
                 items: [
                     {
                         metadata: { name: podName },
-                        // Ran to its end: an adoption takes no pod still running for a group over (#824).
+                        // Ran to its end: an adoption takes no pod still running for a group over.
                         status: {
                             phase: 'Succeeded',
                             containerStatuses: [{ name: 'agent', state: { terminated: { exitCode: 0 } } }],
@@ -114,7 +114,7 @@ export function k8sApiserver({ namespace, podName }: { namespace: string; podNam
         // a readable GET, a uid-preconditioned DELETE (see claimServer).
         const serve = claimServer();
         // A Job deleted by name reads 404 from then on, as the apiserver answers once its Foreground
-        // deletion lands (issue #821: a teardown confirms it); a POST of the same name brings it back.
+        // deletion lands (a teardown confirms it); a POST of the same name brings it back.
         const deletedJobs = new Set<string>();
         // A Job never created reads 404 too — what a derived name's teardown reads before it ends anything.
         const postedJobs = new Set<string>();

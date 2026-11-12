@@ -4,7 +4,7 @@ import { createUsageReporter } from '../src/commerce/commerce-loop.js';
 import type { CommerceStore, UsageKey, UsageLease, UsageRecord } from '../src/db/commerce-store.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 
-/** BEL-146: usage delivery is non-overlapping, bounded by one absolute pass deadline, and settles every lease it takes. */
+/** usage delivery is non-overlapping, bounded by one absolute pass deadline, and settles every lease it takes. */
 const record = (n: number): UsageRecord => ({
     jobId: `00000000-0000-4000-8000-00000000000${n}`,
     rootJobId: `00000000-0000-4000-8000-00000000000${n}`,

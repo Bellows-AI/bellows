@@ -85,7 +85,7 @@ describe.skipIf(!enabled)('a red gate verdict — database', () => {
     });
 });
 
-/** A reclaimed attempt never inherits the previous attempt's gate report (#428). */
+/** A reclaimed attempt never inherits the previous attempt's gate report. */
 describe.skipIf(!enabled)('claim: a reclaimed attempt starts without gates', () => {
     it("does not inherit the previous attempt's gate failure", async () => {
         const rounds = 3;

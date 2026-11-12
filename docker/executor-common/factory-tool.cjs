@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * The agent's tool shell (issue #814). The CLI runs as uid 1000 and every command it runs — through
+ * The agent's tool shell. The CLI runs as uid 1000 and every command it runs — through
  * its shell — runs as uid 1001 in group 1000, so a tool's `kill -KILL -1`, `kill 0` or a stray parent
  * pid reaches only the tool uid's own processes, never the CLI or its helpers.
  *
@@ -17,8 +17,8 @@
  * the group with it. The broker holds its two capabilities for the run and no credential: it starts
  * under an empty environment, and a tool's environment never carries the run-control token.
  *
- * The two uids share files through the group, and the broker keeps three places that sharing works
- * (issues #1016, #1021): the tool's TMPDIR, a directory it makes for both uids, whose contents it
+ * The two uids share files through the group, and the broker keeps three places that sharing works:
+ * the tool's TMPDIR, a directory it makes for both uids, whose contents it
  * opens to the group when each command ends — a 0600 `mktemp` file or a 0700 `mktemp -d` the CLI's
  * Read and Glob would be refused; the tool's own compile cache, because code the tool can write is
  * code the CLI must never load; and nothing of the CLI's: its config dir, credentials and mailboxes

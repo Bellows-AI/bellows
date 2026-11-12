@@ -8,7 +8,7 @@ import { config } from './loop-stubs.js';
 export const SAME_TREE = 'h:same';
 
 /**
- * The gate-run row an earlier ad-hoc pass of `gate` left on the board for `job` (issue #983): the
+ * The gate-run row an earlier ad-hoc pass of `gate` left on the board for `job`: the
  * identity is the driver's own computation, so a case changes one field to make a row ineligible.
  */
 export function gateRunRow(job: BoardJob, gate: string, over: Partial<GateRunRecord> = {}): GateRunRecord {

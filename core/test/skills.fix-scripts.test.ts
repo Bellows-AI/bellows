@@ -148,11 +148,14 @@ describe('the fix skills', () => {
 
     it('bound context: narrow reads, logs on disk, one wait, one implementer per commit, no context cap', () => {
         const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
-        expect(fix).toContain('**Read narrowly.**');
-        expect(fix).toContain('**Suite output stays on disk.**');
-        expect(fix).toContain('**Wait in one call.**');
+        const implementer = readFileSync(join(skill, '../../agents/implementer.md'), 'utf8');
+        expect(fix).toContain('**Read narrowly, suites to disk, wait in one call.**');
+        expect(fix).toContain('.claude/agents/implementer.md');
+        expect(implementer).toContain('**Read narrowly.**');
+        expect(implementer).toContain('**Suite output stays on disk.**');
+        expect(implementer).toContain('**Wait in one call.**');
         expect(fix).toContain('never two agents on the same\n  commit or tree');
-        expect(fix).toContain('**Implementers are fresh agents, never forks.**');
+        expect(fix).toContain('**Implementers are fresh `implementer` agents, never forks.**');
         // A context cap made agents stop mid-task and lose what a handoff note did not carry.
         expect(fix).not.toContain('tokens of context.**');
         expect(fix).toContain('`<scratchpad>/diff-<N>-r<round>.patch`');

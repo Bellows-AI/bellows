@@ -16,9 +16,10 @@ import {
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 /**
- * Offline: the worker's read of a pinned skill bundle (BEL-273). The lease is the credential and the row's pin is the
+ * Offline: the worker's read of a pinned skill bundle. The lease is the credential and the row's pin is the
  * access check; the job store is a stub answering that pin and the skill store a stub answering the bytes.
  */
 const track = trackApps();
@@ -46,7 +47,7 @@ async function boot(options: { reader?: Reader; noStore?: boolean; auth?: boolea
     const asked: { versionId: string; access: unknown }[] = [];
     const jobs = {
         async skillPin(id: string, lease: string): Promise<SkillPinResult> {
-            if (failing.read) throw new Error('the pin could not be read');
+            if (failing.read) throw storeOutage('the pin could not be read');
             const held = pins.get(id);
             if (!held) return { result: 'missing' };
             return held.lease === lease ? { result: 'ok', pin: held.pin } : { result: 'lost' };

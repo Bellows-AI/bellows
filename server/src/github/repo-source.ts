@@ -69,7 +69,7 @@ export interface RepoSourceDeps {
      */
     readonly stored?: (() => Promise<readonly string[]>) | undefined;
     /**
-     * The org's tracked-repo allowlist (#125), as "owner/name" — the onboarding screen's per-org
+     * The org's tracked-repo allowlist, as "owner/name" — the onboarding screen's per-org
      * checkbox answer, read from `tracked_repo`. Empty or absent means everything the
      * installation reports: the default, and the reason a confirm-with-everything-checked writes
      * nothing. The intersection is applied to whatever the source produced (client listing or

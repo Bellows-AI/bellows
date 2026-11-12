@@ -56,7 +56,7 @@ export const nullableTimestamp = (value: unknown): value is string | null =>
     (typeof value === 'string' && value.length <= TIMESTAMP_LIMIT && !Number.isNaN(Date.parse(value)));
 
 /**
- * The agent's questions (050, issue #531). Every figure is the issue's contract, enforced HERE at
+ * The agent's questions (050). Every figure is the issue's contract, enforced HERE at
  * the door: a question is member-visible content, so what the board stores is bounded by shape,
  * not trusted from the driver. The per-attempt cap (`QUESTIONS_PER_ATTEMPT`) lives with the store
  * that counts it.
@@ -74,7 +74,7 @@ export const QUESTION_DESCRIPTION_LIMIT = 1000;
 export const ANSWER_LIMIT = 2000;
 
 /**
- * A named reviewer's request (issue #549): the caller's idempotency key, and the bound on the
+ * A named reviewer's request: the caller's idempotency key, and the bound on the
  * revision fingerprint and snapshot ref the driver reports (a `<sha>:<sha256>` fingerprint is 105).
  */
 export const REVIEW_KEY = /^[A-Za-z0-9_-]{1,64}$/;
@@ -103,7 +103,7 @@ export const CONTEXT_COST_MAX = 1_000_000;
 export const AGENT_TURNS_MAX = 2_147_483_647;
 /**
  * The int4 range `job.exit_code` and `job_pr.pr_number` store: a value past it would fail the
- * verdict's transaction — and a staged one every claim that commits it (issue #821).
+ * verdict's transaction — and a staged one every claim that commits it.
  */
 export const INT4_MIN = -2_147_483_648;
 export const INT4_MAX = 2_147_483_647;
@@ -119,7 +119,7 @@ const SERVICE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/;
 const SERVICE_STATE = /^[a-z][a-z-]{0,31}$/;
 /** Past any legal registry path — an image that long must not bounce every flush of a live run. */
 const SERVICE_IMAGE_LIMIT = 2048;
-/** A dead service's reason/hint, and the tail of its log (issue #487) — ten services of it must fit the progress body. */
+/** A dead service's reason/hint, and the tail of its log — ten services of it must fit the progress body. */
 const SERVICE_REASON_LIMIT = 512;
 const SERVICE_LOG_TAIL_LIMIT = 4096;
 /** A gate is a short label, not a description; well past anything a checkout's yaml declares. */
@@ -141,7 +141,7 @@ function serviceStatus(raw: unknown, at: string): ServiceStatus | string {
     return typeof detail === 'string' ? detail : { name, image, state, ...detail };
 }
 
-/** A dead service's ending (issue #487): an integer exit, a short reason and hint, a bounded log tail. */
+/** A dead service's ending: an integer exit, a short reason and hint, a bounded log tail. */
 function serviceDetail(raw: Record<string, unknown>, at: string): Partial<ServiceStatus> | string {
     const { exitCode, reason, logTail, hint } = raw;
     if (exitCode !== undefined && exitCode !== null && !Number.isInteger(exitCode)) {
@@ -265,7 +265,7 @@ export const LIST_LIMIT_DEFAULT = 50;
 export const LIST_LIMIT_MAX = 200;
 
 /**
- * The settle long-poll's timeout (issue #323), in seconds. `?waitFor=terminal` without a
+ * The settle long-poll's timeout, in seconds. `?waitFor=terminal` without a
  * `timeout` waits the default — comfortably under the read timeout a typical proxy fronts
  * the board with — and any ask over the cap is clamped to it, so one client cannot park a
  * request on the board past what the route is allowed to hold.
@@ -304,7 +304,7 @@ export const LEASE_BATCH_MAX = 100;
 export const CONTROL_BODY_LIMIT = 4096;
 
 /**
- * The staged conclusion's limit (issue #821): the complete body the driver fit to `BODY_LIMIT`,
+ * The staged conclusion's limit: the complete body the driver fit to `BODY_LIMIT`,
  * byte for byte so the board fingerprints both alike, plus the lease length beside it.
  */
 export const CONCLUSION_BODY_LIMIT = BODY_LIMIT + CONTROL_BODY_LIMIT;
@@ -327,7 +327,7 @@ export function noBoard(reply: FastifyReply) {
 }
 
 /**
- * The one answer of BATCHES_ENABLED off (BEL-264): every batch route, and every task route that would advance a batch's
+ * The one answer of BATCHES_ENABLED off: every batch route, and every task route that would advance a batch's
  * thread (retry, follow-up, force-close), answers it, so the web and the CLI branch on the one code.
  */
 export function batchesDisabled(reply: FastifyReply) {
@@ -346,7 +346,7 @@ export function leaseLost(reply: FastifyReply) {
     return reply.code(HTTP_CONFLICT).send({ error: 'Lease lost', code: ERROR_CODES.LEASE_LOST });
 }
 
-/** A settle under a lease whose attempt staged another conclusion (issue #821): that one is its outcome. */
+/** A settle under a lease whose attempt staged another conclusion: that one is its outcome. */
 export function conclusionConflict(reply: FastifyReply) {
     return reply
         .code(HTTP_CONFLICT)

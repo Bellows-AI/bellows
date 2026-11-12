@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { readLaneScript } from './fixtures/lane-script.js';
 
 /*
  * The jobs harness (scripts/test-jobs.sh) only runs where a docker daemon lives, so nothing in
@@ -13,7 +14,7 @@ import { describe, expect, it } from 'vitest';
  * suites do for bytes that only ship in a container.
  */
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+const SCRIPT = readLaneScript('scripts/test-jobs.sh');
 
 describe('the test-jobs harness', () => {
     // The offline board reads a plan over git from the smoke origin (REPO_CLONE_BASE): the daemon is up and
@@ -51,9 +52,9 @@ describe('the test-jobs harness', () => {
     // The route is gone from the board (404 Route not found); the claim's resumeSessionId has no
     // slash, so the legitimate field assertion cannot trip this.
     it('scripts/ holds no reference to the removed /resume route', () => {
-        for (const entry of readdirSync(join(ROOT, 'scripts'), { withFileTypes: true })) {
+        for (const entry of readdirSync(join(ROOT, 'scripts'), { withFileTypes: true, recursive: true })) {
             if (!entry.isFile()) continue;
-            expect(readFileSync(join(ROOT, 'scripts', entry.name), 'utf8')).not.toContain('/resume');
+            expect(readFileSync(join(entry.parentPath, entry.name), 'utf8')).not.toContain('/resume');
         }
     });
 
@@ -200,7 +201,7 @@ describe('the test-jobs harness', () => {
         expect(restart).toBeLessThan(SCRIPT.indexOf('begin_phase mcp'));
     });
 
-    // The bridge the claude entrypoint execs refuses any argv not ending in `-p <prompt>` (#536).
+    // The bridge the claude entrypoint execs refuses any argv not ending in `-p <prompt>`.
     it('the real-claude lanes pass the prompt last, as the driver does', () => {
         expect(SCRIPT).toContain(
             "--dangerously-skip-permissions --model fake-model\n            -p 'touch the step markers')"
@@ -216,7 +217,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toContain('want_exit');
     });
 
-    // The opencode message is the turn context, then the prompt (#518): the stub's final line.
+    // The opencode message is the turn context, then the prompt: the stub's final line.
     it('the opencode check reads the prompt off the message end, not the argv head', () => {
         expect(SCRIPT).not.toContain("'run --agent factory opencode prompt'");
         expect(SCRIPT).toContain('[ "$oc_last" = \'opencode prompt\' ]');
@@ -241,12 +242,11 @@ describe('the test-jobs harness', () => {
         expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# orphan reaper'"));
         expect(start).toBeLessThan(SCRIPT.indexOf("echo '# workflows'"));
         const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
-        // The helpers both recovery phases use sit at file scope (issue #829).
+        // The helpers both recovery phases use sit at file scope.
         expect(SCRIPT).toContain('--filter "label=factory.claim-seq=1"');
         expect(phase).toContain('kill -9 "$driver_pid"');
         expect(phase).toContain('kill -TERM "$driver_pid"');
         expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
-        expect(SCRIPT).toContain("DRAINED='the driver was drained'");
         expect(SCRIPT).toContain("TOOK_OVER='took over the running agent of claim 1, whose driver was lost'");
         expect(phase).toContain('grep -qF "job $killed: $TOOK_OVER"');
         expect(phase).toContain('supervisor_served "$drained" 60');
@@ -257,7 +257,8 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toMatch(/done\n {4}dump_stall "\$id"\n/);
         expect(SCRIPT).toContain("'supervisor: stopped serving the steps'");
         expect(SCRIPT).toContain("ADOPTED='adopted the finished runner of claim 1, whose driver was lost'");
-        expect(phase).toContain('attempts 1');
+        // The refunded attempt and the interruption rows are asserted on the real store, not here.
+        expect(phase).toContain('server/test-db/lane-rows.node-disruption.test.ts');
     });
 
     // Issue #829: the recovery waits are the derived bound plus a margin, not the longest bound a
@@ -365,7 +366,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain("TOOK_OVER='took over the running agent of claim 1, whose driver was lost'");
         expect(phase).toContain('supervisor: rebound to claim 2');
         expect(phase).toContain("resumed gates from claim 1's checkpoint");
-        // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).
+        // A group whose agent exited while its supervisor serves is taken over, never waited out.
         expect(phase).toContain('dk_log "$k4" "$TOOK_OVER"');
         expect(phase).toContain('dk_log "$k5" "$TOOK_OVER"');
         expect(phase).toContain('dk_log "$k4" "$ADOPTED" && bad \'k4: the finished runner was not waited out\'');

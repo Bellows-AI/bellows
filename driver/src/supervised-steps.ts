@@ -39,7 +39,7 @@ import { noStepChannel, StepTimedOut, type StepSink, stepLost } from './step-con
 import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from './supervisor-contract.js';
 
 /**
- * The executor-neutral half of the supervised steps (issue #771): what the startup sync, the
+ * The executor-neutral half of the supervised steps: what the startup sync, the
  * terminal reclaim, the tree probe, the review snapshot, the publish steps and the allowlisted
  * helpers ask of an attempt's task supervisor, and how its answers read. Both executors hand the
  * same requests to the same channel (`step-control.ts`); the supervisor (`scripts/supervisor.cjs`)
@@ -74,7 +74,7 @@ const ID_HASH_CHARS = 16;
 const hash16 = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, ID_HASH_CHARS);
 
 /**
- * The attempt, as a step id's scope: job and the lease its group was made under (#829), so a step of a
+ * The attempt, as a step id's scope: job and the lease its group was made under, so a step of a
  * superseded attempt never names a live one.
  */
 const attemptKey = (job: BoardJob): string => hash16(`${job.id}|${job.groupLease ?? job.leaseToken}`);
@@ -246,7 +246,7 @@ export function supervisedStepRunner(
  * The startup sync (or, for a claim that continues a session, the restore) as one supervised step:
  * a starting claim gets fetch + create-or-rebase, with the board's GitHub token for the fetch when
  * the loop got one; a continuing claim gets RESTORE=1 and no env at all — nothing that touches the
- * remote (issue #58). The step is never abandoned mid-write: a stand-down kills the group instead,
+ * remote. The step is never abandoned mid-write: a stand-down kills the group instead,
  * which rejects it.
  */
 export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: string): Promise<SyncResult> {
@@ -320,7 +320,7 @@ export async function runReadoutStep(
 }
 
 /**
- * One block-helper step (issue #207): an allowlisted, board-owned script, run in the task worktree
+ * One block-helper step: an allowlisted, board-owned script, run in the task worktree
  * with its bounded input as a literal. Only a github-writing helper gets the claim env, with the
  * fresh token the loop minted laid over it; an unknown id fails before anything is submitted. A
  * receipted helper given its effect runs bracketed by its receipt (`helper-receipts.ts`, issue
@@ -393,7 +393,7 @@ export interface GateStepRequest {
 }
 
 /**
- * One gate execution as a supervised step (issue #773): the supervisor hands it to the group's gate
+ * One gate execution as a supervised step: the supervisor hands it to the group's gate
  * container through the gate mailbox. Every execution is a step of its own — a gate run again is run
  * again — while a redelivery of this one call keeps its id and invocation (`submitStep`), so the
  * supervisor's ledger only ever answers the same request. An abort of `signal` cancels it through the
@@ -547,7 +547,7 @@ export function supervisedStepMembers(
 }
 
 /**
- * What a review's close-time export step is given (issue #774): the exporter token the caller's
+ * What a review's close-time export step is given: the exporter token the caller's
  * control channel opened for THIS review row (bound to the row's lease and identity, never the
  * caller's own), and where an opencode review's readout goes — the driver parses and uploads it
  * under the row, since the opencode readout is a read, not a stream.

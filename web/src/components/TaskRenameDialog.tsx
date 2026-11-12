@@ -3,7 +3,7 @@ import { useId, useState } from 'react';
 import { ConfirmDialog } from './ConfirmDialog.js';
 
 /**
- * The rename dialog (BEL-252): one field, prefilled with the name the page shows. Save is dark for a blank
+ * The rename dialog: one field, prefilled with the name the page shows. Save is dark for a blank
  * title and mid-request; a refusal — including the stale answer naming the title the board now holds — is
  * announced once, inside the open dialog. Presentational: the page owns the write and the revision.
  */

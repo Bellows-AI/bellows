@@ -18,6 +18,7 @@ import {
     runDeclaredGates,
     sizeGateForVerify,
 } from './loop-gates.js';
+import { armLeaseClock } from './loop-lease.js';
 import { drainTranscriptExport } from './loop-export.js';
 import { openChain, replayGates, runClaimSeqOf } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
@@ -71,7 +72,7 @@ const sessionNote = (session: RunSession | null): string =>
  * acted on: the heartbeat is what kills a superseded run, and losing the link is not losing the
  * job. An opencode run ALWAYS leaves a session, so an empty scrape is the readout having failed
  * every try — said out loud, because the cost is a task that can never take a follow-up, and a
- * verdict without its finish reason or context. The stopped path calls this too (issue #152): a
+ * verdict without its finish reason or context. The stopped path calls this too: a
  * stop's park lands the row terminal, and a session reported after it is refused — the stopped
  * task would settle sessionless with nothing to follow up.
  */
@@ -152,7 +153,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
  */
 async function checkPlanStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job } = ctx;
-    // The declaration may name a package cache the driver will not set (issue #734).
+    // The declaration may name a package cache the driver will not set.
     const cacheProblem = repoCacheProblem(job);
     if (cacheProblem) {
         return faultHalt(
@@ -187,7 +188,7 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
         await recordSetup(ctx);
         return gateOut.value;
     } catch (e) {
-        // The setup's supervisor was lost (issue #773): the attempt's loss, never a config verdict.
+        // The setup's supervisor was lost: the attempt's loss, never a config verdict.
         if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e), ...(await supervisorLossFlag(ctx, e)) };
         return faultHalt(
             `gate environment failed, failing with a reason: ${(e as Error).message}`,
@@ -199,7 +200,7 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
 
 /**
  * Leaves the pre-agent `environment.setup` outcome on the board, passed or failed, before the agent
- * starts (issue #917): the failure lives in this driver's memory otherwise, and a holder that adopts
+ * starts: the failure lives in this driver's memory otherwise, and a holder that adopts
  * or takes the run over would decide its end-of-run pass without it. Only the attempt that ran the
  * setup records it; a missing row reads as unknown, so a write the board did not take only costs the
  * adopter a retried setup.
@@ -211,7 +212,7 @@ async function recordSetup(ctx: AttemptCtx): Promise<void> {
     await (await openChain(ctx)).record('setup', null, { failure: job.setupFailure ?? null });
 }
 
-/** Why a gate or setup whose supervisor was lost interrupts its attempt (issue #773). */
+/** Why a gate or setup whose supervisor was lost interrupts its attempt. */
 const gateLossReason = (e: unknown): string =>
     `infrastructure loss: the task supervisor running the gates was lost (${(e as Error).message})`;
 
@@ -238,7 +239,7 @@ const isConclusion = (answer: GateSession | null | SetupConclusion): answer is S
 
 /**
  * Ends the attempt on the one conclusion it reached. Every exit from setup goes through here, which is
- * what makes a new refusal safe (issue #472): a stand-down parks the attempt, and wins over whatever
+ * what makes a new refusal safe: a stand-down parks the attempt, and wins over whatever
  * the step concluded — the attempt is down whatever the step found — while a `SetupHalt` is decided
  * by `setupDecision` and landed by `end`. Answers whether the attempt is finished here; a step that
  * answers `null` with the attempt still up is not.
@@ -258,9 +259,9 @@ async function conclude(ctx: AttemptCtx, conclusion: SetupConclusion | null): Pr
  * fall through to the run.
  */
 async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof STOOD_DOWN> {
-    // Every attempt gets a control endpoint (issue #442), minted before anything is created so the
+    // Every attempt gets a control endpoint, minted before anything is created so the
     // env the task group is specced with already names it — and so the supervisor has its channel
-    // for the sync, the first step it serves (issue #771): agent-less and adopted attempts included.
+    // for the sync, the first step it serves: agent-less and adopted attempts included.
     await openRunControl(ctx.rt, ctx.job, ctx.state);
     await mintGateCredentials(ctx.rt, ctx.job);
     for (const step of setupSteps) {
@@ -288,7 +289,7 @@ export type RunPhaseResult = {
     failure: GateFailure | null;
     /** The declared services found dead before the gates — which were skipped for them. */
     deadServices: DeadService[];
-    /** The services found dead before the gates and restarted for them (issue #560). */
+    /** The services found dead before the gates and restarted for them. */
     recoveredServices: DeadService[];
     /**
      * When `runner.run` resolved — the moment the run ended, and the timestamp the timeout
@@ -339,7 +340,7 @@ async function reportRunTail(
 
 /**
  * The spawn: answers the run's outcome, or null when a stand-down landed first (already settled).
- * An agent-less node (issue #503) launches nothing — it answers a clean run for the gates and the
+ * An agent-less node launches nothing — it answers a clean run for the gates and the
  * publish to follow, after handing back the claim the sync took, since no runner comes to release it.
  */
 async function launchRun(
@@ -397,7 +398,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     const endedAt = Date.now();
 
     // A draining attempt settles as stopped even after a clean exit: the agent stopped because it
-    // was asked to, so no gates, helpers, publish or `complete` follow (issue #442). A stop after
+    // was asked to, so no gates, helpers, publish or `complete` follow. A stop after
     // the run still reports the session and uploads the artifacts BEFORE the park.
     // The board holds the task for a connection its helper asked for: the attempt stood down for it.
     if (state.requirement !== null && !state.draining) recordEnding(state, 'requirement');
@@ -459,7 +460,7 @@ async function verifyRun(
      */
     const phases = await openChain(ctx);
     ctx.phases = phases;
-    // An adopted or taken-over run carries the setup outcome of the attempt it resumes (issue #917):
+    // An adopted or taken-over run carries the setup outcome of the attempt it resumes:
     // a failure the first driver held in memory is back on this job, and one the board cannot
     // confirm is retried, never taken as a pass.
     const carried = phases.carriedSetup();
@@ -524,9 +525,9 @@ interface GatesPhase {
     failure: GateFailure | null;
     deadServices: DeadService[];
     gatesSkipped: string | null;
-    /** The gates were skipped because the task produced no change (issue #1020). */
+    /** The gates were skipped because the task produced no change. */
     noChange?: boolean;
-    /** The services found dead before the gates and restarted for them (issue #560): noted, not faults. */
+    /** The services found dead before the gates and restarted for them: noted, not faults. */
     recoveredServices: DeadService[];
     /** The gates list as the board was last told it; empty when no declared gate ran. */
     reports: GateReport[];
@@ -534,7 +535,7 @@ interface GatesPhase {
 
 /**
  * The run's end with no verdict of its own, answering whether the attempt was concluded here: an
- * ad-hoc gate that found the supervisor lost while the agent ran (issue #773) interrupts it, and a
+ * ad-hoc gate that found the supervisor lost while the agent ran interrupts it, and a
  * run the platform refused or took away is concluded by `unreportedDecision`.
  */
 async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boolean> {
@@ -542,12 +543,9 @@ async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boo
     const decision =
         gateLoss === null
             ? unreportedDecision(outcome)
-            : interruptDecision(
-                  `infrastructure loss: ${gateLoss}`,
-                  outcome.exitCode,
-                  false,
-                  outcome.infraNodeLoss === true
-              );
+            : interruptDecision(`infrastructure loss: ${gateLoss}`, outcome.exitCode, false, {
+                  nodeLoss: outcome.infraNodeLoss === true,
+              });
     if (decision === null) return false;
     await end(ctx, decision);
     return true;
@@ -555,7 +553,7 @@ async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boo
 
 /**
  * The gates phase — none without a session to run — or `STOOD_DOWN` once a gate, setup or service
- * restart whose supervisor was lost, or whose pod could not be read (issue #773), interrupted the
+ * restart whose supervisor was lost, or whose pod could not be read, interrupted the
  * attempt here: no gate verdict lands for it.
  */
 async function gatesOrLoss(
@@ -570,8 +568,8 @@ async function gatesOrLoss(
     } catch (e) {
         if (!servicesLost(e)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
-        const { nodeLoss = false } = await supervisorLossFlag(ctx, e);
-        await end(ctx, interruptDecision(reason, null, false, nodeLoss));
+        const { nodeLoss = false, blocked = false } = await supervisorLossFlag(ctx, e);
+        await end(ctx, interruptDecision(reason, null, false, { nodeLoss, blocked }));
         return STOOD_DOWN;
     }
 }
@@ -584,7 +582,7 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     if (gatesSkipped !== null) {
         rt.log(`job ${job.id}: gates skipped — ${gatesSkipped}`);
         // The services' faults are the run's too, gates or not: a blocked agent is the one that
-        // most needs to be told its environment was dead (issue #487).
+        // most needs to be told its environment was dead.
         return {
             failure: null,
             deadServices: await probeDeadServices(rt, job),
@@ -593,13 +591,13 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
             reports: [],
         };
     }
-    // A task that changed nothing has nothing for the gates to judge (issue #1020).
+    // A task that changed nothing has nothing for the gates to judge.
     const unchanged = await noChangeSkip({ ...ctx, gateSession });
     if (unchanged) return unchanged;
     // A gate against a dead service fails on an environment the agent cannot fix, and a
-    // failed gate is what the workflow's gate-fix edge spends a round on (issue #423). The
+    // failed gate is what the workflow's gate-fix edge spends a round on. The
     // services are stateless fixtures, so a dead one is restarted first; only a restart that
-    // cannot bring the fleet back is the run's fault (issue #560).
+    // cannot bring the fleet back is the run's fault.
     await sizeGateForVerify(rt, job);
     const deadBefore = await probeDeadServices(rt, job);
     let recoveredServices: DeadService[] = [];
@@ -651,7 +649,7 @@ function gateHistory(rt: LoopRuntime, gateSession: GateSession | null): readonly
 
 /**
  * A launch the board refused in the claim itself: the executor selection, then the selected
- * skills (issue #545), then the execution plan (a `.bellows.yaml` that does not resolve at the
+ * skills, then the execution plan (a `.bellows.yaml` that does not resolve at the
  * claimed revision, or services that cannot share one pod). All `config`: the member fixes the
  * settings, the selection or the file and retries, and a batch asks a person instead of retrying
  * it as infrastructure. True when the task was failed here and nothing may launch — no sync, no
@@ -695,7 +693,7 @@ function claimRefusalOf(rt: LoopRuntime, job: BoardJob): readonly [string, 'conf
  * plan check, the gate environment) and the run itself. The setup lives here rather than in
  * the claim loop so the attempt's state — heartbeat, abort signal, cleanup — covers all of it:
  * a Stop issued while the dashboard says "Waiting for the executor…" interrupts the setup
- * within one heartbeat poll and stands the attempt down before anything spawns (issue #126).
+ * within one heartbeat poll and stands the attempt down before anything spawns.
  */
 export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const { log } = rt;
@@ -706,18 +704,19 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     state.trace = (t) => log(transitionLine(job, t));
     // In flight for a drain's handover (`loop.ts`) until it settles.
     const over = registerLive(rt, job, state);
+    armLeaseClock(rt, job, state);
     const beating = heartbeat(rt, job, state);
     // Armed before the run so the runner can hand over tails from its first chunk; the pump's
-    // snapshot is the liveness read the timeout note is built from (issue #339).
+    // snapshot is the liveness read the timeout note is built from.
     const outputPump = watchOutput(rt, job, state);
     const session = pickSession(job, executorType);
 
     /*
      * Lands a verdict the heartbeat observed before the runner spawned — a Stop, a lost lease
      * or a Remove that arrived while this attempt was still syncing its checkout or booting
-     * its gate environment (issue #126). `standDown` (`loop-fence.ts`) reads it as a decision and
+     * its gate environment. `standDown` (`loop-fence.ts`) reads it as a decision and
      * `end` (`loop-conclusion.ts`) is the only thing that acts on one — once per attempt, however
-     * many exits ask (issue #820): it parks the attempt, then tears it down.
+     * many exits ask: it parks the attempt, then tears it down.
      */
     const quiesce = attemptQuiesce(rt, job, state, beating);
     const ctx: AttemptCtx = { rt, job, state, quiesce, fenced: false, treeBefore: null, session };
@@ -739,7 +738,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         const closing = await runPostHelpersAndPublish(ctx, outcome);
         if (closing === null) return;
         const { helperFailure, published, policyRefusal } = closing;
-        // Staged, completed, then torn down (issue #821). The liveness read and the gate verdicts
+        // Staged, completed, then torn down. The liveness read and the gate verdicts
         // are read BEFORE the teardown releases the gate session — unregistering clears the
         // recorded runs.
         await reportFinish(ctx, {
@@ -762,7 +761,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     } catch (e) {
         // The run threw — docker is missing, the daemon or apiserver refused, or this driver lost
         // its own credentials mid-run. Deliberately NOT reported as a failed job: that would blame
-        // the command for the driver's problem. Nor handed back as an interruption (issue #822): a
+        // the command for the driver's problem. Nor handed back as an interruption: a
         // runner may have survived — a force-deleted driver pod reads its own Job with a revoked
         // token — and a freed lease lets the reaper sweep what the next claim should adopt.
         // A killed run can reject (the runner's own Job vanished under it): the stand-down

@@ -1,3 +1,4 @@
+// @ts-check
 // The task supervisor: the trusted container of a run's pod (docker: its container group) that owns
 // the attempt's lifecycle — prepare -> setup -> execute -> verify -> publish -> finalize -> report —
 // while the agent runs as a separate container it cannot control and the transcript exporter drains
@@ -11,7 +12,7 @@
 //   <root>/export  supervisor <-> exporter: `drain.json`, `status.json`, `supervisor.alive`
 //   <root>/supervisor  the supervisor's own state: `state.json`, `report.json`, the step ledger; no other container mounts it
 //   <root>/gate    supervisor <-> gate container: `requests/`, `running/`, `done/`, `alive` (`GATE_FILES` below)
-//   <root>/review  supervisor <-> reviewer container (issue #774): the same layout, served beside the gates
+//   <root>/review  supervisor <-> reviewer container: the same layout, served beside the gates
 //
 // The group lives for the whole attempt, not just the agent's run. The driver submits STEPS to it —
 // the startup sync, the tree probe, the review snapshot, the publish steps, the allowlisted helpers
@@ -55,7 +56,7 @@
 //   SUPERVISOR_AGENT_LOST_MS  — a seen agent heartbeat older than this is a lost agent (default 30000).
 //   SUPERVISOR_AGENT_START_MS — how long the agent may take to show a first heartbeat (default 600000).
 //                               The driver's reading of the agent container ended (`GET /control` answers `agentEnded`)
-//                               with no exit marker is a lost agent at once, inside both windows (#920).
+//                               with no exit marker is a lost agent at once, inside both windows.
 //   SUPERVISOR_EXPORTS        — `1` when an exporter container waits for the drain order.
 //   SUPERVISOR_AGENTLESS      — `1` for an attempt with no agent container: no `go` is awaited.
 //   SUPERVISOR_ORPHAN_MS      — how long an unanswering driver is served before finalizing (default 90000).
@@ -66,7 +67,7 @@
 //                               runs what the agent-writable checkout's config names (a tree without it uses the file beside this one); it is also
 //                               written as `git-harden.cjs` beside the shim, named by GIT_HARDEN_MODULE, for the publish probe's in-process calls.
 //   SUPERVISOR_CHECKPOINT_SCRIPT / _CHECKOUT / _BRANCH / _BASE / _DIR / _OPENCODE_DB — the checkpoint the finalize stage
-//                               takes (issue #775): scripts/checkpoint.cjs by content, the task tree and branch it
+//                               takes: scripts/checkpoint.cjs by content, the task tree and branch it
 //                               works on, the directory it writes in, the OpenCode database to snapshot. Absent
 //                               the script, the checkout, the branch or the directory: no checkpoint.
 //   SUPERVISOR_CHECKPOINT_MS  — the one wall-clock bound over the checkpoint's script, chunks, retries and manifest (default 120000).
@@ -89,9 +90,82 @@ const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { pipeline, Transform } = require('node:stream');
 
+/** @typedef {Record<string, string | undefined>} Env */
+/** @typedef {{ script: string, checkout: string, branch: string, dir: string, base: string, opencodeDb: string }} Checkpoint */
+/** @typedef {{ dir: string, real: string, module: string }} GitShim */
+/** @typedef {ReturnType<typeof settingsOf> & { gitShim?: GitShim | null }} Settings */
+/** @typedef {ReturnType<typeof filesOf>} Files */
+/** @typedef {{ status: number, json: any }} Answer */
+/** @typedef {{ body?: any, bytes?: Uint8Array, holdMs?: number, abort?: AbortSignal | null, onContact?: (() => void) | null }} CallOptions */
+/** @typedef {'gate' | 'review'} LaneKind */
+/** @typedef {'sync' | 'reclaim' | 'probe' | 'snapshot' | 'publish' | 'helper' | 'gate' | 'review' | 'restart' | 'go' | 'finish'} StepKind */
+/** @typedef {{ argv: string[], cwd?: string, env?: Record<string, string>, timeoutMs: number }} SpawnSpec */
+/** @typedef {SpawnSpec & { id: string, invocation: string, kind: StepKind }} Step */
+/** @typedef {Step & { kind: LaneKind }} GateStep */
+/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean }} StepResult */
+/** @typedef {{ result: StepResult, interrupted: boolean, tokens?: string[] }} Outcome */
+/** @typedef {{ state: string, result?: StepResult }} Call */
+/** @typedef {{ id: string, kind: string, effect: StepResult | null, invocations: Record<string, Call> }} Entry */
+/** @typedef {{ token?: string, none?: string }} GateAnswer */
+/** @typedef {{ token: string, expiresAt: number | null }} Grant */
+/** @typedef {{ startedAt: number, why: string | null, stoppedAt: number, over: boolean, abort: AbortController, asking: Promise<GateAnswer> | null, cache: Grant | null, tokens: Set<string>, answering: Set<string>, unanswered: boolean, readFailed: boolean }} Flight */
+/** @typedef {{ exitCode: number | null, how: string }} AgentEnd */
+/** @typedef {{ outcome: string, cause: string | null }} Intent */
+/** @typedef {{ claimSeq: number | null, url: string | null, token: string | null, agentToken: string | null, exportToken: string | null, leaseToken: string | null }} Binding */
+/** @typedef {{ server: import('node:http').Server | null, active: number }} Relay */
+/** @typedef {{ turn: Promise<any>, calls: Map<string, Promise<StepResult>>, cancels: Set<string>, answers: Set<Promise<void>>, inFlight: number, stopped: boolean }} Lane */
+/** @typedef {{ id: string, outcome: string | null, cause: string | null, agentExit: number | null, agentEnd: string, drained: boolean }} Report */
+/** @typedef {{ posted: boolean, settled: boolean }} Question */
+/** @typedef {{ stage: string, outcome: string | null, cause: string | null, history: () => string[], enter: (next: string) => void, abort: (why: string, because?: string | null) => void, complete: () => void, performed: () => string[], delegated: () => string[] }} Machine */
+/** @typedef {{ method: string, match: (path: string) => boolean, cap: number, query?: boolean, timeout?: 'gateRelayMs' }} RelayRoute */
+/** @typedef {{ token: 'agentToken' | 'exportToken', inflight: number, routes: RelayRoute[] }} RelaySpec */
+/** @typedef {{ ok?: boolean, reason?: string, state: string, cause: string | null, headerFile: string, parts: Array<{ path: string }> }} Verdict */
+/**
+ * @typedef {object} Run
+ * @property {Settings} settings
+ * @property {() => number} now
+ * @property {(line: string) => void} log
+ * @property {Files} file
+ * @property {Machine} machine
+ * @property {number} startedAt
+ * @property {Map<string, Question>} questions
+ * @property {boolean} stopRaised
+ * @property {string | null} killRaised
+ * @property {number | null} agentSeenAt
+ * @property {boolean} agentEnded
+ * @property {AgentEnd | null} agentEnd
+ * @property {boolean} closed
+ * @property {Intent | null} intent
+ * @property {number} lastControlAt
+ * @property {number} budget
+ * @property {number} budgetStartedAt
+ * @property {boolean} budgetPaused
+ * @property {number | null} goAt
+ * @property {boolean} finishRequested
+ * @property {number} contactedAt
+ * @property {Binding} binding
+ * @property {number} bindingGen
+ * @property {AbortController} bindingAbort
+ * @property {string | null} refusedBinding
+ * @property {AbortController} abort
+ * @property {AbortController} stop
+ * @property {Record<string, Relay>} relays
+ * @property {AbortController} pulling
+ * @property {{ interrupt: () => void } | null} inflight
+ * @property {Record<string, Lane>} lanes
+ * @property {Report | null} report
+ * @property {boolean | null} reportAcked
+ * @property {boolean} reportRefused
+ * @property {number} reportTries
+ * @property {number} reportDueAt
+ */
+
 const STAGES = ['prepare', 'setup', 'execute', 'verify', 'publish', 'finalize', 'report'];
 /** Stages the driver performs until the supervisor takes them over: never recorded as performed here. */
 const DELEGATED = ['setup', 'verify', 'publish'];
+/**
+ * @type {Record<string, string[]>}
+ */
 const TRANSITIONS = {
     prepare: ['setup', 'finalize'],
     setup: ['execute', 'finalize'],
@@ -106,11 +180,11 @@ const OUTCOMES = ['completed', 'failed', 'cancelled', 'timed_out', 'lost'];
 
 /**
  * The agent's own directory inside `in` and `out` (`AGENT_MAILBOX_DIR` of supervisor-contract.ts),
- * created owner-only before the agent is released: its tools run as their own uid (issue #814).
+ * created owner-only before the agent is released: its tools run as their own uid.
  */
 const AGENT_DIR = 'agent';
 const AGENT_DIR_MODE = 0o700;
-/** The review mailbox is served by another uid of this group (REVIEWER_UID, issue #774): its directories and requests are group-writable. */
+/** The review mailbox is served by another uid of this group (REVIEWER_UID): its directories and requests are group-writable. */
 const REVIEW_DIR_MODE = 0o775;
 /** A review's env file is its credential: readable by that group, never written. */
 const REVIEW_ENV_MODE = 0o640;
@@ -167,7 +241,10 @@ const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' };
 const GATE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** How much of a refused env name its refusal quotes. */
 const ENV_NAME_PREVIEW = 64;
-/** The step kinds a container other than this one runs, each in a lane of its own: one at a time, answered beside the rest. */
+/**
+ * The step kinds a container other than this one runs, each in a lane of its own: one at a time, answered beside the rest.
+ * @type {LaneKind[]}
+ */
 const LANES = ['gate', 'review'];
 /** What a gate the driver cancelled answers — discarded by the driver that cancelled it. */
 const GATE_CANCELLED_EXIT = 130;
@@ -175,7 +252,7 @@ const STEP_ID = /^[A-Za-z0-9_.:-]{1,160}$/;
 const STEP_OUTPUT_LIMIT = 1_048_576;
 /** The exit a step the supervisor refused (or could not start) answers with: `sh`'s "cannot execute". */
 const STEP_REFUSED_EXIT = 126;
-/** A step writes the tree the tool uid shares through group 1000 (issue #814). */
+/** A step writes the tree the tool uid shares through group 1000. */
 const STEP_UMASK = 0o002;
 const STEP_RESULT_ATTEMPTS = 5;
 const EXIT_DEADLINE = 124;
@@ -212,9 +289,9 @@ const HTTP_SERVER_ERROR = 500;
 const GATE_TOKEN_REFUSALS = [HTTP_BAD_REQUEST, HTTP_UNAUTHORIZED, HTTP_FORBIDDEN, HTTP_CONFLICT];
 const REQUEST_TIMEOUT_MS = 10_000;
 const REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
-/** Logged once when the agent is released: the evidence a newer claim reads to take a running agent over (#829). */
+/** Logged once when the agent is released: the evidence a newer claim reads to take a running agent over. */
 const RELEASED_LINE = 'supervisor: released the agent';
-/** Logged once when the group stops serving the driver's steps: a newer claim reads its absence as "still serving" (#829). */
+/** Logged once when the group stops serving the driver's steps: a newer claim reads its absence as "still serving". */
 const SERVED_LINE = 'supervisor: stopped serving the steps';
 const STEP_PATH = '/step';
 /** The driver route a gate's GitHub token ask is relayed to (`GATE_TOKEN_PATH` of supervisor-contract.ts). */
@@ -243,10 +320,16 @@ const GATE_ASK_NAME = /^[0-9]{1,10}$/;
 /** A relayed publish waits for the whole answer (a supervised step allows 600s): this is that and headroom. */
 const DEFAULT_RELAY_MS = 900_000;
 
-/** The lifecycle machine: legal transitions only, and a record of what really ran. */
+/**
+ * The lifecycle machine: legal transitions only, and a record of what really ran.
+ * @param {string} [initial]
+ * @returns {Machine}
+ */
 function createMachine(initial = 'prepare') {
     const history = [initial];
+    /** @type {string | null} */
     let outcome = null;
+    /** @type {string | null} */
     let cause = null;
     return {
         get stage() {
@@ -282,11 +365,19 @@ function createMachine(initial = 'prepare') {
     };
 }
 
+/**
+ * @param {Env} env
+ * @param {string} name
+ * @param {number} fallback
+ */
 const positive = (env, name, fallback) => {
     const value = Number(env[name]);
     return Number.isFinite(value) && value > 0 ? value : fallback;
 };
 
+/**
+ * @param {string} file
+ */
 const readJson = (file) => {
     try {
         return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -295,7 +386,11 @@ const readJson = (file) => {
     }
 };
 
-/** Atomic: the reader sees the old file or the whole new one, never half of it. */
+/**
+ * Atomic: the reader sees the old file or the whole new one, never half of it.
+ * @param {string} file
+ * @param {string} text
+ */
 const writeAtomic = (file, text) => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
@@ -305,6 +400,11 @@ const writeAtomic = (file, text) => {
 
 // A stop (the optional signal `supervise` takes) wakes the sleep early. Captured at load: fake timers must not freeze it.
 const yieldMacrotask = setImmediate;
+/**
+ * @param {number} ms
+ * @param {Run} run
+ * @returns {Promise<void>}
+ */
 const sleep = (ms, run) =>
     new Promise((resolve) => {
         const timer = setTimeout(done, ms);
@@ -318,7 +418,11 @@ const sleep = (ms, run) =>
         else run.stop.signal.addEventListener('abort', done, { once: true });
     });
 
-/** The checkpoint this attempt takes at finalize, or null when the driver configured none. */
+/**
+ * The checkpoint this attempt takes at finalize, or null when the driver configured none.
+ * @param {Env} env
+ * @returns {Checkpoint | null}
+ */
 function checkpointOf(env) {
     const script = env.SUPERVISOR_CHECKPOINT_SCRIPT;
     const checkout = env.SUPERVISOR_CHECKPOINT_CHECKOUT;
@@ -337,6 +441,9 @@ function checkpointOf(env) {
     };
 }
 
+/**
+ * @param {Env} env
+ */
 function settingsOf(env) {
     const root = env.FACTORY_CTL_ROOT || '/factory';
     return {
@@ -373,7 +480,7 @@ function settingsOf(env) {
         exports: env.SUPERVISOR_EXPORTS === '1',
         agentless: env.SUPERVISOR_AGENTLESS === '1',
         orphanMs: positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS),
-        // How long a RELEASED group waits for a newer holder (#829): its agent is the work to adopt.
+        // How long a RELEASED group waits for a newer holder: its agent is the work to adopt.
         takeoverMs: positive(env, 'SUPERVISOR_TAKEOVER_MS', positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS)),
         stepWaitMs: positive(env, 'SUPERVISOR_STEP_WAIT_MS', DEFAULT_STEP_WAIT_MS),
         reportMs: positive(env, 'SUPERVISOR_REPORT_MS', DEFAULT_REPORT_MS),
@@ -393,7 +500,10 @@ function settingsOf(env) {
     };
 }
 
-/** Where each file of the mailboxes lives, from the settings' directories. */
+/**
+ * Where each file of the mailboxes lives, from the settings' directories.
+ * @param {Pick<Settings, 'dirs'>} settings
+ */
 function filesOf({ dirs }) {
     const agentIn = path.join(dirs.in, AGENT_DIR);
     const agentOut = path.join(dirs.out, AGENT_DIR);
@@ -424,6 +534,11 @@ function filesOf({ dirs }) {
  * One call to the driver's control endpoint; null is "unreachable", never an answer. A call that
  * returns at all — whatever the status — is the driver being there (`run.contactedAt`), which the
  * orphan bound reads. `holdMs` is the long poll's own wait on top of the usual timeout.
+ * @param {{ url: string | null, token: string | null }} settings
+ * @param {string} method
+ * @param {string} route
+ * @param {CallOptions} [options]
+ * @returns {Promise<Answer | null>}
  */
 async function call(settings, method, route, { body, bytes, holdMs = 0, abort = null, onContact = null } = {}) {
     try {
@@ -451,6 +566,10 @@ async function call(settings, method, route, { body, bytes, holdMs = 0, abort = 
  * One run's state: the settings, the machine, and what the loops below note while the agent runs.
  * `intent` is why the attempt is being ended, noted while the agent still runs — the machine only
  * enters finalize once the agent is gone.
+ * @param {Settings} settings
+ * @param {() => number} now
+ * @param {(line: string) => void} log
+ * @returns {Run}
  */
 function newRun(settings, now, log) {
     const startedAt = now();
@@ -465,7 +584,7 @@ function newRun(settings, now, log) {
         stopRaised: false,
         killRaised: null,
         agentSeenAt: null,
-        agentEnded: false, // the driver read the agent container over (#920); true is sticky, never a verdict on its own
+        agentEnded: false, // the driver read the agent container over; true is sticky, never a verdict on its own
         agentEnd: null, // { exitCode: number | null, how: 'exit' | 'lost' }
         closed: false,
         intent: null,
@@ -514,6 +633,11 @@ function newRun(settings, now, log) {
  * A call to the current holder on this run's behalf: it ends with the run or with the holder it was
  * made to (or with the external stop, a test-only signal), and an answer counts as contact. An answer that lands after a rebind is dropped as if
  * the call never returned: the old holder neither hands a step nor counts as contact.
+ * @param {Run} run
+ * @param {string} method
+ * @param {string} route
+ * @param {CallOptions} [options]
+ * @returns {Promise<Answer | null>}
  */
 async function ask(run, method, route, options = {}) {
     const gen = run.bindingGen;
@@ -534,18 +658,27 @@ async function ask(run, method, route, options = {}) {
 }
 
 /**
- * A released group with a binding file to be followed waits for a newer holder (#829): its agent is
+ * A released group with a binding file to be followed waits for a newer holder: its agent is
  * the work a takeover adopts. A group never released, or one no holder can name itself to, is redone.
+ * @param {Run} run
  */
 const waitsForHolder = (run) => run.goAt !== null && !run.settings.agentless && Boolean(run.settings.bindingFile);
 
-/** The driver stopped answering for longer than the orphan bound (the takeover bound once released): nobody is left to give this group orders. */
+/**
+ * The driver stopped answering for longer than the orphan bound (the takeover bound once released): nobody is left to give this group orders.
+ * @param {Run} run
+ */
 const orphaned = (run) =>
     run.stop.signal.aborted ||
     (Boolean(run.binding.url) &&
         run.now() - run.contactedAt > (waitsForHolder(run) ? run.settings.takeoverMs : run.settings.orphanMs));
 
-/** A binding file's text as a binding strictly newer than `claimSeq`; null for anything else. */
+/**
+ * A binding file's text as a binding strictly newer than `claimSeq`; null for anything else.
+ * @param {string} text
+ * @param {number} claimSeq
+ * @returns {Binding | null}
+ */
 function newerBinding(text, claimSeq) {
     let named;
     try {
@@ -580,6 +713,7 @@ function newerBinding(text, claimSeq) {
  * partial or older one keeps the holder it has (never unbinds, never closes). The old holder's
  * requests are aborted, the report and the pending questions are delivered again to the new one,
  * and its orphan bound starts afresh. Nothing logged names the url or the token.
+ * @param {Run} run
  */
 function followBinding(run) {
     const { bindingFile } = run.settings;
@@ -613,11 +747,16 @@ function followBinding(run) {
     run.log(`supervisor: rebound to claim ${next.claimSeq}`);
 }
 
+/**
+ * @param {Run} run
+ * @param {string} id
+ */
 const ledgerFile = (run, id) => path.join(run.file.ledger, `${encodeURIComponent(id)}.json`);
 
 /**
  * The tail of a stream whose JSON form fits the step output cap. Escaping can turn one byte into six
  * (a NUL is `\u0000`), and the driver bounds the answer body, not the bytes a command printed.
+ * @param {string} text
  */
 function fitTail(text) {
     let tail = text;
@@ -628,6 +767,13 @@ function fitTail(text) {
     return tail;
 }
 
+/**
+ * @param {number | null} exitCode
+ * @param {string} [stdout]
+ * @param {string} [stderr]
+ * @param {boolean} [timedOut]
+ * @returns {StepResult}
+ */
 const stepResult = (exitCode, stdout = '', stderr = '', timedOut = false) => ({
     exitCode,
     stdout: fitTail(stdout),
@@ -635,7 +781,10 @@ const stepResult = (exitCode, stdout = '', stderr = '', timedOut = false) => ({
     timedOut,
 });
 
-/** Keeps the tail of a stream at the step output cap, byte-true enough: the cap is a bound, not a format. */
+/**
+ * Keeps the tail of a stream at the step output cap, byte-true enough: the cap is a bound, not a format.
+ * @param {string} text
+ */
 const keepTail = (text) => (text.length <= STEP_OUTPUT_LIMIT ? text : text.slice(text.length - STEP_OUTPUT_LIMIT));
 
 /**
@@ -647,13 +796,19 @@ const keepTail = (text) => (text.length <= STEP_OUTPUT_LIMIT ? text : text.slice
  * issue #775) reads the thread's checkpoint through the driver's `/checkpoint/restore` route, and the input fetch
  * (INPUT_FEED=1) reads the task's files through `/input`. A step that sets neither — every publish, helper and
  * other sync — never sees the supervisor's token.
+ * @param {Run} run
+ * @param {SpawnSpec} step
+ * @returns {Record<string, string>}
  */
 function controlFeed(run, step) {
     if (!step.env || (step.env.RESTORE_FEED !== '1' && step.env.INPUT_FEED !== '1')) return {};
     return { RESTORE_URL: run.settings.url || '', RESTORE_TOKEN: run.settings.token || '' };
 }
 
-/** The first `git` executable on `pathList`, or null. */
+/**
+ * The first `git` executable on `pathList`, or null.
+ * @param {string | undefined} pathList
+ */
 function findGit(pathList) {
     for (const dir of (pathList || '').split(path.delimiter)) {
         if (!dir) continue;
@@ -673,6 +828,8 @@ function findGit(pathList) {
  * `git` into a private directory that goes first on every step's PATH. The checkout is written by the
  * agent's tool uid, so a step's git must not run what the checkout's config names (docs/security.md).
  * Null when there is no `git` to front (nothing to harden); throws when there is one and no script.
+ * @param {Settings} settings
+ * @returns {GitShim | null}
  */
 function gitShimOf(settings) {
     if (settings.gitShim !== undefined) return settings.gitShim;
@@ -693,7 +850,11 @@ function gitShimOf(settings) {
     return settings.gitShim;
 }
 
-/** A step's environment: the image's, the step's own, and the hardened git first on PATH. */
+/**
+ * A step's environment: the image's, the step's own, and the hardened git first on PATH.
+ * @param {Run} run
+ * @param {SpawnSpec} step
+ */
 function stepEnv(run, step) {
     const env = { ...run.settings.childEnv, ...step.env, ...controlFeed(run, step) };
     const shim = gitShimOf(run.settings);
@@ -706,6 +867,11 @@ function stepEnv(run, step) {
     };
 }
 
+/**
+ * @param {Run} run
+ * @param {SpawnSpec} step
+ * @returns {Promise<Outcome>}
+ */
 function spawnStep(run, step) {
     return new Promise((resolve) => {
         const [exe, ...args] = step.argv;
@@ -714,11 +880,11 @@ function spawnStep(run, step) {
         try {
             env = stepEnv(run, step);
         } catch (error) {
-            const why = `no hardened git: ${error?.message ?? error}`;
+            const why = `no hardened git: ${/** @type {Error} */ (error)?.message ?? error}`;
             resolve({ result: stepResult(STEP_REFUSED_EXIT, '', why), interrupted: false });
             return;
         }
-        // The agent's tools run as their own uid in group 1000 (issue #814), so a step writes the
+        // The agent's tools run as their own uid in group 1000, so a step writes the
         // tree group-writable. The child takes the umask at its fork; this process keeps its own.
         const umask = process.umask(STEP_UMASK);
         try {
@@ -729,7 +895,10 @@ function spawnStep(run, step) {
                 detached: true,
             });
         } catch (error) {
-            resolve({ result: stepResult(STEP_REFUSED_EXIT, '', String(error?.message ?? error)), interrupted: false });
+            resolve({
+                result: stepResult(STEP_REFUSED_EXIT, '', String(/** @type {Error} */ (error)?.message ?? error)),
+                interrupted: false,
+            });
             return;
         } finally {
             process.umask(umask);
@@ -739,6 +908,7 @@ function spawnStep(run, step) {
         let timedOut = false;
         let interrupted = false;
         let settled = false;
+        /** @param {StepResult} result */
         const settle = (result) => {
             if (settled) return;
             settled = true;
@@ -749,7 +919,7 @@ function spawnStep(run, step) {
         };
         const killGroup = () => {
             try {
-                process.kill(-child.pid, 'SIGKILL');
+                process.kill(-(/** @type {number} */ (child.pid)), 'SIGKILL');
             } catch {
                 // The group is already gone.
             }
@@ -782,6 +952,7 @@ function spawnStep(run, step) {
  * One lane's state: its steps one at a time (`turn`), each call joined by a redelivery of it while it
  * runs (`calls`), the ones the driver cancelled (`cancels`, read off the control poll), their
  * answers still being delivered (`answers`), and the order to stop them all.
+ * @returns {Lane}
  */
 function newLane() {
     return {
@@ -794,13 +965,22 @@ function newLane() {
     };
 }
 
-/** A word a shell reads back as one argument: single-quoted, a quote inside closed and reopened. */
+/**
+ * A word a shell reads back as one argument: single-quoted, a quote inside closed and reopened.
+ * @param {string} word
+ */
 const shellQuote = (word) => `'${word.replace(/'/g, `'\\''`)}'`;
 
-/** What a lane's container runs for a step: a gate's one command, or a review's argv as one quoted line. */
+/**
+ * What a lane's container runs for a step: a gate's one command, or a review's argv as one quoted line.
+ * @param {Step} step
+ */
 const laneCommand = (step) => (step.kind === 'review' ? step.argv.map(shellQuote).join(' ') : step.argv[0]);
 
-/** Why a lane's step carries no usable command, or null: a gate's one command, a review's argv. */
+/**
+ * Why a lane's step carries no usable command, or null: a gate's one command, a review's argv.
+ * @param {Step} step
+ */
 function commandRefusal(step) {
     if (step.kind === 'gate') {
         const oneCommand = step.argv.length === 1 && typeof step.argv[0] === 'string' && step.argv[0] !== '';
@@ -810,7 +990,11 @@ function commandRefusal(step) {
     return words ? null : 'a review step carries its command as argv';
 }
 
-/** Why a gate or review step cannot be handed to its container, or null: what the loop could not run as asked. */
+/**
+ * Why a gate or review step cannot be handed to its container, or null: what the loop could not run as asked.
+ * @param {Run} run
+ * @param {GateStep} step
+ */
 function gateRefusal(run, step) {
     const lane = step.kind;
     if (!run.settings[lane]) {
@@ -833,7 +1017,10 @@ function gateRefusal(run, step) {
     return null;
 }
 
-/** The last `STEP_OUTPUT_LIMIT` bytes of a file: what a suite printed, its tail kept. */
+/**
+ * The last `STEP_OUTPUT_LIMIT` bytes of a file: what a suite printed, its tail kept.
+ * @param {string} file
+ */
 function readTail(file) {
     let fd;
     try {
@@ -850,7 +1037,13 @@ function readTail(file) {
     }
 }
 
-/** The answer of a finished request (`done/<id>`), read and removed; null while it is not done. */
+/**
+ * The answer of a finished request (`done/<id>`), read and removed; null while it is not done.
+ * @param {Run} run
+ * @param {LaneKind} lane
+ * @param {string} name
+ * @returns {{ exitCode: number | null, output: string } | null}
+ */
 function takeGateAnswer(run, lane, name) {
     const done = path.join(run.file[lane].done, name);
     if (!fs.existsSync(done)) return null;
@@ -868,7 +1061,12 @@ function takeGateAnswer(run, lane, name) {
     return answer;
 }
 
-/** How long the gate loop has been silent: since its last heartbeat, or since the request when it never beat. */
+/**
+ * How long the gate loop has been silent: since its last heartbeat, or since the request when it never beat.
+ * @param {Run} run
+ * @param {LaneKind} lane
+ * @param {number} since
+ */
 function gateSilentMs(run, lane, since) {
     let beat = since;
     try {
@@ -882,6 +1080,9 @@ function gateSilentMs(run, lane, since) {
 /**
  * Orders the gate stopped: a request the loop has not taken is withdrawn (true — it never ran), a
  * taken one gets `cancel`, which the loop answers by killing it.
+ * @param {Run} run
+ * @param {LaneKind} lane
+ * @param {string} name
  */
 function cancelGate(run, lane, name) {
     const withdrawn = path.join(run.file[lane].staging, `${name}.withdrawn`);
@@ -899,14 +1100,22 @@ function cancelGate(run, lane, name) {
     }
 }
 
-/** The lane mailboxes' directories this supervisor makes, for each container that serves one. */
+/**
+ * The lane mailboxes' directories this supervisor makes, for each container that serves one.
+ * @param {Run} run
+ */
 const gateDirs = (run) =>
     LANES.filter((lane) => run.settings[lane]).flatMap((lane) => {
         const { staging, requests, running, done } = run.file[lane];
         return [staging, requests, running, done];
     });
 
-/** Stages the request whole and renames it into `requests/`: the loop never sees half of one. */
+/**
+ * Stages the request whole and renames it into `requests/`: the loop never sees half of one.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {string} name
+ */
 function postGateRequest(run, step, name) {
     const lane = step.kind;
     const staged = path.join(run.file[lane].staging, name);
@@ -919,7 +1128,7 @@ function postGateRequest(run, step, name) {
         for (const name of [GATE_ASK_FILES.asks, GATE_ASK_FILES.answers]) fs.mkdirSync(path.join(staged, name));
     }
     fs.writeFileSync(path.join(staged, GATE_FILES.command), laneCommand(step));
-    fs.writeFileSync(path.join(staged, GATE_FILES.cwd), step.cwd);
+    fs.writeFileSync(path.join(staged, GATE_FILES.cwd), /** @type {string} */ (step.cwd));
     const env = Object.entries(step.env ?? {}).map(([n, v]) => `${n}=${v}\n`);
     fs.writeFileSync(path.join(staged, GATE_FILES.env), env.join(''), {
         mode: reviewing ? REVIEW_ENV_MODE : GATE_ENV_MODE,
@@ -927,7 +1136,13 @@ function postGateRequest(run, step, name) {
     fs.renameSync(staged, path.join(run.file[lane].requests, name));
 }
 
-/** Why the supervisor stops a gate it handed over, or null: the driver's cancel, the group's end, the deadline. */
+/**
+ * Why the supervisor stops a gate it handed over, or null: the driver's cancel, the group's end, the deadline.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {number} startedAt
+ * @returns {string | null}
+ */
 function gateStopReason(run, step, startedAt) {
     const lane = run.lanes[step.kind];
     if (lane.cancels.has(step.id)) return 'cancelled';
@@ -935,7 +1150,13 @@ function gateStopReason(run, step, startedAt) {
     return run.now() - startedAt >= step.timeoutMs ? 'deadline' : null;
 }
 
-/** What a stopped gate answers: the deadline is a verdict (124), a cancel is discarded, an interruption is unknown. */
+/**
+ * What a stopped gate answers: the deadline is a verdict (124), a cancel is discarded, an interruption is unknown.
+ * @param {string | null} why
+ * @param {GateStep} step
+ * @param {string} output
+ * @returns {Outcome}
+ */
 function stoppedGateResult(why, step, output) {
     const what = step.kind;
     if (why === 'deadline') {
@@ -956,6 +1177,9 @@ function stoppedGateResult(why, step, output) {
  * A gate run that asked for a GitHub token and never got an answer — one that went unanswered, was in
  * flight when the gate was stopped, or is still pending when the gate ends: whatever the gate then exited
  * with, it ran without a token it needed. No verdict, the next claim reruns it (the driver reads the flag).
+ * @param {Flight} flight
+ * @param {string} output
+ * @returns {Outcome | null}
  */
 function unansweredGateResult(flight, output) {
     if (!flight.unanswered && !flight.asking) return null;
@@ -963,7 +1187,13 @@ function unansweredGateResult(flight, output) {
     return { result: { ...result, tokenAskUnanswered: true }, interrupted: false };
 }
 
-/** A stopped gate's result: a deadline that passed while an ask went unanswered is no verdict, not a timeout. */
+/**
+ * A stopped gate's result: a deadline that passed while an ask went unanswered is no verdict, not a timeout.
+ * @param {Flight} flight
+ * @param {GateStep} step
+ * @param {string} output
+ * @returns {Outcome}
+ */
 function stoppedGateRunResult(flight, step, output) {
     return (
         (flight.why === 'deadline' && unansweredGateResult(flight, output)) ||
@@ -971,7 +1201,13 @@ function stoppedGateRunResult(flight, step, output) {
     );
 }
 
-/** The loop's answer to a request: a stopped gate's (its own output kept), or the gate's own exit. */
+/**
+ * The loop's answer to a request: a stopped gate's (its own output kept), or the gate's own exit.
+ * @param {Flight} flight
+ * @param {GateStep} step
+ * @param {{ exitCode: number | null, output: string }} answer
+ * @returns {Outcome}
+ */
 function answeredGateResult(flight, step, answer) {
     if (flight.why) return stoppedGateRunResult(flight, step, answer.output);
     const unanswered = unansweredGateResult(flight, answer.output);
@@ -981,7 +1217,12 @@ function answeredGateResult(flight, step, answer) {
     return { result: stepResult(answer.exitCode, answer.output, lost), interrupted: false };
 }
 
-/** A gate loop gone silent: no exit — never a verdict — whether it never took the request or went quiet on it. */
+/**
+ * A gate loop gone silent: no exit — never a verdict — whether it never took the request or went quiet on it.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @returns {Outcome}
+ */
 function lostGateResult(run, step) {
     const lost = cancelGate(run, step.kind, step.id)
         ? `the ${step.kind} container never took the request: its loop is not running`
@@ -992,6 +1233,10 @@ function lostGateResult(run, step) {
 /**
  * One tick of a gate in flight (`flight`: when it was posted, why it is being stopped and since
  * when): its answer, a stopped gate's past the cancel grace, a lost loop's, or null to wait on.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {Flight} flight
+ * @returns {Outcome | null}
  */
 function gateTick(run, step, flight) {
     const answer = takeGateAnswer(run, step.kind, step.id);
@@ -1014,6 +1259,10 @@ function gateTick(run, step, flight) {
 /**
  * Whether an ask stops trying, unanswered: the run settled or was stopped (the stop already marked an ask
  * in flight, `gateTick`), or the ask's own deadline passed, which marks the run here.
+ * @param {Run} run
+ * @param {Flight} flight
+ * @param {number} left
+ * @returns {boolean}
  */
 function gateAskEnded(run, flight, left) {
     if (flight.over || flight.why || run.stop.signal.aborted) return true;
@@ -1027,6 +1276,10 @@ function gateAskEnded(run, flight, left) {
  * (`gateAskMs`): a token is cached on the gate run's `flight` while it is not near its expiry, a refusal
  * (the driver does not hold the step) is final, and anything unconfirmed — no answer, a 5xx, a malformed
  * body — is retried, then `unanswered`, which taints the run: no verdict. Never an empty token.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {Flight} flight
+ * @returns {Promise<GateAnswer>}
  */
 async function fetchGateToken(run, step, flight) {
     const deadline = run.now() + run.settings.gateAskMs;
@@ -1049,7 +1302,11 @@ async function fetchGateToken(run, step, flight) {
     }
 }
 
-/** The driver's grant in an answer — a token with no whitespace, and when it expires or null — or null: never an empty token. */
+/**
+ * The driver's grant in an answer — a token with no whitespace, and when it expires or null — or null: never an empty token.
+ * @param {Answer | null} answer
+ * @returns {Grant | null}
+ */
 function grantOf(answer) {
     const { token, expiresAt } = answer?.json ?? {};
     if (answer?.status !== HTTP_OK || typeof token !== 'string' || !/^\S+$/.test(token)) return null;
@@ -1057,17 +1314,31 @@ function grantOf(answer) {
     return { token, expiresAt: Number.isFinite(expires) ? expires : null };
 }
 
-/** The token for an ask: the cache while it is fresh, else the one driver call every concurrent ask shares. */
+/**
+ * The token for an ask: the cache while it is fresh, else the one driver call every concurrent ask shares.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {Flight} flight
+ * @returns {Promise<GateAnswer>}
+ */
 function gateToken(run, step, flight) {
     const cached = flight.cache;
-    if (cached && run.now() < cached.expiresAt - GATE_RENEW_SKEW_MS) return Promise.resolve({ token: cached.token });
+    if (cached && run.now() < /** @type {number} */ (cached.expiresAt) - GATE_RENEW_SKEW_MS)
+        return Promise.resolve({ token: cached.token });
     flight.asking ??= fetchGateToken(run, step, flight).finally(() => {
         flight.asking = null;
     });
     return flight.asking;
 }
 
-/** Answers one ask of the running gate, unless the gate was stopped, rebound or ended meanwhile: then nobody asked. */
+/**
+ * Answers one ask of the running gate, unless the gate was stopped, rebound or ended meanwhile: then nobody asked.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {Flight} flight
+ * @param {string} name
+ * @returns {Promise<void>}
+ */
 async function answerGateAsk(run, step, flight, name) {
     const gen = run.bindingGen;
     const running = path.join(run.file.gate.running, step.id);
@@ -1082,8 +1353,13 @@ async function answerGateAsk(run, step, flight, name) {
     } catch (error) {
         // The request ended under the write: nobody is left to read the answer. Anything else is logged once.
         fs.rmSync(staged, { force: true });
-        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')
-            run.log(`supervisor: gate ${step.id} ask not answered: ${error.code}`);
+        if (
+            /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT' &&
+            /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOTDIR'
+        )
+            run.log(
+                `supervisor: gate ${step.id} ask not answered: ${/** @type {NodeJS.ErrnoException} */ (error).code}`
+            );
     }
 }
 
@@ -1092,6 +1368,9 @@ async function answerGateAsk(run, step, flight, name) {
  * reason. Only a request the loop took is served (a request still in `requests/` ran nothing), and only
  * while the gate is not being stopped. A directory that cannot be read is skipped this tick, never read as
  * "no asks"; a dot-prefixed name is the helper's staging file, left alone; any other name is not an ask.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {Flight} flight
  */
 function serveGateAsks(run, step, flight) {
     if (step.kind !== 'gate' || flight.why || !run.settings.url) return;
@@ -1100,9 +1379,15 @@ function serveGateAsks(run, step, flight) {
     try {
         names = fs.readdirSync(dir);
     } catch (error) {
-        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR' && !flight.readFailed) {
+        if (
+            /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT' &&
+            /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOTDIR' &&
+            !flight.readFailed
+        ) {
             flight.readFailed = true;
-            run.log(`supervisor: gate ${step.id} asks unreadable: ${error.code}`);
+            run.log(
+                `supervisor: gate ${step.id} asks unreadable: ${/** @type {NodeJS.ErrnoException} */ (error).code}`
+            );
         }
         return;
     }
@@ -1125,9 +1410,13 @@ function serveGateAsks(run, step, flight) {
  * `gateCancelMs` for the loop's answer. A loop silent past `gateLostMs` is a lost gate container.
  * The gate's token asks are answered on the way; `flight` holds their cache and every token handed
  * out, which the answer is redacted of, and is dropped when the gate is settled.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @returns {Promise<Outcome>}
  */
 async function execGate(run, step) {
     postGateRequest(run, step, step.id);
+    /** @type {Flight} */
     const flight = {
         startedAt: run.now(),
         why: null,
@@ -1158,6 +1447,10 @@ async function execGate(run, step) {
  * A gate or review in its turn: one at a time per lane, whatever the driver sends. The turn re-reads
  * the ledger and settles the call inside itself: the call ahead of this one in the lane may have
  * landed the effect, and the next turn must see it.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {Entry} entry
+ * @returns {Promise<StepResult>}
  */
 function runGate(run, step, entry) {
     const lane = run.lanes[step.kind];
@@ -1178,7 +1471,12 @@ function runGate(run, step, entry) {
     });
 }
 
-/** The `go` order: releases the agent once, unless the attempt is already being ended. */
+/**
+ * The `go` order: releases the agent once, unless the attempt is already being ended.
+ * @param {Run} run
+ * @param {Step} step
+ * @returns {StepResult}
+ */
 function orderGo(run, step) {
     if (run.goAt !== null) return stepResult(0);
     if (run.stopRaised || run.killRaised || run.intent) {
@@ -1194,31 +1492,56 @@ function orderGo(run, step) {
     return stepResult(0);
 }
 
-/** One step's ledger entry: the result of the call that landed its effect, and every call's own state. */
+/**
+ * One step's ledger entry: the result of the call that landed its effect, and every call's own state.
+ * @param {Run} run
+ * @param {Step} step
+ * @returns {Entry}
+ */
 function ledgerOf(run, step) {
     const entry = readJson(ledgerFile(run, step.id));
     if (entry && typeof entry.invocations === 'object' && entry.invocations !== null) return entry;
     return { id: step.id, kind: step.kind, effect: null, invocations: {} };
 }
 
+/**
+ * @param {Run} run
+ * @param {Entry} entry
+ * @param {string} invocation
+ * @param {Call} call
+ */
 function recordCall(run, entry, invocation, call) {
     entry.invocations[invocation] = call;
     writeAtomic(ledgerFile(run, entry.id), JSON.stringify(entry));
 }
 
-/** The answer to a call that was taken and never answered: the caller reconciles before it calls again. */
+/**
+ * The answer to a call that was taken and never answered: the caller reconciles before it calls again.
+ * @param {string} id
+ * @returns {StepResult}
+ */
 const unknownResult = (id) =>
     stepResult(null, '', `step ${id} was interrupted before it answered: whether its effect landed is unknown`);
 
-/** What the ledger answers a call with — an effect that landed, a call already taken — or null: it runs. */
+/**
+ * What the ledger answers a call with — an effect that landed, a call already taken — or null: it runs.
+ * @param {Entry} entry
+ * @param {Step} step
+ * @returns {StepResult | null}
+ */
 function replayOf(entry, step) {
     if (entry.effect) return { ...entry.effect, replayed: true };
     const prior = entry.invocations[step.invocation];
-    if (prior?.state === 'done') return { ...prior.result, replayed: true };
+    if (prior?.state === 'done') return { .../** @type {StepResult} */ (prior.result), replayed: true };
     return prior ? unknownResult(step.id) : null;
 }
 
-/** What one step answers with; a refused step never starts. */
+/**
+ * What one step answers with; a refused step never starts.
+ * @param {Run} run
+ * @param {Step} step
+ * @returns {Promise<StepResult>}
+ */
 async function performStep(run, step) {
     const kind = STEP_KINDS.includes(step?.kind) ? step.kind : null;
     const named =
@@ -1231,7 +1554,8 @@ async function performStep(run, step) {
         run.finishRequested = true;
         return stepResult(0);
     }
-    const gateRefused = LANES.includes(kind) && gateRefusal(run, step);
+    const gateRefused =
+        LANES.includes(/** @type {LaneKind} */ (kind)) && gateRefusal(run, /** @type {GateStep} */ (step));
     if (gateRefused) return stepResult(STEP_REFUSED_EXIT, '', gateRefused);
     // An effect that landed is never run again, whoever asks: that is the harm the ledger prevents. A
     // call already taken is answered as it ended — a failure or a timeout too, which may have half
@@ -1248,28 +1572,46 @@ async function performStep(run, step) {
     return runCall(run, entry, step);
 }
 
-/** Runs a new call — a child of this container, or a gate the gate container runs — its ledger kept as it goes. */
+/**
+ * Runs a new call — a child of this container, or a gate the gate container runs — its ledger kept as it goes.
+ * @param {Run} run
+ * @param {Entry} entry
+ * @param {Step} step
+ * @returns {Promise<StepResult>}
+ */
 async function runCall(run, entry, step) {
     recordCall(run, entry, step.invocation, { state: 'running' });
-    if (LANES.includes(step.kind)) return runGate(run, step, entry);
+    if (LANES.includes(/** @type {LaneKind} */ (step.kind))) return runGate(run, /** @type {GateStep} */ (step), entry);
     return settleCall(run, entry, step, await spawnStep(run, step));
 }
 
 /**
  * A gate or review step's output with its injected GitHub token values replaced: the command may echo them,
  * and what the ledger keeps and the driver is answered must never hold one. The one choke point of both executors.
+ * @param {Step} step
+ * @param {StepResult} result
+ * @param {string[]} [served]
+ * @returns {StepResult}
  */
 function redactedResult(step, result, served = []) {
-    if (!LANES.includes(step.kind)) return result;
-    const secrets = [...['GITHUB_TOKEN', 'GH_TOKEN'].map((name) => step.env?.[name]), ...served].filter(
-        (value) => value
+    if (!LANES.includes(/** @type {LaneKind} */ (step.kind))) return result;
+    const secrets = /** @type {string[]} */ (
+        [...['GITHUB_TOKEN', 'GH_TOKEN'].map((name) => step.env?.[name]), ...served].filter((value) => value)
     );
     if (secrets.length === 0) return result;
+    /** @param {string} text */
     const redact = (text) => secrets.reduce((kept, secret) => kept.split(secret).join('[redacted]'), text);
     return { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) };
 }
 
-/** Records how a call ended: an effect that landed, a call done, or one interrupted. */
+/**
+ * Records how a call ended: an effect that landed, a call done, or one interrupted.
+ * @param {Run} run
+ * @param {Entry} entry
+ * @param {Step} step
+ * @param {Outcome} outcome
+ * @returns {StepResult}
+ */
 function settleCall(run, entry, step, outcome) {
     const { interrupted } = outcome;
     const result = redactedResult(step, outcome.result, outcome.tokens);
@@ -1282,7 +1624,14 @@ function settleCall(run, entry, step, outcome) {
     return result;
 }
 
-/** Posts a call's answer until the driver acknowledges it (or says the attempt is over). */
+/**
+ * Posts a call's answer until the driver acknowledges it (or says the attempt is over).
+ * @param {Run} run
+ * @param {Step} step
+ * @param {StepResult} result
+ * @param {number} gen
+ * @returns {Promise<void>}
+ */
 async function postStepResult(run, step, result, gen) {
     let body = { invocation: step.invocation, ...result };
     // `gen` is the holder the step came from: after a rebind its result stays in the ledger, the new holder redoes the step.
@@ -1309,10 +1658,13 @@ async function postStepResult(run, step, result, gen) {
  * Answers one step. A gate is answered beside the steps that follow it, never before them: it runs
  * for as long as a suite does, and a step queued behind it would outlive its own deadline. A
  * delivery of a gate call still running joins it rather than running it twice.
+ * @param {Run} run
+ * @param {Step} step
+ * @returns {Promise<void>}
  */
 async function answerStep(run, step) {
     const gen = run.bindingGen;
-    if (!LANES.includes(step.kind)) {
+    if (!LANES.includes(/** @type {LaneKind} */ (step.kind))) {
         await postStepResult(run, step, await performStep(run, step), gen);
         return;
     }
@@ -1331,13 +1683,21 @@ async function answerStep(run, step) {
     void answering.finally(() => lane.answers.delete(answering));
 }
 
-/** The result a call's ledger entry recorded: what a joined delivery of a gate answers. */
+/**
+ * The result a call's ledger entry recorded: what a joined delivery of a gate answers.
+ * @param {Run} run
+ * @param {Step} step
+ * @returns {StepResult}
+ */
 function readLedgerResult(run, step) {
     const recorded = ledgerOf(run, step).invocations[step.invocation];
     return recorded?.result ?? unknownResult(step.id);
 }
 
-/** Pulls steps from the driver, one at a time, until the group stops taking them. */
+/**
+ * Pulls steps from the driver, one at a time, until the group stops taking them.
+ * @param {Run} run
+ */
 async function serveSteps(run) {
     const { settings } = run;
     if (!run.binding.url) return;
@@ -1361,10 +1721,18 @@ async function serveSteps(run) {
     }
 }
 
+/**
+ * @param {Run} run
+ * @param {string} outcome
+ * @param {string | null} cause
+ */
 const intend = (run, outcome, cause) => {
     run.intent = run.intent ?? { outcome, cause };
 };
 
+/**
+ * @param {Run} run
+ */
 function persist(run) {
     writeAtomic(
         run.file.state,
@@ -1379,10 +1747,18 @@ function persist(run) {
     );
 }
 
+/**
+ * @param {Run} run
+ */
 function beat(run) {
     for (const target of run.file.alive) writeAtomic(target, `${run.now()}\n`);
 }
 
+/**
+ * @param {Run} run
+ * @param {string} id
+ * @param {{ state: string }} answer
+ */
 function settle(run, id, answer) {
     const known = run.questions.get(id);
     if (!known || known.settled) return;
@@ -1390,10 +1766,16 @@ function settle(run, id, answer) {
     writeAtomic(path.join(run.file.answers, `${id}.json`), JSON.stringify(answer));
 }
 
+/**
+ * @param {Run} run
+ */
 function cancelQuestions(run) {
     for (const id of run.questions.keys()) settle(run, id, { state: 'cancelled' });
 }
 
+/**
+ * @param {Run} run
+ */
 function raiseStop(run) {
     if (run.stopRaised) return;
     run.stopRaised = true;
@@ -1401,6 +1783,10 @@ function raiseStop(run) {
     cancelQuestions(run);
 }
 
+/**
+ * @param {Run} run
+ * @param {string} cause
+ */
 function raiseKill(run, cause) {
     if (run.killRaised) return;
     run.killRaised = cause;
@@ -1408,9 +1794,15 @@ function raiseKill(run, cause) {
     writeAtomic(run.file.kill, `${JSON.stringify({ cause })}\n`);
 }
 
+/**
+ * @param {Run} run
+ */
 const pendingQuestions = (run) => [...run.questions.values()].some((q) => !q.settled);
 
-/** New question files in the agent's mailbox: registered once, and refused at once when they cannot be asked. */
+/**
+ * New question files in the agent's mailbox: registered once, and refused at once when they cannot be asked.
+ * @param {Run} run
+ */
 function scanQuestions(run) {
     let names = [];
     try {
@@ -1434,14 +1826,23 @@ function scanQuestions(run) {
     }
 }
 
-/** What the driver's answer to a question POST means: the state to settle with, or null to go on. */
+/**
+ * What the driver's answer to a question POST means: the state to settle with, or null to go on.
+ * @param {number} status
+ */
 function refusalOf(status) {
     if (status === HTTP_BAD_REQUEST) return 'invalid';
     if (status === HTTP_TOO_MANY_REQUESTS) return 'refused';
     return null;
 }
 
-/** POSTs a question once; true when it is posted and may be polled. */
+/**
+ * POSTs a question once; true when it is posted and may be polled.
+ * @param {Run} run
+ * @param {string} id
+ * @param {Question} known
+ * @returns {Promise<boolean>}
+ */
 async function postQuestion(run, id, known) {
     const parsed = readJson(path.join(run.file.questions, `${id}.json`));
     const answer = await ask(run, 'POST', '/question', { body: parsed });
@@ -1461,7 +1862,12 @@ async function postQuestion(run, id, known) {
     return true;
 }
 
-/** Polls a posted question until a person (or a Stop) settles it. */
+/**
+ * Polls a posted question until a person (or a Stop) settles it.
+ * @param {Run} run
+ * @param {string} id
+ * @param {Question} known
+ */
 async function pollQuestion(run, id, known) {
     const polled = await ask(run, 'GET', `/question/${encodeURIComponent(id)}`);
     if (!polled) return;
@@ -1476,7 +1882,10 @@ async function pollQuestion(run, id, known) {
     }
 }
 
-/** The agent's question files: forwarded once, polled until a person (or a Stop) settles them. */
+/**
+ * The agent's question files: forwarded once, polled until a person (or a Stop) settles them.
+ * @param {Run} run
+ */
 async function serveQuestions(run) {
     scanQuestions(run);
     if (!run.binding.url) return;
@@ -1487,13 +1896,20 @@ async function serveQuestions(run) {
     }
 }
 
-/** The gate steps the driver cancelled, named on the control poll until their answers settle them. */
+/**
+ * The gate steps the driver cancelled, named on the control poll until their answers settle them.
+ * @param {Run} run
+ * @param {unknown} cancel
+ */
 function takeCancels(run, cancel) {
     for (const id of Array.isArray(cancel) ? cancel : []) {
         if (typeof id === 'string') for (const lane of LANES) run.lanes[lane].cancels.add(id);
     }
 }
 
+/**
+ * @param {Run} run
+ */
 async function pollControl(run) {
     followBinding(run);
     const { settings } = run;
@@ -1516,7 +1932,10 @@ async function pollControl(run) {
     }
 }
 
-/** The agent's heartbeat in ms, or null when it has written none. */
+/**
+ * The agent's heartbeat in ms, or null when it has written none.
+ * @param {Run} run
+ */
 function agentBeatMs(run) {
     try {
         const beatMs = Number.parseInt(fs.readFileSync(run.file.agentAlive, 'utf8'), 10);
@@ -1526,17 +1945,23 @@ function agentBeatMs(run) {
     }
 }
 
-/** Whether the file is confirmed missing: any other failure to read it is inconclusive, never a no. */
+/**
+ * Whether the file is confirmed missing: any other failure to read it is inconclusive, never a no.
+ * @param {string} file
+ */
 function markerAbsent(file) {
     try {
         fs.accessSync(file);
         return false;
     } catch (e) {
-        return e?.code === 'ENOENT';
+        return /** @type {NodeJS.ErrnoException} */ (e)?.code === 'ENOENT';
     }
 }
 
-/** The agent ended on its own (an exit marker) or was lost (its heartbeat stopped, or never started). */
+/**
+ * The agent ended on its own (an exit marker) or was lost (its heartbeat stopped, or never started).
+ * @param {Run} run
+ */
 function watchAgent(run) {
     if (run.agentEnd) return;
     if (fs.existsSync(run.file.agentExit)) {
@@ -1544,7 +1969,7 @@ function watchAgent(run) {
         run.agentEnd = { exitCode: Number.isFinite(code) ? code : null, how: 'exit' };
         return;
     }
-    // The driver read the agent container over (#920) and the marker, written before the container ends, is
+    // The driver read the agent container over and the marker, written before the container ends, is
     // confirmed absent: the agent died before it could write one. A marker that cannot be read says nothing.
     if (run.agentEnded && markerAbsent(run.file.agentExit)) {
         run.agentEnd = { exitCode: null, how: 'lost' };
@@ -1558,7 +1983,10 @@ function watchAgent(run) {
     if (stale || neverStarted) run.agentEnd = { exitCode: null, how: 'lost' };
 }
 
-/** The run budget, paused while a question waits for a person. */
+/**
+ * The run budget, paused while a question waits for a person.
+ * @param {Run} run
+ */
 function tickBudget(run) {
     if (!run.budget || run.killRaised || run.agentEnd) return;
     const paused = pendingQuestions(run);
@@ -1573,6 +2001,9 @@ function tickBudget(run) {
     }
 }
 
+/**
+ * @param {Run} run
+ */
 function watchExporter(run) {
     if (!run.settings.exports || run.killRaised || run.agentEnd) return;
     if (readJson(run.file.exportStatus)?.spoolFull === true) {
@@ -1581,7 +2012,10 @@ function watchExporter(run) {
     }
 }
 
-/** execute: until the agent is gone, whatever ended it. */
+/**
+ * execute: until the agent is gone, whatever ended it.
+ * @param {Run} run
+ */
 async function executeUntilAgentEnds(run) {
     while (!run.agentEnd) {
         beat(run);
@@ -1607,11 +2041,12 @@ async function executeUntilAgentEnds(run) {
  * The agent's end, read without trusting it for more than it says. A kill we raised, or a
  * heartbeat that stopped, says why; a Stop the agent honored by finishing its step is a
  * cancellation with a whole transcript; an exit code of its own is the driver's verdict to read.
+ * @param {Run} run
  */
 function concludeAgentEnd(run) {
-    const { machine, agentEnd, intent } = run;
+    const { machine, agentEnd, intent } = /** @type {Run & { agentEnd: AgentEnd }} */ (run);
     cancelQuestions(run);
-    const killed = KILLED_EXITS.includes(agentEnd.exitCode) ? CAUSE.killed : null;
+    const killed = KILLED_EXITS.includes(/** @type {number} */ (agentEnd.exitCode)) ? CAUSE.killed : null;
     if (intent) machine.abort(intent.outcome, intent.cause);
     else if (agentEnd.how === 'lost') machine.abort('lost', CAUSE.lost);
     else if (run.stopRaised) machine.abort('cancelled', killed);
@@ -1630,6 +2065,7 @@ function concludeAgentEnd(run) {
 /**
  * One tick of the supervisor's own duties outside the agent's run: the heartbeat, the driver's
  * orders and — once there is one — the report the driver has yet to acknowledge.
+ * @param {Run} run
  */
 async function tickDuties(run) {
     beat(run);
@@ -1645,6 +2081,7 @@ async function tickDuties(run) {
  * prepare: until the driver releases the agent (`go`). A Stop, a kill, a closed endpoint or a
  * driver that stopped answering ends the attempt here with the agent never launched: the stop and
  * kill markers are what a waiting agent entrypoint exits on.
+ * @param {Run} run
  */
 async function awaitGo(run) {
     while (run.goAt === null) {
@@ -1664,9 +2101,13 @@ async function awaitGo(run) {
     }
 }
 
-/** The report — the agent is over and the exporter drained — minted once: one id however often it is delivered. */
+/**
+ * The report — the agent is over and the exporter drained — minted once: one id however often it is delivered.
+ * @param {Run} run
+ * @param {boolean} drained
+ */
 function mintReport(run, drained) {
-    const { machine, agentEnd } = run;
+    const { machine, agentEnd } = /** @type {Run & { agentEnd: AgentEnd }} */ (run);
     run.report = {
         id: randomUUID(),
         outcome: machine.outcome,
@@ -1678,16 +2119,28 @@ function mintReport(run, drained) {
     keepReport(run);
 }
 
-/** Whether the group serves the driver's steps until `finish`: false once the attempt was ended here, never true again. */
+/**
+ * Whether the group serves the driver's steps until `finish`: false once the attempt was ended here, never true again.
+ * @param {Run} run
+ */
 const serving = (run) => run.intent === null;
 
+/**
+ * @param {Run} run
+ */
 const reportBody = (run) => ({ ...run.report, serving: serving(run) });
 
-/** Whether the driver has yet to acknowledge the report as it stands now — a departure is a new word to deliver. */
+/**
+ * Whether the driver has yet to acknowledge the report as it stands now — a departure is a new word to deliver.
+ * @param {Run} run
+ */
 const reportOwed = (run) =>
     Boolean(run.binding.url) && run.report !== null && !run.reportRefused && run.reportAcked !== serving(run);
 
-/** The report and whether the driver took it, on the supervisor's own volume: what a later reader finds. */
+/**
+ * The report and whether the driver took it, on the supervisor's own volume: what a later reader finds.
+ * @param {Run} run
+ */
 function keepReport(run) {
     writeAtomic(
         run.file.report,
@@ -1699,6 +2152,7 @@ function keepReport(run) {
  * One delivery of the report, when one is owed and due. An acknowledgement settles it; a closed
  * endpoint (a driver that no longer knows the token) or a refusal ends the delivery; anything else —
  * a 5xx, an answer lost — is delivered again under the same id, backing off to the control pace.
+ * @param {Run} run
  */
 async function deliverReport(run) {
     if (!reportOwed(run) || run.now() < run.reportDueAt) return;
@@ -1715,6 +2169,7 @@ async function deliverReport(run) {
 /**
  * publish/finalize: serve the driver's steps, the report delivered meanwhile, until it orders the
  * end, closes the endpoint or stops answering — or orders a kill, which ends the attempt here.
+ * @param {Run} run
  */
 async function serveUntilFinish(run) {
     const over = () => run.finishRequested || run.closed || !serving(run) || orphaned(run);
@@ -1728,6 +2183,7 @@ async function serveUntilFinish(run) {
  * An attempt ended here (a kill, the budget, a full spool) leaves: the group stops taking steps,
  * then tells the driver so — the report with `serving: false` — until it is acknowledged, the
  * endpoint closes or stops answering, or the report bound passes, whatever the other routes answer.
+ * @param {Run} run
  */
 async function depart(run) {
     run.pulling.abort();
@@ -1742,6 +2198,8 @@ async function depart(run) {
  * finalize: the exporter closes every session's manifest, partial when the agent did not end by
  * itself. A driver lost meanwhile ends the wait at the orphan bound: the exporter cannot reach it
  * either, and what it holds stays on the volume for the next claim.
+ * @param {Run} run
+ * @returns {Promise<boolean>}
  */
 async function drainExporter(run) {
     const { settings, file, machine } = run;
@@ -1759,7 +2217,10 @@ async function drainExporter(run) {
     return false;
 }
 
-/** The review mailbox is served by another uid of this group: its directories are group-writable. */
+/**
+ * The review mailbox is served by another uid of this group: its directories are group-writable.
+ * @param {Run} run
+ */
 function openReviewMailbox(run) {
     if (!run.settings.review) return;
     const { requests, running, done } = run.file.review;
@@ -1770,7 +2231,7 @@ function openReviewMailbox(run) {
 }
 
 /**
- * The relays (#829): the supervisor is the one place a run's holder is named, so the agent's proxy and
+ * The relays: the supervisor is the one place a run's holder is named, so the agent's proxy and
  * the exporter reach it through an owner-only unix socket each and hold no token. A relay forwards only
  * its role's routes to the CURRENT holder under that role's token; anything the holder does not
  * answer in full — unreachable, rebound mid-request, timed out, cut off — is hung up on, never
@@ -1786,6 +2247,9 @@ const CONTENT_HEADER = /^content-(type|length)$/;
 const RELAY_MODE = 0o600;
 /** `REVIEW_KEY` of the agent's proxy (docker/*-executor/control-proxy.cjs): the one key shape a review is named by. */
 const REVIEW_KEY = /^\/review\/[A-Za-z0-9_-]{1,64}$/;
+/**
+ * @type {Record<string, RelaySpec>}
+ */
 const RELAYS = {
     agent: {
         token: 'agentToken',
@@ -1810,7 +2274,12 @@ const RELAYS = {
     },
 };
 
-/** The relay route a request is, or null; a query rides only where the route takes one. */
+/**
+ * The relay route a request is, or null; a query rides only where the route takes one.
+ * @param {RelaySpec} spec
+ * @param {import('node:http').IncomingMessage} request
+ * @returns {RelayRoute | null}
+ */
 function relayRouteOf(spec, request) {
     const [pathname, ...query] = (request.url ?? '').split('?');
     return (
@@ -1820,10 +2289,17 @@ function relayRouteOf(spec, request) {
     );
 }
 
-/** A route's wall-clock bound: the one it names in `timeout`, else `relayMs`. */
+/**
+ * A route's wall-clock bound: the one it names in `timeout`, else `relayMs`.
+ * @param {Settings} settings
+ * @param {RelayRoute} route
+ */
 const relayMsOf = (settings, route) => settings[route.timeout ?? 'relayMs'];
 
-/** Refuses a body past `cap` by erroring the stream: the relay then hangs up on both sides. */
+/**
+ * Refuses a body past `cap` by erroring the stream: the relay then hangs up on both sides.
+ * @param {number} cap
+ */
 const capped = (cap) => {
     let seen = 0;
     return new Transform({
@@ -1834,7 +2310,12 @@ const capped = (cap) => {
     });
 };
 
-/** A refusal answered by its status alone; what the client still sends is drained (its length is declared), so it reads the answer, not a broken pipe. */
+/**
+ * A refusal answered by its status alone; what the client still sends is drained (its length is declared), so it reads the answer, not a broken pipe.
+ * @param {import('node:http').IncomingMessage} request
+ * @param {import('node:http').ServerResponse} response
+ * @param {number} status
+ */
 const refuse = (request, response, status) => {
     request.resume();
     response.writeHead(status);
@@ -1842,8 +2323,11 @@ const refuse = (request, response, status) => {
 };
 
 /**
- * The one agent route answered here, never forwarded (#1045): the lease of the holder this supervisor follows,
+ * The one agent route answered here, never forwarded: the lease of the holder this supervisor follows,
  * for helpers whose env still names the claim the container started under. No lease known yet is a 404.
+ * @param {Run} run
+ * @param {import('node:http').IncomingMessage} request
+ * @param {import('node:http').ServerResponse} response
  */
 function answerAttempt(run, request, response) {
     const { leaseToken } = run.binding;
@@ -1852,7 +2336,13 @@ function answerAttempt(run, request, response) {
     response.end(JSON.stringify({ leaseToken }));
 }
 
-/** One relayed request: streamed through, fenced by the binding generation it started under. */
+/**
+ * One relayed request: streamed through, fenced by the binding generation it started under.
+ * @param {Run} run
+ * @param {string} role
+ * @param {import('node:http').IncomingMessage} request
+ * @param {import('node:http').ServerResponse} response
+ */
 function relayRequest(run, role, request, response) {
     if (role === 'agent' && request.method === 'GET' && request.url === '/attempt')
         return answerAttempt(run, request, response);
@@ -1877,6 +2367,7 @@ function relayRequest(run, role, request, response) {
         gone.signal,
         AbortSignal.timeout(relayMsOf(run.settings, route)),
     ]);
+    /** @type {Record<string, string | string[] | undefined>} */
     const headers = { authorization: `Bearer ${token}` };
     for (const [name, value] of Object.entries(request.headers)) {
         if (CONTENT_HEADER.test(name)) headers[name] = value;
@@ -1884,7 +2375,9 @@ function relayRequest(run, role, request, response) {
     const lib = binding.url.startsWith('https:') ? https : http;
     state.active += 1;
     let settled = false;
+    /** @type {import('node:http').ClientRequest | null} */
     let upstream = null;
+    /** @param {boolean} hangUp */
     const settle = (hangUp) => {
         if (settled) return;
         settled = true;
@@ -1918,7 +2411,12 @@ function relayRequest(run, role, request, response) {
     });
 }
 
-/** Starts one role's relay on its socket; a listen that fails leaves that role without one, said in fixed words. */
+/**
+ * Starts one role's relay on its socket; a listen that fails leaves that role without one, said in fixed words.
+ * @param {Run} run
+ * @param {string} role
+ * @returns {Promise<void>}
+ */
 function serveRelay(run, role) {
     const socket = path.join(role === 'agent' ? run.file.agentOut : run.settings.dirs.export, FILES.relay);
     return new Promise((resolve) => {
@@ -1943,7 +2441,10 @@ function serveRelay(run, role) {
     });
 }
 
-/** The relays this run needs: the agent's where an agent runs, the exporter's where one waits; none without the token. */
+/**
+ * The relays this run needs: the agent's where an agent runs, the exporter's where one waits; none without the token.
+ * @param {Run} run
+ */
 async function openRelays(run) {
     const { settings, binding } = run;
     if (!binding.url) return;
@@ -1951,6 +2452,9 @@ async function openRelays(run) {
     if (settings.exports && binding.exportToken) await serveRelay(run, 'export');
 }
 
+/**
+ * @param {Run} run
+ */
 function closeRelays(run) {
     for (const { server } of Object.values(run.relays)) {
         server?.close();
@@ -1962,6 +2466,11 @@ function closeRelays(run) {
  * One checkpoint call, repeated while the driver cannot take it (no answer, a 5xx: the board was out
  * of reach) until `abort` — the stage's absolute deadline, or the end of the run — fires. Any other
  * answer is final: the board said what it thinks of these bytes.
+ * @param {Run} run
+ * @param {string} route
+ * @param {CallOptions} options
+ * @param {AbortSignal} abort
+ * @returns {Promise<Answer | null>}
  */
 async function putCheckpoint(run, route, options, abort) {
     for (let tries = 1; ; tries += 1) {
@@ -1972,7 +2481,12 @@ async function putCheckpoint(run, route, options, abort) {
     }
 }
 
-/** The header line, then each part's bytes, as the stream's consecutive chunks. */
+/**
+ * The header line, then each part's bytes, as the stream's consecutive chunks.
+ * @param {string} headerFile
+ * @param {Array<{ path: string }>} parts
+ * @returns {Generator<Buffer, void, undefined>}
+ */
 function* checkpointChunks(headerFile, parts) {
     const line = Buffer.from(`${JSON.stringify(JSON.parse(fs.readFileSync(headerFile, 'utf8')))}\n`);
     yield line;
@@ -1991,7 +2505,13 @@ function* checkpointChunks(headerFile, parts) {
     }
 }
 
-/** Puts the stream's chunks in order; how it ended: the cause it stopped short for, or null when every chunk is stored. */
+/**
+ * Puts the stream's chunks in order; how it ended: the cause it stopped short for, or null when every chunk is stored.
+ * @param {Run} run
+ * @param {Verdict} verdict
+ * @param {AbortSignal} abort
+ * @returns {Promise<{ state: string, cause: string | null }>}
+ */
 async function uploadCheckpoint(run, verdict, abort) {
     let offset = 0;
     for (const bytes of checkpointChunks(verdict.headerFile, verdict.parts)) {
@@ -2011,12 +2531,13 @@ async function uploadCheckpoint(run, verdict, abort) {
 }
 
 /**
- * finalize, after the publish and before the report is final (issue #775): commits the whole task
+ * finalize, after the publish and before the report is final: commits the whole task
  * tree through `scripts/checkpoint.cjs`, uploads what it made through the driver's checkpoint routes
  * and closes the stream. Every step is bounded by ONE wall-clock deadline and by the end of the run;
  * nothing here changes the attempt's outcome — a checkpoint that could not be taken or uploaded
  * leaves the stream without a `complete` manifest, which is what a reader and the volume's
  * retention rule look at. The directory it wrote in is removed whatever happened.
+ * @param {Run} run
  */
 async function checkpointStage(run) {
     const { checkpoint, checkpointMs, url } = run.settings;
@@ -2052,13 +2573,17 @@ async function checkpointStage(run) {
             `checkpoint: ${ended.state}${ended.cause ? ` (${ended.cause})` : ''}, manifest ${closed ? closed.status : 'unanswered'}`
         );
     } catch (error) {
-        run.log(`checkpoint: failed: ${error?.message ?? error}`);
+        run.log(`checkpoint: failed: ${/** @type {Error} */ (error)?.message ?? error}`);
     } finally {
         fs.rmSync(checkpoint.dir, { recursive: true, force: true });
     }
 }
 
-/** The last line of `text` that is a JSON object, or null. */
+/**
+ * The last line of `text` that is a JSON object, or null.
+ * @param {string} text
+ * @returns {any}
+ */
 function lastJson(text) {
     for (const line of text.trim().split('\n').reverse()) {
         try {
@@ -2071,7 +2596,11 @@ function lastJson(text) {
     return null;
 }
 
-/** Wires the optional external stop to the run: aborting it stops the sleeps and the step pull. */
+/**
+ * Wires the optional external stop to the run: aborting it stops the sleeps and the step pull.
+ * @param {Run} run
+ * @param {AbortSignal | undefined} stop
+ */
 function haltOn(run, stop) {
     const halt = () => {
         run.stop.abort();
@@ -2086,6 +2615,11 @@ function haltOn(run, stop) {
  * Never throws for the attempt's own failures: those are the outcome. A bug throws, and the
  * caller exits 70, which the driver reads as a lost supervisor — an infrastructure loss.
  * `stop` is optional (tests): aborting it ends the run like a lost driver, waking every sleep and the step pull.
+ * @param {Env} [env]
+ * @param {(line: string) => void} [log]
+ * @param {() => number} [now]
+ * @param {AbortSignal} [stop]
+ * @returns {Promise<number>}
  */
 async function supervise(env = process.env, log = (line) => process.stdout.write(`${line}\n`), now = Date.now, stop) {
     const run = newRun(settingsOf(env), now, log);
@@ -2143,7 +2677,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     await Promise.all(LANES.flatMap((lane) => [...run.lanes[lane].answers]));
     run.machine.enter('report');
     persist(run);
-    const { machine, agentEnd } = run;
+    const { machine, agentEnd } = /** @type {Run & { agentEnd: AgentEnd }} */ (run);
     const report = {
         outcome: machine.outcome,
         cause: machine.cause,

@@ -5,7 +5,7 @@ import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 
 /**
- * BEL-269: 127 renames the seven built-in skills on every job row, keeping order and leaving other names alone.
+ * 127 renames the seven built-in skills on every job row, keeping order and leaving other names alone.
  */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);

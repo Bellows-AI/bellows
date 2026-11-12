@@ -51,7 +51,7 @@ export async function taskVolumeIsOurs(execDocker: ExecDocker, job: BoardJob, si
 
 /**
  * The guard in front of every container that mounts the task volume after `ensureTaskVolume`: the
- * reaper may have deleted it since (issue #775), and `--mount type=volume` would create an EMPTY
+ * reaper may have deleted it since, and `--mount type=volume` would create an EMPTY
  * unlabelled one the attempt then runs on. A volume that is gone, or an inspect that proved nothing,
  * is a transient startup refusal — an infrastructure interruption the board refunds, never a run failure.
  */
@@ -129,7 +129,7 @@ export async function removeTaskVolumes(
 }
 
 /**
- * The task volume of the job's thread (issue #775): the thread's highest generation listed by its root
+ * The task volume of the job's thread: the thread's highest generation listed by its root
  * label is adopted, and one that is not there is created on the thread's first attempt, or — for a
  * claim that continues a session — as the next generation to be restored from the checkpoint
  * (`planTaskVolume`). A refused or malformed listing throws and nothing is created or mounted; a

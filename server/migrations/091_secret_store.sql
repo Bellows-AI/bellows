@@ -1,4 +1,4 @@
--- BEL-136: the PostgreSQL backend of the SecretStore contract (server/src/secrets/postgres-secret-store.ts,
+-- the PostgreSQL backend of the SecretStore contract (server/src/secrets/postgres-secret-store.ts,
 -- docs/secrets.md). Ciphertext is the only form a payload takes here: `secret_version.envelope` is an
 -- AES-256-GCM envelope whose key lives outside the database. No table holds plaintext, a bare payload hash
 -- or a key.

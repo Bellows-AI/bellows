@@ -11,7 +11,7 @@ import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
 
 /**
- * BEL-150: 113 is the contract for 093. A database still holding a plaintext secret refuses it, naming the
+ * 113 is the contract for 093. A database still holding a plaintext secret refuses it, naming the
  * conversion command; once every secret is a store reference it applies, and the row admits only the two forms.
  */
 const url = process.env.DATABASE_URL;

@@ -22,6 +22,7 @@ import {
     HTTP_UNAVAILABLE,
     trackApps,
 } from './helpers-http.js';
+import { storeOutage } from './helpers-outage.js';
 
 /**
  * Offline: the worker's content route. The lease is the credential, and the set the lease's job carries is the access
@@ -69,7 +70,7 @@ async function boot(options: { objects?: (base: ObjectStore) => Partial<ObjectSt
     const failing = { read: false };
     const jobs = {
         async attachmentSet(id: string, lease: string): Promise<AttachmentSetResult> {
-            if (failing.read) throw new Error('the set could not be read');
+            if (failing.read) throw storeOutage('the set could not be read');
             const held = sets.get(id);
             if (!held) return { result: 'missing' };
             return held.lease === lease ? { result: 'ok', attachments: held.files } : { result: 'lost' };
@@ -182,7 +183,7 @@ describe('POST /api/jobs/:id/attachments/:attachmentId/content', () => {
         const { app, bound, sets } = await boot({
             objects: (base) => ({
                 get: async (key) => {
-                    if (broken) throw new Error('store down');
+                    if (broken) throw storeOutage('store down');
                     return base.get(key);
                 },
             }),

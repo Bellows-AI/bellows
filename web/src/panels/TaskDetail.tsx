@@ -1,7 +1,7 @@
 import { type MutableRefObject, type ReactNode, useEffect, useRef } from 'react';
 import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
-import type { SubmittedFiles } from '../api/useTasks.js';
+import type { SubmittedFiles } from '../api/taskWrites.js';
 import { type ComposerDraftStore, threadScope } from '../composer-draft.js';
 import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
@@ -16,6 +16,7 @@ import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
 import { type OnAnswer, TaskRun, Verification } from './TaskRun.js';
 import { TaskSection } from './TaskSection.js';
+import { ScrollRegion } from '../components/ScrollRegion.js';
 
 /** No run's activity has been answered yet — every run reads as loading. */
 const NO_ACTIVITY: ThreadActivity = {};
@@ -35,10 +36,9 @@ function ServiceEnding({ service }: { service: ServiceStatus }) {
             </p>
             {hint ? <p className="muted">{hint}</p> : null}
             {logTail?.trim() ? (
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-                <pre className="chat-output" tabIndex={0}>
+                <ScrollRegion as="pre" className="chat-output">
                     {logTail.trimEnd()}
-                </pre>
+                </ScrollRegion>
             ) : null}
         </div>
     );
@@ -125,7 +125,7 @@ function FollowUpComposer({
     };
     return (
         <div className="composer">
-            {error !== null ? <p className="status">{error}</p> : null}
+            {error !== null ? <StateNote state="error">{error}</StateNote> : null}
             <ChatInput
                 id={FOLLOW_UP_INPUT_ID}
                 label="Ask for a follow-up"
@@ -204,7 +204,7 @@ function FollowUp({
     if (eligibility === 'eligible') {
         body = (
             <>
-                {asked ? <p className="status">{ENDED_ON_QUESTION_REPLY}</p> : null}
+                {asked ? <StateNote state="empty">{ENDED_ON_QUESTION_REPLY}</StateNote> : null}
                 <FollowUpComposer
                     rootId={rootId}
                     draftStore={draftStore}
@@ -218,7 +218,7 @@ function FollowUp({
     } else if (eligibility === 'not-author') {
         body = (
             <>
-                {asked ? <p className="status">{ENDED_ON_QUESTION_AUTHOR}</p> : null}
+                {asked ? <StateNote state="empty">{ENDED_ON_QUESTION_AUTHOR}</StateNote> : null}
                 <p className="muted">{notAuthorMessage(latest)}</p>
             </>
         );
@@ -336,7 +336,7 @@ export function TaskDetail({
     const latest = jobs === null || jobs.length === 0 ? null : jobs[jobs.length - 1];
 
     // Three scrollers follow what streams in, each only while its reader is near its own bottom
-    // (BEL-263): the conversation (with a Jump to latest when the reader is away), and the live
+    //: the conversation (with a Jump to latest when the reader is away), and the live
     // run's raw-output well. The log opened from its summary lands on the tail in `TaskRun`.
     // `jobs` changes identity with every poll; the hook judges height, not identity.
     const conversation = useStickToBottom<HTMLElement>(threadContentKey(jobs));
@@ -368,7 +368,7 @@ export function TaskDetail({
                 {header}
                 {/* The action error sits under the title — it is about the reader's last stop or
                 Mark done, not about either column's content. */}
-                {actionError !== null ? <p className="status">{actionError}</p> : null}
+                {actionError !== null ? <StateNote state="error">{actionError}</StateNote> : null}
                 {error !== null ? <ThreadError message={error} onRetry={onRetry} /> : null}
             </div>
             <aside className="task-rail" aria-label="Task details">

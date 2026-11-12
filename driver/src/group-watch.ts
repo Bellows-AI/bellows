@@ -21,7 +21,7 @@ export interface GroupWatch {
 
 /**
  * Watches a group for its whole life — from its supervisor's first contact to its forgetting — and
- * releases its steps on the first confirmed end (#967). Without it, a gate waiting on a supervisor
+ * releases its steps on the first confirmed end. Without it, a gate waiting on a supervisor
  * that died after its report waits out its own timeout. A read that fails, times out or answers
  * nothing is no end: it is read again.
  */

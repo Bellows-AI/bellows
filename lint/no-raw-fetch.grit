@@ -1,0 +1,17 @@
+language js
+
+// The web data layer has ONE `fetch` — `request()` in `web/src/api/request.ts`. A second one
+// re-grows the hand-rolled 401 branches every caller then has to repeat. Replaces the
+// `web/test/no-raw-fetch.test.ts` source scan.
+//
+// Paths are an `or` of whole regexes, never `(a|b)`: Grit binds a regex group to a variable, so an
+// alternation group does not compile, and a plugin that does not compile reports at `info` and
+// matches nothing.
+or { `fetch($...)`, `$_.fetch($...)` } as $call where {
+    $filename <: r".*/web/src/api/.*",
+    $filename <: not r".*/web/src/api/request\.ts$",
+    register_diagnostic(
+        span = $call,
+        message = "Raw fetch in the web data layer: call request() from web/src/api/request.ts instead."
+    )
+}

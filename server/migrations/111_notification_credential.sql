@@ -1,4 +1,4 @@
--- Notification credential (BEL-132): a subscription's channel credential (a chat webhook URL) lives in the secret
+-- Notification credential: a subscription's channel credential (a chat webhook URL) lives in the secret
 -- store, never in the row. The row holds the opaque reference and the version it was written at, like env_var's
 -- secret_ref/secret_version (093); both are rebuilt-identity checked on every read (docs/secrets.md,
 -- docs/notifications.md). NOT NULL without a default is safe here and is the one exception to

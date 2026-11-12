@@ -1,6 +1,6 @@
 /**
  * Row shapes and the row-to-API mappers, plus the small SQL helpers every other job-store file
- * shares: the author join/columns and wall-tick fragments `createJobStore` precompiles, the
+ * shares: the author join/columns fragments `createJobStore` precompiles, the
  * `exists` probe, the running-member check and the workspace-path rule.
  */
 
@@ -100,7 +100,7 @@ export interface JobRow {
     wait_reason?: string | null;
     waiting_since?: Date | null;
     wait_terminal_reason?: string | null;
-    /** Only the detail reads (get/thread) join `job_pr` (#324); absent from the lists. */
+    /** Only the detail reads (get/thread) join `job_pr`; absent from the lists. */
     publication_repo?: string | null;
     publication_pr_number?: number | null;
     publication_pr_url?: string | null;
@@ -308,7 +308,7 @@ export function toTask(row: TaskRow): TaskSummary {
 
 export const toJobRow = (ctx: JobStoreContext, row: JobRow): Job => toJob(ctx.orgId, row);
 
-/** One workflow successor's insert, shared by an ordinary transition and a block-wait wake (#231)
+/** One workflow successor's insert, shared by an ordinary transition and a block-wait wake
  *  — an ordinary queued job, byte-identical either way; the caller decides which row triggers it. */
 export interface WorkflowSuccessorInput {
     orgId: string;
@@ -331,9 +331,9 @@ export async function insertWorkflowSuccessor(tx: TransactionSql, input: Workflo
         select ${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
                ${input.executor}, ${input.executorScope}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode}, ${WORKFLOW_MODE},
-               -- The predecessor's pin (BEL-273): a successor continues the same run with the same skill versions.
+               -- The predecessor's pin: a successor continues the same run with the same skill versions.
                coalesce((select p.skill_pin from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb),
-               -- And its visibility decision (BEL-286), for the same reason.
+               -- And its visibility decision, for the same reason.
                coalesce((select p.skill_hidden from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb)
         returning id
     `;
@@ -388,7 +388,7 @@ export function hasRunningMember(members: { status: JobStatus }[]): boolean {
 
 /**
  * The Stop statement over the live rows `where` selects (a fragment over the `job` table), shared
- * by a member's Stop of one row and the cancellation of a caller's reviews (issue #549) — one
+ * by a member's Stop of one row and the cancellation of a caller's reviews — one
  * rule for what a stop does to a queued, a leased and an expired-lease row. `stopJob` explains it.
  */
 export function stopRows(
@@ -431,7 +431,7 @@ export function stopRows(
             stopped_by = coalesce(stopped_by, ${stoppedBy})
         where org_id = ${orgId} and ${where}
           and status in ('queued','running')
-          -- An expired attempt that staged its conclusion is the board's to commit (issue #821).
+          -- An expired attempt that staged its conclusion is the board's to commit.
           and not (status = 'running' and lease_expires_at <= now() and ${stagedUnderLease(sql, 'job')})
         returning id, status, cancel_requested_at, root_job_id
     `;
@@ -439,7 +439,7 @@ export function stopRows(
 
 /**
  * Stops every live review of the given callers — what a caller's Stop, its verdict and its dead
- * retirement all do, so no review outlives the work it assessed (issue #549). A queued review
+ * retirement all do, so no review outlives the work it assessed. A queued review
  * settles `stopped`, a leased one is stamped and its heartbeat delivers the kill; one that already
  * ended is left alone, which is what makes a retried Stop change nothing.
  */
@@ -450,172 +450,6 @@ export async function stopReviewsOf(
 ): Promise<void> {
     if (callerIds.length === 0) return;
     await stopRows(sql, { ...stop, where: sql`review_of = any(${[...callerIds]}::uuid[])` });
-}
-
-/**
- * `markDone`'s second half, shared by every closure that frees a thread's tree (done, remove's
- * refusal-free sibling, the merge closure's settle points, issue #390): if this settle just made
- * the whole thread terminal, queue its worktree reclaim. The thread is one indexed read off the
- * root column (022), and the ROOT row carries the labels the reclaim is addressed by — the same
- * fields removeThread queues. Terminal only: a member still queued or running keeps the tree (its
- * own settle will reclaim); one member done is what makes the settle a THREAD's close and not one
- * turn's.
- */
-export async function queueReclaimIfThreadDone(tx: TransactionSql, orgId: string, rootJobId: string): Promise<void> {
-    const [thread] = await tx<{ total: number; terminal: number }[]>`
-        select count(*)::int as total,
-               count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal
-        from job
-        where org_id = ${orgId} and root_job_id = ${rootJobId}
-    `;
-    if (!thread || thread.total === 0 || thread.total !== thread.terminal) return;
-
-    const { repo, workspacePath } = await reclaimTarget(tx, orgId, rootJobId);
-    // Idempotent against a row already queued (an earlier done, or a concurrent one): one tree,
-    // one reclaim. The claim-ack cycle removes the row; until then a duplicate insert would only
-    // re-offer an already-removed tree, so the guard is tidiness, not correctness.
-    await tx`
-        insert into task_reclaim (org_id, root_job_id, repo, workspace_path)
-        select ${orgId}, ${rootJobId}, ${repo}, ${workspacePath}
-        where not exists (
-            select 1 from task_reclaim
-            where org_id = ${orgId} and root_job_id = ${rootJobId}
-        )
-    `;
-}
-
-/** The labels a thread's reclaim row is addressed by, read off its ROOT row. */
-async function reclaimTarget(
-    tx: TransactionSql,
-    orgId: string,
-    rootJobId: string
-): Promise<{ repo: string | null; workspacePath: string | null }> {
-    const [root] = await tx<{ repo: string | null; created_by: string | null }[]>`
-        select repo, created_by from job
-        where org_id = ${orgId} and id = ${rootJobId}
-    `;
-    return {
-        repo: root?.repo ?? null,
-        workspacePath: workspacePathFor(orgId, root?.created_by ?? null),
-    };
-}
-
-/**
- * How long the completing worker holds the verdict-time reclaim before the queue offers it again
- * (issue #821). The verdict carries no lease length of its own; a replayed verdict re-checks the
- * row (`liveVerdictReclaim`), so a retry outliving this lease never orders a withdrawn removal.
- */
-export const VERDICT_RECLAIM_LEASE_SECONDS = 300;
-
-/**
- * A threadDone verdict's worktree reclaim (issue #821): a `task_reclaim` row owned by the
- * completing attempt — its lease token is the row's `claim_token` (075), already unique per claim
- * and the token the driver holds the checkout under — in the verdict's transaction, so the order
- * survives a driver that dies before the removal and the `worktree_reclaimed_at` marker follows
- * the ack, never the order. A row
- * already queued for the root (the merge closure's inline settle, an earlier done) is taken over
- * rather than duplicated, and any other unclaimed copy withdrawn: one tree, one work order. A row
- * another worker holds a LIVE claim on is mid-removal right now — its ack finishes it, and this
- * answers null. `skip locked`: a row a concurrent queue claim is taking reads as live. Under the
- * per-root lock reopen takes, re-reading the done stamp: a reopen that committed first wins, and
- * one that waits sees the claimed row and answers `reclaiming`.
- */
-export async function issueVerdictReclaim(
-    tx: TransactionSql,
-    { orgId }: { orgId: string },
-    rootJobId: string,
-    { worker, leaseToken }: { worker: string | null; leaseToken: string }
-): Promise<string | null> {
-    await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
-    const done = await tx`
-        select 1 from job where org_id = ${orgId} and root_job_id = ${rootJobId} and done_at is not null limit 1
-    `;
-    if (done.length === 0) return null;
-    const lease = tx`now() + make_interval(secs => ${VERDICT_RECLAIM_LEASE_SECONDS}::int)`;
-    const [taken] = await tx<{ id: string }[]>`
-        update task_reclaim set claimed_by = ${worker}, claim_token = ${leaseToken}, lease_expires_at = ${lease}
-        where id = (
-            select id from task_reclaim
-            where org_id = ${orgId} and root_job_id = ${rootJobId}
-              and (claim_token is null or lease_expires_at <= now())
-            order by created_at, id
-            limit 1
-            for update skip locked
-        )
-        returning id
-    `;
-    if (taken) {
-        await tx`
-            delete from task_reclaim
-            where org_id = ${orgId} and root_job_id = ${rootJobId} and id <> ${taken.id}
-              and claim_token is null
-        `;
-        return taken.id;
-    }
-    const live = await tx`select 1 from task_reclaim where org_id = ${orgId} and root_job_id = ${rootJobId}`;
-    if (live.length > 0) return null;
-    const { repo, workspacePath } = await reclaimTarget(tx, orgId, rootJobId);
-    const [inserted] = await tx<{ id: string }[]>`
-        insert into task_reclaim (org_id, root_job_id, repo, workspace_path, claimed_by, claim_token, lease_expires_at)
-        values (${orgId}, ${rootJobId}, ${repo}, ${workspacePath}, ${worker}, ${leaseToken}, ${lease})
-        returning id
-    `;
-    return inserted!.id;
-}
-
-/**
- * Whether a verdict's reclaim order is still the completing attempt's to carry out: the row is
- * queued, still owned by that attempt's lease token, and its lease is live. An acked, lapsed or
- * re-acquired row answers false.
- */
-export async function liveVerdictReclaim(
-    tx: TransactionSql,
-    orgId: string,
-    leaseToken: string,
-    reclaimId: string
-): Promise<boolean> {
-    const rows = await tx`
-        select 1 from task_reclaim
-        where org_id = ${orgId} and id = ${reclaimId}
-          and claim_token = ${leaseToken} and lease_expires_at > now()
-    `;
-    return rows.length > 0;
-}
-
-/**
- * The wall-clock banking, shared by every settle point that ends (or supersedes) an executed
- * segment: add the segment `started_at → now()` to what the row has banked. Used inside
- * transactions, like the claim's sameThreadRunning fragment. The SET expression reads the
- * PRE-update row, so it composes beside `started_at = now()` in the claim — the superseded
- * segment is banked in the same statement that resets the stamp, which is the only moment it
- * can be. `greatest` ignores nulls, so a row that never started measures zero, and a clock never
- * runs backwards.
- *
- * The segment is banked less the time it spent waiting for an answer (issue 738): the segment's
- * own questions (its `lease_token`), each clipped to `started_at → now()` — a question still
- * pending waits up to the settle — and merged where they overlap, since the run waits while ANY
- * question is pending (`driver/src/run-deadline.ts`).
- */
-export function wallTickFragment(sql: Sql): Fragment {
-    return sql`coalesce(wall_clock_ms, 0) + greatest(0,
-        (extract(epoch from (now() - started_at)) * 1000)::bigint - (
-            select coalesce((extract(epoch from sum(e - s)) * 1000)::bigint, 0) from (
-                select min(s) as s, max(e) as e from (
-                    select s, e, sum(fresh) over (order by s, e rows unbounded preceding) as island from (
-                        select s, e, case when s <= max(e) over (order by s, e rows between unbounded preceding
-                                                                 and 1 preceding) then 0 else 1 end as fresh
-                        from (
-                            select greatest(q.asked_at, job.started_at) as s,
-                                   least(coalesce(q.answered_at, now()), now()) as e
-                            from job_question q
-                            where q.org_id = job.org_id and q.job_id = job.id and q.lease_token = job.lease_token
-                        ) waits
-                        where e > s
-                    ) flagged
-                ) islands
-                group by island
-            ) merged
-        ))`;
 }
 
 // The authorship joins, shared by get/thread/list: created_by, stopped_by and done_by resolve to
@@ -661,7 +495,7 @@ export function waitLateralFragment(sql: Sql, orgId: string): Fragment {
 }
 
 /**
- * The thread's publication (036, #324), joined by both detail reads (`get`, `thread`). A lateral
+ * The thread's publication (036), joined by both detail reads (`get`, `thread`). A lateral
  * subselect, the `wl` wait lateral's exact shape: the aliased outputs keep the outer query's bare
  * `repo`/`root_job_id` unambiguous, and the primary key `(org_id, root_job_id)` guarantees one
  * row at most, so the join cannot multiply the job rows. Parameter-free on the org side —
@@ -731,7 +565,7 @@ export async function backsBatchTask(tx: TransactionSql, orgId: string, rootJobI
 }
 
 /**
- * Whether the named job's thread backs a batch task while `BATCHES_ENABLED` is off (BEL-264): the batch
+ * Whether the named job's thread backs a batch task while `BATCHES_ENABLED` is off: the batch
  * is hidden then, so a retry or follow-up on its thread (a new job on the batch's task) is refused. A job
  * outside a batch, a missing job, and every job with the flag on are not hidden.
  */
