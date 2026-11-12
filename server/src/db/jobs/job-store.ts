@@ -72,12 +72,11 @@ import { readPhaseCheckpoints, writePhaseCheckpoint } from './job-store-phase-ch
 
 /**
  * The worker-report method bindings — the claim-to-verdict half of the store. Split out of
- * `createJobStore` purely so that factory stays under its line budget; the gate (the migrations
- * wait) closes over the same way.
+ * `createJobStore` purely so that factory stays under its line budget. The gate (the migrations wait) is not
+ * here: `gated` wraps the whole store once.
  */
 function workerMethods(
-    ctx: JobStoreContext,
-    gate: () => Promise<void>
+    ctx: JobStoreContext
 ): Pick<
     JobStore,
     | 'claim'
@@ -106,117 +105,94 @@ function workerMethods(
 > {
     return {
         async claim(worker, leaseSeconds, options) {
-            await gate();
             return claimJob(ctx, worker, leaseSeconds, options);
         },
 
         async demand() {
-            await gate();
             return orgDemand(ctx.sql, ctx.orgId);
         },
 
         async heartbeat(id, leaseToken, leaseSeconds) {
-            await gate();
             return heartbeatJob(ctx, id, leaseToken, leaseSeconds);
         },
 
         async requireConnection(id, leaseToken, provider, target) {
-            await gate();
             return requireConnectionRow(ctx.sql, { orgId: ctx.orgId, id, leaseToken, provider, target });
         },
 
         async session(id, leaseToken, sessionId, evidence) {
-            await gate();
             return sessionReport(ctx, id, leaseToken, { ...evidence, sessionId });
         },
 
         async progress(id, leaseToken, output, runtime: RuntimeVitals | null = null) {
-            await gate();
             return progressReport(ctx, id, leaseToken, { output, runtime });
         },
 
         async gates(id, leaseToken, results) {
-            await gate();
             return gatesReport(ctx, id, leaseToken, results);
         },
 
         async askQuestion(id, leaseToken, ask) {
-            await gate();
             return askQuestionReport(ctx, id, leaseToken, ask);
         },
 
         async requestReview(id, leaseToken, request) {
-            await gate();
             return requestReviewFor(ctx, id, leaseToken, request);
         },
 
         async readReview(id, leaseToken, key) {
-            await gate();
             return readReviewFor(ctx, id, leaseToken, key);
         },
 
         async complete(id, leaseToken, result) {
-            await gate();
             return completeJob(ctx, id, leaseToken, result);
         },
 
         async stageConclusion(id, leaseToken, result, leaseSeconds) {
-            await gate();
             return stageConclusion(ctx, { id, leaseToken }, result, leaseSeconds);
         },
 
         async writePhaseCheckpoint(id, leaseToken, checkpoint) {
-            await gate();
             return writePhaseCheckpoint(ctx, { id, leaseToken }, checkpoint);
         },
 
         async readPhaseCheckpoints(id, leaseToken, runClaimSeq) {
-            await gate();
             return readPhaseCheckpoints(ctx, { id, leaseToken }, runClaimSeq);
         },
 
         async writeGateRun(id, leaseToken, run) {
-            await gate();
             return writeGateRun(ctx, { id, leaseToken }, run);
         },
 
         async readGateRuns(id, leaseToken) {
-            await gate();
             return readGateRuns(ctx, { id, leaseToken });
         },
 
         async writePrOperation(id, leaseToken, operation) {
-            await gate();
             return writePrOperation(ctx, { id, leaseToken }, operation);
         },
 
         async ingestTranscriptTools(id, input) {
-            await gate();
             return ingestTranscriptTools(ctx, id, input);
         },
 
         async leases(ids, withThreads) {
-            await gate();
             return leasesOf(ctx, ids, withThreads);
         },
 
         async artifactScope(id) {
-            await gate();
             return artifactScopeOf(ctx, id);
         },
 
         async restoreScope(id, leaseToken) {
-            await gate();
             return restoreScopeOf(ctx, id, leaseToken);
         },
 
         async attachmentSet(id, leaseToken) {
-            await gate();
             return attachmentSetOf(ctx, id, leaseToken);
         },
 
         async skillPin(id, leaseToken) {
-            await gate();
             return skillPinOf(ctx, id, leaseToken);
         },
     };
@@ -273,21 +249,37 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         batches,
     };
 
-    return jobStoreMethods(ctx, gate);
+    return gated(gate, jobStoreMethods(ctx));
+}
+
+type StoreMethod = (...args: never[]) => Promise<unknown>;
+
+/**
+ * The store with every method waiting for the migrations (`ready`) first. One wrapper over the typed store, so a new
+ * method can never forget the wait: every `JobStore` member is an async method.
+ */
+function gated(gate: () => Promise<void>, store: JobStore): JobStore {
+    const wrapped: Record<string, StoreMethod> = {};
+    for (const [name, method] of Object.entries(store) as [string, StoreMethod][]) {
+        wrapped[name] = async (...args) => {
+            await gate();
+            return method(...args);
+        };
+    }
+    return wrapped as unknown as JobStore;
 }
 
 /**
  * The store's methods, delegating one-to-one to the free functions the sibling job-store-*.ts
  * files own (the header's map). Split from `createJobStore` so the factory stays thin: the
- * context and the ready-gate are closed over here, and a new method is one more entry in this
+ * context is closed over here, and a new method is one more entry in this
  * literal, never a line against the function-length ceiling.
  */
-function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobStore {
+function jobStoreMethods(ctx: JobStoreContext): JobStore {
     return {
-        ...workerMethods(ctx, gate),
+        ...workerMethods(ctx),
 
         async create(command, createdBy, target) {
-            await gate();
             return createTitledJob(ctx, command, createdBy, target);
         },
 
@@ -297,7 +289,6 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
                 JobStore['createFollowUp']
             >
         ) {
-            await gate();
             if (await batchThreadHidden(ctx, parentId)) return 'batches_disabled';
             return createFollowUpRow(ctx.sql, {
                 orgId: ctx.orgId,
@@ -313,127 +304,102 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         },
 
         async bindConnection(id, input, userId) {
-            await gate();
             return bindConnectionRow(ctx.sql, { orgId: ctx.orgId, id, userId, ...input });
         },
 
         async dismissRequirement(id, provider, userId) {
-            await gate();
             return dismissRequirementRow(ctx.sql, { orgId: ctx.orgId, id, provider, userId });
         },
 
         async createRetry(id, createdBy, idempotency, admin) {
-            await gate();
             if (await batchThreadHidden(ctx, id)) return 'batches_disabled';
             return createRetryRow(ctx.sql, { orgId: ctx.orgId, id, createdBy, idempotency, admin });
         },
 
         async editCommand(id, command, caller) {
-            await gate();
             return editJobCommand(ctx, id, command, caller);
         },
 
         async renameTask(id, rename) {
-            await gate();
             return renameTaskRow(ctx, id, rename);
         },
 
         async markDone(id, doneBy) {
-            await gate();
             return markJobDone(ctx, id, doneBy);
         },
 
         async closeMergedPr(repo, prNumber, deliveryId, mergedAt) {
-            await gate();
             return closeMergedPr(ctx, repo, prNumber, { deliveryId, ...(mergedAt ? { mergedAt } : {}) });
         },
 
         async answerQuestion(id, questionId, answers, answeredBy) {
-            await gate();
             return answerQuestionBy(ctx, { id, questionId, answers, answeredBy });
         },
 
         async stop(id, stoppedBy) {
-            await gate();
             return stopJob(ctx, id, stoppedBy);
         },
 
         async interrupt(id, leaseToken, interruption) {
-            await gate();
             return interruptJob(ctx, id, leaseToken, interruption);
         },
         async suspend(id, leaseToken) {
-            await gate();
             return suspendJob(ctx, id, leaseToken);
         },
 
         async removeThread(id, removedBy) {
-            await gate();
             return removeJobThread(ctx, id, removedBy);
         },
 
         async cancelWait(id, cancelledBy, admin) {
-            await gate();
             return cancelThreadWait(ctx, id, cancelledBy, admin);
         },
 
         async pokeWait(id, pokedBy, admin) {
-            await gate();
             return pokeThreadWait(ctx, id, pokedBy, admin);
         },
 
         async reopen(id) {
-            await gate();
             return reopenJob(ctx, id);
         },
 
         async claimReclaim(worker, leaseSeconds) {
-            await gate();
             return claimReclaimRow(ctx, worker, leaseSeconds);
         },
 
         async ackReclaim(id, token) {
-            await gate();
             return ackReclaimRow(ctx, id, token);
         },
 
         async renewReclaim(id, token, leaseSeconds) {
-            await gate();
             return renewReclaimRow(ctx, id, token, leaseSeconds);
         },
 
         async thread(id) {
-            await gate();
             return threadOf(ctx, id);
         },
 
         async get(id) {
-            await gate();
             return getJob(ctx, id);
         },
 
         async taskJobIds(id) {
-            await gate();
             return taskJobIdsOf(ctx, id);
         },
 
         async activityRecords(jobIds) {
-            await gate();
             return activityRecordsOf(ctx, jobIds);
         },
 
         async waitForSettle(id, timeoutMs, signal) {
-            await gate();
             return waitForSettleOf(ctx, id, timeoutMs, signal);
         },
 
         async list(filter) {
-            await gate();
             return listJobs(ctx, filter);
         },
 
         async listTasks(filters) {
-            await gate();
             return listTasksOf(ctx, filters);
         },
     };
