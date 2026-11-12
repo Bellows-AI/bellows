@@ -1,5 +1,5 @@
 /**
- * Reusable skills (issue #545): the `docker/skills/<name>/SKILL.md` files both executor images
+ * Reusable skills: the `docker/skills/<name>/SKILL.md` files both executor images
  * bake. A task selects skills by name; a skill declares the tools and connections it needs in its
  * frontmatter `metadata:` block, and the board checks them at claim time. A skill is instructions
  * plus a declaration — loading one never grants access, and nothing here reads an env VALUE.

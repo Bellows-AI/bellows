@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * The schema guards that used to live as a comment header copied into every migration (#371).
+ * The schema guards that used to live as a comment header copied into every migration.
  * A header asks; this asserts — and `npm run test:db` is not in CI, so an offline suite is the
  * only place a stray `create extension` is caught before it reaches a managed PostgreSQL that
  * has none installed.
