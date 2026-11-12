@@ -21,7 +21,14 @@ export interface Refusal {
  * has no room for a code take `.error` alone; the rest spread the whole object.
  */
 export async function refusalOf(response: Response, verb = 'Request failed'): Promise<Refusal> {
-    const body = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
-    const error = body.error ?? `${verb} (${response.status})`;
+    return refusalFrom((await response.json().catch(() => ({}))) as RefusalBody, response.status, verb);
+}
+
+/** The refusal body shape: the sentence and code, plus whatever extra fields the route added. */
+export type RefusalBody = { error?: string; code?: string; [field: string]: unknown };
+
+/** {@link refusalOf} for a body the caller already read (it needs the extra fields too). */
+export function refusalFrom(body: RefusalBody, status: number, verb = 'Request failed'): Refusal {
+    const error = body.error ?? `${verb} (${status})`;
     return body.code ? { error, code: body.code } : { error };
 }

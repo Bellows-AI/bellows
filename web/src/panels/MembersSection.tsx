@@ -1,7 +1,8 @@
 import { ADMIN_ROLE, type Role } from '@factory-ai/core';
 import { useCallback, useEffect, useState } from 'react';
 import { listMembers, setMemberRole, type MemberView } from '../api/orgMembers.js';
-import { reportUnauthenticated, type Session } from '../api/useSession.js';
+import { reportUnauthenticated } from '../api/unauthenticated.js';
+import type { Session } from '../api/useSession.js';
 import { MembersPanel } from './MembersPanel.js';
 
 /**

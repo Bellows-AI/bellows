@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 export interface InstallationRepo {
     owner: string;
@@ -56,24 +55,17 @@ export function useRepos(enabled: boolean): UseRepos {
 
     const load = useCallback(async (signal: AbortSignal) => {
         setLoading(true);
-        try {
-            const response = await fetch('/api/repos', { signal });
-            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                reportUnauthenticated();
-                return;
-            }
-            if (!response.ok) {
-                setError((await refusalOf(response)).error);
-                return;
-            }
-            setData((await response.json()) as ReposPayload);
+        const result = await request<ReposPayload>('/api/repos', { signal });
+        // An unmounted or superseded read leaves state alone: the effect that replaced it owns it.
+        if (result.aborted) return;
+        // A 401 went to the gate, which swaps the tree: nothing to render for it.
+        if (!result.ok) {
+            if (!result.unauthenticated) setError(result.error);
+        } else {
+            setData(result.value);
             setError(null);
-        } catch (e) {
-            if (signal.aborted) return;
-            setError((e as Error).message);
-        } finally {
-            setLoading(false);
         }
+        setLoading(false);
     }, []);
 
     useEffect(() => {

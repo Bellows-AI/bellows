@@ -1,11 +1,5 @@
-import {
-    isSendResult,
-    JSON_HEADERS,
-    NOTIFICATION_KINDS,
-    type NotificationKind,
-    type SendResult,
-} from '@factory-ai/core';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { isSendResult, NOTIFICATION_KINDS, type NotificationKind, type SendResult } from '@factory-ai/core';
+import { request, type RequestOptions } from './request.js';
 
 /**
  * The notification subscriptions' client half, for both scopes: the organization's rows
@@ -56,8 +50,6 @@ const CHANNEL_LABELS: Record<string, string> = { discord: 'Discord' };
 /** A channel kind as a person reads it; a kind the SPA has no name for reads as sent. */
 export const channelLabel = (kind: string): string => CHANNEL_LABELS[kind] ?? kind;
 
-const SESSION_EXPIRED = 'Your session expired';
-
 const isStringArray = (value: unknown): value is string[] =>
     Array.isArray(value) && value.every((item) => typeof item === 'string');
 
@@ -77,32 +69,21 @@ const isSubscriptionView = (row: unknown): row is SubscriptionView => {
 };
 
 /**
- * A failed response's one sentence: the route's message, with the connector's `problems` joined
- * on (a 400 for a refused webhook URL names what was wrong), else the caller's fallback and the status.
+ * The ONE read/write shell of this file: a failure's sentence is the route's message with the
+ * connector's `problems` joined on (a 400 for a refused webhook URL names what was wrong).
  */
-async function refusalMessage(response: Response, verb: string): Promise<string> {
-    const body = (await response.json().catch(() => ({}))) as { error?: unknown; problems?: unknown };
-    const error = typeof body.error === 'string' ? body.error : `${verb} (${response.status})`;
-    return isStringArray(body.problems) && body.problems.length > 0 ? `${error}: ${body.problems.join('; ')}` : error;
-}
-
-/** Fetches; a 401 is broadcast and answered as the session sentence, any other failure as its refusal sentence. */
-async function call(
+async function call<T>(
     url: string,
-    init: RequestInit | undefined,
-    verb: string
-): Promise<{ ok: true; response: Response } | { ok: false; error: string }> {
-    try {
-        const response = await fetch(url, init);
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false, error: SESSION_EXPIRED };
-        }
-        if (!response.ok) return { ok: false, error: await refusalMessage(response, verb) };
-        return { ok: true, response };
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+    init: RequestOptions<T> & { verb: string }
+): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+    const result = await request<T>(url, init);
+    if (result.ok) return result;
+    const problems = result.body?.problems;
+    return {
+        ok: false,
+        error:
+            isStringArray(problems) && problems.length > 0 ? `${result.error}: ${problems.join('; ')}` : result.error,
+    };
 }
 
 /** The scope's rows and the channel kinds this board can send through, or the refusal's message. */
@@ -111,33 +92,30 @@ export const listSubscriptions = async (
 ): Promise<
     { ok: true; subscriptions: SubscriptionView[]; connectorKinds: string[] } | { ok: false; error: string }
 > => {
-    const got = await call(BASE[scope], undefined, 'Could not load the notifications');
-    if (!got.ok) return got;
-    try {
-        const body = (await got.response.json()) as { subscriptions?: unknown; connectorKinds?: unknown };
-        const { subscriptions, connectorKinds } = body;
-        if (
-            !Array.isArray(subscriptions) ||
-            !subscriptions.every(isSubscriptionView) ||
-            !isStringArray(connectorKinds)
-        ) {
-            return { ok: false, error: 'Could not load the notifications: unexpected response shape.' };
-        }
-        return { ok: true, subscriptions, connectorKinds };
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+    const got = await call<{ subscriptions: SubscriptionView[]; connectorKinds: string[] }>(BASE[scope], {
+        verb: 'Could not load the notifications',
+        guard: (body): body is { subscriptions: SubscriptionView[]; connectorKinds: string[] } => {
+            const { subscriptions, connectorKinds } = (body ?? {}) as {
+                subscriptions?: unknown;
+                connectorKinds?: unknown;
+            };
+            return (
+                Array.isArray(subscriptions) && subscriptions.every(isSubscriptionView) && isStringArray(connectorKinds)
+            );
+        },
+        malformed: 'Could not load the notifications: unexpected response shape.',
+    });
+    return got.ok ? { ok: true, ...got.value } : got;
 };
 
-const write = async (url: string, init: RequestInit, verb: string): Promise<string | null> => {
-    const done = await call(url, init, verb);
+const write = async (url: string, init: RequestOptions<undefined>, verb: string): Promise<string | null> => {
+    const done = await call(url, { ...init, verb, empty: true });
     return done.ok ? null : done.error;
 };
 
-const jsonBody = (method: 'POST' | 'PUT', input: SubscriptionInput): RequestInit => ({
+const jsonBody = (method: 'POST' | 'PUT', input: SubscriptionInput): RequestOptions<undefined> => ({
     method,
-    headers: JSON_HEADERS,
-    body: JSON.stringify(input),
+    body: input,
 });
 
 /** Returns the refusal's message, or null when the subscription is saved. */
@@ -161,21 +139,13 @@ export const sendTestNotification = async (
     scope: SubscriptionScope,
     id: string
 ): Promise<{ ok: true; result: SendResult } | { ok: false; error: string }> => {
-    const got = await call(
-        `${BASE[scope]}/${encodeURIComponent(id)}/test`,
-        { method: 'POST' },
-        'Could not send the test notification'
-    );
-    if (!got.ok) return got;
-    try {
-        const { result } = (await got.response.json()) as { result?: unknown };
-        if (!isSendResult(result)) {
-            return { ok: false, error: 'Could not send the test notification: unexpected response.' };
-        }
-        return { ok: true, result };
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+    const got = await call<{ result: SendResult }>(`${BASE[scope]}/${encodeURIComponent(id)}/test`, {
+        method: 'POST',
+        verb: 'Could not send the test notification',
+        guard: (body): body is { result: SendResult } => isSendResult((body as { result?: unknown } | null)?.result),
+        malformed: 'Could not send the test notification: unexpected response.',
+    });
+    return got.ok ? { ok: true, result: got.value.result } : got;
 };
 
 const SECOND_MS = 1000;

@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { mutate } from './mutate.js';
 import { useResource } from './useResource.js';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 import type { WorkflowParamChoice } from '../task-composer.js';
 
 /**
@@ -70,26 +69,20 @@ export function useWorkflows(repo: string | null): UseWorkflows {
         const ack = new AbortController();
         controller.current = ack;
         const url = repo === null ? '/api/workflows' : `/api/workflows?repo=${encodeURIComponent(repo)}`;
-        // Explicitly discarded: the body catches everything it can answer for, and an effect
-        // cannot await. The `void` is what says so rather than leaving a floating promise.
-        void (async () => {
-            try {
-                const response = await fetch(url, { signal: ack.signal });
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    reportUnauthenticated();
-                    return;
-                }
-                if (!response.ok) {
-                    setError((await refusalOf(response, 'Could not load the workflows')).error);
-                    return;
-                }
-                const body = (await response.json()) as { workflows?: WorkflowChoice[] };
-                setAnswer({ repo, workflows: body.workflows ?? [] });
-                setError(null);
-            } catch {
-                // Aborted on repo change or unmount — the newer fetch answers instead.
+        // Explicitly discarded: an effect cannot await. The `void` says so rather than leaving a floating promise.
+        void request<{ workflows?: WorkflowChoice[] }>(url, {
+            signal: ack.signal,
+            verb: 'Could not load the workflows',
+        }).then((result) => {
+            // Aborted on repo change or unmount (the newer fetch answers instead), or a 401 for the gate.
+            if (result.aborted || result.unauthenticated) return;
+            if (!result.ok) {
+                setError(result.error);
+                return;
             }
-        })();
+            setAnswer({ repo, workflows: result.value.workflows ?? [] });
+            setError(null);
+        });
         return () => ack.abort();
     }, [repo, nonce]);
 
@@ -113,7 +106,7 @@ export interface WorkflowDetailView extends WorkflowSummaryView {
     definition: unknown;
 }
 
-const readRecord = async (response: Response) => (await response.json()) as WorkflowDetailView;
+const readRecord = (body: unknown) => body as WorkflowDetailView;
 
 /** A read or write that named its own refusal, `code` included — the panel renders `code: error`
  * so a validator refusal (UNKNOWN_KEY, NO_PUBLISH_PATH, …) is diagnosable, not just a sentence. */
@@ -147,17 +140,10 @@ export function useWorkflowsManagement(): UseWorkflowsManagement {
     const { data: workflows, loading, error, refresh } = useResource('/api/workflows', selectWorkflows);
 
     const fetchOne = useCallback(async (id: string): Promise<WorkflowResult> => {
-        try {
-            const response = await fetch(`/api/workflows/${id}`);
-            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                reportUnauthenticated();
-                return { ok: false, error: 'Your session expired' };
-            }
-            if (!response.ok) return { ok: false, ...(await refusalOf(response)) };
-            return { ok: true, record: (await response.json()) as WorkflowDetailView };
-        } catch (e) {
-            return { ok: false, error: (e as Error).message };
-        }
+        const result = await request<WorkflowDetailView>(`/api/workflows/${id}`);
+        return result.ok
+            ? { ok: true, record: result.value }
+            : { ok: false, error: result.error, ...(result.code ? { code: result.code } : {}) };
     }, []);
 
     const create = useCallback(

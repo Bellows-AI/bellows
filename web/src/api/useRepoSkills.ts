@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SlashSkill } from '../slash-skills.js';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 export interface UseRepoSkills {
     status: 'idle' | 'loading' | 'ready' | 'error';
@@ -52,15 +51,15 @@ async function readSkills(
         query.set('executorScope', executor.scope);
     }
     const suffix = query.size > 0 ? `?${query.toString()}` : '';
-    const response = await fetch(`/api/repos/${repo}/skills${suffix}`, { signal });
-    if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-        reportUnauthenticated();
-        throw new Error('Your session expired');
-    }
-    if (!response.ok) throw new Error((await refusalOf(response, 'Could not list skills')).error);
-    const body = (await response.json()) as Partial<SkillsBody>;
-    if (!Array.isArray(body.skills)) throw new Error('Could not list skills (unexpected answer)');
-    return { skills: body.skills, repoError: body.repoError ?? null, unreadable: body.unreadable ?? [] };
+    const result = await request<Partial<SkillsBody>>(`/api/repos/${repo}/skills${suffix}`, {
+        signal,
+        verb: 'Could not list skills',
+        guard: (body): body is Partial<SkillsBody> => Array.isArray((body as Partial<SkillsBody> | null)?.skills),
+        malformed: 'Could not list skills (unexpected answer)',
+    });
+    if (!result.ok) throw new Error(result.error);
+    const body = result.value;
+    return { skills: body.skills!, repoError: body.repoError ?? null, unreadable: body.unreadable ?? [] };
 }
 
 /**

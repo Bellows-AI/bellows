@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 /**
  * Whether this deployment can connect each provider, from `GET /api/integrations` (booleans only). `loading` until
@@ -24,15 +24,10 @@ const parse = (body: unknown): Record<string, boolean> | null => {
 };
 
 const read = async (): Promise<UseIntegrationConfig> => {
-    try {
-        const response = await fetch('/api/integrations');
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) reportUnauthenticated();
-        if (!response.ok) return { state: 'error' };
-        const configured = parse(await response.json());
-        return configured ? { state: 'ok', configured } : { state: 'error' };
-    } catch {
-        return { state: 'error' };
-    }
+    const result = await request<object>('/api/integrations', {
+        guard: (body): body is object => parse(body) !== null,
+    });
+    return result.ok ? { state: 'ok', configured: parse(result.value) ?? {} } : { state: 'error' };
 };
 
 /** One read per mount; `retry` asks again after a failure. */

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listExecutorConfigs } from '../src/api/useWorkspace.js';
-import { subscribeUnauthenticated } from '../src/api/useSession.js';
+import { subscribeUnauthenticated } from '../src/api/unauthenticated.js';
 
 /**
  * The one on-demand executor read, pinned at the wire (#183): the dialog is its only caller, and

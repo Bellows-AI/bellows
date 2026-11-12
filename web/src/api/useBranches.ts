@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 /** The pause after the last keystroke before the search goes out. */
 export const BRANCH_SEARCH_DEBOUNCE_MS = 300;
@@ -58,15 +57,15 @@ async function readPage(repo: string, query: string, cursor: string | null, sign
     if (query !== '') params.set('q', query);
     if (cursor !== null) params.set('cursor', cursor);
     const suffix = params.size > 0 ? `?${params.toString()}` : '';
-    const response = await fetch(`/api/repos/${repo}/branches${suffix}`, { signal });
-    if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-        reportUnauthenticated();
-        throw new Error('Your session expired');
-    }
-    if (!response.ok) throw new Error((await refusalOf(response, 'Could not list branches')).error);
-    const body = (await response.json()) as Partial<BranchPage>;
-    if (!Array.isArray(body.branches)) throw new Error('Could not list branches (unexpected answer)');
-    return { branches: body.branches, cursor: body.cursor ?? null, defaultBranch: body.defaultBranch ?? null };
+    const result = await request<Partial<BranchPage>>(`/api/repos/${repo}/branches${suffix}`, {
+        signal,
+        verb: 'Could not list branches',
+        guard: (body): body is Partial<BranchPage> => Array.isArray((body as Partial<BranchPage> | null)?.branches),
+        malformed: 'Could not list branches (unexpected answer)',
+    });
+    if (!result.ok) throw new Error(result.error);
+    const body = result.value;
+    return { branches: body.branches!, cursor: body.cursor ?? null, defaultBranch: body.defaultBranch ?? null };
 }
 
 /** The value, after it has held still for `ms`; an empty value goes through at once. */
