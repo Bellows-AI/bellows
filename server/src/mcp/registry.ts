@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { SCOPE_OF_CLASS, classOf, type Scope } from '../auth/route-class.js';
 import type { Caller } from '../auth/store.js';
 import type { Bridge, BridgeRequest } from './bridge.js';
-import { abortableSleep } from './bounded-wait.js';
+import { abortableSleep } from '../abortable-sleep.js';
 import { mapResult, refusal, inconclusive, type Tagged, type ToolOutcome } from './result.js';
 import { secondsSince } from '../prometheus.js';
 import type { Tool, ToolContext } from './tool.js';

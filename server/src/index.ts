@@ -1,3 +1,4 @@
+import { closeOnSignal } from './shutdown.js';
 import { start } from './main.js';
 
 /*
@@ -5,4 +6,5 @@ import { start } from './main.js';
  * `process.env` and passing no override can only ever yield `github.mode === 'app'` — see
  * start()'s doc comment in main.ts for the shape of the pair with offline.ts.
  */
-await start();
+const { close } = await start();
+closeOnSignal(close);

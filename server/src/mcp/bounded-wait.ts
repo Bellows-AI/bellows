@@ -17,19 +17,6 @@ export const WAIT_PACE_S = 5;
 /** The pause after a poll that answered without holding: one pace, never longer than the hold it stands in for. */
 export const paceMs = (holdSeconds: number): number => Math.min(WAIT_PACE_S, holdSeconds) * MS_PER_SECOND;
 
-/** Sleeps `ms`, or less when `signal` aborts first; the caller's loop sees the abort. */
-export const abortableSleep = (ms: number, signal: AbortSignal): Promise<void> =>
-    new Promise((resolve) => {
-        if (signal.aborted) return resolve();
-        const done = () => {
-            clearTimeout(timer);
-            signal.removeEventListener('abort', done);
-            resolve();
-        };
-        const timer = setTimeout(done, ms);
-        signal.addEventListener('abort', done, { once: true });
-    });
-
 /** What one hold found. `open`: the thing is still moving. `stop`: the call is over with this answer. */
 export type Hold<T> =
     | { readonly kind: 'settled'; readonly value: T }

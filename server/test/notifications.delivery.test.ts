@@ -216,6 +216,7 @@ describe('startNotificationDelivery', () => {
             orgs: orgs as unknown as OrgRegistry,
             metrics: m,
             ready: Promise.resolve(),
+            track: (start) => void start(),
         });
         await vi.advanceTimersByTimeAsync(120_000);
 
@@ -235,6 +236,7 @@ describe('startNotificationDelivery', () => {
             orgs: orgs as unknown as OrgRegistry,
             metrics: m,
             ready: Promise.resolve(),
+            track: (start) => void start(),
         });
         await vi.advanceTimersByTimeAsync(120_000);
 
@@ -254,6 +256,7 @@ describe('startNotificationDelivery', () => {
             orgs: orgs as unknown as OrgRegistry,
             metrics: m,
             ready: Promise.resolve(),
+            track: (start) => void start(),
         });
         await vi.advanceTimersByTimeAsync(10);
 
@@ -278,6 +281,7 @@ describe('startNotificationDelivery', () => {
             orgs: orgs as unknown as OrgRegistry,
             metrics: m,
             ready: Promise.resolve(),
+            track: (start) => void start(),
         });
         await vi.advanceTimersByTimeAsync(10);
 

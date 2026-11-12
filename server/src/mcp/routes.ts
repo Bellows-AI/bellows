@@ -49,6 +49,23 @@ const jsonRpcError = (
     error: { id: string | number | null; code: number; message: string }
 ) => reply.code(status).send({ jsonrpc: '2.0', id: error.id, error: { code: error.code, message: error.message } });
 
+/**
+ * A board that is closing ends the call the way a client leaving would: a wait stops holding (the client calls
+ * again, on another replica), and a write in flight is reported inconclusive, never lost. The listener sits on a
+ * signal that outlives every request, so it is released as the reply closes.
+ */
+function abortWhenClosing(request: FastifyRequest, reply: FastifyReply, aborted: AbortController): void {
+    if (request.closing.aborted) {
+        aborted.abort();
+        return;
+    }
+    const onClosing = () => aborted.abort();
+    request.closing.addEventListener('abort', onClosing, { once: true });
+    const release = () => request.closing.removeEventListener('abort', onClosing);
+    if (reply.raw.destroyed || reply.raw.closed) release();
+    else reply.raw.once('close', release);
+}
+
 const webRequestOf = (request: FastifyRequest, origin: string, signal: AbortSignal): Request => {
     const headers = new Headers();
     for (const [name, value] of Object.entries(request.headers)) {
@@ -130,6 +147,7 @@ export async function mcpRoutes(
         });
         // 'close' may already have fired while the body was parsed; the listener above would never hear it.
         if (reply.raw.destroyed || reply.raw.closed) aborted.abort();
+        abortWhenClosing(request, reply, aborted);
         reply.hijack();
         try {
             const response = await handler.fetch(webRequestOf(request, origin, aborted.signal), {

@@ -60,6 +60,13 @@ const HTTP_NOT_FOUND = 404;
 const MS_PER_SECOND = 1000;
 const UNMATCHED_ROUTE = '<unmatched>';
 
+declare module 'fastify' {
+    interface FastifyRequest {
+        /** Aborted when the app begins to close: a long-poll answers its timeout-shaped result at once. */
+        readonly closing: AbortSignal;
+    }
+}
+
 export interface AppDeps {
     config: AppConfig;
     /**
@@ -324,6 +331,13 @@ export async function buildApp({
 }: AppDeps): Promise<FastifyInstance> {
     const app = Fastify({ logger });
     app.setErrorHandler(errorHandler);
+
+    // Aborted the moment `app.close()` begins, before it waits for the open requests: the long-polls (settle, batch
+    // settle, the MCP waits) read it as `request.closing` and answer at once instead of holding the close up to
+    // their timeout (docs/architecture.md, BEL-322).
+    const closing = new AbortController();
+    app.decorateRequest('closing', { getter: () => closing.signal });
+    app.addHook('preClose', async () => closing.abort());
 
     const header = csp(config.webRoot === null);
     app.addHook('onSend', async (_request, reply) => {

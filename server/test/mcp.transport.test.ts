@@ -495,6 +495,8 @@ describe('a client that disconnects', () => {
         let release!: () => void;
         const started = new Promise<void>((resolve) => (release = resolve));
         const app = track(Fastify());
+        // buildApp's decoration, which a bare instance lacks: the board is not closing.
+        app.decorateRequest('closing', { getter: () => new AbortController().signal });
         const store = memoryAuthStore();
         const caller = store.seedMember(ORG, 'octocat', 'admin');
         app.addHook('onRequest', async (request) => {

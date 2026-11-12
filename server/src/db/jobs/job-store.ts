@@ -424,9 +424,9 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return activityRecordsOf(ctx, jobIds);
         },
 
-        async waitForSettle(id, timeoutMs) {
+        async waitForSettle(id, timeoutMs, signal) {
             await gate();
-            return waitForSettleOf(ctx, id, timeoutMs);
+            return waitForSettleOf(ctx, id, timeoutMs, signal);
         },
 
         async list(filter) {
