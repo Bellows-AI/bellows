@@ -1,6 +1,7 @@
 import { tmpdir } from 'node:os';
-import { describe, expect, it, vi } from 'vitest';
-import Fastify, { type FastifyServerOptions } from 'fastify';
+import { describe, expect, it } from 'vitest';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { subscribe, unsubscribe } from 'node:diagnostics_channel';
 import { buildApp } from '../src/app.js';
 import { bridgedRequestClass } from '../src/auth/bridge-binding.js';
 import { requirementFor } from '../src/auth/plugin.js';
@@ -40,21 +41,6 @@ import {
     HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
-
-// Every instance Fastify creates records each route it is handed, so the full app's patterns can be read back.
-const registered = vi.hoisted(() => ({ urls: [] as string[], routes: [] as { method: string; url: string }[] }));
-vi.mock('fastify', async (importOriginal) => {
-    const original = await importOriginal<typeof import('fastify')>();
-    const wrapped = ((options?: FastifyServerOptions) => {
-        const instance = original.default(options);
-        instance.addHook('onRoute', (route) => {
-            registered.urls.push(route.url);
-            for (const method of [route.method].flat()) registered.routes.push({ method, url: route.url });
-        });
-        return instance;
-    }) as typeof original.default;
-    return { ...original, default: wrapped };
-});
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -419,8 +405,15 @@ describe('the route table', () => {
     // because its caller treats the answer as best-effort. Every route the job board registers
     // must be a decision recorded above.
     it('has a row for every route the full app registers', async () => {
-        registered.urls.length = 0;
-        registered.routes.length = 0;
+        // Fastify announces every instance it creates on a diagnostics channel, whichever module copy built it, so
+        // the route table is read without mocking `fastify` (a mock cannot reach an `app.ts` another file already bound).
+        const registered = { urls: [] as string[], routes: [] as { method: string; url: string }[] };
+        const watchInstance = (message: unknown) => {
+            (message as { fastify: FastifyInstance }).fastify.addHook('onRoute', (route) => {
+                registered.urls.push(route.url);
+                for (const method of [route.method].flat()) registered.routes.push({ method, url: route.url });
+            });
+        };
         const store = memoryAuthStore();
         const config = testConfig({
             auth: githubAuth(),
@@ -429,37 +422,46 @@ describe('the route table', () => {
             mcp: { enabled: true, resource: 'https://board.example.test/api/mcp', trustedOrigins: [] },
             commerce: { enabled: true, url: 'https://commerce.example/', token: 'commerce-token-0123456789abcdef-xyz' },
         });
-        const app = track(
-            await buildApp({
-                config,
-                orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
-                store: telemetryStoreStub(),
-                auth: store,
-                oauth: {} as OAuthStore,
-                uploadCapabilities: memoryUploadCapabilities().store,
-                commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
-                // The runner credential routes exist exactly when their per-call check does.
-                attemptOfLease: async () => ({ ok: false, pending: false }),
-                pairMatches: async () => ({ ok: false, pending: false }),
-                integrations: {
-                    flowOf: () => ({
-                        startAuthorization: async () => ({ ok: false as const, reason: 'unknown-provider' as const }),
-                        completeAuthorization: async () => ({
-                            ok: false as const,
-                            returnTo: '/',
-                            failure: 'state-mismatch' as const,
+        subscribe('fastify.initialization', watchInstance);
+        let app: FastifyInstance;
+        try {
+            app = track(
+                await buildApp({
+                    config,
+                    orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
+                    store: telemetryStoreStub(),
+                    auth: store,
+                    oauth: {} as OAuthStore,
+                    uploadCapabilities: memoryUploadCapabilities().store,
+                    commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
+                    // The runner credential routes exist exactly when their per-call check does.
+                    attemptOfLease: async () => ({ ok: false, pending: false }),
+                    pairMatches: async () => ({ ok: false, pending: false }),
+                    integrations: {
+                        flowOf: () => ({
+                            startAuthorization: async () => ({
+                                ok: false as const,
+                                reason: 'unknown-provider' as const,
+                            }),
+                            completeAuthorization: async () => ({
+                                ok: false as const,
+                                returnTo: '/',
+                                failure: 'state-mismatch' as const,
+                            }),
+                            recoverAuthorization: async () => 'idle' as const,
                         }),
-                        recoverAuthorization: async () => 'idle' as const,
-                    }),
-                    resolverOf: () => ({
-                        resolveCredential: async () => ({
-                            ok: false as const,
-                            outcome: { outcome: 'forbidden' as const, reason: 'principal-mismatch' as const },
+                        resolverOf: () => ({
+                            resolveCredential: async () => ({
+                                ok: false as const,
+                                outcome: { outcome: 'forbidden' as const, reason: 'principal-mismatch' as const },
+                            }),
                         }),
-                    }),
-                },
-            })
-        );
+                    },
+                })
+            );
+        } finally {
+            unsubscribe('fastify.initialization', watchInstance);
+        }
         await app.ready();
         const patterns = new Set(registered.urls);
         const tabled = new Set(ROUTE_TABLE.map(([path]) => path));
