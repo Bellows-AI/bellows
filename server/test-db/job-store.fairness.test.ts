@@ -142,7 +142,7 @@ describe.skipIf(!enabled)('cross-org fairness on every replica (issue #831)', ()
         expect((await replica(budget)('w2'))?.id).toBe(light);
     });
 
-    // The refusal interleaving of the test above, with the poll's later board varied (issue #831).
+    // The refusal interleaving of the test above, with the poll's later board varied.
     const refusedPoll = async (
         mutate: (board: JobStore, orgId: string, settle: () => Promise<void>) => JobStore,
         log?: (e: Error) => void

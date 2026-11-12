@@ -33,7 +33,7 @@ const githubId = (n: number): number => {
 };
 
 // The two orgs are re-planted before every test, because the token tests write rows that need an
-// org to point at without signing in first. signIn materializes every other org itself (#99).
+// org to point at without signing in first. signIn materializes every other org itself.
 const db = useTestDb({ orgs: [ORG, SECOND_ORG] });
 
 beforeAll(async () => {

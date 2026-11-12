@@ -1069,7 +1069,7 @@ describe.skipIf(!enabled)('bounded recovery', () => {
         expect((await stateOf(id)).a).toMatchObject({ gate: 'passed' });
     });
 
-    // A repair is a follow-up, and a follow-up refuses a thread with unfinished work in it (#698):
+    // A repair is a follow-up, and a follow-up refuses a thread with unfinished work in it:
     // the repair is never queued behind it, and the task goes to a person instead.
     it('never dispatches a repair onto a busy thread', async () => {
         const id = await frozen(planWith([{ key: 'one', tasks: [prTask('a')] }]));

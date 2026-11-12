@@ -339,7 +339,7 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         expect(lines.join('\n')).not.toContain('ghs_blocked_secret_token');
     });
 
-    // BEL-243: a lapsed lease or a takeover on a task that still runs is transient, never the terminal 403.
+    // a lapsed lease or a takeover on a task that still runs is transient, never the terminal 403.
     it('answers 503 LEASE_PENDING with Retry-After to a lapsed lease on a running task, and mints nothing', async () => {
         const minted: string[] = [];
         const { app: instance } = await boot(async (orgId) => {
@@ -420,7 +420,7 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         }
     });
 
-    // BEL-60: Stop revokes the stopped attempt's token only. Possession of a token is the authority to revoke it
+    // Stop revokes the stopped attempt's token only. Possession of a token is the authority to revoke it
     // (the pair names the attempt, GitHub's own check says whether the token is real), so the route never
     // revokes anything it was not handed, and never needs the lease to be live.
     it('revokes the token an attempt hands it even after Stop, and nobody else’s', async () => {

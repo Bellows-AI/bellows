@@ -19,7 +19,7 @@ import { randomGithubId, testOrg } from './fixtures.js';
 
 /**
  * The driver's real board client (`driver/src/board/board.ts`) against the real app and store on a
- * migrated `_test` database (BEL-318): claim, heartbeat, phase checkpoint and verdict, and claim then
+ * migrated `_test` database: claim, heartbeat, phase checkpoint and verdict, and claim then
  * interrupt, each asserted on the rows. Coverage of the wire contract, not a regression for a defect.
  */
 
@@ -115,7 +115,7 @@ const rowOf = async (id: string) => {
     return row!;
 };
 
-describe.skipIf(!enabled)('the driver board client against the real store (BEL-318)', () => {
+describe.skipIf(!enabled)('the driver board client against the real store', () => {
     it('claims, heartbeats, records a phase checkpoint and reports a verdict', async () => {
         const id = await enqueue();
         const job = await board.claim('wire-driver');

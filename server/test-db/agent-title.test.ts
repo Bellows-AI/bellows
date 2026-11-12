@@ -14,7 +14,7 @@ import { useTestDb } from './harness.js';
 import { expireLease, testOrg, testUser } from './fixtures.js';
 
 /**
- * The agent's own title write (BEL-252, `POST /api/jobs/:id/agent-title`) on a real database: the
+ * The agent's own title write (`POST /api/jobs/:id/agent-title`) on a real database: the
  * attempt pair is the only credential, the write runs under the caller's own row lock and the thread
  * root's, and every precondition is re-checked under those locks.
  */
