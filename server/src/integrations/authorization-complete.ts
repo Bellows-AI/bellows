@@ -400,9 +400,9 @@ async function afterExchange(
         authority: facts.authority,
     };
     if (row.intent === 'reconnect') return reconnect(fc, row, { held, payload, facts });
-    const existing = await grantOfAccount(fc.sql, { provider: row.provider, accountId: identity.externalAccountId });
+    const existing = await grantOfAccount(fc, row.provider, identity.externalAccountId);
     if (!existing) return connectNewGrant(fc, row, { payload, facts });
-    if (existing.orgId !== fc.orgId || existing.principalUserId !== row.userId) return fail(fc, row, 'grant-conflict');
+    if (existing.principalUserId !== row.userId) return fail(fc, row, 'grant-conflict');
     return connectExistingGrant(fc, row, { grantId: existing.id, hooks, payload, facts });
 }
 
