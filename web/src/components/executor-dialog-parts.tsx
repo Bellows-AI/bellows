@@ -6,6 +6,7 @@ import {
     ADD_LABEL,
     ADVANCED_LABEL,
     AGENT_HELP,
+    CLOUD_OAUTH_NOTE,
     CONFIG_JSON_LABEL,
     CONFIG_TESTED_NOTE,
     CREDENTIALS_NOTE,
@@ -191,22 +192,30 @@ export function modelBlockedNote(parsedOk: boolean, unsupported: boolean): strin
     return unsupported ? `${MODEL_NOT_TEXT}. ${MODEL_BLOCKED_NOTE}` : null;
 }
 
-/** Where credentials go instead of the configuration, with the composer's return forwarded. */
+/**
+ * Where credentials go instead of the configuration, with the composer's return forwarded; in
+ * Bellows Cloud, also that an OAuth token is refused and an API key is the way.
+ */
 export function CredentialsNote({
     href,
     onFollow,
+    cloud = false,
 }: {
     href: string;
     onFollow: (event: MouseEvent<HTMLAnchorElement>) => void;
+    cloud?: boolean;
 }) {
     return (
-        <p className="picker-help">
-            {CREDENTIALS_NOTE}{' '}
-            <Link to={href} onClick={onFollow}>
-                Workspace settings
-            </Link>
-            .
-        </p>
+        <>
+            <p className="picker-help">
+                {CREDENTIALS_NOTE}{' '}
+                <Link to={href} onClick={onFollow}>
+                    Workspace settings
+                </Link>
+                .
+            </p>
+            {cloud && <p className="picker-help">{CLOUD_OAUTH_NOTE}</p>}
+        </>
     );
 }
 

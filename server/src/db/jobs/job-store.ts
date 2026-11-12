@@ -20,6 +20,7 @@
  * of them: the decisions here look simplifiable and mostly are not.
  */
 
+import { SELF_HOSTED } from '@factory-ai/core';
 import { bindConnectionRow, dismissRequirementRow, requireConnectionRow } from './job-store-connections.js';
 import {
     createFollowUpRow,
@@ -223,6 +224,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         prs,
         admission = {},
         batches = true,
+        deploymentMode = SELF_HOSTED,
         metrics,
     } = deps;
     const gate = async () => {
@@ -247,6 +249,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         publicationColumns: publicationColumnsFragment(sql),
         admission,
         batches,
+        deploymentMode,
     };
 
     return gated(gate, jobStoreMethods(ctx));

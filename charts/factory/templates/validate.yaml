@@ -106,6 +106,12 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if not .Values.auth.publicUrl }}
 {{- fail "auth.publicUrl is required: the origin GitHub redirects back to" }}
 {{- end }}
+{{- if not (has .Values.deploymentMode (list "self-hosted" "cloud")) }}
+{{- fail (printf "deploymentMode must be self-hosted or cloud, got %q" .Values.deploymentMode) }}
+{{- end }}
+{{- if and (eq .Values.deploymentMode "cloud") .Values.secret.create (not .Values.telemetry.ingestToken) }}
+{{- fail "deploymentMode cloud requires telemetry.ingestToken: a cloud board never accepts unauthenticated telemetry" }}
+{{- end }}
 {{- if and .Values.mcp.enabled (not (hasPrefix "https://" .Values.auth.publicUrl)) }}
 {{- fail "mcp.enabled requires an https auth.publicUrl: the MCP endpoint carries bearer tokens" }}
 {{- end }}

@@ -1,5 +1,13 @@
-import { DEFAULT_GATE_FIX_ROUNDS, ERROR_CODES, EXECUTOR_TYPES, MAX_GATE_FIX_ROUNDS } from '@factory-ai/core';
-import type { ErrorCode } from '@factory-ai/core';
+import {
+    CLOUD,
+    CLOUD_CREDENTIAL_MESSAGE,
+    DEFAULT_GATE_FIX_ROUNDS,
+    ERROR_CODES,
+    EXECUTOR_TYPES,
+    forbiddenCredentialIn,
+    MAX_GATE_FIX_ROUNDS,
+} from '@factory-ai/core';
+import type { DeploymentMode, ErrorCode } from '@factory-ai/core';
 
 /**
  * A ceiling on how many executors one person can configure, and (issue 391) on how many
@@ -28,6 +36,7 @@ export function executorFieldRefusal(message: string): ErrorCode {
     if (message.startsWith('at most')) return ERROR_CODES.TOO_MANY_EXECUTORS;
     if (message.startsWith('unknown executor type')) return ERROR_CODES.BAD_EXECUTOR_TYPE;
     if (message.startsWith('gateFixRounds')) return ERROR_CODES.BAD_EXECUTOR_ROUNDS;
+    if (message === CLOUD_CREDENTIAL_MESSAGE) return ERROR_CODES.CLOUD_CREDENTIAL_REFUSED;
     return ERROR_CODES.BAD_BODY;
 }
 
@@ -47,9 +56,10 @@ function parseGateFixRounds(item: { name?: unknown; gateFixRounds?: unknown }): 
 
 /**
  * The fields every executor payload entry carries: the name/type/config shape, the known type and
- * the round limit. A string return is the refusal message; the caller stops at the first.
+ * the round limit — and, in cloud mode, no Claude subscription OAuth token anywhere in `config`.
+ * A string return is the refusal message; the caller stops at the first.
  */
-export function parseExecutorFields(entry: unknown): ExecutorFields | string {
+export function parseExecutorFields(entry: unknown, deploymentMode: DeploymentMode): ExecutorFields | string {
     const item = entry as {
         name?: unknown;
         type?: unknown;
@@ -64,6 +74,9 @@ export function parseExecutorFields(entry: unknown): ExecutorFields | string {
     }
     if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
         return `unknown executor type "${item.type}" (known: ${EXECUTOR_TYPES.join(', ')})`;
+    }
+    if (deploymentMode === CLOUD && forbiddenCredentialIn(undefined, item.config) !== null) {
+        return CLOUD_CREDENTIAL_MESSAGE;
     }
     const gateFixRounds = parseGateFixRounds(item);
     if (typeof gateFixRounds === 'string') return gateFixRounds;

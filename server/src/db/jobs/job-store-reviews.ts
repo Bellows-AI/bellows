@@ -312,7 +312,7 @@ interface ReviewClaimRow {
  * grants. The board decides all of it; the caller names none of it.
  */
 async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: string): Promise<Claim> {
-    const { orgId, env, executorConfig } = ctx;
+    const { orgId, env, executorConfig, deploymentMode } = ctx;
     await recordExecution(tx, orgId, reviewId);
     const [row] = await tx<ReviewClaimRow[]>`
         select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, execution_user_id as run_as,
@@ -324,7 +324,11 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
         from job where org_id = ${orgId} and id = ${reviewId}
     `;
     const spec = row!.review_spec;
-    const executor = await resolveClaimExecutor(tx, { env, executorConfig, grant: spec.connections }, row!);
+    const executor = await resolveClaimExecutor(
+        tx,
+        { env, executorConfig, deploymentMode, grant: spec.connections },
+        row!
+    );
     const claim = buildClaimResult(
         {
             ...row!,

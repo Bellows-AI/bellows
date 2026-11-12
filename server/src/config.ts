@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { DEPLOYMENT_MODES, type DeploymentMode, SELF_HOSTED } from '@factory-ai/core';
 import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
 import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
 import { loadMcpConfig, type McpConfig } from './config-mcp.js';
@@ -176,6 +177,18 @@ export interface AppConfig {
     readonly mcp: McpConfig;
     /** Batches (BATCHES_ENABLED); off by default. Off: routes answer 404, MCP tools are unlisted, loops do not start. */
     readonly batches: { readonly enabled: boolean };
+    /**
+     * Where this board runs (DEPLOYMENT_MODE): `self-hosted` (unset) or `cloud`. Server environment
+     * only — no request can change it. Cloud refuses a Claude subscription OAuth token in executor
+     * settings, member env and at claim (`forbiddenCredentialIn`).
+     */
+    readonly deploymentMode: DeploymentMode;
+}
+
+function loadDeploymentMode(raw: string | undefined): DeploymentMode {
+    if (raw === undefined) return SELF_HOSTED;
+    if ((DEPLOYMENT_MODES as readonly string[]).includes(raw)) return raw as DeploymentMode;
+    throw new Error(`DEPLOYMENT_MODE must be "self-hosted" or "cloud", got "${raw}"`);
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -694,6 +707,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         integrations: { callbackOrigin: publicOriginOrNull(env, host, port)?.origin ?? null, jira: loadJiraOAuth(env) },
         commerce: loadCommerceConfig(env),
         batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
+        deploymentMode: loadDeploymentMode(env.DEPLOYMENT_MODE),
         mcp: loadMcpConfig(
             env,
             bool(env.MCP_ENABLED, false, 'MCP_ENABLED'),

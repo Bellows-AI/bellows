@@ -64,6 +64,7 @@ See [Jira app](/self-host/jira-app).
 | `MCP_ENABLED` | | off | Turns on the MCP endpoint `POST /api/mcp`. Needs an https `PUBLIC_URL` (http is accepted only for a loopback `PUBLIC_URL` on a loopback `HOST`). Off, the endpoint answers 404. |
 | `MCP_TRUSTED_ORIGINS` | | none | Comma-separated exact http(s) origins, besides `PUBLIC_URL`, that may call MCP from a browser. No wildcards, paths or trailing slashes. |
 | `BATCHES_ENABLED` | | off | Turns on batches. Off, `/api/batches` answers 404 `BATCHES_DISABLED`, batch MCP tools are not listed, and the batch loops do not start. |
+| `DEPLOYMENT_MODE` | | `self-hosted` | `self-hosted` or `cloud`; any other value refuses to boot. Cloud refuses a Claude subscription OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) in executor settings and environment variables, and fails a task whose stored settings carry one. The Helm chart (`deploymentMode`) refuses cloud without `telemetry.ingestToken`. |
 
 ### Admission and capacity
 

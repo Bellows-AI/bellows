@@ -117,6 +117,7 @@ export const OPEN_BOARD_SESSION: Session = {
     mode: 'none',
     mcp: false,
     batches: false,
+    deploymentMode: 'self-hosted',
 };
 
 /**

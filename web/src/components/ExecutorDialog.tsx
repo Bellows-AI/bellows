@@ -71,12 +71,23 @@ export interface ExecutorDialogProps {
     /** Told the success sentence just before the dialog closes. */
     onSaved: (message: string) => void;
     saving: boolean;
+    /** Bellows Cloud: the credentials note adds that an OAuth token is refused. */
+    cloud?: boolean;
 }
 
 /** What to do once the reader answers Discard changes. */
 type PendingDiscard = { proceed: () => void };
 
-export function ExecutorDialog({ open, existing, editing, onClose, onSave, onSaved, saving }: ExecutorDialogProps) {
+export function ExecutorDialog({
+    open,
+    existing,
+    editing,
+    onClose,
+    onSave,
+    onSaved,
+    saving,
+    cloud = false,
+}: ExecutorDialogProps) {
     const [baseline, setBaseline] = useState<ExecutorDraft>(() => initialExecutorDraft(undefined));
     const [draft, setDraft] = useState<ExecutorDraft>(baseline);
     const [nameTouched, setNameTouched] = useState(false);
@@ -185,7 +196,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, onSav
                         onCustom={() => setConfig(draft.configs[type], true)}
                         onModel={(value) => writeModel(value.trim() || null, true)}
                     />
-                    <CredentialsNote href={envHref} onFollow={followEnvLink} />
+                    <CredentialsNote href={envHref} onFollow={followEnvLink} cloud={cloud} />
 
                     <AdvancedConfiguration
                         ids={ids}

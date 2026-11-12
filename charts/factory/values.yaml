@@ -129,6 +129,10 @@ mcp:
 batches:
     enabled: false
 
+# Where this board runs (docs/configuration.md): self-hosted or cloud. Cloud refuses a Claude subscription OAuth token
+# in executor settings, member env and at claim, and refuses to render without telemetry.ingestToken.
+deploymentMode: self-hosted
+
 github:
     # The id and the key are required unless dashboard.offline: without them the server refuses to
     # boot — there is no no-fetch mode to fall back to.

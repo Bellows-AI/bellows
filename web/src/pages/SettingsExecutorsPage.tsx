@@ -1,3 +1,4 @@
+import { CLOUD } from '@factory-ai/core';
 import { useState } from 'react';
 import type { WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
@@ -162,6 +163,7 @@ export function SettingsExecutorsPage() {
                 onSave={savePersonal}
                 onSaved={setSavedMessage}
                 saving={saving}
+                cloud={session?.deploymentMode === CLOUD}
             />
         </>
     );

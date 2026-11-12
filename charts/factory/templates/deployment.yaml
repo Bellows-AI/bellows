@@ -223,6 +223,9 @@ spec:
                       # Batches (docs/configuration.md); off by default.
                       - name: BATCHES_ENABLED
                         value: {{ .Values.batches.enabled | quote }}
+                      # Where this board runs (docs/configuration.md): self-hosted or cloud.
+                      - name: DEPLOYMENT_MODE
+                        value: {{ .Values.deploymentMode | quote }}
                       - name: COOKIE_SECURE
                         value: {{ .Values.auth.cookieSecure | quote }}
                       - name: INGEST_TOKEN

@@ -570,10 +570,10 @@ async function assembleClaim(
     },
     prepared: { rootJobId: string; gates: ResolvedClaimGates; connections: ClaimConnections }
 ): Promise<Omit<Claim, 'attachments'>> {
-    const { orgId, env, githubApp, executorConfig, prs } = ctx;
+    const { orgId, env, githubApp, executorConfig, prs, deploymentMode } = ctx;
     const { rootJobId } = prepared;
     const { connections } = prepared;
-    const executor = await resolveClaimExecutor(tx, { env, executorConfig }, row);
+    const executor = await resolveClaimExecutor(tx, { env, executorConfig, deploymentMode }, row);
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
