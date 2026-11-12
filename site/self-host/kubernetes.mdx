@@ -368,7 +368,7 @@ helm upgrade bellows oci://ghcr.io/<owner>/charts/factory \
 
 - Back up the database first. The dashboard runs schema migrations at boot.
 - The dashboard is always replaced by Recreate, never rolled, so two versions never share the schema. Expect a few seconds of downtime.
-- The driver drains on shutdown. It stops claiming, and a minute before `driver.terminationGracePeriodSeconds` (default `600`) it hands running tasks back. They are retried at once, and each runner Job keeps running for the next claim. Raise the value to let more runs finish in place.
+- The driver drains on shutdown. On SIGTERM it stops claiming and hands running tasks back at once (`driver.handoverMs`, default `"0"`), so a spot node's two-minute notice is enough. They are retried at once, and each runner Job keeps running for the next claim. Set `driver.handoverMs` above zero, below `driver.terminationGracePeriodSeconds` (default `600`), to let more runs finish in place first.
 - Pin the executor image tags in values when you upgrade, since they are not derived from the chart version.
 
 ## Roll back

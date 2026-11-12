@@ -8,8 +8,7 @@ import { runJob } from './loop-run.js';
 import { processReclaim, processVerdictReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from '../executors.js';
 import { withBoardRetry } from '../board/board-retry.js';
-import { down, type JobState } from './loop-attempt.js';
-import { recordEnding } from './loop-phase.js';
+import { down, handOver } from './loop-attempt.js';
 
 export interface Loop {
     /**
@@ -124,18 +123,6 @@ function completeWithRetry(
 }
 
 /**
- * One attempt handed over: the intent is recorded and the attempt told to stop; its own chain ends
- * it as an interruption (`end`, `loop-conclusion.ts`), the runner left for the next claim.
- */
-function handOver(state: JobState, reason: string): void {
-    if (!recordEnding(state, 'handover')) return;
-    state.handoverReason = reason;
-    state.abortNow();
-    state.wake();
-    state.signalHandover();
-}
-
-/**
  * The drain's handover: the attempts in flight — registered on `rt.live`, where each
  * `runJob` reports its own — and the latch `start()` stops waiting at.
  */
@@ -147,8 +134,21 @@ export function handoverOf(rt: LoopRuntime) {
         landed = resolve;
     });
     return {
-        done,
+        /**
+         * Lands once `run` has settled, then waits for any attempt that registered after it began
+         * (a claim answered mid-drain, handed over in `registerLive`) to settle too.
+         */
+        async settled(): Promise<void> {
+            await done;
+            // Every attempt still registered: a late claim handed over in `registerLive`, and one whose
+            // own ending (a verdict, a retry) began before the handover and was left to it. Its
+            // write is the durable one, so the process does not exit under it; the lease clock
+            // bounds it and the pod's SIGKILL is the outer bound.
+            await Promise.all([...live.values()].map(({ over }) => over));
+        },
         async run(reason: string): Promise<void> {
+            const began = Date.now();
+            rt.handoverReason = reason;
             // An attempt whose `end` started — a verdict in flight or any other decision — is
             // not handed over: its own ending and teardown decide it.
             const handing = [...live.values()].filter(
@@ -158,6 +158,7 @@ export function handoverOf(rt: LoopRuntime) {
             for (const { state } of handing) handOver(state, reason);
             // `start()` stops waiting only once every handed-over attempt's end has settled.
             await Promise.all(handing.map(({ over }) => over));
+            rt.log(`handover: ${handing.length} attempt(s) settled in ${Date.now() - began} ms`);
             landed();
         },
     };
@@ -410,7 +411,7 @@ export function createLoop({
             // Claiming has stopped; let what is already running finish rather than orphaning
             // containers that are mid-edit in a checkout.
             if (active.size) log(`draining ${active.size} running job(s)`);
-            await Promise.race([Promise.all(active), handoff.done]);
+            await Promise.race([Promise.all(active), handoff.settled()]);
             await draining;
         },
     };

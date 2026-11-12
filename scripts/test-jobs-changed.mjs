@@ -68,7 +68,7 @@ export const RULES = [
     [/^(server|core)\/(src|migrations)\//, FULL, 'the board every phase boots'],
 
     // --- docker executor, specific concerns ------------------------------------------------------
-    [/^driver\/src\/(loop\/loop-adopt|loop\/loop-reclaim|loop\/loop-fence|loop\/loop-lease|loop\/loop-race|adopt-skeleton|task-restore|reclaim-calls|kill-ledger|loop\/loop-ledger|operation-ledger)\.ts$/, RECOVERY, 'adoption and takeover'],
+    [/^driver\/src\/(drain|loop\/loop-adopt|loop\/loop-reclaim|loop\/loop-fence|loop\/loop-lease|loop\/loop-race|adopt-skeleton|task-restore|reclaim-calls|kill-ledger|loop\/loop-ledger|operation-ledger)\.ts$/, RECOVERY, 'adoption and takeover'],
     [/^driver\/src\/scripts\/(checkpoint\.cjs|checkpoint-restore\.cjs|binding-write\.sh|operation-ledger\.cjs)$/, [...RECOVERY, 'driver'], 'checkpoints and the ledger'],
     [/^driver\/src\/(supervisor-contract|supervisor-plan|supervised-steps|step-control|control-channel|docker\/docker-mailbox|docker\/docker-group|docker\/docker-group-probe|group-watch|termination|startup-cause)\.ts$/, ['driver', ...RECOVERY], 'task supervisor protocol'],
     [/^driver\/src\/(run-deadline|docker\/docker-run-timers|timeout-note)\.ts$/, ['run-deadline'], 'run deadline'],
