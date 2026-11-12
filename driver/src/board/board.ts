@@ -3,7 +3,7 @@ import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
 import { type AttachmentContent, attachmentCalls, type ClaimAttachment } from './board-attachments.js';
-import { claimOf } from './board-claim.js';
+import { claimOf, parseClaim } from './board-claim.js';
 import { type ClaimSkills, skillCalls } from './board-skills.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
@@ -838,9 +838,13 @@ export function createBoard({
     leaseSeconds,
     token,
     fetch = globalThis.fetch,
+    onMalformedClaim = (fields: string[]) =>
+        console.error(`[driver] the board delivered a malformed claim (${fields.join(', ')}); left to its lease`),
 }: {
     url: string;
     leaseSeconds: number;
+    /** Told the names of the fields that made a claim malformed; the claim is then left to its lease (BEL-318). */
+    onMalformedClaim?: (fields: string[]) => void;
     /**
      * The shared board secret, when the board requires one. Empty against a board with AUTH_MODE=none.
      *
@@ -858,7 +862,11 @@ export function createBoard({
         async claim(worker) {
             const response = await post('/api/jobs/claim', { worker, leaseSeconds });
             if (response.status === HTTP_NO_CONTENT) return null;
-            return claimOf((await response.json()) as Partial<BoardJob>);
+            const parsed = parseClaim(await response.json().catch(() => null));
+            if ('claim' in parsed) return parsed.claim;
+            // Never a verdict on an unconfirmed read: the job is left to its lease.
+            onMalformedClaim(parsed.malformed);
+            return null;
         },
 
         async heartbeat(job, signal) {
