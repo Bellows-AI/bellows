@@ -115,7 +115,7 @@ describe('settings area wiring', () => {
 describe('the route table', () => {
     it('builds the routes the data router serves, settings tree intact', () => {
         // The conversion to route objects (issue 182) must not move an address: the settings tree
-        // keeps its four sections and its overview index (#180), the shell layout route stays
+        // keeps its four sections and its overview index, the shell layout route stays
         // pathless above everything, the detail route survives, and the catch-all stands.
         const paths = (routes: typeof appRoutes, prefix = ''): string[] =>
             routes.flatMap((route) => {

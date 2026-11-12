@@ -6,7 +6,7 @@ import { mockedActivityOf, publishedThread } from '../../e2e/fixtures/threads.js
 import { RouteError } from '../src/components/RouteError.js';
 import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 
-/** BEL-313: a failed thread tick keeps the poll alive, says so with a Retry, and heals on its own. */
+/** a failed thread tick keeps the poll alive, says so with a Retry, and heals on its own. */
 const TASK = publishedThread[0]!.id;
 const threadFetches = (calls: { url: string }[]) => calls.filter((call) => /\/api\/jobs\/[^/]+\/thread/.test(call.url));
 

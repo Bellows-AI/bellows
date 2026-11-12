@@ -71,7 +71,7 @@ describe('the executor dialog', () => {
         const board = settingsBoard();
         stubFetch(boardHandler(board));
         // No inter-action timer: each step below waits on the element or request it needs, not on wall time.
-        // The flow is split across three tests so no one test renders ~60 steps under a loaded runner (#662).
+        // The flow is split across three tests so no one test renders ~60 steps under a loaded runner.
         const user = userEvent.setup({ delay: null });
         renderApp('/settings/executors');
 

@@ -9,7 +9,7 @@ import type { EnvPayloadRow } from '../src/panels/env-draft.js';
 import './dom.js';
 
 /**
- * The inline variables editor (BEL-262), mounted on its own: Variables | Secrets tabs over one
+ * The inline variables editor, mounted on its own: Variables | Secrets tabs over one
  * draft, read-only rows that open one at a time, the raw `.env` text on the same draft with no
  * Apply step, nothing persisted until Save, a save bar only while there is something to save.
  * The settings pages' wiring (title, refetch, navigation guard) is `env.dom.test.tsx`.

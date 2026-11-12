@@ -37,14 +37,14 @@ describe('nav model', () => {
     it('is the one route array the shell navigates by, each item with its glyph', () => {
         expect(NAV_ITEMS.map((item) => [item.to, item.label, item.end ?? false, item.icon])).toEqual([
             ['/', 'Dashboard', true, 'home'],
-            // Observe → act → configure (#159): the report, then the work, then the configuration.
+            // Observe → act → configure: the report, then the work, then the configuration.
             ['/tasks', 'Tasks', false, 'list'],
             ['/batches', 'Batches', false, 'layers'],
             ['/settings', 'Settings', false, 'settings'],
         ]);
     });
 
-    it('lists Batches only when the session says batches are on (BEL-264)', () => {
+    it('lists Batches only when the session says batches are on', () => {
         const labels = (session: { batches: boolean } | null) => navItems(session).map((item) => item.label);
         expect(labels({ batches: true })).toEqual(['Dashboard', 'Tasks', 'Batches', 'Settings']);
         expect(labels({ batches: false })).toEqual(['Dashboard', 'Tasks', 'Settings']);
@@ -54,7 +54,7 @@ describe('nav model', () => {
 
     it('carries the Settings tree, Overview first, in the order the sections ship', () => {
         expect(SETTINGS_SECTIONS.map((item) => [item.to, item.label, item.end ?? false])).toEqual([
-            // The overview is end-matched, so it never stays lit on a section page (#274).
+            // The overview is end-matched, so it never stays lit on a section page.
             ['/settings', 'Overview', true],
             ['/settings/organization', 'Organization', false],
             ['/settings/workspace', 'Workspace', false],

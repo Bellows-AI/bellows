@@ -372,12 +372,12 @@ describe('TaskDetail — runtime', () => {
     });
 });
 
-/** The task's live summary moved to the page header's meta (#159). */
+/** The task's live summary moved to the page header's meta. */
 /**
  * The per-turn close-time scrape — `ctx … tok · $…` — belongs to EVERY terminal turn,
  * including the newest: the scrape is written at close, so its absence is how a running turn
  * says "not yet", and a finished thread's last turn is usually the most relevant one to read
- * it on (issue #60).
+ * it on.
  */
 describe('TaskDetail — turn stats', () => {
     const scrape = (contextTokens: number, costUsd: number | null) => ({
@@ -639,7 +639,7 @@ describe('TaskDetail — main column', () => {
     });
 });
 
-describe('TaskDetail — surface hierarchy (BEL-232)', () => {
+describe('TaskDetail — surface hierarchy', () => {
     it('draws the conversation on the canvas, not as a soft panel; no panel nests in another', () => {
         const html = renderDetail({
             jobs: [

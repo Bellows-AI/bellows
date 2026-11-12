@@ -4,7 +4,7 @@ import type { EnvSaveResult, EnvVarView } from '../src/api/useEnv.js';
 import { EnvVarsSection } from '../src/panels/EnvVarsSection.js';
 
 /**
- * The inline variables editor's first paint (BEL-262), server-render-tested by markup assertions:
+ * The inline variables editor's first paint, server-render-tested by markup assertions:
  * the tabs and their counts, the rows read as text, masking and the empty state. The editing
  * itself is driven by `env-editor.dom.test.tsx` and, through the pages, by `env.dom.test.tsx`.
  */

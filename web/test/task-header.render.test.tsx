@@ -10,7 +10,7 @@ describe('the task page header', () => {
     /**
      * The page-level head of `/tasks/:id`: the task's name as the page's one `h1`, its status,
      * wall clock and live activity in the meta slots, and every action the task can take in the
-     * actions slot — lifted out of the conversation panel (#159).
+     * actions slot — lifted out of the conversation panel.
      */
 
     it("names the task after its opening command, as the page's one h1", () => {
@@ -186,7 +186,7 @@ describe('the task page header — Mark done, overflow and meta', () => {
     });
 
     it('shows the live activity line in the meta while the newest run is going', () => {
-        // Same line the sidebar's "Task" row and the sidenav read — page level now (#159).
+        // Same line the sidebar's "Task" row and the sidenav read — page level now.
         const runtime = {
             cpuPercent: 12,
             memUsedMb: 300,
@@ -407,7 +407,7 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
     });
 });
 
-describe('the task page header — the display title (BEL-252)', () => {
+describe('the task page header — the display title', () => {
     const LONG = 'word '.repeat(300).trim();
     const h1Of = (html: string) => /<h1([^>]*)>([^<]*)<\/h1>/.exec(html)!;
     const decode = (text: string) =>

@@ -209,7 +209,7 @@ describe('serializeEnv', () => {
     });
 });
 
-describe('the raw .env round trip (BEL-262)', () => {
+describe('the raw .env round trip', () => {
     const roundTrip = (rows: EnvVarRow[]) => parseEnvRaw(serializeEnv(rows), noSecrets);
 
     it('returns every value shape unchanged, empty and quoted ones included', () => {
@@ -262,7 +262,7 @@ describe('the raw .env round trip (BEL-262)', () => {
     });
 });
 
-describe('.env text that must not parse to something else (BEL-262 review)', () => {
+describe('.env text that must not parse to something else', () => {
     const refused = (text: string) => {
         const result = parseEnvRaw(text, noSecrets);
         expect(result.ok).toBe(false);

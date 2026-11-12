@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { mockedActivityOf, publishedThread } from '../../e2e/fixtures/threads.js';
 import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 
-/** BEL-264: the web learns `batches` from `/api/auth/me` and shows nothing batch-shaped while it is not true. */
+/** the web learns `batches` from `/api/auth/me` and shows nothing batch-shaped while it is not true. */
 const TASK = publishedThread[0]!.id;
 const BATCH = { id: 'bbbbbbbb-0000-4000-8000-000000000001', title: 'Rollout batch' };
 
