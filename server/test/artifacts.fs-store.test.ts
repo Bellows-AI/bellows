@@ -140,7 +140,7 @@ describe('boot and periodic sweep', () => {
             await Promise.all(passes);
             expect(await exists(young)).toBe(false);
         } finally {
-            stop();
+            await stop();
         }
     });
 
@@ -159,8 +159,9 @@ describe('boot and periodic sweep', () => {
         release();
         await vi.advanceTimersByTimeAsync(1000);
         expect(sweep).toHaveBeenCalledTimes(2);
-        stop();
+        const stopped = stop();
         release();
+        await stopped;
         await vi.advanceTimersByTimeAsync(5000);
         expect(sweep).toHaveBeenCalledTimes(2);
     });
@@ -174,7 +175,7 @@ describe('boot and periodic sweep', () => {
             .mockResolvedValue({ removed: 0, skipped: 0, stopped: false });
         const stop = startTempSweep(sweep, { intervalMs: 1000, log });
         await vi.advanceTimersByTimeAsync(2500);
-        stop();
+        await stop();
         expect(sweep).toHaveBeenCalledTimes(2);
         expect(log.mock.calls.flat().join(' ')).toContain('boom');
     });

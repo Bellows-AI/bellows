@@ -24,7 +24,7 @@ describe('startBatchLoops', () => {
         expect(orgs.reconcileBatches).toHaveBeenCalledTimes(1);
         expect(orgs.observeBatchPrs).toHaveBeenCalledTimes(1);
         expect(orgs.followPrs).toHaveBeenCalledTimes(1);
-        stop();
+        await stop();
     });
 
     it('starts neither batch loop when batches are disabled, but the single-task PR follower still runs', async () => {
@@ -35,7 +35,7 @@ describe('startBatchLoops', () => {
         expect(orgs.reconcileBatches).not.toHaveBeenCalled();
         expect(orgs.observeBatchPrs).not.toHaveBeenCalled();
         expect(orgs.followPrs).toHaveBeenCalled();
-        stop();
+        await stop();
     });
 
     it('stops every loop it started', async () => {
@@ -43,7 +43,7 @@ describe('startBatchLoops', () => {
         const { orgs, timedPass } = rig();
         const stop = startBatchLoops({ batchesEnabled: true, orgs, timedPass });
         await vi.advanceTimersByTimeAsync(0);
-        stop();
+        await stop();
         orgs.followPrs.mockClear();
         orgs.reconcileBatches.mockClear();
         await vi.advanceTimersByTimeAsync(600_000);

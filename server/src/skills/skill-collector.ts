@@ -3,6 +3,7 @@ import type { ArtifactBackend } from '../artifacts/backend.js';
 import type { ObjectStore } from '../artifacts/object-store.js';
 import type { ServerMetrics } from '../metrics.js';
 import { lockObjectKey, skillKeyNamespace } from '../db/skill-store.js';
+import { startIntervalLoop } from '../interval-loop.js';
 
 /**
  * The skill retention sweep (docs/skills.md). A version is removed only when (a) its skill was soft-deleted at least
@@ -161,32 +162,20 @@ export function startSkillSweep({
     /** `ArtifactsConfig.retentionDays`: how long a deleted skill's versions stay. */
     retentionDays: number;
     intervalMs?: number;
-}): () => void {
+}): () => Promise<void> {
     const collector = createSkillCollector({
         sql,
         objects: artifacts.objects,
         prefix: artifacts.prefix,
         retentionDays,
     });
-    const controller = new AbortController();
-    let running = false;
-    const tick = async () => {
-        if (running || controller.signal.aborted) return;
-        running = true;
-        try {
+    return startIntervalLoop(
+        'skills',
+        async (signal) => {
             await ready;
-            await metrics.timedPass('skill_collect', () => collector.collect({ signal: controller.signal }));
-        } catch (e) {
-            console.error(`[skills] collect failed: ${(e as Error).message}`);
-        } finally {
-            running = false;
-        }
-    };
-    void tick();
-    const timer = setInterval(() => void tick(), intervalMs);
-    timer.unref();
-    return () => {
-        clearInterval(timer);
-        controller.abort();
-    };
+            await metrics.timedPass('skill_collect', () => collector.collect({ signal }));
+        },
+        intervalMs,
+        { onError: (e) => console.error(`[skills] collect failed: ${e.message}`) }
+    );
 }

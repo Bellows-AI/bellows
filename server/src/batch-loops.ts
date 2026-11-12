@@ -16,7 +16,7 @@ export function startBatchLoops({
     batchesEnabled: boolean;
     orgs: Pick<OrgRegistry, 'reconcileBatches' | 'observeBatchPrs' | 'followPrs'>;
     timedPass: <T>(loop: string, fn: () => Promise<T>) => Promise<T>;
-}): () => void {
+}): () => Promise<void> {
     const stops = [
         startPrFollower({
             followPrs: () => timedPass('pr_follow', () => orgs.followPrs()),
@@ -32,7 +32,7 @@ export function startBatchLoops({
             })
         );
     }
-    return () => {
-        for (const stop of stops) stop();
+    return async () => {
+        await Promise.all(stops.map((stop) => stop()));
     };
 }
