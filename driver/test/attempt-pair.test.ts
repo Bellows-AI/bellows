@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
- * The attempt pair a runner's helpers present (#1045), shipped in both executor images: the lease the
+ * The attempt pair a runner's helpers present, shipped in both executor images: the lease the
  * supervisor relays when it follows a newer holder, else the env the container started with, and
  * never a verdict of its own. Driven against a real unix socket.
  */

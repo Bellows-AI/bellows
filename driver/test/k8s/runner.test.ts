@@ -39,7 +39,7 @@ const taskVolumeCalls = (): string[] => [
  * The methods of a runner attempt after its sweep: the claim verify, the task volume (read, created),
  * the Job POST (suspended), the Secret POST, the claim verify, the Job's resume, the status poll, the pod list and the log.
  * The close-time claude-code turn read is a supervised step: no call of its own. The group's Secret is not reaped here, nor is the checkout claim released: the group's
- * end (`finish`) does both, once confirmed (issue #821). The fence tests spell out everything before it.
+ * end (`finish`) does both, once confirmed. The fence tests spell out everything before it.
  */
 const RUN_FROM_SECRET = ['GET', 'GET', 'POST', 'POST', 'POST', 'GET', 'PATCH', 'GET', 'GET', 'GET'];
 
@@ -102,7 +102,7 @@ describe('the kubernetes runner', () => {
             `GET /api/v1/namespaces/factory/pods`,
             // The claim verify, then the Job created suspended and only then its per-attempt
             // Secret (the runner's attempt pair), so a Secret never exists without a Job to derive
-            // it from (issue #821); the post-create verify, then the resume that starts the pod.
+            // it from; the post-create verify, then the resume that starts the pod.
             `GET ${claimPathFor(job.id)}`,
             ...taskVolumeCalls(),
             `POST ${jobsPath(namespace)}`,
@@ -115,7 +115,7 @@ describe('the kubernetes runner', () => {
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
             // The group does not go here: its Job and Secret
             // serve the steps after the run until the loop's `finish` — which is also what hands
-            // the checkout claim back, once the group's end is confirmed (issue #821).
+            // the checkout claim back, once the group's end is confirmed.
         ]);
         expect(outcome).toEqual({
             // The fake's log parses as no count at all: unmeasured, never zero.
@@ -124,7 +124,7 @@ describe('the kubernetes runner', () => {
             output: 'did the work\n',
             timedOut: false,
             started: true,
-            // The full log rides the outcome now (issue #325) — the whole (one-line) log, uncut.
+            // The full log rides the outcome now — the whole (one-line) log, uncut.
             fullLog: 'did the work\n',
             logTruncated: false,
         });
@@ -155,7 +155,7 @@ describe('the kubernetes runner', () => {
         });
         // The Secret follows the Job, created suspended, and precedes its resume: no pod exists
         // before its Secret (a CreateContainerConfigError would burn the attempt), and no Secret
-        // exists without a Job the fence and the reaper can derive it from (issue #821).
+        // exists without a Job the fence and the reaper can derive it from.
         const secretIndex = calls.findIndex((call) => call.method === 'POST' && call.path === secretsPath);
         const jobIndex = calls.findIndex((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         const resumeIndex = calls.findIndex(
@@ -269,7 +269,7 @@ describe('the kubernetes runner', () => {
                 (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, runnerJobName(envJob)))
             )
         ).toBe(true);
-        // The attempt's Secret (issue #821; the gates hold none of their own, issue #773), before the
+        // The attempt's Secret (the gates hold none of their own), before the
         // Job: nothing could derive its name once it is gone.
         expect(calls.filter((call) => call.path?.includes('/secrets')).map((call) => call.path)).toEqual([
             `/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`,
@@ -379,7 +379,7 @@ describe('the kubernetes runner', () => {
             output: 'did the work\n',
             timedOut: false,
             started: true,
-            // The full log rides the outcome now (issue #325) — the whole (one-line) log, uncut.
+            // The full log rides the outcome now — the whole (one-line) log, uncut.
             fullLog: 'did the work\n',
             logTruncated: false,
         });
@@ -620,7 +620,7 @@ describe('the kubernetes runner', () => {
         // Named on the first poll — the image question never waits out the deadline.
         expect(polls).toBe(1);
         // A thrown fact: run() deletes the group's Job itself no more than docker's removes its
-        // containers (#828) — the loop's end() finishes it.
+        // containers — the loop's end() finishes it.
         expect(deletes.filter((path) => path === jobPath(namespace, runnerJobName(job)))).toEqual([]);
     });
 
@@ -750,7 +750,7 @@ describe('the kubernetes runner', () => {
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped. It
             // rides THIS attempt, so its name hashes the token this run holds. The claim stays: the
-            // group's end hands it back (issue #821).
+            // group's end hands it back.
         ]);
     });
 
@@ -863,7 +863,7 @@ describe('the kubernetes runner', () => {
         ).run(envJob, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
-        // Created once, after the Job POST (suspended) and before its resume (issue #821).
+        // Created once, after the Job POST (suspended) and before its resume.
         const secretPosts = calls.filter((c) => c.method === 'POST' && c.path === secretsPath);
         expect(secretPosts).toHaveLength(1);
         expect(calls.findIndex((c) => c.method === 'POST' && c.path === secretsPath)).toBeGreaterThan(
@@ -1038,7 +1038,7 @@ describe('the kubernetes runner', () => {
         ]);
     });
 
-    // A collection that answers 404 proves nothing is gone (BEL-315): the fence never frees the
+    // A collection that answers 404 proves nothing is gone: the fence never frees the
     // checkout on it, so no Job is created and nothing is deleted.
     it('does not free the checkout on a 404 from the label list', async () => {
         const { request, calls } = routed((method, path) => {
@@ -1095,7 +1095,7 @@ describe('the kubernetes runner', () => {
     it('releases the claim when the run ends, and never releases a claim it no longer holds', async () => {
         const claimPath = claimPathFor(job.id);
         // (a) A finished group ends with the claim read and released, the last calls of its
-        // `finish` — never of the run, which the group outlives (issue #821): the service fleet
+        // `finish` — never of the run, which the group outlives: the service fleet
         // outlives run() until the loop releases it, and the attempt's group, Secret and claim
         // until its `finish` confirms the group ended.
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
@@ -1227,7 +1227,7 @@ describe('the kubernetes runner', () => {
             /taken over before the runner could start/
         );
         // Its OWN Job, by name, Foreground.
-        // By the uid its create answered (issue #821): that incarnation and no other.
+        // By the uid its create answered: that incarnation and no other.
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
@@ -1476,7 +1476,7 @@ describe('the kubernetes runner', () => {
         const claimPath = claimPathFor(job.id);
         let reads = 0;
         // A delete that answered 200 or 404 leaves the Job reading gone, as the apiserver does —
-        // the acknowledged stand-down confirms that before the claim may go (issue #821).
+        // the acknowledged stand-down confirms that before the claim may go.
         let jobGone = false;
         const { request, calls } = routed((method, path) => {
             if (method === 'POST' && path === configmapsPath) {
@@ -1500,7 +1500,7 @@ describe('the kubernetes runner', () => {
 
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(error);
         // The delete names only this attempt's own Job, Foreground — best-effort.
-        // By the uid its create answered (issue #821): that incarnation and no other.
+        // By the uid its create answered: that incarnation and no other.
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
@@ -1565,7 +1565,7 @@ describe('the kubernetes runner', () => {
             /taken over before the runner could start/
         );
         // The stand-down did try its own Job delete — and only its own.
-        // By the uid its create answered (issue #821): that incarnation and no other.
+        // By the uid its create answered: that incarnation and no other.
         expect(calls).toContainEqual({
             method: 'DELETE',
             path: `${jobPath(namespace, runnerJobName(job))}?propagationPolicy=Foreground`,
@@ -1686,7 +1686,7 @@ describe('the kubernetes runner', () => {
     // HTTP failures and transport exceptions take separate branches, but have the same bound and
     // cleanup contract: the run leaves the group to the loop's `finish`, which the loop calls on
     // every exit and which reaps the attempt's Secrets first — but a Job its driver cannot read is
-    // no confirmed end, so the checkout claim is kept (issue #821) and the Job is not deleted (#869). One table keeps that contract
+    // no confirmed end, so the checkout claim is kept and the Job is not deleted. One table keeps that contract
     // in one place instead of duplicating the whole attempt fixture.
     it.each(['http', 'transport'] as const)(
         'abandons after consecutive %s polling failures, reaps the attempt Secret on finish and keeps the unconfirmed claim',
@@ -1725,7 +1725,7 @@ describe('the kubernetes runner', () => {
                 (call) => call.method === 'DELETE' && call.path?.startsWith(jobPath(namespace, runnerJobName(envJob)))
             );
             expect(secretReap).toBeGreaterThan(secretCreate);
-            // A Job that never read is no evidence it ended: it is kept for a later read, never deleted (#869).
+            // A Job that never read is no evidence it ended: it is kept for a later read, never deleted.
             expect(jobDelete).toBe(-1);
             expect(claimDeleted()).toBe(false);
         }
@@ -1871,7 +1871,7 @@ describe('the kubernetes runner', () => {
         expect(outcome).not.toHaveProperty('infraLoss');
     });
 
-    // BEL-127: a node-killed pod's statuses are ContainerStatusUnknown with null times; the run reads
+    // a node-killed pod's statuses are ContainerStatusUnknown with null times; the run reads
     // it as the supervisor's loss (an infrastructure loss), not as an unreadable pod list.
     it('ends a run whose killed pod left null container times as an infrastructure loss', async () => {
         const unknown = {
@@ -1902,8 +1902,8 @@ describe('the kubernetes runner', () => {
         expect(outcome).toMatchObject({ started: true, infraLoss: expect.stringMatching(/ContainerStatusUnknown/) });
     });
 
-    // BEL-302: only a runner the executor saw taken away is a node loss; a supervisor that died inside a live pod is not.
-    describe('which ended runs are a node loss (BEL-302)', () => {
+    // only a runner the executor saw taken away is a node loss; a supervisor that died inside a live pod is not.
+    describe('which ended runs are a node loss', () => {
         const terminated = (name: string, exitCode: number) => ({ name, state: { terminated: { exitCode } } });
         const endedWith = async (pods: unknown) => {
             const { request } = fakeRequest({
@@ -2010,7 +2010,7 @@ describe('the kubernetes runner', () => {
         await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/500/);
     });
 
-    // The docker twin is pinned `it.fails` in docker.test.ts (#828, slice 1): a run that rejects once
+    // The docker twin is pinned `it.fails` in docker.test.ts (slice 1): a run that rejects once
     // its group exists ends nothing here (`k8s-runner.ts:415-420`) — neither the Job nor the
     // checkout claim — and the loop decides.
     it('a run that rejects leaves its group for the loop to decide', async () => {
@@ -2069,7 +2069,7 @@ describe('the kubernetes runner', () => {
         await runner(request).kill(job);
         await runner(request).kill(job);
 
-        // The attempt's own teardown, Secrets first (issue #821) — by their own names: the
+        // The attempt's own teardown, Secrets first — by their own names: the
         // group's steps are over with the Job, and a 404 is the ordinary end — then the Job, its
         // confirming read, then the lease-scoped pod and service lists (and 404 deletes for
         // whatever they ever named).

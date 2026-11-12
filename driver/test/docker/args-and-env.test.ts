@@ -72,7 +72,7 @@ describe('the docker run arguments', () => {
             'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9',
         ]);
         expect(opencode).not.toContain('BELLOWS_RESUME_MAY_BE_UNWRITTEN=1');
-        // A takeover (issue #822): the same plan, with the permission the pod spec carries too.
+        // A takeover: the same plan, with the permission the pod spec carries too.
         const takeover = dockerArgs(
             loadDriverConfig({}),
             { ...job, resumeSessionId: SESSION, ownSession: true },
@@ -324,7 +324,7 @@ describe("the board's environment", () => {
         ).toEqual({});
     });
 
-    // The driver alone grants a takeover's runner the unwritten-session fallback (issue #822): a
+    // The driver alone grants a takeover's runner the unwritten-session fallback: a
     // member value would hand it to a follow-up, whose missing transcript must stay a refusal.
     it('refuses the unwritten-resume permission from a claim', () => {
         expect(claimEnv({ ...job, env: { BELLOWS_RESUME_MAY_BE_UNWRITTEN: '1' } })).toEqual({});
@@ -389,12 +389,12 @@ describe("the board's environment", () => {
         // chooses; a member's `!` helper riding the claim env into the sync container would be
         // member-controlled code execution, run by git as helper code.
         ['CRED_HELPER', { CRED_HELPER: '!evil' }],
-        // RESTORE is the sync's restore-mode switch (issue #58), and the claim env rides the
+        // RESTORE is the sync's restore-mode switch, and the claim env rides the
         // same sync container: a member value there would flip STARTING claims into restore
         // mode — no fetch, no rebase, a first attempt dead-ending on "the branch is gone" —
         // so the driver alone chooses it.
         ['RESTORE', { RESTORE: '1' }],
-        // The startup sync lock's bounds (issue #307) are the script's defaults; a member value
+        // The startup sync lock's bounds are the script's defaults; a member value
         // riding the claim env into the sync container could shrink the wait to nothing or make
         // every sync steal its neighbour's live lock — so the names stay driver-owned, like
         // RESTORE beside them.
@@ -406,7 +406,7 @@ describe("the board's environment", () => {
         // The turn context is board-rendered (runner-plan.ts); a member value would reach the
         // model through the UserPromptSubmit hook as Factory's own context.
         ['FACTORY_TURN_CONTEXT', { FACTORY_TURN_CONTEXT: 'spoof' }],
-        // The agent container starts as root to launch the tool broker (issue #814): the glibc
+        // The agent container starts as root to launch the tool broker: the glibc
         // loader honours these for that root /bin/sh, env and setpriv before any script line runs.
         [
             'loader variables',

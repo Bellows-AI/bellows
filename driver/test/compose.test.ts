@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
- * What pins the compose driver to the working tree (issue #174). The compose `driver` service
+ * What pins the compose driver to the working tree. The compose `driver` service
  * used to build the baked `runtime` stage of docker/driver.Dockerfile — `driver/dist` inside the
  * image — so a plain `docker compose up` or restart kept running whatever publisher code was
  * baked last, and `/fix N` PRs went out without the closing keyword the current source appends.

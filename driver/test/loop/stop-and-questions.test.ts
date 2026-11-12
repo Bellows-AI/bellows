@@ -186,8 +186,8 @@ describe('a stand-down after the gates (issue #427)', () => {
 
     const retryable = publishFailed('gh pr create: HTTP 502: Bad Gateway', 'transport');
 
-    // Guard, not RED: there is no second try before BEL-253; it keeps the retry from pushing past a stand-down.
-    it('BEL-253 a lease lost after a failed try pushes no second time', async () => {
+    // Guard, not RED: there is no second try before the retry exists; it keeps the retry from pushing past a stand-down.
+    it('a lease lost after a failed try pushes no second time', async () => {
         const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
         const fire = armHeartbeat(board.board, 'lost');
         const runner = stubRunner(async () => ok(), { publishSequence: [retryable, landed] });
@@ -207,7 +207,7 @@ describe('a stand-down after the gates (issue #427)', () => {
         expect(board.board.completed).toEqual([]);
     });
 
-    it('BEL-253 a stop landing during the retry token ask pushes nothing more', async () => {
+    it('a stop landing during the retry token ask pushes nothing more', async () => {
         const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
         const fire = armHeartbeat(board.board, 'stop');
         let asks = 0;
@@ -745,7 +745,7 @@ describe('questions (issue #226)', () => {
 });
 
 /**
- * The configured evidence policy (issue #548): enforced at publication whatever the agent chose to
+ * The configured evidence policy: enforced at publication whatever the agent chose to
  * run, bound to the tree fingerprint the evidence assessed, and reported with the verdict.
  */
 describe('revision-bound evidence', () => {

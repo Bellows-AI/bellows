@@ -1,11 +1,11 @@
 /**
- * Every read of the docker runner's destructive and verdict paths, replayed faulted (issue #869):
+ * Every read of the docker runner's destructive and verdict paths, replayed faulted:
  * the hard kill, the service teardown, the supervised stop, an adoption, the reaper's two verdicts
  * and the dead-service probe. The engine, its skip table and the stopAgent exception are
  * `fixtures/read-faults.ts`; each scenario's world is "something there", so every read that guards
  * a delete or a verdict answers non-empty when clean.
  *
- * Every path reads typed (#869): a cell that holds is a plain test, and nothing is pinned.
+ * Every path reads typed: a cell that holds is a plain test, and nothing is pinned.
  */
 import type { ChildProcess, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -110,7 +110,7 @@ const hardKill: Build<ExecDocker> = async (tap, alias) => {
 
 /**
  * D-ST: the service teardown of one service container. A service shares its group supervisor's
- * network namespace (issue #773), so no network of its own is listed, detached or removed.
+ * network namespace, so no network of its own is listed, detached or removed.
  */
 const serviceTeardown: Build<ExecDocker> = async (tap, alias) => {
     const job = freshJob();
@@ -151,7 +151,7 @@ const stopAgent: Build<ExecDocker> = async (tap, alias) => {
     };
 };
 
-/** D-G1: a lost supervisor's container still answers its inspect: the group is kept (BEL-316). */
+/** D-G1: a lost supervisor's container still answers its inspect: the group is kept. */
 const groupKept: Build<ExecDocker> = async (tap, alias) => {
     const job = freshJob();
     aliasPair(alias, job, 'lease');
@@ -180,7 +180,7 @@ const adoptExited: Build<ExecDocker> = async (tap, alias) => {
     const { exec } = routedDocker(
         either(writes, (args) => {
             if (is(args, 'wait')) return ok('0\n');
-            // The adoption's one listing of the job's runners (#829), then the fence's.
+            // The adoption's one listing of the job's runners, then the fence's.
             if (is(args, 'ps'))
                 return ok(
                     args[args.indexOf('--format') + 1]?.startsWith('{{.Names}}')
@@ -386,7 +386,7 @@ const notWholeThread = (root: string) => ({
 });
 
 /**
- * D-VX (issue #938): the reaper's export of a not-whole thread's volume, then its delete. A faulted read of
+ * D-VX: the reaper's export of a not-whole thread's volume, then its delete. A faulted read of
  * the export (the volume presence, the container's end, its state) must end in a kept volume, never a delete.
  */
 const volumeExportOf =

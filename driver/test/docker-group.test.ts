@@ -91,7 +91,7 @@ const gated: BoardJob = {
     repo: 'Bellows-AI/bellows',
     gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
 };
-/** The same attempt, whose claim lists a reviewer profile (issue #774): its group holds a reviewer container. */
+/** The same attempt, whose claim lists a reviewer profile: its group holds a reviewer container. */
 const reviewing: BoardJob = { ...job, reviewerProfiles: ['security'] };
 const volumeOf = (box: keyof typeof MAILBOXES): string => `src=${ctlVolumeName(job, MAILBOXES[box])},`;
 
@@ -106,7 +106,7 @@ describe('the supervisor container', () => {
         for (const box of ['in', 'out', 'export', 'supervisor', 'gate'] as const) {
             expect(mounted.some((mount) => mount.includes(volumeOf(box)))).toBe(true);
         }
-        // The review mailbox is the reviewer container's and the supervisor's alone (issue #774).
+        // The review mailbox is the reviewer container's and the supervisor's alone.
         expect(mounted.some((mount) => mount.includes(volumeOf('review')))).toBe(false);
         const task = mounted.filter((mount) => mount.includes(taskVolumeName(reviewing)));
         expect(task).toEqual([`type=volume,src=${taskVolumeName(reviewing)},target=${TASK_MOUNT}`]);
@@ -310,7 +310,7 @@ describe('creating and starting the group', () => {
     it('creates the labelled mailbox volumes, then the supervisor, then the exporter', async () => {
         const { calls, deps } = recorder();
         await createGroup(deps, job, SESSION);
-        // Without a reviewer the review mailbox has no volume (issue #774).
+        // Without a reviewer the review mailbox has no volume.
         expect(ctlVolumeArgs(config, job)).toHaveLength(Object.keys(MAILBOXES).length);
         expect(calls.slice(0, ctlVolumeArgs(config, job).length)).toEqual(ctlVolumeArgs(config, job));
         expect(calls.some((argv) => argv.includes(ctlVolumeName(job, MAILBOXES.review)))).toBe(false);

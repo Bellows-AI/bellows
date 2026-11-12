@@ -136,7 +136,7 @@ export const containerView = (config: DriverConfig, of: BoardJob, name: string):
     return { ...view, pod: { ...view.pod, containers: [container] } };
 };
 
-/** The suite's job, with a checkout that declares a gate: its pod holds the gate sidecar (issue #773). */
+/** The suite's job, with a checkout that declares a gate: its pod holds the gate sidecar. */
 export const gatedOf = (of: BoardJob): BoardJob => ({
     ...of,
     repo: 'Bellows-AI/bellows',
@@ -159,7 +159,7 @@ export const gateView = (config: DriverConfig, of: BoardJob): PodView => {
     return { ...view, pod: { ...view.pod, containers: [gate] } };
 };
 
-/** A run's pod with one declared service, seen through its sidecar alone (issue #773). */
+/** A run's pod with one declared service, seen through its sidecar alone. */
 export const serviceSidecarView = (config: DriverConfig, of: BoardJob): PodView => {
     const spec = runnerJobSpec(
         { ...config, servicesEnabled: true },
@@ -210,7 +210,7 @@ export const defaultStepAnswer = (step: StepRequest): StepResult =>
     stepOk(step.kind === 'sync' ? '{"ok":true,"reason":null}\n' : '');
 
 /**
- * The supervised-step channel of an attempt (issue #771): records every step submitted, answers each
+ * The supervised-step channel of an attempt: records every step submitted, answers each
  * through `answer`, and reports only when the test says so — so a run's end is the Job's, as it is
  * for any test that scripts the Job status, unless a test calls `report`.
  */
@@ -278,7 +278,7 @@ export const START = '2026-08-20T06:00:00.000Z';
 
 export const configmapsPath = `/api/v1/namespaces/${namespace}/configmaps`;
 
-/** The checkout claim's path: one ConfigMap per JOB id, shared by every attempt (issue #32). */
+/** The checkout claim's path: one ConfigMap per JOB id, shared by every attempt. */
 export const claimPathFor = (id: string): string => `${configmapsPath}/factory-job-${id}-claim`;
 
 /** The runner pod's agent log read — the verdict's, and the live tail's. */

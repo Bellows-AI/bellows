@@ -8,7 +8,7 @@ import { createStepBroker, type StepBroker } from '../src/step-control.js';
 import type { StepRequest } from '../src/supervisor-contract.js';
 
 /**
- * The control channel's gate-token route (BEL-258): the supervisor's token — and only it — asks for a
+ * The control channel's gate-token route: the supervisor's token — and only it — asks for a
  * GitHub token on behalf of a gate step it is running; the answer is the board's.
  */
 const TOKEN = 'tok';

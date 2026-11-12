@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
- * `factory-gate` and `factory-control` (issue #1061), the two commands the baked skills use for the
+ * `factory-gate` and `factory-control`, the two commands the baked skills use for the
  * gate server and the run-control socket, so the managed allowlist can name them instead of a `curl`
  * whose `*` would take any URL. Driven as real processes against a loopback gate server and a unix
  * socket; the destination is fixed, the arguments only fill a JSON an encoder builds.

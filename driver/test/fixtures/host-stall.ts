@@ -1,5 +1,5 @@
 /**
- * Host stalls (#946, #972): a loaded host takes the CPU away from this process for longer than a lease lasts. The
+ * Host stalls: a loaded host takes the CPU away from this process for longer than a lease lasts. The
  * simulated board, drivers, supervisors and cluster all live in this one process, so a stall freezes the whole
  * world; a watcher on the event loop measures it. The gremlin matches an unexplained interruption against the stalls
  * in its silence; the played board's `loopNow` leaves them out, so a lease is never judged against time nothing ran.

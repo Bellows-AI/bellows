@@ -219,7 +219,7 @@ describe('the step and reaper observers', () => {
         expect(text).toContain('factory_driver_reaper_volume_export_total{result="lost"} 2');
     });
 
-    it('counts a malformed claim by its first offending field (BEL-318)', async () => {
+    it('counts a malformed claim by its first offending field', async () => {
         const metrics = createDriverMetrics({ boardUrl: BOARD });
         metrics.malformedClaim(['leaseToken', 'env']);
         expect(await metrics.render()).toContain('factory_driver_malformed_claims_total{field="leaseToken"} 1');

@@ -3,7 +3,7 @@ import { createBoard } from '../src/board/board.js';
 import { boardJob } from './fixtures/board-job.js';
 
 /**
- * The gate-run record's two board calls (issue #983): the write is lease-fenced and answers whether
+ * The gate-run record's two board calls: the write is lease-fenced and answers whether
  * the row landed; the read answers the rows or null — an unconfirmed read is never an empty one.
  */
 interface Call {

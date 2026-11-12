@@ -620,7 +620,7 @@ describe('verification gates', () => {
         expect(stack.stack.released).toEqual([`${gatedJob(1).id}/bellows`]);
     });
 
-    // The worktree (issue #35) is the checkout the gates share with the coding agent: the
+    // The worktree is the checkout the gates share with the coding agent: the
     // environment is acquired, and every gate runs, in `<root id>/<repo segment>` —
     // the tree the run edits — never in the pristine clone. The acquire repeats before every
     // gate: the cooldown may have torn the environment down mid-run, and acquire is the revive.
@@ -649,7 +649,7 @@ describe('verification gates', () => {
 
         expect(stack.stack.registered).toBe(1);
         expect(stack.stack.unregistered).toBe(1);
-        // No gate URL is minted for the agent any more (BEL-88): it asks the control socket.
+        // No gate URL is minted for the agent any more: it asks the control socket.
         expect(stack.stack.advertised).toBe('');
     });
 
@@ -702,7 +702,7 @@ describe('verification gates', () => {
         expect(acquired).toEqual([key, key, key]);
     });
 
-    // A gate's own `timeout:` (issue #576) reaches the manager in ms; an undeclared one stays undefined.
+    // A gate's own `timeout:` reaches the manager in ms; an undeclared one stays undefined.
     it("hands each declared gate's timeout to the manager in ms", async () => {
         const timed: BoardJob = {
             ...gatedJob(1),

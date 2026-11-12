@@ -76,7 +76,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         }, overrides);
     };
 
-    // The adopted run's Job is kept (issue #821): if this claim is lost before its verdict lands, the
+    // The adopted run's Job is kept: if this claim is lost before its verdict lands, the
     // next claim adopts the same run again; its Secrets go once it is read.
     it('reads its verdict, log and session, keeps its Job for the next claim, and holds the checkout', async () => {
         const { request, calls } = withRunners([priorItem({ succeeded: 1 })]);
@@ -107,7 +107,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect(JSON.parse(held.body)).toMatchObject({ data: { holder: NEW_TOKEN } });
     });
 
-    // Once its read succeeded the run is this attempt's (issue #821): a Secret delete refused
+    // Once its read succeeded the run is this attempt's: a Secret delete refused
     // after it is cleanup for later — the Job stays as its anchor, the claim stays held, nothing
     // is run again; the reaper's Secret-first pass (or the owner reference) takes the Secret.
     it('answers the read run when its Secret cannot be deleted, keeping the Job as the cleanup anchor', async () => {
@@ -258,7 +258,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
     });
 
-    // BEL-127: a node-killed pod keeps ContainerStatusUnknown statuses whose times are null; that is a
+    // a node-killed pod keeps ContainerStatusUnknown statuses whose times are null; that is a
     // readable pod, never a shape refusal that blocks the adoption.
     it('takes away, rather than blocks on, a killed pod whose container times are null', async () => {
         const unknown = {
@@ -1138,7 +1138,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect(deletedPrior(calls)).toBe(false);
     });
 
-    // BEL-160: the sweep after the read run meets a pod stuck terminating on a gone node.
+    // the sweep after the read run meets a pod stuck terminating on a gone node.
     it('hands an adoption whose sweep meets an older pod stuck terminating back as a blocked interruption, the read run kept', async () => {
         const { request: base, calls } = earlier({ item: priorItem({ succeeded: 1 }) });
         const stuck = {
@@ -1202,7 +1202,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
     });
 
     // A node drained mid-finalization: the pod is terminating, its agent exited, its supervisor still
-    // running — the group a claim must wait out, never sweep (#824).
+    // running — the group a claim must wait out, never sweep.
     it('waits out a supervisor finalizing on a terminating pod, then adopts its run', async () => {
         let ended = false;
         const terminating = { deletionTimestamp: '2026-01-01T00:00:00Z' };
@@ -1254,7 +1254,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         );
         expect((adopted as AdoptedRun | null)?.outcome.output).toContain('did the work');
         expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
-        // The read run's Job is kept for a later claim (#821); only its Secrets go.
+        // The read run's Job is kept for a later claim; only its Secrets go.
         expect(
             calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
         ).toBe(false);

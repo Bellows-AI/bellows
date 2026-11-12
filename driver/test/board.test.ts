@@ -94,7 +94,7 @@ describe('the worker token', () => {
 
     /**
      * The runtime sample travels inside the progress body, verbatim. A vitals-only sample
-     * carries no `services` key at all — the byte-identical pin (issue #60): a job whose
+     * carries no `services` key at all — the byte-identical pin: a job whose
      * attempt declared no services must put exactly what it always put on the wire.
      */
     it('carries the runtime sample verbatim, with services only when there are any', async () => {
@@ -256,7 +256,7 @@ describe('the claimed job', () => {
     });
 });
 
-describe('the claim’s skill pin (BEL-273)', () => {
+describe('the claim’s skill pin', () => {
     const PIN = [
         {
             name: 'org-style',
@@ -282,7 +282,7 @@ describe('the claim’s skill pin (BEL-273)', () => {
         expect(job).not.toHaveProperty('skillPinUnreadable');
     });
 
-    it('reads a claim skillHidden as the built-in names to hide, and an absent one as unreadable (BEL-286)', async () => {
+    it('reads a claim skillHidden as the built-in names to hide, and an absent one as unreadable', async () => {
         const hidden = [{ name: 'factory-jira', source: 'builtin', reason: 'needs_connection', connection: 'jira' }];
         const ok = await claimWith({ skillHidden: hidden });
         expect(ok?.skillHidden).toEqual(['factory-jira']);
@@ -888,7 +888,7 @@ describe('the complete verdict', () => {
 
     it('carries the verdict-time reclaim the board queued beside the lease state', async () => {
         // The board queues a done thread's reclaim, claimed by this worker, in the same
-        // lease-guarded transaction as the verdict (issue #821), so the driver reads both from the
+        // lease-guarded transaction as the verdict, so the driver reads both from the
         // one complete round trip — no separate thread read to race a follow-up's insertion against.
         const { calls, fetch } = recorder(() =>
             Response.json(
@@ -940,7 +940,7 @@ describe('the complete verdict', () => {
     });
 
     it('carries failureKind on the wire when the verdict names one, and no key when it does not', async () => {
-        // The structured failure kind (issue #339) rides the verdict like agentTurns does: present
+        // The structured failure kind rides the verdict like agentTurns does: present
         // only when there is one, so a success or a pre-column row is stored null, never zero-ish.
         const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', threadDone: false }, { status: 200 }));
         const board = boardOn(fetch);

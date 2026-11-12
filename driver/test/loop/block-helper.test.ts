@@ -190,7 +190,7 @@ describe('block-helper steps (issue #207)', () => {
         }
     );
 
-    // BEL-302: a lost helper supervisor is a node loss only on the executor's confirmation that the group was taken away.
+    // a lost helper supervisor is a node loss only on the executor's confirmation that the group was taken away.
     it.each<[string, () => Error, () => Promise<GroupTakenAway>, Record<string, true>]>([
         [
             'a closed channel with the group confirmed taken away',
@@ -361,7 +361,7 @@ describe('block-helper steps (issue #207)', () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         await started;
 
-        // The helper was handed the stand-down's signal and it fired (issue #488): cancelled, not only raced.
+        // The helper was handed the stand-down's signal and it fired: cancelled, not only raced.
         expect(seen?.aborted).toBe(true);
         expect(runCalls).toEqual([]);
         expect(released).toEqual([job(1).id]);
@@ -397,7 +397,7 @@ describe('block-helper steps (issue #207)', () => {
                 [{ ok: true, output: { decided: 'up-to-date' }, control: 'conclude' }]
             );
             // A conclusion is a setup refusal like any other, and no runner is coming to release
-            // the checkout claim (issue #469).
+            // the checkout claim.
             const released: string[] = [];
             runner.releaseFence = async (fencedJob) => {
                 released.push(fencedJob.id);

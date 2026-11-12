@@ -14,7 +14,7 @@ import type { GateStepRequest } from '../src/supervised-steps.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 
 /**
- * The record of each gate run (issue #983): the ad-hoc endpoint writes a `running` row durably before
+ * The record of each gate run: the ad-hoc endpoint writes a `running` row durably before
  * the gate executes — a write the board did not take refuses the call and the gate never starts — and
  * exactly one terminal row on every exit; the tree is probed inside the checkout's queue, just before
  * and just after the gate, so a run queued behind another never reads the other's tree. One real
@@ -60,7 +60,7 @@ const until = async (ready: () => boolean): Promise<void> => {
 };
 
 type Probe = GateLedger['probe'];
-// The HEAD-bound fingerprint is never what a row stores: the content key is (issue #983).
+// The HEAD-bound fingerprint is never what a row stores: the content key is.
 const BEFORE = { fingerprint: 'f:before', content: 'h:before', mutatedSince: null };
 const AFTER = { fingerprint: 'f:after', content: 'h:after', mutatedSince: false };
 

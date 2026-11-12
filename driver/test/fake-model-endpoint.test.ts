@@ -11,7 +11,7 @@ import { REPO_ROOT as ROOT, readLaneScript } from './fixtures/repo-files.js';
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /*
- * The scripted model endpoint behind the `test:jobs` cooperative-Stop lane (issue #442). The lane
+ * The scripted model endpoint behind the `test:jobs` cooperative-Stop lane. The lane
  * itself needs docker and the real CLIs; what is pinned here is the endpoint's protocol, so a lane
  * failure is never the stub's fault, and the lane's wiring.
  */

@@ -1,5 +1,5 @@
 /**
- * `Runner.supervisorServing` on docker (#928): whether a prior group's supervisor can still pick up a rebind.
+ * `Runner.supervisorServing` on docker: whether a prior group's supervisor can still pick up a rebind.
  * Only a container the daemon says exited or no longer exists, or a log carrying the served line, is an end;
  * every read that fails to say so is inconclusive. The read-fault rows cannot go red on the code before the
  * member existed: they pin the unconfirmed-read rule.

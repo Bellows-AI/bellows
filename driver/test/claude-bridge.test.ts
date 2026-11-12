@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
- * The runner end of AskUserQuestion (issue #226): docker/claude-executor/claude-bridge.cjs run
+ * The runner end of AskUserQuestion: docker/claude-executor/claude-bridge.cjs run
  * against a fake `claude` on PATH and the task supervisor's mailbox played by the test — the bridge
  * holds no control credential and never speaks HTTP, it writes a question file and reads an answer
  * file. The fake CLI records its
@@ -289,7 +289,7 @@ describe('claude-bridge argv', () => {
     });
 
     // A driver lost between reporting the session it minted and the CLI's first transcript write
-    // leaves the board an id with nothing behind it (issue #822): the recovery's `--resume` would
+    // leaves the board an id with nothing behind it: the recovery's `--resume` would
     // be refused, so on a takeover or handover — the driver's BELLOWS_RESUME_MAY_BE_UNWRITTEN —
     // the bridge starts that same id instead.
     const TAKEOVER = { BELLOWS_RESUME_MAY_BE_UNWRITTEN: '1' };

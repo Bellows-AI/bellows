@@ -47,7 +47,7 @@ const withAgentLog = (answer: (path: string) => K8sResponse) =>
     routed((method, path) => (method === 'GET' && isAgentLogRead(path) ? answer(path) : undefined));
 
 // ==============================================================================================
-// Gates under kubernetes (issue #773): the declared image as a native sidecar of the attempt's
+// Gates under kubernetes: the declared image as a native sidecar of the attempt's
 // pod, running the gate loop over the gate mailbox; a gate is a supervised step, never a Job.
 // ==============================================================================================
 
@@ -179,7 +179,7 @@ describe('the gate sidecar', () => {
         expect(agent.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
     });
 
-    // BEL-60 slice 4: the token redaction lives in the supervisor script, so the pod must run that script.
+    // The token redaction lives in the supervisor script, so the pod must run that script.
     it('runs the one supervisor script, where a gate step’s token is redacted, as the supervisor container', () => {
         const supervisor = podOf(gated).containers.find((candidate) => candidate.name === 'supervisor')!;
         expect(supervisor.command).toEqual(['node', '-e', supervisorScript]);
@@ -220,7 +220,7 @@ describe('the gate sidecar', () => {
 });
 
 // ==============================================================================================
-// The reviewer sidecar (issue #774): a claim that lists reviewer profiles gets one dormant
+// The reviewer sidecar: a claim that lists reviewer profiles gets one dormant
 // reviewer container in the task pod, beside the supervisor, serving the review mailbox.
 // ==============================================================================================
 
