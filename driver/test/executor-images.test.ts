@@ -1360,9 +1360,7 @@ describe('the shared executor skills', () => {
 
     it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {
         expect(existsSync(join(ROOT, '.opencode/skills'))).toBe(false);
-        expect(readdirSync(join(ROOT, '.claude/skills'))).toEqual(
-            expect.arrayContaining(['fix', 'doc-maintenance'])
-        );
+        expect(readdirSync(join(ROOT, '.claude/skills'))).toEqual(expect.arrayContaining(['fix', 'doc-maintenance']));
     });
 });
 

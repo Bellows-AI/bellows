@@ -12,7 +12,10 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
  * comments, the chart README). Each pin below is a fact the issue demands be stated; a docs edit
  * that drops one fails here instead of at an operator's cluster.
  */
-const kubernetesDocs = readFileSync(join(ROOT, 'docs/kubernetes.md'), 'utf8');
+// The stated limits live in kubernetes-limits.md; the pins read both pages as one.
+const kubernetesDocs =
+    readFileSync(join(ROOT, 'docs/kubernetes.md'), 'utf8') +
+    readFileSync(join(ROOT, 'docs/kubernetes-limits.md'), 'utf8');
 const netpolTemplate = readFileSync(join(ROOT, 'charts/factory/templates/runner-networkpolicy.yaml'), 'utf8');
 const chartValues = readFileSync(join(ROOT, 'charts/factory/values.yaml'), 'utf8');
 const agentsDoc = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');

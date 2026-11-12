@@ -31,8 +31,10 @@ prose that no file can state on its own.
 Hard limits, enforced per file:
 
 - **60 lines** for a normal area doc. **120** only for an area with several independent surfaces
-  (jobs, kubernetes, design-system). A runbook of literal commands (`eks-runbook.md`) is exempt from
+  (auth, design-system, jobs, kubernetes). A runbook of literal commands (`eks-runbook.md`) is exempt from
   the cap but not from the rules.
+- **300 characters** per table cell: a long cell dodges the line cap. `core/test/docs-cap.test.ts`
+  enforces the caps and that every path resolves.
 - Every row and every bullet carries a path. **A claim with no path gets deleted, not researched.**
 - The table comes first. If a reader's question is answered by "which file", they never read past it.
 
