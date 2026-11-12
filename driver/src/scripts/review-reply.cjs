@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 
 /*
@@ -62,14 +63,29 @@ const GH_OUTPUT_MAX_BUFFER_BYTES = 16777216;
 const KINDS = ['general', 'inline', 'thread', 'resolve'];
 const STATUSES = ['planned', 'refused'];
 
+/**
+ * @typedef {{ owner: string, repo: string, number: number }} Ref
+ * @typedef {{ id: string, kind: string, action: 'refused', reason: string }
+ *   | { id: string, kind: string, action: 'resolve' }
+ *   | { id: string, kind: string, action: 'reply', args: string[] }} Execution
+ * @typedef {Record<string, { found: boolean, isResolved: boolean }>} ThreadState
+ */
+
+/** @param {unknown} v */
 const str = (v) => (typeof v === 'string' ? v : null);
 
+/**
+ * @param {string | undefined} repo
+ * @param {string | undefined} pr
+ * @returns {Ref | null}
+ */
 function validateRef(repo, pr) {
-    const m = /^([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)$/.exec(repo);
-    if (!m || !/^\d{1,9}$/.test(pr)) return null;
+    const m = /^([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)$/.exec(/** @type {string} */ (repo));
+    if (!m || !/^\d{1,9}$/.test(/** @type {string} */ (pr))) return null;
     return { owner: m[1], repo: m[2], number: Number(pr) };
 }
 
+/** @param {string[]} args */
 function gh(args) {
     return execFileSync('gh', args, {
         env: process.env,
@@ -79,11 +95,17 @@ function gh(args) {
     });
 }
 
+/** @param {unknown} error */
 function bound(error) {
     const text = String(error);
     return text.length > ERROR_MAX ? `${text.slice(0, ERROR_MAX)}${TRUNCATED_MARKER}` : text;
 }
 
+/**
+ * @param {string} id
+ * @param {string} kind
+ * @param {any} error a caught value, opaque
+ */
 function classify(id, kind, error) {
     const text = String((error && error.stderr) || (error && error.message) || error);
     const code = /HTTP (\d{3})/.exec(text)?.[1] ?? null;
@@ -94,11 +116,18 @@ function classify(id, kind, error) {
     return { id, kind, status: 'refused', reason: bound(text) };
 }
 
+/**
+ * @param {unknown} error
+ * @param {Ref | null} ref
+ */
 function refusal(error, ref) {
     return JSON.stringify({ ok: false, version: VERSION, schema: SCHEMA, ref, error: bound(error) });
 }
 
-/** Parse and shape-check REPLY_PLAN against `ref`; returns a plan or a refusal string. */
+/**
+ * Parse and shape-check REPLY_PLAN against `ref`; returns a plan or a refusal string.
+ * @param {Ref} ref
+ */
 function parsePlan(ref) {
     let plan;
     try {
@@ -121,7 +150,12 @@ function parsePlan(ref) {
     return plan;
 }
 
-/** The gh args for a reply target's mutation, or an ERROR_MAX-bounded refusal string. */
+/**
+ * The gh args for a reply target's mutation, or an ERROR_MAX-bounded refusal string.
+ * @param {any} target one plan target, opaque parsed JSON
+ * @param {Ref} ref
+ * @returns {string[] | string}
+ */
 function replyArgs(target, ref) {
     const pulls = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
     const issues = `repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
@@ -143,7 +177,12 @@ function replyArgs(target, ref) {
     return ['api', `${pulls}/comments/${anchorId}/replies`, '-f', `body=${target.reply}`];
 }
 
-/** One plan target -> one execution, or an ERROR_MAX-bounded refusal string on malformed input. */
+/**
+ * One plan target -> one execution, or an ERROR_MAX-bounded refusal string on malformed input.
+ * @param {any} target one plan target, opaque parsed JSON
+ * @param {Ref} ref
+ * @returns {Execution | string}
+ */
 function toExecution(target, ref) {
     if (
         typeof target.id !== 'string' ||
@@ -166,7 +205,13 @@ function toExecution(target, ref) {
 // Pass 1 — validate EVERY target into an executable list before the first gh call. A malformed
 // target anywhere is ONE terminal refusal: never a partially-executed plan whose refusals a
 // retry would replay on top of already-landed mutations.
+/**
+ * @param {any[]} targets
+ * @param {Ref} ref
+ * @returns {Execution[] | string}
+ */
 function toExecutions(targets, ref) {
+    /** @type {Execution[]} */
     const executions = [];
     for (const target of targets) {
         const x = toExecution(target, ref);
@@ -176,8 +221,14 @@ function toExecutions(targets, ref) {
     return executions;
 }
 
-/** Live resolution state of every thread a resolve execution targets, read via GraphQL. */
+/**
+ * Live resolution state of every thread a resolve execution targets, read via GraphQL.
+ * @param {Execution[]} resolveExecutions
+ * @param {Ref} ref
+ * @returns {ThreadState}
+ */
 function preflightResolveState(resolveExecutions, ref) {
+    /** @type {ThreadState} */
     const threadState = {};
     if (!resolveExecutions.length) return threadState;
     const gql = JSON.parse(
@@ -206,6 +257,10 @@ function preflightResolveState(resolveExecutions, ref) {
     return threadState;
 }
 
+/**
+ * @param {Execution} x
+ * @param {ThreadState} threadState
+ */
 function executeResolve(x, threadState) {
     const st = threadState[x.id];
     if (!st || !st.found) return { id: x.id, kind: 'resolve', status: 'noop', reason: 'not_found' };
@@ -219,6 +274,10 @@ function executeResolve(x, threadState) {
 }
 
 // Pass 2 — execute, appending one result per target in plan order.
+/**
+ * @param {Execution[]} executions
+ * @param {ThreadState} threadState
+ */
 function executeAll(executions, threadState) {
     const results = [];
     for (const x of executions) {
@@ -263,7 +322,7 @@ function reply() {
 try {
     const out = reply();
     if (typeof out === 'string') process.stdout.write(`${out}\n`);
-} catch (e) {
+} catch (/** @type {any} */ e) {
     const ref = validateRef(process.env.REPO, process.env.PR);
     const message = (e && e.stderr && String(e.stderr)) || (e && e.message && String(e.message)) || String(e);
     process.stdout.write(`${refusal(message, ref)}\n`);

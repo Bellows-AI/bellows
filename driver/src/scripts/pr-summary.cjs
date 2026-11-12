@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 
 /*
@@ -52,6 +53,10 @@ const NUMSTAT_BINARY = '-';
  */
 const TEST_FILE = /(^|\/)(tests?|__tests__)(\/|$)|\.(test|spec)\.[^/]+$|(^|\/)test_[^/]*$/i;
 
+/**
+ * @param {string[]} args
+ * @returns {string}
+ */
 function git(args) {
     return execFileSync('git', args, {
         cwd: process.cwd(),
@@ -62,8 +67,16 @@ function git(args) {
     });
 }
 
-/** `adds\tdels\tpath` rows (binary rows spell `-\t-\t`); churn is adds+dels, path is the rest. */
+/** @typedef {[string, number]} ChurnRow */
+/** @typedef {{ subject: string, files: ChurnRow[] }} Commit */
+
+/**
+ * `adds\tdels\tpath` rows (binary rows spell `-\t-\t`); churn is adds+dels, path is the rest.
+ * @param {string} numstat
+ * @returns {ChurnRow[]}
+ */
 function churnRows(numstat) {
+    /** @type {ChurnRow[]} */
     const files = [];
     for (const row of numstat.split('\n')) {
         const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(row);
@@ -80,8 +93,11 @@ function churnRows(numstat) {
  * subject and its per-file churn, newest first as git prints them. A merge shows no numstat
  * (weight zero downstream); a subject with embedded newlines contributes its first line, the
  * same line `--format=%s` alone would have shown.
+ * @param {string} logOutput
+ * @returns {Commit[]}
  */
 function parseCommits(logOutput) {
+    /** @type {Commit[]} */
     const commits = [];
     for (const record of logOutput.split(RECORD_SEPARATOR)) {
         const lines = record.split('\n').filter((line) => line.trim());
@@ -100,6 +116,9 @@ function parseCommits(logOutput) {
  * final diff still changes, the smaller of the two churns. The min is what keeps reverted or
  * superseded work from advertising itself, and keeps a commit from outscoring the final diff
  * it actually left behind. Split by test-ness: the source half earns the source tier.
+ * @param {ChurnRow[]} files
+ * @param {Map<string, number>} finalChurn
+ * @returns {{ source: number, tests: number }}
  */
 function survivingSplit(files, finalChurn) {
     let source = 0;
@@ -128,6 +147,10 @@ function survivingSplit(files, finalChurn) {
  * is the branch's only commit the selection answers null and the driver's plan.title fallback
  * lands anyway — the same string it would have been. The commit itself keeps its place in the
  * body's commit list.
+ * @param {Commit[]} commits
+ * @param {Map<string, number>} finalChurn
+ * @param {string | null} backstop
+ * @returns {string | null}
  */
 function selectTitle(commits, finalChurn, backstop) {
     const eligible = backstop ? commits.filter((commit) => normalizeTitle(commit.subject) !== backstop) : commits;
@@ -158,6 +181,8 @@ const CONTROL_C1_END = 0x9f;
  * Control characters stripped (a subject can carry a \r), trimmed, then truncated on CODE
  * POINTS — a multi-byte character at the boundary must not become a lone surrogate in a PR
  * title. Empty after cleaning means no title: the caller falls back per half.
+ * @param {string} subject
+ * @returns {string | null}
  */
 function normalizeTitle(subject) {
     const cleaned = [...subject]
@@ -179,8 +204,10 @@ function summarize() {
     const base = (process.env.BASE ?? '').trim();
     if (!base) return { title: null, body: null };
 
+    /** @type {Commit[]} */
     let commits;
     let shortstat;
+    /** @type {string | null} */
     let title = null;
     try {
         const log = git(['log', '--numstat', '--format=%x1e%H%x1f%s', `${base}..HEAD`]);
