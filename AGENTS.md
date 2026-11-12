@@ -142,7 +142,7 @@ npm test                        # offline: no token, no quota, no database, no d
 npm run test:changed            # iterate: suites the diff vs origin/main reaches (arg: other base); npm test stays the gate
 npm run test:executors          # focused board/driver/runner/telemetry suites
 npx vitest run --project driver   # one package's in-process suites; --project spawn: the spawning files
-npm run typecheck               # tsc -b: src, every <pkg>/tsconfig.test.json and e2e/tsconfig.json
+npm run typecheck               # tsc -b: src, every <pkg>/tsconfig.test.json and e2e/tsconfig.json, then the `// @ts-check` driver scripts
 npm run lint                    # biome check; npm run format / lint:fix are the fixers
 npm run lint:changed            # biome on the branch's files only (vs origin/main), niced
 npm run verify:ui               # real chromium; needs postgres + playwright install chromium

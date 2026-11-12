@@ -22,6 +22,14 @@ describe('npm run typecheck covers every test directory', () => {
         expect(include).toContain('test/**/*.ts');
     });
 
+    it('the driver container scripts that opt in with // @ts-check are checked by npm run typecheck', () => {
+        const scripts = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+            scripts: { typecheck: string };
+        };
+        expect(scripts.scripts.typecheck).toContain('tsc -p driver/tsconfig.scripts.json');
+        expect(readConfig('driver/tsconfig.scripts.json').include).toContain('src/scripts/*.cjs');
+    });
+
     it('web/test covers its .tsx tests', () => {
         expect(readConfig('web/tsconfig.test.json').include).toContain('test/**/*.tsx');
     });
