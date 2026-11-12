@@ -88,7 +88,7 @@ const mustFollowUp = (root: string, command: string, userId: string | null): Pro
     });
 
 describe.skipIf(!enabled)('retries', () => {
-    // The whole point of retry (issue #326): a finished run whose session was never reported is
+    // The whole point of retry: a finished run whose session was never reported is
     // recoverable in place. The new run is a
     // member of the SAME thread (same root, so the same worktree) and carries no session of its
     // own: it starts fresh.
@@ -161,7 +161,7 @@ describe.skipIf(!enabled)('retries', () => {
         expect(claim).toMatchObject({ id: retry.id, resumeSessionId: null, followUp: false });
     });
 
-    // Recovery keeps the session on the row it recovers (issue #822); the explicit fresh retry is
+    // Recovery keeps the session on the row it recovers; the explicit fresh retry is
     // still a new row with none, however the head's run was recovered on the way.
     it('starts a retry fresh after a recovered attempt', async () => {
         const { id } = await mustCreate(store.create('drive me', null, { repo: null, executor: null }));
@@ -193,7 +193,7 @@ describe.skipIf(!enabled)('retries', () => {
 });
 
 /*
- * Follow-up and retry answer one thread-eligibility contract (#698), so each rule runs for both.
+ * Follow-up and retry answer one thread-eligibility contract, so each rule runs for both.
  * Every op finishes its task its own way — follow-up from a run that reported a session, retry from
  * one that never did (its own acceptance shape) — except where a rule needs a thread of two.
  * The per-thread advisory lock both take is pinned with the other lock waits, in

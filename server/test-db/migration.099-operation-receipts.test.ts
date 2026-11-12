@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 
-/** BEL-61: 099 adds the operation receipt table, its unique logical key and its status check, expand only. */
+/** 099 adds the operation receipt table, its unique logical key and its status check, expand only. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);

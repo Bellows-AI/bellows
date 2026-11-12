@@ -38,7 +38,7 @@ beforeAll(() => {
     plain = createJobStore({ sql, orgId: ORG });
 });
 
-/** The author's own managed Jira connection (097); its id is the explicit selection (BEL-59: a binding). */
+/** The author's own managed Jira connection (097); its id is the explicit selection: a binding. */
 async function jiraConnection(): Promise<string> {
     return (await oauthConnection(sql, ORG, USER.id, { account: 'agent@example.com' })).id;
 }
@@ -92,7 +92,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
     });
 
     it('a Jira skill on a task with no connection is not claimed: a missing requirement, no refusal text', async () => {
-        // ATLASSIAN_* env never stands in for a connection (BEL-59: the claim excludes it, spending no attempt).
+        // ATLASSIAN_* env never stands in for a connection: the claim excludes it, spending no attempt).
         const store = storeWithEnv({ ATLASSIAN_SITE: 'site-sentinel' });
         const id = await queue(store, ['factory-jira']);
         expect(await store.claim(WORKER, LEASE_SECONDS)).toBeNull();

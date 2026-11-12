@@ -16,7 +16,7 @@ import { expireLease, oauthConnection, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
- * BEL-286: a job row decides once, when its skills are pinned, which skills the CLI must not list (`skill_hidden`):
+ * a job row decides once, when its skills are pinned, which skills the CLI must not list (`skill_hidden`):
  * a switched-off skill, or one whose required connection the task does not hold. Every path that makes a row carries
  * or re-decides it (docs/skills.md). Each case takes its own organization.
  */

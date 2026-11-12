@@ -8,7 +8,7 @@ import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
 
 /**
- * The long-poll settle read (issue #323): `waitForSettle` holds until the named job's THREAD
+ * The long-poll settle read: `waitForSettle` holds until the named job's THREAD
  * settles — the chain head (newest member) reaches a terminal status, or an open PR wait
  * (036) stands on the thread (`terminal` / `parked`) — answering `timeout` at the deadline,
  * each with the thread's root and head identity, or null for an id the org does not know. The predicate is deliberately the same one `listTasksOf` buckets

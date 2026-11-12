@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 
-/** BEL-54: 093 adds the secret reference columns to env_var and keeps plaintext rows readable. */
+/** 093 adds the secret reference columns to env_var and keeps plaintext rows readable. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);

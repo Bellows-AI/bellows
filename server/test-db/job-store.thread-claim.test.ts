@@ -147,7 +147,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
     // rows of one thread — two runners into one root-keyed worktree. The claim must therefore
     // take the thread root's lock BEFORE deciding, and never claim through one it cannot take. It
     // only TRIES the lock (it holds the candidate's row, and every thread-wide writer takes the
-    // lock first and then waits on a row — BEL-157), so a held lock skips the thread for this
+    // lock first and then waits on a row), so a held lock skips the thread for this
     // poll. This holds that lock from the outside, on a connection of its own, with the exact key
     // derivation job-store.ts uses (copied, like the driver copies its board-side patterns — the
     // suites share no helper for it).

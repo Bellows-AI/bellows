@@ -5,7 +5,7 @@ import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
 
-/** BEL-59: 094 extends connector_connection in place, adds grants and bindings, and bridges old pods. */
+/** 094 extends connector_connection in place, adds grants and bindings, and bridges old pods. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);

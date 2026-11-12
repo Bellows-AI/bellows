@@ -10,7 +10,7 @@ import type { SecretRef } from '../src/secrets/secret-store.js';
 import { assertTestDatabase } from './harness.js';
 import { MutableKeys, testIdentity, utf8 } from './secrets-postgres-harness.js';
 
-/** BEL-137: 092 upgrades a database that stops at 091 and already holds secret versions. */
+/** 092 upgrades a database that stops at 091 and already holds secret versions. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);

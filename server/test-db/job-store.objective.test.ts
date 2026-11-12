@@ -123,7 +123,7 @@ describe.skipIf(!enabled)('objective mode — database', () => {
         await expireLease(sql, first.id);
 
         // The dead worker's lease is reclaimed in place: same row, fresh token, the expiry its
-        // interruption rather than a spent attempt (issue #822).
+        // interruption rather than a spent attempt.
         const second = await claim();
         expect(second).toMatchObject({ id: first.id, attempts: 1, claimSeq: 2 });
         expect(second.leaseToken).not.toBe(first.leaseToken);

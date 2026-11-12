@@ -7,7 +7,7 @@ import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
 
 /**
- * BEL-61: 100 ends the legacy Jira API-token connections. A database that ran 099 holds active legacy rows with
+ * 100 ends the legacy Jira API-token connections. A database that ran 099 holds active legacy rows with
  * their tokens, bindings to them and queued tasks waiting on them; 100 disconnects the rows, scrubs the tokens,
  * clears the rollout projection and leaves each queued task as an open requirement the claim never offers.
  */

@@ -10,7 +10,7 @@ import { useTestDb } from './harness.js';
 import { mustCreate, randomGithubId, spendInterruptionBudget, testOrg } from './fixtures.js';
 
 /**
- * The merged-PR closure against a real database (issue #390): a verified merge delivery closes
+ * The merged-PR closure against a real database: a verified merge delivery closes
  * every thread published to that PR — done-stamped with no local actor, queued work stopped,
  * waits cancelled `pr merged`, the reclaim queued only when every member is terminal — while a
  * plain close, another org/repo/PR, a redelivery and a manual Reopen all leave exactly the
@@ -305,7 +305,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         `;
         expect(rounds[0]!.n).toBe(0);
         // threadDone-true verdict: the reclaim is queued claimed by the completing worker, and the
-        // marker waits for its ack (issue #821).
+        // marker waits for its ack.
         expect((await reclaimRowsOf(root)).length).toBe(1);
         expect(await reclaimedAtOf(root)).toBeNull();
         if (done.result !== 'ok' || !done.reclaimId) throw new Error('no reclaim was issued');
@@ -383,7 +383,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
     });
 
     it('a stamped stop whose worker died before the park settles at the next claim — and reclaims', async () => {
-        // The arm between stop and suspend (#152): the stop only stamps `cancel_requested_at`
+        // The arm between stop and suspend: the stop only stamps `cancel_requested_at`
         // (the lease is live), the worker dies before it can park, the lease expires, and the
         // next claim lands the row `stopped`. A merge-marked thread closes through that settle —
         // the tree cannot wait for a verdict that is never coming.
@@ -504,7 +504,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         expect((await jobRowOf(root)).done_at).not.toBeNull();
         // The closure's inline settle queued a reclaim row moments before the threadDone stamp;
         // the verdict took it over, claimed by its worker — one tree, one work order — and the
-        // marker waits for the ack (issue #821).
+        // marker waits for the ack.
         expect(await sql`select claimed_by from task_reclaim where org_id = ${ORG} and root_job_id = ${root}`).toEqual([
             { claimed_by: WORKER },
         ]);
@@ -526,7 +526,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         `;
         expect(marker[0]!.n).toBe(0);
         // The retry lands; the follow-up behind it now names the queued retry, not task_done —
-        // both read the thread, and a queued member owns the turn (#698).
+        // both read the thread, and a queued member owns the turn.
         await mustRetry(root);
         expect(await store.createFollowUp(root, 'after reopen', null)).toBe('not_finished');
 

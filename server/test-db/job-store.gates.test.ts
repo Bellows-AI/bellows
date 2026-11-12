@@ -143,7 +143,7 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
         `;
         expect(deferral?.deferred).toBe(true);
 
-        // Deferred, never failed (issue #822): once the reader is back and the deferral lapsed,
+        // Deferred, never failed: once the reader is back and the deferral lapsed,
         // the next claim resolves the plan.
         failing = false;
         await lapseDeferral(sql, created.id);
