@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 // Installs a claim's pinned org and workspace skills into a directory the agent CLIs read as a skills directory
 // (`<TARGET_DIR>/<name>/SKILL.md`): each version of the pin is read from the control endpoint's
@@ -53,7 +54,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SOURCES = new Set(['org', 'workspace']);
-/** The checkout directories the task's CLI scans; a missing or malformed list throws (inconclusive), never "none". */
+/**
+ * The checkout directories the task's CLI scans; a missing or malformed list throws (inconclusive), never "none".
+ * @param {string | undefined} list
+ */
 const scannedDirsOf = (list) => {
     const dirs = (list ?? '').split(',');
     if (dirs.some((dir) => dir === '' || path.isAbsolute(dir) || dir.split('/').includes('..'))) {
@@ -84,8 +88,18 @@ const OCTAL = 8;
 
 class Unavailable extends Error {}
 
+/** @typedef {{ name: string, source: string, versionId: string, sha256: string }} Pin */
+/** @typedef {{ url: string | undefined, token: string | undefined, delivery: string, timeoutMs: number }} Source */
+/** @typedef {{ path: string, dir: boolean, bytes: Buffer }} TarEntry */
+/** @typedef {{ kind: 'absent' } | { kind: 'file', text?: string } | { kind: 'dir', names: string[] } | { kind: 'other' }} Probe */
+
+/** @param {string | Buffer} bytes */
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
+/**
+ * @param {string | undefined} raw
+ * @returns {Pin[]}
+ */
 const pinOf = (raw) => {
     const list = JSON.parse(raw || '');
     if (!Array.isArray(list)) throw new Error('PIN is not a list');
@@ -106,9 +120,14 @@ const pinOf = (raw) => {
     return list;
 };
 
-/** One bundle's bytes from the control endpoint, checked against the pin's digest. */
+/**
+ * One bundle's bytes from the control endpoint, checked against the pin's digest.
+ * @param {Pin} entry
+ * @param {Source} source
+ */
 const readBundle = async (entry, source) => {
     let response;
+    /** @type {Buffer | undefined} */
     let bytes;
     try {
         response = await fetch(`${source.url}/input/${encodeURIComponent(source.delivery)}/${entry.versionId}`, {
@@ -117,33 +136,49 @@ const readBundle = async (entry, source) => {
         });
         if (response.ok) bytes = Buffer.from(await response.arrayBuffer());
     } catch (e) {
-        throw new Error(`the control endpoint could not be read for ${entry.name}: ${e.message}`);
+        throw new Error(
+            `the control endpoint could not be read for ${entry.name}: ${/** @type {Error} */ (e).message}`
+        );
     }
     if (UNAVAILABLE_STATUSES.has(response.status)) {
         throw new Unavailable(`the board does not serve skill ${entry.name} (${response.status})`);
     }
     if (!response.ok) throw new Error(`the control endpoint answered ${response.status} for skill ${entry.name}`);
-    if (bytes.length > MAX_TAR_BYTES)
+    if (/** @type {Buffer} */ (bytes).length > MAX_TAR_BYTES)
         throw new Unavailable(`the bundle of skill ${entry.name} is larger than a skill may be`);
-    if (sha256(bytes) !== entry.sha256) {
+    if (sha256(/** @type {Buffer} */ (bytes)) !== entry.sha256) {
         throw new Unavailable(`the bytes of skill ${entry.name} do not match the pin's sha256`);
     }
-    return bytes;
+    return /** @type {Buffer} */ (bytes);
 };
 
+/**
+ * @param {Buffer} block
+ * @param {number} at
+ * @param {number} length
+ */
 const text = (block, at, length) => {
     const field = block.subarray(at, at + length);
     const end = field.indexOf(0);
     return field.toString('utf8', 0, end === -1 ? length : end);
 };
 
-/** A header's octal field, or null when it holds anything else. */
+/**
+ * A header's octal field, or null when it holds anything else.
+ * @param {Buffer} block
+ * @param {number} at
+ * @param {number} length
+ */
 const octal = (block, at, length) => {
     const raw = text(block, at, length).trim();
     return /^[0-7]+$/.test(raw) ? parseInt(raw, OCTAL) : null;
 };
 
-/** The relative path of an entry, refused when it could name anything outside the skill's own directory. */
+/**
+ * The relative path of an entry, refused when it could name anything outside the skill's own directory.
+ * @param {string} raw
+ * @param {string} bundle
+ */
 const safePath = (raw, bundle) => {
     const trimmed = raw.endsWith('/') ? raw.slice(0, -1) : raw;
     const parts = trimmed.split('/');
@@ -162,14 +197,21 @@ const safePath = (raw, bundle) => {
 const SPACE = 0x20;
 const MAGIC_BYTES = 5;
 
-/** The sum of a header's bytes with its checksum field read as spaces, as ustar defines it. */
+/**
+ * The sum of a header's bytes with its checksum field read as spaces, as ustar defines it.
+ * @param {Buffer} header
+ */
 const checksumOf = (header) => {
     let sum = 0;
     for (let i = 0; i < BLOCK; i++) sum += i >= TAR.checksum && i < TAR.checksum + CHECKSUM_BYTES ? SPACE : header[i];
     return sum;
 };
 
-/** One header as `{path, dir, size}`; only a regular file or a directory with a sound checksum, magic and size. */
+/**
+ * One header as `{path, dir, size}`; only a regular file or a directory with a sound checksum, magic and size.
+ * @param {Buffer} header
+ * @param {string} bundle
+ */
 const parseHeader = (header, bundle) => {
     if (octal(header, TAR.checksum, CHECKSUM_BYTES) !== checksumOf(header)) {
         throw new Unavailable(`the bundle of skill ${bundle} has a header with a bad checksum`);
@@ -194,8 +236,11 @@ const parseHeader = (header, bundle) => {
  * The entries of a ustar tar, in archive order: `{path, dir, bytes}`. Only regular files and directories are
  * read; a link, a device, a pax or GNU extension header, a bad checksum, a truncated entry or a missing end
  * marker is the bundle's own fault, so it is `Unavailable`.
+ * @param {Buffer} tar
+ * @param {string} bundle
  */
 const untar = (tar, bundle) => {
+    /** @type {TarEntry[]} */
     const entries = [];
     let at = 0;
     for (;;) {
@@ -211,7 +256,11 @@ const untar = (tar, bundle) => {
     }
 };
 
-/** The entries as a skill: SKILL.md at its root, no path both a file and a directory, no path twice, at most MAX_FILES files. */
+/**
+ * The entries as a skill: SKILL.md at its root, no path both a file and a directory, no path twice, at most MAX_FILES files.
+ * @param {TarEntry[]} entries
+ * @param {string} bundle
+ */
 const checkSkill = (entries, bundle) => {
     const files = new Set();
     const dirs = new Set();
@@ -232,7 +281,12 @@ const checkSkill = (entries, bundle) => {
     return dirs;
 };
 
-/** Writes one skill's entries under `dir`: directories 0755, files 0644, whatever the tar or the umask says. */
+/**
+ * Writes one skill's entries under `dir`: directories 0755, files 0644, whatever the tar or the umask says.
+ * @param {string} dir
+ * @param {TarEntry[]} entries
+ * @param {Set<string>} dirs
+ */
 const write = (dir, entries, dirs) => {
     fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
     fs.chmodSync(dir, DIR_MODE);
@@ -248,7 +302,10 @@ const write = (dir, entries, dirs) => {
     }
 };
 
-/** Whether a read failed because the path is confirmed absent: the only failure that is an answer. */
+/**
+ * Whether a read failed because the path is confirmed absent: the only failure that is an answer.
+ * @param {any} e
+ */
 const absent = (e) => Boolean(e) && (e.code === 'ENOENT' || e.code === 'ENOTDIR');
 
 const ABSENT = Object.freeze({ kind: 'absent' });
@@ -258,6 +315,9 @@ const ABSENT = Object.freeze({ kind: 'absent' });
  * is there: `{kind:'file', text?}`, `{kind:'dir', names}` or `{kind:'other'}`. Any other failure (EACCES, EIO, ...)
  * is a read that confirmed nothing: it throws, the run is transient, and nothing is deleted or overwritten on it.
  * No other function reads the filesystem; `skills-reads` pins that.
+ * @param {string} target
+ * @param {{ text?: boolean }} [options]
+ * @returns {Probe}
  */
 const probe = (target, { text = false } = {}) => {
     try {
@@ -276,6 +336,7 @@ const probe = (target, { text = false } = {}) => {
  * key is a skill name and every value a lowercase sha256. Only a confirmed absence owns nothing. Anything else that is
  * not a valid manifest THROWS (a transient failure) and the file is left as it is, because replacing it would forget
  * what this script owns for good, and acting on a half-valid one would delete what it does not own.
+ * @param {string} target
  */
 const manifestOf = (target) => {
     const found = probe(path.join(target, MANIFEST_NAME), { text: true });
@@ -283,9 +344,9 @@ const manifestOf = (target) => {
     if (found.kind !== 'file') throw new Error(`${MANIFEST_NAME} is not a file`);
     let doc;
     try {
-        doc = JSON.parse(found.text);
+        doc = JSON.parse(/** @type {string} */ (found.text));
     } catch (e) {
-        throw new Error(`${MANIFEST_NAME} is not JSON: ${e.message}`);
+        throw new Error(`${MANIFEST_NAME} is not JSON: ${/** @type {Error} */ (e).message}`);
     }
     const owned = doc && typeof doc === 'object' && !Array.isArray(doc) ? doc.owned : undefined;
     if (!owned || typeof owned !== 'object' || Array.isArray(owned)) {
@@ -299,16 +360,29 @@ const manifestOf = (target) => {
     return owned;
 };
 
-/** Whether the skill's SKILL.md is in place: false only on a confirmed absence. */
+/**
+ * Whether the skill's SKILL.md is in place: false only on a confirmed absence.
+ * @param {string} target
+ * @param {string} name
+ */
 const installed = (target, name) => probe(path.join(target, name, SKILL_MD)).kind === 'file';
 
+/** @param {string[]} names */
 const skippedOf = (names) => (names.length > 0 ? { skipped: names } : {});
 
-/** Whether the checkout holds a skill of this name in a directory the CLI scans: false only on a confirmed absence. */
+/**
+ * Whether the checkout holds a skill of this name in a directory the CLI scans: false only on a confirmed absence.
+ * @param {string} checkout
+ * @param {string[]} dirs
+ * @param {string} name
+ */
 const heldByCheckout = (checkout, dirs, name) =>
     dirs.some((dir) => probe(path.join(checkout, dir, name, SKILL_MD)).kind === 'file');
 
-/** The skills directory and the manifest's owned map, both confirmed: a directory that is absent owns nothing. */
+/**
+ * The skills directory and the manifest's owned map, both confirmed: a directory that is absent owns nothing.
+ * @param {string} target
+ */
 const survey = (target) => {
     const dir = probe(target);
     if (dir.kind !== 'absent' && dir.kind !== 'dir') throw new Error('TARGET_DIR is not a directory');
@@ -318,7 +392,11 @@ const survey = (target) => {
 /** The digest of a name that is claimed but not yet installed: never equals a bundle's sha256, so it is reinstalled. */
 const UNVERIFIED = '0000000000000000000000000000000000000000000000000000000000000000';
 
-/** Writes the manifest atomically (temp file, fsync, rename): a crash leaves the old manifest or the new, never a torn one. */
+/**
+ * Writes the manifest atomically (temp file, fsync, rename): a crash leaves the old manifest or the new, never a torn one.
+ * @param {string} target
+ * @param {Record<string, string>} owned
+ */
 const commit = (target, owned) => {
     const pending = path.join(target, MANIFEST_NAME + '.tmp');
     fs.writeFileSync(pending, JSON.stringify({ owned }) + '\n', { mode: FILE_MODE, flush: true });
@@ -326,7 +404,10 @@ const commit = (target, owned) => {
     fs.renameSync(pending, path.join(target, MANIFEST_NAME));
 };
 
-/** Test seam: a runner lost at the named step boundary (SIGKILL, nothing after it runs). */
+/**
+ * Test seam: a runner lost at the named step boundary (SIGKILL, nothing after it runs).
+ * @param {string} point
+ */
 const crashAt = (point) => {
     if (process.env.SKILL_INSTALL_CRASH_AT === point) process.kill(process.pid, 'SIGKILL');
 };
@@ -394,8 +475,10 @@ async function main() {
     return { ok: true, skills: pin.length, fetched: missing.length, pruned: stale.length, ...skippedOf(skipped) };
 }
 
+/** @param {object} verdict */
 const say = (verdict) => process.stdout.write(JSON.stringify(verdict) + '\n');
 
+/** @param {any} e */
 const failure = (e) => {
     const reason = String((e && e.message) || e);
     return e instanceof Unavailable

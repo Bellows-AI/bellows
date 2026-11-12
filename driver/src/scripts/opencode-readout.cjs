@@ -1,3 +1,4 @@
+// @ts-check
 // The close-time opencode readout: one read-only query pair against the session database a
 // finished run left behind — the ROOT session that ran in OPENCODE_DIR (subagents create children
 // under a parent_id; the conversation a follow-up continues is the run's own root) and, from its
@@ -42,6 +43,7 @@ const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
 
 // The agent's blocked report: the final text's LAST non-empty line, when it starts with the
 // marker — read before the summary collapses the lines, so a mention mid-message never counts.
+/** @param {string} text */
 const blockedOf = (text) => {
     const last =
         text
@@ -60,9 +62,14 @@ const STREAM_RAW = 'raw';
 const STREAM_NORMALIZED = 'normalized';
 
 // A blob column has no JSON form; base64 keeps the raw row lossless.
+/**
+ * @param {string} _key
+ * @param {any} value
+ */
 const rawReplacer = (_key, value) =>
     value instanceof Uint8Array ? { $blob: Buffer.from(value).toString('base64') } : value;
 
+/** @param {string} text */
 const parseJson = (text) => {
     try {
         return JSON.parse(text);
@@ -72,11 +79,16 @@ const parseJson = (text) => {
 };
 
 // The usage block opencode keeps on an assistant message and on a step-finish part.
+/** @param {any} d */
 const usageOf = (d) =>
     d && (d.tokens || typeof d.cost === 'number') ? { tokens: d.tokens ?? null, cost: d.cost ?? null } : null;
 
 // One normalized event per part: the text, the tool call (name, call id, status, input, output)
 // or the step's usage — whatever else a part is keeps its type and its own data.
+/**
+ * @param {any} p
+ * @param {any} d
+ */
 const normalizePart = (p, d) => {
     const base = {
         stream: STREAM_NORMALIZED,
@@ -102,6 +114,11 @@ const normalizePart = (p, d) => {
 };
 
 // The newest `limit` bytes of whole lines, with a marker line first when any were dropped.
+/**
+ * @param {string} stream
+ * @param {string[]} lines
+ * @param {number} limit
+ */
 const tailKept = (stream, lines, limit) => {
     const kept = [];
     let bytes = 0;
@@ -117,6 +134,7 @@ const tailKept = (stream, lines, limit) => {
     return kept;
 };
 
+/** @param {any} s */
 const normalizeSession = (s) => ({
     stream: STREAM_NORMALIZED,
     kind: 'session',
@@ -126,6 +144,10 @@ const normalizeSession = (s) => ({
     time: s.time_created ?? null,
 });
 
+/**
+ * @param {any} m
+ * @param {any} d
+ */
 const normalizeMessage = (m, d) => ({
     stream: STREAM_NORMALIZED,
     kind: 'message',
@@ -141,7 +163,9 @@ const normalizeMessage = (m, d) => ({
 
 // Every row of the export tables, read inside the caller's open transaction. A table the schema
 // lacks costs its own rows only.
+/** @param {import('node:sqlite').DatabaseSync} db */
 const readRows = (db) => {
+    /** @type {Record<string, any[]>} */
     const rows = {};
     for (const table of EXPORT_TABLES) {
         try {
@@ -154,6 +178,7 @@ const readRows = (db) => {
 };
 
 // Sessions first, then each message followed by its parts, in row order.
+/** @param {Record<string, any[]>} rows */
 const normalizedLines = (rows) => {
     const lines = rows.session.map((s) => JSON.stringify(normalizeSession(s)));
     const partsOf = new Map();
@@ -172,6 +197,7 @@ const normalizedLines = (rows) => {
     return lines;
 };
 
+/** @param {import('node:sqlite').DatabaseSync} db */
 const printExport = (db) => {
     const rows = readRows(db);
     const raw = EXPORT_TABLES.flatMap((table) =>
@@ -213,7 +239,7 @@ try {
         // the end once the parts are in hand.
         const assistantIds = [];
         for (const m of msgs) {
-            const d = JSON.parse(m.data);
+            const d = JSON.parse(/** @type {string} */ (m.data));
             if (d.role !== 'assistant') continue;
             // The per-run delta: a message whose own created time predates this run belongs to
             // the run (or runs) before it. A message with no usable time cannot be placed in
@@ -238,7 +264,7 @@ try {
         try {
             const texts = new Map();
             for (const p of db.prepare('select message_id, data from part where session_id=? order by id').all(s.id)) {
-                const d = JSON.parse(p.data);
+                const d = JSON.parse(/** @type {string} */ (p.data));
                 if (d.type !== 'text' || typeof d.text !== 'string' || !d.text.trim()) continue;
                 const held = texts.get(String(p.message_id));
                 texts.set(String(p.message_id), held ? `${held}\n${d.text}` : d.text);

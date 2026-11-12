@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 // Derives plain text beside the PDF and Word attachments of a delivered inputs directory, so an agent whose CLI
 // cannot read those formats still can. Images and text files are read natively by the CLI and are left alone.
@@ -52,7 +53,11 @@ const DERIVED_SUFFIX = '.derived.txt';
 const DOCUMENT_PART = 'word/document.xml';
 const TEXT_PART = /^word\/(?:document|header\d*|footer\d*|footnotes|endnotes)\.xml$/;
 
+/** @typedef {{ name: string, flags: number, method: number, packed: number, offset: number }} Part */
+/** @typedef {{ id: string, mediaType?: string, size: number, path: string, derived?: object, status?: string, reason?: string }} Entry */
+
 class Unreadable extends Error {
+    /** @param {string} reason */
     constructor(reason) {
         super(reason);
         this.reason = reason;
@@ -60,7 +65,10 @@ class Unreadable extends Error {
 }
 const malformed = () => new Unreadable('malformed');
 
-/** The offset of the end-of-central-directory record, searched back over the longest comment a zip may carry. */
+/**
+ * The offset of the end-of-central-directory record, searched back over the longest comment a zip may carry.
+ * @param {Buffer} zip
+ */
 const findEnd = (zip) => {
     const last = zip.length - EOCD.size;
     for (let at = last; at >= Math.max(0, last - COUNT_FIELD_MAX); at--) {
@@ -69,7 +77,12 @@ const findEnd = (zip) => {
     throw malformed();
 };
 
-/** One part's bytes, inflated under `limit`; `null` when it does not fit (the caller decides what that means). */
+/**
+ * One part's bytes, inflated under `limit`; `null` when it does not fit (the caller decides what that means).
+ * @param {Buffer} zip
+ * @param {Part} entry
+ * @param {number} limit
+ */
 const inflated = (zip, entry, limit) => {
     if (entry.flags & FLAG_ENCRYPTED) throw new Unreadable('encrypted');
     if (entry.packed === SIZE_FIELD_MAX) throw new Unreadable('unsupported');
@@ -85,18 +98,22 @@ const inflated = (zip, entry, limit) => {
     try {
         return zlib.inflateRawSync(data, { maxOutputLength: limit });
     } catch (e) {
-        if (e && e.code === 'ERR_BUFFER_TOO_LARGE') return null;
+        if (e && /** @type {NodeJS.ErrnoException} */ (e).code === 'ERR_BUFFER_TOO_LARGE') return null;
         throw malformed();
     }
 };
 
-/** The text-bearing parts of a package, from its central directory: the body first, then headers, footers, notes. */
+/**
+ * The text-bearing parts of a package, from its central directory: the body first, then headers, footers, notes.
+ * @param {Buffer} zip
+ */
 const textParts = (zip) => {
     if (zip.length < EOCD.size) throw malformed();
     const end = findEnd(zip);
     const count = zip.readUInt16LE(end + EOCD.count);
     let at = zip.readUInt32LE(end + EOCD.directoryAt);
     if (count === COUNT_FIELD_MAX || at === SIZE_FIELD_MAX) throw new Unreadable('unsupported');
+    /** @type {Part[]} */
     const parts = [];
     for (let i = 0; i < count; i++) {
         if (at + CENTRAL.size > zip.length || zip.readUInt32LE(at) !== CENTRAL_SIG) throw malformed();
@@ -116,14 +133,19 @@ const textParts = (zip) => {
         at = nameAt + nameLen + zip.readUInt16LE(at + CENTRAL.extraLen) + zip.readUInt16LE(at + CENTRAL.commentLen);
     }
     if (!parts.some((part) => part.name === DOCUMENT_PART)) throw malformed();
+    /** @param {Part} part */
     const rank = (part) => (part.name === DOCUMENT_PART ? 0 : 1);
     return parts.sort((x, y) => rank(x) - rank(y) || (x.name < y.name ? -1 : 1));
 };
 
+/** @type {Record<string, string>} */
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-/** `text` with its five named entities and numeric character references decoded; anything else is malformed. */
+/**
+ * `text` with its five named entities and numeric character references decoded; anything else is malformed.
+ * @param {string} text
+ */
 const decode = (text) =>
-    text.replace(/&([^;&\s]*);|&/g, (_, ref) => {
+    text.replace(/&([^;&\s]*);|&/g, (/** @type {string} */ _, /** @type {string | undefined} */ ref) => {
         if (ref === undefined) throw malformed();
         const numeric = /^#(?:x([0-9a-f]+)|(\d+))$/i.exec(ref);
         if (!numeric) {
@@ -139,19 +161,30 @@ const decode = (text) =>
 const NAME = /^[\w:.-]+$/;
 /** A start tag from `at` (just past its `<`) to its `>`, quotes respected: [inner text, index after `>`]. */
 const START_TAG = /(?:[^>"']|"[^"]*"|'[^']*')*>/y;
+/**
+ * @param {string} xml
+ * @param {number} at
+ * @returns {[string, number]}
+ */
 const readStart = (xml, at) => {
     START_TAG.lastIndex = at;
     if (!START_TAG.test(xml)) throw malformed();
     return [xml.slice(at, START_TAG.lastIndex - 1), START_TAG.lastIndex];
 };
 
-/** The index after `close`, searched from `at`; the markup is unterminated when it is missing. */
+/**
+ * The index after `close`, searched from `at`; the markup is unterminated when it is missing.
+ * @param {string} xml
+ * @param {number} at
+ * @param {string} close
+ */
 const skipPast = (xml, at, close) => {
     const found = xml.indexOf(close, at);
     if (found < 0) throw malformed();
     return found + close.length;
 };
 
+/** @type {Record<string, string>} */
 const SELF_CLOSED_TEXT = { 'w:tab': '\t', 'w:br': '\n', 'w:cr': '\n' };
 const COMMENT = { open: '!--', close: '-->' };
 const CDATA = { open: '![CDATA[', close: ']]>' };
@@ -164,12 +197,15 @@ const INSTRUCTION = { open: '?', close: '?>' };
  * extracts, so a part cannot be "valid" and read short. A DOCTYPE or any unknown entity is malformed.
  */
 class PartReader {
+    /** @param {string} xml */
     constructor(xml) {
         this.xml = xml;
         this.at = 0;
+        /** @type {string[]} */
         this.stack = [];
         this.out = '';
         this.rootClosed = false;
+        /** @type {Set<string | undefined>} */
         this.closedNames = new Set();
     }
 
@@ -231,6 +267,10 @@ class PartReader {
     }
 }
 
+/**
+ * @param {string} xml
+ * @param {string} name
+ */
 const readPart = (xml, name) => {
     const reader = new PartReader(xml).read();
     if (reader.stack.length > 0 || !reader.rootClosed) throw malformed();
@@ -241,6 +281,7 @@ const readPart = (xml, name) => {
 /**
  * The text of the body, then of every header, footer and note, under ONE output cap: a body that does not fit is
  * `limit`; a later part that does not is dropped and the result says it is cut (`truncated`).
+ * @param {Buffer} bytes
  */
 const fromDocx = (bytes) => {
     let budget = XML_CAP_BYTES;
@@ -260,6 +301,11 @@ const fromDocx = (bytes) => {
 };
 
 const ENCRYPTED_TRAILER = /\/Encrypt\s*(?:<<|\d+\s+\d+\s+R)/;
+/**
+ * @param {string} file
+ * @param {Buffer} bytes
+ * @param {number} timeoutMs
+ */
 const fromPdf = (file, bytes, timeoutMs) => {
     if (ENCRYPTED_TRAILER.test(bytes.subarray(-ENCRYPT_TAIL_BYTES).toString('latin1')))
         throw new Unreadable('encrypted');
@@ -269,9 +315,9 @@ const fromPdf = (file, bytes, timeoutMs) => {
         killSignal: 'SIGKILL',
     });
     if (run.error) {
-        if (run.error.code === 'ENOENT') throw new Unreadable('no_extractor');
-        if (run.error.code === 'ENOBUFS') throw new Unreadable('limit');
-        if (run.error.code === 'ETIMEDOUT') throw new Unreadable('timeout');
+        if (/** @type {NodeJS.ErrnoException} */ (run.error).code === 'ENOENT') throw new Unreadable('no_extractor');
+        if (/** @type {NodeJS.ErrnoException} */ (run.error).code === 'ENOBUFS') throw new Unreadable('limit');
+        if (/** @type {NodeJS.ErrnoException} */ (run.error).code === 'ETIMEDOUT') throw new Unreadable('timeout');
         throw run.error;
     }
     if (run.status !== 0) {
@@ -280,13 +326,22 @@ const fromPdf = (file, bytes, timeoutMs) => {
     return { text: run.stdout.toString('utf8'), truncated: false };
 };
 
+/**
+ * @param {Entry} entry
+ * @param {string} file
+ * @param {number} timeoutMs
+ */
 const derive = (entry, file, timeoutMs) => {
     const bytes = fs.readFileSync(file);
     if (entry.mediaType === DOCX) return fromDocx(bytes);
     return fromPdf(file, bytes, timeoutMs);
 };
 
-/** `bytes` at `file`: written writable, read-only before its rename. */
+/**
+ * `bytes` at `file`: written writable, read-only before its rename.
+ * @param {string} file
+ * @param {string} text
+ */
 const publish = (file, text) => {
     const tmp = file + '.part';
     fs.rmSync(tmp, { force: true });
@@ -295,9 +350,14 @@ const publish = (file, text) => {
     fs.renameSync(tmp, file);
 };
 
-/** `entry` with the outcome of its extraction: `derived`, `status`+`reason`, or untouched when it needs none. */
+/**
+ * `entry` with the outcome of its extraction: `derived`, `status`+`reason`, or untouched when it needs none.
+ * @param {Entry} entry
+ * @param {string} target
+ * @param {number} timeoutMs
+ */
 const settle = (entry, target, timeoutMs) => {
-    const rest = { ...entry };
+    const rest = /** @type {Record<string, any>} */ ({ ...entry });
     for (const key of ['derived', 'status', 'reason']) delete rest[key];
     if (entry.mediaType !== PDF && entry.mediaType !== DOCX) return rest;
     try {
@@ -319,9 +379,9 @@ const main = () => {
     const timeoutMs = Number(process.env.EXTRACT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     const manifestPath = path.join(target, 'manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    manifest.files = manifest.files.map((entry) => settle(entry, target, timeoutMs));
-    const derived = manifest.files.filter((entry) => entry.derived).length;
-    const unreadable = manifest.files.filter((entry) => entry.status === 'unreadable').length;
+    manifest.files = manifest.files.map((/** @type {Entry} */ entry) => settle(entry, target, timeoutMs));
+    const derived = manifest.files.filter((/** @type {Entry} */ entry) => entry.derived).length;
+    const unreadable = manifest.files.filter((/** @type {Entry} */ entry) => entry.status === 'unreadable').length;
     const pending = manifestPath + '.tmp';
     fs.rmSync(pending, { force: true });
     fs.writeFileSync(pending, JSON.stringify(manifest, null, 2) + '\n');
@@ -330,9 +390,10 @@ const main = () => {
     return { ok: true, derived, unreadable };
 };
 
+/** @param {object} verdict */
 const say = (verdict) => process.stdout.write(JSON.stringify(verdict) + '\n');
 try {
     say(main());
 } catch (e) {
-    say({ ok: false, reason: String((e && e.message) || e) });
+    say({ ok: false, reason: String((e && /** @type {Error} */ (e).message) || e) });
 }
