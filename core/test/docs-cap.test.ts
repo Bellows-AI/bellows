@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
  * The doc cap, enforced (`.claude/skills/doc-maintenance/SKILL.md`): a doc is at most 60 lines, 120
  * for an area with several independent surfaces, and a runbook of literal commands is exempt. A
  * table cell is at most 300 characters, because a long cell dodges the line cap. Every file path a
- * doc names, in backticks or a link, resolves from the repo root.
+ * doc names, in backticks or a link, resolves from the repo root; a `../` path leaves the repo and is not checked.
  */
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const DOCS = join(ROOT, 'docs');
@@ -35,7 +35,7 @@ const pathsIn = (text: string): string[] => {
     const found: string[] = [];
     for (const [, span] of text.matchAll(/`([^`\s]+)`/g)) {
         const bare = (span ?? '').replace(new RegExp(`(\\.(?:${EXT})):[\\w.:-]*$`), '$1');
-        if (bare.includes('/') && PATH.test(bare)) found.push(...expandBraces(bare));
+        if (bare.includes('/') && !bare.startsWith('../') && PATH.test(bare)) found.push(...expandBraces(bare));
     }
     return found;
 };
