@@ -364,10 +364,7 @@ export function createReaper(deps: {
     const readRoot = (root: string) =>
         lookupAll(deps.board, [root], log, { withThreads: true, consequence: `keeping thread ${root} this round` });
     const exporter = createVolumeExportGate({
-        attempts: deps.exportAttempts,
-        log,
-        observe: deps.observe,
-        onUnproven,
+        ...{ attempts: deps.exportAttempts, log, now, observe: deps.observe, onUnproven },
         reread: async (root) => (await readRoot(root))?.get(root)?.thread,
     });
 

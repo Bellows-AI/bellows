@@ -1,6 +1,6 @@
 import type { BoardJob, BoardThreadFacts } from './board/board.js';
 import { transcriptDir } from './claim.js';
-import { DEFAULT_TASK_VOLUME_EXPORT_ATTEMPTS } from './config.js';
+import { DEFAULT_TASK_VOLUME_EXPORT_ATTEMPTS, EXPORT_GIVE_UP_MIN_SPAN_MS } from './config.js';
 import { VOLUME_EXPORT_CAUSE } from './loop/loop-export.js';
 import type { ReaperArm, ReaperObserver, VolumeThread } from './reaper.js';
 import { generationOfName, taskRootOf } from './task-volume.js';
@@ -8,7 +8,7 @@ import { generationOfName, taskRootOf } from './task-volume.js';
 /**
  * The reaper's export-before-delete (issue #938): a thread that is not whole may hold transcript records
  * only its volume knows are unacknowledged, so its volume is deleted only after an export proved a drain
- * or `attempts` of them failed. The platform arms run the exporter (`ReaperArm.exportVolume`); this file
+ * or `attempts` of them failed over at least `EXPORT_GIVE_UP_MIN_SPAN_MS`. The platform arms run the exporter (`ReaperArm.exportVolume`); this file
  * decides when, how often and what a result licenses.
  */
 
@@ -34,6 +34,8 @@ export type VolumeExport =
 
 export type VolumeExportResult = VolumeExport['result'];
 
+const MS_PER_MINUTE = 60_000;
+
 /** Whether a thread left nothing behind that only its volume holds: its artifacts all terminal and a complete checkpoint. */
 export const isWhole = (facts: BoardThreadFacts): boolean => facts.artifactsComplete && facts.checkpoint === 'complete';
 
@@ -44,6 +46,7 @@ export function createVolumeExportGate(deps: {
     /** Failed re-exports of one thread tolerated before its volume is deleted anyway. */
     attempts: number | undefined;
     log: (message: string) => void;
+    now: () => number;
     observe: ReaperObserver | undefined;
     onUnproven: () => void;
     /** The thread's root row read alone, right now: its facts, or undefined when the read proved nothing or the row is gone. */
@@ -51,8 +54,14 @@ export function createVolumeExportGate(deps: {
 }) {
     const attempts = deps.attempts ?? DEFAULT_TASK_VOLUME_EXPORT_ATTEMPTS;
     const { log, onUnproven } = deps;
-    // In memory per thread root: a driver restart starts the count over.
-    const failures = new Map<string, number>();
+    const { now } = deps;
+    // In memory per thread root: a driver restart starts the count and the span over.
+    const failures = new Map<string, { count: number; firstAt: number }>();
+    /** Enough failed attempts, spread over enough time: a burst of fast failures (an outage) never gives bytes up. */
+    const exhausted = (root: string): boolean => {
+        const record = failures.get(root);
+        return record !== undefined && record.count >= attempts && now() - record.firstAt >= EXPORT_GIVE_UP_MIN_SPAN_MS;
+    };
     let exporting: AbortController | null = null;
 
     /** Runs the arm's export; null when the reaper was stopped meanwhile. A throw is an inconclusive result. */
@@ -94,22 +103,22 @@ export function createVolumeExportGate(deps: {
     const lost = (root: string, last: string): void => {
         deps.observe?.volumeExport?.('lost');
         log(
-            `reaper: LOST transcript bytes — thread ${root}: ${failures.get(root) ?? 0} export attempts failed (last: ${last}); deleting its task volumes, whatever they held unacknowledged is gone`
+            `reaper: LOST transcript bytes — thread ${root}: ${failures.get(root)?.count ?? 0} export attempts failed over ${Math.round((now() - (failures.get(root)?.firstAt ?? now())) / MS_PER_MINUTE)} min (last: ${last}); deleting its task volumes, whatever they held unacknowledged is gone`
         );
     };
 
-    /** One failed attempt; true once the last one has failed. */
+    /** One failed attempt; true once enough of them have failed, far enough apart. */
     const failed = (
         root: string,
         outcome: Exclude<VolumeExport, { result: 'drained' | 'gone' | 'contended' }>
     ): boolean => {
-        const count = (failures.get(root) ?? 0) + 1;
-        failures.set(root, count);
+        const count = (failures.get(root)?.count ?? 0) + 1;
+        failures.set(root, { count, firstAt: failures.get(root)?.firstAt ?? now() });
         onUnproven();
         log(
             `reaper: thread ${root} — the transcript export did not drain (${outcome.result}, attempt ${count} of ${attempts}): ${outcome.why}`
         );
-        return count >= attempts;
+        return exhausted(root);
     };
 
     /** The delete, if the thread is still the one that was exported; a loss when the volume goes with unexported bytes. */
@@ -175,7 +184,7 @@ export function createVolumeExportGate(deps: {
             if (facts.lastJobId === null || facts.lastClaimSeq === null) return 'delete';
             const attempt = { jobId: facts.lastJobId, claimSeq: facts.lastClaimSeq };
             // The last attempt failed but the delete did not happen (a refused read or delete): no more tries.
-            if ((failures.get(thread.root) ?? 0) >= attempts) {
+            if (exhausted(thread.root)) {
                 return finish(thread, attempt, 'the previous attempt did not drain');
             }
             if (round.exported) return 'keep';
