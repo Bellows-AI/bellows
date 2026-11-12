@@ -1,5 +1,5 @@
 /**
- * `Runner.supervisorServing` on kubernetes (#928): whether a prior group's supervisor can still pick up a
+ * `Runner.supervisorServing` on kubernetes: whether a prior group's supervisor can still pick up a
  * rebind. Only a confirmed end (Job gone, pod over, supervisor terminated, the served line) is an answer
  * of "no"; every read that fails to say so is inconclusive. The read-fault rows cannot go red on the code
  * before the member existed: they pin the unconfirmed-read rule.

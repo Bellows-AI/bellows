@@ -55,7 +55,7 @@ describe('the admission policy Secret pattern', () => {
     });
 
     // Issue #771: the sync, the publish steps and the helpers run in the task supervisor and hold
-    // no Secret of their own, and neither do the gates (issue #773): their env rides each request.
+    // no Secret of their own, and neither do the gates: their env rides each request.
     // A Secret by one of these names is a driver doing something the design forbids, and admission
     // refuses it.
     it.each(['sync', 'publish', 'helper', 'gate'])('refuses a retired %s env Secret name', (kind) => {
@@ -166,7 +166,7 @@ describe('the admission policy requires the pod hardening (#382)', () => {
             runnerJobSpec(config, promptedJob, { id: SESSION, resume: false }).spec.template.spec,
             // The supervisor-only group of an agentless attempt: no agent container.
             runnerJobSpec(config, { ...promptedJob, agent: false }, null).spec.template.spec,
-            // A run with a gate and a declared service: their sidecars are init containers (#773).
+            // A run with a gate and a declared service: their sidecars are init containers.
             runnerJobSpec(
                 config,
                 {
@@ -177,7 +177,7 @@ describe('the admission policy requires the pod hardening (#382)', () => {
                 },
                 { id: SESSION, resume: false }
             ).spec.template.spec,
-            // The reader Job of an adopted ended group's close-time readouts (#775).
+            // The reader Job of an adopted ended group's close-time readouts.
             readerJobSpec(config, promptedJob, 'factory-read-0', { argv: ['node'], env: {}, timeoutMs: 1_000 }).spec
                 .template.spec,
         ];

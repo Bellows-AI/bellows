@@ -97,8 +97,8 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
 }
 
 /**
- * Every ending runs the same way (issue #828): the durable board call first, then the heartbeat is
- * quiesced, the group ends, and the checkout claim goes back last (issue #469) — so the board is told
+ * Every ending runs the same way: the durable board call first, then the heartbeat is
+ * quiesced, the group ends, and the checkout claim goes back last — so the board is told
  * before anything is destroyed. A stand-down parks a stopped turn and then says what the board said;
  * a conclusion says why it ended and reports it.
  */
@@ -247,7 +247,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         }
     );
 
-    // BEL-160: a sweep blocked by leftovers still deleting is no failure of the attempt.
+    // a sweep blocked by leftovers still deleting is no failure of the attempt.
     describe('a sweep blocked by a terminating leftover', () => {
         const blocked = new LeftoverTerminating('the leftover pod p on node n is still terminating after its delete');
         const expected = {
@@ -327,7 +327,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('keeps the helper steps pure — they answer data and settle for nobody', () => {
         // The pre-helper runs inside setup and is the other setup module, so a settlement or a
-        // release of its own is a fence it should not own (issue #472).
+        // release of its own is a fence it should not own.
         const helpers = loopSources().find(([file]) => file === 'loop-helpers.ts')?.[1] ?? '';
         expect(helpers.match(/await (ctx\.)?settle\(\)/g) ?? []).toEqual([]);
         expect(helpers.match(/releaseFence/g) ?? []).toEqual([]);
@@ -336,7 +336,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
     it('mints the attempt one signal, never one per step', () => {
         // The gate exec, the tree probe and the gate-session cancel all take `state.signal`: a
         // controller per transport is a controller that can answer a stand-down out of step with
-        // the race that decides one (issue #472). The one other signal is the lease clock's (BEL-317):
+        // the race that decides one. The one other signal is the lease clock's:
         // it fences board calls on the lease, and decides no stand-down by itself.
         const minting = loopSources()
             .filter(
@@ -349,7 +349,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('leaves the phase files no second stand-down path and no phase-level check of their own', () => {
         // What remains of `down(state)` are re-checks after an await INSIDE a step (loop-gates,
-        // loop-helpers); a phase boundary asks `standDown` (issue #488).
+        // loop-helpers); a phase boundary asks `standDown`.
         const phaseFiles = ['loop-run.ts', 'loop-post-run.ts', 'loop-phase-checkpoints.ts'];
         const sources = loopSources().filter(([file]) => phaseFiles.includes(file));
         expect(sources.map(([file]) => file).sort()).toEqual([...phaseFiles].sort());
@@ -423,7 +423,7 @@ describe('one abort signal per attempt (issue #472)', () => {
     });
 });
 
-describe('node loss is flagged on structured evidence only (BEL-302)', () => {
+describe('node loss is flagged on structured evidence only', () => {
     afterEach(() => {
         vi.useRealTimers();
     });

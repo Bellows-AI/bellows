@@ -1,5 +1,5 @@
 /**
- * The stall clock behind the takeover simulation (#972): loop time leaves out the stretches the host held the process,
+ * The stall clock behind the takeover simulation: loop time leaves out the stretches the host held the process,
  * and never runs backwards.
  */
 import { describe, expect, it } from 'vitest';

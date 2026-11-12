@@ -15,7 +15,7 @@ import { runHelperStep } from '../src/supervised-steps.js';
 import { SUPERVISOR_ENV, type StepRequest, type StepResult } from '../src/supervisor-contract.js';
 
 /**
- * Block-helper receipts across claims (issue #826). Two claims of one job — a lost one and its
+ * Block-helper receipts across claims. Two claims of one job — a lost one and its
  * replacement, each with its own lease and so its own step ids — share the task volume (a temp
  * directory here) and nothing else. The ledger steps run the real script, as the supervisor would;
  * the helper's external write is a counter, and the "crash" is the supervisor channel closing at a

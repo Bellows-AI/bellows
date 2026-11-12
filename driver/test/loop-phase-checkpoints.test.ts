@@ -79,7 +79,7 @@ const publishCp = (over: Partial<PhaseCheckpoint> = {}): PhaseCheckpoint => ({
 interface Scene {
     adopted?: AdoptedRun | LiveRun | null;
     checkpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);
-    /** The gate-run rows (issue #983) the board answers with. */
+    /** The gate-run rows the board answers with. */
     gateRuns?: GateRunRecord[] | null;
     write?: 'ok' | 'lost' | 'rejected' | 'throw';
     probeTree?: string | null;
@@ -521,7 +521,7 @@ describe('writing the phase checkpoints', () => {
                 runClaimSeq: 3,
                 phase: 'gates',
                 tree: TREE,
-                // A gate that ran carries the execution its record was written under (issue #983).
+                // A gate that ran carries the execution its record was written under.
                 result: {
                     ...gatesResult,
                     reports: passedReports.map((report) => ({ ...report, executionId: expect.any(String) })),

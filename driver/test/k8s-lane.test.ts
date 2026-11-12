@@ -70,7 +70,7 @@ exec ${JSON.stringify(realDirname)} "$@"
         expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|capacity|mcp|drain|bench]');
     });
 
-    it('delivers pinned org and workspace skills in the recovery phase and holds the sha set across a pod deletion (BEL-273)', () => {
+    it('delivers pinned org and workspace skills in the recovery phase and holds the sha set across a pod deletion', () => {
         const script = readLaneScript('scripts/test-k8s.sh');
         const stub = readRepoFile('scripts/k8s-stub.sh');
         expect(script).toContain('begin_phase recovery-skills');
@@ -499,7 +499,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
     });
 
-    // BEL-108: the chart's MCP server is exercised in the cluster, and the board is put back for the phases after it.
+    // the chart's MCP server is exercised in the cluster, and the board is put back for the phases after it.
     it('runs the mcp phase after capacity: one client pass through the port-forward, then MCP off again', () => {
         expect(script.indexOf('if selected_phase mcp; then')).toBeGreaterThan(
             script.indexOf('if selected_phase capacity; then')
@@ -529,7 +529,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(script).not.toContain('/workspaces/$member_path');
         expect(takeover).toContain('supervisor: rebound to claim 2');
         expect(takeover).toContain("resumed gates from claim 1's checkpoint");
-        // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).
+        // A group whose agent exited while its supervisor serves is taken over, never waited out.
         for (const step of ['t4', 't5']) {
             expect(takeover).toContain(`"$(driver_logs)" "job $${step}: $TOOK_OVER"`);
             expect(takeover).toContain(`expect_not_contains '${step}: the finished runner was not waited out'`);

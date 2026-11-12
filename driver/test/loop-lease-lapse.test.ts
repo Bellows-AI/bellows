@@ -6,7 +6,7 @@ import { whileReclaimRenewed } from '../src/loop/loop-reclaim.js';
 import { type BoardStub, config, job, ok, sleep, stubBoard, stubRunner } from './fixtures/loop-stubs.js';
 
 /**
- * BEL-317: the driver's own lease clock. A board the driver cannot reach expires its lease, so the driver
+ * the driver's own lease clock. A board the driver cannot reach expires its lease, so the driver
  * stops acting at that moment — departing and leaving the runner for the next claim — whether the beat
  * fails, never returns, or the lapse lands while the verdict is being concluded. The lease is compressed
  * to a second; the real loop runs against a stub board and runner.

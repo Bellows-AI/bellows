@@ -11,7 +11,7 @@ import type { VolumeThread } from '../src/reaper.js';
 import { VOLUME_EXPORT_CLEANUP_MS } from '../src/reaper-export.js';
 
 /**
- * The kubernetes arm of the reaper's export-before-delete (issue #938): the one-shot exporter pod over
+ * The kubernetes arm of the reaper's export-before-delete: the one-shot exporter pod over
  * the thread's newest task volume claim. The request function is injected, so the test is a router over
  * (method, path) that records what the arm asked the API server for.
  */

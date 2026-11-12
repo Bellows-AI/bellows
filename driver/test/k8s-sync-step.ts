@@ -7,7 +7,7 @@ import { taskVolumeServer } from './fixtures/k8s-apiserver.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 
 /**
- * The sync step the kubernetes runner submits to the attempt's supervisor for `job` (issue #771),
+ * The sync step the kubernetes runner submits to the attempt's supervisor for `job`,
  * over a fake apiserver that keeps the checkout claim honest and answers every other object a
  * group's creation touches. For the suites that pin what the startup sync CARRIES on both
  * executors — its env, never its argv — and need no more of the cluster than that.
