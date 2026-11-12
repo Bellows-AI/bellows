@@ -51,7 +51,7 @@ import { markExecutionsRemoved, recordLaunchOutcome } from './job-store-provenan
 import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import type { ParamValues, WorkflowDefinition } from '../workflows/workflow-schema.js';
 import type { ExecutorScope } from '@factory-ai/core';
-import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
+import { authorOwnsFragment, terminalFragment, doneFragment, threadIdleFragment } from './job-store-sql-fragments.js';
 
 /** The job and thread transitions the board writes: create, follow up, retry, edit, done, stop, remove, waits, reopen, and the worker-initiated suspend and interrupt. */
 export interface JobActionStore {
@@ -477,33 +477,53 @@ async function threadBusyInTx(tx: TransactionSql, orgId: string, rootJobId: stri
     return row.busy;
 }
 
+type Admission = { rootJobId: string } | { answer: 'missing' | 'not_finished' | CreatedRef | 'forbidden' };
+
+/**
+ * What a follow-up and a retry settle before their conditional insert: the named row's thread root, the replay of a
+ * recorded idempotent request, the root row then the thread lock (the bind's order; the claim only tries), and the
+ * busy answer. The lock makes the eligibility check and the insert atomic with a racing done on ANY member or a claim
+ * of the head. A busy thread is answered here, not from the refusal read after the insert: that read is a later
+ * snapshot, and a verdict committing in between would turn not_finished into forbidden. Under the lock no member
+ * leaves terminal or appears (follow-up, retry and reopen take it too), so this and the insert's idle predicate agree.
+ */
+async function admitThreadInsert(
+    tx: TransactionSql,
+    source: {
+        orgId: string;
+        parentId: string;
+        createdBy: string | null;
+        admin: boolean;
+        idem: IdempotencyInput | undefined;
+    }
+): Promise<Admission> {
+    const { orgId, parentId, createdBy, admin, idem } = source;
+    // The read resolves the thread root the advisory lock below is keyed by.
+    const [label] = await tx<{ root_job_id: string }[]>`
+        select root_job_id from job where org_id = ${orgId} and id = ${parentId}
+    `;
+    if (!label) return { answer: 'missing' };
+    const replayed = await replayOf(tx, orgId, createdBy, idem);
+    if (replayed) return { answer: await replayedFor(tx, { orgId, parentId, createdBy, admin }, replayed) };
+    if (!(await lockThreadRootInTx(tx, orgId, label.root_job_id))) return { answer: 'missing' };
+    if (await threadBusyInTx(tx, orgId, label.root_job_id)) return { answer: 'not_finished' };
+    return { rootJobId: label.root_job_id };
+}
+
 /** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
 export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
     const { orgId, parentId, command, createdBy, idempotency: idem, connectionIds = [], attachmentIds = [] } = input;
     const admin = adminActs(createdBy, input.admin);
-    // The read resolves the thread root the advisory lock below is keyed by.
-    const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
-            select repo, root_job_id from job where org_id = ${orgId} and id = ${parentId}
-        `;
-    if (!label) return 'missing';
-    const replayed = await replayOf(tx, orgId, createdBy, idem);
-    if (replayed) return replayedFor(tx, { orgId, parentId, createdBy, admin }, replayed);
-    // The root row, then the thread lock (the bind's order; the claim only tries): the eligibility check and the insert
-    // must be atomic with a racing done on ANY member — not only on the parent row the CTE below locks — or a done
-    // could commit between the check and the insert and leave queued work in a thread the user closed.
-    if (!(await lockThreadRootInTx(tx, orgId, label.root_job_id))) return 'missing';
-    // A busy thread is answered here, before the insert: the refusal read after it is a later snapshot, and a verdict
-    // committing in between would turn not_finished into forbidden.
-    if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
+    const admitted = await admitThreadInsert(tx, { orgId, parentId, createdBy, admin, idem });
+    if ('answer' in admitted) return admitted.answer;
+    const { rootJobId } = admitted;
     const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode
                 from job
                 where org_id = ${orgId} and id = ${parentId}
                   and ${terminalFragment(tx)}
-                  and (${admin}::boolean or (
-                      select r.execution_user_id from job r where r.org_id = ${orgId} and r.id = job.root_job_id
-                  ) is not distinct from ${createdBy})
+                  and ${authorOwnsFragment(tx, { orgId, admin, createdBy })}
                   -- A named-profile review is not a task: a follow-up of it would run as an
                   -- ordinary job with the author's full env and token (issue #549).
                   and review_of is null
@@ -541,22 +561,13 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
             -- Eligibility is the THREAD's, as a retry's is (#698): a finished parent whose thread
             -- still holds unfinished work, or carries a done on any member, refuses — so a repeat
             -- never queues a second follow-up, and a closed thread never gets queued work.
-            where not exists (
-                select 1 from job m
-                where m.org_id = ${orgId} and m.root_job_id = parent.root_job_id
-                  and not ${terminalFragment(tx, 'm.status')}
-            )
-              and not exists (
-                select 1 from job d
-                where d.org_id = ${orgId} and d.root_job_id = parent.root_job_id
-                  and ${doneFragment(tx, 'd')}
-            )
+            where ${threadIdleFragment(tx, orgId, 'parent.root_job_id')}
             returning id
         `;
     if (rows[0]) {
-        await addFollowUpBindings(tx, { orgId, rootJobId: label.root_job_id, createdBy, connectionIds });
-        await recordFollowUpDecisionInTx(tx, input, rows[0].id, label.root_job_id);
-        const ref = { orgId, jobId: rows[0].id, rootJobId: label.root_job_id, createdBy };
+        await addFollowUpBindings(tx, { orgId, rootJobId: rootJobId, createdBy, connectionIds });
+        await recordFollowUpDecisionInTx(tx, input, rows[0].id, rootJobId);
+        const ref = { orgId, jobId: rows[0].id, rootJobId: rootJobId, createdBy };
         await bindAttachmentsInTx(tx, { ...ref, ids: attachmentIds });
         await stampKey(tx, orgId, rows[0].id, idem);
         await insertAdminActionEvent(tx, { orgId, jobId: rows[0].id, action: 'follow-up', actorId: createdBy });
@@ -584,9 +595,7 @@ async function replayedFor(
     const [parent] = await tx<{ id: string }[]>`
         select id from job
         where org_id = ${orgId} and id = ${parentId}
-          and (${admin}::boolean or (
-              select r.execution_user_id from job r where r.org_id = ${orgId} and r.id = job.root_job_id
-          ) is not distinct from ${createdBy})
+          and ${authorOwnsFragment(tx, { orgId, admin, createdBy })}
     `;
     return parent ? { id, replayed: true } : 'forbidden';
 }
@@ -628,30 +637,14 @@ export type RetryRowResult = CreatedRef | 'missing' | 'not_finished' | 'task_don
 export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promise<RetryRowResult> {
     const { orgId, id, createdBy, idempotency: idem } = input;
     const admin = adminActs(createdBy, input.admin);
-    // The read resolves the thread root the advisory lock below is keyed by.
-    const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
-            select repo, root_job_id from job where org_id = ${orgId} and id = ${id}
-        `;
-    if (!label) return 'missing';
-    const replayed = await replayOf(tx, orgId, createdBy, idem);
-    if (replayed) return replayedFor(tx, { orgId, parentId: id, createdBy, admin }, replayed);
-    // The root row, then the thread lock (the bind's order; the claim only tries): the eligibility check and the
-    // insert must be atomic with a racing done on ANY member and with a claim of the head, or a done could commit
-    // between the check and the insert and leave a fresh attempt queued into a closed thread.
-    if (!(await lockThreadRootInTx(tx, orgId, label.root_job_id))) return 'missing';
-    // The insert below skips when the named row or any member of its thread is not terminal, and the refusal read
-    // after it is a later snapshot: a verdict committing in between would turn not_finished into forbidden. Answer
-    // from this read instead. Under the thread lock no member leaves terminal or appears (follow-up, retry and
-    // reopen take it too), so this and the insert's busy predicate agree.
-    if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
+    const admitted = await admitThreadInsert(tx, { orgId, parentId: id, createdBy, admin, idem });
+    if ('answer' in admitted) return admitted.answer;
     const rows = await tx<{ id: string }[]>`
             with named as (
                 select id, root_job_id
                 from job
                 where org_id = ${orgId} and id = ${id}
-                  and (${admin}::boolean or (
-                      select r.execution_user_id from job r where r.org_id = ${orgId} and r.id = job.root_job_id
-                  ) is not distinct from ${createdBy})
+                  and ${authorOwnsFragment(tx, { orgId, admin, createdBy })}
                   -- A named-profile review is not a task: a retry of it would run as an ordinary
                   -- job with the author's full env and token, in the reviewer's worktree (#549).
                   and review_of is null
@@ -672,20 +665,7 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
             select ${orgId}, head.command, ${createdBy}, head.repo, head.executor, head.executor_scope,
                    head.root_job_id, head.workflow_name, head.mode, head.skill_pin, head.skill_hidden
             from named, head
-            where not exists (
-                  select 1
-                  from job m
-                  where m.org_id = ${orgId}
-                    and m.root_job_id = head.root_job_id
-                    and not ${terminalFragment(tx, 'm.status')}
-              )
-              and not exists (
-                  select 1
-                  from job d
-                  where d.org_id = ${orgId}
-                    and d.root_job_id = head.root_job_id
-                    and ${doneFragment(tx, 'd')}
-              )
+            where ${threadIdleFragment(tx, orgId, 'head.root_job_id')}
             returning id
         `;
     if (rows[0]) {
