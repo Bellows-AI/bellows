@@ -31,6 +31,7 @@ import type {
 import type { RestoreScopeResult } from '../restore-types.js';
 import type { JobLeaseInfo, JobThreadFacts } from '../lease-types.js';
 import type { ActivityRecords } from '../../telemetry/run-activity.js';
+import { abortableSleep } from '../../abortable-sleep.js';
 import { questionsOfJobs } from './job-store-questions.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from '../task-summary.js';
 
@@ -90,9 +91,10 @@ export interface JobReadStore {
      * so a waiting client and the sidenav can never disagree about "still moving". Answers
      * `terminal` or `parked` the moment a read says so, `timeout` once `timeoutMs` has elapsed,
      * each with the thread's root and head identity, and null — without holding — when the org
-     * holds no such job.
+     * holds no such job. An aborted `signal` (the board closing) ends the hold at once with the state
+     * as last read — the same answer shape the timeout gives, so a client re-issues it.
      */
-    waitForSettle(id: string, timeoutMs: number): Promise<SettleOutcome | null>;
+    waitForSettle(id: string, timeoutMs: number, signal?: AbortSignal): Promise<SettleOutcome | null>;
 
     /**
      * The gate executions, reused completion checks, managed PR operations and classified transcript
@@ -335,8 +337,6 @@ export async function settleStateOf(ctx: JobStoreContext, id: string): Promise<S
 /** How often the settle long-poll re-reads the thread while it holds — cheap by design. */
 export const SETTLE_POLL_MS = 250;
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /**
  * The hold itself: check first (an already-settled thread answers without sleeping), then re-read
  * every `SETTLE_POLL_MS` until the deadline. No connection is held between polls — one query per
@@ -348,7 +348,8 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 export async function waitForSettleOf(
     ctx: JobStoreContext,
     id: string,
-    timeoutMs: number
+    timeoutMs: number,
+    signal?: AbortSignal
 ): Promise<SettleOutcome | null> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -356,8 +357,8 @@ export async function waitForSettleOf(
         if (state === null) return null;
         if (state.result !== 'timeout') return state;
         const remaining = deadline - Date.now();
-        if (remaining <= 0) return state;
-        await sleep(Math.min(SETTLE_POLL_MS, remaining));
+        if (remaining <= 0 || signal?.aborted) return state;
+        await abortableSleep(Math.min(SETTLE_POLL_MS, remaining), signal);
     }
 }
 

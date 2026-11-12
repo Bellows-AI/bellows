@@ -18,6 +18,7 @@ Data flow: agent → OTEL collector → `POST /api/otlp/v1/metrics` → `flatten
 | Concern | Code | Test |
 | --- | --- | --- |
 | Boot wiring and start order | `server/src/main.ts` | `server/test/helpers-harness.ts` drives `buildApp` |
+| Graceful shutdown: `start()` returns `{ close }`; SIGTERM/SIGINT run it under one 10 s deadline (abort the long-polls via `request.closing`, `app.close()`, settle every loop's pass, end both pools) and exit 0, or 1 on overrun | `server/src/shutdown.ts`, `interval-loop.ts`, `app.ts`, `index.ts` | `server/test-db/shutdown.test.ts`, `server/test/shutdown.test.ts`, `server/test/interval-loop.test.ts` |
 | Per-org runtimes (repo source, telemetry, stats cache, stores) | `server/src/orgs.ts` | `server/test/orgs.test.ts` |
 | `JobStore` is the intersection of one interface per concern, each beside its implementation; a handler asks `storeFor<keyof JobQuestionStore>` for the slice it calls; the value-import edges that keep `vitest related` narrow | `server/src/db/jobs/job-store-types.ts`, `server/src/routes/jobs/job-context.ts`, `server/src/routes/route-guards.ts` | `server/test/job-store-slices.test.ts`, `server/test/import-boundaries.test.ts` |
 | Read-time aggregation and the cache slot | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |

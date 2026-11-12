@@ -35,6 +35,8 @@ spec:
                 containers included; the init container needs none of it, and a pod annotation cannot widen this. */}}
                 {{- toYaml (set (deepCopy (.Values.podAnnotations | default dict)) "eks.amazonaws.com/skip-containers" "wait-for-database") | nindent 16 }}
         spec:
+            {{- /* The drain sleep, then the server's own 10 s close deadline (server/src/shutdown.ts), then slack. */}}
+            terminationGracePeriodSeconds: {{ add (ternary (int64 .Values.dashboard.preStopSeconds) 0 (gt (int64 .Values.dashboard.replicas) 1)) 15 }}
             serviceAccountName: {{ include "factory.fullname" . }}-dashboard
             # The dashboard calls no Kubernetes API; a mounted token would only be something to steal.
             # IRSA and Pod Identity inject their own projected credentials, which this does not touch.

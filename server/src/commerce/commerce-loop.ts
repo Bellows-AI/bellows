@@ -1,6 +1,7 @@
 import type { AppConfig } from '../config.js';
 import type { CommerceStore, UsageKey } from '../db/commerce-store.js';
 import { startIntervalLoop } from '../interval-loop.js';
+import type { Track } from '../shutdown.js';
 import type { ServerMetrics } from '../metrics.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type CommerceClient, createCommerceClient } from './commerce-client.js';
@@ -72,11 +73,13 @@ export function startCommerceDelivery({
     orgs,
     metrics,
     ready,
+    track,
 }: {
     commerce: AppConfig['commerce'];
     orgs: OrgRegistry;
     metrics: Pick<ServerMetrics, 'timedPass'>;
     ready: Promise<unknown>;
+    track: Track;
 }): void {
     if (!commerce.enabled) return;
     const report = createUsageReporter({
@@ -84,6 +87,8 @@ export function startCommerceDelivery({
         client: createCommerceClient({ url: commerce.url, token: commerce.token }),
     });
     void ready.then(() =>
-        startIntervalLoop('commerce', () => metrics.timedPass('commerce_usage', report), COMMERCE_INTERVAL_MS)
+        track(() =>
+            startIntervalLoop('commerce', () => metrics.timedPass('commerce_usage', report), COMMERCE_INTERVAL_MS)
+        )
     );
 }

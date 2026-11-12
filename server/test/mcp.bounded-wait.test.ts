@@ -1,11 +1,11 @@
 import type { McpServer, ServerContext } from '@modelcontextprotocol/server';
 import { describe, expect, it, vi } from 'vitest';
+import { abortableSleep } from '../src/abortable-sleep.js';
 import type { Caller } from '../src/auth/store.js';
 import type { Bridge, BridgeOutcome } from '../src/mcp/bridge.js';
 import {
     WAIT_BUDGET_DEFAULT_S,
     WAIT_BUDGET_MAX_S,
-    abortableSleep,
     boundedWait,
     holdSecondsLeft,
     type Hold,

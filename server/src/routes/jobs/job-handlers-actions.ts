@@ -489,7 +489,7 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
         const settled = await guard(
             reply,
             (e) => request.log.error({ err: e }, 'job wait failed'),
-            () => store.waitForSettle(id, timeoutMs)
+            () => store.waitForSettle(id, timeoutMs, request.closing)
         );
         if (!settled.ok) return reply;
         if (settled.value === null) return notFoundJob(reply);

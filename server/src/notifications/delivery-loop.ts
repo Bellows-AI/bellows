@@ -1,5 +1,6 @@
 import { notificationEventOf, type SendResult } from '@factory-ai/core';
 import { startIntervalLoop } from '../interval-loop.js';
+import type { Track } from '../shutdown.js';
 import type { ServerMetrics } from '../metrics.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type ConnectorRegistry, deliver } from './connector.js';
@@ -112,12 +113,14 @@ export function startNotificationDelivery({
     orgs,
     metrics,
     ready,
+    track,
 }: {
     connectors: ConnectorRegistry;
     publicUrl: string | null;
     orgs: OrgRegistry;
     metrics: Pick<ServerMetrics, 'timedPass'>;
     ready: Promise<unknown>;
+    track: Track;
 }): void {
     if (connectors.size === 0) return;
     if (publicUrl === null) {
@@ -126,10 +129,12 @@ export function startNotificationDelivery({
     }
     const pass = createNotificationDeliverer({ orgs, connectors, publicUrl });
     void ready.then(() =>
-        startIntervalLoop(
-            'notifications',
-            () => metrics.timedPass('notification_delivery', pass),
-            NOTIFICATION_INTERVAL_MS
+        track(() =>
+            startIntervalLoop(
+                'notifications',
+                () => metrics.timedPass('notification_delivery', pass),
+                NOTIFICATION_INTERVAL_MS
+            )
         )
     );
 }
