@@ -82,6 +82,44 @@ describe('ci workflows', () => {
         expect('workflow_call' in on).toBe(true);
     });
 
+    // A merge queue builds each candidate on the queue's own branch and needs the required checks to
+    // report on `merge_group`; the repository setting that turns the queue on is the maintainer's.
+    // e2e stays post-merge only (never on a pull request, and not in the queue either).
+    it('validates a merge-queue candidate with validate and test-db, never e2e', () => {
+        const doc = workflow(CI);
+        expect('merge_group' in triggers(doc)).toBe(true);
+        expect(doc.jobs.validate!.if).toBeUndefined();
+        expect(doc.jobs['test-db']!.if).toBeUndefined();
+        expect(doc.jobs.e2e!.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main'");
+    });
+
+    // A red main used to be noticed by whoever looked next. One issue, found by its fixed title, takes a
+    // comment per red run instead of a new issue; the only credential is github.token.
+    it('opens or comments on one issue when a push to main goes red, with no secret', () => {
+        const doc = workflow(CI);
+        const job = doc.jobs['notify-red-main']!;
+        expect(job, 'ci.yml has no notify-red-main job').toBeTruthy();
+        expect(new Set(needs(job))).toEqual(new Set(['validate', 'test-db', 'e2e']));
+        expect(job.if).toContain('failure()');
+        expect(job.if).toContain("github.ref == 'refs/heads/main'");
+        expect(job.if).toContain("github.event_name == 'push'");
+        expect(job.permissions).toEqual({ issues: 'write' });
+        expect(job.steps!.some((step) => step.uses?.startsWith('actions/checkout'))).toBe(false);
+        const script = runs(job).join('\n');
+        expect(script).toContain('gh issue list');
+        expect(script).toContain('gh issue comment');
+        expect(script).toContain('gh issue create');
+        expect(script).toContain('--title "$TITLE"');
+        expect((job as Job & { env: Record<string, string> }).env.GH_TOKEN).toContain('github.token');
+        expect(read(CI)).not.toContain('secrets.');
+        // A called workflow cannot hold more than its caller grants, or the release run fails to start.
+        expect(workflow(RELEASE).jobs.validate!.permissions).toEqual({
+            contents: 'read',
+            packages: 'read',
+            issues: 'write',
+        });
+    });
+
     // Path filters never reach a `workflow_call`, but `[skip ci]` on the tagged commit would skip
     // the tag's push workflow outright.
     it('still validates the release tag through the called workflow', () => {
@@ -533,7 +571,9 @@ describe('ci workflows', () => {
         // The OIDC token mints an npm publish credential, so exactly one job may request it, and
         // that job holds nothing else of the workflow's.
         const scoped = Object.entries(workflow(RELEASE).jobs).filter(([, job]) => job.permissions !== undefined);
+        // The other scoped job is the called CI: it may not exceed its caller, and its red-main alert needs issues.
         expect(Object.fromEntries(scoped.map(([name, job]) => [name, job.permissions]))).toEqual({
+            validate: { contents: 'read', packages: 'read', issues: 'write' },
             npm: { contents: 'read', 'id-token': 'write' },
         });
     });

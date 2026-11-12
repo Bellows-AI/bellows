@@ -10,6 +10,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 | CLI publish: `@bellows-ai/bellows-cli` on npmjs.org, trusted publishing, `VERSION` stamped over `0.0.0` | `.github/workflows/release-image.yml` (`npm`), `cli/package.json`, `cli/src/version.ts` | `core/test/ci-workflows.test.ts`, `cli/test/diagnostics.test.ts` |
 | Release command: refuses unless main's CI run for HEAD is green; patch bump, version-only commit, tag, atomic push; `--rc` tags HEAD `vX.Y.Z-rc`, `-rc-2`, … and pushes only the tag | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | Release images; separate core/server/web compilation stages and source-only build inputs | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/`, `docker/executor-common/` | `driver/test/executor-images.test.ts`, `driver/test/compose.test.ts` |
+| Merge queue: `merge_group` runs `validate` and `test-db` (never `e2e`); red-main alert: `notify-red-main` opens or comments on one `CI is red on main` issue via `github.token` | `.github/workflows/ci.yml` | `core/test/ci-workflows.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
 | Postgres mirror: the compose pin copied from `mirror.gcr.io` to `ghcr.io/bellows-ai/postgres:17`, weekly and on demand | `.github/workflows/mirror-images.yml` | `core/test/ci-workflows.test.ts` |
 | Nightly/on-demand browser lane: `@nightly` specs and the specimen, never on the merge path | `.github/workflows/ui-nightly.yml`, `playwright.nightly.config.ts` | `core/test/ci-workflows.test.ts`, `core/test/e2e-config.test.ts` |
@@ -25,6 +26,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   instead of skipping the external-store suites. `.github/workflows/ci.yml`, `core/test/ci-workflows.test.ts`.
 - **The `e2e` job runs only on a push to `main`**, with a `postgres:17` service, `factory_e2e` and
   `factory_auth_e2e` created by hand (`e2e/reset-db.mjs` truncates but never creates), and chromium.
+- **The merge queue is a repository setting**: until it is on, `merge_group` is inert. `notify-red-main` holds `issues: write` only.
 - **A push to `main` that changes only `VERSION` skips CI; its tag still validates** through the `workflow_call`
   `release-image.yml` makes. No release commit carries `[skip ci]`.
 - **Node is `24`, matching `docker/Dockerfile`'s runtime base**; no `.nvmrc`, the test is the only pin.
