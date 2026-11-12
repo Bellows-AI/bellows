@@ -268,8 +268,10 @@ describe('analytics toolbar', () => {
 
     it('renders the Scope tabs when the session carries a personal scope', () => {
         const html = render(READY, { session: GITHUB_SESSION });
-        expect(html).toContain('role="tablist" aria-label="Scope"');
-        expect(html).toMatch(/aria-selected="true"[^>]*>Organization<\/button>/);
+        expect(html).toMatch(
+            /<div[^>]*role="radiogroup"[^>]*aria-label="Scope"|<div[^>]*aria-label="Scope"[^>]*role="radiogroup"/
+        );
+        expect(html).toMatch(/aria-checked="true"[^>]*>Organization<\/button>/);
     });
 });
 

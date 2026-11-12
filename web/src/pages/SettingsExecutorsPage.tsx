@@ -100,7 +100,7 @@ export function SettingsExecutorsPage() {
             <>
                 <PageHeader eyebrow="Settings" title="Executors" description={EXECUTOR_SCOPE} />
                 <DraftReturnBanner />
-                <p className="status">Loading your workspace…</p>
+                <StateNote state="loading">Loading your workspace…</StateNote>
             </>
         );
     }
@@ -146,7 +146,7 @@ export function SettingsExecutorsPage() {
                 </>
             ) : null}
 
-            {executorDialogError ? <p className="status">{executorDialogError}</p> : null}
+            {executorDialogError ? <StateNote state="error">{executorDialogError}</StateNote> : null}
             <PersonalExecutorRemoval
                 request={removing}
                 executors={data?.executors ?? []}

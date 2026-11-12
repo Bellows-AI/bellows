@@ -401,7 +401,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(literal.map((m) => m[0])).toEqual([]);
     });
 
-    // The same ratchet as colour (BEL-331): type, space and the touch floor are tokens, and the
+    // The same ratchet as colour: type, space and the touch floor are tokens, and the
     // literals outside `tokens.css` may only drop. Lower a ceiling when a change removes a hit.
     describe('type, space and touch tokens', () => {
         const SPACE_SCALE = [4, 8, 12, 16, 24, 32, 48];
@@ -471,7 +471,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         // narrowest plot's mono ticks sit at 11px, with collision checked by the overflow
         // matrix — it must stay exercised, not silently grow or shrink.
         const css = stripComments(shippedCss());
-        // A size is a `--text-*` token (BEL-331), read back as the px its token defines.
+        // A size is a `--text-*` token, read back as the px its token defines.
         const textPx = new Map([...css.matchAll(/--text-([\w-]+):\s*(\d+)px/g)].map((m) => [m[1]!, m[2]!] as const));
         const sizes = rules(css)
             .map(([prelude, body]) => {
@@ -676,7 +676,9 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
         expect(body('button.tertiary')).toMatch(/background\s*:\s*transparent/);
         expect(body('button.icon-button')).toMatch(/min-width\s*:\s*36px/);
-        expect(body(".tabs [role='tab'][aria-selected='true']")).toContain('var(--accent)');
+        const selected = all.find(([prelude]) => prelude.includes(".tabs [role='tab'][aria-selected='true']"));
+        expect(selected?.[1]).toContain('var(--accent)');
+        expect(selected?.[0]).toContain(".tabs [role='radio'][aria-checked='true']");
         for (const variant of ['button.tertiary', 'button.icon-button']) {
             const hover = all.find(([prelude]) => prelude.includes(`${variant}:hover:not(:disabled)`));
             expect(hover?.[1], `${variant} hover fill`).toContain('var(--surface-hover)');

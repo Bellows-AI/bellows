@@ -284,7 +284,7 @@
         color: var(--ink-muted);
     }
 
-    /* The shared tab strip: a row of `role="tab"` buttons, the selected one (aria-selected, the
+    /* The shared tab strip: a row of `role="tab"` (or, for a filter that owns no panel, `role="radio"`) buttons, the selected one (aria-selected or aria-checked, the
        attribute roving focus moves) marked by an accent underline and ink. Lanes migrate their own
        tab skins onto it. */
     .tabs {
@@ -294,7 +294,8 @@
         gap: var(--space-1);
     }
 
-    .tabs [role='tab'] {
+    .tabs [role='tab'],
+    .tabs [role='radio'] {
         background: transparent;
         border-bottom: 2px solid transparent;
         border-radius: 0;
@@ -302,11 +303,13 @@
         margin-bottom: -1px;
     }
 
-    .tabs [role='tab']:hover:not(:disabled, [aria-selected='true']) {
+    .tabs [role='tab']:hover:not(:disabled, [aria-selected='true']),
+    .tabs [role='radio']:hover:not(:disabled, [aria-checked='true']) {
         background: var(--surface-strong);
     }
 
-    .tabs [role='tab'][aria-selected='true'] {
+    .tabs [role='tab'][aria-selected='true'],
+    .tabs [role='radio'][aria-checked='true'] {
         border-bottom-color: var(--accent);
         color: var(--accent);
     }

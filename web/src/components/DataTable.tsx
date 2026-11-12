@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Key, ReactNode } from 'react';
+import { ScrollRegion } from './ScrollRegion.js';
 
 /**
  * What a column orders by. null means the value was never measured, and always sorts last.
@@ -173,8 +174,7 @@ export function DataTable<T>({ labelledBy, rows, columns, rowKey, initialSort, e
         // Scroll rather than spill: cells are nowrap, so the table is as wide as its content
         // needs. A named section is the region landmark; focusable so keyboard users can reach
         // the scrolled columns too (the WCAG focusable-scroll-area pattern).
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-        <section className="table-wrap" aria-labelledby={labelledBy} tabIndex={0}>
+        <ScrollRegion className="table-wrap" aria-labelledby={labelledBy}>
             <table className="data">
                 <thead>
                     <tr>
@@ -199,6 +199,6 @@ export function DataTable<T>({ labelledBy, rows, columns, rowKey, initialSort, e
                     ))}
                 </tbody>
             </table>
-        </section>
+        </ScrollRegion>
     );
 }

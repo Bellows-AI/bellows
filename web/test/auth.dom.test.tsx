@@ -145,8 +145,8 @@ describe('the dashboard scope tabs', () => {
         const user = userEvent.setup();
         renderApp('/');
 
-        const tab = async (name: string) => screen.findByRole('tab', { name });
-        const selected = async () => (await screen.findByRole('tab', { selected: true })).textContent;
+        const tab = async (name: string) => screen.findByRole('radio', { name });
+        const selected = async () => (await screen.findByRole('radio', { checked: true })).textContent;
         await tab('Organization');
         expect(await selected()).toBe('Organization');
         expect(statsCalls().every((url) => !url.includes('scope=mine'))).toBe(true);

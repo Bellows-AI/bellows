@@ -3,6 +3,7 @@ import type { AccessTokenView, MintResult } from '../api/useAccessTokens.js';
 import { useAccessTokens } from '../api/useAccessTokens.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { taskTime } from '../format.js';
+import { StateNote } from '../components/StateNote.js';
 
 /** One token row: its label and timestamps, and Revoke — or the fact that it already is one.
  * Split out of `AccessTokensPanel` so its own conditional cell does not add to the panel's
@@ -215,8 +216,8 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
                 </h2>
             </div>
             {hint ? <p className="muted">{hint}</p> : null}
-            {error ? <p className="status">{error}</p> : null}
-            {failure ? <p className="status">{failure}</p> : null}
+            {error ? <StateNote state="error">{error}</StateNote> : null}
+            {failure ? <StateNote state="error">{failure}</StateNote> : null}
 
             {minted !== null ? (
                 <MintedTokenOnce

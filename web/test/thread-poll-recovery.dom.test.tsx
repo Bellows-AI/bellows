@@ -27,7 +27,10 @@ describe('thread poll after a failed tick', () => {
     it('keeps polling, then clears the error and shows the thread once the board answers', async () => {
         const calls = board([503, 'ok']);
         renderApp(`/tasks/${TASK}`);
-        expect((await screen.findByRole('alert')).textContent).toContain('board unavailable');
+        // The page also reads the sidebar list, which this board answers 404: several alerts, one ours.
+        expect((await screen.findAllByRole('alert')).map((alert) => alert.textContent).join(' ')).toContain(
+            'board unavailable'
+        );
         const failed = threadFetches(calls).length;
         // The retry comes from the poll's own timer: nothing here asks for it.
         expect(await screen.findByRole('region', { name: 'Conversation' })).toBeTruthy();

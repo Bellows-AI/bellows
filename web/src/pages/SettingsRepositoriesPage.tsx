@@ -14,6 +14,7 @@ import {
 import { matchesSearch, orderByRecency } from '../components/repository-setup.js';
 import { EnvVarsSection } from '../panels/EnvVarsSection.js';
 import { useSettingsPage } from './SettingsLayout.js';
+import { StateNote } from '../components/StateNote.js';
 
 /** The list's transient postures, worded like the page has always worded them: a load in flight
  * says so, and a hard failure is named rather than rendered as an empty list. */
@@ -42,7 +43,7 @@ function ConfiguredRepoEnv({
     scope: { vars: EnvVarView[] } | undefined;
     env: UseEnv;
 }) {
-    if (env.loading && !env.data) return <p className="status">Loading environment…</p>;
+    if (env.loading && !env.data) return <StateNote state="loading">Loading environment…</StateNote>;
     if (!env.data) return null;
     return (
         <EnvVarsSection
@@ -117,7 +118,7 @@ export function SettingsRepositoriesPage() {
                 }
             />
             <DraftReturnBanner />
-            {env.error ? <p className="status">{env.error}</p> : null}
+            {env.error ? <StateNote state="error">{env.error}</StateNote> : null}
             <RepositoryListNotices
                 cachedError={repos.data?.meta.error ?? null}
                 fetchedAt={repos.data?.meta.fetchedAt ?? null}

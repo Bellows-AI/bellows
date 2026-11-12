@@ -35,9 +35,9 @@ export function StatusBanner({
     }
     if (!progress) return null;
     return (
-        <p className="status">
+        <StateNote state="loading">
             {progress.state === 'loading' ? 'Preparing telemetry…' : 'Waiting for telemetry…'}
             {hasData ? '' : ' (the first read waits for the database)'}
-        </p>
+        </StateNote>
     );
 }

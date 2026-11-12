@@ -16,6 +16,7 @@
         .mobile-nav .sidenav-newtask,
         .select-trigger,
         .tabs [role='tab'],
+        .tabs [role='radio'],
         .tabs a,
         .page-header-actions button,
         table.data button {

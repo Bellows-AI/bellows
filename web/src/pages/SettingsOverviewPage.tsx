@@ -9,6 +9,7 @@ import {
     type ReadinessTone,
 } from '../settings/readiness.js';
 import { useSettingsPage } from './SettingsLayout.js';
+import { StateNote } from '../components/StateNote.js';
 
 /** A row's status: attention is the bad pill and pending the warning pill; a settled answer (ok, or a
  * neutral info fact) is plain text, because a calm row does not need a lamp. */
@@ -146,8 +147,8 @@ export function SettingsOverviewPage() {
 
             {/* Stale-data warnings only: with no data at all, each item's fact already names the
                 error, and a second line would say it twice. */}
-            {workspace.error && workspace.data ? <p className="status">{workspace.error}</p> : null}
-            {env.error && env.data ? <p className="status">{env.error}</p> : null}
+            {workspace.error && workspace.data ? <StateNote state="error">{workspace.error}</StateNote> : null}
+            {env.error && env.data ? <StateNote state="error">{env.error}</StateNote> : null}
         </>
     );
 }

@@ -5,6 +5,7 @@ import { Icon } from '../components/Icon.js';
 import { executorTypeLabel } from '../workspace/executors.js';
 import type { OrgExecutor } from '../api/useWorkspace.js';
 import { DEFAULT_LABEL, RESUME_LABEL, SUSPEND_LABEL, SUSPENDED_LABEL } from './WorkspaceExecutorsPanel.js';
+import { ScrollRegion } from '../components/ScrollRegion.js';
 
 /**
  * The organization's executor profiles (issue 391): managed by administrators, selectable by
@@ -139,8 +140,7 @@ export function OrgExecutorsPanel({
                         : 'No organization executors yet — an administrator can add ones for everyone.'}
                 </p>
             ) : (
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
-                <section className="table-wrap" tabIndex={0} aria-label="Organization executors">
+                <ScrollRegion className="table-wrap" aria-label="Organization executors">
                     {/* `table-cards`: at ≤640px the row reflows into a labeled card, the way the
                         env table does, instead of pushing the actions off a phone's screen. */}
                     <table className="data data-compact table-cards">
@@ -196,7 +196,7 @@ export function OrgExecutorsPanel({
                             ))}
                         </tbody>
                     </table>
-                </section>
+                </ScrollRegion>
             )}
         </section>
     );

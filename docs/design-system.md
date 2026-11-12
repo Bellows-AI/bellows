@@ -27,7 +27,7 @@ never utilities, and every color it renders resolves through a token.
 | Component interaction under jsdom + Testing Library (the `dom` project) | `web/test/dom.tsx`, `vitest.config.ts` | `web/test/*.dom.test.tsx` |
 | Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` (`npm run verify:ui:nightly`) |
 | Specimen sections (Surfaces, Type, Icons, Actions, Data, Forms, States, Tokens), one icon per `ICON_NAMES`, token explorer over `tokens.css` | `e2e/specimen/main.tsx`, `e2e/specimen/tokens.tsx`, `e2e/specimen/matrix.ts` (`GROUPS`, `SECTIONS`) | `e2e/specimen.spec.ts` (`specimen documentation`) |
-| Every route family's overflow at 4 widths in one theme; rendered contrast in both themes | — | `e2e/matrix.spec.ts` |
+| Every route family's overflow at 4 widths in one theme; rendered contrast in both themes; axe-core in both themes, its open findings listed in `AXE_KNOWN` | — | `e2e/matrix.spec.ts` |
 | DOM regression matrix (`@nightly`, no screenshots): major routes plus batches list, draft and monitor in both themes at 1440 and 390 held to fit, no NaN text and a clean console; held reads are never an alert, every refused read (dashboard `StatusBanner` included) announces as one | `web/src/components/StatusBanner.tsx` | `e2e/state-matrix.spec.ts`, `web/test/dashboard-telemetry.test.tsx` |
 
 ## Invariants
@@ -104,12 +104,13 @@ Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-preci
 `usage-variants`, `usage-child-row`, `usage-diagnostics`, `usage-state-note`.
 
 Shared state line: `state-note` (+ `error`) via `StateNote.tsx` — loading `role=status`, error `role=alert`, empty plain; `web/test/state-note.dom.test.tsx`.
+Scrollable table or log wells: `ScrollRegion.tsx` (focusable, named); `web/test/scroll-region.dom.test.tsx`.
 
 ## Shared UI units
 
 `AppBar.tsx`, `AppShell.tsx`, `Avatar.tsx`, `ConfirmDialog.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
 `MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`, `RouteError.tsx`,
-`SideNav.tsx`, `StateNote.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
+`ScrollRegion.tsx`, `SideNav.tsx`, `StateNote.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
 `SettingsLayout.tsx`, `TasksLayout.tsx` (`web/src/pages/`).
 
 ## Lanes

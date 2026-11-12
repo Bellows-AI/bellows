@@ -13,6 +13,7 @@ import { JiraConnectionActions, type ConnectionActionsProps } from '../panels/Ji
 import { accessSentence, connectionState } from '../settings/integration-providers.js';
 import { DISCONNECTED_STATE, useIntegrationNotice } from '../settings/useIntegrationNotice.js';
 import { integrationPath, STATE_PILL } from './SettingsIntegrationsPage.js';
+import { StateNote } from '../components/StateNote.js';
 
 const OVERVIEW = '/settings/integrations';
 const ALREADY_DISCONNECTED = 'That connection was already disconnected.';
@@ -99,7 +100,7 @@ export function SettingsIntegrationDetailPage() {
                     {lifecycle.error}
                 </p>
             ) : null}
-            {read.state === 'loading' ? <p className="status">Loading integration…</p> : null}
+            {read.state === 'loading' ? <StateNote state="loading">Loading integration…</StateNote> : null}
             {read.state === 'error' ? (
                 <p className="status error" role="alert">
                     {read.error}

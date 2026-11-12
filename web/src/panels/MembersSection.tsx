@@ -4,6 +4,7 @@ import { listMembers, setMemberRole, type MemberView } from '../api/orgMembers.j
 import { reportUnauthenticated } from '../api/unauthenticated.js';
 import type { Session } from '../api/useSession.js';
 import { MembersPanel } from './MembersPanel.js';
+import { StateNote } from '../components/StateNote.js';
 
 /**
  * The members section's interactive half (issue 410): the roster read, the role write, and the
@@ -68,12 +69,12 @@ export function MembersSection({ session }: { session: Session | null }) {
 
     return (
         <>
-            {error ? <p className="status">{error}</p> : null}
+            {error ? <StateNote state="error">{error}</StateNote> : null}
             {isAdmin ? (
                 members === null ? (
                     <section className="panel">
                         <h2>Members</h2>
-                        <p className="status">Loading members…</p>
+                        <StateNote state="loading">Loading members…</StateNote>
                     </section>
                 ) : (
                     <MembersPanel
