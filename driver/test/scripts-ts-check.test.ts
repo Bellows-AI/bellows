@@ -16,9 +16,6 @@ const FRAGMENTS = [
     'review-reply-probe-postlude.cjs',
 ];
 
-/** Scripts not yet typed (BEL-319, 10c). Only ever shrinks: a script that gains `// @ts-check` leaves it. */
-const PENDING = new Set<string>(['supervisor.cjs']);
-
 const optedIn = (file: string): boolean =>
     readFileSync(join(SCRIPTS, file), 'utf8').split('\n', 3).includes('// @ts-check');
 
@@ -26,11 +23,11 @@ const optedIn = (file: string): boolean =>
 describe('driver container scripts carry // @ts-check', () => {
     const scripts = readdirSync(SCRIPTS).filter((file) => file.endsWith('.cjs'));
 
-    it.each(scripts.filter((file) => !PENDING.has(file) && !FRAGMENTS.includes(file)))('%s opts in', (file) => {
+    it.each(scripts.filter((file) => !FRAGMENTS.includes(file)))('%s opts in', (file) => {
         expect(optedIn(file)).toBe(true);
     });
 
-    it.each([...PENDING, ...FRAGMENTS])('%s is listed only while it does not opt in', (file) => {
+    it.each(FRAGMENTS)('%s is listed only while it does not opt in', (file) => {
         expect(scripts).toContain(file);
         expect(optedIn(file)).toBe(false);
     });
