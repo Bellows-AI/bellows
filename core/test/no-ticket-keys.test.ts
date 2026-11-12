@@ -3,17 +3,17 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import allowlist from './no-ticket-keys.allowlist.json' with { type: 'json' };
 
 /**
  * Ticket keys and issue/PR numbers are history, and history lives in git and the tracker. A
- * migration is applied once and never edited again, so its comments carry none at all; every
- * other tree is ratcheted down by `no-ticket-keys.allowlist.json`: a per-file count that may only
- * shrink, and that is lowered in the same change that removes a hit.
+ * migration is applied once and never edited again, so its comments carry no key, issue or PR
+ * number at all; every other tracked file carries no `BEL-<n>` key. A test that needs a key as
+ * data uses a neutral one such as `ABC-1`.
  */
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const MIGRATIONS = 'server/migrations/';
-const SELF = new Set(['core/test/no-ticket-keys.test.ts', 'core/test/no-ticket-keys.allowlist.json']);
+const SELF = new Set(['core/test/no-ticket-keys.test.ts']);
+const KEY = /\bBEL-\d+\b/g;
 const PATTERNS = [/\bBEL-\d+\b/g, /(^|[\s(])#\d+\b/gm, /\bissues? #?\d+/gi, /\bPR #?\d+/gi];
 
 const count = (text: string): number => PATTERNS.reduce((sum, re) => sum + (text.match(re)?.length ?? 0), 0);
@@ -24,6 +24,7 @@ const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, maxBuffer: 
     .filter((path) => path !== '' && !SELF.has(path));
 
 const counts = new Map<string, number>();
+const keys = new Map<string, number>();
 for (const path of tracked) {
     let text: string;
     try {
@@ -34,6 +35,8 @@ for (const path of tracked) {
     if (text.includes('\0')) continue;
     const n = count(text);
     if (n > 0) counts.set(path, n);
+    const k = text.match(KEY)?.length ?? 0;
+    if (k > 0) keys.set(path, k);
 }
 
 describe('ticket keys and issue numbers in comments', () => {
@@ -47,18 +50,8 @@ describe('ticket keys and issue numbers in comments', () => {
         expect(hits).toEqual([]);
     });
 
-    it('never lets another file exceed its allowlisted count', () => {
-        const over = [...counts]
-            .filter(([path]) => !path.startsWith(MIGRATIONS))
-            .filter(([path, n]) => n > ((allowlist as Record<string, number>)[path] ?? 0))
-            .map(([path, n]) => `${path}: ${n} > ${(allowlist as Record<string, number>)[path] ?? 0}`);
-        expect(over).toEqual([]);
-    });
-
-    it('ratchets: an allowlist entry above the real count is lowered or deleted', () => {
-        const slack = Object.entries(allowlist as Record<string, number>)
-            .filter(([path, n]) => (counts.get(path) ?? 0) < n)
-            .map(([path, n]) => `${path}: allowlisted ${n}, found ${counts.get(path) ?? 0}`);
-        expect(slack).toEqual([]);
+    it('keeps every other tracked file free of BEL ticket keys', () => {
+        const hits = [...keys].filter(([path]) => !path.startsWith(MIGRATIONS));
+        expect(hits).toEqual([]);
     });
 });
