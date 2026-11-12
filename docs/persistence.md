@@ -9,6 +9,7 @@ database-free through the in-memory stores in `server/test/helpers*.ts`.
 | Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts` |
 | Inbound OAuth tables (122): refresh serialized on the family row | `server/migrations/122_oauth.sql`, `server/src/auth/oauth-store.ts` | `server/test-db/auth-store.oauth-concurrency.test.ts` |
 | `metric_point_dedup` identity (086) | `server/migrations/086_metric_point_identity.sql` | `server/test-db/migration.086-metric-point-identity.test.ts` |
+| Migration runner, ledger checksum, frozen duplicate prefixes | `server/src/db/migrate.ts`, `server/migrations/` | `server/test-db/migrate.checksum.test.ts`, `server/test/migrations-numbering.test.ts` |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/jobs/*` | `server/test-db/job-store.*.test.ts` |
 | Agent questions, `claim_seq`-stamped (050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/jobs/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
@@ -36,7 +37,15 @@ database-free through the in-memory stores in `server/test/helpers*.ts`.
 
 ## Invariants
 
-- **Applied migrations are never edited.** They are skipped by filename; every schema change is a new file, a
+- **Applied migrations are immutable, comments included.** `schema_migrations.checksum` holds `sha256(body)`; a
+  mismatch refuses boot (`MigrationChecksumError`, no retry, `ready` stays rejected so routes answer 503), and a
+  null checksum is back-filled once with the shipped hash. Repeatables are exempt.
+  `server/test-db/migrate.checksum.test.ts`.
+- **The ten duplicate-prefix pairs are frozen.** The ledger key is the filename, so a rename re-applies the file;
+  a new file takes an unused number. `server/test/migrations-numbering.test.ts`.
+- **A data migration batches, or builds its index `CONCURRENTLY` outside the transaction**, so the boot lock is not
+  held for a table scan. `server/src/db/migrate.ts`.
+- Applied files are skipped by filename; every schema change is a new file, a
   removed feature's schema a new `drop` migration (`023_drop_pull_requests.sql`), children before parents.
 - **Versioned migrations run before repeatable ones; `*.repeatable.sql` files are re-applied every boot** and skipped when `schema_migrations` holds a versioned
   file this build does not ship. Every repeatable change, a revert included, ships a new no-op marker, the newest

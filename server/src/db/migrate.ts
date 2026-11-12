@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import type { Sql, TransactionSql } from 'postgres';
 import { LOCAL_ORG_ID } from '../identifiers.js';
@@ -28,7 +29,34 @@ export interface MigrateOptions {
     /** How long one attempt waits for another process's migration lock before it fails. */
     lockWaitMs?: number;
     log?: (message: string) => void;
+    /** The migration directory; tests point it at a copy whose bodies they alter. */
+    dir?: URL;
 }
+
+/** An applied file whose body no longer hashes to the ledger's checksum: not transient, never retried. */
+export class MigrationChecksumError extends TelemetryError {
+    constructor(versions: string[]) {
+        super(`Applied migrations were edited after they ran: ${versions.join(', ')}`, 'MIGRATION');
+    }
+}
+
+/**
+ * The numeric prefixes more than one file carries. The ledger key is the filename, so renaming
+ * one of an existing pair would re-apply it: the pairs are frozen and a new prefix must be unique.
+ */
+export function duplicatePrefixes(names: string[]): string[] {
+    const seen = new Map<string, number>();
+    for (const name of names) {
+        const prefix = name.split('_')[0] as string;
+        seen.set(prefix, (seen.get(prefix) ?? 0) + 1);
+    }
+    return [...seen]
+        .filter(([, n]) => n > 1)
+        .map(([prefix]) => prefix)
+        .sort();
+}
+
+const checksum = (body: string) => createHash('sha256').update(body).digest('hex');
 
 /** The database-wide advisory lock every migrating process takes, hashed like the claim locks. */
 export const MIGRATION_LOCK_KEY = 'factory:migrate';
@@ -111,13 +139,13 @@ export async function reapPendingSignIns(sql: Sql | TransactionSql): Promise<num
  */
 const isRepeatable = (name: string) => name.endsWith('.repeatable.sql');
 
-function files(): { version: string; sql: string; repeatable: boolean }[] {
-    const all = readdirSync(DIR)
+function files(dir: URL): { version: string; sql: string; repeatable: boolean }[] {
+    const all = readdirSync(dir)
         .filter((name) => name.endsWith('.sql'))
         .sort()
         .map((name) => ({
             version: name,
-            sql: readFileSync(new URL(name, DIR), 'utf8'),
+            sql: readFileSync(new URL(name, dir), 'utf8'),
             repeatable: isRepeatable(name),
         }));
 
@@ -147,6 +175,29 @@ async function applyMigrations(
     });
 }
 
+/**
+ * A row without a checksum predates the column: adopt the shipped body once, since what was applied is
+ * unrecoverable. A row with one must still match, or boot is refused (F17). Repeatables never have rows.
+ */
+async function verifyChecksums(
+    sql: TransactionSql,
+    ledger: { version: string; checksum: string | null }[],
+    all: { version: string; sql: string }[]
+): Promise<void> {
+    const byVersion = new Map(all.map((f) => [f.version, f]));
+    const edited: string[] = [];
+    for (const row of ledger) {
+        const file = byVersion.get(row.version);
+        if (!file) continue;
+        if (row.checksum === null) {
+            await sql`update schema_migrations set checksum = ${checksum(file.sql)} where version = ${row.version}`;
+        } else if (row.checksum !== checksum(file.sql)) {
+            edited.push(row.version);
+        }
+    }
+    if (edited.length > 0) throw new MigrationChecksumError(edited.sort());
+}
+
 async function applyLocked(
     sql: TransactionSql,
     options: MigrateOptions,
@@ -158,25 +209,31 @@ async function applyLocked(
             applied_at timestamptz not null default now()
         )
     `;
+    // The column is added here, not by a numbered migration: the ledger must exist before any
+    // migration can run, and this statement is what makes every later boot comparable.
+    await sql`alter table schema_migrations add column if not exists checksum text`;
 
     // A file that used to be versioned and is now repeatable leaves a row behind. The
     // runner ignores it, so this is hygiene rather than a fix — but leaving it makes
     // "repeatable files are never recorded" true only of new writes, not of the table.
     await sql`delete from schema_migrations where version like '%.repeatable.sql'`;
 
-    const applied = new Set(
-        (await sql<{ version: string }[]>`select version from schema_migrations`).map((r) => r.version)
-    );
+    const ledger = await sql<{ version: string; checksum: string | null }[]>`
+        select version, checksum from schema_migrations
+    `;
+    const applied = new Set(ledger.map((r) => r.version));
 
     // A ledger version this build does not ship means a newer build already migrated this
     // database: re-applying this build's repeatables would rewrite its newer views. Repeatable rows
     // cannot count here — the delete above removed them in this same transaction.
-    const all = files();
+    const all = files(options.dir ?? DIR);
     const known = new Set(all.filter((f) => !f.repeatable).map((f) => f.version));
     const ahead = [...applied].filter((version) => !known.has(version)).sort();
     if (ahead.length > 0) {
         log(`database is ahead of this build (unknown versions: ${ahead.join(', ')}); skipping repeatable migrations`);
     }
+
+    await verifyChecksums(sql, ledger, all);
 
     for (const { version, sql: body, repeatable } of all) {
         if (repeatable ? ahead.length > 0 : applied.has(version)) continue;
@@ -185,7 +242,7 @@ async function applyLocked(
         // between them cannot record a body without its row (033 and 039 are not replayable).
         await sql.unsafe(body);
         if (repeatable) continue;
-        await sql`insert into schema_migrations (version) values (${version})
+        await sql`insert into schema_migrations (version, checksum) values (${version}, ${checksum(body)})
                   on conflict (version) do nothing`;
     }
 
@@ -215,6 +272,7 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
             await applyMigrations(sql, options, lockWaitMs, log);
             return;
         } catch (e) {
+            if (e instanceof MigrationChecksumError) throw e;
             lastError = e;
             if (attempt === attempts) break;
             log(`migration attempt ${attempt} failed, retrying: ${(e as Error).message}`);
