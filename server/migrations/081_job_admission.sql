@@ -1,4 +1,4 @@
--- Shared admission budgets (issue #831): the slot a running row holds in each budget its claim
+-- Shared admission budgets: the slot a running row holds in each budget its claim
 -- admitted it under. Occupancy is the running rows themselves, so a row that ends frees its slots
 -- by leaving the indexes' predicate and no counter can leak.
 --

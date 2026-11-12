@@ -1,4 +1,4 @@
--- Notification outbox (BEL-129): one row per (event, subscription) owed a delivery. The job.status trigger
+-- Notification outbox: one row per (event, subscription) owed a delivery. The job.status trigger
 -- (102) fans an event out at emission, inside the settle's own transaction, to the enabled subscriptions that
 -- match it at that moment: a re-fired trigger for an existing event id inserts no event and so fans out
 -- nothing, and a subscription created later receives nothing. The outbox store (never this file) stamps every

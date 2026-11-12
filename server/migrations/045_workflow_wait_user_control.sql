@@ -1,4 +1,4 @@
--- User control for a thread parked on a durable PR wait (issue #328): the two person routes
+-- User control for a thread parked on a durable PR wait: the two person routes
 -- `POST /api/jobs/:id/wait/cancel` and `POST /api/jobs/:id/wait/poke`.
 --
 -- CANCELLED_BY: the acting caller on the wait row, 025's actor pattern (stopped_by/done_by) —

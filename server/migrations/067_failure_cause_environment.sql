@@ -1,4 +1,4 @@
--- A gate that failed for the environment, not the change (issue #653).
+-- A gate that failed for the environment, not the change.
 --
 --   job.failure_cause  gains `environment`: every test passed but the gate exited non-zero, or the
 --                      gate timed out or was killed. The batch scheduler retries it as

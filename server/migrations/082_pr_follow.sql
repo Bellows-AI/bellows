@@ -1,4 +1,4 @@
--- The PR follower's cadence (issue #831): the periodic read that makes the webhook-only paths — a
+-- The PR follower's cadence: the periodic read that makes the webhook-only paths — a
 -- parked block wait on a PR, and the merged-PR close of a non-batch thread — converge when a
 -- delivery is lost. One row per followed (org, repo, PR): WHEN it is next read, never WHAT it said.
 -- Everything it concludes is applied to the existing wait, ledger and thread rows, so the row can

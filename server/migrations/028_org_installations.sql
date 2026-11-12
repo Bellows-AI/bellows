@@ -1,4 +1,4 @@
--- Multi-org sign-in (#99): one GitHub App installation = one Factory organization.
+-- Multi-org sign-in: one GitHub App installation = one Factory organization.
 --
 -- The org id BECOMES the installation id (a decimal string — it passes organization_id_ck,
 -- which restates ORG_ID_PATTERN: 1-39 chars of [a-z0-9_-], no leading __). Organizations are

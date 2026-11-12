@@ -1,4 +1,4 @@
--- The structured terminal reason of a run (issue #339): why a FAILED run failed. The driver
+-- The structured terminal reason of a run: why a FAILED run failed. The driver
 -- reports it with the verdict (`failureKind` on POST /api/jobs/:id/complete), the route validates
 -- it against the six known spellings, and every job read serves it — so "how many timeouts this
 -- week" and "timeouts where the gates passed" are queries over this column, and the task view can

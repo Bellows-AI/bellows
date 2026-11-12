@@ -1,5 +1,5 @@
 -- A member's saved defaults for the two optional default-workflow steps: whether a task's review
--- reconciliation runs and whether merge-conflict autofix runs (#203, parent #36).
+-- reconciliation runs and whether merge-conflict autofix runs.
 --
 -- MISSING MEANS BOTH ON. There is no backfill and no row for a member who never changed anything:
 -- the store answers `true, true, null` for an absent row, so a new member and a member who has

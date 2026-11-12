@@ -1,4 +1,4 @@
--- The built-in skills an organization has switched off (BEL-286). A row is one off switch; no row means the built-in is
+-- The built-in skills an organization has switched off. A row is one off switch; no row means the built-in is
 -- on, so an organization that never touched the switch keeps every built-in. The catalog leaves a switched-off name out
 -- of what tasks may select, in `effectiveCatalog` (server/src/skill-catalog.ts).
 --

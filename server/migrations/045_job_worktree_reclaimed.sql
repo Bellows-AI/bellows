@@ -1,4 +1,4 @@
--- Whether the task worktree has been removed already — the durable signal reopen (issue #327)
+-- Whether the task worktree has been removed already — the durable signal reopen
 -- needs to answer "can this done task still be followed up".
 --
 -- The reclaim row in task_reclaim could not carry this: ack DELETES the row once the tree is

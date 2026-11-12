@@ -1,4 +1,4 @@
--- The "make default" action on the executor list (issue 215): a member may flag one of their
+-- The "make default" action on the executor list: a member may flag one of their
 -- executors as the one a new task draft autoselects, instead of always landing on whichever row
 -- sorts first.
 --

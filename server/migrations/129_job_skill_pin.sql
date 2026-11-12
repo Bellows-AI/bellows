@@ -1,4 +1,4 @@
--- Org and workspace skill versions pinned per job row (BEL-273). `skill_pin` is the array of
+-- Org and workspace skill versions pinned per job row. `skill_pin` is the array of
 -- `{name, source, versionId, sha256}` the row's task selected from the org's skills and its owner's workspace, resolved
 -- once when the row is made and never rewritten: a create and a follow-up resolve it, a retry, a workflow successor and
 -- a durable-wait wake copy it, a reviewer row stays empty. The claim hands the row's own pin to the runner, the content

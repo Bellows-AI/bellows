@@ -1,4 +1,4 @@
--- Jira Cloud OAuth (BEL-61): what a person asked of an authorization, and the one more way it can end.
+-- Jira Cloud OAuth: what a person asked of an authorization, and the one more way it can end.
 -- Expand only (docs/persistence.md): two nullable columns and a wider closed list; no existing writer changes.
 --
 -- `requested_access` is the consent the person chose at the start (`read` or `write`); `expected_site` is the one

@@ -1,4 +1,4 @@
--- A person force-closes a live batch's thread (issue #676).
+-- A person force-closes a live batch's thread.
 --
 --   batch_task.closed_at  when a person closed the task's thread while its batch was live: the
 --                         task is cancelled (unless already accepted), never retried or repaired,

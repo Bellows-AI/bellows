@@ -1,4 +1,4 @@
--- Transcript tool events (issue #983): the gate runs and pull-request operations an executor's own
+-- Transcript tool events: the gate runs and pull-request operations an executor's own
 -- transcript shows, read by the board when a `transcript-raw` chunk lands and again when its stream
 -- is finalized. One row per HALF of a tool call: `call` when the call was seen, `result` when its
 -- paired result was seen and classified, so a call with no result row is interrupted or unknown,

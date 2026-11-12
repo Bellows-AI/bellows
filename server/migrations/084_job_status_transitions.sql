@@ -1,4 +1,4 @@
--- The board's job status transitions, explicit (issue #821): the only `job.status` moves storage
+-- The board's job status transitions, explicit: the only `job.status` moves storage
 -- accepts, whichever statement writes them. Each operation still guards its own preconditions (lease
 -- token, expiry, staged conclusion) in its transactional WHERE; this is the graph they all move along.
 --

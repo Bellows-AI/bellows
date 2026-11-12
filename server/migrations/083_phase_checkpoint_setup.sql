@@ -1,4 +1,4 @@
--- The pre-agent setup's outcome as a phase checkpoint (issue #917): a failed `environment.setup` was
+-- The pre-agent setup's outcome as a phase checkpoint: a failed `environment.setup` was
 -- held only in the first driver's memory, so a holder that adopted or took the run over could skip the
 -- end-of-run pass that would have refused it. The setup phase runs before the others and is written
 -- once, passed or failed, before the agent starts; the adopter reads it back with the other phases.

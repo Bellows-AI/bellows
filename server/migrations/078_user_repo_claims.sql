@@ -1,4 +1,4 @@
--- Lease-owned clone rows and token-owned purge stamps (issue #830). The single-process assumption
+-- Lease-owned clone rows and token-owned purge stamps. The single-process assumption
 -- of 011 and 044 is retired: a `cloning` row is held by a claim_token and a lease, a `purging` row
 -- by a purge_token and its stamp, and every publish, move and terminal write is fenced by its token.
 --

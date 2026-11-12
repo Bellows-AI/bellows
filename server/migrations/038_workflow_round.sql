@@ -1,12 +1,12 @@
--- The durable block-wait's parked continuation and bounded wake audit (issue #231). One row per
+-- The durable block-wait's parked continuation and bounded wake audit. One row per
 -- "round" a workflow-block runtime boundary parks: a thread that transitions into a wait-boundary
 -- node holds NO job row while it waits — this table is what it holds instead, so waiting consumes
 -- no runner/executor lease and the claim loop never has to poll a permanently sleeping job.
 --
 -- ONE ROW PER PARK, NEVER DELETED ON WAKE: `woken_at`/`job_id`/`delivery_count`/`last_delivery_id`
 -- turn a parked round into its own bounded audit record — which continuation job it became, and how
--- many folded deliveries woke it — linking the root job, the PR identity (repo/pr_number, #202's
--- `job_pr`/`workflow_wait`) and the workflow node together for exactly the round it describes. A
+-- many folded deliveries woke it — linking the root job, the PR identity (repo/pr_number, the
+-- `job_pr`/`workflow_wait` tables) and the workflow node together for exactly the round it describes. A
 -- node re-entering the same wait boundary later (a loop back into review, say) parks a NEW round;
 -- `workflow_round_parked_uk` is what makes "the currently parked one" a single, indexed lookup.
 --

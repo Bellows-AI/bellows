@@ -1,4 +1,4 @@
--- Retires the code-owned default workflow (issue #543): an omitted `workflow` is objective mode
+-- Retires the code-owned default workflow: an omitted `workflow` is objective mode
 -- (051), so the frozen optional-block pair, the gate-repair round limit stamped beside it, and the
 -- member's saved default-workflow switches have no reader left.
 --

@@ -1,4 +1,4 @@
--- Removes the pull-request statistics schema, dropped with the feature (issue #62).
+-- Removes the pull-request statistics schema, dropped with the feature.
 --
 -- 004 created the PR tables, 005 partitioned them by organization, and 003 added the
 -- session_pr side channel that joined agent sessions to PR numbers. Nothing reads any of

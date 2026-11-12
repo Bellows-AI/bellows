@@ -1,4 +1,4 @@
--- Gate runs (issue #983): one row per gate EXECUTION of an attempt, written under its lease — a
+-- Gate runs: one row per gate EXECUTION of an attempt, written under its lease — a
 -- `running` row before the gate starts, replaced by its terminal row when it ends — so the
 -- completion pass (and another driver after a takeover) can tell a verified pass of the unchanged
 -- tree from a stale one instead of running every gate again.

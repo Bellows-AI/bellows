@@ -1,4 +1,4 @@
--- Org and workspace skills (BEL-271): a skill is a named owner-scoped row (`user_id` null is the organization scope,
+-- Org and workspace skills: a skill is a named owner-scoped row (`user_id` null is the organization scope,
 -- set is that member's workspace) and each content change is an immutable `skill_version`. The bundle bytes live in
 -- the object store under `object_key` (`<prefix>_skills/<org>/<sha256>`, one object per org and content); the version
 -- row is written only after its object is stored (content-addressed, create-only), in one transaction with the skill row. `current_version_id` is the one

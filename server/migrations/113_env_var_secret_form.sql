@@ -1,4 +1,4 @@
--- BEL-150: the contract for 093. A secret holds only its store reference and version, a non-secret only its
+-- the contract for 093. A secret holds only its store reference and version, a non-secret only its
 -- value. It refuses while a plaintext secret remains rather than converting one, and deletes nothing: the
 -- refusal names the conversion command of the previous release, and an oversized value (over the store's
 -- 32768-byte limit, MAX_SECRET_BYTES) is re-entered by a member.

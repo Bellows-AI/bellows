@@ -1,5 +1,5 @@
 -- The code-owned default workflow's selected optional-block pair, frozen on the root job at
--- create (issue #209).
+-- create.
 --
 -- This supersedes 032's "an unnamed task runs the member's words verbatim, and a workflow walks
 -- one only when a body names it": an unnamed task now resolves the code-owned DEFAULT workflow —

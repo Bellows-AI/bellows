@@ -17,7 +17,7 @@
 -- runner credential. Secrets are still write-only at the API (list never echoes a secret's value),
 -- which closes the browser, not the database, as the leak.
 --
--- WHO OWNS A ROW: org rows are the "Core secrets" of issue #17 and are admin-written; repo rows
+-- WHO OWNS A ROW: org rows are the "Core secrets" and are admin-written; repo rows
 -- are org-wide (one configuration per repository, applied to every member's runs in it — the
 -- Actions precedent) and also admin-written; workspace rows are the member's own. Membership is
 -- not a sandbox here (docs/jobs.md), and nothing about env changes that.

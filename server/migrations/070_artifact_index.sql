@@ -1,4 +1,4 @@
--- The artifact index (issue #764, openspec/changes/task-owned-runner): immutable chunk and manifest
+-- The artifact index (openspec/changes/task-owned-runner): immutable chunk and manifest
 -- records for the streams a task's runner uploads, replacing `job_artifact` (046) — one capped,
 -- overwritable text row per (job, kind, attempt) — outright. Nothing is migrated: that table's
 -- rows were tail-kept 512 KiB excerpts, not the source the new streams are cut from.

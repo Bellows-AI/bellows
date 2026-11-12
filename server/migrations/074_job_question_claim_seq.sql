@@ -1,4 +1,4 @@
--- The claim that asked (issue #822): the asking claim's `job.claim_seq` (057). `attempt` cannot
+-- The claim that asked: the asking claim's `job.claim_seq`. `attempt` cannot
 -- name it — a claim that recovers an expired lease runs in the same attempt, so the lost claim's
 -- never-answered question would count against its takeover. The per-claim question cap and the
 -- batch's "died holding an unanswered question" read both key by this column.

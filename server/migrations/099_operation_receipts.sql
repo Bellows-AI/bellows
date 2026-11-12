@@ -1,4 +1,4 @@
--- Operation receipts (BEL-61): the durable record of one runner-side write to an external provider, keyed by the
+-- Operation receipts: the durable record of one runner-side write to an external provider, keyed by the
 -- logical operation the runner means (a hash of what it is about to do, or a key it chose). It exists so a lost
 -- response is settled by what the receipt says, never by a replay: `started` was never dispatched, `dispatched`
 -- may have run, `unknown` is a dispatched write whose outcome could not be confirmed. Expand only

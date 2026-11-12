@@ -1,4 +1,4 @@
--- Inbound OAuth for the MCP server (BEL-101): an MCP client obtains `mat_` access and `mrt_` refresh tokens for an
+-- Inbound OAuth for the MCP server: an MCP client obtains `mat_` access and `mrt_` refresh tokens for an
 -- account in one org. Distinct from the outbound provider connections (054). Reach is never stored here: a token
 -- resolves through the LIVE org_membership join, so nothing below cascades from membership. This file must contain
 -- NO `create extension`, per 005's header.

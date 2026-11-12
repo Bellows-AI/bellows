@@ -1,4 +1,4 @@
--- The default workflow's gate-repair round limit, frozen on the root job at create (issue #49) —
+-- The default workflow's gate-repair round limit, frozen on the root job at create —
 -- the third of the launch-time options 039 started: the pair said WHICH optional blocks were
 -- selected, this says how many bounded gate-fix rounds the graph may spend repairing a failed
 -- gate. The value is read off the selected executor's row (042) by POST /api/jobs and stamped
@@ -9,7 +9,7 @@
 -- the pair columns. Unlike them it is USABLE null: the UI treats null as "no default workflow" and
 -- shows no repair counter at all.
 --
--- THE BACKFILL BEFORE THE CONSTRAINT: rows created between #209 and this file hold the pair
+-- THE BACKFILL BEFORE THE CONSTRAINT: rows created before this file hold the pair
 -- non-null with the new column null by construction — and a NOT VALID check constraint, while
 -- skipping existing rows at ADD time, is still enforced against every subsequent INSERT and
 -- UPDATE, so leaving them as-is would fail the next claim, heartbeat or verdict write on every
