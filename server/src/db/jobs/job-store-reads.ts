@@ -34,6 +34,7 @@ import type { ActivityRecords } from '../../telemetry/run-activity.js';
 import { abortableSleep } from '../../abortable-sleep.js';
 import { questionsOfJobs } from './job-store-questions.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from '../task-summary.js';
+import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
 
 /** The reads: a job, a thread, the task list, the settle wait, and the scopes artifacts and restore resolve against. */
 export interface JobReadStore {
@@ -303,7 +304,7 @@ export async function settleStateOf(ctx: JobStoreContext, id: string): Promise<S
         }[]
     >`
         select r.root_job_id, head.id as head_id, head.status as head_status,
-               head.status in ('succeeded', 'failed', 'dead', 'stopped') as terminal,
+               ${terminalFragment(sql, 'head.status')} as terminal,
                wl.wait_reason,
                (wl.wait_reason is not null and wl.wait_terminal_reason is null) as parked
         from (select root_job_id from job where org_id = ${orgId} and id = ${id}) r
@@ -611,7 +612,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                 where org_id = ${orgId} and review_of is null
                 group by root_job_id
                 having count(*) filter (
-                    where status not in ('succeeded', 'failed', 'dead', 'stopped')
+                    where not ${terminalFragment(sql)}
                 ) = 0
             ),
             picked as (
@@ -744,7 +745,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
                    -- review is never "running", whatever status the row itself carries while
                    -- parked on it (206). A wait that has gone terminal carries no extra weight
                    -- here — the status/done rule alone decides, same as a thread that never waited.
-                   (h.status in ('succeeded', 'failed', 'dead', 'stopped')
+                   (${terminalFragment(sql, 'h.status')}
                        or (wl.wait_reason is not null and wl.wait_terminal_reason is null)) as terminal,
                    cu.id as creator_id, cu.github_login as creator_login,
                    cu.display_name as creator_name, cu.avatar_url as creator_avatar_url,
@@ -778,7 +779,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
                 select json_build_object(
                            'running', count(*) filter (where not terminal),
                            'review', count(*) filter (where terminal and done_at is null),
-                           'past', count(*) filter (where terminal and done_at is not null)
+                           'past', count(*) filter (where terminal and ${doneFragment(sql)})
                        )
                 from task
             ) as counts,
@@ -838,10 +839,10 @@ export function resolveTaskCursor(filters: TaskListFilters): TaskCursor | null {
 
 export function taskStateWhere(sql: Sql, state: TaskListFilters['state']): Fragment {
     return {
-        attention: sql`not (terminal and done_at is not null)`,
+        attention: sql`not (terminal and ${doneFragment(sql)})`,
         running: sql`not terminal`,
         review: sql`terminal and done_at is null`,
-        past: sql`terminal and done_at is not null`,
+        past: sql`terminal and ${doneFragment(sql)}`,
     }[state];
 }
 

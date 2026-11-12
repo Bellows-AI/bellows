@@ -9,6 +9,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { backsBatchTask, queueReclaimIfThreadDone } from './job-store-rows.js';
 import { lockRootRowsInTx, lockThreadRootInTx } from '../connection-bindings.js';
 import type { JobStoreContext } from './job-store-types.js';
+import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
 
 /** The merged-PR close the webhook and the observer drive. */
 export interface JobMergeStore {
@@ -191,7 +192,7 @@ async function applyMergeCloseToRoot(tx: TransactionSql, ctx: JobStoreContext, r
     await tx`
         update job set done_at = coalesce(done_at, now())
         where org_id = ${orgId} and root_job_id = ${rootJobId}
-          and status in ('succeeded','failed','dead','stopped')
+          and ${terminalFragment(tx)}
     `;
 
     // The shared reclaim rule: queues only when EVERY member is terminal — a member still
@@ -243,8 +244,8 @@ async function closeMarkedThreadIfTerminal(
 
     const [thread] = await tx<{ total: number; terminal: number; done: number }[]>`
         select count(*)::int as total,
-               count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal,
-               count(*) filter (where done_at is not null)::int as done
+               count(*) filter (where ${terminalFragment(tx)})::int as terminal,
+               count(*) filter (where ${doneFragment(tx)})::int as done
         from job
         where org_id = ${orgId} and root_job_id = ${rootJobId}
     `;
@@ -256,7 +257,7 @@ async function closeMarkedThreadIfTerminal(
         await tx`
             update job set done_at = coalesce(done_at, now())
             where org_id = ${orgId} and root_job_id = ${rootJobId}
-              and status in ('succeeded','failed','dead','stopped')
+              and ${terminalFragment(tx)}
         `;
     }
     await queueReclaimIfThreadDone(tx, ctx.orgId, rootJobId);

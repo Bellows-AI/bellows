@@ -53,8 +53,8 @@ import {
     attachmentSetOf,
     skillPinOf,
 } from './job-store-reads.js';
+import { wallTickFragment } from './job-store-sql-fragments.js';
 import {
-    wallTickFragment,
     authorJoinFragment,
     authorColumnsFragment,
     taskPreviewColumnsFragment,
