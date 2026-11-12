@@ -6,7 +6,7 @@ import type { AskedQuestion, Claim, JobStore } from '../src/db/jobs/job-store-ty
 import { useTestDb } from './harness.js';
 import { expireLease, testOrg, testUser } from './fixtures.js';
 
-/** The agent's questions (050, issue #531) against a real database. */
+/** The agent's questions (050) against a real database. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const OTHER_ORG = testOrg();

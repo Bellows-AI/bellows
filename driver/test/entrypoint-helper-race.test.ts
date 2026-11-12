@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readRepoFile } from './fixtures/repo-files.js';
 
 /*
- * The real executor entrypoints, run under /bin/sh against fake helpers (issue #829): a helper
+ * The real executor entrypoints, run under /bin/sh against fake helpers: a helper
  * TERMed in its fork-to-exec window runs the shell's handler and swallows the signal, and a bare
  * `wait` on it held PID 1, and the run, forever. Here ctl-agent swallows its FIRST TERM; the
  * entrypoint must still exit with the CLI's status and write agent.exit within a few seconds.

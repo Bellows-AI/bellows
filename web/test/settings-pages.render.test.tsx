@@ -610,7 +610,7 @@ describe('settings scope context (issue 182 invariants)', () => {
 
 describe('settings page headers', () => {
     // Every page answers "where am I" with exactly one h1 — the page header's — and the
-    // Settings eyebrow names the tree the page sits in (#159).
+    // Settings eyebrow names the tree the page sits in.
     it.each([
         ['/settings/organization', 'Organization'],
         ['/settings/workspace', 'Workspace'],

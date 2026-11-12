@@ -5,7 +5,7 @@ import type { JobStore } from '../../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 
 /**
- * The job board a request lands on is its caller's org's (#99): the session, the personal
+ * The job board a request lands on is its caller's org's: the session, the personal
  * token or the worker secret's resolved org each names one, and the runtime resolved from
  * it carries that org's store. Absent in the route-test mode with no stores behind the
  * registry.
@@ -36,7 +36,7 @@ export async function artifactsFor(orgs: OrgRegistry, request: FastifyRequest) {
     return rt?.artifacts ?? null;
 }
 
-/** The telemetry client the caller's org reads through (#99), mirroring `storeFor`. */
+/** The telemetry client the caller's org reads through, mirroring `storeFor`. */
 export async function telemetryFor(orgs: OrgRegistry, request: FastifyRequest) {
     const rt = await orgs.for(orgOf(request));
     return rt?.telemetry ?? null;
@@ -64,7 +64,7 @@ export async function boardsFor<K extends keyof JobStore = keyof JobStore>(
     return store ? [store] : [];
 }
 
-/** The workflow definitions the create may resolve against — the caller's org's (#99). */
+/** The workflow definitions the create may resolve against — the caller's org's. */
 export async function workflowsFor(orgs: OrgRegistry, request: FastifyRequest) {
     const rt = await orgs.for(orgOf(request));
     return rt?.workflows ?? null;
@@ -168,7 +168,7 @@ async function scanUnderBudget<Board, T>(
 }
 
 /**
- * The job claim's scan (issue #831): the boards in the order their rows give, so every board
+ * The job claim's scan: the boards in the order their rows give, so every board
  * replica and every driver sees the same priority instead of each replica's own rotation. An org
  * whose lost attempt waits for its takeover comes first — recovery needs no budget slot, and a
  * takeover window is bounded — then the org with the fewest running rows, then the one whose

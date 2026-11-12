@@ -432,7 +432,7 @@
         padding: 6px 0;
     }
 
-    /* The Skills page (BEL-272): the precedence strip, the head actions, a row's quiet notes and the
+    /* The Skills page: the precedence strip, the head actions, a row's quiet notes and the
        read-only view of one skill's SKILL.md and files. */
     .skill-precedence {
         align-items: center;
@@ -558,7 +558,7 @@
         }
     }
 
-    /* The inline skill editor (BEL-272): a card in the row's place, tabs for a new skill, the save bar below. */
+    /* The inline skill editor: a card in the row's place, tabs for a new skill, the save bar below. */
     .skill-editor {
         background: var(--surface-raised);
         border: 1px solid var(--line);
@@ -643,7 +643,7 @@
         text-overflow: ellipsis;
     }
 
-    /* The variables editor (BEL-262), inline on a settings page: the title, the Variables |
+    /* The variables editor, inline on a settings page: the title, the Variables |
        Secrets tab strip, then one bordered box — a head (title, filter, raw toggle, New) over
        rows that read as text and open one at a time for editing. */
     .env-editor {

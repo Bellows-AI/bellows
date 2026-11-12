@@ -4,7 +4,7 @@ import { generate, type SyntheticSession } from '../src/seed/synthetic.js';
 const DAY_MS = 86_400_000;
 const WEEKDAYS = 7;
 const WEEK_MS = 7 * DAY_MS;
-/** A Wednesday: the weekday on which the unmeasured-bucket e2e spec went red (BEL-151). */
+/** A Wednesday: the weekday on which the unmeasured-bucket e2e spec went red. */
 const WEDNESDAY = Date.parse('2026-10-28T13:00:00Z');
 
 const weekOf = (ms: number): string => {

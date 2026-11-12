@@ -32,8 +32,8 @@ import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, boardIdentity, generationOfName } fr
 import { parseRfc3339 } from '../timestamps.js';
 
 /**
- * The kubernetes half of the orphan reaper (issue #301): enumerate the Jobs the driver's crashed
- * attempts left behind — a declared service is a sidecar of its attempt's pod (issue #773), so it
+ * The kubernetes half of the orphan reaper: enumerate the Jobs the driver's crashed
+ * attempts left behind — a declared service is a sidecar of its attempt's pod, so it
  * goes with its Job — and delete them when the board condemns the owning job. The
  * counterpart of the re-claim fence — the fence acts on the job label at CLAIM time, under the
  * checkout claim; this arm acts on it when the BOARD says no claim can ever be taken again.
@@ -77,14 +77,14 @@ interface ListedItem extends ListedRunnerJob {
 
 /**
  * A finished runner Job — its name is the (job, lease) hash no aux Job shares — that nobody has read
- * yet. A Job its driver suspended because its teardown could not be confirmed (issue #821) is no
+ * yet. A Job its driver suspended because its teardown could not be confirmed is no
  * run to adopt: it is reaped, Secrets first.
  */
 const unreadRunner = (item: ListedItem, jobId: string, leaseToken: string): boolean =>
     JOB_ID.test(jobId) && JOB_ID.test(leaseToken) && finishedAgentRun(item, attemptPair(jobId, leaseToken));
 
 /**
- * One listed item as far as the scan reads it (#869): an item carrying the job and the lease label
+ * One listed item as far as the scan reads it: an item carrying the job and the lease label
  * is in scope, and must be dated; any job, lease or holder label it carries must be a uuid — a
  * corrupt one would become an attempt identity the grouping files it under, and the group's board
  * lookup would condemn a live attempt's objects. A Job named as the runner of its pair must have a
@@ -152,7 +152,7 @@ const groupKeyOf = (
         kind,
         name,
         ...(kind === 'job' && unreadRunner(item, jobId, leaseToken) ? { unread: true as const } : {}),
-        // A live job's runner Job, running or not, is its next claim's fence's (issue #821).
+        // A live job's runner Job, running or not, is its next claim's fence's.
         ...(isRunner ? { runner: true as const } : {}),
         // The incarnation listed: its delete names that one only.
         uid,
@@ -277,7 +277,7 @@ const reap = async (
     // The checkout claim is JOB-scoped — the one name a replacement attempt can hold — so only a
     // provably dead job's claim may be removed, and only once nothing of this round failed: a
     // superseded attempt's group must never touch it, the live attempt's fence is holding it. It
-    // goes the one way a claim ever goes (issue #821): the incarnation read here, both groups its
+    // goes the one way a claim ever goes: the incarnation read here, both groups its
     // holder can have left ended the acknowledged way and confirmed gone, then the uid-preconditioned
     // delete — anything short of that is deferred to a later round, never deleted on a maybe.
     // Answered in the log like the fleet's objects, so "is the reaper running?" stays answerable
@@ -331,7 +331,7 @@ interface JunkVolumeClaim {
 }
 
 /**
- * A claim of the task volume listing (issue #775): null when it is not an identified object at all (the
+ * A claim of the task volume listing: null when it is not an identified object at all (the
  * list proved nothing), `junk` when it is one whose root label names no thread it is a generation of.
  */
 const asVolumeClaim = (value: unknown, board: string): ListedVolumeClaim | JunkVolumeClaim | 'foreign' | null => {
@@ -364,7 +364,7 @@ const asVolumeClaim = (value: unknown, board: string): ListedVolumeClaim | JunkV
 
 /**
  * Every task volume claim, by its root label, all generations — the unschedulable-labelled included —
- * grouped by thread (issue #775). Null when the list proved nothing: a refused call, an absent
+ * grouped by thread. Null when the list proved nothing: a refused call, an absent
  * collection, or a claim that cannot be named a generation of its labelled root. A claim already
  * terminating is on its way out and left out.
  */
@@ -421,7 +421,7 @@ export function createKubernetesReaper({
     config: DriverConfig;
     request: K8sRequest;
     sleep?: (ms: number) => Promise<void>;
-    /** Export a not-whole thread's volume before its delete (issue #938); absent, the arm cannot export. */
+    /** Export a not-whole thread's volume before its delete; absent, the arm cannot export. */
     exporting?: KubernetesVolumeExporting;
 }): ReaperArm {
     const deps: K8sDeps = { config, request, sleep };

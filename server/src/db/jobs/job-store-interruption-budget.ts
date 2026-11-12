@@ -1,4 +1,4 @@
-/** The interruption budgets (issue #792, BEL-302); `job-store.ts` re-exports them. */
+/** The interruption budgets; `job-store.ts` re-exports them. */
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 
 /**
@@ -12,7 +12,7 @@ export const INTERRUPTION_BUDGET = 5;
 export const INTERRUPTION_WINDOW_MS = 3_600_000;
 
 /**
- * How many node losses (BEL-302) a row may suffer inside `NODE_LOSS_WINDOW_MS` before the row is retired. An
+ * How many node losses a row may suffer inside `NODE_LOSS_WINDOW_MS` before the row is retired. An
  * attempt lost to a drained node, an evicted pod or a removed container says nothing of the job, so it
  * never spends `INTERRUPTION_BUDGET`; this generous bound only stops a row the platform thrashes for ever.
  */
@@ -23,7 +23,7 @@ export const NODE_LOSS_WINDOW_MS = 21_600_000;
 /**
  * Whether the row's interruption budget is spent. A blocked hand-back waits on a leftover rather than
  * losing an attempt to the infrastructure, so it is outside the count; a requirement hand-back waits on a
- * person, so it is too; a node loss (BEL-302) is the platform's, so it has its own bound. Only interruptions inside
+ * person, so it is too; a node loss is the platform's, so it has its own bound. Only interruptions inside
  * `INTERRUPTION_WINDOW_MS` count; an `at` that does not parse counts as spent.
  * The cutoff is bound per call from the process clock that wrote each `at`, never DB now().
  */

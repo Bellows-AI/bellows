@@ -59,7 +59,7 @@ async function publishPhase(
     if (resumed) return resumed;
     // The fence sits BETWEEN each token ask and its push: a Stop during the ask killed the runner,
     // and pushing now would outlive it. The push itself is never fenced — it cannot be
-    // recalled (issue #472). A rejected or missing token, or a GitHub 5xx, retries (BEL-253).
+    // recalled. A rejected or missing token, or a GitHub 5xx, retries.
     let published: PublishResult;
     try {
         const answer = await publishWithRetry(ctx, { what: 'the publish', options }, () =>
@@ -69,7 +69,7 @@ async function publishPhase(
         published = answer;
     } catch (e) {
         if (!stepLost(e)) throw e;
-        // The supervisor was lost under the push: no verdict on the publish, the next claim redoes it (#925).
+        // The supervisor was lost under the push: no verdict on the publish, the next claim redoes it.
         const { nodeLoss = false, blocked = false } = await supervisorLossFlag(ctx, e);
         await end(
             ctx,

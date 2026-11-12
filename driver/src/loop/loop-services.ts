@@ -34,7 +34,7 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
             );
         }
         // An infrastructure refusal: the start tore its partial fleet down itself. The executor's own
-        // node-loss evidence (a refused start's, a lost supervisor's) rides the interruption (BEL-302).
+        // node-loss evidence (a refused start's, a lost supervisor's) rides the interruption.
         if (e instanceof StartupRefused) return startupHaltOf(e);
         const reason = `could not start the services: ${(e as Error).message}`;
         return { halt: 'interrupt', reason, ...(stepLost(e) ? await supervisorLossFlag(ctx, e) : {}) };
@@ -54,7 +54,7 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
 }
 
 /**
- * A failure of the services' machinery rather than of the services (issue #773, R2-1): a lost
+ * A failure of the services' machinery rather than of the services (R2-1): a lost
  * supervisor (`stepLost`) or a pod or daemon that could not be read (`Inconclusive`). The attempt is
  * interrupted for it, never failed `services`.
  */

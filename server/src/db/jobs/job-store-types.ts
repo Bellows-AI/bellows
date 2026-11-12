@@ -53,7 +53,7 @@ export interface SettleOutcome {
 export type JobOutcome = 'succeeded' | 'failed';
 
 /**
- * The structured terminal reason of a run (issue #339), stored as `job.failure_kind` and served on
+ * The structured terminal reason of a run, stored as `job.failure_kind` and served on
  * every job read: why a failed run failed — the timeout kill, a prompt-cache loss, an agent
  * reporting itself blocked, a failed gate, an unlanded publish, a failed block-helper, a dead
  * declared service, or the runner erroring. Null is "not a failure": a success, or a row older
@@ -76,7 +76,7 @@ export type FailureKind =
     | 'runner_error';
 
 /**
- * What lies under a `gate`, `publish` or `helper` failure (issue #581), stored as
+ * What lies under a `gate`, `publish` or `helper` failure, stored as
  * `job.failure_cause` and read only by the batch scheduler's recovery: a conflict or failed check is
  * repaired, a transport loss or an environment fault retried, a refusal or bad configuration left to
  * a person. Null on every other kind. Copied from the driver's `board.ts`, which depends on nothing.
@@ -92,9 +92,9 @@ export interface GateReport {
     startedAt?: string;
     /** The gate's tail. Bounded by the driver's window; truncated again at the route. */
     output: string | null;
-    /** The recorded execution this entry is (issue #983); absent for a gate no record covers. */
+    /** The recorded execution this entry is; absent for a gate no record covers. */
     executionId?: string;
-    /** Set when the gate was not launched but served from an earlier verified pass (issue #983). */
+    /** Set when the gate was not launched but served from an earlier verified pass. */
     reused?: { executionId: string; finishedAt: string | null; reason: string };
 }
 
@@ -107,7 +107,7 @@ export interface ServiceStatus {
     name: string;
     image: string;
     state: string;
-    /** Why a dead service died (issue #487): present only once the driver read its ending. */
+    /** Why a dead service died: present only once the driver read its ending. */
     exitCode?: number | null;
     reason?: string | null;
     logTail?: string;
@@ -152,23 +152,23 @@ export interface TranscriptExportVitals {
     oldestUnackedMs: number;
 }
 
-/** One attempt the infrastructure interrupted (071, issue #792). */
+/** One attempt the infrastructure interrupted (071). */
 export interface JobInterruption {
     at: string;
     reason: string;
     claimSeq: number;
-    /** A hand-back that waited on a leftover still terminating: outside the interruption budget (BEL-160). */
+    /** A hand-back that waited on a leftover still terminating: outside the interruption budget. */
     blocked?: true;
     /** A hand-back that waited on a connection the task asked for: outside the interruption budget. */
     requirement?: true;
-    /** The platform took the attempt away (BEL-302): outside the interruption budget, bounded by `NODE_LOSS_BUDGET`. */
+    /** The platform took the attempt away: outside the interruption budget, bounded by `NODE_LOSS_BUDGET`. */
     nodeLoss?: true;
 }
 
 export interface Job {
     id: string;
     command: string;
-    /** The thread root's stored title (BEL-252), or null while the fallback derived from `command` stands. */
+    /** The thread root's stored title, or null while the fallback derived from `command` stands. */
     title: string | null;
     /** Who set `title`: null exactly when `title` is. */
     titleOrigin: TaskTitleOrigin | null;
@@ -209,7 +209,7 @@ export interface Job {
     /** The branch the thread bases on (batch target, else the root's request), or null for the remote default. Filled by the detail reads (get/thread) only. */
     baseBranch: string | null;
     /**
-     * The skills this row's CLI does not list and why (BEL-286): `switched_off` or `needs_connection`. Filled by `get`
+     * The skills this row's CLI does not list and why: `switched_off` or `needs_connection`. Filled by `get`
      * only; absent on a list and on the thread read.
      */
     hiddenSkills?: { name: string; reason: 'switched_off' | 'needs_connection' }[];
@@ -224,14 +224,14 @@ export interface Job {
      */
     summary: string | null;
     /**
-     * The structured terminal reason (issue #339) — why a FAILED run failed: the timeout kill, a
+     * The structured terminal reason — why a FAILED run failed: the timeout kill, a
      * prompt-cache loss, an agent reporting itself blocked, a failed gate, an unlanded publish, a
      * failed block-helper, or the runner erroring. Null on every success, and on every row that predates the column (044) — "not a
      * failure", never "unknown failure".
      */
     failureKind: FailureKind | null;
     /**
-     * What caused a `gate`, `publish` or `helper` failure (#581) — the half a batch's recovery
+     * What caused a `gate`, `publish` or `helper` failure — the half a batch's recovery
      * decides on. Null beside any other kind, on success, and when the worker reported none.
      */
     failureCause: FailureCause | null;
@@ -274,7 +274,7 @@ export interface Job {
     /**
      * The id of the thread's ROOT job — the job itself, unless it is a follow-up, and then the
      * chain's first job. Stored on every row (022): the composite is served, never re-derived by
-     * the reader. The worktree (issue #35) is keyed by it, and every member of one conversation
+     * the reader. The worktree is keyed by it, and every member of one conversation
      * carries the same value from insert.
      */
     rootJobId: string;
@@ -294,7 +294,7 @@ export interface Job {
      */
     workflowName: string | null;
     /**
-     * The task's execution mode (051, issue #543): 'objective' for a task created without a
+     * The task's execution mode (051): 'objective' for a task created without a
      * workflow, 'workflow' for one that walks a named workflow's graph. Fixed on the root at
      * create and inherited by every follow-up, retry and successor.
      */
@@ -310,7 +310,7 @@ export interface Job {
      * heartbeat the worker already sends (`cancelRequested`), and the flag is cleared when the
      * stop happens — parking (suspend) or finishing (complete) — never by the request itself. A
      * run whose worker died mid-stop never waits out a reclaim: the claim settles the stamped row
-     * `stopped` (issue #152), the stop's own landing, and `/stop` on a row whose lease already
+     * `stopped`, the stop's own landing, and `/stop` on a row whose lease already
      * expired settles it in place. Null on every job nobody asked to stop.
      */
     cancelRequestedAt: string | null;
@@ -341,13 +341,13 @@ export interface Job {
      */
     agentTurns: number | null;
     /**
-     * How long this run's `environment.setup` ran before the agent started (069, issue #733), as the
+     * How long this run's `environment.setup` ran before the agent started (069), as the
      * driver reported it on the verdict — part of `wallClockMs`, shown apart from the agent's time.
      * Null when no setup ran or the read does not select it (the per-run lists).
      */
     setupMs: number | null;
     /**
-     * The attempts the infrastructure interrupted (071, issue #792), oldest first: when, why, and
+     * The attempts the infrastructure interrupted (071), oldest first: when, why, and
      * the claim sequence each ran under. Empty when none was; the per-run lists serve it empty too.
      */
     interruptions: JobInterruption[];
@@ -355,7 +355,7 @@ export interface Job {
      * The wall clock the task's WHOLE thread has banked — every executed segment of every run,
      * accumulated by the board at the settle points (claim, the dead retirement, the verdict,
      * the suspend park) into `wall_clock_ms` and summed over the thread by the read. Served by
-     * `thread()` and by the grouped terminal list, whose rows ARE tasks (#124) — the figure the
+     * `thread()` and by the grouped terminal list, whose rows ARE tasks — the figure the
      * task view's head clock and the recently-completed panel both render. Null where nothing
      * has accumulated — never zero, which would claim a measurement that was never made.
      */
@@ -365,13 +365,13 @@ export interface Job {
      * recently active terminal one, the same rule the task-summary read model follows. Carried on
      * every member of the thread alike, since the wait belongs to the ROOT, not the run: the task
      * view renders it beside whichever member it is looking at. Served by `get()` and `thread()`
-     * (#324) — the per-run lists answer null, exactly as they do for a thread that never waited.
+     * — the per-run lists answer null, exactly as they do for a thread that never waited.
      */
     waitReason: string | null;
     waitingSince: string | null;
     waitTerminalReason: string | null;
     /**
-     * The thread's recorded publication (036, #324) — the PR identity the publishing verdict
+     * The thread's recorded publication (036) — the PR identity the publishing verdict
      * landed: repo, PR number and URL, the head branch the task pushed and the base it branched
      * from. Belongs to the ROOT, so every member of the thread carries the same one. Null on a
      * thread that never published — a no-op or a failed publish writes no `job_pr` row. Served by
@@ -380,7 +380,7 @@ export interface Job {
      */
     publication: PublicationState | null;
     /**
-     * The questions the agent asked during THIS run (050, issue #531), oldest first. Served by
+     * The questions the agent asked during THIS run (050), oldest first. Served by
      * `get()` and `thread()`; the per-run lists answer an empty array.
      */
     questions: JobQuestion[];
@@ -462,7 +462,7 @@ export type AskQuestionResult =
     | { result: 'created' | 'existing'; question: JobQuestion }
     | { result: 'lost' | 'missing' | 'limit' };
 
-/** A reviewer profile as frozen on a review row: its instructions, env grant and budget (issue #549). */
+/** A reviewer profile as frozen on a review row: its instructions, env grant and budget. */
 export interface ReviewerSpec {
     name: string;
     instructions: string;
@@ -493,7 +493,7 @@ export interface ReviewView {
 
 /**
  * What a request did: a new review (`created`), the stored one (`existing`), or why none. A review
- * live under the caller's claim carries its `claim` (issue #774): leased in the request's own
+ * live under the caller's claim carries its `claim`: leased in the request's own
  * transaction, handed back to a retried request, re-leased to a newer caller claim. A finished one
  * is answered from its row, with no claim. `running` refuses a second key: its `review` is the one
  * in flight.
@@ -546,7 +546,7 @@ export interface Claim {
     attempts: number;
     maxAttempts: number;
     /**
-     * Whether a loss of this attempt ends the job (issue #822): its attempts and its interruption
+     * Whether a loss of this attempt ends the job: its attempts and its interruption
      * budget are both spent, so the board retires it `dead` when this lease expires. Until then a
      * lost attempt is an interruption, and a driver that cannot run it leaves it to the lease.
      */
@@ -568,21 +568,21 @@ export interface Claim {
      */
     executorRefusal: string | null;
     /**
-     * Why the task's selected skills cannot run (issue #545) — a skill the catalog lacks, or a
+     * Why the task's selected skills cannot run — a skill the catalog lacks, or a
      * connection whose env names the task's environment does not hold. Names only, never a value.
      * The driver fails the task `config` with this sentence before any runner starts; null when
      * nothing was selected or every requirement is met.
      */
     skillRefusal: string | null;
     /**
-     * The org and workspace skill versions this row's task runs with (BEL-273), pinned when the row was made: `[]`
+     * The org and workspace skill versions this row's task runs with, pinned when the row was made: `[]`
      * when it selected none and for a reviewer. Each version's bytes are the runner's to fetch under this lease
      * (`POST /api/jobs/:id/skills/:versionId/content`, `x-content-sha256` = `sha256`); a pin is never re-resolved
      * across claims, so a takeover or retry delivers the same versions.
      */
     skillPin: PinnedSkill[];
     /**
-     * The skills this row's CLI must not list (BEL-286), decided once when the row's skills were pinned and never
+     * The skills this row's CLI must not list, decided once when the row's skills were pinned and never
      * re-read by a claim: `{name, source: builtin | org | workspace, reason: switched_off | needs_connection,
      * connection?}`. `[]` when nothing is hidden; a reviewer row decides with no bindings.
      */
@@ -604,13 +604,13 @@ export interface Claim {
      */
     userId: string | null;
     /**
-     * The board-owned Factory execution context (issue #244), rendered by `master-prompt.ts` from
+     * The board-owned Factory execution context, rendered by `master-prompt.ts` from
      * trusted claim metadata alone — never from `job.command`, a node's own prompt text, or any
      * other author-supplied content. Delivered through the executor's native system-instruction
      * channel, never concatenated into the command. Null only when the trusted metadata could not
      * produce a valid, bounded prompt (a workflow node claim whose snapshot is missing or does not
      * contain it) — the driver refuses the launch explicitly rather than running with no contract.
-     * Thread-invariant: this claim's node and capabilities ride `turnContext` instead (issue #509).
+     * Thread-invariant: this claim's node and capabilities ride `turnContext` instead.
      */
     masterPrompt: string | null;
     /**
@@ -637,7 +637,7 @@ export interface Claim {
     /**
      * The id of the thread's ROOT job — the job itself, unless it is a follow-up, and then the
      * chain's first job. Read straight off the row's `root_job_id` column (022). The task worktree
-     * (issue #35) is keyed by it, so every attempt of a task and every follow-up resuming its
+     * is keyed by it, so every attempt of a task and every follow-up resuming its
      * session lands in the same tree, branched off the remote default. The driver cannot walk the
      * chain — the board owns the rows — so the claim is where the root travels.
      */
@@ -657,7 +657,7 @@ export interface Claim {
     /**
      * The session this claim resumes, which the worker restores instead of starting a new one: a
      * follow-up's copy of its parent's, or the one an interrupted attempt of this row reported — a
-     * lease-expiry takeover or a handover (issue #822). Null when the claim starts a new
+     * lease-expiry takeover or a handover. Null when the claim starts a new
      * conversation: a first run, or a reclaim that spends an attempt.
      */
     resumeSessionId: string | null;
@@ -670,15 +670,15 @@ export interface Claim {
     followUp: boolean;
     /**
      * Whether `resumeSessionId` was minted by an attempt of THIS row — a root's, a fresh workflow
-     * node's, a sessionless follow-up's — rather than inherited from an earlier row of the thread
-     * (issue #822). Only such a session can be lost unwritten, with a driver gone before the CLI's
+     * node's, a sessionless follow-up's — rather than inherited from an earlier row of the thread.
+     * Only such a session can be lost unwritten, with a driver gone before the CLI's
      * first write, so only its resume may start that id anew (`BELLOWS_RESUME_MAY_BE_UNWRITTEN`).
      * False when there is no session.
      */
     ownSession: boolean;
     /**
      * Whether this claim continues, in its session, the interrupted attempt it supersedes — a
-     * lease-expiry takeover or a handover (issue #822). `command` stays what that attempt's first
+     * lease-expiry takeover or a handover. `command` stays what that attempt's first
      * claim was delivered, the text its runner is marked with for adoption; the driver frames the
      * prompt as a continuation (`driver/src/continuation.ts`).
      */
@@ -725,12 +725,12 @@ export interface Claim {
     policy?: EvidencePolicy;
     review?: ReviewEvidence;
     /**
-     * The names of the reviewer profiles the repository declares (issue #774), present when there
+     * The names of the reviewer profiles the repository declares, present when there
      * are any: what the driver provisions one dormant reviewer for. Absent on a reviewer's own claim.
      */
     reviewerProfiles?: readonly string[];
     /**
-     * Present only on a named-profile review's claim (issue #549) (issue #549): the git ref its worktree starts
+     * Present only on a named-profile review's claim: the git ref its worktree starts
      * from, and the wall-clock budget its profile grants. Such a claim gets no GitHub credential and
      * no member env beyond the profile's `connections`, never publishes, runs no gates and opens
      * no publish or question relay — the board decides all of that, never the caller.
@@ -750,7 +750,7 @@ export interface Claim {
      */
     agent?: false;
     /**
-     * Declared pre/post block-helper steps for this node's claim (issue #207/#122), resolved from
+     * Declared pre/post block-helper steps for this node's claim, resolved from
      * the snapshot node's own `helperPlans` — absent on every claim outside a block's expansion,
      * which is the ordinary case for every workflow-less and plain `agent`-node task today.
      */
@@ -774,7 +774,7 @@ export type LeaseResult = 'ok' | 'lost' | 'missing';
  * - `lost`    the job is no longer running under this token — the lease expired and someone else
  *             has it, or the board gave up on it. The caller must stop working.
  * - `missing` no such job in this organization.
- * - `conflict` the attempt staged a conclusion under this token (issue #821): that is its outcome.
+ * - `conflict` the attempt staged a conclusion under this token: that is its outcome.
  */
 export type SuspendResult = { result: 'ok'; status: JobStatus } | SettleRefusal;
 export type SettleRefusal = { result: 'lost' } | { result: 'missing' } | { result: 'conflict' };
@@ -784,7 +784,7 @@ export type SettleRefusal = { result: 'lost' } | { result: 'missing' } | { resul
  *
  * - `missing`      no such job in this organization.
  * - `not_finished` the parent, or any other member of its thread, is still queued or running —
- *                  the thread's turn is not over, as a retry's refusal says (#698).
+ *                  the thread's turn is not over, as a retry's refusal says.
  * - `task_done`    the user has declared the task done; the conversation is closed.
  * - `forbidden`    the parent was queued by a different account. The child would inherit the
  *                  parent's session, and a session resumes only in the checkout tree it ran in —
@@ -794,12 +794,12 @@ export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbid
 
 /**
  * The refusal of a task-path write (retry, follow-up, Done) on a thread that backs a batch task while
- * `BATCHES_ENABLED` is off (BEL-264): the batch is hidden, so its threads are not reachable through the task routes.
+ * `BATCHES_ENABLED` is off: the batch is hidden, so its threads are not reachable through the task routes.
  */
 export type BatchesDisabledRefusal = 'batches_disabled';
 
 /**
- * Why a retry was refused (issue #326). The follow-up set — a session is never a precondition of
+ * Why a retry was refused. The follow-up set — a session is never a precondition of
  * either.
  *
  * - `missing`      no such job in this organization.
@@ -831,7 +831,7 @@ export type StopResult =
     | { result: 'conflict'; status: JobStatus };
 
 /**
- * What a queued-command edit (issue #329) did.
+ * What a queued-command edit did.
  *
  * - `ok`         the command was replaced. The new command rides the answer so the route can
  *                echo it without a second read.
@@ -869,7 +869,7 @@ export type RemoveResult =
     | 'batch';
 
 /**
- * What a user wait-cancel (issue #328) did.
+ * What a user wait-cancel did.
  *
  * - `ok`        the thread's open wait was cancelled — reason `cancelled by user`, the acting
  *               caller stamped beside it; a parked round is permanently unwakeable and a woken
@@ -883,7 +883,7 @@ export type RemoveResult =
 export type CancelWaitResult = { result: 'ok' } | 'missing' | 'no_wait' | 'forbidden';
 
 /**
- * What a user poke (issue #328) did: the parked round's wake transaction, run now.
+ * What a user poke did: the parked round's wake transaction, run now.
  *
  * - `ok`        the poke ran; `woken` says whether a round was actually woken — false is an
  *               honest answer for nothing parked, a round already woken, or an active member,
@@ -969,7 +969,7 @@ export interface TaskSummary {
     headRunId: string;
     /** The root command; the fallback title derives from it. */
     command: string;
-    /** The root's stored title, or null while the fallback stands (BEL-252). */
+    /** The root's stored title, or null while the fallback stands. */
     title: string | null;
     titleOrigin: TaskTitleOrigin | null;
     titleRevision: number;
@@ -1042,7 +1042,7 @@ export interface CreateJobStoreDeps {
     sql: Sql;
     orgId: string;
     /**
-     * `config.batches.enabled` (BEL-264), default on. Off, the claim skips every job of a batch thread and
+     * `config.batches.enabled`, default on. Off, the claim skips every job of a batch thread and
      * retry, follow-up and Done refuse one with `batches_disabled`; a job outside a batch is unchanged.
      */
     batches?: boolean;
@@ -1110,9 +1110,9 @@ export interface CreateJobStoreDeps {
      * absent in the tests that predate it: a verdict then simply records no publication.
      */
     prs?: JobStorePrs;
-    /** The shared admission budgets every claim enforces (issue #831); absent is unlimited. */
+    /** The shared admission budgets every claim enforces; absent is unlimited. */
     admission?: AdmissionBudgets;
-    /** What the claim reports about itself (issue #831); absent in the tests that predate it. */
+    /** What the claim reports about itself; absent in the tests that predate it. */
     metrics?: ClaimObserver;
 }
 
@@ -1160,7 +1160,7 @@ export interface JobStorePrs {
         exec?: Sql | TransactionSql
     ): Promise<number>;
     /**
-     * Enters (or re-enters) a durable wait for a workflow-block runtime boundary (issue #231) —
+     * Enters (or re-enters) a durable wait for a workflow-block runtime boundary —
      * the transition's park, in the same transaction as the verdict that triggered it.
      */
     enterWait(
@@ -1168,7 +1168,7 @@ export interface JobStorePrs {
         exec?: Sql | TransactionSql
     ): Promise<WaitState>;
     /**
-     * Atomically claims a wait's folded deliveries for the wake sweep (issue #231): the pending
+     * Atomically claims a wait's folded deliveries for the wake sweep: the pending
      * count returns and resets to zero in the same lock, coalescing whatever folded since the last
      * claim.
      */
@@ -1202,7 +1202,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     taskPreviewColumns: Fragment;
     /** The thread's wait (036), joined by the detail reads (`get`, `thread`) — one definition. */
     waitLateral: Fragment;
-    /** The thread's publication join (`job_pr`, 036, #324), the same two reads only. */
+    /** The thread's publication join (`job_pr`, 036), the same two reads only. */
     publicationJoin: Fragment;
     /** The publication columns that ride beside it, comma-leading like `authorColumns`. */
     publicationColumns: Fragment;

@@ -36,7 +36,7 @@ run() { docker run --rm -v "$REPO:/workspace" "$@"; }
 check 'claude runs'            'Claude Code'      run --entrypoint claude "$IMAGE" --version
 check 'acli installed'         'acli version'     run --entrypoint acli "$IMAGE" --version
 check 'gh installed'           'gh version'       run --entrypoint gh "$IMAGE" --version
-# No plugin (issue #841): context-mode's executions cannot run as the tool uid yet.
+# No plugin: context-mode's executions cannot run as the tool uid yet.
 check 'no plugin installed'    'No plugins installed' run --entrypoint claude "$IMAGE" plugin list
 check 'CLAUDE.md present'      'Agent guide'      run --entrypoint head "$IMAGE" -1 /home/node/.claude/CLAUDE.md
 check 'skills present'         'factory-fix'      run --entrypoint ls "$IMAGE" /usr/local/share/factory-skills
@@ -53,7 +53,7 @@ check 'onboarding done'   'true'  run --entrypoint node "$IMAGE" -e \
     'console.log(require(process.env.CLAUDE_CONFIG_DIR + "/.claude.json").hasCompletedOnboarding)'
 
 # Managed settings outrank every scope the agent can reach, so the agent's uid must not be able to
-# rewrite them (issue #452): baked root-owned, and replaced by the driver root-owned again. The
+# rewrite them: baked root-owned, and replaced by the driver root-owned again. The
 # driver's delivery is reproduced exactly — create, `docker cp -` of the archive
 # driver/src/telemetry-config.ts renders (uid 0, mode 0444), start attached.
 check 'managed settings are not writable by the runtime user' 'ok' run --entrypoint sh "$IMAGE" -c \
@@ -104,13 +104,13 @@ fi
 
 # An empty CLAUDE_CONFIG_DIR — the transcript store's per-thread directory, or a volume mounted over
 # the baked configuration — hides everything baked. Seeding is therefore load-bearing, not a nicety.
-# The seed source /opt/claude-home is a symlink to the baked home (#401), so a volume mounted OVER
+# The seed source /opt/claude-home is a symlink to the baked home, so a volume mounted OVER
 # /home/node/.claude hides it; the supported shape points CLAUDE_CONFIG_DIR at the empty directory.
 VOL="$(mktemp -d)"
 chmod 777 "$VOL"
 check 'seeds an empty volume' 'CLAUDE.md' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; ls "$CLAUDE_CONFIG_DIR"'
-# The listing view (BEL-286): the managed skills path links to /tmp/.factory-skills, which every start rebuilds from
+# The listing view: the managed skills path links to /tmp/.factory-skills, which every start rebuilds from
 # FACTORY_HIDDEN_SKILLS. A hidden skill has no entry there, so the CLI never lists it (a Skill() deny only refuses the call).
 check 'the managed skills path lists every baked skill when nothing is hidden' 'factory-jira' docker run --rm --entrypoint sh "$IMAGE" -c \
     'claude-executor --version >/dev/null 2>&1; ls /etc/claude-code/.claude/skills'
@@ -123,7 +123,7 @@ check 'a malformed hidden list ends the run before the CLI (exit 78)' 'exit 78' 
 check 'a view that is a symlink is refused (exit 78)' 'exit 78' docker run --rm -e FACTORY_HIDDEN_SKILLS= --entrypoint sh "$IMAGE" -c \
     'ln -s /etc /tmp/.factory-skills; claude-executor --version >/dev/null 2>&1; echo "exit $?"'
 
-# The skills are managed (issue #1024): read from the one path the tool uid can read, never copied
+# The skills are managed: read from the one path the tool uid can read, never copied
 # into the seeded volume, where the CLI would load the private-dir copy first.
 check 'the seeded volume carries no copy of the baked skills' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; test ! -e "$CLAUDE_CONFIG_DIR"/skills/factory-fix && ls /etc/claude-code/.claude/skills | grep factory-fix >/dev/null && echo ok'
@@ -171,7 +171,7 @@ else
     echo 'note: no token in the environment or .env — skipped the live prompt'
 fi
 
-# The member's own executor config (CLAUDE_CODE_CONFIG_CONTENT, #212): model and env additions
+# The member's own executor config (CLAUDE_CODE_CONFIG_CONTENT): model and env additions
 # merge into the baked settings.json, but a member cannot use it to strip the runner's hooks/
 # plugins fence. Telemetry keys a member sets land in user scope and lose to managed settings, so
 # the merge never touches managed-settings.json.
@@ -212,7 +212,7 @@ else
     fail=$((fail + 1))
 fi
 
-# Tools agents reach for in repo scripts (issue #1022).
+# Tools agents reach for in repo scripts.
 if docker run --rm --entrypoint sh "$IMAGE" -c 'command -v python3 && command -v pgrep && command -v pkill && command -v ps' >/dev/null 2>&1; then
     printf 'ok   %s\n' 'python3, ps, pgrep and pkill are on PATH'
     pass=$((pass + 1))
@@ -221,7 +221,7 @@ else
     fail=$((fail + 1))
 fi
 
-# Repo skills (BEL-270), measured with the real CLI against the scripted model endpoint: the Skill tool's
+# Repo skills, measured with the real CLI against the scripted model endpoint: the Skill tool's
 # "Base directory" line says which file the CLI loaded. With the managed settings and
 # CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1 in place, a checkout's .claude/skills/<name> is loaded; on a name
 # clash the MANAGED (baked) skill is the one that loads, so a repo cannot shadow a built-in at runtime.
@@ -266,7 +266,7 @@ else
     printf 'FAIL %s\n     got: %s\n' 'a repo skill named like a built-in loses to the managed built-in' "$got"
     fail=$((fail + 1))
 fi
-# Pinned org and workspace skills (BEL-273): the driver installs them root-owned (0755/0644) under the task volume at
+# Pinned org and workspace skills: the driver installs them root-owned (0755/0644) under the task volume at
 # /task/.factory/skills-root/.claude/skills and starts the CLI with `--add-dir /task/.factory/skills-root` (the plan
 # in driver/src/runner-plan.ts). The CLI loads the skill from there, through the image's real entrypoint and bridge.
 # `--add-dir` ranks below a checkout's own skill of the same name, so a WORKSPACE skill is also named in
@@ -308,7 +308,7 @@ skill_env=()
 rm -rf "$task_vol"
 rm -rf "$skill_ws"
 
-# The agent's tool isolation (issue #814), the same checks in both images.
+# The agent's tool isolation, the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh
 . "$HERE/../tool-isolation-checks.sh"
 

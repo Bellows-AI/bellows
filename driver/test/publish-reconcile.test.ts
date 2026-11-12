@@ -5,7 +5,7 @@ import type { PrOperationWrite as PrOperationNote } from '../src/board/board-pr-
 import { StepChannelClosed, StepTimedOut } from '../src/step-control.js';
 
 /**
- * Publication reconciliation (issue #771): a publish is a chain of effects on a remote, and each can
+ * Publication reconciliation: a publish is a chain of effects on a remote, and each can
  * land while its answer is lost. The world below is a stateful fake of the checkout, the remote and
  * the PR list, with one fault injector: an effect that LANDS and then answers with an error — the
  * lost response. What it pins is that a retried (or adopted) publish asks the remote what it has
@@ -240,7 +240,7 @@ describe('publication reconciliation after an uncertain response', () => {
 });
 
 /**
- * The record of each managed PR operation (issue #983): written at execution time from the publish
+ * The record of each managed PR operation: written at execution time from the publish
  * itself, with an id minted per operation, never derived from the verdict afterwards. A PR the driver
  * opened is `created`; one it found (an earlier publish, the agent, or a create whose answer was lost)
  * is `reused`. The recorder is best effort: its failure must never fail the publish or open a second PR.

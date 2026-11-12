@@ -4,7 +4,7 @@ import { attachCheckpoint, createCheckpointRelay } from '../src/loop/loop-export
 import type { LoopRuntime } from '../src/loop/loop-types.js';
 
 /**
- * The loop's half of the checkpoint (issue #775): the supervisor's chunks and closing record reach
+ * The loop's half of the checkpoint: the supervisor's chunks and closing record reach
  * the board's `checkpoint` stream under the attempt's own claim sequence — the loop's, never one the
  * supervisor names — for every executor, not only the ones that stream a transcript.
  */

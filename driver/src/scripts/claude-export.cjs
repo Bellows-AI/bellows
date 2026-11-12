@@ -8,7 +8,7 @@
 // Environment (set by the driver; paths and literals, no credential):
 //   CLAUDE_TRANSCRIPT_DIR  — the thread's transcript directory (the runner's CLAUDE_CONFIG_DIR).
 //   EXPORT_CONTROL_SOCKET  — the task supervisor's relay socket in FACTORY_EXPORT_DIR: it adds this
-//                            exporter's token and follows whichever driver holds the run (issue #829),
+//                            exporter's token and follows whichever driver holds the run,
 //                            so this process holds no credential. A socket not there yet is retried.
 //   BELLOWS_CONTROL_URL / BELLOWS_CONTROL_TOKEN — one-shot mode only (a review's close-time export,
 //                            run by the holder itself): the endpoint and the token it issued.
@@ -81,7 +81,7 @@ const positive = (name, fallback) => {
 };
 const DIR = process.env.CLAUDE_TRANSCRIPT_DIR;
 const EXPORT_DIR = process.env.FACTORY_EXPORT_DIR;
-// One-shot mode (a review's close-time export, issue #774): no mailbox and no drain order. The
+// One-shot mode (a review's close-time export): no mailbox and no drain order. The
 // closing state and cause come from the env, and the exporter drains what is there, closes and exits.
 const ONCE = process.env.EXPORT_ONCE;
 const CONTROL_SOCKET = process.env.EXPORT_CONTROL_SOCKET;

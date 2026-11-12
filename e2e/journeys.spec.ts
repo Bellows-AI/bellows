@@ -14,7 +14,7 @@ import { type Theme, VIEWPORTS } from './screenshot-matrix.js';
 import { useTheme, watchConsole } from './page-health.js';
 
 /**
- * The task journey's hand-backs across the merged lanes (#286), in one theme — the theme only
+ * The task journey's hand-backs across the merged lanes, in one theme — the theme only
  * changes the screenshots: a parked review wait closed with Mark done. The states are the #270
  * fixtures, following one task id. A failed gate answered with another pass is task-detail.spec.ts's;
  * the configure-from-the-blocker launch is composer.spec.ts's F1 journey; another author's
@@ -48,7 +48,7 @@ async function shoot(page: Page, journey: string, step: string, theme: Theme): P
  */
 async function routeTask(page: Page, held: { jobs: ThreadJob[] }): Promise<void> {
     await page.route('**/api/jobs/*/thread*', (route) => route.fulfill({ json: { jobs: held.jobs } }));
-    // The page's run-activity hook (issue #339) fetches beside the thread poll; a mocked thread
+    // The page's run-activity hook fetches beside the thread poll; a mocked thread
     // answers it too, or the real board 404s a task id the fixture only names.
     await page.route('**/api/jobs/*/activity', (route) => route.fulfill({ json: mockedActivityOf(held.jobs) }));
     await page.route(/\/api\/tasks(\?|$)/, (route) => {

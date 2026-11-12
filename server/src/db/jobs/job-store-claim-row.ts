@@ -34,16 +34,16 @@ export interface ClaimCandidateRow {
     live_providers: string[];
     /** The frozen target branch of the batch task the thread works (059), read in the same RETURNING; null outside a batch. */
     base_branch: string | null;
-    /** Whether this attempt's loss retires the job: attempts and interruption budget spent (issue #822). */
+    /** Whether this attempt's loss retires the job: attempts and interruption budget spent. */
     last_attempt: boolean;
-    /** Whether this claim continues, in its session, the interrupted attempt it supersedes (issue #822). */
+    /** Whether this claim continues, in its session, the interrupted attempt it supersedes. */
     resumes_interrupted: boolean;
     /** Whether `session_id` was minted by this row's own attempt rather than inherited from an earlier row (`claimRules`). */
     own_session: boolean;
 }
 
 /**
- * Try, never wait, the thread root's ROW for a member candidate (BEL-161): the cancellation fence locks it while the
+ * Try, never wait, the thread root's ROW for a member candidate: the cancellation fence locks it while the
  * claim holds the advisory lock, and a thread writer holds it before waiting on that lock. A root candidate is its own
  * row, already held. Busy or gone both answer false, which is no answer about the row.
  */

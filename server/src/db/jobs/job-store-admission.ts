@@ -1,5 +1,5 @@
 /**
- * Shared admission budgets (issue #831): how many rows may run at once across every org, per org and
+ * Shared admission budgets: how many rows may run at once across every org, per org and
  * per repo, enforced by the claim for every board replica and driver alike. Occupancy is the running
  * non-review rows themselves (081), so a row that ends — verdict, stop, retirement, handover, remove —
  * frees its slots by leaving the unique indexes' predicate, and no counter can leak when its owner
@@ -10,7 +10,7 @@ import type { Fragment, Sql, TransactionSql } from 'postgres';
 
 /** The org's queue demand the shared admission budgets read. */
 export interface JobAdmissionStore {
-    /** This org's demand on the cluster, which orders the cross-org claim scan (issue #831). */
+    /** This org's demand on the cluster, which orders the cross-org claim scan. */
     demand(): Promise<OrgDemand>;
 }
 
@@ -166,7 +166,7 @@ async function admitInBudget(tx: TransactionSql, budget: Budget): Promise<number
 
 /**
  * What one org's board asks of the cluster right now, read from its rows so every board replica
- * orders the cross-org claim scan the same way (issue #831, `fairBoardScan`): whether a lost
+ * orders the cross-org claim scan the same way (`fairBoardScan`): whether a lost
  * attempt waits for its takeover, how many rows run, and when its oldest waiting row queued.
  */
 export interface OrgDemand {
@@ -179,7 +179,7 @@ export interface OrgDemand {
  * A row a lost or handed-over attempt left for its takeover, claimable now: running with its lease
  * expired, or released by a draining driver (queued, its newest interruption naming its own claim),
  * and not deferred by a failed preparation. The org that has one is scanned first and the row comes
- * first in its org's queue (issue #831); `table` qualifies the columns for an aliased read.
+ * first in its org's queue; `table` qualifies the columns for an aliased read.
  */
 export function awaitingTakeover(sql: Sql | TransactionSql, table: string | null = null): Fragment {
     const col = (name: string) => sql(table === null ? name : `${table}.${name}`);
@@ -236,7 +236,7 @@ export async function admissionOccupancy(
     });
 }
 
-/** What the claim reports about itself (issue #831): `metrics.ts` turns these into series. No method takes an id. */
+/** What the claim reports about itself: `metrics.ts` turns these into series. No method takes an id. */
 /** A row waiting for its first claim (`new`) or for the takeover of an attempt that was lost (`takeover`). */
 export type ClaimWaitKind = 'new' | 'takeover';
 
@@ -254,7 +254,7 @@ export interface ClaimObserver {
 }
 
 /**
- * What a claim that returned null reports, for the cross-org scan (issue #831): `global` is set when the global
+ * What a claim that returned null reports, for the cross-org scan: `global` is set when the global
  * admission budget refused it new work, so no later board of the same poll may admit any either.
  */
 export interface ClaimRefusal {
@@ -262,7 +262,7 @@ export interface ClaimRefusal {
 }
 
 /**
- * How a claim is made (issue #831). `takeoverOnly` offers only rows awaiting a takeover, which hold their slot
+ * How a claim is made. `takeoverOnly` offers only rows awaiting a takeover, which hold their slot
  * already, and never admits a queued row; `refusal` is where the claim reports a global budget refusal.
  */
 export interface ClaimOptions {

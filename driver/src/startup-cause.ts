@@ -28,7 +28,7 @@ export class StartupRefused extends Error {
     readonly service: string | undefined;
     /**
      * Set only where the executor confirmed the platform took the group away before its first contact
-     * (BEL-302): the hand-back then stays out of the poison interruption budget. Never inferred from the message.
+     *: the hand-back then stays out of the poison interruption budget. Never inferred from the message.
      */
     declare readonly nodeLoss?: true;
 

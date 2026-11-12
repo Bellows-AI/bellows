@@ -1,4 +1,4 @@
-# The liveness probe of a declared service's sidecar (issue #773): the kubernetes restart. The
+# The liveness probe of a declared service's sidecar: the kubernetes restart. The
 # supervisor bumps the service's generation file ($1/$2); this probe, on its first run in a fresh
 # writable layer, records the generation it reads in $4 (default /tmp/.factory-generation) and fails
 # from then on once the file says otherwise, so the kubelet restarts the container with a new layer.

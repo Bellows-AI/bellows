@@ -25,7 +25,7 @@ function attemptFailingWith(error: unknown, takenAway: GroupTakenAway): AttemptC
     } as unknown as AttemptCtx;
 }
 
-describe('a services start that fails flags a node loss only on executor evidence (BEL-302)', () => {
+describe('a services start that fails flags a node loss only on executor evidence', () => {
     it('flags a refused start that carries the executor node-loss evidence', async () => {
         const lost = new StartupRefused('the task pod was evicted', 'transient', undefined, true);
 

@@ -1,7 +1,7 @@
 /**
- * The board-owned master prompt (issue #244): a bounded, code-rendered text every agent claim
+ * The board-owned master prompt: a bounded, code-rendered text every agent claim
  * carries through the executor's native system-instruction channel, telling the agent it is one
- * turn inside a Factory-run process. It holds only thread-invariant text (issue #509): the system
+ * turn inside a Factory-run process. It holds only thread-invariant text: the system
  * prompt precedes the conversation, so a byte that changed between two claims of one thread would
  * re-write the resumed session's whole history to the prompt cache. What Factory does around THIS
  * turn — the node, its capabilities — is the turn context, which the driver delivers per turn.
@@ -67,9 +67,9 @@ const WORKFLOW_RULES = `${RULES_HEAD}
 ${RULES_TAIL}`;
 
 /**
- * An objective turn (issue #573): the agent directs publication. Gates run before every push but are never a
+ * An objective turn: the agent directs publication. Gates run before every push but are never a
  * permission check; the board's own end-of-run publish reuses the agent's pull request. The agent
- * may wait on its own pull request's CI and reviews, through the factory-pr-land runner skill (issue #729).
+ * may wait on its own pull request's CI and reviews, through the factory-pr-land runner skill.
  */
 const OBJECTIVE_RULES = `${RULES_HEAD}
 - Factory runs the declared gates and a publish after your turn, and reuses any pull request you opened; do not emulate the other capabilities this turn's Factory turn context lists.
@@ -97,7 +97,7 @@ export interface MasterPromptClaimInput {
     /** This claim's own declared pre/post block-helper steps, exactly as resolved onto it. */
     helperPlans: ClaimHelperPlan[] | undefined;
     /**
-     * The thread root's selected skill names (issue #545): catalog names, validated at task
+     * The thread root's selected skill names: catalog names, validated at task
      * creation, so they are safe to render. Thread-invariant — it is the root's, never a row's.
      * Absent is none.
      */

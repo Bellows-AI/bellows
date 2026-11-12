@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { SCRIPT_IDENTITY, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The merge-conflict-autofix block's deterministic preflight (issue #122), against real git —
+ * The merge-conflict-autofix block's deterministic preflight, against real git —
  * offline throughout, the same `file://` bare-remote discipline `worktree.test.ts` uses, and the
  * same fixture (a task worktree already standing on `factory/<root>`, since the probe never syncs
  * one into being — it runs against the worktree the block's `repair` node already claimed).

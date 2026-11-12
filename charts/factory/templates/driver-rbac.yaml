@@ -55,7 +55,7 @@ rules:
     - apiGroups: ['']
       resources: ['pods']
       verbs: ['delete', 'list']
-    # The thread's task volume (issue #775): the driver creates one claim per root thread and reads
+    # The thread's task volume: the driver creates one claim per root thread and reads
     # it back on a later attempt, and `patch` labels one no pod can be scheduled onto. The admission
     # policy admits only the claim's name, labels and shape, and that one label.
     - apiGroups: ['']
@@ -64,7 +64,7 @@ rules:
     - apiGroups: ['']
       resources: ['pods/log']
       verbs: ['get']
-    # The gate sidecar's in-place resize (issue #773): low while the agent runs, the gate requests
+    # The gate sidecar's in-place resize: low while the agent runs, the gate requests
     # for verify. The admission policy's `-resize` lets it change the `gate` container alone.
     - apiGroups: ['']
       resources: ['pods/resize']

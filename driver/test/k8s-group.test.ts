@@ -24,7 +24,7 @@ import {
 } from '../src/supervisor-contract.js';
 
 /**
- * The kubernetes task group (issue #771): one Job per attempt, created by its first step and ended
+ * The kubernetes task group: one Job per attempt, created by its first step and ended
  * by the loop's `finish`. What these pin is the acceptance of the change — the sync, the tree probe,
  * the review snapshot, the publish, the helpers and the reclaim create no Job or container of
  * their own — over a fake apiserver that records every object the driver creates.
@@ -470,7 +470,7 @@ describe('the task group of one attempt', () => {
             expect(reads).toBeGreaterThan(100);
         });
 
-        // BEL-302: the refusal is a node loss only where the pod's own state proves the platform took it.
+        // the refusal is a node loss only where the pod's own state proves the platform took it.
         it('flags a pod seen starting and then gone as a node loss', async () => {
             const { thrown } = await lostSync((read) => (read < 3 ? [starting] : []));
 

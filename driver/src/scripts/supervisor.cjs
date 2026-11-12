@@ -12,7 +12,7 @@
 //   <root>/export  supervisor <-> exporter: `drain.json`, `status.json`, `supervisor.alive`
 //   <root>/supervisor  the supervisor's own state: `state.json`, `report.json`, the step ledger; no other container mounts it
 //   <root>/gate    supervisor <-> gate container: `requests/`, `running/`, `done/`, `alive` (`GATE_FILES` below)
-//   <root>/review  supervisor <-> reviewer container (issue #774): the same layout, served beside the gates
+//   <root>/review  supervisor <-> reviewer container: the same layout, served beside the gates
 //
 // The group lives for the whole attempt, not just the agent's run. The driver submits STEPS to it —
 // the startup sync, the tree probe, the review snapshot, the publish steps, the allowlisted helpers
@@ -56,7 +56,7 @@
 //   SUPERVISOR_AGENT_LOST_MS  — a seen agent heartbeat older than this is a lost agent (default 30000).
 //   SUPERVISOR_AGENT_START_MS — how long the agent may take to show a first heartbeat (default 600000).
 //                               The driver's reading of the agent container ended (`GET /control` answers `agentEnded`)
-//                               with no exit marker is a lost agent at once, inside both windows (#920).
+//                               with no exit marker is a lost agent at once, inside both windows.
 //   SUPERVISOR_EXPORTS        — `1` when an exporter container waits for the drain order.
 //   SUPERVISOR_AGENTLESS      — `1` for an attempt with no agent container: no `go` is awaited.
 //   SUPERVISOR_ORPHAN_MS      — how long an unanswering driver is served before finalizing (default 90000).
@@ -66,7 +66,7 @@
 //   SUPERVISOR_GIT_HARDEN_SCRIPT — scripts/git-harden.cjs by content: the `git` first on every step's PATH, so a step never
 //                               runs what the agent-writable checkout's config names (a tree without it uses the file beside this one).
 //   SUPERVISOR_CHECKPOINT_SCRIPT / _CHECKOUT / _BRANCH / _BASE / _DIR / _OPENCODE_DB — the checkpoint the finalize stage
-//                               takes (issue #775): scripts/checkpoint.cjs by content, the task tree and branch it
+//                               takes: scripts/checkpoint.cjs by content, the task tree and branch it
 //                               works on, the directory it writes in, the OpenCode database to snapshot. Absent
 //                               the script, the checkout, the branch or the directory: no checkpoint.
 //   SUPERVISOR_CHECKPOINT_MS  — the one wall-clock bound over the checkpoint's script, chunks, retries and manifest (default 120000).
@@ -179,11 +179,11 @@ const OUTCOMES = ['completed', 'failed', 'cancelled', 'timed_out', 'lost'];
 
 /**
  * The agent's own directory inside `in` and `out` (`AGENT_MAILBOX_DIR` of supervisor-contract.ts),
- * created owner-only before the agent is released: its tools run as their own uid (issue #814).
+ * created owner-only before the agent is released: its tools run as their own uid.
  */
 const AGENT_DIR = 'agent';
 const AGENT_DIR_MODE = 0o700;
-/** The review mailbox is served by another uid of this group (REVIEWER_UID, issue #774): its directories and requests are group-writable. */
+/** The review mailbox is served by another uid of this group (REVIEWER_UID): its directories and requests are group-writable. */
 const REVIEW_DIR_MODE = 0o775;
 /** A review's env file is its credential: readable by that group, never written. */
 const REVIEW_ENV_MODE = 0o640;
@@ -251,7 +251,7 @@ const STEP_ID = /^[A-Za-z0-9_.:-]{1,160}$/;
 const STEP_OUTPUT_LIMIT = 1_048_576;
 /** The exit a step the supervisor refused (or could not start) answers with: `sh`'s "cannot execute". */
 const STEP_REFUSED_EXIT = 126;
-/** A step writes the tree the tool uid shares through group 1000 (issue #814). */
+/** A step writes the tree the tool uid shares through group 1000. */
 const STEP_UMASK = 0o002;
 const STEP_RESULT_ATTEMPTS = 5;
 const EXIT_DEADLINE = 124;
@@ -288,9 +288,9 @@ const HTTP_SERVER_ERROR = 500;
 const GATE_TOKEN_REFUSALS = [HTTP_BAD_REQUEST, HTTP_UNAUTHORIZED, HTTP_FORBIDDEN, HTTP_CONFLICT];
 const REQUEST_TIMEOUT_MS = 10_000;
 const REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
-/** Logged once when the agent is released: the evidence a newer claim reads to take a running agent over (#829). */
+/** Logged once when the agent is released: the evidence a newer claim reads to take a running agent over. */
 const RELEASED_LINE = 'supervisor: released the agent';
-/** Logged once when the group stops serving the driver's steps: a newer claim reads its absence as "still serving" (#829). */
+/** Logged once when the group stops serving the driver's steps: a newer claim reads its absence as "still serving". */
 const SERVED_LINE = 'supervisor: stopped serving the steps';
 const STEP_PATH = '/step';
 /** The driver route a gate's GitHub token ask is relayed to (`GATE_TOKEN_PATH` of supervisor-contract.ts). */
@@ -479,7 +479,7 @@ function settingsOf(env) {
         exports: env.SUPERVISOR_EXPORTS === '1',
         agentless: env.SUPERVISOR_AGENTLESS === '1',
         orphanMs: positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS),
-        // How long a RELEASED group waits for a newer holder (#829): its agent is the work to adopt.
+        // How long a RELEASED group waits for a newer holder: its agent is the work to adopt.
         takeoverMs: positive(env, 'SUPERVISOR_TAKEOVER_MS', positive(env, 'SUPERVISOR_ORPHAN_MS', DEFAULT_ORPHAN_MS)),
         stepWaitMs: positive(env, 'SUPERVISOR_STEP_WAIT_MS', DEFAULT_STEP_WAIT_MS),
         reportMs: positive(env, 'SUPERVISOR_REPORT_MS', DEFAULT_REPORT_MS),
@@ -583,7 +583,7 @@ function newRun(settings, now, log) {
         stopRaised: false,
         killRaised: null,
         agentSeenAt: null,
-        agentEnded: false, // the driver read the agent container over (#920); true is sticky, never a verdict on its own
+        agentEnded: false, // the driver read the agent container over; true is sticky, never a verdict on its own
         agentEnd: null, // { exitCode: number | null, how: 'exit' | 'lost' }
         closed: false,
         intent: null,
@@ -657,7 +657,7 @@ async function ask(run, method, route, options = {}) {
 }
 
 /**
- * A released group with a binding file to be followed waits for a newer holder (#829): its agent is
+ * A released group with a binding file to be followed waits for a newer holder: its agent is
  * the work a takeover adopts. A group never released, or one no holder can name itself to, is redone.
  * @param {Run} run
  */
@@ -875,7 +875,7 @@ function spawnStep(run, step) {
             resolve({ result: stepResult(STEP_REFUSED_EXIT, '', why), interrupted: false });
             return;
         }
-        // The agent's tools run as their own uid in group 1000 (issue #814), so a step writes the
+        // The agent's tools run as their own uid in group 1000, so a step writes the
         // tree group-writable. The child takes the umask at its fork; this process keeps its own.
         const umask = process.umask(STEP_UMASK);
         try {
@@ -1960,7 +1960,7 @@ function watchAgent(run) {
         run.agentEnd = { exitCode: Number.isFinite(code) ? code : null, how: 'exit' };
         return;
     }
-    // The driver read the agent container over (#920) and the marker, written before the container ends, is
+    // The driver read the agent container over and the marker, written before the container ends, is
     // confirmed absent: the agent died before it could write one. A marker that cannot be read says nothing.
     if (run.agentEnded && markerAbsent(run.file.agentExit)) {
         run.agentEnd = { exitCode: null, how: 'lost' };
@@ -2222,7 +2222,7 @@ function openReviewMailbox(run) {
 }
 
 /**
- * The relays (#829): the supervisor is the one place a run's holder is named, so the agent's proxy and
+ * The relays: the supervisor is the one place a run's holder is named, so the agent's proxy and
  * the exporter reach it through an owner-only unix socket each and hold no token. A relay forwards only
  * its role's routes to the CURRENT holder under that role's token; anything the holder does not
  * answer in full — unreachable, rebound mid-request, timed out, cut off — is hung up on, never
@@ -2314,7 +2314,7 @@ const refuse = (request, response, status) => {
 };
 
 /**
- * The one agent route answered here, never forwarded (#1045): the lease of the holder this supervisor follows,
+ * The one agent route answered here, never forwarded: the lease of the holder this supervisor follows,
  * for helpers whose env still names the claim the container started under. No lease known yet is a 404.
  * @param {Run} run
  * @param {import('node:http').IncomingMessage} request
@@ -2522,7 +2522,7 @@ async function uploadCheckpoint(run, verdict, abort) {
 }
 
 /**
- * finalize, after the publish and before the report is final (issue #775): commits the whole task
+ * finalize, after the publish and before the report is final: commits the whole task
  * tree through `scripts/checkpoint.cjs`, uploads what it made through the driver's checkpoint routes
  * and closes the stream. Every step is bounded by ONE wall-clock deadline and by the end of the run;
  * nothing here changes the attempt's outcome — a checkpoint that could not be taken or uploaded

@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /*
- * scripts/lane-capacity-samples.mjs judges the capacity phases' once-a-second reads of the running rows
- * (issue #831): the budget held on every readable sample, a failed read is counted apart and is
+ * scripts/lane-capacity-samples.mjs judges the capacity phases' once-a-second reads of the running rows:
+ * the budget held on every readable sample, a failed read is counted apart and is
  * never a zero, and the crash window must hold a readable sample.
  */
 const SCRIPT = fileURLToPath(new URL('../../scripts/lane-capacity-samples.mjs', import.meta.url));

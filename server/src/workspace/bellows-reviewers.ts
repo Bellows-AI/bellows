@@ -1,7 +1,7 @@
 import { fail, KEY_VALUE, MAX_COMMAND_LENGTH, readTimeoutMinutes, scalar } from './bellows-grammar.js';
 
 /**
- * The `reviewers:` block of `.bellows.yaml` (issue #549): named reviewer profiles an agent may
+ * The `reviewers:` block of `.bellows.yaml`: named reviewer profiles an agent may
  * invoke as a separate run.
  *
  *     reviewers:

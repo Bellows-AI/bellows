@@ -68,7 +68,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const calls: string[][] = [];
         const exec = (args: string[]) => {
             calls.push(args);
-            // The adoption's ONE listing of the job's runners (#829): the exited ones the test gave as `ps`, the
+            // The adoption's ONE listing of the job's runners: the exited ones the test gave as `ps`, the
             // still-running ones as `running` (none unless a test lists one), each row ending in its state.
             if (isAdoptListing(args)) {
                 return running instanceof Error
@@ -210,7 +210,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     });
 
     // Issue #796: a run read but never swept is no adoption — and, like the kubernetes twin, the
-    // attempt stands down to its lease rather than run afresh over that run's tree (#824).
+    // attempt stands down to its lease rather than run afresh over that run's tree.
     it('rejects when an older leftover cannot be swept', async () => {
         const { exec: base, calls, logs } = daemon(listing());
         const exec = (args: string[]) => {
@@ -651,7 +651,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({ started: true, ...fields });
         expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
-        // The record is the earlier attempt's, kept with the read run for a later adoption (#821).
+        // The record is the earlier attempt's, kept with the read run for a later adoption.
         expect(calls.some((args) => args[0] === 'rm' && args.includes('a4a4a4a4a4a4'))).toBe(false);
     });
 
@@ -665,7 +665,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     });
 
     // A full spool rides a supervised stop, so its record never explains how the supervisor ended:
-    // one lost after it (#805), or taken down when the stop fell back to the hard kill — which on
+    // one lost after it, or taken down when the stop fell back to the hard kill — which on
     // kubernetes deletes the Job and its record — is run again, on both executors.
     it.each(['70', '137'])(
         'never takes a recorded full spool for the end of a supervisor that exited %s',
@@ -716,7 +716,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         expect(calls.some((args) => args[0] === 'logs')).toBe(false);
     });
 
-    // Failure injection (#825): a log past an exec's output buffer streams; it never fails the adoption.
+    // Failure injection: a log past an exec's output buffer streams; it never fails the adoption.
     it('adopts a runner whose log outgrew an exec buffer: its tail kept, flagged truncated', async () => {
         const EXEC_MAX_BUFFER = 1024 * 1024;
         const line = 'body line\n';

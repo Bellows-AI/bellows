@@ -12,7 +12,7 @@ import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 
 /**
- * A named reviewer's steps in the caller's task group (issue #774): the restore starts at the
+ * A named reviewer's steps in the caller's task group: the restore starts at the
  * snapshot with no credential, the review's env is the plan and the grant and never a token, and
  * the wall-clock budget is the profile's, never past the operator's ceiling.
  */
@@ -79,7 +79,7 @@ describe('the reviewer’s review step', () => {
         expect(step?.argv.length).toBeGreaterThan(0);
     });
 
-    // BEL-286: the review row decided its own hidden built-ins; the reviewer's argv and env must carry them, since its
+    // the review row decided its own hidden built-ins; the reviewer's argv and env must carry them, since its
     // container gets neither the main run's plan nor a managed-settings copy.
     it.each(['claude-code', 'opencode'] as const)('hides the review row’s skillHidden names on %s', (executorType) => {
         const own = { ...review, executorType, skillHidden: ['factory-jira'] } as unknown as ReviewClaim;

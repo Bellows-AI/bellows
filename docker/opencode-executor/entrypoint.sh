@@ -13,7 +13,7 @@ unset GITHUB_TOKEN GH_TOKEN
 # The branch reporter beside it, resolved the same way.
 BRANCH_REPORTER="$(cd "$(dirname "$0")" && pwd)/branch-reporter.cjs"
 
-# The task supervisor releases the agent (issue #771). The group exists from the attempt's first
+# The task supervisor releases the agent. The group exists from the attempt's first
 # step, the sync, and the tree this container works in does not exist until then, so the agent waits
 # for the supervisor's `go` marker in its read-only mailbox. A Stop or a kill order that lands first
 # means the agent is never released: it leaves quietly. An image run by hand has no mailbox and waits
@@ -54,15 +54,15 @@ if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUN
         2>/dev/null || echo "opencode-executor: could not configure the git credential helper" >&2
 fi
 
-# The tool uid shares node's group and the tree's umask, and reads this file through its own
-# (issue #814): readable, never writable, by the commands the agent runs.
+# The tool uid shares node's group and the tree's umask, and reads this file through its own:
+# readable, never writable, by the commands the agent runs.
 if [ -f "$HOME/.gitconfig" ]; then chmod 0644 "$HOME/.gitconfig" 2>/dev/null || true; fi
 
 # Jira (docs/connections.md): no Jira variable rides this container. The jira skill's helper asks the
 # board's credential broker for the task's managed connection; a JIRA_API the claim env carried is dropped.
 unset JIRA_API
 
-# The baked policy is root-owned (issue #452): the global copy under $HOME/.config/opencode
+# The baked policy is root-owned: the global copy under $HOME/.config/opencode
 # fixes the key order, the managed copy under /etc/opencode restores every baked value. The per-run
 # allow below therefore rides OPENCODE_CONFIG_CONTENT — the inline layer, merged after the global
 # copy, so its new keys land after the baked deny globs (last-match-wins) — never a file edit.
@@ -75,7 +75,7 @@ MEMBER_ROOT=''
 if [ -n "${XDG_DATA_HOME:-}" ]; then
     mkdir -p "$XDG_DATA_HOME"
     # The session database is the CLI's uid's alone: the agent's tools run as their own uid in its
-    # group (issue #814).
+    # group.
     chmod 0700 "$XDG_DATA_HOME" 2>/dev/null || true
 
     # The driver's shape is /task/.factory/opencode/<task>, so the task volume — the checkout and
@@ -89,7 +89,7 @@ if [ -n "${XDG_DATA_HOME:-}" ]; then
 fi
 
 # A takeover or handover (`--session <id>`, the id also in BELLOWS_SESSION_ID) resumes the session
-# its predecessor reported live (issue #822); a node lost before opencode flushed that row leaves a
+# its predecessor reported live; a node lost before opencode flushed that row leaves a
 # database without it, and opencode would refuse the run. Only there — the driver grants it with
 # BELLOWS_RESUME_MAY_BE_UNWRITTEN, never to a session inherited from an earlier row (a follow-up's
 # parent's), whose missing session stays opencode's refusal — and only when the reporter finds the
@@ -156,7 +156,7 @@ if [ -n "$MEMBER_ROOT" ] || [ -n "$SKILLS_VIEW" ] || [ -n "${FACTORY_SKILLS_PATH
     # FACTORY_SKILLS_PATH is the directory the driver installed the claim's pinned org and workspace skills in: it joins
     # `skills.paths` and gets its own external_directory allow, so a bundle's helper files open for the tool uid.
     # Single-quoted: the shell expands nothing in the script. A value the merge cannot extend is
-    # named in one line on stderr and passed through untouched. FACTORY_HIDDEN_SKILLS (BEL-286) is the exception: the
+    # named in one line on stderr and passed through untouched. FACTORY_HIDDEN_SKILLS is the exception: the
     # built-in skills the task does not list get `permission.skill[<name>] = "deny"`, written last so a member
     # config's allow cannot win, and a list that cannot be applied ends the run (exit 78) instead of listing them.
     if amended="$(MEMBER_ROOT="$MEMBER_ROOT" SKILLS_VIEW="$SKILLS_VIEW" node -e '
@@ -275,10 +275,10 @@ stop_helper() {
     wait "$_guard" 2>/dev/null || true
 }
 
-# The run-control proxy (issue #814): the agent's tools run as their own uid and hold no run-control
+# The run-control proxy: the agent's tools run as their own uid and hold no run-control
 # token. The proxy serves the two routes the baked skills call on a socket a tool can reach and
 # forwards them to the supervisor's relay socket in FACTORY_CTL_OUT, where the supervisor attaches
-# the agent's token (#829); no token is ever in this shell's environment. A sibling like the
+# the agent's token; no token is ever in this shell's environment. A sibling like the
 # reporter, stdio discarded.
 if [ -n "${FACTORY_CTL_OUT:-}" ] && [ -S "$FACTORY_CTL_OUT/control.sock" ]; then
     node /usr/local/bin/control-proxy.cjs >/dev/null 2>&1 &
@@ -287,7 +287,7 @@ fi
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
-# The cooperative Stop (issue #442): the mailbox agent reads what the task supervisor wrote into
+# The cooperative Stop: the mailbox agent reads what the task supervisor wrote into
 # the read-only FACTORY_CTL_IN directory and writes the stop marker the baked factory-stop plugin
 # checks at each step boundary; it also beats the heartbeat the supervisor reads and forwards a
 # kill order to this shell as TERM. Exported so the agent and the plugin agree on one path; any

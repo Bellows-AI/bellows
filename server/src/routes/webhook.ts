@@ -154,7 +154,7 @@ async function handleOrganizationEvent(store: AuthStore, payload: WebhookPayload
         return;
     }
 
-    // installation.id IS the organization id — the orgs are the App's installations (#99) — and
+    // installation.id IS the organization id — the orgs are the App's installations — and
     // membership.user.id is THE identity: github_login is a label (docs/auth.md).
     const installation = payload.installation?.id;
     const githubUserId = payload.membership?.user?.id;
@@ -207,7 +207,7 @@ interface PrEventInput {
 }
 
 /**
- * A MERGED close (issue #390) closes the tasks whose recorded publication names this PR, instead
+ * A MERGED close closes the tasks whose recorded publication names this PR, instead
  * of merely cancelling their waits. Strict `=== true`: a missing or non-boolean flag falls
  * through to the ordinary-close path — only a real merge is an automatic Done.
  */

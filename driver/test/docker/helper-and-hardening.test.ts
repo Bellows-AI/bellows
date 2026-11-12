@@ -289,8 +289,8 @@ describe('every container the driver runs is hardened (#382)', () => {
 
     /*
      * The paths that used to build a `docker run` argv INLINE — the publish
-     * steps, the tree probe and the block helpers — now ask the task supervisor for a step instead
-     * (#771). What they leave on the daemon is the group they ran in, so what is asserted is every
+     * steps, the tree probe and the block helpers — now ask the task supervisor for a step instead.
+     * What they leave on the daemon is the group they ran in, so what is asserted is every
      * container THEY create (the supervisor of a group they open) and that none of them runs one
      * of its own: a new `docker run` site would land here unnoticed otherwise.
      *

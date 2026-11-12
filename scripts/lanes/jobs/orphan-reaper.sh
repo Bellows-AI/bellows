@@ -1,12 +1,12 @@
 if selected_phase orphan-reaper; then
 begin_phase orphan-reaper
-# --- The orphan reaper (issue #301) -----------------------------------------------------------
+# --- The orphan reaper -----------------------------------------------------------
 #
 # The exact shape the issue describes: a service fleet is up, the driver is kill -9ed before its
 # teardown can run, and the job goes terminal WITHOUT any driver alive to sweep it — the stop
-# route's in-place landing on a row whose lease has already expired (#152) is what settles it.
+# route's in-place landing on a row whose lease has already expired is what settles it.
 # A restarted driver's reaper (one fast round of DRIVER_REAP_INTERVAL_MS/GRACE) then removes the
-# service container; no network is the attempt's (issue #773). The runner container is NOT the reaper's to reap
+# service container; no network is the attempt's. The runner container is NOT the reaper's to reap
 # (its scope is the service label; the fence owns the rest), so it is hand-removed at the end,
 # by label, exactly as an operator would.
 
@@ -46,8 +46,8 @@ kill -9 "$driver_pid" 2>/dev/null
 wait "$driver_pid" 2>/dev/null
 driver_pid=""
 
-# The lease has 10 seconds on it; the stop is only an in-place landing once it has expired
-# (#152), so poll the stop until the row says stopped.
+# The lease has 10 seconds on it; the stop is only an in-place landing once it has expired,
+# so poll the stop until the row says stopped.
 orphan_stop_landed() { [ "$(status "$(api POST "/api/jobs/$orphan/stop" '{}')")" = 200 ]; }
 # The row it lands on (stopped, finished) is asserted on the real store in server/test-db/lane-rows.orphan-reaper.test.ts;
 # here the landing is the precondition of the leak, and a stop that never lands fails the phase at once.

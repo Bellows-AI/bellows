@@ -8,7 +8,7 @@ import { clearExecutors, saveExecutor } from './executor.js';
 import { throughSignIn } from './signin.js';
 
 /**
- * The whole MCP connect journey (BEL-108) against the auth board with `MCP_ENABLED` on: a real SDK client is
+ * The whole MCP connect journey against the auth board with `MCP_ENABLED` on: a real SDK client is
  * refused with the resource-metadata challenge, discovers the authorization server from it, registers itself,
  * is sent to the real consent page where the signed-in member allows it in the browser, exchanges the code, and
  * calls `create_task`, `wait_task` and `read_job_log`. Disconnect on the account page then makes its next call 401.

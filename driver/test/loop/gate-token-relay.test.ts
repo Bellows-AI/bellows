@@ -23,7 +23,7 @@ function relayOn(grant: (signal: AbortSignal) => Promise<GithubGrant>) {
     return { relay: createGateTokenRelay(rt, boardJob(), state), state, calls };
 }
 
-describe('the gate token relay (BEL-258)', () => {
+describe('the gate token relay', () => {
     it('passes a live attempt’s grant through', async () => {
         const grant: GithubGrant = { kind: 'token', token: 'ghs_1', expiresAt: null };
         const { relay, calls } = relayOn(async () => grant);

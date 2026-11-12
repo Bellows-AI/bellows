@@ -49,7 +49,7 @@ export interface GateSession {
     lastReports?: GateReport[];
     /** The claim of the run this session gates (`runClaimSeqOf`): the gate-run record is keyed by it. */
     runClaimSeq: number;
-    /** The gate-run record's probe, identity and board write (issue #983). */
+    /** The gate-run record's probe, identity and board write. */
     ledger: GateLedger;
 }
 
@@ -67,7 +67,7 @@ export type GateReport = {
     output: string | null;
     /** When a `running` entry started (ISO); the settled entry carries none. */
     startedAt?: string;
-    /** The recorded execution this entry is (issue #983); absent for a gate no record covers. */
+    /** The recorded execution this entry is; absent for a gate no record covers. */
     executionId?: string;
     /** Set when the gate was not launched: it is served from an earlier verified pass. */
     reused?: { executionId: string; finishedAt: string | null; reason: string };
@@ -83,7 +83,7 @@ const declaresGates = (job: BoardJob): boolean => Boolean(job.gates?.gates.lengt
 /**
  * Puts the gate server's registration key onto `job.gateEnv`, once. It is the driver's own handle on
  * the job's gate claim, never an agent credential: the agent asks for a gate through the control
- * socket (`POST /gate/run`) and holds no gate URL or token, so no runner env renders this (BEL-88).
+ * socket (`POST /gate/run`) and holds no gate URL or token, so no runner env renders this.
  * The key is registered only by `beginGates`.
  */
 async function ensureGatePair(gates: GateStack, job: BoardJob): Promise<string> {
@@ -109,8 +109,8 @@ export async function mintGateCredentials(rt: LoopRuntime, job: BoardJob): Promi
 
 /**
  * Ensures the job's gate environment, registers its ad-hoc token and runs `environment.setup` in
- * it (issue #733), or answers null for a job that declares neither gates nor setup. The token
- * stays the driver's: it is on `job.gateEnv` and in no runner env (BEL-88), so the agent's gate
+ * it, or answers null for a job that declares neither gates nor setup. The token
+ * stays the driver's: it is on `job.gateEnv` and in no runner env, so the agent's gate
  * request carries it nowhere and a takeover has nothing for the agent to re-learn.
  */
 export async function beginGates(
@@ -121,14 +121,14 @@ export async function beginGates(
 ): Promise<GateSession | null> {
     const { gates } = rt;
     // A checkout that declares only `setup` still gets the environment: setup runs in it before
-    // the agent starts (issue #733).
+    // the agent starts.
     if (!job.gates || (!job.gates.gates.length && !job.gates.setup)) return null;
     if (!gates) {
         // Declared gates with no gate environment were refused by the re-read; only setup is left.
         rt.log(`job ${job.id}: environment.setup skipped — this driver has no gate environment configured`);
         return null;
     }
-    // The gates run in the task checkout (issue #35) — the tree the run edits — so the
+    // The gates run in the task checkout — the tree the run edits — so the
     // environment is keyed by `checkoutKey`, `<root id>/<repo segment>`. A job that names no
     // repository has no checkout and no gates either.
     const key = checkoutKey(job);
@@ -139,7 +139,7 @@ export async function beginGates(
     // The job is the gate manager's attempt context: the group whose gate container runs it.
     await gates.manager.acquire(key, job.gates.image, envBody, { job, signal: state.signal });
     // A stand-down that landed while the acquire was in flight leaves the environment here:
-    // the caller has stopped waiting and holds no session to release through (issue #126).
+    // the caller has stopped waiting and holds no session to release through.
     if (down(state)) {
         gates.manager.release(key, job);
         return null;
@@ -166,7 +166,7 @@ export async function beginGates(
         if (controlToken && declaresGates(job)) gates.server.attachGateRun(controlToken, token);
         // The key is on `job.gateEnv`, beside `env` and not inside it, and no runner env renders it: the
         // reserved-name filter keeps a member-configured BELLOWS_GATE_* out of the claim lines.
-        // A taken-over run's environment setup ran before the agent did (#829).
+        // A taken-over run's environment setup ran before the agent did.
         if (!opts.takeover) await runEnvironmentSetup(rt, job, key, state);
         // The same check at the far edge — listen can take its time, and nothing registered
         // or live may survive a stand-down detected inside this function.
@@ -199,7 +199,7 @@ export async function beginGates(
 const SETUP_FAILURE_TAIL_BYTES = 2048;
 
 /**
- * The turn context a failed `environment.setup` adds (issue #733): the agent still starts, told
+ * The turn context a failed `environment.setup` adds: the agent still starts, told
  * the exit code and the output's tail so it can fix the install. Appended to the board's own
  * context, which it never replaces.
  */
@@ -249,12 +249,12 @@ async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, 
 }
 
 /**
- * Opens the run-control channel for one attempt about to launch, gated or not (issue #442): three
+ * Opens the run-control channel for one attempt about to launch, gated or not: three
  * tokens scoped to this lease. The supervisor's goes to the task supervisor alone
  * (`job.supervisorEnv`) so it can read a Stop the board raised, relay the agent's questions and run
  * the supervised steps; the exporter's and the agent's, beside it in `job.supervisorEnv`, open only
  * the transcript export and only the publish and review routes. Neither leaves the supervisor: it
- * relays the agent's and the exporter's requests, attaching the role's token (#829). Best-effort — a driver whose endpoint cannot bind keeps today's immediate-kill
+ * relays the agent's and the exporter's requests, attaching the role's token. Best-effort — a driver whose endpoint cannot bind keeps today's immediate-kill
  * Stop, said out loud, instead of refusing every job over a feature.
  */
 export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
@@ -310,7 +310,7 @@ export function closeRunControl(rt: LoopRuntime, state: JobState): void {
 }
 
 /**
- * Leaves the attempt's control token to a newer holder (#829): its group is retained, so the token
+ * Leaves the attempt's control token to a newer holder: its group is retained, so the token
  * is hung up on — never answered 401, which the group's supervisor reads as the end of its attempt —
  * until the group's takeover bound passes and the holder it waits for has named itself.
  */
@@ -350,7 +350,7 @@ const withoutGatePair = (job: BoardJob): BoardJob => ({
 export const stableGateEnvBody = (job: BoardJob): string => envFileBody(withoutGatePair(job));
 
 /**
- * The gate-run record of one claim (issue #983): the runner's tree probes, the identity of a gate's
+ * The gate-run record of one claim: the runner's tree probes, the identity of a gate's
  * configuration — its env, which never holds a GitHub token, keyed by the board token — and the board
  * write. The identity is computed from the current claim's job, never from a registered copy.
  */
@@ -372,7 +372,7 @@ const refusedToRun = (e: Error): GateRun => {
 };
 
 /**
- * Asks the runner to size the gate container for the setup and the gates (issue #773). Best-effort:
+ * Asks the runner to size the gate container for the setup and the gates. Best-effort:
  * whatever it answers, the setup and the gates run.
  */
 export async function sizeGateForVerify(rt: LoopRuntime, job: BoardJob): Promise<void> {
@@ -384,7 +384,7 @@ const GATE_SERVER_PAIR: readonly string[] = ['BELLOWS_GATE_URL', 'BELLOWS_GATE_T
 
 /**
  * One declared gate's re-acquire-then-run outcome, folding a re-acquire failure into a failed gate.
- * The run is recorded (issue #983) as a `completion` execution: best-effort, since a board hiccup
+ * The run is recorded as a `completion` execution: best-effort, since a board hiccup
  * costs the record, never the gating; exactly one terminal row is written on every exit.
  */
 async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<{ run: GateRun; executionId: string } | null> {
@@ -451,7 +451,7 @@ function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { e
  * sync's to answer whether the tree moved. Null when unknown: no before-fingerprint, or a probe
  * that failed.
  *
- * Ad-hoc admission closes and the runs in flight settle first (issue #983): an on-demand gate still
+ * Ad-hoc admission closes and the runs in flight settle first: an on-demand gate still
  * draining may write the tree, and a pass reused at completion certifies exactly this read, with every
  * ad-hoc run already in the record.
  */
@@ -461,7 +461,7 @@ export async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
     // An adopted run has no synced fingerprint, but its tree is still the revision evidence binds to.
     if (treeBefore === null && !ctx.adopted && !ctx.takeover) return null;
     // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
-    // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
+    // the request in flight and stops waiting on it, and the caller rechecks.
     const raced = await raceStep(
         state.signal,
         rt.runner.probeTree(job, state.signal).catch(() => null)
@@ -498,8 +498,7 @@ export async function runDeclaredGates(
     const { state, treeAfter } = pass;
     if (!gates) return null;
     // The attempt's own signal is the gate transport's abort: a stand-down cancels the gate in
-    // flight, not only the ones after it, and no second controller exists to keep in step
-    // (issue #472).
+    // flight, not only the ones after it, and no second controller exists to keep in step.
     const runCtx: GatesRunCtx = { rt, job, gateSession, state, signal: state.signal };
     // No declared gate to retry a failed setup before: the pass is that retry alone.
     if (gateSession.declared.length === 0) return retryFailedSetup(runCtx);
@@ -545,7 +544,7 @@ export async function runDeclaredGates(
 /** One walk over the declared gates: the context, the report list the board is told, and the report pump. */
 interface GateWalk extends GatesRunCtx {
     treeAfter: string | null;
-    /** The content key of `treeAfter` (issue #983): what a reused pass must have run on. Null: nothing is reused. */
+    /** The content key of `treeAfter`: what a reused pass must have run on. Null: nothing is reused. */
     content: string | null;
     results: GateReport[];
     perGate: number;
@@ -571,7 +570,7 @@ async function treeUnchanged(w: GateWalk): Promise<boolean | null> {
 }
 
 /**
- * The content key of the completion tree (issue #983), read once before the walk: a pass certifies
+ * The content key of the completion tree, read once before the walk: a pass certifies
  * file contents, which a publish commit keeps while it moves the fingerprint. Taken only while the
  * checkout still reads `treeAfter`, the fingerprint the evidence binds to; null — nothing reused —
  * on any other read, a timeout or no completion tree at all.
@@ -688,7 +687,7 @@ async function passOver(
 }
 
 /**
- * The task thread's gate record, read once before the declared gates (issue #983): null — reuse nothing, run
+ * The task thread's gate record, read once before the declared gates: null — reuse nothing, run
  * every gate — for a tree that could not be read (nothing can match it), a read the board did not
  * answer in full, one that timed out, or a stand-down that cut it short. Never an empty record by
  * default: an unconfirmed read is not an answer.
@@ -726,7 +725,7 @@ async function retryFailedSetup(ctx: GatesRunCtx): Promise<GateFailure | null> {
 }
 
 /**
- * The attempt's dead services, asked right before the declared gates (issue #423). Best-effort:
+ * The attempt's dead services, asked right before the declared gates. Best-effort:
  * a probe that cannot read the fleet costs the short-circuit, never the gates — they run, and a
  * service that really died still fails them.
  */

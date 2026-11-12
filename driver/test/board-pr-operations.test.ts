@@ -3,7 +3,7 @@ import { createBoard } from '../src/board/board.js';
 import { boardJob } from './fixtures/board-job.js';
 
 /**
- * The PR-operation record's board call (issue #983): one lease-fenced write per managed publish
+ * The PR-operation record's board call: one lease-fenced write per managed publish
  * operation. It answers whether the board took the row and never throws, so a publish that already
  * landed its PR is never failed by the bookkeeping.
  */

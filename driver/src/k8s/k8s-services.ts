@@ -23,7 +23,7 @@ import { runServiceGenerationStep, type StepHost, stepHostOf } from '../supervis
 import { SERVICE_NOT_ACKED_EXIT, serviceContainerOf } from '../supervisor-contract.js';
 
 /**
- * A declared service under kubernetes (issue #773): a native sidecar of the attempt's task pod,
+ * A declared service under kubernetes: a native sidecar of the attempt's task pod,
  * specced with the group (`k8s-podspec.ts`) and reached on the pod's loopback by its declared name.
  * Nothing here creates or deletes an object: readiness and death are read off the pod's
  * `initContainerStatuses`, and a restart is the supervisor's bump of the service's generation
@@ -189,7 +189,7 @@ async function logTailOf(deps: K8sDeps, pod: string, status: SidecarStatus): Pro
 }
 
 /**
- * The attempt's dead services (issues #423, #773 D8): a sidecar not running for a reason waiting
+ * The attempt's dead services (#773 D8): a sidecar not running for a reason waiting
  * cannot cure, or one the kubelet restarted since the driver last saw it ready — its restart count
  * past the baseline — with the kubelet's words and its last log lines. A pod that cannot be read
  * throws `Inconclusive`: dead is never inferred from it. A log that cannot be read costs its tail.
@@ -273,7 +273,7 @@ async function bumpWhenAcked(
 }
 
 /**
- * The pre-gate restart (issues #560, #773 D9): EVERY declared service is restarted, as the fleet it
+ * The pre-gate restart (#773 D9): EVERY declared service is restarted, as the fleet it
  * is (R1-4). The bump waits until each has acknowledged its current generation; then each sidecar's
  * restart count must grow past what it was at the bump, and each run and acknowledge the new one —
  * the bump and the waits sharing one SERVICE_RESTART_TIMEOUT_MS budget. One that restarts again

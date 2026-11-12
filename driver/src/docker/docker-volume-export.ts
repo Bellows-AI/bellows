@@ -33,7 +33,7 @@ import {
 } from './docker-runner-support.js';
 
 /**
- * The docker arm of the reaper's export-before-delete (issue #938): the one-shot exporter container over
+ * The docker arm of the reaper's export-before-delete: the one-shot exporter container over
  * the thread's newest task volume, uploading what the volume holds that the board does not. It carries the
  * board label and its own, never the job, lease or role label a group scan reads, so no sweep reaps it.
  * One absolute deadline covers the create (which pulls), the start, the wait and the inspect; the removal

@@ -6,7 +6,7 @@ import { gateRunRow, SAME_TREE } from '../fixtures/gate-runs.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from '../fixtures/loop-stubs.js';
 
 /**
- * Reusing a verified gate pass at completion (issue #983): the end-of-run pass skips a declared gate
+ * Reusing a verified gate pass at completion: the end-of-run pass skips a declared gate
  * whose LATEST recorded run — any scope — is a full, unfiltered ad-hoc pass of the same gate identity,
  * on the very tree the completion probe reads, untouched while it ran, under the same run claim. Every
  * other state of the record, and any read the loop could not confirm, runs the gate as it always did.
@@ -109,7 +109,7 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         });
     });
 
-    // ---- a publish between the pass and completion (issue #983, found live) ---------------------
+    // ---- a publish between the pass and completion (found live) ---------------------
     // The agent gates, then publishes: the publish commits the very bytes the gates passed on, which
     // moves HEAD and the fingerprint but not the content key the passes were recorded against.
     it('reuses passes a publish commit kept: the fingerprint moved, the content did not', async () => {
@@ -167,7 +167,7 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
     });
 
-    // ---- the record is the task thread's: an earlier run's pass is reusable (BEL-254) ---------------
+    // ---- the record is the task thread's: an earlier run's pass is reusable ---------------
     it.each<[string, Partial<GateRunRecord>]>([
         ['a completion pass an earlier run of the task recorded', { source: 'completion', runClaimSeq: 2 }],
         ['an ad-hoc pass from an earlier run of the task', { source: 'adhoc', runClaimSeq: 2 }],

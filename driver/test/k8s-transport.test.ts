@@ -76,7 +76,7 @@ describe('readAnswer', () => {
         expect(job(`{${uid},"status":{}}`).kind).toBe('value');
         expect(job(`{${uid}}`).kind).toBe('inconclusive');
         expect(job(`{${uid},"status":"done"}`).kind).toBe('inconclusive');
-        // A Job that cannot say which incarnation it is proves nothing about one (#869).
+        // A Job that cannot say which incarnation it is proves nothing about one.
         expect(job('{"status":{"succeeded":1}}').kind).toBe('inconclusive');
         expect(job('{"metadata":{},"status":{}}').kind).toBe('inconclusive');
     });

@@ -2,7 +2,7 @@
  * The claim's env and executor resolution (see `job-store-claim.ts`): the stacked env and the
  * author's executor row merged over the runner's config env name. No GitHub credential rides it:
  * the runner obtains one from the board (docs/connections.md). Split out of the claim file for its
- * size cap; a reviewer's claim (issue #549) reuses it with an env grant.
+ * size cap; a reviewer's claim reuses it with an env grant.
  */
 
 import {
@@ -87,7 +87,7 @@ export async function resolveClaimExecutor(
         env: CreateJobStoreDeps['env'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
         /**
-         * Set for a reviewer's claim (issue #549): ONLY these member env names reach it. The
+         * Set for a reviewer's claim: ONLY these member env names reach it. The
          * executor config (the agent's own runtime settings) still travels — a reviewer needs to
          * run — but nothing of the caller's access does.
          */

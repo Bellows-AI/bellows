@@ -23,7 +23,7 @@ import {
 import type { PostgresHarness } from './secrets-postgres-harness.js';
 
 /**
- * BEL-138 slice 4: the background pass that adopts what a lost board pod left. It is driven here exactly as main.ts
+ * The background pass that adopts what a lost board pod left. It is driven here exactly as main.ts
  * drives it (a runtime over the shared pool, one pass per tick); the loop's own timers are compressed with fake timers.
  */
 const enabled = Boolean(process.env.DATABASE_URL);

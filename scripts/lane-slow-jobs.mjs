@@ -1,4 +1,4 @@
-// What a lane's attempts spent their slots on (issue #829).
+// What a lane's attempts spent their slots on.
 //
 //   node scripts/lane-slow-jobs.mjs <driver.log> [threshold-seconds]
 //

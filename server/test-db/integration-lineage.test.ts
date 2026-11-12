@@ -33,7 +33,7 @@ import {
 } from './integration-store-faults.js';
 import type { PostgresHarness } from './secrets-postgres-harness.js';
 
-/** BEL-138: one grant is one refresh lineage; the claim, the identical replay and the recovery keep it single. */
+/** one grant is one refresh lineage; the claim, the identical replay and the recovery keep it single. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const ALICE = testUser('lineage-alice');

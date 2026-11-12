@@ -1,5 +1,5 @@
 /**
- * The read-fault replay engine (issue #869, PR 0): a scenario's world is built once clean, every read
+ * The read-fault replay engine (PR 0): a scenario's world is built once clean, every read
  * it makes is counted, and the scenario is then replayed in a fresh world once per read with that one
  * read answered by a fault. A faulted read is an unconfirmed one, and an unconfirmed read never
  * licenses a delete or a negative verdict: each replay's writes after the fault must be ones the

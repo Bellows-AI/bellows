@@ -5,7 +5,7 @@ import { authoredBy, LOCAL_AUTHOR, missingSummaryThread, mockedActivityOf } from
 import { type FetchCall, type FetchReply, OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 
 /**
- * Renaming a task from its header (BEL-252): the dialog sends the revision the page rendered, a stale
+ * Renaming a task from its header: the dialog sends the revision the page rendered, a stale
  * revision shows the server's current title and stays open, and a terminal thread (whose detail poll
  * has stopped) still updates the header after a local rename because the page refetches.
  */

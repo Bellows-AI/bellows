@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 /*
  * scripts/lane-slow-jobs.mjs reads a lane's driver.log and names the attempts that held a slot
- * longer than a threshold, and those that never ended (issue #829): a stall costs a line in the
+ * longer than a threshold, and those that never ended: a stall costs a line in the
  * run's output instead of a re-run to catch it live.
  */
 const SCRIPT = fileURLToPath(new URL('../../scripts/lane-slow-jobs.mjs', import.meta.url));

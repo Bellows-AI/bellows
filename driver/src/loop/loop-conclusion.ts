@@ -1,10 +1,10 @@
 /**
- * How one attempt ends (issues #821, #828): `end` is the ONE place an attempt is concluded and torn
+ * How one attempt ends: `end` is the ONE place an attempt is concluded and torn
  * down, whatever path decided it. Its order is the same for every decision — the durable board call
  * first, then the heartbeat is quiesced, then the destructive teardown with the run control still
  * open — so nothing is destroyed that the board was not told about first, and a driver lost between
  * the two leaves the next claim a runner to adopt rather than a task nobody can recover. The first
- * call decides; later calls await the same promise (issue #820).
+ * call decides; later calls await the same promise.
  */
 
 import { withBoardRetry } from '../board/board-retry.js';
@@ -143,7 +143,7 @@ const releaseServices = ({ rt, job }: AttemptCtx): Promise<void> =>
 /** The destructive half, once the board knows: the group, then the control channel it is served on, then the rest. */
 async function teardown(ctx: AttemptCtx): Promise<void> {
     const { rt, job, state } = ctx;
-    // The attempt's task group (issue #771) lives from its sync to here, not to the agent's exit: its
+    // The attempt's task group lives from its sync to here, not to the agent's exit: its
     // supervisor serves the probe, the helpers and the publish. It ends while the control channel its
     // order travels is still open — and never for an attempt handed over by a drain, nor one whose
     // outcome the board never took (`keep`): either runner is left for the next claim to adopt.
@@ -162,7 +162,7 @@ async function teardown(ctx: AttemptCtx): Promise<void> {
 }
 
 /**
- * The verdict conclusion (issue #821): the final envelope is staged under the lease, then completed,
+ * The verdict conclusion: the final envelope is staged under the lease, then completed,
  * the heartbeat renewing the lease throughout (`phase` `concluding`), so the evidence the group holds
  * outlives every moment the verdict could still be lost. A stage the board answers as lost, removed
  * or another's settles at once with no verdict. A board that takes neither the stage nor the verdict
@@ -218,7 +218,7 @@ function unstaged(ctx: AttemptCtx, answer: 'lost' | 'conflict' | 'removed'): Lea
  * Parks a stopped attempt, retried like a verdict. A board that never takes it leaves the attempt to
  * the lease: the claim settles a requested stop whose lease expired (`job-store-claim.ts`) and offers
  * anything else again, so the row is recoverable and nothing here may throw — the process carries
- * every other claim (issue #820). The runner stays then, as the board was not told. An answer of
+ * every other claim. The runner stays then, as the board was not told. An answer of
  * `lost` is final.
  */
 async function park(ctx: AttemptCtx, decision: Extract<EndDecision, { kind: 'park' }>): Promise<void> {

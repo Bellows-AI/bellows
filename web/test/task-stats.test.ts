@@ -17,7 +17,7 @@ import {
 } from './tasks-fixtures.js';
 
 /**
- * The task statistics read model (issues #530, #847, #848): the totals are the canonical task's usage
+ * The task statistics read model: the totals are the canonical task's usage
  * (review runs included, never re-summed from the thread), a missing measurement stays null (rendered
  * "—"), a measured zero stays 0, and a run still going marks the figures provisional.
  */
@@ -169,7 +169,7 @@ describe('taskStats', () => {
 });
 
 /**
- * Gate and PR activity (issue #983): the task-level answer the newest run carries, worded for the
+ * Gate and PR activity: the task-level answer the newest run carries, worded for the
  * dialog. A figure nobody recorded is "—", never 0, and a partial answer says so.
  */
 describe('taskStats gate and PR activity', () => {

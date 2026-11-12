@@ -1,6 +1,6 @@
 // Every in-process supervise() a test starts is stopped before the test's directories are removed: an
 // unstopped supervisor ticks on until its 90 s orphan bound, and under isolate:false it outlives its
-// file into the next one's fake clock (issue #905). Each supervisor-starting file registers
+// file into the next one's fake clock. Each supervisor-starting file registers
 // `afterEach(stopSupervisors)` at its own top level — a fixture-level hook would not bind per file.
 
 const STOP_BOUND_MS = 5_000;

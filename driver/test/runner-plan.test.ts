@@ -346,7 +346,7 @@ describe('the reviewer plan with the reviewed request’s files', () => {
 });
 
 /**
- * BEL-273: a claim that pins skills tells each agent where the installed bundles are. claude-code gets the base
+ * a claim that pins skills tells each agent where the installed bundles are. claude-code gets the base
  * directory with `--add-dir`; opencode gets the skills directory in an env name its entrypoint merges into
  * `skills.paths`. Nothing is passed without a pin, and nothing is ever under `/etc/claude-code`.
  */
@@ -417,7 +417,7 @@ describe('the pinned skills in the runner plan', () => {
     });
 });
 
-describe('the hidden built-in skills in the runner plan (BEL-286)', () => {
+describe('the hidden built-in skills in the runner plan', () => {
     const SESSION_FRESH = { id: SESSION, resume: false };
     const hiddenEnv = (env: [string, string][]) => env.find(([name]) => name === 'FACTORY_HIDDEN_SKILLS')?.[1];
 

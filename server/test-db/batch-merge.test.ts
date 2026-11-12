@@ -640,7 +640,7 @@ describe.skipIf(!enabled)('automerge', () => {
     });
 });
 
-describe.skipIf(!enabled)('task.blocked from a refused merge (BEL-134)', () => {
+describe.skipIf(!enabled)('task.blocked from a refused merge', () => {
     const blockedOf = (root: string) =>
         sql<{ job_id: string; reason: string | null }[]>`
             select job_id, reason from notification_event

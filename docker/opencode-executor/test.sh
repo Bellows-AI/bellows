@@ -134,7 +134,7 @@ else
     bad 'otel.json points at the compose collector' "$otel"
 fi
 
-# No context-mode (issue #841): its executions cannot run as the tool uid yet, so it is not baked.
+# No context-mode: its executions cannot run as the tool uid yet, so it is not baked.
 if docker run --rm --entrypoint sh "$IMAGE" -c 'test ! -e /usr/local/lib/node_modules/context-mode' \
     && ! grep -q context-mode opencode-home/opencode.json; then
     ok 'context-mode is neither installed nor referenced'
@@ -142,7 +142,7 @@ else
     bad 'context-mode is neither installed nor referenced' 'the image or the baked opencode.json still carries it'
 fi
 
-# The baked policy is root-owned twice over (issue #452): the global copy, the first config layer,
+# The baked policy is root-owned twice over: the global copy, the first config layer,
 # fixes the key order every later layer merges into; the managed copy (/etc/opencode) outranks
 # every layer the agent can write and restores each baked value. A checkout config that drops the
 # plugins, flips webfetch and lists the external-path allow BEFORE the catch-all deny — a reorder
@@ -179,7 +179,7 @@ else
 fi
 
 # otel.json decides where telemetry goes and whether prompt and tool bodies ride along, so the
-# agent's uid must not be able to rewrite it (issue #452): baked root-owned in a root-owned
+# agent's uid must not be able to rewrite it: baked root-owned in a root-owned
 # directory the plugin is pointed at, and replaced by the driver root-owned again. The driver's
 # delivery is reproduced exactly — create, `docker cp -` of the archive
 # driver/src/telemetry-config.ts renders (uid 0, mode 0444), start attached.
@@ -349,7 +349,7 @@ else
     bad 'no baked auth file in the opencode data directory' 'auth.json exists in the image'
 fi
 
-# Tools agents reach for in repo scripts (issue #1022), and the ripgrep opencode's grep and glob
+# Tools agents reach for in repo scripts, and the ripgrep opencode's grep and glob
 # tools resolve from PATH instead of downloading one into ~/.cache/opencode/bin at run time.
 if docker run --rm --entrypoint sh "$IMAGE" -c 'command -v python3 && command -v pgrep && command -v pkill && command -v ps && command -v rg' >/dev/null 2>&1; then
     ok 'python3, ps, pgrep, pkill and rg are on PATH'
@@ -357,7 +357,7 @@ else
     bad 'python3, ps, pgrep, pkill and rg are on PATH' 'one is missing'
 fi
 
-# Repo skills (BEL-270): opencode scans a checkout's .claude/skills (what claude-executor reads) as well
+# Repo skills: opencode scans a checkout's .claude/skills (what claude-executor reads) as well
 # as .opencode/skills, .opencode/skill and .agents/skills, with no config of ours. On a name clash across sources
 # (a repo copy, a baked global skill, a skills.paths directory) opencode lists ONE copy, but which source wins is
 # not deterministic: measured under contention, skills.paths won 7 of 12 runs, the repo 4 and the global 1, so the
@@ -398,7 +398,7 @@ else
 fi
 rm -rf "$skill_ws"
 
-# Pinned org and workspace skills (BEL-273): the driver installs them root-owned (0755/0644) under the task volume at
+# Pinned org and workspace skills: the driver installs them root-owned (0755/0644) under the task volume at
 # /task/.factory/skills-root/.claude/skills, and the entrypoint adds that directory to skills.paths (merged into
 # OPENCODE_CONFIG_CONTENT from FACTORY_SKILLS_PATH, pinned offline in driver/test/executor-images.test.ts). Here the
 # merged config is given as the entrypoint produces it, and the real CLI must list the installed skill.
@@ -461,7 +461,7 @@ fi
 rm -rf "$ws_repo"
 rm -rf "$task_vol"
 
-# The agent's tool isolation (issue #814), the same checks in both images.
+# The agent's tool isolation, the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh
 . "$HERE/../tool-isolation-checks.sh"
 

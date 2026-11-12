@@ -14,10 +14,10 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * two different paths to one runner's working directory; CRED_HELPER is the credential-helper CODE the sync
  * fetch runs — a member value there would be member-controlled code executed by the sync
  * container's git; RESTORE is the sync's restore-mode switch — a member value there would flip
- * starting claims into restore mode, silently skipping the fetch and rebase (issue #58); and the
- * two SYNC_LOCK_* names are the startup sync lock's bounds (issue #307) — a member value there
+ * starting claims into restore mode, silently skipping the fetch and rebase; and the
+ * two SYNC_LOCK_* names are the startup sync lock's bounds — a member value there
  * would shrink the wait to nothing or make every sync steal its neighbour's live lock; REVIEW_REF
- * is the ref a named reviewer's worktree is created at (issue #549) — a member value would point it
+ * is the ref a named reviewer's worktree is created at — a member value would point it
  * at any commit of the clone. The
  * three reporter names steer the branch reporter — where it posts, which
  * attempt it speaks for, and which session it claims — and a member value in any of them is a
@@ -38,7 +38,7 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
 export const GITHUB_ENV_NAMES: readonly string[] = ['GITHUB_TOKEN', 'GH_TOKEN'];
 
 /**
- * The runner's agent container starts as root to launch its tool broker (issue #814), and the glibc
+ * The runner's agent container starts as root to launch its tool broker, and the glibc
  * loader reads these for that root shell before any line of it runs: every `LD_` name, plus glibc's
  * other loadable-code and file names. A member value in one is code run with the launch capabilities.
  */

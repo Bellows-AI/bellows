@@ -41,7 +41,7 @@ const validRow = (): ExecutorRow => ({
 
 describe('parseExecutorConfig', () => {
     it('reads blank text as the inherited configuration, {}', () => {
-        // Name and agent alone are enough to save: the member never has to type {} (#261).
+        // Name and agent alone are enough to save: the member never has to type {}.
         expect(parseExecutorConfig('')).toEqual({ ok: true, value: {} });
         expect(parseExecutorConfig('  \n ')).toEqual({ ok: true, value: {} });
     });

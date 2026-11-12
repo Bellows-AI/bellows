@@ -13,7 +13,7 @@ import { isRecord } from './k8s-transport.js';
 import type { K8sPod, Refused } from './k8s-transport.js';
 
 /**
- * A listed or read object that names itself, as far as a decision on it reads (#869): a `metadata`
+ * A listed or read object that names itself, as far as a decision on it reads: a `metadata`
  * with a non-empty string `name`; `uid` a non-empty string, `labels` and `annotations` string maps
  * and `creationTimestamp` an RFC 3339 time when present; a `status`, when present, a record whose Job
  * counters are counts. One entry that is not this makes the whole read inconclusive; only a
@@ -30,7 +30,7 @@ export function asNamed<T>(value: unknown): T | null {
 }
 
 /**
- * `asNamed` for a listing a delete is decided on (#869): the entry also carries a non-empty `uid`,
+ * `asNamed` for a listing a delete is decided on: the entry also carries a non-empty `uid`,
  * which the apiserver always sets and the delete's precondition names. An entry without one makes
  * the whole read inconclusive — it is never deleted unconditionally.
  */
@@ -40,7 +40,7 @@ export function asIdentified<T>(value: unknown): T | null {
 }
 
 /**
- * A listed or read pod (#869): named, with its deletion time, phase, words, conditions and every
+ * A listed or read pod: named, with its deletion time, phase, words, conditions and every
  * container status — named, with a typed state — in the grammar `k8s-shapes.ts` gives them. A pod
  * with no `status` yet is a pod that has not started: no container evidence, which every consumer
  * reads as "nothing seen".
@@ -63,7 +63,7 @@ const podWith =
 export const asPod = podWith((status) => containerStatusesFault(status.containerStatuses, 'containerStatuses'));
 
 /**
- * A pod as the group start reads it (#869): `asPod`, and also every field `heldOf`, `startRefusalOf`
+ * A pod as the group start reads it: `asPod`, and also every field `heldOf`, `startRefusalOf`
  * and `agentStarted` consume — the init containers' statuses as well as the main ones, each image a
  * string, and the pod spec's init container names and images.
  */
@@ -83,7 +83,7 @@ export const asStartupPod = podWith(({ containerStatuses, initContainerStatuses 
 });
 
 /**
- * A pod as the service sidecars are read (#869): `asPod` over the init container statuses alone, each
+ * A pod as the service sidecars are read: `asPod` over the init container statuses alone, each
  * with a restart count that is a count and a `lastState` of the same typed shape as `state` — every
  * field `sidecarStatuses` and its endings consume.
  */
@@ -93,7 +93,7 @@ export const asServicePod = podWith(({ initContainerStatuses }) =>
 
 /**
  * A Job's `succeeded`, `failed` and `active` counts, each a non-negative integer when present, and
- * its `conditions` a list of typed records when present (#869).
+ * its `conditions` a list of typed records when present.
  */
 export const validCounters = (status: Record<string, unknown>): boolean =>
     (status.conditions === undefined ||

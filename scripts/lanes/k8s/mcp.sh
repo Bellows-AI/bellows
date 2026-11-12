@@ -1,6 +1,6 @@
 if selected_phase mcp; then
 begin_phase mcp
-# --- The board-hosted MCP server behind the chart (BEL-108) ---------------------------------------
+# --- The board-hosted MCP server behind the chart ---------------------------------------
 #
 # The chart renders MCP off and https-only (phase one asserts that and the ingress routing); this phase turns it on
 # in the running dashboard and makes one client pass through the port-forward, as a client behind the ingress would

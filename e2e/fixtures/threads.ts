@@ -94,11 +94,11 @@ export interface ThreadJob {
     exitCode: number | null;
     output: string | null;
     summary: string | null;
-    // The structured terminal reason (issue #339); null on every fixture here — the seed writes
+    // The structured terminal reason; null on every fixture here — the seed writes
     // succeeded jobs, and a failed-with-kind run is a lane fixture's to add, never this file's
     // to retrofit.
     failureKind: string | null;
-    /** What caused a gate, publish or helper failure (#581, served by #652); null on every fixture here. */
+    /** What caused a gate, publish or helper failure (served by #652); null on every fixture here. */
     failureCause: string | null;
     gates: ThreadGate[] | null;
     runtime: ThreadRuntime | null;
@@ -112,7 +112,7 @@ export interface ThreadJob {
     workflowName: string | null;
     /** The branch the thread bases on; null means the repository default. */
     baseBranch: string | null;
-    /** The thread root's stored title (BEL-252), null while the command-derived fallback stands. */
+    /** The thread root's stored title, null while the command-derived fallback stands. */
     title: string | null;
     titleOrigin: 'user' | 'agent' | null;
     titleRevision: number;
@@ -126,9 +126,9 @@ export interface ThreadJob {
     finishedAt: string | null;
     wallClockMs: number | null;
     agentTurns: number | null;
-    /** How long `environment.setup` ran before the agent (issue #733); null when none ran. */
+    /** How long `environment.setup` ran before the agent; null when none ran. */
     setupMs: number | null;
-    /** The attempts the infrastructure interrupted (issue #792); empty when none was. */
+    /** The attempts the infrastructure interrupted; empty when none was. */
     interruptions: { at: string; reason: string; claimSeq: number }[];
     taskWallClockMs: number | null;
     waitReason: string | null;
@@ -497,7 +497,7 @@ export const failedGateThread = thread([
             failedLintGate,
         ],
         runtime: finishedRuntime('2026-09-01T12:29:00.000Z'),
-        // The install ran before the agent (issue #733): shown beside the wall clock, apart from it.
+        // The install ran before the agent: shown beside the wall clock, apart from it.
         setupMs: 240_000,
         taskWallClockMs: 1_799_000,
     }),
@@ -648,7 +648,7 @@ export const nullAuthorThread = thread([
     }),
 ]);
 
-/** Interrupted twice by the infrastructure (issue #796) and then succeeded: both attempts were
+/** Interrupted twice by the infrastructure and then succeeded: both attempts were
  *  refunded, so the run spent one try. */
 export const interruptedThread = thread([
     run({
@@ -684,7 +684,7 @@ export function measuredBlock(tokens: Partial<Tokens>): UsageBlock {
     };
 }
 
-/** The gate and PR half of an activity answer when the board recorded nothing: null counts, never zeros (issue #983). */
+/** The gate and PR half of an activity answer when the board recorded nothing: null counts, never zeros. */
 const NO_RECORDS = (() => {
     const gates = {
         coverage: null,
@@ -701,7 +701,7 @@ const NO_RECORDS = (() => {
 })();
 
 /**
- * The activity payload a mocked thread answers with (issues #339, #530, #847): the newest run
+ * The activity payload a mocked thread answers with: the newest run
  * measured on three of the four token types (cache creation was never measured: null, rendered
  * "—"), plus the canonical task around it - the thread's other runs unmeasured and one review run
  * that is not a row of the thread - so the page's activity summary and statistics modal render
@@ -765,7 +765,7 @@ export function mockedActivityOf(jobs: readonly ThreadJob[]): unknown {
 }
 
 /**
- * The activity payload of a task with everything the statistics modal can show (issue #848): runs
+ * The activity payload of a task with everything the statistics modal can show: runs
  * [run, follow-up, review of the newest], model rows (a `[1m]` raw variant with `main`/`subagent`
  * children, and an `unknown` row), a type measured by one of two sessions, an estimated cache read,
  * located-nowhere tokens, and a task-owned amount with no run. The task total deliberately differs
@@ -900,7 +900,7 @@ export async function routeThread(page: Page, jobs: readonly ThreadJob[]): Promi
 }
 
 /** The same thread queued by `author` — every member, the way the board attributes a chain. Only
- *  the task's author is offered a follow-up (#281), so a spec that needs the composer re-authors
+ *  the task's author is offered a follow-up, so a spec that needs the composer re-authors
  *  a fixture to whoever is signed in. */
 export function authoredBy(jobs: readonly ThreadJob[], author: ThreadUser | null): ThreadJob[] {
     return jobs.map((job) => ({ ...job, author, createdBy: author?.id ?? null, executionUser: author }));
@@ -1018,7 +1018,7 @@ export const longContentThread = thread([
 ]);
 
 /**
- * The measured task plus its gate and PR activity (issue #983): three gate executions (two passed,
+ * The measured task plus its gate and PR activity: three gate executions (two passed,
  * one failed) none of which carries a timing, so the duration is "-" and the coverage partial; one
  * completion check that reused an earlier pass; and one PR touched by two operations, so operations
  * (2) and distinct PRs (1) differ.

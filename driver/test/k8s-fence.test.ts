@@ -570,7 +570,7 @@ describe('prepare and launch around the Job POST', () => {
         ).toBe(false);
     });
 
-    // The claim bracket is a wait of the attempt (#869): a kill ends its reads at once, not after the patience.
+    // The claim bracket is a wait of the attempt: a kill ends its reads at once, not after the patience.
     it('reads the claim no more once the attempt is killed before the POST, creating no Job', async () => {
         const kill = new AbortController();
         let reads = 0;

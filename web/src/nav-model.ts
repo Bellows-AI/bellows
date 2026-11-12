@@ -31,7 +31,7 @@ export const NAV_ITEMS: readonly PrimaryNavItem[] = [
 ];
 
 /**
- * The primary items this session may see. Batches is behind a deployment flag (BEL-264): the row
+ * The primary items this session may see. Batches is behind a deployment flag: the row
  * shows only on a confirmed `batches: true`, so a loading, errored or anonymous session — and a
  * `/me` without the key — lists no Batches link.
  */

@@ -1,6 +1,6 @@
 /**
  * What members do to tasks: create, follow up, retry, edit, mark done, remove, control a parked PR wait
- * (issue #328) and reopen — and the reclaim a thread queues once its last member is done.
+ * and reopen — and the reclaim a thread queues once its last member is done.
  */
 
 import type { Sql, TransactionSql } from 'postgres';
@@ -74,7 +74,7 @@ export async function insertJobInTx(
         `;
     await bindOnCreate(tx, { orgId, rootJobId: rows[0]!.id, createdBy, target });
     const jobId = rows[0]!.id;
-    // Pin and hide the row's skills after its bindings, in this transaction (BEL-273, BEL-286).
+    // Pin and hide the row's skills after its bindings, in this transaction.
     await recordCreateDecisionInTx(tx, { orgId, jobId, createdBy, target, githubApp: ctx.githubApp });
     await bindAttachmentsInTx(tx, { orgId, jobId, rootJobId: jobId, createdBy, ids: target.attachmentIds ?? [] });
     await stampKey(tx, orgId, rows[0]!.id, idem);
@@ -115,7 +115,7 @@ export interface FollowUpRowInput {
     idempotency?: IdempotencyInput | undefined;
     /** The route's org-admin verdict; ignored for a null caller. */
     admin?: boolean | undefined;
-    githubApp?: boolean | undefined; // the `github` connection a skill may require (BEL-286)
+    githubApp?: boolean | undefined; // the `github` connection a skill may require
 }
 
 /**
@@ -133,7 +133,7 @@ export async function createFollowUpRow(sql: Sql, input: FollowUpRowInput): Prom
 
 /**
  * The thread root of the named job (`root_job_id` is immutable, so the unlocked read is final), locked root row then
- * thread lock — the bind's order; the claim only tries (BEL-161). Null when the job or its root is gone.
+ * thread lock — the bind's order; the claim only tries. Null when the job or its root is gone.
  */
 async function lockThreadOf(tx: TransactionSql, orgId: string, id: string): Promise<string | null> {
     const [named] = await tx<{ root_job_id: string }[]>`
@@ -207,7 +207,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                   and ${terminalFragment(tx)}
                   and ${authorOwnsFragment(tx, { orgId, admin, createdBy })}
                   -- A named-profile review is not a task: a follow-up of it would run as an
-                  -- ordinary job with the author's full env and token (issue #549).
+                  -- ordinary job with the author's full env and token.
                   and review_of is null
                 for update
             ),
@@ -240,7 +240,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                    coalesce(primary_session.session_id, parent.session_id),
                    parent.root_job_id, parent.workflow_name, parent.mode, '[]'::jsonb, '[]'::jsonb
             from parent, root, primary_session
-            -- Eligibility is the THREAD's, as a retry's is (#698): a finished parent whose thread
+            -- Eligibility is the THREAD's, as a retry's is: a finished parent whose thread
             -- still holds unfinished work, or carries a done on any member, refuses — so a repeat
             -- never queues a second follow-up, and a closed thread never gets queued work.
             where ${threadIdleFragment(tx, orgId, 'parent.root_job_id')}
@@ -283,7 +283,7 @@ async function replayedFor(
 }
 
 /**
- * createRetry's body (issue #326): queue a fresh attempt of the thread head's command in the SAME
+ * createRetry's body: queue a fresh attempt of the thread head's command in the SAME
  * thread, without resuming a session. One transaction and one conditional insert, shaped exactly
  * like the follow-up's. Eligibility is the
  * THREAD's, not the named row's: the `named` CTE carries only the caller's own-row predicate
@@ -328,10 +328,10 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
                 where org_id = ${orgId} and id = ${id}
                   and ${authorOwnsFragment(tx, { orgId, admin, createdBy })}
                   -- A named-profile review is not a task: a retry of it would run as an ordinary
-                  -- job with the author's full env and token, in the reviewer's worktree (#549).
+                  -- job with the author's full env and token, in the reviewer's worktree.
                   and review_of is null
                   -- A running or queued member answers not_finished: locking it here would wait on a row
-                  -- a claim or a verdict holds while that one waits on the lock above (BEL-157).
+                  -- a claim or a verdict holds while that one waits on the lock above.
                   and ${terminalFragment(tx)}
                 for update
             ),
@@ -361,7 +361,7 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
 }
 
 /**
- * editCommand's body (issue #329). One conditional UPDATE carries every precondition — queued,
+ * editCommand's body. One conditional UPDATE carries every precondition — queued,
  * off-graph, the caller's own task — so an edit can never land on a row a worker already holds:
  * the UPDATE takes the row's lock, and under READ COMMITTED whichever statement gets the lock
  * second re-checks its predicates against the row's newest committed version. A claim that
@@ -478,9 +478,9 @@ export async function removeJobThread(
         // The one refusal: a member is running. The user stops it first — the per-task
         // worktree is a live runner's checkout, and tearing it out under the container would
         // corrupt a run that was happily going. Checked before the review rows are locked: a
-        // running member's verdict holds those rows and waits on this root lock (issue #821).
+        // running member's verdict holds those rows and waits on this root lock.
         if (hasRunningMember(members)) return 'conflict';
-        // The thread's named-profile reviews (issue #549) are threads of their own, so they are
+        // The thread's named-profile reviews are threads of their own, so they are
         // not in `members`: a running one is a live runner's checkout too, and they leave with it.
         const reviews = await tx<{ id: string; status: JobStatus }[]>`
             select id, status from job
@@ -504,12 +504,12 @@ export async function removeJobThread(
         if (prs) {
             await prs.cancelWaitsForRoot(rootJobId, 'task removed', tx);
         }
-        // Any parked or already-woken block-wait round (issue #231) is this thread's audit data
+        // Any parked or already-woken block-wait round is this thread's audit data
         // too — cancelWaitsForRoot above already makes it permanently unwakeable, this is just not
         // leaving it behind forever.
         await revokeThreadAttachmentsInTx(tx, orgId, rootJobId);
         await tx`delete from workflow_round where org_id = ${orgId} and root_job_id = ${rootJobId}`;
-        // The merge-closure marker (issue #390) is the thread's audit data the same way: the rows
+        // The merge-closure marker is the thread's audit data the same way: the rows
         // it discriminates are gone.
         await tx`delete from job_merge_close where org_id = ${orgId} and root_job_id = ${rootJobId}`;
 
@@ -532,7 +532,7 @@ export async function removeJobThread(
 }
 
 /**
- * The shared preamble of both wait-control verbs (issue #328): resolve the named id to its
+ * The shared preamble of both wait-control verbs: resolve the named id to its
  * thread root and check the caller may act on the thread. `id` may be any member — the wait
  * belongs to the root, exactly as `removeThread` resolves. Author-scoped like the follow-up (the
  * woken continuation runs in the author's worktree): only the account that queued the thread —
@@ -560,7 +560,7 @@ async function resolveControlledRoot(
 }
 
 /**
- * The user's wait-cancel (issue #328): `cancelWaitsForRoot` with the user reason and the acting
+ * The user's wait-cancel: `cancelWaitsForRoot` with the user reason and the acting
  * caller, decided atomically enough — the update's `cancelled_at is null` predicate IS the
  * no-open-wait answer, so a cancel racing itself answers `ok` exactly once and `no_wait` after.
  * No advisory lock, exactly like `cancelForRepoPr`/`cancelWaitsForRoot` today: a cancel can land
@@ -580,7 +580,7 @@ export async function cancelThreadWait(
 }
 
 /**
- * The user's poke (issue #328): re-evaluate the parked PR now. The board's only GitHub input is
+ * The user's poke: re-evaluate the parked PR now. The board's only GitHub input is
  * webhook deliveries, so "re-evaluate" cannot mean fetching GitHub here — it means running the
  * wake transaction (`wakeOneRound`) for the thread's parked rounds without the sweep's
  * `pending > 0` gate: whatever IS folded is claimed honestly (a poke that folds nothing stamps
@@ -641,7 +641,7 @@ export async function pokeThreadWait(
 }
 
 /**
- * Done's inverse (issue #327): clear the done stamp on every member of the thread and withdraw a
+ * Done's inverse: clear the done stamp on every member of the thread and withdraw a
  * task_reclaim row that has not run yet, so a task closed by mistake can be followed up again —
  * createFollowUpRow's thread-wide done predicate is exactly what this reverses. The whole decision
  * is one transaction under the thread's root row and then its advisory lock (the claim only tries
@@ -664,7 +664,7 @@ export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<Jo
 
         // A removed tree is unrecoverable: a follow-up resumes a session in the tree it ran in,
         // and there is no tree. The marker (045) is stamped only at the ack (a threadDone verdict
-        // queues its reclaim claimed, issue #821) — the queue row alone could not carry this,
+        // queues its reclaim claimed) — the queue row alone could not carry this,
         // because ack deletes it. The root read doubles as the remove-lost-the-race
         // check: remove deletes the rows under this same lock, so no root row means the thread
         // is gone, whatever the pre-lock read saw.
@@ -713,7 +713,7 @@ export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<Jo
             update job set done_at = null, done_by = null
             where org_id = ${orgId} and root_job_id = ${rootJobId} and ${doneFragment(tx)}
         `;
-        // A merge closure's marker (issue #390) is the discriminator complete's transition reads:
+        // A merge closure's marker is the discriminator complete's transition reads:
         // gone with the stamps, so a thread the user reopens after an automatic Done walks its
         // graph again — and the surviving `pr_merge` ledger row is what keeps a redelivered merge
         // from re-closing it.

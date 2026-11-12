@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createCommerceClient } from '../src/commerce/commerce-client.js';
 import type { UsageRecord } from '../src/db/commerce-store.js';
 
-/** BEL-146: the outbound usage POST — authenticated, bounded, and never believing a partial answer. */
+/** the outbound usage POST — authenticated, bounded, and never believing a partial answer. */
 const TOKEN = 'commerce-test-token-0123456789abcdef-xyz';
 const URL_BASE = 'https://commerce.example/';
 const ORG = 'org-1';

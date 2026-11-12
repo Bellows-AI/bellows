@@ -24,7 +24,7 @@ describe('the executor dialog help copy', () => {
         expect(INHERITED_NOTE).toMatch(/inherited from this deployment/);
         expect(INHERITED_NOTE).toMatch(/not your credentials or whether the model is available/);
         // The gate-repair field's help is the same contract: what the number decides, and that
-        // zero turns automatic repair off (issue #49).
+        // zero turns automatic repair off.
         expect(GATE_FIX_ROUNDS_HELP).toMatch(/failed gate/);
         expect(GATE_FIX_ROUNDS_HELP).toMatch(/0 turns/i);
     });

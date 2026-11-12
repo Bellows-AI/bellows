@@ -34,7 +34,7 @@ export interface EvidenceRow {
     status: string;
     output: string | null;
     evidence: RecordedEvidence | null;
-    /** A named-profile review run (issue #549): a row of its own thread, linked to the caller it assessed. */
+    /** A named-profile review run: a row of its own thread, linked to the caller it assessed. */
     reviewProfile?: boolean;
     /** The tree fingerprint the caller asked this review to assess — the revision its verdict is bound to. */
     reviewRevision?: string | null;

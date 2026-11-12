@@ -41,14 +41,14 @@ import {
 const kindsOf = (steps: { submitted: StepRequest[] }): string[] => steps.submitted.map((step) => step.kind);
 
 /*
- * The startup sync (issue #35), ported: the docker runner creates the task worktree with a
+ * The startup sync, ported: the docker runner creates the task worktree with a
  * `docker run` of the worktree script; here the same script is the same Job shape every other
  * aux Job uses — the declared image over the workspaces PVC, read-write this time, because the
  * whole point is creating the worktree the run will edit. Executor parity is why this exists:
  * without it, every claimed job fails at the loop's sync step.
  */
 /*
- * The startup sync is the attempt's first supervised step (issue #771): the fence takes the checkout
+ * The startup sync is the attempt's first supervised step: the fence takes the checkout
  * claim, the attempt's group is created (one Job, its supervisor, its agent), and the sync is a
  * step the supervisor runs as a child process. What it asks and how its answer reads is pinned
  * here; the group's own lifecycle is k8s-group.test.ts.
@@ -233,7 +233,7 @@ describe('the worktree sync', () => {
     });
 
     // A claim that CONTINUES a session — a follow-up, or a parked job resumed — is mid-task, and
-    // git operations that touch the remote belong to the task's beginning and end (issue #58).
+    // git operations that touch the remote belong to the task's beginning and end.
     // Its sync is a RESTORE: the step carries the literal, no credential helper even with a
     // token, and no claim env at all.
     it('carries RESTORE for a claim that continues a session, with no helper and no claim env', async () => {
@@ -300,7 +300,7 @@ describe('the worktree sync', () => {
         const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
         const claimPost = order.indexOf(`POST ${configmapsPath}`);
         expect(claimPost).toBe(0);
-        // The group's Job is created suspended, then its Secret, then resumed (issue #821): a Secret
+        // The group's Job is created suspended, then its Secret, then resumed: a Secret
         // never exists without a Job to derive it from, and no pod starts without its Secret.
         expect(claimPost).toBeLessThan(order.indexOf(`POST ${jobsPath(namespace)}`));
         expect(order.indexOf(`POST ${jobsPath(namespace)}`)).toBeLessThan(order.indexOf(`POST ${secretsPath}`));
@@ -452,7 +452,7 @@ describe('the worktree sync', () => {
         );
     });
 
-    // The group's creates, the same transient-400 rule the polls have (issue #308): a pre-handler
+    // The group's creates, the same transient-400 rule the polls have: a pre-handler
     // `400 Bad Request` is connection damage, never the sync's verdict — it throws, and the loop's
     // catch leaves the job to its lease; the throw still hands the checkout over cleanly.
     it.each([
@@ -700,7 +700,7 @@ describe('the worktree sync', () => {
 });
 
 /*
- * The terminal reclaim (issue #775): the thread's tree lives on its own task volume, which only the
+ * The terminal reclaim: the thread's tree lives on its own task volume, which only the
  * reaper deletes, so the reclaim is an acknowledged no-op — no group, no Secret, no checkout claim,
  * no request at all, and nothing a live follow-up could be hurt by.
  */
@@ -811,7 +811,7 @@ describe('publishing the produced work', () => {
         const push = commands.find((argv) => argv.includes('push'));
         expect(push!.join(' ')).toContain('credential.helper=');
         expect(push).toContain('--force-with-lease');
-        // The summarizer is one step like every other (issue #82): node over the worktree, the
+        // The summarizer is one step like every other: node over the worktree, the
         // BASE ref and the backstop commit's subject as literal envs, and no credential — local
         // git reads only. Its worktree anchor is pinned explicitly, because its failure mode
         // without one is the quiet one: nulls, and the command title this issue removes.
@@ -957,7 +957,7 @@ describe('publishing the produced work', () => {
         expect(publishStepsOf(steps).some((step) => step.argv.includes('push'))).toBe(true);
     });
 
-    // The step's own output is what its failure — and so its cause (#581) — is read from.
+    // The step's own output is what its failure — and so its cause — is read from.
     it('fails with the step and the tool’s own words when the push is refused', async () => {
         const steps = scripted({
             step: (step) =>
@@ -1001,7 +1001,7 @@ describe('publishing the produced work', () => {
     });
 
     // A step the supervisor never answers (the channel closed under it) is no verdict on the work:
-    // it is thrown, and the loop hands the attempt back as an interruption (#925).
+    // it is thrown, and the loop hands the attempt back as an interruption.
     it('throws a closed step channel instead of answering a failed publish', async () => {
         const steps = scripted({
             step: (step) => {

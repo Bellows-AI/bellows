@@ -1,5 +1,5 @@
 /**
- * Phase checkpoints (issue #829; `080_job_phase_checkpoints.sql`): the outcome of each post-run
+ * Phase checkpoints (`080_job_phase_checkpoints.sql`): the outcome of each post-run
  * phase of an attempt, written under its lease after the phase returns and read back by the
  * driver that adopts or takes over the run.
  */
@@ -7,7 +7,7 @@
 import { lockRunningAttempt, leaseRefusal } from './job-store-rows.js';
 import type { JobStoreContext } from './job-store-types.js';
 
-/** The phases that leave a checkpoint, in the order they run: the pre-agent setup, then the post-run phases (#829, #917). */
+/** The phases that leave a checkpoint, in the order they run: the pre-agent setup, then the post-run phases. */
 export type PhaseCheckpointPhase = 'setup' | 'gates' | 'post' | 'publish';
 
 /** One stored phase checkpoint: the claim that wrote it, the tree its phase ran against, its outcome. */

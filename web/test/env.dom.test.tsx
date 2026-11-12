@@ -270,7 +270,7 @@ describe('the organization variables editor', () => {
         expect(primaries.sort()).toEqual(['New variable', 'Save changes']);
     });
 
-    // BEL-262 review: the editor's baseline is the last SAVED list, not whatever the refetch has
+    // The editor's baseline is the last SAVED list, not whatever the refetch has
     // delivered, or the next whole-list PUT silently deletes the row that was just saved.
     async function saveA(user: User, editor: ReturnType<typeof within>, name: string) {
         await addVariable(user, editor, name);
@@ -323,7 +323,7 @@ describe('the organization variables editor', () => {
 });
 
 /**
- * The same last-saved baseline on the other two scopes (BEL-262 review): the workspace and the
+ * The same last-saved baseline on the other two scopes: the workspace and the
  * repository sections keep the row they just saved while the refetch is held.
  */
 describe('the workspace and repository editors keep the last saved list', () => {

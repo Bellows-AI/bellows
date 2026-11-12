@@ -166,7 +166,7 @@ export interface Job {
     gates?: GateCheck[] | null;
     /** The attempt's last container vitals, or null until the driver's first sample lands. */
     runtime?: RuntimeVitals | null;
-    /** The thread root's stored title (BEL-252), or null while the title derived from `command` stands. */
+    /** The thread root's stored title, or null while the title derived from `command` stands. */
     title: string | null;
     /** Who set `title`: null exactly when `title` is. */
     titleOrigin: TaskTitleOrigin | null;

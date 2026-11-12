@@ -7,7 +7,7 @@ import { setRole } from './roles.js';
 import { throughSignIn } from './signin.js';
 
 /**
- * Settings → Skills end to end (BEL-272), on the `auth` board: the stub member is the installation's
+ * Settings → Skills end to end, on the `auth` board: the stub member is the installation's
  * first member, so admin until a spec says otherwise. Names are unique per run — the database is
  * shared with the other auth specs — and admin is restored in `finally`.
  */

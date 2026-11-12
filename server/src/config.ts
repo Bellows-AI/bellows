@@ -125,7 +125,7 @@ export type AuthConfig =
 export interface AppConfig {
     /**
      * There is no `orgId`/`orgName` here any more. The organizations are the GitHub App
-     * installations, upserted at sign-in (#99) — the org is a property of the caller, resolved
+     * installations, upserted at sign-in — the org is a property of the caller, resolved
      * from the session or the token on every request, never of the process. AUTH_MODE=none keeps
      * the single `default` org, named by LOCAL_ORG_ID.
      *
@@ -155,13 +155,13 @@ export interface AppConfig {
     /** Where task artifacts are stored (070); see `config-artifacts.ts`. */
     readonly artifacts: ArtifactsConfig;
     /**
-     * The shared admission budgets every claim enforces (issue #831): the most rows running at once
+     * The shared admission budgets every claim enforces: the most rows running at once
      * across every org (ADMISSION_MAX_RUNNING), per org (ADMISSION_MAX_RUNNING_PER_ORG) and per repo
      * (ADMISSION_MAX_RUNNING_PER_REPO). An unset one is unlimited. See `db/jobs/job-store-admission.ts`.
      */
     readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
     /**
-     * Outbound OAuth (BEL-138). `callbackOrigin` is the origin a provider redirects back to: `PUBLIC_URL`, else the
+     * Outbound OAuth. `callbackOrigin` is the origin a provider redirects back to: `PUBLIC_URL`, else the
      * loopback bind's own, else null. Null never fails the boot; starting an authorization then answers
      * `not-configured`.
      */
@@ -569,7 +569,7 @@ function assertNoRetiredEnvVars(env: NodeJS.ProcessEnv): void {
     }
 
     /*
-     * The keys the multi-org sign-in replaced (#99).
+     * The keys the multi-org sign-in replaced.
      *
      * Same register as the block above: each one used to decide what the process served, so an
      * ignored one boots a deployment that silently reports on the wrong organization — or only

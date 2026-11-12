@@ -50,7 +50,7 @@ const jsonLines = (stdout: string): Record<string, any>[] =>
         .map((line) => JSON.parse(line));
 
 /**
- * A readout log the kubernetes transport cut to its tail (issue #825): whatever stream it now opens
+ * A readout log the kubernetes transport cut to its tail: whatever stream it now opens
  * on lost its head, whatever that stream's own lines say; a stream wholly after it did not.
  */
 describe('the opencode export parse of a head-cut readout', () => {
@@ -79,7 +79,7 @@ describe('the opencode export parse of a head-cut readout', () => {
 });
 
 /**
- * The opencode session export (issues #735, #767), against a real sqlite database: the readout
+ * The opencode session export, against a real sqlite database: the readout
  * prints every raw row and a normalized event stream ahead of its answer line, all inside one read
  * transaction. The suite pins what the export keeps (tool calls, usage, provenance), the cap's
  * marker, and — the part worth executing — a consistent snapshot while a writer commits.

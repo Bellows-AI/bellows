@@ -13,7 +13,7 @@ import { actionableObservation, decide, failedAttentionReason, recoveriesUsed, t
 import { DECISION_ADVANCE, DECISION_REPAIR } from './batch-store-types.js';
 
 /**
- * Recovery from a task's observed PR after its run succeeded (docs/batches.md, issue #581): a
+ * Recovery from a task's observed PR after its run succeeded (docs/batches.md): a
  * confirmed failing check or conflict queues one repair per observation revision, within the
  * task's repair budget; a PR closed without merging parks the task for a person. Runs in the
  * scheduler's pass, under the batch's row lock, and never in a fenced batch — the caller checks.

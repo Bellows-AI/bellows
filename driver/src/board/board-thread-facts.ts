@@ -1,9 +1,9 @@
 /**
- * The facts the orphan reaper decides a task volume on (issue #775), copied from the server's
+ * The facts the orphan reaper decides a task volume on, copied from the server's
  * `JobThreadFacts` rather than imported. `lastFinalizedAt` is when the thread's newest attempt
  * finalized (null while it has not); `artifactsComplete` is false while that attempt has an artifact
  * stream still pending; `checkpoint` is `complete` only when the root's pointer names that attempt whole;
- * `lastJobId` / `lastClaimSeq` name that attempt (issue #938).
+ * `lastJobId` / `lastClaimSeq` name that attempt.
  */
 export interface BoardThreadFacts {
     live: boolean;

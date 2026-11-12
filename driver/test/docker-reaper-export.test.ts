@@ -9,7 +9,7 @@ import type { VolumeThread } from '../src/reaper.js';
 import { VOLUME_EXPORT_CLEANUP_MS } from '../src/reaper-export.js';
 
 /**
- * The docker arm of the reaper's export-before-delete (issue #938): the one-shot exporter container over
+ * The docker arm of the reaper's export-before-delete: the one-shot exporter container over
  * the thread's newest task volume. The daemon seam is the injected `ExecDocker`, so the test is a router
  * over argv that records what the arm asked the daemon for.
  */

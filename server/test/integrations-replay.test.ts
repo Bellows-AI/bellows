@@ -4,7 +4,7 @@ import { createAttempts, type LineageCtx } from '../src/integrations/lineage-typ
 import type { SecretError, SecretResult, SecretVersion } from '../src/secrets/secret-store.js';
 
 /**
- * BEL-138 review r1 (A1): a SecretStore mutation never starts after its deadline, is bounded by the time the claim
+ * A SecretStore mutation never starts after its deadline, is bounded by the time the claim
  * has left, and stays accounted for until it really settles, so recovery cannot mistake "no operation observed" for
  * "never happened" while an attempt may still land.
  */

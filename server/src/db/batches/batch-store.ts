@@ -50,7 +50,7 @@ export function createBatchStore({
     close?: CloseThread;
     /** Resolves a target branch's head commit for the attempt record; absent records none. */
     revisionOf?: RevisionOf;
-    /** Whether the org's GitHub App is installed: the tasks the scheduler creates decide their skills' visibility by it (BEL-286). */
+    /** Whether the org's GitHub App is installed: the tasks the scheduler creates decide their skills' visibility by it. */
     githubApp?: boolean;
     /** The clock the time limit and the retry backoff are read against; production leaves it unset. */
     now?: () => Date;

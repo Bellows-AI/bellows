@@ -15,7 +15,7 @@ import type { GateStepRequest } from '../src/supervised-steps.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 
 /**
- * The supervised gate manager (issue #773) and the ad-hoc HTTP channel.
+ * The supervised gate manager and the ad-hoc HTTP channel.
  *
  * The runner is stood in by `gateRunner`: every gate is one step the attempt's supervisor hands its
  * gate container, and every assertion is on the request the manager makes or the verdict it reports.
@@ -460,7 +460,7 @@ describe('the gate server', () => {
 
     // An ad-hoc call is a client waiting on one HTTP answer (the agent's shell tool gives up at
     // 10 minutes), and a hangup kills the run: a longer gate would die every time, so it is
-    // refused up front and left to the end-of-run pass (issue #576).
+    // refused up front and left to the end-of-run pass.
     it('refuses an ad-hoc run of a gate whose timeout outlasts the call, before acquiring', async () => {
         let acquired = 0;
         let ran = 0;
@@ -978,7 +978,7 @@ describe('the gate server: a repeat while the forward is in flight (issue #226)'
 });
 
 describe('the gate server: run history for the timeout note', () => {
-    // A timed-out run's kill note quotes the latest ad-hoc verdicts (issue #339), so the server
+    // A timed-out run's kill note quotes the latest ad-hoc verdicts, so the server
     // records them as they complete: one entry per declared gate name, the latest run winning.
     it('records the latest run per gate name, and clears them on unregister', async () => {
         let call = 0;
@@ -1015,7 +1015,7 @@ describe('the gate server: run history for the timeout note', () => {
         await server.close();
     });
 
-    // The one channel to an agent mid-run (issue #487): a dead service's note rides every answer.
+    // The one channel to an agent mid-run: a dead service's note rides every answer.
     it('carries the dead-service note in each answer until it is cleared or the token ends', async () => {
         const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: 'ok' }) };
         const served = await serveGates(manager, { token: 'tok-dead', gates: [{ name: 'test', command: 'x' }] });

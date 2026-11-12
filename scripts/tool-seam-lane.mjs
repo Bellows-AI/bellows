@@ -57,7 +57,7 @@ const CACHE = [
     `if [ -w ${CLI_CACHE} ]; then echo CLI_CACHE=writable; else echo CLI_CACHE=readonly; fi`,
 ].join('\n');
 
-/** The commit identity (#1017): a bare commit as the tool uid, then who it was authored by. */
+/** The commit identity: a bare commit as the tool uid, then who it was authored by. */
 export const COMMIT_IDENTITY = 'factory-ai factory-ai@users.noreply.github.com';
 const IDENTITY = [
     `git init -q ${TRUSTED}/id-repo`,
@@ -65,7 +65,7 @@ const IDENTITY = [
     `echo AUTHOR=$(git -C ${TRUSTED}/id-repo log -1 --format='%an %ae' 2>/dev/null)`,
 ].join('\n');
 
-/** The gate pair the lane gives the runner (#1018) as the tool uid sees it; the token's value is never printed. */
+/** The gate pair the lane gives the runner as the tool uid sees it; the token's value is never printed. */
 export const GATE_URL = 'http://gate.invalid:9';
 const GATE_ENV = ['echo GATE_URL=${BELLOWS_GATE_URL:-unset}', 'echo GATE_TOKEN=${BELLOWS_GATE_TOKEN:+set}'].join('\n');
 

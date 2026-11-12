@@ -100,7 +100,7 @@ export interface JobRow {
     wait_reason?: string | null;
     waiting_since?: Date | null;
     wait_terminal_reason?: string | null;
-    /** Only the detail reads (get/thread) join `job_pr` (#324); absent from the lists. */
+    /** Only the detail reads (get/thread) join `job_pr`; absent from the lists. */
     publication_repo?: string | null;
     publication_pr_number?: number | null;
     publication_pr_url?: string | null;
@@ -308,7 +308,7 @@ export function toTask(row: TaskRow): TaskSummary {
 
 export const toJobRow = (ctx: JobStoreContext, row: JobRow): Job => toJob(ctx.orgId, row);
 
-/** One workflow successor's insert, shared by an ordinary transition and a block-wait wake (#231)
+/** One workflow successor's insert, shared by an ordinary transition and a block-wait wake
  *  — an ordinary queued job, byte-identical either way; the caller decides which row triggers it. */
 export interface WorkflowSuccessorInput {
     orgId: string;
@@ -331,9 +331,9 @@ export async function insertWorkflowSuccessor(tx: TransactionSql, input: Workflo
         select ${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
                ${input.executor}, ${input.executorScope}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode}, ${WORKFLOW_MODE},
-               -- The predecessor's pin (BEL-273): a successor continues the same run with the same skill versions.
+               -- The predecessor's pin: a successor continues the same run with the same skill versions.
                coalesce((select p.skill_pin from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb),
-               -- And its visibility decision (BEL-286), for the same reason.
+               -- And its visibility decision, for the same reason.
                coalesce((select p.skill_hidden from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb)
         returning id
     `;
@@ -388,7 +388,7 @@ export function hasRunningMember(members: { status: JobStatus }[]): boolean {
 
 /**
  * The Stop statement over the live rows `where` selects (a fragment over the `job` table), shared
- * by a member's Stop of one row and the cancellation of a caller's reviews (issue #549) — one
+ * by a member's Stop of one row and the cancellation of a caller's reviews — one
  * rule for what a stop does to a queued, a leased and an expired-lease row. `stopJob` explains it.
  */
 export function stopRows(
@@ -431,7 +431,7 @@ export function stopRows(
             stopped_by = coalesce(stopped_by, ${stoppedBy})
         where org_id = ${orgId} and ${where}
           and status in ('queued','running')
-          -- An expired attempt that staged its conclusion is the board's to commit (issue #821).
+          -- An expired attempt that staged its conclusion is the board's to commit.
           and not (status = 'running' and lease_expires_at <= now() and ${stagedUnderLease(sql, 'job')})
         returning id, status, cancel_requested_at, root_job_id
     `;
@@ -439,7 +439,7 @@ export function stopRows(
 
 /**
  * Stops every live review of the given callers — what a caller's Stop, its verdict and its dead
- * retirement all do, so no review outlives the work it assessed (issue #549). A queued review
+ * retirement all do, so no review outlives the work it assessed. A queued review
  * settles `stopped`, a leased one is stamped and its heartbeat delivers the kill; one that already
  * ended is left alone, which is what makes a retried Stop change nothing.
  */
@@ -495,7 +495,7 @@ export function waitLateralFragment(sql: Sql, orgId: string): Fragment {
 }
 
 /**
- * The thread's publication (036, #324), joined by both detail reads (`get`, `thread`). A lateral
+ * The thread's publication (036), joined by both detail reads (`get`, `thread`). A lateral
  * subselect, the `wl` wait lateral's exact shape: the aliased outputs keep the outer query's bare
  * `repo`/`root_job_id` unambiguous, and the primary key `(org_id, root_job_id)` guarantees one
  * row at most, so the join cannot multiply the job rows. Parameter-free on the org side —
@@ -565,7 +565,7 @@ export async function backsBatchTask(tx: TransactionSql, orgId: string, rootJobI
 }
 
 /**
- * Whether the named job's thread backs a batch task while `BATCHES_ENABLED` is off (BEL-264): the batch
+ * Whether the named job's thread backs a batch task while `BATCHES_ENABLED` is off: the batch
  * is hidden then, so a retry or follow-up on its thread (a new job on the batch's task) is refused. A job
  * outside a batch, a missing job, and every job with the flag on are not hidden.
  */

@@ -71,7 +71,7 @@ export interface AppDeps {
     config: AppConfig;
     /**
      * The per-org runtimes: the routes resolve the CALLER's org through it and take the repo
-     * source, telemetry and stats service from there (#99). In tests, `orgs.for` answers for any
+     * source, telemetry and stats service from there. In tests, `orgs.for` answers for any
      * org with the same runtime, which keeps the single-org route tests honest about one thing:
      * every route reads the org the caller carries, never a process constant.
      */
@@ -113,7 +113,7 @@ export interface AppDeps {
     pairMatches?: PairMatches | undefined;
     /** The runner's durable operation receipts (099); with `attemptOfLease` and `pairMatches` the receipt routes exist. */
     operationReceipts?: OperationReceipts | undefined;
-    /** The running agent's own title write (BEL-252); with `attemptOfLease` the route exists. */
+    /** The running agent's own title write; with `attemptOfLease` the route exists. */
     agentTitle?: AgentTitle | undefined;
     /** The runner helper's connection list (`GET .../credentials/connections`); with `integrations` the route exists. */
     connectionListing?: ConnectionListing | undefined;
@@ -139,7 +139,7 @@ export interface AppDeps {
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
     appSlug?: (() => Promise<string>) | undefined;
     /**
-     * Repos one installation can see, for the onboarding screen (#125). Absent means the screen
+     * Repos one installation can see, for the onboarding screen. Absent means the screen
      * reports repo tracking as unavailable — the offline shape, where there is no App client.
      */
     installationListing?: ((installationId: string) => Promise<InstallationRepo[] | null>) | undefined;
@@ -158,11 +158,11 @@ export interface AppDeps {
     logger?: FastifyServerOptions['logger'];
     /** The secret-storage seam (docs/secrets.md). main.ts supplies the PostgreSQL backend; consumers read it. */
     secrets?: SecretStore | undefined;
-    /** Destroys the secret of a grant a disconnect revoked (BEL-138); absent, the `integrations` runtime's. */
+    /** Destroys the secret of a grant a disconnect revoked; absent, the `integrations` runtime's. */
     destroyRevokedSecret?: DestroyRevokedSecret | undefined;
     /** Uploads one process buffers at once; absent takes the route's default. */
     attachmentMaxInFlight?: number | undefined;
-    /** The single-use upload capabilities (BEL-248); with it the upload-request routes and the capability PUT exist. */
+    /** The single-use upload capabilities; with it the upload-request routes and the capability PUT exist. */
     uploadCapabilities?: UploadCapabilityStore | undefined;
 }
 
@@ -182,7 +182,7 @@ export function csp(dev: boolean): string {
         "font-src 'self'",
         "base-uri 'none'",
         "form-action 'none'",
-        // Nothing embeds the SPA; the consent screen (BEL-103) must never be framed.
+        // Nothing embeds the SPA; the consent screen must never be framed.
         "frame-ancestors 'none'",
     ].join('; ');
 }
@@ -334,7 +334,7 @@ export async function buildApp({
 
     // Aborted the moment `app.close()` begins, before it waits for the open requests: the long-polls (settle, batch
     // settle, the MCP waits) read it as `request.closing` and answer at once instead of holding the close up to
-    // their timeout (docs/architecture.md, BEL-322).
+    // their timeout (docs/architecture.md).
     const closing = new AbortController();
     app.decorateRequest('closing', { getter: () => closing.signal });
     app.addHook('preClose', async () => closing.abort());
@@ -431,12 +431,12 @@ export async function buildApp({
         githubRevoke,
     });
     await app.register(workspaceRoutes({ orgs }));
-    // Plans and usage (BEL-146): like the webhook, no route exists unless the deployment turned commerce on.
+    // Plans and usage: like the webhook, no route exists unless the deployment turned commerce on.
     await registerCommerce(app, config, orgs, commercePlanWriter);
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs }));
-    // Notification subscriptions (BEL-131): the org's settings for who hears about a task verdict.
+    // Notification subscriptions: the org's settings for who hears about a task verdict.
     await app.register(
         notificationSubscriptionRoutes({
             orgs,

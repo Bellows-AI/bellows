@@ -93,7 +93,7 @@ function rawAttributeLines(prefix: string, list: { key: string; value: AnyValue 
 }
 
 /**
- * The raw series identity (#846): a one-way digest over the data point's FULL attribute set —
+ * The raw series identity: a one-way digest over the data point's FULL attribute set —
  * resource, scope and point attributes before the allowlist — plus agent, temporality and start
  * time. Two series that differ only in a dropped attribute stay two rows in `metric_point_dedup`,
  * while the dropped values themselves are never stored.

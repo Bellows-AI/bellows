@@ -479,7 +479,7 @@ describe('the skill install script', () => {
         expect((await install([a, next])).ok).toBe(true);
     });
 
-    describe('a checkout that holds the skill itself (BEL-286: the repo beats a pinned org skill)', () => {
+    describe('a checkout that holds the skill itself: the repo beats a pinned org skill', () => {
         let checkout = '';
         const isRoot = process.getuid?.() === 0;
         // What driver/src/skill-inputs.ts checkoutSkillDirsOf hands each CLI.

@@ -27,7 +27,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         // `none` — the code-only no-fetch arm — so the offline suite never constructs a token
         // provider or an App client. The repo list reaches the service through `staticRepoSource`
         // in `harness` instead — which is the same seam `npm run seed` and `verify:ui` use, rather
-        // than a test-only one. There is no orgId/orgName any more (#99): the orgs live in the
+        // than a test-only one. There is no orgId/orgName any more: the orgs live in the
         // store and the registry, and the tests that name one use 'test-org' explicitly.
         github: { mode: 'none' },
         port: 0,

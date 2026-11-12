@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// The runner's end of AskUserQuestion (issue #226). Plain `claude -p` has no AskUserQuestion tool;
+// The runner's end of AskUserQuestion. Plain `claude -p` has no AskUserQuestion tool;
 // under `--input-format stream-json --permission-prompt-tool stdio` the CLI asks this process for
 // every permission decision as a `control_request`. The bridge answers them: AskUserQuestion goes
 // to the task supervisor through the mailbox (a file in FACTORY_CTL_OUT; the answer comes back as a
@@ -87,7 +87,7 @@ async function decide(request) {
 }
 
 /**
- * A `--resume` of a session that left no transcript (issue #822) becomes `--session-id` under the
+ * A `--resume` of a session that left no transcript becomes `--session-id` under the
  * same id: a driver lost between reporting the id it minted and the CLI's first write leaves the
  * board holding a session with nothing behind it, and the CLI refuses to resume that. Only on a
  * resume of a session the row minted itself, which the driver grants with
@@ -147,7 +147,7 @@ function main() {
     });
     // The CLI can exit before a late write lands; that is the exit handler's to report, not a crash.
     cli.stdin.on('error', () => {});
-    // Our stdout is the progress sidecar's FIFO (issue #798): a reader that died costs the live
+    // Our stdout is the progress sidecar's FIFO: a reader that died costs the live
     // progress, never the run — stop relaying, say so once, and let the CLI's status stand.
     let relaying = true;
     process.stdout.on('error', () => {

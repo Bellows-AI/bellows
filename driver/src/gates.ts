@@ -46,7 +46,7 @@ const CANCELLED_EXIT_CODE = 130;
 const TIMEOUT_EXIT_CODE = 124;
 
 /**
- * The gates of an attempt (issue #773): every declared gate and the `environment.setup` run in the
+ * The gates of an attempt: every declared gate and the `environment.setup` run in the
  * attempt's own task group — the declared image as a gate container beside the task supervisor, on
  * both executors — as one supervised step each (`Runner.runGate`), which the supervisor hands the
  * gate container through the mailbox only the two of them mount. This module owns what the loop and
@@ -64,7 +64,7 @@ export interface GateRun {
     output: string;
     /** True when the environment's `setup` command failed: the gate itself never ran. */
     setupFailed?: true;
-    /** What the run measured around the gate command (issue #983); present only for a run given an `execution`. */
+    /** What the run measured around the gate command; present only for a run given an `execution`. */
     measure?: GateMeasure;
 }
 
@@ -83,7 +83,7 @@ export interface GateRunOptions {
     timeoutMs?: number | undefined;
     /** The ad-hoc request's narrowing, set as env `GATE_FILTER` for this one run; never part of the command. */
     filter?: string | undefined;
-    /** Records the run (issue #983): probes the tree inside the queue around it and writes the running row first. */
+    /** Records the run: probes the tree inside the queue around it and writes the running row first. */
     execution?: GateExecution | undefined;
 }
 
@@ -105,7 +105,7 @@ export interface GateManager {
      */
     runGate(key: string, name: string, command: string, options?: GateRunOptions): Promise<GateRun>;
     /**
-     * Runs the attempt's `gates.setup` now, before the agent starts (issue #733), under `timeoutMs`
+     * Runs the attempt's `gates.setup` now, before the agent starts, under `timeoutMs`
      * rather than the gate default; null when the checkout declares none. Always runs — a new
      * attempt re-runs it, relying on its idempotency. A success clears the pending setup the first
      * gate would run; a failure leaves it pending, so that gate retries it.
@@ -239,7 +239,7 @@ function assertAcquirable(key: string, image: string, attempt: GateAttempt | und
 }
 
 /**
- * The gate manager of both executors (issue #773): a gate run is one supervised step in the
+ * The gate manager of both executors: a gate run is one supervised step in the
  * attempt's task group, whose gate container runs it in the checkout. Nothing here starts a
  * container, a Job or a cooldown: the gate container lives and ends with its group.
  */
@@ -365,14 +365,14 @@ export interface GateClaim {
     envBody?: string;
     job: BoardJob;
     gates: readonly DeclaredGate[];
-    /** The dead-service note the loop's sampler last set (issue #487); set on the stored claim, never at register. */
+    /** The dead-service note the loop's sampler last set; set on the stored claim, never at register. */
     deadServices?: string | undefined;
     /**
-     * Told when an ad-hoc gate found the attempt's supervisor lost (`stepLost`, issue #773): the
+     * Told when an ad-hoc gate found the attempt's supervisor lost (`stepLost`): the
      * agent's call answers incomplete, and the attempt is the loop's to interrupt.
      */
     onInfraLoss?: (reason: string) => void;
-    /** The claim's gate-run record (issue #983); absent, an ad-hoc run is not recorded. */
+    /** The claim's gate-run record; absent, an ad-hoc run is not recorded. */
     ledger?: GateLedger;
 }
 
@@ -393,7 +393,7 @@ export interface GateServer {
     cancel(token: string): void;
     /**
      * Closes the token to new ad-hoc runs (503, retryable) and resolves once every one already admitted
-     * has settled, its terminal row written (issue #983): the completion pass reads the gate record only
+     * has settled, its terminal row written: the completion pass reads the gate record only
      * after this, so no run is still on its way to a verdict it would not see. `register` reopens it.
      */
     quiesce(token: string): Promise<void>;
@@ -404,7 +404,7 @@ export interface GateServer {
      */
     lastRuns(token: string): readonly GateRunNote[];
     /**
-     * Sets the dead-service note (issue #487) every later ad-hoc answer of this token carries as
+     * Sets the dead-service note every later ad-hoc answer of this token carries as
      * `deadServices` — the one channel to an agent mid-run. Null clears it; an unknown token does nothing.
      */
     setDeadServices(token: string, note: string | null): void;
@@ -457,7 +457,7 @@ export interface GateServer {
     raiseKill(token: string): void;
     /** Ends the control token: the supervisor and the agent both get 401 from here on. */
     closeControl(token: string): void;
-    /** Leaves the attempt to a newer holder (#829): every token of it is hung up on for `forMs`, never answered 401. */
+    /** Leaves the attempt to a newer holder: every token of it is hung up on for `forMs`, never answered 401. */
     departControl(token: string, forMs: number): void;
     /** Idempotent. Resolves with the bound port, which is what the advertised URL is built from. */
     listen(): Promise<number>;
@@ -494,7 +494,7 @@ const runRegisteredGate = async (
     // A cancelled token runs nothing more.
     const { gate, filter } = target;
     if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
-    // The run's record (issue #983): one execution id, a running row before the gate executes, and
+    // The run's record: one execution id, a running row before the gate executes, and
     // exactly one terminal row on every exit below — `end` is what the `finally` writes.
     const record = claim.ledger
         ? recordGateRun(claim.ledger, {
@@ -568,7 +568,7 @@ const setDeadNote = (claim: GateClaim | undefined, note: string | null): void =>
     if (claim) claim.deadServices = note ?? undefined;
 };
 
-/** An answered gate run carries the claim's dead-service note beside its verdict (issue #487). */
+/** An answered gate run carries the claim's dead-service note beside its verdict. */
 const withDeadNote = (result: { status: number; body: unknown }, claim: GateClaim): unknown =>
     result.status === HTTP_OK && claim.deadServices
         ? { ...(result.body as object), deadServices: claim.deadServices }

@@ -345,7 +345,7 @@ describe('the review-reply-probe helper', () => {
     });
 
     it('never re-posts a reply whose addressed marker the live PR carries past the collection caps', async () => {
-        // A replayed reply (issue #826): the first run's writes landed, its answer was lost. Each
+        // A replayed reply: the first run's writes landed, its answer was lost. Each
         // marker sits past the section the collection keeps (50 general/inline rows, 10 comments
         // per thread) while the item it answers is still inside it.
         const marked = (id: number, key: string) => ({

@@ -67,13 +67,13 @@ interface ListedRunner extends ListedRunnerJob {
 /** An agent runner of an earlier claim: the attempt it ran as, its claim sequence and session. */
 interface EarlierRunner extends EarlierRun {
     status: NonNullable<ListedRunner['status']>;
-    /** The Job is over; otherwise its agent may have exited while its supervisor finalizes (#824). */
+    /** The Job is over; otherwise its agent may have exited while its supervisor finalizes. */
     finished: boolean;
     /** Why its driver ended the run, as recorded on the Job before the kill (`recordRunnerKill`). */
     kills: KillRecord[];
-    /** The incarnation listed, which a taken-over group's teardown deletes (#829). */
+    /** The incarnation listed, which a taken-over group's teardown deletes. */
     uid: string | undefined;
-    /** A released group taken over: when it started, and the incarnation (#829). */
+    /** A released group taken over: when it started, and the incarnation. */
     live?: { startedAt: string; uid: string };
 }
 
@@ -92,7 +92,7 @@ function earlierRunnerOf(job: BoardJob, item: ListedRunner): EarlierRunner | nul
     const prior = { ...job, leaseToken: item.metadata?.labels?.[LEASE_LABEL] ?? '' };
     const annotations = item.metadata?.annotations;
     // Only an agent run of the runner itself (its name is the (job, lease) hash, which no aux Job
-    // shares): never a supervisor-only group, never a Job its driver suspended (issue #821).
+    // shares): never a supervisor-only group, never a Job its driver suspended.
     if (!agentRunJob(item, prior)) return null;
     return {
         prior,
@@ -127,7 +127,7 @@ function groupStateOf(pods: K8sPod[]): 'over' | 'finalizing' | 'unknown' {
 }
 
 /**
- * A listed Job of this job, as far as an adoption reads it (#869): one that names itself and its
+ * A listed Job of this job, as far as an adoption reads it: one that names itself and its
  * lease — every Job the driver creates carries one. A Job named as the runner of that lease also
  * carries the markers an adoption orders and recognizes it by — a claim sequence in digits within the
  * safe integers, a command mark — and a spec that says whether it runs an agent; without them it
@@ -159,8 +159,8 @@ async function listEarlierRunners(deps: K8sDeps, job: BoardJob): Promise<ListedR
 
 /**
  * Whether an earlier runner (newest first) is one a claim may adopt: a finished one, or one whose
- * agent exited while its supervisor finalizes (#824) — a Job listed over whose supervisor still
- * runs is that too — or a group its supervisor RELEASED whose agent still runs, taken over (#829).
+ * agent exited while its supervisor finalizes — a Job listed over whose supervisor still
+ * runs is that too — or a group its supervisor RELEASED whose agent still runs, taken over.
  * A group not released is skipped, as ever: it is redone.
  */
 async function admitted(deps: K8sDeps, found: EarlierRunner): Promise<EarlierRunner | null> {
@@ -169,7 +169,7 @@ async function admitted(deps: K8sDeps, found: EarlierRunner): Promise<EarlierRun
     const pod = runnerPodOf(pods);
     if (containerStatusOf(pod, AGENT_CONTAINER)?.state?.terminated) {
         // The agent ended: a supervisor that still serves the driver's steps is taken over like a
-        // running agent; anything less certain is waited out for its report, never swept (#829).
+        // running agent; anything less certain is waited out for its report, never swept.
         return (await stillServing(deps, pod)) ? liveOf(found) : found;
     }
     if (!(await releasedRunning(deps, pod))) return null;
@@ -241,7 +241,7 @@ async function releasedRunning(deps: K8sDeps, pod: K8sPod | undefined): Promise<
 }
 
 /**
- * Whether an earlier group's supervisor can still pick up a rebind (#928), as `Runner.supervisorServing`
+ * Whether an earlier group's supervisor can still pick up a rebind, as `Runner.supervisorServing`
  * reads it: one request each for the Job, its pods and the supervisor log, none retried, all ended by
  * `bound`. Only a Job confirmed gone, a pod over, a terminated supervisor or `SUPERVISOR_SERVED_LINE` in
  * its log says it stopped; every other read that does not answer is inconclusive, never an end.
@@ -292,9 +292,9 @@ async function groupOver(deps: K8sDeps, prior: BoardJob): Promise<boolean | null
 }
 
 /**
- * Waits out a supervisor finalizing after its agent exited (#824), bounded in time by
+ * Waits out a supervisor finalizing after its agent exited, bounded in time by
  * `finalizeWaitMs`: the wind-down its own drain and report take, and what a released group may wait
- * for a holder (#829). Answers the Job's terminal status once its pod is over too; null
+ * for a holder. Answers the Job's terminal status once its pod is over too; null
  * when the Job is gone (taken away) or confirmed still running at the bound — the sweep's then, as
  * the docker twin leaves it. Each poll is one read, never the verdict reads' retries, so an
  * apiserver that does not answer spends the bound and no more; a bound that ends on reads that
@@ -411,9 +411,9 @@ async function assertClaimStillHeld(deps: K8sDeps, job: BoardJob): Promise<void>
 }
 
 /**
- * The kubernetes `Runner.adopt` (issue #792). The checkout claim is taken first, so no other
+ * The kubernetes `Runner.adopt`. The checkout claim is taken first, so no other
  * contender reads or sweeps the earlier runner alongside; a runner whose supervisor is still
- * finalizing is waited out (#824); its verdict, log and session are read exactly as `run` reads its
+ * finalizing is waited out; its verdict, log and session are read exactly as `run` reads its
  * own; and only then is the earlier attempt's leftover swept — never an unread runner. A runner the
  * platform took away is no run to adopt: the claim goes back, and the sync's re-claim fence takes
  * it as ever. `signal` is the attempt's stand-down: an abandoned adoption deletes nothing.
@@ -424,7 +424,7 @@ export function adoptFinishedRunner(
     reads: CloseReads,
     signal?: AbortSignal
 ): Promise<AdoptedRun | LiveRun | null> {
-    // This attempt continues the run it reads: its sweeps keep it (issue #821).
+    // This attempt continues the run it reads: its sweeps keep it.
     deps.adopted ??= new Map();
     // The supplied stand-down and the attempt's kill end every request and pause of the adoption.
     return adoptEarlierRun(k8sAdoption(deps, reads), deps.adopted, job, anyOf(signal, ledgerOf(deps).signal(job)));
@@ -510,7 +510,7 @@ function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierR
 
 /**
  * The sweep spares the run it read — the evidence the next claim adopts if this one is lost
- * before its verdict lands (issue #821). Its Secrets go now; one that will not is cleanup for
+ * before its verdict lands. Its Secrets go now; one that will not is cleanup for
  * later, never a reason to run again: the Job it is derived from stays listed as its anchor for
  * the reaper's Secret-first pass, and its owner reference takes it with the Job.
  */
@@ -524,7 +524,7 @@ async function sweepAfterAdoption(
         await sweepClaimedFleets(deps, job, signal ?? ledgerOf(deps).signal(job));
     } catch (e) {
         if (signal?.aborted) throw adoptionAbandoned();
-        // Every leftover already deleting: nothing failed, the attempt waits for it (BEL-160).
+        // Every leftover already deleting: nothing failed, the attempt waits for it.
         if (e instanceof LeftoverTerminating) throw e;
         // A leftover the sweep could not confirm gone may still write the tree: the read run is
         // not abandoned for a fresh one, the attempt stands down to its lease.

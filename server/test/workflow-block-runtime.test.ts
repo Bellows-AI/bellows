@@ -7,7 +7,7 @@ import {
 import type { WorkflowNode } from '../src/db/workflows/workflow-schema.js';
 
 /**
- * The runtime dispatcher's pure half (issue #231): the allowlist and the params parser, exercised
+ * The runtime dispatcher's pure half: the allowlist and the params parser, exercised
  * with no database and no compiler in the loop. `workflow-block-compiler.test.ts` covers how a
  * block's expansion attaches this onto a node; `job-store.block-wait.test.ts` covers the
  * transactional park/wake behavior against a real database.

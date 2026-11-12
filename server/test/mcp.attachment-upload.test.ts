@@ -28,7 +28,7 @@ import { HTTP_BAD_REQUEST, HTTP_CREATED, HTTP_PAYLOAD_TOO_LARGE, trackApps } fro
 import { memoryUploadCapabilities } from './helpers-upload-capability.js';
 
 /**
- * The attachment handoff (BEL-248): `create_attachment_upload` through the real auth plugin and bridge mints a
+ * The attachment handoff: `create_attachment_upload` through the real auth plugin and bridge mints a
  * single-use capability, and `PUT /api/attachments/uploads/:capability` (an open route, the capability is the
  * credential) streams into the board's own attachment pipeline. `server/test-db/mcp.attachment-handoff.test.ts` runs
  * the same over real stores.

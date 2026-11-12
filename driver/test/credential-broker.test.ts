@@ -16,7 +16,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
  * The runner's credential broker client (docs/connections.md), shared by the GitHub front end and
- * the library export a connection helper (BEL-61) calls: the per-attempt, per-key memory cache, one
+ * the library export a connection helper calls: the per-attempt, per-key memory cache, one
  * wall-clock deadline over every retry, the typed stops, and the revoking `clear`. Driven in process
  * with a fake clock and a fake board; the process-level channel pins live in github-credential.test.ts.
  */
@@ -263,7 +263,7 @@ describe('one wall-clock deadline', () => {
         expect(r.elapsed()).toBeLessThanOrEqual(broker.DEADLINE_MS);
     });
 
-    it('takes the budget a helper passes, never a fresh one (BEL-61)', async () => {
+    it('takes the budget a helper passes, never a fresh one', async () => {
         const r = rig(() => 'hang');
         const budget = 4000;
         expect(await broker.connectionCredential(CONNECTION, { ...r.deps, deadlineMs: budget })).toMatchObject({
@@ -323,7 +323,7 @@ describe('one wall-clock deadline', () => {
         expect(r.elapsed()).toBe(0);
     });
 
-    // BEL-243: a takeover relays the adopting claim's pair; every try presents the pair as it is now.
+    // a takeover relays the adopting claim's pair; every try presents the pair as it is now.
     it('re-reads the pair on every try: a pending answer under the old lease is followed by the relayed lease', async () => {
         const NEW = '44444444-4444-4444-8444-444444444444';
         const r = rig((call) => {

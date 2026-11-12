@@ -1,5 +1,5 @@
 /**
- * The post-run phases' checkpoints (issue #829): gates, post-run helpers and publish each leave
+ * The post-run phases' checkpoints: gates, post-run helpers and publish each leave
  * their outcome on the board once they return, and an attempt that adopted a finished runner or took
  * a live one over resumes after the last phase that finished. A phase is served from its checkpoint
  * only while the chain before it is intact and the checkpoint validates field by field; every other
@@ -25,7 +25,7 @@ export interface GatesCheckpoint {
     failure: GateFailure | null;
     deadServices: DeadService[];
     gatesSkipped: string | null;
-    /** The skip was for a task with no change (issue #1020): its evidence reads the same when replayed. */
+    /** The skip was for a task with no change: its evidence reads the same when replayed. */
     noChange: boolean;
     recoveredServices: DeadService[];
     /** The gates list the board was last told: a claim resets it, so a resumed phase sends it again. */
@@ -127,7 +127,7 @@ export interface PhaseChain {
     /**
      * The pre-agent setup outcome the run this attempt resumed left on the board: its failure, null
      * when it passed or nothing was declared, and `unknown` when the board's answer is missing or
-     * unreadable — which the caller treats as a failure to retry, never as a pass (issue #917). A
+     * unreadable — which the caller treats as a failure to retry, never as a pass. A
      * fresh attempt resumes nothing and answers null.
      */
     carriedSetup(): SetupFailure | 'unknown' | null;

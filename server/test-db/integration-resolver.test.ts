@@ -25,7 +25,7 @@ import {
     spied,
 } from './integration-store-faults.js';
 
-/** BEL-138: the resolver turns a frozen binding into a short-lived credential, or into a closed outcome. */
+/** the resolver turns a frozen binding into a short-lived credential, or into a closed outcome. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const ALICE = testUser('resolver-alice');

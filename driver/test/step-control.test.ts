@@ -16,7 +16,7 @@ import {
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /**
- * The supervised-step channel (issue #771): the broker the runners submit to, the control routes
+ * The supervised-step channel: the broker the runners submit to, the control routes
  * the supervisor pulls them through, and — against the real supervisor script — the whole round trip.
  */
 process.env.SUPERVISOR_NO_MAIN = '1';
@@ -637,7 +637,7 @@ describe('the step broker observer (issue #831)', () => {
     });
 });
 
-describe('the step broker holdsGate (BEL-258)', () => {
+describe('the step broker holdsGate', () => {
     const gate = (id: string) => step(id, { kind: 'gate' });
 
     it('is true only for a pulled, unsettled gate step', async () => {

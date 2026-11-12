@@ -3,7 +3,7 @@ begin_phase services
 # --- Auxiliary services (.bellows.yaml) -------------------------------------------------------
 #
 # Issue #6, end to end: a checkout declares a service, the driver starts it in the network
-# namespace of the task's group supervisor, whose hosts file names it on loopback (issue #773), and
+# namespace of the task's group supervisor, whose hosts file names it on loopback, and
 # the runner and the gate container reach it by name. The stub runner is the one image here whose
 # entrypoint EXECUTES the prompt (the driver always puts it last in the argv), so the job's output
 # is the hosts entry and an HTTP fetch of `http://stub-svc:8000/probe` — the assertion fails unless
@@ -65,7 +65,7 @@ expect_contains 'the parse reason comes back'    "$(field "$(body "$(api GET "/a
 stop_driver
 
 # Nothing of THIS RUN's jobs may survive the driver, and no job made a network of its own: the
-# services share their group supervisor's namespace (issue #773). Scoped to the ids this script
+# services share their group supervisor's namespace. Scoped to the ids this script
 # created — the daemon may be serving a live deployment whose factory.job containers and
 # factory-job-* networks are none of this suite's business.
 svc_networks=0

@@ -137,12 +137,12 @@ export interface WorkflowNode {
      */
     agent?: boolean;
     /**
-     * Declared pre/post block-helper steps for this node's claim (issue #207/#122). Absent on
+     * Declared pre/post block-helper steps for this node's claim. Absent on
      * every node that declares none, which is every node outside a block's own expansion today.
      */
     helperPlans?: WorkflowNodeHelperPlan[];
     /**
-     * Private, server-authored runtime descriptor (issue #231): present only on a node a block's
+     * Private, server-authored runtime descriptor: present only on a node a block's
      * `expand()` declared as a durable wait boundary, attached by the compiler after validation —
      * never authorable, never present on a plain node. See `WorkflowNodeRuntime`.
      */
@@ -153,7 +153,7 @@ export interface WorkflowNode {
 export type BlockConfigValue = string | number | boolean;
 
 /**
- * A private, server-authored block runtime descriptor (issue #231): what turns a node into a
+ * A private, server-authored block runtime descriptor: what turns a node into a
  * durable wait boundary instead of an ordinary claimable row. Never a `KNOWN_AGENT_NODE_KEY` — the
  * authored grammar has no `runtime` key at all, so a member's JSON (or a pasted `GET /api/workflows`
  * body) carrying one refuses `UNKNOWN_KEY`. Only `workflow-blocks/index.ts`'s compiler attaches it,
@@ -169,7 +169,7 @@ export interface WorkflowNodeRuntime {
 }
 
 /**
- * A reference to a board-owned, allowlisted block (issue #204) — the authored alternative to an
+ * A reference to a board-owned, allowlisted block — the authored alternative to an
  * inline `agent` node. `uses` names a reserved block id (`namespace/block-name`); the registry
  * under `server/src/db/workflows/workflow-blocks/` owns which ids exist, their config shape, availability
  * and expansion — this module stays registry-unaware and validates structural shape only. `with`

@@ -22,7 +22,7 @@ export interface DockerGateDeps {
 }
 
 /**
- * One gate in the attempt's group (issue #773): its gate container runs it, in the network
+ * One gate in the attempt's group: its gate container runs it, in the network
  * namespace of the group's supervisor, so it reaches the declared services by name on loopback the
  * way the agent does.
  */
@@ -35,7 +35,7 @@ export async function runDockerGate(
     return runGateStep(await deps.host(), job, gate, signal);
 }
 
-/** One review in the caller's group (issue #774): its reviewer container runs it, beside the gate container, in the same namespace. */
+/** One review in the caller's group: its reviewer container runs it, beside the gate container, in the same namespace. */
 export async function runDockerReview(deps: DockerGateDeps, run: ReviewRun, signal?: AbortSignal): Promise<StepResult> {
     const result = await runReviewSteps(await deps.host(), run, signal);
     if (!reviewIsLost(result, signal)) return result;

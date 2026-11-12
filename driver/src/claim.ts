@@ -37,13 +37,13 @@ export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 export const GATE_UID = 1000;
 export const GATE_GID = 1000;
 /**
- * The uid the agent's tool commands run as (issue #814): `factory-tool` in both executor images, in
+ * The uid the agent's tool commands run as: `factory-tool` in both executor images, in
  * group GATE_GID beside the CLI's uid, so a tool cannot signal the CLI that started it. The terminal
  * reclaim's release pass runs as it too, to give back what a tool closed to the uid-1000 reclaim.
  */
 export const TOOL_UID = 1001;
 /**
- * The uid the task pod's reviewer container runs as (issue #774), in group GATE_GID: distinct from the
+ * The uid the task pod's reviewer container runs as, in group GATE_GID: distinct from the
  * CLI's, the tool's and the gate's, so no one of them can signal a review mid-run. Its HOME is the
  * one directory of the task volume it may write (`REVIEWER_TREE_DIR`), group-writable so the
  * supervisor's uid reads and removes what a review left; the rest of the tree it mounts read-only.
@@ -70,7 +70,7 @@ export const reviewerAttachmentsDir = (review: Pick<BoardJob, 'id' | 'rootJobId'
 export const reviewerDataName = (review: Pick<BoardJob, 'id' | 'rootJobId'>): string =>
     `${REVIEWER_DATA}/${review.rootJobId ?? review.id}`;
 /**
- * The capabilities the agent container starts with (issue #814), as root, every other one dropped:
+ * The capabilities the agent container starts with, as root, every other one dropped:
  * what the tool broker needs to start each command as TOOL_UID. factory-launch drops both, and root,
  * before the CLI runs; no other container the driver starts gets either.
  */
@@ -78,7 +78,7 @@ export const AGENT_LAUNCH_CAPS = ['SETUID', 'SETGID'] as const;
 const NPM_UPDATE_NOTIFIER = 'NPM_CONFIG_UPDATE_NOTIFIER';
 /**
  * Runner and gate env, both executors: npm's update notice is the last line every npm call prints,
- * and it buries the summary a job's output tail exists to show (#511). A default only — a claim
+ * and it buries the summary a job's output tail exists to show. A default only — a claim
  * that names it wins, so the driver never states the name beside it (docker's `-e` would beat the
  * env file, a pod's `env` would beat `envFrom`, and a runner pod would carry the name twice).
  */
@@ -166,11 +166,11 @@ export const CREDENTIAL_CACHE_DIR = '/run/factory-credentials';
 /** The cache's ceiling, one small JSON file: the kubernetes quantity and the docker tmpfs size. */
 export const CREDENTIAL_CACHE_SIZE = { k8s: '1Mi', docker: '1m' } as const;
 
-/** The env names the loop mints for a launched attempt's run-control channel (issue #442). */
+/** The env names the loop mints for a launched attempt's run-control channel. */
 export const CONTROL_URL_ENV = 'BELLOWS_CONTROL_URL';
 export const CONTROL_TOKEN_ENV = 'BELLOWS_CONTROL_TOKEN';
 /**
- * Set to `1` by the runner plan for a takeover or handover (issue #822): the session it resumes may
+ * Set to `1` by the runner plan for a takeover or handover: the session it resumes may
  * never have been written, and the runner may start it anew. Never for a follow-up.
  */
 export const RESUME_MAY_BE_UNWRITTEN_ENV = 'BELLOWS_RESUME_MAY_BE_UNWRITTEN';
@@ -178,7 +178,7 @@ export const RESUME_MAY_BE_UNWRITTEN_ENV = 'BELLOWS_RESUME_MAY_BE_UNWRITTEN';
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
  * sets, the two BELLOWS_GATE_ names stay the driver's
- * (no runner env carries them since BEL-88, and a member cannot set them), CRED_HELPER is the credential-helper CODE
+ * (no runner env carries them, and a member cannot set them), CRED_HELPER is the credential-helper CODE
  * the sync fetch runs, RESTORE is the sync's restore-mode switch (a member value there would
  * flip starting claims into restore mode, silently skipping the fetch and rebase issue #58
  * reserves for continuations), the two SYNC_LOCK_* names are the startup sync lock's bounds
@@ -201,7 +201,7 @@ export const RESERVED_ENV_NAMES = [
     'WORKDIR',
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
-    // The run-control channel the loop mints per launched attempt (issue #442): the agent's own
+    // The run-control channel the loop mints per launched attempt: the agent's own
     // publish/review pair, the task supervisor's pair and the exporter's token — a member value under
     // those names would reach the agent by the same Secret key the minted credential lives under.
     CONTROL_URL_ENV,
@@ -217,7 +217,7 @@ export const RESERVED_ENV_NAMES = [
     'SYNC_LOCK_WAIT_MS',
     'SYNC_LOCK_STALE_MS',
     'FACTORY_TRANSCRIPT_DIR',
-    // The board-rendered turn context the claude runner's UserPromptSubmit hook reads (issue #509).
+    // The board-rendered turn context the claude runner's UserPromptSubmit hook reads.
     'FACTORY_TURN_CONTEXT',
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',
@@ -230,7 +230,7 @@ export const RESERVED_ENV_NAMES = [
     // board (docs/connections.md), so no claim value may stand in for it.
     'GITHUB_TOKEN',
     'GH_TOKEN',
-    // The agent container starts as root to launch its tool broker (issue #814): the glibc loader
+    // The agent container starts as root to launch its tool broker: the glibc loader
     // reads these for that root shell before any line of it runs. Every `LD_` name too (claimEnv).
     'GCONV_PATH',
     'GLIBC_TUNABLES',
@@ -353,7 +353,7 @@ export function claimEnv(job: BoardJob): Record<string, string> {
 
 /**
  * `claimEnv`, plus the reserved OpenCode `factory` agent merged into `OPENCODE_CONFIG_CONTENT`
- * (issue #244) — the one place this overlay happens, so the real runner Secret/env-file and the
+ * — the one place this overlay happens, so the real runner Secret/env-file and the
  * pod spec's key names (kubernetes) can never drift onto two different merges. Never applied to
  * an aux container (sync, gates, publish, helpers): none of them runs the agent CLI, so none of
  * them needs the reserved agent at all. Claude-code claims pass through untouched — the master
@@ -367,9 +367,9 @@ export function runnerClaimEnv(job: BoardJob): Record<string, string> {
 
 /**
  * Whether the claim CONTINUES a session rather than starting a task: a follow-up, or a takeover or
- * handover of the row's own attempt, which resumes that attempt's session (issue #822). The task is
+ * handover of the row's own attempt, which resumes that attempt's session. The task is
  * mid-flight, and the startup git work is a RESTORE, not a
- * sync — no fetch, no rebase onto the remote default (issue #58): the conversation's tree is
+ * sync — no fetch, no rebase onto the remote default: the conversation's tree is
  * what the run continues from, and moving its base underneath it is the mid-task "sync with
  * main" the follow-up flow must not do. A re-claim whose attempt reported no session, or one that
  * spends an attempt past the interruption budget (the board clears its session), starts — and
@@ -382,13 +382,13 @@ const MIN_RUN_TIMEOUT_MS = 1_000;
 
 /**
  * The run budget less what `environment.setup` already spent of it before the agent started
- * (`job.setupMs`, issue #733): setup counts against the run deadline, not the gate budget.
+ * (`job.setupMs`): setup counts against the run deadline, not the gate budget.
  */
 export const runTimeoutMs = (config: { jobTimeoutMs: number }, job: BoardJob): number =>
     Math.max(MIN_RUN_TIMEOUT_MS, config.jobTimeoutMs - (job.setupMs ?? 0));
 
 /**
- * The pre-agent `environment.setup` timeout (issue #733): the gate budget, but never more than half
+ * The pre-agent `environment.setup` timeout: the gate budget, but never more than half
  * the run budget, so a hung install always leaves the agent a reserve.
  */
 export const setupTimeoutMs = (config: { jobTimeoutMs: number; gateTimeoutMs: number }): number =>
@@ -438,7 +438,7 @@ export function envFileBody(job: BoardJob, config?: DriverConfig): string {
         envLine(job, name, value)
     );
     // No gate lines: the agent asks for a gate through the control socket and holds no gate URL or
-    // token (BEL-88); `job.gateEnv`'s registration key is the driver's own and is never rendered.
+    // token; `job.gateEnv`'s registration key is the driver's own and is never rendered.
     // The attempt pair is the one driver-side credential in the file, and it goes after
     // everything: same precedence rule, and the lines a reader audits for "what can authenticate
     // as this runner" are always the last ones. The reporter presents them as headers, and the

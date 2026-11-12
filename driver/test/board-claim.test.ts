@@ -16,7 +16,7 @@ const malformedOf = (raw: unknown) => {
     return 'malformed' in parsed ? parsed.malformed : null;
 };
 
-describe('parseClaim (BEL-318)', () => {
+describe('parseClaim', () => {
     it('reads a well-formed claim into the job', () => {
         const parsed = parseClaim({ ...WIRE, env: { A: '1' }, repo: 'o/r', agent: false, baseBranch: null });
         expect('claim' in parsed && parsed.claim.id).toBe('job-1');

@@ -4,7 +4,7 @@ import { isRecord, JOB_ID } from './k8s-transport.js';
 import { parseRfc3339 } from '../timestamps.js';
 
 /**
- * The grammar of every field a destructive decision reads off an apiserver object (#869), one
+ * The grammar of every field a destructive decision reads off an apiserver object, one
  * function per field kind or object part, reused by every reader. A reader that gets a field outside
  * its grammar answers inconclusive; absence of evidence never matches. The fields each reader
  * validates, and who reads them, are listed in the table of the round's report, not here.

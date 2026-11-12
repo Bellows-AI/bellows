@@ -31,7 +31,7 @@ const clientView = (clientId: string, client: OAuthClient | null) => ({
 const isField = (value: unknown): value is string => typeof value === 'string' && value.length <= FIELD_LIMIT;
 
 /**
- * The consent transaction API behind the consent screen (BEL-103 renders it; docs/auth.md). Every route here is the
+ * The consent transaction API behind the consent screen (docs/auth.md). Every route here is the
  * signed-in COOKIE session and nothing else: a bearer token, an MCP token included, never approves its own grant.
  * Approving also needs the transaction's CSRF value, which only the redirect from the authorize endpoint carried, and
  * the JSON-only body keeps a cross-site form out (a form post is 415, as on every other state-changing route).

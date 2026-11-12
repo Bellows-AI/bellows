@@ -6,7 +6,7 @@ import type { RenameTaskResult } from '../src/db/jobs/job-store-title.js';
 import { trackApps } from './helpers-http.js';
 import { jobStoreSlice, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
-/** `PUT /api/jobs/:id/title` — the user's rename (BEL-252): validated here, decided by the store. */
+/** `PUT /api/jobs/:id/title` — the user's rename: validated here, decided by the store. */
 const track = trackApps();
 const ID = '11111111-1111-4111-8111-111111111111';
 

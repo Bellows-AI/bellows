@@ -5,7 +5,7 @@
  * The deterministic review REPLY: execute a bounded mutation plan against a pull request and
  * report one per-target result per target, so orchestration can retry the refusals without
  * duplicating the work that already landed. One execFileSync per gh call, direct argv only; the
- * credential rides gh's own env and never appears in argv, in an error, or on stdout (issue #201).
+ * credential rides gh's own env and never appears in argv, in an error, or on stdout.
  *
  * Environment:
  *   REPO        owner/name of the repository;

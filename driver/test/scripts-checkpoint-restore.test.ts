@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SCRIPT_IDENTITY, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The checkpoint restore script (issue #775): a checkpoint taken by scripts/checkpoint.cjs from a worked
+ * The checkpoint restore script: a checkpoint taken by scripts/checkpoint.cjs from a worked
  * task tree, served chunk by chunk over a control endpoint, is rebuilt into a fresh directory by the
  * script FILE as the container runs it. Real git on a real partial clone.
  */

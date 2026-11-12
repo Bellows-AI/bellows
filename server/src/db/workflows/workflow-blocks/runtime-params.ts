@@ -1,5 +1,5 @@
 /**
- * The allowlist and params parser of the workflow-block runtime (issue #231): the pure half of
+ * The allowlist and params parser of the workflow-block runtime: the pure half of
  * `runtime.ts`, split out so the block compiler (`workflow-blocks/index.ts`) and the catalog
  * routes validate a runtime descriptor without loading the transactional park/wake code, which
  * reaches the job store's SQL.

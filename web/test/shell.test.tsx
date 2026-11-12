@@ -81,7 +81,7 @@ describe('AppShell', () => {
         // the review pill needs the tasks poll, which does not run on the dashboard.
         const html = renderShell('/');
         const nav = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'));
-        // The static render has no session, so Batches (behind the BEL-264 flag) is off: three glyphs.
+        // The static render has no session, so Batches (behind its flag) is off: three glyphs.
         const NAV_ITEM_COUNT = 3;
         expect(nav.match(/class="icon"/g) ?? []).toHaveLength(NAV_ITEM_COUNT);
         expect(html).not.toContain('sidenav-count');

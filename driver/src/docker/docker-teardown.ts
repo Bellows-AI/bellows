@@ -87,7 +87,7 @@ export async function readDockerKills(execDocker: ExecDocker, job: BoardJob): Pr
 
 /**
  * A volume's labels as `inspect` answers them; null for a volume that carries none. Anything else
- * is `Inconclusive` — a record that cannot be read is no proof there is none (#824).
+ * is `Inconclusive` — a record that cannot be read is no proof there is none.
  */
 function labelsOf(read: string): Record<string, string> | null {
     let labels: unknown;
@@ -131,7 +131,7 @@ export async function dockerKillFor(deps: TeardownDeps, job: BoardJob, kill: Kil
 export async function dockerServiceTeardown(deps: TeardownDeps, job: BoardJob): Promise<void> {
     if (!deps.config.servicesEnabled) return;
     forgetDeclaredServices(job);
-    // A listing that is refused or is no list of ids removes nothing (#869): no read is a target.
+    // A listing that is refused or is no list of ids removes nothing: no read is a target.
     const found = await readDocker(
         deps.execDocker,
         [
@@ -224,7 +224,7 @@ export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promis
         await deps
             .execDocker(['kill', id])
             // Tried again, never removed: an agent that exited meanwhile is the run the next claim
-            // adopts, and only end() removes it (#828).
+            // adopts, and only end() removes it.
             .catch(() => deps.execDocker(['kill', id]))
             .catch(() => undefined);
     }

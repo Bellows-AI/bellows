@@ -11,7 +11,7 @@ export interface WorkspaceExecutor {
     suspended: boolean;
     type: string;
     createdAt: string;
-    /** The default workflow's gate-repair round limit tasks on this executor launch with (#49). */
+    /** The default workflow's gate-repair round limit tasks on this executor launch with. */
     gateFixRounds: number;
     /** Deliberately absent from the payload: it may hold credentials, and this is polled. */
 }

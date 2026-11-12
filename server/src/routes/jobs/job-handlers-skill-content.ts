@@ -10,7 +10,7 @@ import { resolveJobRoute } from '../route-guards.js';
 import { CONTROL_BODY_LIMIT, HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAVAILABLE, leaseLost, notFoundJob } from './job-limits.js';
 
 /**
- * The runner's read of a pinned org or workspace skill bundle (BEL-273): a POST authorized by the job's live lease
+ * The runner's read of a pinned org or workspace skill bundle: a POST authorized by the job's live lease
  * (`leaseToken` in the body, like the attachment content route), answered only for a version in the pin that row holds
  * now. Nothing is cached from the claim: the lease and the pin are read on every call. Not being in the pin is a 404;
  * a pinned version the store cannot produce is never a 404, so it cannot read as "not pinned": `410` when the version

@@ -20,7 +20,7 @@ import {
     USER,
 } from '../fixtures/loop-stubs.js';
 
-/** A queue row's acquisition token, never its id (issue #821). */
+/** A queue row's acquisition token, never its id. */
 const ROW_TOKEN = '77777777-7777-4777-8777-777777777777';
 
 describe('the poll loop', () => {
@@ -183,7 +183,7 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.failureKind).toBe('timeout');
     });
 
-    // The active/idle distinction (issue #339): a run whose tail was still moving when the wall
+    // The active/idle distinction: a run whose tail was still moving when the wall
     // clock ran out was WORKING — the note must say so, with the last activity line, not leave
     // the reader to raw-SQL three sources to find out.
     it('says a timed-out run was still active when its output was still arriving', async () => {
@@ -467,7 +467,7 @@ describe('the poll loop', () => {
     });
 
     // A pre-run refusal is the driver's own environment failing, never the agent's work: nothing
-    // syncs, no runner is reached, and the verdict names its kind (issue #339). A refused executor
+    // syncs, no runner is reached, and the verdict names its kind. A refused executor
     // selection is deterministic — config, so the board rests the thread and a batch asks a person
     // rather than retrying it as a transient runner error.
     const suspendedReason = 'The personal executor "main" is suspended. Resume it or choose another executor.';
@@ -515,7 +515,7 @@ describe('the poll loop', () => {
             'runner_error',
         ],
         // The same no-fallback rule the null workspacePath refusal applies, extended to the task
-        // worktree (issue #35): a repo-shaped label this driver cannot resolve a worktree path for
+        // worktree: a repo-shaped label this driver cannot resolve a worktree path for
         // is failed with a reason, never run in a fallback location.
         [
             'fails a repo job whose worktree path cannot be resolved, before anything runs',
@@ -576,13 +576,13 @@ describe('the poll loop', () => {
 
         expect(runner.synced).toHaveLength(1);
         // The run never started on an unknown tree — and an unnamed sync refusal is the driver's
-        // environment, not the agent's work (issue #339).
+        // environment, not the agent's work.
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
         expect(board.board.completed[0]?.output).toContain('could not be synced with the remote');
         expect(board.board.completed[0]?.output).toContain('conflict in driver/src/loop/loop.ts');
     });
 
-    // A poll that exhausted its patience is infrastructure, not a verdict (issue #308): the
+    // A poll that exhausted its patience is infrastructure, not a verdict: the
     // exhaustion arrives as a THROW from syncCheckout, and the loop's catch leaves the job to its
     // lease — the same arm a stand-down takes — never a terminal `failed` with attempts left.
     it('leaves the job to its lease when the checkout sync poll exhausts — never reports failed', async () => {
@@ -610,7 +610,7 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('package cache');
     });
 
-    // The terminal reclaim (issue #47, revised): after the thread is DONE — every member terminal
+    // The terminal reclaim (revised): after the thread is DONE — every member terminal
     // AND the user's done on one of them, the board says so in the same breath as the verdict —
     // the per-thread task worktree is removed. A thread that merely finished keeps its tree: the
     // tree is the user's to free, and a failed task's tree is what its next turn continues from.
@@ -622,7 +622,7 @@ describe('the poll loop', () => {
 
         expect(board.board.completed[0]?.status).toBe('succeeded');
         expect(runner.reclaimed).toEqual([job(1)]);
-        // The board stamps the reclaimed marker on this ack, never on the verdict (issue #821).
+        // The board stamps the reclaimed marker on this ack, never on the verdict.
         expect(board.board.reclaimAcks).toEqual(['reclaim-1']);
     });
 
@@ -917,7 +917,7 @@ describe('the poll loop', () => {
     it.each([
         // The whole reason the heartbeat exists: two containers must not go on writing to one checkout.
         ['kills the container and reports nothing once the lease is lost', { lease: 'lost' }, []],
-        // A Stop (issue #41) is a park, not an end: the board stamps the running row with the flag,
+        // A Stop is a park, not an end: the board stamps the running row with the flag,
         // the heartbeat carries it back, and the container is killed so the run stops editing the
         // checkout — but the job goes back on the board, session intact, for a human to resume from
         // the Claude UI. Exactly the landing an idle run gets, and reporting nothing lets it stay
@@ -1045,10 +1045,10 @@ describe('the poll loop', () => {
     // The park is the follow-up's launching pad, and a stopped opencode run's session id is
     // learned only at close (the scrape) — so it must be reported BEFORE the park lands, while
     // the row still runs under this lease. After it, the row is terminal, the report is refused,
-    // and the stopped task settles sessionless: nothing to follow up (issue #152).
+    // and the stopped task settles sessionless: nothing to follow up.
     // The board's output for a parked run is the last tail it was streamed. A line the agent printed
     // between the runner's last poll and its end (the stop's own acknowledgement) is in the outcome
-    // only, so the stand-down streams it before it parks (issue #773).
+    // only, so the stand-down streams it before it parks.
     it('streams the output a stopped run ended with before parking it', async () => {
         const options: { cancelRequested?: boolean } = {};
         const board = stubBoard([job(1)], options);
@@ -1128,7 +1128,7 @@ describe('the poll loop', () => {
     it.each([
         // An opencode run ALWAYS leaves a session, so an empty scrape on a stopped run is the
         // readout having failed — said out loud on the stopped path too, because the cost is a
-        // task that can never take a follow-up (issue #152).
+        // task that can never take a follow-up.
         {
             label: 'says so when a stopped opencode run has no session to report',
             claimed: { ...job(1), executorType: 'opencode' as const },
@@ -1138,7 +1138,7 @@ describe('the poll loop', () => {
         },
         // A stopped claude-code run has no scrape and no empty-scrape notice: the session was minted
         // and reported at spawn, and again as the launch evidence of the run that started — the two
-        // reports counted — and the helper must not fire the opencode-only complaint (issue #152).
+        // reports counted — and the helper must not fire the opencode-only complaint.
         {
             label: 'reports nothing extra when a stopped claude-code run has no scraped session',
             claimed: job(1),
@@ -1219,7 +1219,7 @@ describe('the poll loop', () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         await started;
 
-        // The sync was handed the stand-down's signal and it fired (issue #488): aborted, not only raced.
+        // The sync was handed the stand-down's signal and it fired: aborted, not only raced.
         expect(seen?.aborted).toBe(true);
         expect(runner.killed).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
@@ -1252,7 +1252,7 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        // The start was handed the stand-down's signal and it fired (issue #488).
+        // The start was handed the stand-down's signal and it fired.
         expect(seen?.aborted).toBe(true);
         expect(fenced).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
@@ -1286,7 +1286,7 @@ describe('the poll loop', () => {
         // The abandoned beginGates settles on its own timer and releases the environment then.
         await new Promise((resolve) => setTimeout(resolve, 40));
 
-        // The environment start was handed the stand-down's signal and it fired (issue #488).
+        // The environment start was handed the stand-down's signal and it fired.
         expect(seen?.aborted).toBe(true);
         expect(stack.released).toHaveLength(1);
         expect(stack.acquired).toHaveLength(1);
@@ -1375,7 +1375,7 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
-    // The other half of Remove (issue #41): the thread's rows are gone and the queue hands this
+    // The other half of Remove: the thread's rows are gone and the queue hands this
     // driver the tree to take down. The worktree is reclaimed through the same runner call a
     // terminal thread's report() uses, fed a job synthesised from the row's identity, and acked
     // once the tree is down so the row stops being offered.
@@ -1492,14 +1492,14 @@ describe('the poll loop', () => {
     });
 
     /*
-     * The orphaned checkout claim (issue #344): a claim ConfigMap whose holder job the board no
+     * The orphaned checkout claim: a claim ConfigMap whose holder job the board no
      * longer knows stood every reclaim of the removed thread down forever — nothing else can see
      * a bare ConfigMap, so the reclaim loop is the only cleaner. The proof is the board's own
      * lease lookup, never a clock; the reap is uid-preconditioned in the runner; and the failure
      * lines throttle to state changes so a stuck row does not log an identical line every poll.
      */
     /*
-     * Reclaim ownership (issue #821): every acquisition of a reclaim row holds it under a token of
+     * Reclaim ownership: every acquisition of a reclaim row holds it under a token of
      * its own, and a removal can run far longer than the lease its claim granted — so the loop
      * renews the row under that token, once before the removal starts (the gate: a row this
      * acquisition no longer owns is never touched) and at the heartbeat's pace while it runs.
@@ -2020,7 +2020,7 @@ describe('the poll loop', () => {
     });
 
     // The board retires a job whose attempts ran out with no output, so the attempt that burns the
-    // last one reports the daemon's reason as the verdict (issue #664).
+    // last one reports the daemon's reason as the verdict.
     it('reports the reason a runner never started on the last attempt', async () => {
         // The last attempt is one whose interruption budget is spent, so the board answers that.
         const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }], { interruptVerdict: 'exhausted' });
@@ -2083,8 +2083,8 @@ describe('the poll loop', () => {
     });
 
     // A runner the platform took away — its pod deleted, evicted or its node removed — never gave
-    // the agent's verdict (issue #560): no verdict is reported, and the attempt goes back to the
-    // board as an interruption, refunded and claimable at once (issue #792).
+    // the agent's verdict: no verdict is reported, and the attempt goes back to the
+    // board as an interruption, refunded and claimable at once.
     it('hands back as an interruption a job whose runner reports an infrastructure loss', async () => {
         const claimed = { ...gatedJob(1), attempts: 3 };
         const board = stubBoard([claimed]);
@@ -2426,7 +2426,7 @@ describe('the poll loop', () => {
     });
 
     // A failed adoption is no verdict — a read that threw (issue 796): the attempt is left to its
-    // lease, since an unconfirmed read never licenses a fresh run's sweep (#828).
+    // lease, since an unconfirmed read never licenses a fresh run's sweep.
     it('leaves the job to its lease, running nothing, when the adoption throws', async () => {
         const board = stubBoard([job(1)]);
         let launched = 0;
@@ -2492,7 +2492,7 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('infrastructure loss');
     });
 
-    // A container that never started is the daemon's refusal, said by a live driver (issue #822):
+    // A container that never started is the daemon's refusal, said by a live driver:
     // handed back with its reason, like a run that could not start.
     it('hands a runner that never started back as an interruption', async () => {
         const board = stubBoard([job(1)]);
@@ -2565,7 +2565,7 @@ describe('the poll loop', () => {
             expect(transientRun.board.interrupted).toHaveLength(1);
         });
 
-        // The runner only throws or returns the fact (both executors' `run()` finish nothing, #828):
+        // The runner only throws or returns the fact (both executors' `run()` finish nothing):
         // the loop's `end()` is what gives the refused group back, on every refusal it decides.
         it.each([
             ['a run that throws a transient refusal', () => Promise.reject(transient())],
@@ -2767,7 +2767,7 @@ describe('the poll loop', () => {
     });
 
     /**
-     * The attempt's service fleet rides the same flush (issue #60): the dashboard can answer
+     * The attempt's service fleet rides the same flush: the dashboard can answer
      * "did db come up" while the run is going. A services-only sample — vitals unreadable, a
      * kubernetes cluster with no metrics-server for one — carries null numbers rather than
      * skipping the flush; the fleet must not depend on the metrics API.
@@ -2802,7 +2802,7 @@ describe('the poll loop', () => {
     });
 
     /**
-     * A service that dies mid-run (issue #487): the first sample that sees it dead reads its
+     * A service that dies mid-run: the first sample that sees it dead reads its
      * ending once, the board's fleet carries it — exit, reason, log tail, the capability-drop
      * hint — and the gate endpoint's token is handed the note the agent reads.
      */

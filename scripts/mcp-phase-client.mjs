@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The MCP client of `scripts/test-jobs.sh --phase mcp` (BEL-108): a real SDK client that signs a member in through the
+// The MCP client of `scripts/test-jobs.sh --phase mcp`: a real SDK client that signs a member in through the
 // stub identity provider over plain HTTP (a cookie jar, no browser), is sent through the board's real authorization
 // server (discovery, registration, PKCE, consent approved with the member's session), then drives a task to its end
 // through the MCP tools while a real driver runs the stub runner. It adds no route to the board: the member is signed

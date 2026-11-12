@@ -1,5 +1,5 @@
 /**
- * The verdict's two board calls (issue #821): the staged conclusion and the complete, which send
+ * The verdict's two board calls: the staged conclusion and the complete, which send
  * one body — the board fingerprints both alike, so a staged envelope and the verdict it stands for
  * are the same request. Split out of `board.ts` for its line budget; `createBoard` is the only importer.
  */
@@ -45,7 +45,7 @@ function completeBody({
         ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
         ...(typeof setupMs === 'number' ? { setupMs } : {}),
         ...(summary ? { summary } : {}),
-        // The structured failure reason, when there is one (issue #339); absent stays null.
+        // The structured failure reason, when there is one; absent stays null.
         ...(failureKind ? { failureKind } : {}),
         ...(failureCause ? { failureCause } : {}),
         // Measured only after a failed gate; unknown stays off the wire.
@@ -83,7 +83,7 @@ export function verdictCalls(post: Post, leaseSeconds: number): Pick<Board, 'sta
             const response = await post(`/api/jobs/${job.id}/complete`, completeWireBody(job, result));
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
             // thread — no reclaim was ordered, not an unknown one. The attempt's own staged
-            // conclusion refusing a different verdict (issue #821) is the same answer, flagged.
+            // conclusion refusing a different verdict is the same answer, flagged.
             if (response.status === HTTP_CONFLICT) {
                 return (await conflictCodeOf(response)) === CONCLUSION_CONFLICT_CODE
                     ? { state: 'lost', reclaimId: null, conflict: true }

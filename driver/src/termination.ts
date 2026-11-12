@@ -113,7 +113,7 @@ export interface EndEvidence {
 export interface SettledEnd {
     timedOut: boolean;
     infraLoss: string | null;
-    /** The loss is the runner taken away (`vanished`) — structured evidence of a node loss, BEL-302 — and no other kind. */
+    /** The loss is the runner taken away (`vanished`) — structured evidence of a node loss — and no other kind. */
     infraNodeLoss?: true;
     fields: Partial<Pick<RunOutcome, 'timedOut' | 'cacheLost' | 'artifactSpoolFull'>>;
 }

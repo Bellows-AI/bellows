@@ -420,7 +420,7 @@ describe('end takes the board\'s "lost" as final', () => {
     });
 });
 
-describe('the interruption body names a node loss only when the decision does (BEL-302)', () => {
+describe('the interruption body names a node loss only when the decision does', () => {
     const bodyOf = async (decision: EndDecision): Promise<Record<string, unknown>> => {
         const { ctx } = attempt();
         const bodies: Record<string, unknown>[] = [];

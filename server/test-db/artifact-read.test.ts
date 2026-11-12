@@ -9,7 +9,7 @@ import { testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
- * The analysis reads (#768) over the real index and each object store, and the rule that keeps a
+ * The analysis reads over the real index and each object store, and the rule that keeps a
  * transcript out of token metrics: the exports are artifacts, never `metric_point` rows, and where
  * a session has both, `session_source` keeps OTEL.
  */

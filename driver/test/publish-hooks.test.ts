@@ -16,7 +16,7 @@ import {
 import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The publish over a real repository whose hooks would rewrite content (issue #825): a publish
+ * The publish over a real repository whose hooks would rewrite content: a publish
  * bound to evidence ships exactly the content the evidence assessed. The checkout is written by the
  * agent's tool uid, so its hooks are not the driver's to run: the driver's git (`git-harden.cjs`,
  * the `git` of every supervised step, which the runner below goes through) runs none of them, so no

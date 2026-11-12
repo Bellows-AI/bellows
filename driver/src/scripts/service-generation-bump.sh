@@ -1,4 +1,4 @@
-# The supervisor's half of a declared service's kubernetes restart (issue #773): `acked` names, one
+# The supervisor's half of a declared service's kubernetes restart: `acked` names, one
 # per line, every service whose probe has not acknowledged its current generation ($ACKS/<name>/ack
 # against $GENERATIONS/<name>, absent read as 0) and exits 3 when any has not; `bump` refuses the
 # same way, and otherwise moves every named service's generation on by one, each written beside its

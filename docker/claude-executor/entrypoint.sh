@@ -11,7 +11,7 @@ GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"
 # this container would shadow it in gh and git, and outlive its hour.
 unset GITHUB_TOKEN GH_TOKEN
 
-# The task supervisor releases the agent (issue #771). The group exists from the attempt's first
+# The task supervisor releases the agent. The group exists from the attempt's first
 # step, the sync, and the tree this container works in does not exist until then, so the agent waits
 # for the supervisor's `go` marker in its read-only mailbox. A Stop or a kill order that lands first
 # means the agent is never released: it leaves quietly. An image run by hand has no mailbox and waits
@@ -28,7 +28,7 @@ fi
 WORKDIR="${WORKDIR:-/workspace}"
 export WORKDIR
 
-# The transcript store (issue #55): when the driver hands us a transcript directory, the CLI's
+# The transcript store: when the driver hands us a transcript directory, the CLI's
 # config dir moves to it — on the task volume, so transcripts survive this container and a
 # follow-up's --resume finds the thread's earlier sessions in the same directory. The seed below
 # and the patches read CLAUDE_CONFIG_DIR dynamically, so the baked hooks and settings ride along
@@ -46,11 +46,11 @@ if [ ! -f "$CLAUDE_CONFIG_DIR/settings.json" ] && [ -d /opt/claude-home ]; then
     cp -a /opt/claude-home/. "$CLAUDE_CONFIG_DIR/"
 fi
 # The CLI's config dir — its transcripts, settings and credentials, the exporter's state beside them
-# — is the CLI's uid's alone: the agent's tools run as their own uid in its group (issue #814). After
+# — is the CLI's uid's alone: the agent's tools run as their own uid in its group. After
 # the seed, whose `cp -a` of the directory itself lays the baked mode back over it.
 chmod 0700 "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
 
-# The baked skills are the CLI's managed skills, at one path the tool uid can read (issue #1024). A
+# The baked skills are the CLI's managed skills, at one path the tool uid can read. A
 # thread seeded before that holds its own copy of each under its config dir — and a copy there is
 # the one the CLI loads, citing a path in this private dir. Only the baked names go: a skill the
 # agent made itself stays.
@@ -61,7 +61,7 @@ for skill in /usr/local/share/factory-skills/*/; do
 done
 rmdir "$CLAUDE_CONFIG_DIR/skills" 2>/dev/null || true
 
-# The listing the CLI offers the model (BEL-286): the managed skills path is a symlink to this
+# The listing the CLI offers the model: the managed skills path is a symlink to this
 # per-run view, rebuilt on every start with a link to each baked skill the task does not hide. A deny
 # rule only refuses the call; a skill missing from this directory is not listed at all. The driver
 # always sets FACTORY_HIDDEN_SKILLS (empty = nothing hidden); unset is an image run by hand and links
@@ -152,8 +152,8 @@ if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUN
         2>/dev/null || echo "claude-executor: could not configure the git credential helper" >&2
 fi
 
-# The tool uid shares node's group and the tree's umask, and reads this file through its own
-# (issue #814): readable, never writable, by the commands the agent runs.
+# The tool uid shares node's group and the tree's umask, and reads this file through its own:
+# readable, never writable, by the commands the agent runs.
 if [ -f "$HOME/.gitconfig" ]; then chmod 0644 "$HOME/.gitconfig" 2>/dev/null || true; fi
 
 # Workspace trust. An untrusted workspace makes the CLI ignore the checkout's .claude/settings.json
@@ -212,7 +212,7 @@ if [ -n "${CLAUDE_CODE_CONFIG_CONTENT:-}" ]; then
     fi
 fi
 
-# The baked Stop hook (issue #226) is a prompt hook, and one without a usable model fails OPEN —
+# The baked Stop hook is a prompt hook, and one without a usable model fails OPEN —
 # the stop is allowed, silently. So the placeholder it ships with becomes the run's model, after
 # the merge above has settled which one that is: $ANTHROPIC_MODEL, else the merged settings' own
 # top-level `model`. With neither, the key is deleted and the CLI uses its default.
@@ -288,10 +288,10 @@ stop_helper() {
     wait "$_guard" 2>/dev/null || true
 }
 
-# The run-control proxy (issue #814): the agent's tools run as their own uid and hold no run-control
+# The run-control proxy: the agent's tools run as their own uid and hold no run-control
 # token. The proxy serves the two routes the baked skills call on a socket a tool can reach and
 # forwards them to the supervisor's relay socket in FACTORY_CTL_OUT, where the supervisor attaches
-# the agent's token (#829); no token is ever in this shell's environment. A sibling like the
+# the agent's token; no token is ever in this shell's environment. A sibling like the
 # reporter, stdio discarded.
 if [ -n "${FACTORY_CTL_OUT:-}" ] && [ -S "$FACTORY_CTL_OUT/control.sock" ]; then
     node /usr/local/bin/control-proxy.cjs >/dev/null 2>&1 &
@@ -300,7 +300,7 @@ fi
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
-# The cooperative Stop (issue #442): the mailbox agent reads what the task supervisor wrote into
+# The cooperative Stop: the mailbox agent reads what the task supervisor wrote into
 # the read-only FACTORY_CTL_IN directory and writes the stop marker the baked PostToolUse hook
 # (stop-hook.cjs) checks after each tool call; it also beats the heartbeat the supervisor reads and
 # forwards a kill order to this shell as TERM. Exported so the agent and the hook agree on one
@@ -324,7 +324,7 @@ PROGRESS_PID=$!
 # the wait loop and the `kill -0` probe below are unchanged, and the FIFO redirect stays on the
 # subshell, which is the same file descriptor the CLI inherits.
 #
-# What is exec'd is the bridge (issue #226), not the CLI: it launches `claude` in stream-json mode,
+# What is exec'd is the bridge, not the CLI: it launches `claude` in stream-json mode,
 # answers AskUserQuestion through the driver's control endpoint inside the same run, forwards
 # TERM/INT to the CLI and exits with the CLI's status. Its stdout is the CLI's, unchanged, so the
 # FIFO contract holds and $! is still the process the runtime's signal has to reach.

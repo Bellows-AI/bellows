@@ -18,7 +18,7 @@ import {
 import { storeOutage } from './helpers-outage.js';
 
 /**
- * Offline: how the job routes carry a task's `connections` (BEL-59) — the create and follow-up
+ * Offline: how the job routes carry a task's `connections` — the create and follow-up
  * fields, the idempotency fingerprint, and the owner route that satisfies a requirement. Who may
  * bind what is the store's (server/test-db/job-store.connection-bindings.test.ts).
  */

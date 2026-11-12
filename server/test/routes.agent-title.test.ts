@@ -13,7 +13,7 @@ import {
 } from './helpers-http.js';
 
 /**
- * Offline: the agent title route's HTTP contract (BEL-252; docs/connections.md) against stub checks and a stub
+ * Offline: the agent title route's HTTP contract (docs/connections.md) against stub checks and a stub
  * store. The SQL and its locks are pinned by server/test-db/agent-title.test.ts.
  */
 const JOB_ID = '11111111-1111-4111-8111-111111111111';

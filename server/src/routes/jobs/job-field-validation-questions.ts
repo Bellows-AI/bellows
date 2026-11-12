@@ -13,7 +13,7 @@ import {
 } from './job-limits.js';
 
 /**
- * The question report's and the answer's field validation (050, issue #531), split out of
+ * The question report's and the answer's field validation (050), split out of
  * `job-field-validation.ts` for that file's line budget. Unknown keys are dropped, never stored:
  * every value that survives is rebuilt from the fields named here.
  */

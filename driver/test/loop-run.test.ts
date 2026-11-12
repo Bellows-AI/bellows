@@ -445,7 +445,7 @@ describe('a normal run reaches observed before its verdict (issue #845, plan F6)
     });
 });
 
-describe('the end-of-run publish retries a rejected or missing token (BEL-253)', () => {
+describe('the end-of-run publish retries a rejected or missing token', () => {
     const landed: PublishResult = {
         ok: true,
         published: true,

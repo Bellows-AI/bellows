@@ -5,7 +5,7 @@ import type { TaskNavigation, UseTasks } from '../src/api/useTasks.js';
 import { TaskInboxPage } from '../src/pages/TaskInboxPage.js';
 
 /**
- * The task inbox at /tasks (#158): rows, page states, URL filters. The page
+ * The task inbox at /tasks: rows, page states, URL filters. The page
  * reads the published context through `useTasksPage`, so the harness mounts it
  * under an Outlet context carrying the poll fake and a workspace fake — the
  * same two-level shape the shell and the layout publish in the real tree.
@@ -88,7 +88,7 @@ const linkHref = (html: string, attribute: string): string | undefined =>
         ?.find((tag) => tag.includes(attribute))
         ?.match(/href="([^"]*)"/)?.[1];
 
-describe('TaskInboxPage rows — the display title (BEL-252)', () => {
+describe('TaskInboxPage rows — the display title', () => {
     const stored = { title: 'Fix the login crash', titleOrigin: 'agent' as const, titleRevision: 1 };
 
     it('renders the stored title, not the command, with the full text as title=', () => {

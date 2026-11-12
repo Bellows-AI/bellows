@@ -7,7 +7,7 @@ import { commandMark } from './runner.js';
 import { stepLost } from './step-control.js';
 
 /**
- * Block-helper receipts (issue #826). A receipted helper's run is an external effect, and a claim
+ * Block-helper receipts. A receipted helper's run is an external effect, and a claim
  * can be lost anywhere around it: before the write, after it but before anyone heard, or after.
  * Its replacement — a new lease, a new pod, maybe a new driver — needs a name for the effect that
  * is the same on every claim of the job (`helperEffectId`; a step id carries its attempt's lease,

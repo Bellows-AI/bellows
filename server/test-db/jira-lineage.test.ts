@@ -9,7 +9,7 @@ import { bindConnections, newRoot } from './integration-store-faults.js';
 import { begin, connectionsOf, grantsOf, jiraRuntime, newTag, refreshCalls, resolveAs, script } from './jira-rig.js';
 
 /**
- * BEL-61 slice 2: the refresh lineage with the real Jira hooks. Two runtimes over one database are two board
+ * The refresh lineage with the real Jira hooks. Two runtimes over one database are two board
  * replicas; the scripted Atlassian counts every refresh it is asked for.
  */
 const enabled = Boolean(process.env.DATABASE_URL);

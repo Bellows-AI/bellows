@@ -75,7 +75,7 @@ const GATE: Mailbox = {
     reviewer: null,
 };
 
-/** `review`: supervisor to reviewer container (issue #774) — the review requests and their answers (`REVIEW_FILES`). Nothing else mounts it. */
+/** `review`: supervisor to reviewer container — the review requests and their answers (`REVIEW_FILES`). Nothing else mounts it. */
 const REVIEW: Mailbox = {
     name: 'ctl-review',
     path: `${CTL_ROOT}/review`,
@@ -123,7 +123,7 @@ export const GATE_CANCEL_GRACE_MS = 10_000;
 export const GATE_LOST_MS = 30_000;
 
 /**
- * The kubernetes restart of the declared services (issue #773): a generation file per service under
+ * The kubernetes restart of the declared services: a generation file per service under
  * `path`, the supervisor's to write (`scripts/service-generation-bump.sh`, run as a `restart` step)
  * and every service sidecar's to read, and one acknowledgement directory per service, which its
  * sidecar mounts at `ackPath` and the supervisor reads under `ackRoot/<name>`. The sidecar's liveness
@@ -164,7 +164,7 @@ export const MAILBOX_FILES = {
 /**
  * The agent's own directory inside `in` and `out`, which the supervisor creates owner-only (`AGENT_DIR`
  * of supervisor.cjs). The agent container mounts both mailboxes whole, and its tools run as their own
- * uid (issue #814): they can neither read what the agent is told nor forge what it says.
+ * uid: they can neither read what the agent is told nor forge what it says.
  */
 export const AGENT_MAILBOX_DIR = 'agent';
 /** The agent's side of `in` (`FACTORY_CTL_IN`) and of `out` (`FACTORY_CTL_OUT`). */
@@ -195,7 +195,7 @@ export const SUPERVISOR_DRAIN_MS = 300_000;
  */
 export const SUPERVISOR_REPORT_MS = 60_000;
 /**
- * How long the supervisor's finalize stage may take to run the checkpoint and upload it (issue #775),
+ * How long the supervisor's finalize stage may take to run the checkpoint and upload it,
  * as one absolute wall-clock bound over the script, every chunk, every retry and the manifest;
  * `DEFAULT_CHECKPOINT_MS` of supervisor.cjs.
  */
@@ -290,7 +290,7 @@ export const SUPERVISOR_RELEASED_LINE = 'supervisor: released the agent';
 /** Logged once when the group stops serving the driver's steps; `SERVED_LINE` of supervisor.cjs. */
 export const SUPERVISOR_SERVED_LINE = 'supervisor: stopped serving the steps';
 
-/** The final report as the supervisor logged it: what a claim adopting its group reads back (issue #824). */
+/** The final report as the supervisor logged it: what a claim adopting its group reads back. */
 export type FinalReport = Pick<SupervisorReport, 'outcome' | 'cause' | 'agentExit' | 'agentEnd' | 'drained'>;
 
 /** The last final report in a supervisor's log; null when it logged none, or none that parses. */
@@ -321,7 +321,7 @@ export function finalReportOf(log: string): FinalReport | null {
 /** The routes a supervisor reaches the driver's control endpoint by, beside `GET /control`. */
 export const STEP_PATH = '/step';
 export const REPORT_PATH = '/report';
-/** `POST /gate-token {step}`: a running gate step's GitHub token ask, relayed by the supervisor (BEL-258). */
+/** `POST /gate-token {step}`: a running gate step's GitHub token ask, relayed by the supervisor. */
 export const GATE_TOKEN_PATH = '/gate-token';
 
 /**
@@ -346,7 +346,7 @@ export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
  * One `GET /step` long poll (DRIVER_STEP_WAIT_MS, `supervisor.cjs` SUPERVISOR_STEP_WAIT_MS). A live driver answers it
  * inside this hold, and the answer is the supervisor's contact, so the orphan floor must outlast it by
  * `SUPERVISOR_ORPHAN_SLACK_MS`: the answer's own latency on a loaded host. The production values (15 s, 30 s) keep
- * a 15 s slack; a lane that lowers the floor (DRIVER_ORPHAN_MIN_MS, #950) lowers the long poll with it.
+ * a 15 s slack; a lane that lowers the floor (DRIVER_ORPHAN_MIN_MS) lowers the long poll with it.
  */
 export const SUPERVISOR_STEP_WAIT_MS = 15_000;
 export const SUPERVISOR_ORPHAN_SLACK_MS = 5_000;
@@ -366,7 +366,7 @@ export const orphanBoundOf = (leaseSeconds: number, floorMs: number): number =>
  * Why the orphan floor, the step long poll and the lease cannot all hold, or null. The floor outlasts the long poll
  * by `SUPERVISOR_ORPHAN_SLACK_MS` (else a live driver reads as lost between two answers); and, where a lane lowered
  * the floor (`lowered`), the lease outlasts the orphan bound plus one heartbeat (else a lost driver's group can end
- * after its lease did, #950). The production floor is the contract the default leases were sized for, not rechecked.
+ * after its lease did). The production floor is the contract the default leases were sized for, not rechecked.
  */
 export function orphanConfigFault(
     config: { leaseSeconds: number; orphanMinMs: number; stepWaitMs: number },
@@ -382,13 +382,13 @@ export function orphanConfigFault(
     return null;
 }
 /**
- * What a released group (its agent went) waits for a newer holder on top of the lease (#829): the
+ * What a released group (its agent went) waits for a newer holder on top of the lease: the
  * next claim must find the group, learn it is released and write its binding, which a driver that
  * lost its lease only then stops hanging up on. `takeoverBoundMs` is the lease plus this. The
  * default of DRIVER_REBIND_GRACE_MS (driver/src/config.ts).
  */
 export const SUPERVISOR_REBIND_GRACE_MS = 240_000;
-/** What a taken-over run's supervisor has, after its rebind is written, to first poll the new endpoint (#829). */
+/** What a taken-over run's supervisor has, after its rebind is written, to first poll the new endpoint. */
 export const SUPERVISOR_REBIND_DELIVERY_MS = 150_000;
 /**
  * What the kubelet's (or docker's) backstop allows on top of the run budget for the steps a task
@@ -429,7 +429,7 @@ export const SUPERVISOR_ENV = {
     // The claim this supervisor's binding belongs to, and the file a newer holder names itself in.
     claimSeq: 'SUPERVISOR_CLAIM_SEQ',
     bindingFile: 'SUPERVISOR_BINDING_FILE',
-    /** The attempt's checkpoint at finalize (issue #775): the script by content, and the tree it works on. */
+    /** The attempt's checkpoint at finalize: the script by content, and the tree it works on. */
     /** The hardened `git` every step runs (scripts/git-harden.cjs), by content. */
     gitHardenScript: 'SUPERVISOR_GIT_HARDEN_SCRIPT',
     checkpointScript: 'SUPERVISOR_CHECKPOINT_SCRIPT',
@@ -469,9 +469,9 @@ export const AGENT_CONTAINER = 'agent';
 export const EXPORTER_CONTAINER = 'exporter';
 /** The declared gate image's container, beside the supervisor in a group whose checkout declares gates or setup. */
 export const GATE_CONTAINER = 'gate';
-/** The reviewer container, beside the supervisor in a group whose claim lists reviewer profiles (issue #774). */
+/** The reviewer container, beside the supervisor in a group whose claim lists reviewer profiles. */
 export const REVIEWER_CONTAINER = 'reviewer';
 
-/** The mailboxes a group holds: the review mailbox only where a reviewer container is (issue #774), on both executors. */
+/** The mailboxes a group holds: the review mailbox only where a reviewer container is, on both executors. */
 export const mailboxesOf = (reviewing: boolean): Mailbox[] =>
     Object.values(MAILBOXES).filter((box) => reviewing || box !== MAILBOXES.review);

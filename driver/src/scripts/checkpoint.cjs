@@ -1,5 +1,5 @@
 // @ts-check
-// The attempt's checkpoint (issue #775): what a replacement volume needs to continue the task. Run
+// The attempt's checkpoint: what a replacement volume needs to continue the task. Run
 // by the task supervisor in its finalize stage, after the publish and before the report. It commits
 // the WHOLE task tree — tracked edits, deletions, untracked files; ignored paths and `.factory/`
 // stay out — through a throwaway index, bundles that commit against what the remote already has

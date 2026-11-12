@@ -136,7 +136,7 @@ describe.runIf(enabled)('attribution', () => {
         `;
         expect(queued).toEqual({ status: 'queued', attempts: 0, claimed_by: null });
 
-        // The failed preparation leaves its reservation (issue #822); waiting it out is the lapse.
+        // The failed preparation leaves its reservation; waiting it out is the lapse.
         await lapseDeferral(sql, created.id);
         await sql`delete from env_var where org_id = ${ORG} and name = 'LOCKED'`;
         expect(await envAware.claim('driver-1', LEASE_SECONDS)).toMatchObject({ id: created.id, env: {} });

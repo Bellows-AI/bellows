@@ -18,7 +18,7 @@ import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 
 /**
- * BEL-131: the subscription routes through the real app, org registry and auth store. Two orgs, so
+ * the subscription routes through the real app, org registry and auth store. Two orgs, so
  * isolation is shown by the real per-org resolution, not by a double. The first sign-in into an org
  * is its admin; the next is a member.
  */

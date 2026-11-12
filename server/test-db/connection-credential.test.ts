@@ -201,7 +201,7 @@ describe.skipIf(!enabled)('the managed-connection broker — on a real attempt',
         expect(res.body).not.toContain('legacy-secret-token');
     });
 
-    // BEL-243: a lapsed lease or the pair one claim back, on a task that still runs, is transient.
+    // a lapsed lease or the pair one claim back, on a task that still runs, is transient.
     it('answers 503 LEASE_PENDING to a lapsed or superseded pair on the credential route and the list route', async () => {
         const r = await rig();
         expect((await r.ask()).statusCode).toBe(HTTP_OK);

@@ -93,7 +93,7 @@ describe('a dead service note (issue #487)', () => {
         expect(noteOf({ logTail: '' })).not.toContain('hint:');
     });
 
-    // A service the platform no longer lists has no exit to report (issue #560): the note says why it went.
+    // A service the platform no longer lists has no exit to report: the note says why it went.
     it('names why a missing service went, never "exit unknown"', () => {
         const note = noteOf({ state: 'missing', exitCode: null, reason: 'Evicted: low on memory', logTail: '' });
         expect(note).toBe('service "db" (mongo) missing — Evicted: low on memory; declared gates skipped');

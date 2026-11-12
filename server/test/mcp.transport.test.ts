@@ -252,7 +252,7 @@ describe('the endpoint, github mode', () => {
             new ModernTransport(board.url, { requestInit: { headers: bearer() }, fetch: fetchRecording })
         );
         expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-        // The registry is 40 tools: BEL-248's create_attachment_upload is the last addition (docs/mcp.md).
+        // The registry is 40 tools: create_attachment_upload is the last addition (docs/mcp.md).
         expect(TOOL_NAMES).toHaveLength(40);
         expect(client.getServerVersion()?.name).toBe('factory');
         // The request headers of the modern era name the revision on every call, so none went out as 2025-11-25.

@@ -229,7 +229,7 @@ describe('untilStandDown', () => {
 });
 
 /*
- * Restoring a thread's task tree (issue #775): a continuing claim whose volume is gone is rebuilt from
+ * Restoring a thread's task tree: a continuing claim whose volume is gone is rebuilt from
  * the board's checkpoint onto the next generation by a supervised `restore` step that runs before the
  * sync step; the generation it replaces is removed only after that step reports ok.
  */

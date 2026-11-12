@@ -42,7 +42,7 @@ const router = (
             const hit = answers.find(([m, p]) => m === method && p === path);
             if (hit) return hit[2];
             // An unlisted collection answers an empty list under the default fallback: a collection
-            // 404 is inconclusive (BEL-315), so a test that means "nothing there" must say so.
+            // 404 is inconclusive, so a test that means "nothing there" must say so.
             if (method === 'GET' && path.includes('?') && fallbackStatus === 404) {
                 return { status: 200, body: JSON.stringify({ items: [] }) };
             }
@@ -79,7 +79,7 @@ const group = (overrides: Partial<OrphanGroup> = {}): OrphanGroup => ({
 const AUX_DELETE = `${jobsPath(NAMESPACE)}/${AUX}?propagationPolicy=Foreground`;
 
 describe('the kubernetes reaper arm: scan', () => {
-    // A declared service is a sidecar of its attempt's pod (issue #773): it goes with its Job, so
+    // A declared service is a sidecar of its attempt's pod: it goes with its Job, so
     // the arm lists Jobs alone — no service pod, no headless Service.
     it('lists the attempt Jobs, and nothing else', async () => {
         const { request, calls } = router([]);
@@ -161,7 +161,7 @@ describe('the kubernetes reaper arm: scan', () => {
             { metadata: { name: 'x', labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE } } },
         ],
         ['an in-scope Job with an unparsable creationTimestamp', auxJob('x', JOB, LEASE, 'not-a-date')],
-        // BEL-127: null is an unset time on a pod, and an in-scope Job with no date is no group to age.
+        // null is an unset time on a pod, and an in-scope Job with no date is no group to age.
         ['an in-scope Job with a null creationTimestamp', auxJob('x', JOB, LEASE, null as unknown as string)],
         ['an in-scope Job dated "0"', auxJob('x', JOB, LEASE, '0')],
         ['an in-scope Job dated on a day the calendar lacks', auxJob('x', JOB, LEASE, '2026-02-31T00:00:00Z')],
@@ -208,7 +208,7 @@ describe('the kubernetes reaper arm: scan', () => {
         ],
     ])('answers nothing when a listed row is malformed — %s', async (_name, row) => {
         // A row that cannot be dated or named proves nothing about the rest: a group dated from the
-        // other rows could read as out of its grace (#869).
+        // other rows could read as out of its grace.
         const items = [auxJob('good', JOB, LEASE, '2026-09-01T00:00:00Z'), row];
         const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
         await expect(createKubernetesReaper({ config, request }).scan()).resolves.toBeNull();
@@ -278,7 +278,7 @@ describe('the kubernetes reaper arm: reap', () => {
         const removed = await createKubernetesReaper({ config, request }).reap(group(), 'gone');
 
         const secrets = deleteCalls(calls).filter((path) => path.startsWith(secretsPath(NAMESPACE)));
-        // The attempt's one Secret (issue #773: the gates hold none of their own).
+        // The attempt's one Secret (the gates hold none of their own).
         expect(secrets).toEqual([runnerSecret]);
         // A 2xx Secret delete is a removal like any other.
         expect(removed).toContain(`secret ${runnerSecret.split('/').pop()}`);
@@ -297,7 +297,7 @@ describe('the kubernetes reaper arm: reap', () => {
         ]);
 
         await createKubernetesReaper({ config, request }).reap(group(), 'gone');
-        // The one way a claim goes (issue #821): its holder's groups confirmed ended, then the delete.
+        // The one way a claim goes: its holder's groups confirmed ended, then the delete.
         expect(deleteCalls(calls)).toContainEqual(claimPath);
         // The delete can only ever reach the exact incarnation this call read.
         const claimDelete = calls.find((call) => call.method === 'DELETE' && call.path === claimPath);
@@ -379,7 +379,7 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
             labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
             creationTimestamp: '2026-10-01T00:00:00Z',
         },
-        // A Job that ran an agent: a supervisor-only group's is no run to adopt (issue #821).
+        // A Job that ran an agent: a supervisor-only group's is no run to adopt.
         spec: { template: { spec: { containers: [{ name: 'supervisor' }, { name: 'agent' }] } } },
         status: { succeeded: 1 },
     };
@@ -401,7 +401,7 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
     });
 
     // A supervisor-only group's Job (an agentless node, the group an adoption made) ran no agent:
-    // no run to adopt, so nothing to spare (issue #821).
+    // no run to adopt, so nothing to spare.
     it('never marks a finished supervisor-only Job unread', async () => {
         const supervisorOnly = {
             ...finishedRunner,
@@ -546,7 +546,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
     const secrets = [secretName(pair)].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
     const sweep = (request: K8sRequest) =>
         createReaper({
-            // The job is terminal: a live job's runner Job is its next claim's fence's (issue #821).
+            // The job is terminal: a live job's runner Job is its next claim's fence's.
             board: { leases: async () => [{ id: JOB, status: 'failed', leaseToken: null }] },
             arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
             intervalMs: 0,

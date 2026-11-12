@@ -8,7 +8,7 @@
 # reads the run as lost. The command's stdout and stderr are the run's, unchanged.
 # Pinned by driver/test/lane-stubs.test.ts.
 
-# Review mode (issue #774): `stub-agent.sh review <executor> <executor args…>`, how the stub images'
+# Review mode: `stub-agent.sh review <executor> <executor args…>`, how the stub images'
 # /usr/local/bin/claude-executor and opencode-executor answer when a task group's reviewer container
 # runs them (scripts/stub-runner.Dockerfile). A scripted reviewer: it names who ran it, tries to
 # write into the shared clone it was given read-only and reports whether that failed, optionally
@@ -36,7 +36,7 @@ if [ "${1:-}" = review ]; then
     exit 0
 fi
 
-# The supervisor's release (issue #771), as the real entrypoints wait for it: nothing starts until
+# The supervisor's release, as the real entrypoints wait for it: nothing starts until
 # `go`, and a Stop or a kill order that lands first means the agent leaves quietly.
 if [ -n "${FACTORY_CTL_GO:-}" ]; then
     while [ ! -f "$FACTORY_CTL_GO" ]; do

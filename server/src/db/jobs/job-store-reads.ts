@@ -39,11 +39,11 @@ import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
 /** The reads: a job, a thread, the task list, the settle wait, and the scopes artifacts and restore resolve against. */
 export interface JobReadStore {
     /**
-     * The batched lease lookup behind `POST /api/jobs/leases` (issue #301): every named id's
+     * The batched lease lookup behind `POST /api/jobs/leases`: every named id's
      * status and current lease, in no particular order. Ids this org's board does not know are
      * simply not answered — the driver reads an absent id as "no such job here". Read-only, and
      * deliberately NOT lease-guarded: the reaper holding no lease is the whole point. `withThreads`
-     * adds the thread facts (issue #775) to every ROOT's row; the task-volume sweep asks for them, the group sweep does not.
+     * adds the thread facts to every ROOT's row; the task-volume sweep asks for them, the group sweep does not.
      */
     leases(ids: readonly string[], withThreads?: boolean): Promise<JobLeaseInfo[]>;
 
@@ -56,7 +56,7 @@ export interface JobReadStore {
     artifactScope(id: string): Promise<JobArtifactScope | null>;
 
     /**
-     * The thread facts the restore reads (issue #775), authorized by the LIVE lease of `id`: the
+     * The thread facts the restore reads, authorized by the LIVE lease of `id`: the
      * root's checkpoint pointer and the thread's rows. `lost` is a known job whose lease is not
      * `leaseToken` (or is not running); `missing` an unknown one. Writes nothing.
      */
@@ -86,7 +86,7 @@ export interface JobReadStore {
     get(id: string): Promise<Job | null>;
 
     /**
-     * The settle long-poll (issue #323): holds until the named job's THREAD settles — the chain
+     * The settle long-poll: holds until the named job's THREAD settles — the chain
      * head (the newest member, created then id, the sidenav's rule) reaches a terminal status, or
      * an open PR wait (036) stands on the thread — the same predicate `listTasksOf` buckets by,
      * so a waiting client and the sidenav can never disagree about "still moving". Answers
@@ -99,7 +99,7 @@ export interface JobReadStore {
 
     /**
      * The gate executions, reused completion checks, managed PR operations and classified transcript
-     * calls of these jobs (issue #983), for the activity read. Reads only; the reduction is the caller's.
+     * calls of these jobs, for the activity read. Reads only; the reduction is the caller's.
      */
     activityRecords(jobIds: readonly string[]): Promise<ActivityRecords>;
 
@@ -113,10 +113,10 @@ export interface JobReadStore {
     /**
      * Newest first. `output` is not selected — it is unbounded and no list view shows it — and
      * `gates` stays off the same way; `runtime` does travel, a bounded vitals object whose
-     * `activity` line is the live summary the nav and task view render (issue #61).
+     * `activity` line is the live summary the nav and task view render.
      *
      * `status: 'terminal'` is the one pseudo-value, and its answer is grouped as one row per
-     * TASK, not per run (#124): the settled verdicts (`succeeded`/`failed`/`dead`/`stopped` —
+     * TASK, not per run: the settled verdicts (`succeeded`/`failed`/`dead`/`stopped` —
      * the same set the thread-done computation uses) are folded by `root_job_id`, so a finished
      * conversation with follow-ups is one row. Identity fields are the ROOT's (id, command,
      * author, created), present-tense fields the chain HEAD's (status, summary, runtime,
@@ -135,7 +135,7 @@ export interface JobReadStore {
     }): Promise<Job[]>;
 
     /**
-     * The task read model (#157): one summary per thread root — identity and authorship from the
+     * The task read model: one summary per thread root — identity and authorship from the
      * ROOT row, present tense from the chain HEAD (the newest member, created then id — the
      * sidenav's chainHead rule), bucketed running/review/past exactly as `taskSections()` does in
      * the web layer, including a done task resurrected by a queued follow-up. The response
@@ -172,7 +172,7 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
         -- The thread's wait (036), carried on every member alike — the open wait first, else
         -- the most recently active terminal one, the same rule listTasksOf() applies.
         ${waitLateral}
-        -- The thread's publication (036, #324), the same thread-wide rule: one row at most.
+        -- The thread's publication (036), the same thread-wide rule: one row at most.
         ${publicationJoin}
         where org_id = ${orgId}
           and root_job_id = (select root_job_id from job where org_id = ${orgId} and id = ${id})
@@ -261,7 +261,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
                session_id, exit_code, output, gates, runtime, repo, executor, executor_scope,
                parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                summary, wall_clock_ms, agent_turns, setup_ms, interruptions, failure_kind, failure_cause,
-               -- The thread's wait (036) and publication (#324), served by the detail reads on
+               -- The thread's wait (036) and publication, served by the detail reads on
                -- the same thread-wide rule thread() follows — the per-run lists answer null.
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason,
                ${threadBaseBranchFragment(sql)} as base_branch, job.skill_hidden,
@@ -285,7 +285,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
 }
 
 /**
- * The settle long-poll's one check (issue #323): where does the named job's thread stand? The
+ * The settle long-poll's one check: where does the named job's thread stand? The
  * predicate is `listTasksOf`'s terminal rule verbatim — the chain head (newest member, created
  * then id) in `succeeded|failed|dead|stopped` is `terminal`, OR an open `workflow_wait` (036) on
  * the thread — a wait row with no terminal reason yet, the open one preferred exactly as the task
@@ -364,7 +364,7 @@ export async function waitForSettleOf(
 }
 
 /**
- * The orphan reaper's batched lease lookup (issue #301): status and CURRENT lease token for every
+ * The orphan reaper's batched lease lookup: status and CURRENT lease token for every
  * named id this org holds, nothing for the ids it does not. No author join and no audit columns —
  * the reaper needs three facts, and a worker credential must never pull more of a row than the
  * question asked for.
@@ -388,7 +388,7 @@ export async function leasesOf(
 }
 
 /**
- * The thread facts of every ROOT id among `ids` (issue #775), in the one round trip the lease lookup
+ * The thread facts of every ROOT id among `ids`, in the one round trip the lease lookup
  * already makes. The newest attempt is the thread's newest row at its current claim sequence; a stream
  * of it with chunks and no manifest, or a `partial` manifest, is an artifact still pending.
  */
@@ -524,7 +524,7 @@ export async function attachmentSetOf(
 }
 
 /**
- * The root's checkpoint pointer and the thread's rows, for the live lease of `id` (issue #775). The
+ * The root's checkpoint pointer and the thread's rows, for the live lease of `id`. The
  * lease check is the claim's own: running, and the token the row holds now.
  */
 export async function restoreScopeOf(
@@ -587,7 +587,7 @@ export type ListFilter = Parameters<JobStore['list']>[0];
 export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promise<Job[]> {
     const { sql, orgId, authorColumns, authorJoin } = ctx;
     const { status, repo, limit } = filter;
-    // The recently-completed view asks for TASKS, not runs (#124): the terminal set folds
+    // The recently-completed view asks for TASKS, not runs: the terminal set folds
     // into one row per thread. Identity (id, command, author, created) comes from the
     // root; the present tense (status, summary, runtime, session, started) from the HEAD
     // — the newest member, the same resolution `chainHead` renders in the sidenav; the
@@ -608,7 +608,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                        max(done_at) as done_at,
                        max(finished_at) as finished_at
                 from job
-                -- A named-profile review (issue #549) is its caller's evidence, not a task.
+                -- A named-profile review is its caller's evidence, not a task.
                 where org_id = ${orgId} and review_of is null
                 group by root_job_id
                 having count(*) filter (
@@ -676,7 +676,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                session_id, exit_code, runtime, repo, executor, executor_scope,
                parent_job_id, root_job_id, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The close-time summary and the run's own banked clock ride beside the
-               -- vitals, both bounded where output is not (#109); the structured failure
+               -- vitals, both bounded where output is not; the structured failure
                -- kind (044) is what a list badge or a query reads.
                summary, wall_clock_ms, agent_turns, failure_kind, failure_cause,
                ${threadTitleColumnsFragment(sql)}
@@ -722,7 +722,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
                    root_job_id, id, status, done_at, cancel_requested_at,
                    created_at, started_at, finished_at, summary, runtime
             from job
-            -- A named-profile review (issue #549) is a thread of its own, linked to its caller: it is
+            -- A named-profile review is a thread of its own, linked to its caller: it is
             -- the caller's evidence, not a task a member queued, so it is not a row of this list.
             where org_id = ${orgId} and review_of is null
             order by root_job_id, created_at desc, id desc

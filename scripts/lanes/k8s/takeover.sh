@@ -1,5 +1,5 @@
-# The takeover and drain phases share these (issue #829).
-# Barriers are flat files at /task/.lane-kill-<case>.* on the job's own task volume (issue #775): a
+# The takeover and drain phases share these.
+# Barriers are flat files at /task/.lane-kill-<case>.* on the job's own task volume: a
 # volume only the pods of its thread mount, so they are reached through whichever of the job's pods
 # mounts /task — the origin's state and push log through the origin pod. The stub gh keeps its PR list
 # and hold in /task/.lane-gh.
@@ -197,7 +197,7 @@ tk_prepare() { # tk_prepare -> the origin's push log hook exists; the lane stops
 
 if selected_phase takeover; then
 begin_phase takeover
-# --- Driver killed at each step of a run (issue #829) -------------------------------------------
+# --- Driver killed at each step of a run -------------------------------------------
 #
 # The driver pod is deleted hard at one step of a run — while its setup blocks, while the agent
 # runs, while a gate runs, while the publish waits at the PR — and the lease is expired as waiting it
@@ -304,7 +304,7 @@ else
     expect_not_contains 't4: the finished runner was not waited out' "$(driver_logs)" "job $t4: $ADOPTED"
 fi
 
-# T4b. The gates: the runner pod is deleted while a gate runs (issue #967). The pod's supervisor goes with
+# T4b. The gates: the runner pod is deleted while a gate runs. The pod's supervisor goes with
 #      it, so the waiting gate step is released at once and the attempt ends as an interruption inside two
 #      leases, never failed or dead; the pod's agent is gone with it, so the next claim resumes the session
 #      in a new runner and reruns the gate that never finished.

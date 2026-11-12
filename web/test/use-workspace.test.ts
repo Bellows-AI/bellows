@@ -3,7 +3,7 @@ import { listExecutorConfigs } from '../src/api/useWorkspace.js';
 import { subscribeUnauthenticated } from '../src/api/unauthenticated.js';
 
 /**
- * The one on-demand executor read, pinned at the wire (#183): the dialog is its only caller, and
+ * The one on-demand executor read, pinned at the wire: the dialog is its only caller, and
  * everything the member pasted — credentials included — rides in this response and no other. The
  * poll (/api/workspace) carries name/type/timestamps only; this is the read that carries the
  * config, so its shape and error handling are asserted here rather than trusted.

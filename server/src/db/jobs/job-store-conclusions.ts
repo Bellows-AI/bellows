@@ -1,5 +1,5 @@
 /**
- * Staged conclusions (issue #821; `076_job_conclusions.sql`): the attempt's final envelope, staged
+ * Staged conclusions (`076_job_conclusions.sql`): the attempt's final envelope, staged
  * under its lease before the driver completes and tears the attempt down, and the board's commit
  * of one whose lease expired before the driver's complete landed. The commit is the verdict's own
  * transaction (`completeInTx`), so the driver's identical complete afterwards replays its receipt.
@@ -16,7 +16,7 @@ import { type CompleteOutcome, type CompleteResult, completeInTx } from './job-s
 /** The staged conclusion an agent leaves under its lease. */
 export interface JobConclusionStore {
     /**
-     * Stages the attempt's final envelope, the input `complete` takes, under its lease (issue #821),
+     * Stages the attempt's final envelope, the input `complete` takes, under its lease,
      * renewing it by `leaseSeconds`: immutable, and binding — see `job-store-conclusions.ts`.
      */
     stageConclusion(

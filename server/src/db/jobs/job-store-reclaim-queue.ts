@@ -9,7 +9,7 @@ import { workspacePathFor } from './job-store-rows.js';
 
 /**
  * `markDone`'s second half, shared by every closure that frees a thread's tree (done, remove's
- * refusal-free sibling, the merge closure's settle points, issue #390): if this settle just made
+ * refusal-free sibling, the merge closure's settle points): if this settle just made
  * the whole thread terminal, queue its worktree reclaim. The thread is one indexed read off the
  * root column (022), and the ROOT row carries the labels the reclaim is addressed by — the same
  * fields removeThread queues. Terminal only: a member still queued or running keeps the tree (its
@@ -56,14 +56,14 @@ async function reclaimTarget(
 }
 
 /**
- * How long the completing worker holds the verdict-time reclaim before the queue offers it again
- * (issue #821). The verdict carries no lease length of its own; a replayed verdict re-checks the
+ * How long the completing worker holds the verdict-time reclaim before the queue offers it again.
+ * The verdict carries no lease length of its own; a replayed verdict re-checks the
  * row (`liveVerdictReclaim`), so a retry outliving this lease never orders a withdrawn removal.
  */
 export const VERDICT_RECLAIM_LEASE_SECONDS = 300;
 
 /**
- * A threadDone verdict's worktree reclaim (issue #821): a `task_reclaim` row owned by the
+ * A threadDone verdict's worktree reclaim: a `task_reclaim` row owned by the
  * completing attempt — its lease token is the row's `claim_token` (075), already unique per claim
  * and the token the driver holds the checkout under — in the verdict's transaction, so the order
  * survives a driver that dies before the removal and the `worktree_reclaimed_at` marker follows

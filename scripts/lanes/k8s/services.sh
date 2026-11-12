@@ -1,4 +1,4 @@
-# The plan committer the services and takeover phases share (issues #773, #829): a plan, or none, lands
+# The plan committer the services and takeover phases share: a plan, or none, lands
 # in the member's origin, where the offline board reads it at claim time.
 # The gate scripts every plan commits beside it. reach.sh: both names on 127.0.0.1, then a TCP
 # connect to each, retried while a service still boots. leave.sh: a background write the gate loop's
@@ -73,7 +73,7 @@ EOF
 
 if selected_phase services; then
 begin_phase services
-# --- Declared services and gates in the task pod (issue #773) -----------------------------------
+# --- Declared services and gates in the task pod -----------------------------------
 #
 # The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from the
 # origin over git (REPO_CLONE_BASE; server/src/github/local-origin-plan.ts), so `commit_plan`
@@ -234,7 +234,7 @@ ghost_gate_end="$(await_brief "$ghost_gate" 'failed*' 300)"
 expect_contains 'the failure names the gate image' "$(job_output "$ghost_gate")" \
     "the gate image \"$missing_gate\" cannot be pulled"
 
-# e. The reviewer in the task pod (issue #774). A plan declaring a reviewer gives the pod a `reviewer`
+# e. The reviewer in the task pod. A plan declaring a reviewer gives the pod a `reviewer`
 #    sidecar. Idle, a task that never asks holds only the configured idle request, measured here on
 #    the live pod. Then a task asks for a review and its pod is deleted while the first reviewer holds:
 #    the caller is re-claimed, asks the same key again, the review row is re-leased (claim 2), and the

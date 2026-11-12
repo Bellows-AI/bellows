@@ -165,7 +165,7 @@ const literalClassTokens = (path: string, text: string): { tokens: Set<string>; 
     return { tokens, prefixes };
 };
 
-/** The compact-shell 44px floor is owned where the control is owned (#321): shared controls in
+/** The compact-shell 44px floor is owned where the control is owned: shared controls in
  * `styles/touch-targets.css` — the components layer's last file, so the floor still outranks
  * every equal-specificity rule — and each lane's controls in that lane's own trailing segment,
  * so a lane adds a target by editing only its own file. The lists are disjoint; the ownership
@@ -565,7 +565,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
 
     it('clears 44px touch targets across the compact shell (#189)', () => {
         // Each control clears the floor through its OWN owner's compact-shell segment — the
-        // shared list for shared controls, the lane's trailing segment for lane controls (#321).
+        // shared list for shared controls, the lane's trailing segment for lane controls.
         // A new mobile-visible control joins its owner's list, never a one-off rule.
         const cssByRel = new Map(readShipped().map((f) => [f.rel, stripComments(f.text)] as const));
         const assignments: Array<[string, string]> = [
@@ -742,7 +742,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.composer-context .select-trigger')).not.toMatch(/border|background/);
     });
 
-    it('focus on the chat input brightens its border and never resizes it (BEL-261; not the RED, see the e2e)', () => {
+    it('focus on the chat input brightens its border and never resizes it (not the RED, see the e2e)', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         const focusRules = rules(css).filter(
             ([prelude]) => /:focus(-within|-visible)?\b/.test(prelude) && /chat-input/.test(prelude)
@@ -755,7 +755,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         }
     });
 
-    it('task detail: the conversation is the one scroll region, the composer docks under it (BEL-263)', () => {
+    it('task detail: the conversation is the one scroll region, the composer docks under it', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/task-detail.css'), 'utf8'));
         const all = rules(css);
         const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
@@ -769,12 +769,12 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body('.task-follow-up')).not.toMatch(/overflow/);
     });
 
-    it('both composers share one chat input recipe, not a copy per composer (BEL-263)', () => {
+    it('both composers share one chat input recipe, not a copy per composer', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         // No composer restyles the shared input: no rule reaches into it from either page.
         const perComposer = rules(css).filter(([p]) => /\.(task-compose|task-follow-up)\b[^,{]*\.chat-input/.test(p));
         expect(perComposer).toEqual([]);
-        // Focus keeps a visible ring on the field itself (BEL-266), drawn on the border, never `outline: none`.
+        // Focus keeps a visible ring on the field itself, drawn on the border, never `outline: none`.
         const focus = rules(css).find(([p]) => /\.chat-input-field:focus-visible/.test(p));
         expect(focus?.[1]).toMatch(/outline:\s*1px solid var\(--line-strong\)/);
         expect(focus?.[1]).toMatch(/outline-offset:\s*-1px/);
@@ -994,7 +994,7 @@ describe('the style system file ownership (#321)', () => {
 
 describe('the design-system inventory', () => {
     // Both assertions read the design-system docs — this document plus every lane doc beside it
-    // (docs/design-system/*.md), which is where a lane's rows live (#321) — so the inventory is
+    // (docs/design-system/*.md), which is where a lane's rows live — so the inventory is
     // enforced, not aspirational: a new UI unit or a new class fails the suite until one of them
     // names it.
     const regionDocDir = fileURLToPath(new URL('../../docs/design-system', import.meta.url));
@@ -1089,7 +1089,7 @@ describe('the design-system inventory', () => {
     });
 });
 
-describe('the inline variables editor (BEL-262)', () => {
+describe('the inline variables editor', () => {
     const css = stripComments(readFileSync(join(webSrc, 'styles/regions/settings.css'), 'utf8'));
     const all = rules(css);
     const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';

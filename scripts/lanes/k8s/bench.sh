@@ -1,6 +1,6 @@
 if [ "$PHASE" = bench ]; then
 begin_phase bench
-# --- Throughput and recovery on one laptop's kind cluster (issue #831) ----------------------------
+# --- Throughput and recovery on one laptop's kind cluster ----------------------------
 #
 # Cells of N tasks (1, 4, 8, 16) against R driver replicas (1, 2) at the chart's production poll, lease
 # and reaper values, one dashboard replica (the chart default, docs/kubernetes.md), tasks that hold a

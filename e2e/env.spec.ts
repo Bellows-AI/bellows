@@ -4,7 +4,7 @@ import { FORBIDDEN, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
 
-/** The inline variables editor on each settings page (BEL-262): one interaction per state, a
+/** The inline variables editor on each settings page: one interaction per state, a
  * screenshot per state. `npm test` renders the editor with react-dom/server and drives it under
  * jsdom; only a browser proves the keyboard path, the `.env` round trip through real textarea
  * input, the unsaved-changes guard on in-app navigation, and that the save bar stays reachable with
@@ -61,7 +61,7 @@ test.describe('inline variables editor', () => {
         const problems = watchConsole(page);
 
         await open(page);
-        // The Organization section answers who and what scope before any editor (#180).
+        // The Organization section answers who and what scope before any editor.
         await expect(page.getByText('Your role')).toBeVisible();
         const editor = editorOf(page);
         await expect(editor.getByRole('tab', { name: /^Variables/ })).toHaveAttribute('aria-selected', 'true');
@@ -81,7 +81,7 @@ test.describe('inline variables editor', () => {
         await page.screenshot({ path: `${SHOTS}/settings-workspace-env.png`, fullPage: true });
 
         await page.goto('/settings/repos');
-        // The per-repository variables sit behind a row's Configure action (#181).
+        // The per-repository variables sit behind a row's Configure action.
         await expect(page.getByRole('heading', { name: 'Repositories', exact: true })).toBeVisible({ timeout: 60_000 });
         const reposText = await page.locator('main').innerText();
         for (const token of FORBIDDEN) expect(reposText, `repos section contains ${token}`).not.toContain(token);

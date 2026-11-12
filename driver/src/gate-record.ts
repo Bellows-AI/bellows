@@ -29,7 +29,7 @@ export interface GateRunStart {
 export type TreeProbeFn = (signal: AbortSignal, sinceMs?: number) => Promise<TreeProbe>;
 
 /**
- * One recorded execution (issue #983), what the manager needs of it: the id, the probe, and the
+ * One recorded execution, what the manager needs of it: the id, the probe, and the
  * `start` it awaits inside the checkout's queue right before the gate executes. A `start` that answers
  * false refuses the run: the gate never executes (`GateRecordRefused`).
  */
@@ -77,7 +77,7 @@ function probeWithin(
 }
 
 /**
- * One gate run, recorded (issue #983): the tree is probed here — inside the checkout's queue, where the
+ * One gate run, recorded: the tree is probed here — inside the checkout's queue, where the
  * manager calls it — so it is the tree this run runs on, never another run's. The running row is awaited
  * before `execute` runs the gate; one the board did not take refuses the run. Null when the run's signal
  * aborted before the gate could start.
@@ -157,7 +157,7 @@ function terminalRow(base: Identified, end: GateEnd, started: GateRunStart | nul
 type Identified = Pick<GateRunRow, 'executionId' | 'gate' | 'identity' | 'filtered' | 'source'>;
 
 /**
- * Mints the execution id and records one gate run (issue #983): the manager calls `execution.start`
+ * Mints the execution id and records one gate run: the manager calls `execution.start`
  * inside the checkout's queue right before the gate executes — the `running` row — and the caller
  * calls `finish` on every exit, whatever happened, for exactly one terminal row. `requireRecord`
  * makes a running write the board did not take refuse the run (`start` answers false): the ad-hoc call

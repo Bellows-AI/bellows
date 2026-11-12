@@ -1,6 +1,6 @@
 if selected_phase acceptance; then
 begin_phase acceptance
-# --- The failure matrix, accepted end to end (issue #779) ----------------------------------------
+# --- The failure matrix, accepted end to end ----------------------------------------
 #
 # Every cell has unit or integration coverage; these are the lane's characterization of the whole:
 # a driver runs a task whose runner leaves a transcript on the task volume (the stub's

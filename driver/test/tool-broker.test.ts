@@ -12,7 +12,7 @@ import { TOOL_UID } from '../src/claim.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
- * The agent's tool shell (issue #814), shipped in both executor images: the broker that starts each
+ * The agent's tool shell, shipped in both executor images: the broker that starts each
  * command as the tool uid and the client the CLI runs as its shell. Driven over a real socket in a
  * scratch directory, as this test's own uid — the uid switch itself is the images' to prove
  * (docker/*-executor/test.sh) — with the spawn options the broker passes pinned on the side.

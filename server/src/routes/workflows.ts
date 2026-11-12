@@ -46,7 +46,7 @@ function noStore(reply: FastifyReply) {
  * - `POST /api/workflows` — create; org-level is an admin's move, user- and repo-level are any
  *   member's. A `kind: "block"` node is compiled (registry lookup, availability, config, expansion)
  *   before storage — an unknown/unavailable/misconfigured block refuses the same way a schema
- *   error does (issue #204, docs/workflows.md "Built-in blocks").
+ *   error does (docs/workflows.md "Built-in blocks").
  * - `GET /api/workflow-blocks` — the board-owned catalog every `uses` may reference: id,
  *   description, config schema, availability. Never a prompt or script body — those stay inside
  *   the registry, unserialized. Static, org-independent metadata; gated the same as the other
@@ -68,7 +68,7 @@ function noStore(reply: FastifyReply) {
  * well-formed, the name was gone.
  */
 /**
- * The workflow definitions a request touches are its caller's org's (#99) — the same resolution
+ * The workflow definitions a request touches are its caller's org's — the same resolution
  * the job board makes. Absent in the route-test mode with no stores behind the registry.
  */
 async function storeOf(orgs: OrgRegistry, request: FastifyRequest): Promise<WorkflowStore | null> {

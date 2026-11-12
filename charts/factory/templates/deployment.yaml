@@ -107,7 +107,7 @@ spec:
                                 key: github-app-private-key
                                 optional: true
                       # The organizations are the App's installations, materialized at sign-in
-                      # (#99) — there is no org env to set. Install the App on every account this
+                      # — there is no org env to set. Install the App on every account this
                       # deployment should serve.
                       # Shared admission budgets (server/src/db/jobs/job-store-admission.ts); empty is unlimited.
                       - name: ADMISSION_MAX_RUNNING

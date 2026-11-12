@@ -19,7 +19,7 @@ import {
 } from '../src/helpers.js';
 
 /**
- * The shared, platform-agnostic half of the block-helper transport (issue #207): the registry
+ * The shared, platform-agnostic half of the block-helper transport: the registry
  * lookup, the versioned bounded-JSON parser both the docker and kubernetes runners call, and the
  * bounded input serializer. The docker/kubernetes transport SHAPES (argv, aux Job spec) are pinned
  * in docker/ and k8s/; this file covers the platform-agnostic contract alone.

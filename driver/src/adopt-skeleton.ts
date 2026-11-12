@@ -19,7 +19,7 @@ export interface EarlierRun {
     /** The command mark it was created under; another valid mark is another command's run. */
     commandMark: string | undefined;
     session: string | null;
-    /** Set by `admit` for a released group whose agent still runs (#829): taken over, never read as an end. */
+    /** Set by `admit` for a released group whose agent still runs: taken over, never read as an end. */
     live?: { startedAt: string };
 }
 
@@ -187,7 +187,7 @@ export async function adoptEarlierRun<F extends EarlierRun>(
 }
 
 /**
- * A released group still running (#829): nothing of it is read or waited for. The claim is confirmed,
+ * A released group still running: nothing of it is read or waited for. The claim is confirmed,
  * everything older swept (the group is spared as an adopted run is), and only then is it recorded as
  * this driver's to step into. The caller rebinds its supervisor.
  */

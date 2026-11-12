@@ -3,12 +3,12 @@ import { skillCatalog } from '../../skills.js';
 import type { PinnedSkill } from './job-store-skill-pin.js';
 
 /**
- * The sentence that stops a claim whose selected skills cannot run, or null (issue #545): a
+ * The sentence that stops a claim whose selected skills cannot run, or null: a
  * selection the catalog lacks, a skill whose connection has no env names in the claim's resolved
  * env, or a managed connection the task never selected (`managed`; whether it is still authorized
  * is the broker's per-call check, docs/connections.md). Config-kind and recoverable — the member fixes the settings and retries.
  * A name the row's own `pin` holds is delivered at the pinned version whatever the live catalog says now: a skill
- * disabled or deleted after the row was made still runs it (BEL-273).
+ * disabled or deleted after the row was made still runs it.
  */
 export function resolveClaimSkills(
     skills: readonly string[],

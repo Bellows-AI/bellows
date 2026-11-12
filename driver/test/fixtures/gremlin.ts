@@ -1,5 +1,5 @@
 /**
- * Gremlins for the takeover simulation (#829, #922): a seeded plan of faults played at random points of
+ * Gremlins for the takeover simulation: a seeded plan of faults played at random points of
  * one run, and the invariants a run owes whatever hit it. Nothing here scripts an outcome: the plan says
  * what is injected and when, `check` says what must hold afterwards. A failing seed replays with
  * `GREMLIN_SEED=<n>`; `GREMLIN_RUNS` raises the count for a local soak.
@@ -214,7 +214,7 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         const running = sim.row.status === 'running' && !sim.row.staged;
         // A pod over (its supervisor ended) loses nothing; a Pending one never ran an attempt but still a claim's. The
         // pod of an earlier claim is the row's claim's loss only once that claim holds it (a holder's token the driver
-        // answered to): lost before that contact, the claim finds it over and redoes the group, which hit no attempt of it (#943).
+        // answered to): lost before that contact, the claim finds it over and redoes the group, which hit no attempt of it.
         // `tokens` is insertion-ordered: index 0 is the owner's own token, the rest are holders' after a rebind.
         const holds =
             g.claimSeq === sim.row.claimSeq ||

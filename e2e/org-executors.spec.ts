@@ -20,7 +20,7 @@ import { contextChip } from './executor.js';
  * now stands between a click and an org-wide, irreversible write.
  *
  * On the `auth` project, which is the board whose signed-in member is an admin: the stub account
- * is the installation's FIRST member and the bootstrap rule lands admin (#410). The setRole below
+ * is the installation's FIRST member and the bootstrap rule lands admin. The setRole below
  * is still test infrastructure — belt and braces over what sign-in now does, and the same
  * direct-SQL idiom as e2e/reset-db.mjs; the role is read per request through the session join, so
  * a reload is all it takes to see.
@@ -127,7 +127,7 @@ test('the row actions collapse into one overflow menu named for the row, at both
         );
         expect(overflowing, `settings-executors at ${label}: horizontal scroll`).toBe(false);
     }
-    // Still a finger target in the compact shell (#189) — the cell's controls are new, and a 36px
+    // Still a finger target in the compact shell — the cell's controls are new, and a 36px
     // icon button is exactly the kind that slips past the shared floor.
     for (const control of [first.getByRole('button', { name: 'Edit' }), trigger(page, PROFILES[0]!)]) {
         const box = (await control.boundingBox())!;

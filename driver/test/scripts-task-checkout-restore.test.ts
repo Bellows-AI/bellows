@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The RESTORE mode of the task checkout script (issue #58): a follow-up continues the task where it
+ * The RESTORE mode of the task checkout script: a follow-up continues the task where it
  * stands — no fetch, no rebase, the tree kept byte-for-byte as the run before it left it, and a
  * missing tree a named failure rather than a fresh clone.
  */
@@ -12,7 +12,7 @@ describe.skipIf(!hasGit())('the task checkout script (restore)', () => {
     const fx = setupWorktreeFixture();
 
     it('restores an existing checkout untouched: no fetch, no rebase', () => {
-        // A follow-up continues the task where it stands (issue #58): git operations that touch
+        // A follow-up continues the task where it stands: git operations that touch
         // the remote belong to the task's beginning and end, never mid-flight. The tree must be
         // byte-for-byte what the previous run left — no rebase onto a moved main, no fetch
         // dragging upstream commits in, no autostash dance over the session's edits.

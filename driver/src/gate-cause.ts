@@ -21,7 +21,7 @@ const JEST_FAILED_TESTS = /^\s*Tests:\s+(\d+) failed\b/;
 const JEST_FAILURE_HEADING = /^\s*● (.+)$/;
 const JEST_TEST_TIMEOUT = /Exceeded timeout of \d+ ?m?s for a test\b/;
 /**
- * A stale NFS file handle (ESTALE, issue #789): npm's `errno -116`, or the strerror the kernel and
+ * A stale NFS file handle (ESTALE): npm's `errno -116`, or the strerror the kernel and
  * node print after a colon (`cp: x: Stale file handle`, `ESTALE: stale file handle`). Neither a
  * bare `ESTALE` nor the phrase alone is matched — a failing test's name can carry either.
  */
@@ -73,7 +73,7 @@ function onlyJestTestTimeouts(output: string): boolean {
 }
 
 /**
- * The `failure_cause` of a failed declared gate (issue #653). `environment` when the exit or the
+ * The `failure_cause` of a failed declared gate. `environment` when the exit or the
  * output shows the environment, not the diff, failed the gate — a stale file handle wins over any
  * exit, since a broken filesystem fails assertions too; `verification` otherwise, so a
  * genuine failing assertion is still repaired. Core's `batch-recovery.ts` decides what each

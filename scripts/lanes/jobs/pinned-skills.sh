@@ -1,6 +1,6 @@
 if selected_phase pinned-skills; then
 begin_phase pinned-skills
-# --- Org and workspace skills reach the agent on both runtimes, pinned (BEL-273) ---------------------
+# --- Org and workspace skills reach the agent on both runtimes, pinned ---------------------
 #
 # An authenticated board (one org, an admin and two members), the real driver and the real claude and
 # opencode images against the scripted model. The admin publishes an org skill and member A a workspace
@@ -234,13 +234,13 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     ps_expect "$cli: B's task does not see A's workspace skill" "$(ps_seen "$seen" "$v1")$(ps_seen "$seen" "$v2")" nono
     ps_expect "$cli: the org skill's helper file opens for B's tool uid" "$(ps_probe "$results" 1)" open
     case "$(ps_probe "$results" 2)" in open | missing) bad "$cli: A's workspace skill is not installed for B" "probe 2: $(ps_probe "$results" 2)" ;; *) ok "$cli: A's workspace skill is not installed for B" ;; esac
-    # BEL-286: B's task has no Jira binding, so factory-jira is not in what the model is offered; a built-in with no
+    # B's task has no Jira binding, so factory-jira is not in what the model is offered; a built-in with no
     # requirement is (the control: a probe that sees neither proves nothing).
     ps_expect "$cli: a task with no Jira binding is not offered factory-jira" "$(ps_seen "$seen" "$PS_JIRA_DESC")" no
     ps_expect "the control: $cli's task is offered an unrestricted built-in" "$(ps_seen "$seen" "$PS_FIX_DESC")" yes
     lane_endpoint_stop "$ps_pid"
 
-    # BEL-286: a member who holds a Jira connection has it bound to the task when it is made, so factory-jira is listed.
+    # a member who holds a Jira connection has it bound to the task when it is made, so factory-jira is listed.
     local ps_c
     ps_c="$(ps_jira_member "ps-member-c-$cli")" && ok "$cli: a member holding a Jira connection is minted" || bad "$cli: a member holding a Jira connection is minted" "$ps_c"
     AUTH_HEADER="Bearer $ps_c" expect_status "$cli: the Jira member stores the task executors" 200 PUT /api/workspace/executors \
@@ -254,7 +254,7 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     ps_expect "the control: $cli's Jira task is offered an unrestricted built-in" "$(ps_seen "$seen" "$PS_FIX_DESC")" yes
     lane_endpoint_stop "$ps_pid"
 
-    # BEL-286: an org admin's switch hides a built-in from the next task of every member, and switching it back on
+    # an org admin's switch hides a built-in from the next task of every member, and switching it back on
     # lists it again; the pin is taken when the task is made, so only a task made after the flip sees the change.
     ps_switch factory-fix false
     ps_endpoint "pins-$cli-off" "$PS_FIX_DESC" "/etc/shadow"
@@ -271,7 +271,7 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     ps_expect "$cli: the built-in is offered again after the switch is back on" "$(ps_seen "$(ps_get "http://127.0.0.1:$ps_port/skills-seen")" "$PS_FIX_DESC")" yes
     lane_endpoint_stop "$ps_pid"
 
-    # BEL-286: a checkout that ships a skill named like a pinned org skill keeps its own copy, and the org copy is not
+    # a checkout that ships a skill named like a pinned org skill keeps its own copy, and the org copy is not
     # installed at all (the driver's install step reads the checkout).
     ps_endpoint "pins-$cli-clash" "$PS_ORG_SENTINEL,$PS_REPO_SENTINEL" "$PS_DIR/$PS_ORG_SKILL/ref/helper.txt"
     ps_point "$cli" "$ps_b" "$ps_port"

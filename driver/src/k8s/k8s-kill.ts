@@ -32,7 +32,7 @@ export class RunnerKilled extends Error {
     }
 }
 
-/** Thrown by a poll that ended because this process abandoned the attempt: its Job is the next holder's (#829). */
+/** Thrown by a poll that ended because this process abandoned the attempt: its Job is the next holder's. */
 export class RunnerAbandoned extends Error {
     constructor(jobName: string) {
         super(`the runner job ${jobName} was abandoned to the next holder`);

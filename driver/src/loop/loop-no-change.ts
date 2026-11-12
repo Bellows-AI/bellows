@@ -7,7 +7,7 @@ import type { LoopRuntime } from './loop-types.js';
 export const NO_CHANGES = 'no changes';
 
 /**
- * The gates phase of a task confirmed to have produced no change (issue #1020), logged; null when it
+ * The gates phase of a task confirmed to have produced no change, logged; null when it
  * did, or when the read failed, timed out or was aborted — inconclusive, so the gates run.
  */
 export async function noChangeSkip(ctx: {

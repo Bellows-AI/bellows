@@ -63,7 +63,7 @@ export const executorSuspendedMessage = (scope: ExecutorScope, name: string): st
     'Resume it or choose another executor, then start a new task.';
 
 /**
- * The default-workflow gate-repair round limit (issue #49): how many bounded gate-fix rounds an
+ * The default-workflow gate-repair round limit: how many bounded gate-fix rounds an
  * ordinary task may spend repairing a failed gate before the thread rests. A value of zero turns
  * automatic gate repair off — the graph falls back to today's no-edge shape. The board reads the
  * per-member value off the selected executor row at launch and freezes it onto the thread's root
@@ -77,7 +77,7 @@ export const MAX_GATE_FIX_ROUNDS = 10;
 /**
  * The top-level config keys the board strips before a member's executor config reaches its runner
  * (issue 183): claude-code's baked hooks and plugin install, opencode's permission fence.
- * One list for the claim that strips them and the dialog that warns about them (#261), so the
+ * One list for the claim that strips them and the dialog that warns about them, so the
  * warning cannot promise a key the runner would honor or miss one it drops.
  */
 export const RUNNER_MANAGED_KEYS: Record<ExecutorType, readonly string[]> = {

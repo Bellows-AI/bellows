@@ -124,7 +124,7 @@ export async function repairInTx(
 
 /**
  * The wait reason of a failed run that needs a person: the question it left, the budget it spent,
- * or the kind and cause it failed with when neither was recognized (issue #581).
+ * or the kind and cause it failed with when neither was recognized.
  */
 export function failedAttentionReason(
     reason: AttentionReason,

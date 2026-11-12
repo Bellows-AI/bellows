@@ -5,7 +5,7 @@ import type { StreamRef } from '../../artifacts/keys.js';
 import type { TranscriptToolStore } from '../../db/jobs/job-store-transcript-tools.js';
 
 /**
- * Reads the tool calls out of a landed transcript chunk (issue #983). It runs after the chunk is
+ * Reads the tool calls out of a landed transcript chunk. It runs after the chunk is
  * stored and after a stream is finalized, and answers nothing a caller could branch on: an upload
  * never fails, and never changes a verdict, because the ingest did. It is idempotent (the store
  * files each half of a call once), so a repeat of the put or the finalize costs a read and nothing else.

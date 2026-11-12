@@ -202,7 +202,7 @@ export function useEnvSaveState() {
 export type EnvEditMode = 'list' | 'env';
 
 /**
- * The list/raw mode over the ONE shared draft (BEL-262): the rows stay the truth.
+ * The list/raw mode over the ONE shared draft: the rows stay the truth.
  * Entering raw mode serializes them; every edit of the text re-reads it live — valid text
  * replaces the variable rows at once (no Apply step), malformed text only records its
  * line-numbered errors and leaves the rows as they were, so a bad edit can never overwrite a

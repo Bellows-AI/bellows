@@ -50,7 +50,7 @@ export interface JobActionStore {
              */
             executorScope?: ExecutorScope;
             /**
-             * The skills the task selects (issue #545), names the route validated against the
+             * The skills the task selects, names the route validated against the
              * catalog. Stored on the root row only; a follow-up, retry or successor reads the
              * root's selection at claim time (055). Absent is none.
              */
@@ -93,7 +93,7 @@ export interface JobActionStore {
                 params: ParamValues;
             } | null;
             /**
-             * The request's `Idempotency-Key` (issue #589): a repeat of a recorded request answers
+             * The request's `Idempotency-Key`: a repeat of a recorded request answers
              * the row it made (`replayed`), a key reused for a different request throws
              * `IdempotencyKeyReusedError`. The same holds for `createFollowUp` and `createRetry`.
              */
@@ -148,7 +148,7 @@ export interface JobActionStore {
     dismissRequirement(id: string, provider: string, userId: string): Promise<DismissRequirementResult>;
 
     /**
-     * Queues a fresh attempt of the thread head's command (issue #326): a new job in the SAME
+     * Queues a fresh attempt of the thread head's command: a new job in the SAME
      * thread — the thread's `root_job_id`, with the head's command, repo, executor and workflow
      * name copied at insert — that resumes NOTHING: no `parent_job_id`, no session. The claim
      * delivers it like any first fresh run (`resumeSessionId: null`, `followUp: false`), and
@@ -168,7 +168,7 @@ export interface JobActionStore {
     ): Promise<{ id: string; replayed?: boolean } | RetryRefusal | BatchesDisabledRefusal>;
 
     /**
-     * Edits a queued task's command in place (issue #329): same id, same thread, where a stop
+     * Edits a queued task's command in place: same id, same thread, where a stop
      * plus a re-create would have burned both. Queued rows only — the `job` row is an audit
      * record of what RAN, and a row that has run nothing has nothing audited to overwrite.
      * Author-scoped like the follow-up, null-safe both ways (`is not distinct from`): a null
@@ -208,7 +208,7 @@ export interface JobActionStore {
      * stamped `cancel_requested_at` (idempotently) and left running: the driver reads the request
      * on the heartbeat it already sends, kills its runner and settles it with the existing
      * suspend route — the flag IS the stop travelling, and the settle clears it. A RUNNING row
-     * whose lease has already expired settles `stopped` here instead (issue #152): nobody holds
+     * whose lease has already expired settles `stopped` here instead: nobody holds
      * the lease, and a stamp would wait for a heartbeat nobody will send. A row that already
      * ended refutes with its status.
      *
@@ -232,7 +232,7 @@ export interface JobActionStore {
     removeThread(id: string, removedBy: string | null): Promise<RemoveResult>;
 
     /**
-     * The user's wait-cancel (issue #328): ends the thread's open durable PR wait with reason
+     * The user's wait-cancel: ends the thread's open durable PR wait with reason
      * `cancelled by user`, so a thread parked past a missed webhook can be closed out by hand.
      * Takes no lease — a wait holds no runner. Cancel ends the WAIT, never a running turn (stop
      * is for turns); a continuation already woken and claimed is settled by the claim's
@@ -245,7 +245,7 @@ export interface JobActionStore {
     cancelWait(id: string, cancelledBy: string | null, admin?: boolean): Promise<CancelWaitResult>;
 
     /**
-     * The user's poke (issue #328): re-evaluates the thread's parked PR wait NOW — the wake
+     * The user's poke: re-evaluates the thread's parked PR wait NOW — the wake
      * transaction the sweep runs, minus the pending gate, because the board has no other GitHub
      * input than webhooks and the motivating case is one that never arrived. The woken
      * continuation's own claim-time pre-helper re-fetches the PR state (a false wake costs a
@@ -260,7 +260,7 @@ export interface JobActionStore {
     pokeWait(id: string, pokedBy: string | null, admin?: boolean): Promise<PokeWaitResult>;
 
     /**
-     * The user's reopening of a done task (issue #327): clears the done stamp on EVERY member of
+     * The user's reopening of a done task: clears the done stamp on EVERY member of
      * the thread and withdraws a queued task_reclaim row, so a task closed by mistake can be
      * followed up again — `createFollowUp`'s thread-wide done predicate is what this reverses.
      * Decided under the same per-thread advisory lock the claim, remove and reclaim ack take, so
@@ -285,12 +285,12 @@ export interface JobActionStore {
     suspend(id: string, leaseToken: string): Promise<SuspendResult>;
 
     /**
-     * Records an attempt the infrastructure interrupted (issue #792), lease-guarded, refunding the
+     * Records an attempt the infrastructure interrupted, lease-guarded, refunding the
      * attempt and appending the reason. `release` hands the claim back claimable at once (a drained
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
      * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
      * the earlier attempt it adopted; the adopting claim's launch becomes `adopted`, linked to that
-     * claim. `refused` says the runner never started (issue #845). `blocked` (a release only) says the claim waits on a leftover still terminating: it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for: no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `nodeLoss` (a release only, BEL-302) says the platform took the attempt away (a drained driver, an evicted runner): it spends no `INTERRUPTION_BUDGET`, is accepted past a spent one, and counts against `NODE_LOSS_BUDGET` per `NODE_LOSS_WINDOW_MS` instead. `exhausted` once `INTERRUPTION_BUDGET` (or, for a node loss, that bound) is spent: nothing
+     * claim. `refused` says the runner never started. `blocked` (a release only) says the claim waits on a leftover still terminating: it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for: no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `nodeLoss` (a release only) says the platform took the attempt away (a drained driver, an evicted runner): it spends no `INTERRUPTION_BUDGET`, is accepted past a spent one, and counts against `NODE_LOSS_BUDGET` per `NODE_LOSS_WINDOW_MS` instead. `exhausted` once `INTERRUPTION_BUDGET` (or, for a node loss, that bound) is spent: nothing
      * changed, and the caller reports or leaves the attempt as before.
      */
     interrupt(

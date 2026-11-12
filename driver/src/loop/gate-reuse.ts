@@ -12,7 +12,7 @@ export interface ReuseWant {
 }
 
 /**
- * The earlier run a declared gate may be reported `passed` from without launching it (issue #983), or
+ * The earlier run a declared gate may be reported `passed` from without launching it, or
  * null — and then the gate runs, as it always did. The LATEST row of the gate, of any scope, decides:
  * a newer running, failed, incomplete or filtered row beats an older pass, and a row the board could
  * not confirm never existed. It is reusable only when it is a full pass of the same gate identity, ad-hoc

@@ -8,7 +8,7 @@ import type { BoardJob } from '../src/board/board.js';
 import { onOwnGroup, ownGroup, type Runner } from '../src/runner.js';
 
 /**
- * The executor contract (issue #828): a capability both executors implement is required of every
+ * The executor contract: a capability both executors implement is required of every
  * runner, so the loop calls it directly and carries no "a runner without it" fallback. Only what
  * one executor genuinely lacks stays optional — docker's fence leaves nothing to release or reap.
  */
@@ -146,7 +146,7 @@ describe('the Runner contract', () => {
                             }),
                         };
                     }
-                    // A collection answers empty: a collection 404 is inconclusive (BEL-315).
+                    // A collection answers empty: a collection 404 is inconclusive.
                     if (method === 'GET' && path.includes('?')) return { status: 200, body: '{"items":[]}' };
                     return { status: 404, body: '{"kind":"Status"}' };
                 }

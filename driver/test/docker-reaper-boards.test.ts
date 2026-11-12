@@ -5,7 +5,7 @@ import { createReaper } from '../src/reaper.js';
 import { boardIdentity } from '../src/task-volume.js';
 
 /**
- * Two boards on one docker daemon (issue #887): the reaper decides by asking ITS board about a
+ * Two boards on one docker daemon: the reaper decides by asking ITS board about a
  * group's lease, so a group made for another board is a job its board does not know — and "gone".
  * The daemon here is a stateful stand-in that applies the `--filter label=` terms of the argv it is
  * given and removes what it is told to, so what survives is the daemon's answer, not an assertion on argv.

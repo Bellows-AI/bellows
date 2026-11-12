@@ -103,7 +103,7 @@ function board(initial: BatchRecord, initialReport: BatchReportView | null = rep
         return record;
     };
     const calls = stubFetch(({ method, url }) => {
-        // The batch routes are behind the session's `batches` flag (BEL-264), so this board has it on.
+        // The batch routes are behind the session's `batches` flag, so this board has it on.
         if (url === '/api/auth/me') return { ...OPEN_BOARD_SESSION, batches: true };
         const prefix = `/api/batches/${ID}`;
         if (!url.startsWith(prefix)) return;

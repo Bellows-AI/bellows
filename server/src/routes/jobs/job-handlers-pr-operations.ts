@@ -69,7 +69,7 @@ export async function handlePrOperation(orgs: OrgRegistry, request: FastifyReque
     return reply.code(HTTP_OK).send({ id, operationId: checked.value.operationId });
 }
 
-/** The worker route (088, issue #983), under the attempt's lease. */
+/** The worker route (088), under the attempt's lease. */
 export function prOperationRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     app.post('/api/jobs/:id/pr-operation', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
         handlePrOperation(orgs, request, reply)

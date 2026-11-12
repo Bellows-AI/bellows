@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * The attempt pair a runner presents to the board (issue #1045): `x-factory-job-id` and
+ * The attempt pair a runner presents to the board: `x-factory-job-id` and
  * `x-factory-job-lease-token`. A claim that adopts a surviving runner rotates the lease, but the
  * container's env was fixed at creation, so the supervisor answers the lease it follows now on
  * `GET /attempt` of the agent's control socket (`relayRequest` of driver/src/scripts/supervisor.cjs).

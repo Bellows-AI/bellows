@@ -27,7 +27,7 @@ import {
  */
 
 /**
- * Where each managed PR operation is handed as it happens (issue #983): the loop's recorder writes it
+ * Where each managed PR operation is handed as it happens: the loop's recorder writes it
  * to the board under the attempt's lease. It is best effort by contract — it logs its own failure and
  * a publish never depends on it.
  */
@@ -94,8 +94,8 @@ async function retargetPr(step: RunPublishStep, job: BoardJob, branch: string): 
 }
 
 /**
- * A clean, fully-pushed checkout on its task branch may still carry a PR the agent opened itself
- * (issue #573): the publication record names it, so the board links the one PR and a retry or a
+ * A clean, fully-pushed checkout on its task branch may still carry a PR the agent opened itself:
+ * the publication record names it, so the board links the one PR and a retry or a
  * resume reuses it instead of opening a second.
  */
 export async function reconcileAgentPr(
@@ -152,13 +152,13 @@ export async function resolveOrCreatePr(
         return noted(reused, 'reused');
     }
 
-    // The PR speaks for the work, not for the command that started it (issue #82): a
+    // The PR speaks for the work, not for the command that started it: a
     // summarizer script reads the branch — its commits and the diff against the default
     // — in the same throwaway-container shape as every other step. It needs no
     // credential (local git reads only) and its failure is decoration: the
     // command-derived plan title and the plain body stay the fallback. BACKSTOP_TITLE names
     // this publish's own just-created commit (its subject IS plan.title) so the script never
-    // selects the command text as the title (issue #389) — the commit's work stays in the
+    // selects the command text as the title — the commit's work stays in the
     // diff and its subject in the body, but it cannot win the title.
     const summarized = await runStep({
         label: 'pr summary',

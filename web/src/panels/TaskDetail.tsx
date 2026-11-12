@@ -336,7 +336,7 @@ export function TaskDetail({
     const latest = jobs === null || jobs.length === 0 ? null : jobs[jobs.length - 1];
 
     // Three scrollers follow what streams in, each only while its reader is near its own bottom
-    // (BEL-263): the conversation (with a Jump to latest when the reader is away), and the live
+    //: the conversation (with a Jump to latest when the reader is away), and the live
     // run's raw-output well. The log opened from its summary lands on the tail in `TaskRun`.
     // `jobs` changes identity with every poll; the hook judges height, not identity.
     const conversation = useStickToBottom<HTMLElement>(threadContentKey(jobs));

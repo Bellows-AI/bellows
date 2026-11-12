@@ -15,7 +15,7 @@ import { createServer } from 'node:http';
 const port = Number(process.env.STUB_IDP_PORT ?? Number(process.env.E2E_PORT_BASE ?? 8123) + 2);
 const login = process.env.STUB_IDP_LOGIN ?? 'e2e-user';
 const userId = Number(process.env.STUB_IDP_USER_ID ?? 424242);
-// The installations the account can see (#99) — the membership decision. Comma-separated ids;
+// The installations the account can see — the membership decision. Comma-separated ids;
 // each becomes an organization named after `stub-org-<id>` at sign-in.
 const installations = (process.env.STUB_IDP_INSTALLATIONS ?? '999999')
     .split(',')
@@ -27,7 +27,7 @@ const json = (response, body, status = 200) => {
     response.end(JSON.stringify(body));
 };
 
-// ── Atlassian (Jira 3LO), BEL-61 ──
+// ── Atlassian (Jira 3LO) ──
 // The same arrangement for the connection flow: the board's ATLASSIAN_*_URL overrides point at
 // /atlassian/*. Nobody is here to consent either, so the consent screen redirects straight back as
 // whichever account `POST /atlassian/_control` last selected (`a` or `b`), or with access_denied.
@@ -138,7 +138,7 @@ createServer(async (request, response) => {
         return;
     }
 
-    // The membership decision itself: what the callback asks with the exchanged token (#99).
+    // The membership decision itself: what the callback asks with the exchanged token.
     if (url.pathname === '/user/installations') {
         json(response, {
             installations: installations.map((id) => ({ id: Number(id), account: { login: `stub-org-${id}` } })),

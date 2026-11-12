@@ -70,7 +70,7 @@ export interface BoardJobRecord {
     sessionId: string | null;
     exitCode: number | null;
     failureKind: string | null;
-    /** Beside a `gate`, `publish` or `helper` kind: what caused it (#581), which batch recovery decides on. */
+    /** Beside a `gate`, `publish` or `helper` kind: what caused it, which batch recovery decides on. */
     failureCause: string | null;
     summary: string | null;
     gates: readonly { name: string; status: string; exitCode?: number | null; output?: string | null }[] | null;
@@ -105,7 +105,7 @@ export interface JobActivity {
     buckets: readonly { start: string; tokens: Tokens; edits: number | null }[];
     usage: UsageBlock;
     task: TaskUsage | null;
-    /** This run's gate and PR activity (issue #983), and the same over every run of the task. */
+    /** This run's gate and PR activity, and the same over every run of the task. */
     gates: GateActivity;
     prs: PrActivity;
     taskActivity: { gates: GateActivity; prs: PrActivity };
@@ -313,9 +313,9 @@ export interface BoardClient extends BatchRoutes {
         executorScope?: 'user' | 'org' | undefined;
         /** The branch the task is based on; absent lets the board use the repo's default branch. */
         baseBranch?: string | undefined;
-        /** The task's own title (BEL-252), sent verbatim: the board normalizes it. Absent leaves the derived title. */
+        /** The task's own title, sent verbatim: the board normalizes it. Absent leaves the derived title. */
         title?: string | undefined;
-        /** The skills the task selects (issue #545); absent selects none. */
+        /** The skills the task selects; absent selects none. */
         skills?: string[] | undefined;
         /** Names this logical attempt; a repeat under the same key never makes a second task. */
         idempotencyKey?: string | undefined;

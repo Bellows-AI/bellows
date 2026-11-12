@@ -98,7 +98,7 @@ describe.skipIf(!enabled)('job store', () => {
         expect((await store.claim('w2', LEASE_SECONDS))?.id).toBe(second);
     });
 
-    // An expired lease is the attempt's interruption (issue #822), not a spent try: the claim
+    // An expired lease is the attempt's interruption, not a spent try: the claim
     // sequence is what moves, and the attempt count stays.
     it('reclaims an expired lease with a fresh token and a bumped claim sequence', async () => {
         const { id } = await queue('echo hi');
@@ -444,7 +444,7 @@ describe.skipIf(!enabled)('job store', () => {
             failureKind: 'timeout',
         });
         // The column itself: the reason is queryable ("how many timeouts this week", "timeouts
-        // where the gates passed"), which is the whole point of the structured kind (issue #339).
+        // where the gates passed"), which is the whole point of the structured kind.
         const rows = await sql<{ failure_kind: string | null }[]>`
             select failure_kind from job where org_id = ${ORG} and id = ${first.id}
         `;
@@ -589,7 +589,7 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     /**
-     * The attempt's service fleet rides the same runtime object (issue #60), and the object
+     * The attempt's service fleet rides the same runtime object, and the object
      * merges KEY-WISE: a report without services keeps the fleet a previous one carried, a
      * report whose numbers could not be read keeps the last good numbers, and the claim clears
      * the whole column — the fleet describes the attempt that took the lease, exactly like the
@@ -708,7 +708,7 @@ describe.skipIf(!enabled)('job store', () => {
         expect(second).toMatchObject({ id: followUp.id, resumeSessionId: ses, followUp: true });
     });
 
-    // The attempt whose lease expired was lost, not failed (issue #822): its session is the
+    // The attempt whose lease expired was lost, not failed: its session is the
     // conversation the takeover continues, on the same row, under the next claim sequence.
     it('keeps the session of an expired attempt and offers it to resume', async () => {
         const { id } = await queue('echo hi');
@@ -850,7 +850,7 @@ describe.skipIf(!enabled)('job store', () => {
         });
     });
 
-    // The orphan reaper's batched lookup (issue #301): status and CURRENT lease per id, and
+    // The orphan reaper's batched lookup: status and CURRENT lease per id, and
     // silence — never a row — for the ids this org's board does not know.
     it('answers leases() with the status and current lease of every known id, and nothing for unknown ones', async () => {
         const { id: claimedId } = await queue('claimed');

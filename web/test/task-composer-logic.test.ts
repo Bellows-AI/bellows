@@ -364,7 +364,7 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
         expect('defaultWorkflow' in body).toBe(false);
     });
 
-    it('ignores a legacy `title` on a restored draft without throwing (BEL-261)', () => {
+    it('ignores a legacy `title` on a restored draft without throwing', () => {
         const legacy = { ...held, title: '  Fix the login crash ' } as ComposerDraftInput;
         const body = queuedTask(legacy, [], {});
         expect('title' in body).toBe(false);

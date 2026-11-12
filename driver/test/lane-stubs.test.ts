@@ -77,7 +77,7 @@ describe('the lane stub executor images', () => {
         expect(dockerfile(script, '"$work/github/Dockerfile"')).toContain(
             'COPY credential-broker.cjs /usr/local/bin/credential-broker.cjs\\n'
         );
-        // The acceptance phase runs the kind lane's own stub (#779), so both lanes answer the same words.
+        // The acceptance phase runs the kind lane's own stub, so both lanes answer the same words.
         expect(script).toContain('cp scripts/k8s-stub.sh "$work/acc/stub.sh"');
         // The service stub is no agent: no supervisor watches it.
         expect(dockerfile(script, '"$work/svc/Dockerfile"')).not.toContain('stub-agent.sh');
@@ -94,7 +94,7 @@ describe('the lane stub executor images', () => {
         expect(line).toContain(
             'COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs skill-view.cjs jira.cjs task-title.cjs /usr/local/bin/\\n'
         );
-        // BEL-252: the stub's title branch calls the baked helper.
+        // the stub's title branch calls the baked helper.
         expect(read('scripts/k8s-stub.sh')).toMatch(
             /\*factory-stub-title\*\)[\s\S]*node \/usr\/local\/bin\/task-title\.cjs/
         );

@@ -9,7 +9,7 @@ import { SHUTDOWN_DEADLINE_MS } from '../src/shutdown.js';
 import { useTestDb } from './harness.js';
 
 /**
- * Graceful shutdown (BEL-322): `start()` returns a handle whose `close()` answers the open settle long-polls at once,
+ * Graceful shutdown: `start()` returns a handle whose `close()` answers the open settle long-polls at once,
  * refuses new requests, settles every loop and ends the pools — all inside one deadline, so a SIGTERM never strands a
  * request until its timeout nor cuts a pass mid-query.
  */

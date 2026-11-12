@@ -17,7 +17,7 @@ import {
 } from './lock-order-harness.js';
 
 /**
- * BEL-157 / BEL-81: the claim holds its candidate's ROW and must never WAIT for the thread's advisory lock, because
+ * the claim holds its candidate's ROW and must never WAIT for the thread's advisory lock, because
  * every thread-wide writer (retry, follow-up, remove, merge close, done) takes the advisory lock first and then waits
  * on a member row the claim may hold. Each L case drives the real claim() to a pause in the plan reader, queues the
  * writer behind a shared row lock, and requires both to finish: a 40P01 is the inversion, never a timing accident.

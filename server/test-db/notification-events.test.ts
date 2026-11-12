@@ -11,7 +11,7 @@ import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js'
 import { craftJob, mustCreate, testOrg } from './fixtures.js';
 
 /**
- * BEL-128: every committed job.status change to a settled verdict records one durable
+ * every committed job.status change to a settled verdict records one durable
  * notification_event in the same transaction (succeeded → task.ready, failed/dead → task.blocked),
  * judged on the status the transaction commits, never on the statement's NEW row.
  */

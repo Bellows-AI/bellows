@@ -442,7 +442,7 @@ describe('finding the connection', () => {
         expect(down.jira.calls).toHaveLength(0);
     });
 
-    // BEL-243 counterpart: the helper re-reads the relayed pair on each try, so a pending answer under the
+    // Counterpart: the helper re-reads the relayed pair on each try, so a pending answer under the
     // superseded lease is followed by the adopting claim's. A pin: green before the fix.
     it('rides a 503 LEASE_PENDING from the connection list onto the relayed pair', async () => {
         const OLD = '55555555-5555-4555-8555-555555555555';

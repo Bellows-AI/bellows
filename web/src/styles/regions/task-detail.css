@@ -33,7 +33,7 @@
         min-width: 0;
     }
 
-    /* The main column is a bounded flex column (BEL-263): the conversation is its one scroll
+    /* The main column is a bounded flex column: the conversation is its one scroll
        region and the follow-up composer docks under it, so the composer never moves as output
        grows. Narrow, the block is a viewport tall (100dvh less the app bar and the page padding)
        inside the page's own flow; from 1024px the shell is bounded instead, below. */

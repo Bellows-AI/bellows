@@ -20,16 +20,16 @@ export class SkillGone extends Error {}
 export class SkillCorrupt extends Error {}
 
 /**
- * What a claim carries of its pin (BEL-273): every enabled org and workspace skill the row was pinned to, each a version
+ * What a claim carries of its pin: every enabled org and workspace skill the row was pinned to, each a version
  * the board serves under the lease; an empty list means none. A pin the claim carried but this client cannot read is
  * `skillPinUnreadable`, never an empty pin: the run is left to its lease instead of starting without its skills.
  */
 export interface ClaimSkills {
     skillPin?: ClaimSkill[];
     skillPinUnreadable?: string;
-    /** The built-in skill names this task does not list (BEL-286); empty means none hidden. */
+    /** The built-in skill names this task does not list; empty means none hidden. */
     skillHidden?: string[];
-    /** A `skillHidden` the claim carried but this client cannot read: never "nothing hidden" (BEL-286). */
+    /** A `skillHidden` the claim carried but this client cannot read: never "nothing hidden". */
     skillHiddenUnreadable?: string;
 }
 
@@ -79,7 +79,7 @@ const HIDDEN_SOURCES: readonly string[] = ['builtin', 'org', 'workspace'];
 const HIDDEN_REASONS: readonly string[] = ['switched_off', 'needs_connection'];
 
 /**
- * A claim's `skillHidden` (BEL-286), the board's list of skills this task does not see: the built-in names the runner
+ * A claim's `skillHidden`, the board's list of skills this task does not see: the built-in names the runner
  * must not list, or a reason string. The board always sends the field, so an absent one is as unreadable as a malformed
  * one, never "nothing hidden". Hidden org and workspace skills are simply not pinned, so only built-ins matter here.
  */

@@ -205,7 +205,7 @@ describe('final envelope (issue #821 D1)', () => {
 
         await drive({ ...board, runner });
 
-        // The lease is the new holder's: its adoption owns the finished runner, so this end finishes nothing (#828).
+        // The lease is the new holder's: its adoption owns the finished runner, so this end finishes nothing.
         expect(order).toEqual(['stage']);
         expect(board.board.completed).toEqual([]);
     });

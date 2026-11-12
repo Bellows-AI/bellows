@@ -17,7 +17,7 @@ const outcomeSentence = ({ label, outcome, target }: ConnectionOutcome): string 
         : `The user chose to continue without the ${label} connection; do not ask for it again, and say so in your final report where it matters.`;
 
 /**
- * What a claim that continues an interrupted attempt in its session is prompted with (issue #822):
+ * What a claim that continues an interrupted attempt in its session is prompted with:
  * the resumed conversation already holds the task, and handing it over afresh would have the agent
  * repeat what the lost attempt already did. The command follows whole, never cut — on the
  * unwritten-session fallback this text is all the agent gets, and argv carries no command cap.

@@ -1,5 +1,5 @@
 /**
- * The one attempt phase and the one first-wins ending (issue #828). Every writer of either goes
+ * The one attempt phase and the one first-wins ending. Every writer of either goes
  * through `transition` and `recordEnding`, and each change writes exactly one structured line, so an
  * attempt's phase path can be rebuilt from its log alone.
  */

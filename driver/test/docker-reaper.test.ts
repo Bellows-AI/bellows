@@ -578,7 +578,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
                 `factory-kill-timeout-${JOB}-${LEASE}`,
             ])
         );
-        // Live under NEW_LEASE: no task group of the job is reaped (issue #821) — the superseded
+        // Live under NEW_LEASE: no task group of the job is reaped — the superseded
         // LEASE group is the replacement fence's to sweep, the unread LEASE2 group keeps its kill
         // marks for the claim that adopts it, and the live attempt's own group is never touched.
         expect(await sweep([{ id: JOB, leaseToken: NEW_LEASE, status: 'running' }])).toEqual([]);

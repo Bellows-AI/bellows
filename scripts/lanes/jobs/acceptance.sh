@@ -1,6 +1,6 @@
 if selected_phase acceptance; then
 begin_phase acceptance
-# --- The failure matrix, accepted end to end (issue #779) -------------------------------------
+# --- The failure matrix, accepted end to end -------------------------------------
 #
 # The docker twin of the kind lane's acceptance phase (scripts/test-k8s.sh): a driver runs a task
 # whose runner leaves a transcript on the task volume (scripts/k8s-stub.sh `factory-stub-transcript-<n>`),

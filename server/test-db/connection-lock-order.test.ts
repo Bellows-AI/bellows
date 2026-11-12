@@ -23,7 +23,7 @@ import {
 } from './lock-order-harness.js';
 
 /**
- * BEL-59 lock order: thread root row (no key update) -> thread advisory lock -> grant -> connection -> child
+ * The lock order: thread root row (no key update) -> thread advisory lock -> grant -> connection -> child
  * inserts. Each test drives the REAL claim() to a pause in the plan reader, queues a second transaction behind it,
  * and requires both to finish: a lock-order inversion is a 40P01 here, never a timing accident.
  */

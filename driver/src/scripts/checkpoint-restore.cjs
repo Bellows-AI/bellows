@@ -1,5 +1,5 @@
 // @ts-check
-// The task tree, rebuilt from the thread's checkpoint on a replacement volume (issue #775): the
+// The task tree, rebuilt from the thread's checkpoint on a replacement volume: the
 // counterpart of checkpoint.cjs. The checkpoint stream is one JSON header line, then the git bundle
 // of the whole tree's commit (against what the remote already had), then the OpenCode snapshot. The
 // driver serves the stream's chunks over the control channel; this script reads each one (its sha256

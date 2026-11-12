@@ -764,7 +764,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
     });
 
-    // A spawn failure is a fact the run throws, at once: it tears nothing down (#828) — the services
+    // A spawn failure is a fact the run throws, at once: it tears nothing down — the services
     // it started are the loop's `releaseServices` to take down, which still finds and removes them.
     it('rejects a spawn error at once, leaving the services for the loop to release', async () => {
         const exec = vitest.fn(async (args: string[]) => {
@@ -820,7 +820,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             .map((call) => call[0])
             .filter((args) => args[0] === 'rm' && [supervisorName(job), exporterName(job)].includes(args[2] ?? ''));
 
-    // The run is no teardown owner beside the loop's `end()` (#828): a spawn that errored rejects
+    // The run is no teardown owner beside the loop's `end()`: a spawn that errored rejects
     // with the group untouched, and the loop's `finish` or its retention decides.
     it('removes nothing of the group when a spawn errors before rejecting', async () => {
         const exec = daemon();

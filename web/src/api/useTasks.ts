@@ -29,7 +29,7 @@ export interface TaskSummary {
     id: string;
     /** The root command; the fallback title derives from it. */
     command: string;
-    /** The root's stored title, or null while the fallback stands (BEL-252). */
+    /** The root's stored title, or null while the fallback stands. */
     title: string | null;
     titleOrigin: TaskTitleOrigin | null;
     titleRevision: number;

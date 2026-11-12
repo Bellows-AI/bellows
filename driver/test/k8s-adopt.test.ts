@@ -513,7 +513,7 @@ describe('a live run (#829)', () => {
         expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, priorName)))).toBe(false);
     });
 
-    // BEL-160: the sweep after a live takeover meets a pod stuck terminating on a gone node.
+    // the sweep after a live takeover meets a pod stuck terminating on a gone node.
     it('rejects a live takeover whose sweep meets a terminating leftover with LeftoverTerminating, owning no group and keeping the claim', async () => {
         const stuck = {
             metadata: {

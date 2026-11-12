@@ -257,7 +257,7 @@ describe('the branch reporter: wire shape and redirects', () => {
         }
     });
 
-    // An adopting claim rotates the lease under a container whose env stays as it was (#1045): the
+    // An adopting claim rotates the lease under a container whose env stays as it was: the
     // supervisor's answer on the control socket is the lease the board now accepts.
     it.each([
         ['claude', CLAUDE_AGENT],
@@ -520,7 +520,7 @@ describe('the branch reporter: opencode session discovery', () => {
     });
 
     // A retry is a fresh run in the SAME task: its directory and session database already hold
-    // the conversation an earlier attempt had (issue #822). Reported live, that id would land on
+    // the conversation an earlier attempt had. Reported live, that id would land on
     // the retry's row and a recovery would resume it — so the entrypoint names it before opencode
     // starts, and discovery waits for the run's own.
     describe('a session that predates the run', () => {
@@ -676,7 +676,7 @@ describe('the branch reporter: opencode session discovery', () => {
     });
 });
 
-// The opencode entrypoint asks before it drops a resumed `--session` (issue #822): 0 the database
+// The opencode entrypoint asks before it drops a resumed `--session`: 0 the database
 // holds the session, 1 it certainly does not — no database, or no such row — and 2 unknown. The
 // one reader of the database path and the session table, so the entrypoint carries no copy.
 describe('the branch reporter: --has-session', () => {

@@ -1,6 +1,6 @@
 if selected_phase run-deadline; then
 begin_phase run-deadline
-# --- The run deadline through the task supervisor (issue #770) --------------------------------
+# --- The run deadline through the task supervisor --------------------------------
 #
 # A run past its budget is ended by its supervisor, never by the docker backstop: the job fails
 # with the driver's timeout note well inside the backstop, and the supervisor's logged report

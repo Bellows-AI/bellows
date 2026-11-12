@@ -80,7 +80,7 @@ describe('reviewEvidenceOf', () => {
     });
 });
 
-/** A row of a named-profile review (issue #549): bound to the revision the caller asked about. */
+/** A row of a named-profile review: bound to the revision the caller asked about. */
 const profileRow = (over: Partial<EvidenceRow> = {}): EvidenceRow => ({
     node: null,
     status: 'succeeded',

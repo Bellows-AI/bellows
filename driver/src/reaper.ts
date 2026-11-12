@@ -10,19 +10,19 @@ import {
 
 export type { VolumeExport, VolumeExportAttempt, VolumeExportResult };
 
-/** What the reaper reports about each sweep (issue #831). */
+/** What the reaper reports about each sweep. */
 export interface ReaperObserver {
     sweep(outcome: 'ok' | 'aborted' | 'error', seconds: number): void;
     scanned(what: 'groups' | 'objects' | 'volume_threads', count: number): void;
     /**
-     * One thread's volume export finished (issue #938): `lost` is the volume deleted after its last
+     * One thread's volume export finished: `lost` is the volume deleted after its last
      * attempt failed, bytes the board never got.
      */
     volumeExport?(result: VolumeExportResult | 'lost'): void;
 }
 
 /**
- * The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
+ * The orphan reaper: the periodic watcher that reaps service objects whose owning
  * job can no longer use them. This file is the executor-neutral core — the decision table and
  * the sweep timer. The platform arms it drives are `k8s-reaper.ts` (Jobs, the attempt-scoped env
  * Secrets, the checkout claim) and `docker-reaper.ts` (service containers and the task group's
@@ -38,12 +38,12 @@ export interface OrphanObject {
     kind: 'job' | 'container' | 'volume';
     name: string;
     /**
-     * A runner that finished after its driver died (issue #792): the next claim's to adopt, so a
+     * A runner that finished after its driver died: the next claim's to adopt, so a
      * `superseded` verdict spares its whole group — only a `gone` job's is reaped.
      */
     unread?: true;
     /**
-     * A runner of the attempt, running or finished (issue #821): a scan is a snapshot, and one listed
+     * A runner of the attempt, running or finished: a scan is a snapshot, and one listed
      * running may finish before its reap, so a live job's runner group is its next claim's fence's to
      * adopt or sweep — a `superseded` verdict spares the whole group, only a `gone` job's is reaped.
      */
@@ -94,14 +94,14 @@ export interface ReaperArm {
      */
     reap(group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[] | ReapInconclusive>;
     /**
-     * Every task volume of the platform (issue #775), all generations, grouped by thread root; null when
+     * Every task volume of the platform, all generations, grouped by thread root; null when
      * the listing proved nothing — a refused call or a row it could not read — and the round deletes none.
      */
     scanVolumes?(): Promise<VolumeListing | null>;
     /** Deletes every generation of one thread, answering a line per volume actually removed. */
     reapVolumes?(thread: VolumeThread): Promise<readonly string[] | ReapInconclusive>;
     /**
-     * Uploads the transcript bytes the thread's newest generation still holds unacknowledged (issue #938):
+     * Uploads the transcript bytes the thread's newest generation still holds unacknowledged:
      * the one-shot exporter over that volume, under `attempt`'s identity, ended and removed on every exit
      * path, killed when `signal` aborts. Only `drained` licenses the delete; anything else keeps the volume.
      */
@@ -138,7 +138,7 @@ export interface VolumePolicy {
 
 /**
  * The statuses a job can never come back from — the objects its attempts created are orphans.
- * Exported because the reclaim loop's orphaned-claim decision (issue #344) must read the SAME
+ * Exported because the reclaim loop's orphaned-claim decision must read the SAME
  * vocabulary the reaper decides with, not a restated list that can drift.
  */
 export const TERMINAL_JOB_STATUSES: readonly string[] = ['succeeded', 'failed', 'dead', 'stopped'];
@@ -174,7 +174,7 @@ export function reapDecision(
 }
 
 /**
- * Whether a thread's task volumes may go (issue #775), pure. Deleted only when no job of the thread is
+ * Whether a thread's task volumes may go, pure. Deleted only when no job of the thread is
  * live and its last attempt finalized, and then only once idle for the ttl when everything it left is
  * whole — its artifacts all terminal and a complete checkpoint of that attempt — or for the (longer)
  * bound when it is not: a truncated checkpoint or a pending artifact keeps the tree up to the bound,
@@ -192,7 +192,7 @@ export function volumeDecision(
 }
 
 /**
- * Whether a thread's task volumes may go, given the board's lease row for its root (issue #775), pure.
+ * Whether a thread's task volumes may go, given the board's lease row for its root, pure.
  * A row answers by its thread facts. NO row — the root absent from a fully confirmed answer, which is
  * how `removeTask` leaves a thread — can never finalize again, so its volumes go once every one is at
  * least the ttl old; a creation time that could not be read keeps them.
@@ -270,7 +270,7 @@ const reapOne = async (
 ): Promise<void> => {
     const verdict = reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs);
     if (verdict === null) return;
-    // A live job's next claim adopts it (issue #792), or its fence sweeps it: never deleted from a scan.
+    // A live job's next claim adopts it, or its fence sweeps it: never deleted from a scan.
     if (verdict === 'superseded' && group.objects.some((object) => object.unread || object.runner)) return;
     const removed = settleReap(await arm.reap(group, verdict), `job ${group.jobId}`, ctx);
     for (const line of removed) {
@@ -336,12 +336,12 @@ export function createReaper(deps: {
     graceMs: number;
     log?: (message: string) => void;
     now?: () => number;
-    /** Sweeps task volumes (issue #775) when set and the arm lists them. */
+    /** Sweeps task volumes when set and the arm lists them. */
     volumePolicy?: VolumePolicy;
-    /** Reports each sweep (issue #831): its outcome and duration, and what it scanned. */
+    /** Reports each sweep: its outcome and duration, and what it scanned. */
     observe?: ReaperObserver;
     /**
-     * How many failed re-exports of a not-whole thread (issue #938) the reaper tolerates before it deletes
+     * How many failed re-exports of a not-whole thread the reaper tolerates before it deletes
      * the volume and logs the loss; counted in memory per thread root, so a driver restart starts over.
      */
     exportAttempts?: number;

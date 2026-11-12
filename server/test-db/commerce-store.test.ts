@@ -5,7 +5,7 @@ import { createCommerceStore, type CommerceStore, type UsageLease } from '../src
 import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
 
-/** BEL-146: the per-org usage outbox over `job_execution`, and the member read of the pushed plan. */
+/** the per-org usage outbox over `job_execution`, and the member read of the pushed plan. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const OTHER = testOrg();
@@ -120,7 +120,7 @@ describe.skipIf(!enabled)('commerce store — database', () => {
         ]);
     });
 
-    // BEL-163: enqueue and lease must read one clock. The store's clock runs 10 minutes behind the database's,
+    // enqueue and lease must read one clock. The store's clock runs 10 minutes behind the database's,
     // so a row stamped by the database default would not be due yet.
     it('a row queued under the store clock is due at that clock', async () => {
         const behind = new Date(Date.now() - 10 * MINUTE_MS);

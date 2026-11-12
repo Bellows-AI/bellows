@@ -1,6 +1,6 @@
 if selected_phase repo-skills; then
 begin_phase repo-skills
-# --- A repo's own skill reaches the agent on both runtimes (BEL-270) ---------------------------------
+# --- A repo's own skill reaches the agent on both runtimes ---------------------------------
 #
 # The board accepts a skill the checkout ships (<checkout>/.claude/skills/<name>/SKILL.md); only the
 # real CLIs can say whether they then offer it to the model. The endpoint's `--skill-sentinel` mode

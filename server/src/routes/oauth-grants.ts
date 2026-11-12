@@ -8,7 +8,7 @@ const HTTP_NOT_FOUND = 404;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The connected-apps API (BEL-103; docs/auth.md): a member lists and ends the MCP grant families they hold in every
+ * The connected-apps API (docs/auth.md): a member lists and ends the MCP grant families they hold in every
  * organization they belong to. Cookie session only, and route-class `none`, so an MCP token can neither list the
  * grants nor end one. A family that is not the caller's, unknown or already ended is 404 alike.
  */

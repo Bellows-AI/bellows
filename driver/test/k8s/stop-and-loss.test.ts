@@ -106,7 +106,7 @@ describe('the paused deadline for an agent question', () => {
         expect(patches.map((patch) => patch.metadata.uid)).toEqual(['job-uid']);
     });
 
-    // A Job whose incarnation cannot be named could be a replacement under the name (#869): no write.
+    // A Job whose incarnation cannot be named could be a replacement under the name: no write.
     it.each([
         ['no uid', { spec: { activeDeadlineSeconds: 120 }, metadata: {} }],
         ['no metadata', { spec: { activeDeadlineSeconds: 120 } }],
@@ -350,7 +350,7 @@ describe('runnerLossOf (issue #560)', () => {
     });
 });
 
-describe('groupTakenAway: the executor confirms the task group was taken away (BEL-302)', () => {
+describe('groupTakenAway: the executor confirms the task group was taken away', () => {
     const pod = (status: Record<string, unknown>) => ({ metadata: { name: podName }, status });
     const answering = (answer: K8sRequest | { status: number; body: string }) =>
         runner(typeof answer === 'function' ? answer : async () => answer);

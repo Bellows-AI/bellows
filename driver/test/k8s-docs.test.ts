@@ -43,7 +43,7 @@ describe('the EKS prerequisites record', () => {
     });
 
     // Issue #887: the reaper's scope is the release on kubernetes, the board label on docker.
-    it('states that an unconfirmed group read is a blocked interrupt, with the unbounded-retry limit (BEL-316)', () => {
+    it('states that an unconfirmed group read is a blocked interrupt, with the unbounded-retry limit', () => {
         expect(prose(kubernetesDocs)).toContain('is `unknown`, a blocked interrupt that spends no budget');
         expect(prose(kubernetesDocs)).toContain('re-queues the task with no bound');
     });
@@ -138,7 +138,7 @@ describe('the executor isolation record (#382)', () => {
     it('states the deployment assumptions, each of which is silent when absent', () => {
         expect(kubernetesDocs).toContain('A CNI that enforces NetworkPolicy');
         // 1.33: the first release with the `pods/resize` subresource the gate sidecar is resized
-        // through, beside native sidecars and ValidatingAdmissionPolicy (issue #773, checked on kind
+        // through, beside native sidecars and ValidatingAdmissionPolicy (checked on kind
         // v1.33.4).
         expect(kubernetesDocs).toContain(
             'ValidatingAdmissionPolicy, native sidecars and `pods/resize`, Kubernetes ≥ 1.33'

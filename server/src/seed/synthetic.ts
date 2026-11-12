@@ -60,7 +60,7 @@ export interface SyntheticJob {
      * turn distribution beside tasks that measured.
      */
     readonly agentTurns: number | null;
-    /** The structured terminal reason (issue #339); absent on every ordinary succeeded run. */
+    /** The structured terminal reason; absent on every ordinary succeeded run. */
     readonly failureKind?: 'timeout';
     /** The verdict tail a timed-out run leaves in its output well. */
     readonly output?: string;
@@ -90,7 +90,7 @@ export interface SyntheticSession {
     readonly fields: Readonly<Record<string, number>>;
     /**
      * Written by the CLI as one delta row per 15-minute bucket instead of one summed midpoint
-     * row — the timed-out thread's progress-over-time series (issue #339), whose chart needs the
+     * row — the timed-out thread's progress-over-time series, whose chart needs the
      * per-bucket shape and would otherwise double-count the midpoint row beside it.
      */
     readonly bucketed?: boolean;
@@ -212,7 +212,7 @@ const TOKENLESS_LEAD_WEEKS = 3;
  * One session that reported lines and time but no token figure, in a calendar week no other
  * session touches. The weekly usage chart then always holds a bucket nothing measured, which the
  * e2e spec asserts reads as dashes. The bulk window's own quiet week is not enough: whether one
- * lines up with a calendar week depends on the weekday the seed ran on (BEL-151).
+ * lines up with a calendar week depends on the weekday the seed ran on.
  */
 function tokenlessSession({ repo, now, weeks }: { repo: string; now: Date; weeks: number }): SyntheticSession {
     const firstSeen = new Date(now.getTime() - (weeks + TOKENLESS_LEAD_WEEKS) * DAYS_PER_WEEK * DAY);
@@ -237,7 +237,7 @@ export const TIMED_OUT_TOKENS_PER_BUCKET = 2_400_000;
 export const TIMED_OUT_EDITS_PER_BUCKET = 5;
 
 /**
- * The one timed-out thread (issue #339): a failed run carrying the structured `timeout` kind, a
+ * The one timed-out thread: a failed run carrying the structured `timeout` kind, a
  * session whose metric series lands one row per 15-minute bucket of its two-hour wall clock —
  * steady work in every bucket, the shape that reads "was still working when it was killed". The
  * task page's timeout badge and run-activity chart render from exactly these rows.

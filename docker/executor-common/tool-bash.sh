@@ -1,5 +1,5 @@
 #!/bin/sh
-# The agent CLI's shell, installed as /usr/local/libexec/factory-tool/bash (issue #814): Claude Code
+# The agent CLI's shell, installed as /usr/local/libexec/factory-tool/bash: Claude Code
 # takes it through CLAUDE_CODE_SHELL, whose path must name bash, and OpenCode through SHELL. Every
 # command runs as the tool uid through the broker factory-launch started (factory-tool.cjs). With
 # no broker socket at all — the image run by hand, not as root — it is plain bash, as before. A

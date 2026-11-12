@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * `factory-gate <name> [--filter <value>]`: run one declared gate on the gate server (issue #1061).
+ * `factory-gate <name> [--filter <value>]`: run one declared gate on the gate server.
  *
  * The agent's skills call this instead of a hand-built request, so the managed allowlist can
  * pre-approve exactly this command (`Bash(factory-gate *)`) without admitting a `curl` whose `*`
  * would take any URL. The destination is fixed here: POST /gate/run on the agent's control socket
  * (`control-proxy.cjs`, the one `factory-control` and `attempt-pair.cjs` use), which the supervisor's
- * relay carries to whichever driver holds the run now (BEL-88). The agent holds no gate URL and no
+ * relay carries to whichever driver holds the run now. The agent holds no gate URL and no
  * token; the arguments only choose the gate and its filter, and the JSON is built by an encoder,
  * never by a shell.
  *

@@ -12,7 +12,7 @@
  *   node github-credential.cjs clear       revoke the cached token and remove the cache, at the entrypoint's exit
  *
  * Reads FACTORY_STATS_URL (the board) and the attempt pair through `attempt-pair.cjs`: the container's
- * RUNNER_JOB_ID and RUNNER_LEASE_TOKEN, with the lease the supervisor names now (#1045).
+ * RUNNER_JOB_ID and RUNNER_LEASE_TOKEN, with the lease the supervisor names now.
  * The token goes to stdout and nowhere else — stdout is the channel git and the wrapper read — and
  * never to stderr, which carries only guidance a person can act on. A refusal exits non-zero, and
  * git then falls back to no credential.

@@ -6,7 +6,7 @@
  * bounded, versioned JSON verdict — the state future review reconciliation reads, and the reply
  * planner validates against. One execFileSync per gh call, direct argv only: no shell, no
  * interpolation, no value can become a command. The credential rides gh's own env (GH_TOKEN or
- * GITHUB_TOKEN) and never appears in argv, in an error, or on stdout (issue #201).
+ * GITHUB_TOKEN) and never appears in argv, in an error, or on stdout.
  *
  * Environment:
  *   REPO  owner/name of the repository;
@@ -19,7 +19,7 @@
  * deduped by GitHub id, capped, and stable-sorted, so the same upstream state always produces the
  * same bytes. `addressed` is the sorted keys whose Factory reply marker any general or inline
  * comment carries, read before the caps — a thread reply is an inline comment too — so whether an
- * item was already answered never depends on which rows a section kept (issue #826).
+ * item was already answered never depends on which rows a section kept.
  * REST carries the bulk (numeric ids, full bodies, diff hunks, --paginate); GraphQL carries what REST
  * does not expose: review-thread node ids, their resolved state, the PR's review decision and its
  * head commit. `pendingChecks` counts the head's check runs not yet completed (a review bot is

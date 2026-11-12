@@ -25,7 +25,7 @@ import { createBatchStore } from '../src/db/batches/batch-store.js';
 import { batchPlan, headOf, rootOf, startBatch } from './batch-fixtures.js';
 
 /**
- * BEL-129: the durable notification outbox. The settle's own transaction fans an event out to the
+ * the durable notification outbox. The settle's own transaction fans an event out to the
  * subscriptions that match it at that moment (104); a replica-safe deliverer leases the rows, sends through the
  * connector registry and settles each one on the store's injected clock.
  */
@@ -829,7 +829,7 @@ const ALICE = ALICE_USER.id;
 const BOB = BOB_USER.id;
 const owner = (userId: string) => ({ kind: 'user', userId }) as const;
 
-describe.skipIf(!enabled)('notification outbox — personal subscriptions (BEL-177)', () => {
+describe.skipIf(!enabled)('notification outbox — personal subscriptions', () => {
     beforeEach(async () => {
         if (!enabled) return;
         await sql`delete from notification_subscription where org_id = ${ORG}`;

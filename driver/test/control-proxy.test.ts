@@ -9,7 +9,7 @@ import { CONNECTION_PATH, GATE_RUN_PATH, PUBLISH_PATH, REVIEW_PATH } from '../sr
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
- * The agent's run-control proxy (issue #814), shipped in both executor images: the agent's tools run
+ * The agent's run-control proxy, shipped in both executor images: the agent's tools run
  * as their own uid and hold no run-control credential, and reach the routes the baked skills call
  * through this socket, which forwards them to the supervisor's relay (#829 S3c), where the token is
  * added. Driven against a fake relay over scratch sockets.

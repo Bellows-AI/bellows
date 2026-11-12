@@ -13,7 +13,7 @@ const DIR = new URL('../../migrations/', import.meta.url);
 
 export interface MigrateOptions {
     /**
-     * Whether to prepare the single LOCAL organization AUTH_MODE=none lives in (#99): the
+     * Whether to prepare the single LOCAL organization AUTH_MODE=none lives in: the
      * `default` row and the stand-in account.
      *
      * Github mode leaves all of it alone — there the organizations are the App's installations,
@@ -118,7 +118,7 @@ export async function reapSessions(sql: Sql | TransactionSql): Promise<number> {
 }
 
 /**
- * Drops pending sign-ins (#125) nobody can complete any more.
+ * Drops pending sign-ins nobody can complete any more.
  *
  * The pending row is the single-use hop between the OAuth callback and the selection screen; the
  * read path spends an expired row on sight regardless (findPendingSignIn deletes it), so like

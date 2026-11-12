@@ -14,7 +14,7 @@ import { useTestDb } from './harness.js';
 import { DEADLINE_MS, holder, pool, settledWithin, value, waitForLockWait } from './lock-order-harness.js';
 
 /**
- * BEL-161: the bind locks the thread's ROOT ROW (`for no key update`) and then the thread advisory lock, so every
+ * the bind locks the thread's ROOT ROW (`for no key update`) and then the thread advisory lock, so every
  * thread writer must take them in that order too. Each B case holds the root row `for share`, queues the bind on
  * it, queues the writer behind it, releases, and requires both to finish: a 40P01 is the inversion (the writer held
  * the advisory lock and waited on the root row the bind then held).

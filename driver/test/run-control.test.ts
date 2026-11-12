@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
 /*
- * The runner's half of the cooperative Stop (issue #442): the mailbox agent turns what the task
+ * The runner's half of the cooperative Stop: the mailbox agent turns what the task
  * supervisor wrote into the agent's read-only directory into a marker file, and the agent-side
  * mechanism — Claude Code's PostToolUse hook, OpenCode's plugin — reads only that marker. The agent
  * holds no control credential at all. The real binaries are the `test:jobs` lane's business

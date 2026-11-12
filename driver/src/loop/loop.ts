@@ -19,7 +19,7 @@ export interface Loop {
     start(): Promise<void>;
     stop(): void;
     /**
-     * Hands every attempt still in flight back to the board as an interruption (issue #792): each
+     * Hands every attempt still in flight back to the board as an interruption: each
      * reads as lost from here — nothing parked, reported or killed — and its runner is left alive
      * for the next claim. What a draining driver does before its grace runs out.
      */
@@ -83,7 +83,7 @@ function claimRefusal(job: BoardJob): { log: string; output: string; config?: tr
     }
 
     /*
-     * A repo job runs in its task worktree (issue #35), so the same rule the null
+     * A repo job runs in its task worktree, so the same rule the null
      * workspacePath above applies extends there: a board-shaped repo label this
      * driver cannot resolve a worktree path for is failed with a reason, never run
      * in a fallback location. The board's own shape validation is not this
@@ -109,8 +109,8 @@ const MS_PER_SECOND = 1_000;
 
 // A non-409 failure (a board 5xx, a dropped connection) leaves the finished run without a verdict,
 // and the lease expiry would run it again after its work already published. 409 is already an
-// answer (`lost`), so only a throw is retried — for as long as the lease the verdict still holds
-// (issue #820), since past it the board answers lost anyway; the last one propagates.
+// answer (`lost`), so only a throw is retried — for as long as the lease the verdict still holds,
+// since past it the board answers lost anyway; the last one propagates.
 function completeWithRetry(
     deps: Pick<LoopRuntime, 'board' | 'config' | 'log' | 'sleep'>,
     job: BoardJob,
@@ -136,7 +136,7 @@ function handOver(state: JobState, reason: string): void {
 }
 
 /**
- * The drain's handover (issue #792): the attempts in flight — registered on `rt.live`, where each
+ * The drain's handover: the attempts in flight — registered on `rt.live`, where each
  * `runJob` reports its own — and the latch `start()` stops waiting at.
  */
 export function handoverOf(rt: LoopRuntime) {
@@ -149,7 +149,7 @@ export function handoverOf(rt: LoopRuntime) {
     return {
         done,
         async run(reason: string): Promise<void> {
-            // An attempt whose `end` started — a verdict in flight (issue #821) or any other decision — is
+            // An attempt whose `end` started — a verdict in flight or any other decision — is
             // not handed over: its own ending and teardown decide it.
             const handing = [...live.values()].filter(
                 ({ state }) =>
@@ -165,7 +165,7 @@ export function handoverOf(rt: LoopRuntime) {
 
 /**
  * A done thread's verdict-time reclaim (`report` in `createLoop`): the removal, once the attempt's
- * group is torn down (`after`, issue #821), then its ack. Registered under the thread's root in the
+ * group is torn down (`after`), then its ack. Registered under the thread's root in the
  * reclaim barrier before it starts — the set and the start are one synchronous block, so no claimant
  * can observe the in-between — and dropped only while it is still the one registered: a replacement
  * reclaim for the same root is never undone by a predecessor settling late.
@@ -214,7 +214,7 @@ export function createLoop({
     const reclaims = new Map<string, Promise<void>>();
 
     /*
-     * The last reclaim-failure line logged per thread root, keyed by root id (issue #344): a row
+     * The last reclaim-failure line logged per thread root, keyed by root id: a row
      * the reclaim cannot settle is re-offered every lease expiry, and an orphaned checkout claim
      * makes every one of those offers refuse identically — 109 identical lines in 24h in the wild.
      * The digest of WHAT refused (the reason plus the held claim's name; deliberately not the
@@ -248,7 +248,7 @@ export function createLoop({
 
     /**
      * The verdict is reported, then the task worktree is reclaimed — but only when the thread is
-     * DONE, not merely terminal (issue #47, revised): the board answers the verdict AND whether
+     * DONE, not merely terminal (revised): the board answers the verdict AND whether
      * every member of the thread is terminal AND the user has declared it done, in one
      * lease-guarded round trip computed in the same transaction as the verdict. A thread that
      * finished without the user's done keeps its tree — a failed task's tree is exactly what its
@@ -259,7 +259,7 @@ export function createLoop({
      * follow-up's insertion: reclaim sits downstream of the verdict and runs only when the answer
      * says done-and-terminal, so a follow-up still queued keeps its tree.
      *
-     * The order is a reclaim row owned by this attempt's lease token (issue #821), renewed under it
+     * The order is a reclaim row owned by this attempt's lease token, renewed under it
      * while the removal runs (and never removed unless the first renew holds), acked under it once
      * the removal lands — the ack marks the tree reclaimed, and a lost ack response is replayed for
      * the lease. A refusal, a throw or a refused ack skips the ack and the row returns to the queue
@@ -288,7 +288,7 @@ export function createLoop({
         return verdict.state;
     }
 
-    // Contained here (issue #820): one attempt's throw is that attempt's, logged, never a rejected
+    // Contained here: one attempt's throw is that attempt's, logged, never a rejected
     // `start()` or an unhandled rejection that takes every other claim down with the process.
     function track(job: BoardJob): void {
         const promise = runJob(rt, job)
@@ -318,7 +318,7 @@ export function createLoop({
     }
 
     /**
-     * Drains the board's worktree-reclaim queue (issue #41), one row at a time: a Remove deleted
+     * Drains the board's worktree-reclaim queue, one row at a time: a Remove deleted
      * a thread, or a done landed on an already-terminal one, and this loop is the worker half of
      * taking the tree down. Claim a row and hand it to `handleReclaim`.
      */
@@ -347,7 +347,7 @@ export function createLoop({
      * gate environment and the run are all runJob's (they moved in from this loop so the
      * attempt's heartbeat and abort signal cover the whole setup: a stop issued while the
      * dashboard says "Waiting for the executor…" now stands the attempt down within one
-     * heartbeat poll, issue #126).
+     * heartbeat poll).
      */
     async function claimAndTrack(): Promise<void> {
         let job: BoardJob | null;

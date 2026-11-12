@@ -8,7 +8,7 @@ import { expectNoPlaceholder } from './fixtures.js';
 /* What stays here is the executors panel; the repositories list is pinned in repository-setup.*. */
 
 describe('the executors panel', () => {
-    // The panel is the list itself plus the scope context (#183): the "My workspace" heading, the
+    // The panel is the list itself plus the scope context: the "My workspace" heading, the
     // guidance that says the type controls task execution, and the rows. Since 391 the default is
     // a per-member preference naming a scope — the panel reads it off the poll's resolved
     // default, never off a row flag.

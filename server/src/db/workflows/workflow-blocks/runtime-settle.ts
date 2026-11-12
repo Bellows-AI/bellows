@@ -1,5 +1,5 @@
 /**
- * The generic counterpart to `runtime.ts`'s park (issue #231, `enterRuntimeBoundary`): closes a
+ * The generic counterpart to `runtime.ts`'s park (`enterRuntimeBoundary`): closes a
  * durable block wait once the transition it parked for is truly LEAVING the block that opened it —
  * never on every internal step a multi-node block takes while the wait stays legitimately open
  * (docs/workflows.md, "Durable block waits": "the wait itself stays OPEN across a wake... only a
@@ -28,7 +28,7 @@ function scopeOf(nodeName: string): string | null {
 /**
  * Whether a transition is an INSERT that enters a block's own helper-driven node from OUTSIDE that
  * block's scope — a fresh entry from a bare node, or from another block use entirely, never the
- * block's own internal round-trip (issue #209: `job-store-worker.ts`'s `runWorkflowTransition` rests
+ * block's own internal round-trip (`job-store-worker.ts`'s `runWorkflowTransition` rests
  * instead of inserting such a transition with no recorded publication, since every declared helper
  * plan is handed `{publication}` generically — `resolveClaimHelperPlans` — and a null publication is
  * nothing a helper script can act on). Block-agnostic, like the rest of this file: it reads only

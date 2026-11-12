@@ -1,6 +1,6 @@
 if selected_phase capacity; then
 begin_phase capacity
-# --- Competing drivers under one shared budget (issue #831) -----------------------------------
+# --- Competing drivers under one shared budget -----------------------------------
 #
 # Two AUTH_MODE=github boards and two drivers share one database and one admission budget
 # (ADMISSION_MAX_RUNNING=2) while their own concurrency (2 + 2) would admit four. A heavy org queues

@@ -1,6 +1,6 @@
 if selected_phase node-disruption; then
 begin_phase node-disruption
-# --- Node disruption (issue #796) -------------------------------------------------------------
+# --- Node disruption -------------------------------------------------------------
 #
 # Infrastructure loss interrupts a task, it never loses one: a driver lost mid-run leaves its
 # runner container running to the end, and the next claim adopts that finished runner's verdict
@@ -42,7 +42,7 @@ driver_pid=""
 [ -n "$(docker ps -q --filter "label=factory.job=$killed" --filter 'label=factory.role=supervisor' --filter status=running)" ] &&
     ok 'its supervisor still finalizes when the next driver starts' ||
     bad 'its supervisor still finalizes when the next driver starts' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
-# A fast reaper round: the adopted run is kept until its verdict lands (issue #821), then reaped.
+# A fast reaper round: the adopted run is kept until its verdict lands, then reaped.
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 expect_contains 'the next claim settles the killed run' "$(await_settled "$killed" "$ADOPT_S")" succeeded
 killed_body="$(body "$(api GET "/api/jobs/$killed")")"
@@ -88,7 +88,7 @@ grep -qF "job $drained: $ADOPTED" "$work/driver.log" && ok 'the driver logs the 
     bad 'the driver logs the handed-over adoption' "$(grep -F "job $drained:" "$work/driver.log" | tail -5)"
 stop_driver
 
-# d. The driver and its runner lost together (issue #822): nothing survives to adopt, so the next
+# d. The driver and its runner lost together: nothing survives to adopt, so the next
 #    claim redoes the attempt in a replacement runner — in the lost attempt's session, on its tree.
 #    The first runner leaves a mark in the worktree's git-ignored .factory/ and blocks; the second
 #    finds it. Restored, not synced: the origin moves while no driver runs, and a sync would have

@@ -5,7 +5,7 @@ import { hashToken } from './session.js';
 import { toCaller, type Caller, type CallerRow } from './store.js';
 
 /**
- * Inbound OAuth storage for the MCP server (BEL-101): clients, authorization codes, grant families, the `mat_` /
+ * Inbound OAuth storage for the MCP server: clients, authorization codes, grant families, the `mat_` /
  * `mrt_` token pair and the consent transaction. Every refusal is a closed `OAuthError` value, never a thrown
  * message; the token endpoint maps it to the RFC 6749 code of the same name.
  *

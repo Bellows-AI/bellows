@@ -1,5 +1,5 @@
 /**
- * Transcript tool events (issue #983; `089_transcript_tool_event.sql`): the gate runs and PR
+ * Transcript tool events (`089_transcript_tool_event.sql`): the gate runs and PR
  * operations an executor's transcript shows, classified and filed under the run that owns the
  * session the record names. Idempotent on (executor, session, call id, half): a chunk put twice, an
  * export taken again or a resumed session replaying its history inserts nothing.

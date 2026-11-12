@@ -422,7 +422,7 @@ describe('the runner env for a gated job', () => {
     });
 
     // The default gate URL's host gateway mapping is the supervisor's, whose namespace and hosts
-    // file the agent shares (issue #773): docker refuses --add-host on a container-mode network.
+    // file the agent shares: docker refuses --add-host on a container-mode network.
     it('leaves the host gateway mapping to the supervisor whose namespace it shares', () => {
         expect(
             dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })

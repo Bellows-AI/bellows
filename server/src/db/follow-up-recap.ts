@@ -89,7 +89,7 @@ export async function readRecapTurns(
 /**
  * The command a claim delivers: a member follow-up with no session to resume starts fresh, so the
  * earlier turns ride ahead of its command; every other claim delivers the row's own command. A
- * claim that continues an interrupted attempt in its session (issue #822) is delivered exactly what
+ * claim that continues an interrupted attempt in its session is delivered exactly what
  * that attempt's first claim was — the recap too when the session is the row's own, minted by a
  * first claim that ran sessionless — never wrapped: the runner that claim launched is marked with
  * this text (`COMMAND_MARK`) and adopted on it, and the driver frames the continuation itself.

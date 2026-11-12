@@ -9,7 +9,7 @@
 # the security-relevant decisions — credentials by secretKeyRef and never by value, a
 # namespace-scoped Role, a runner pod with no service account, and an auth wall that no value can
 # take down (the chart always renders AUTH_MODE=github). Phase one also renders an EKS-shaped value
-# set (#364): the cluster phase refuses every non-kind context, so the cloud shape is asserted
+# set: the cluster phase refuses every non-kind context, so the cloud shape is asserted
 # where it can be — at render time — and exercised on a real cluster only by the by-hand walk in
 # docs/eks-runbook.md. Phase two installs the chart into the
 # local cluster with the stub executor image and the code-only no-fetch entry (dashboard.offline)
@@ -210,7 +210,7 @@ cleanup() {
         # forever on a pod whose delete it never reaches.
         kubectl delete jobs -l "factory.job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
         # The smoke origin pod and Service, and the task volumes the driver created for this
-        # release (labelled factory.task-root and the release, issue #775) — a claim a runner pod
+        # release (labelled factory.task-root and the release) — a claim a runner pod
         # still mounts is held under pvc-protection, so they follow the Jobs above.
         kubectl delete pod "$RELEASE-origin" fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
         kubectl delete service "$RELEASE-origin" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1
@@ -368,7 +368,7 @@ expect_contains     'the driver role manages the task volume claims' "$rbac" \
       verbs: ['create', 'get', 'list', 'delete', 'patch']"
 expect_not_contains 'the driver role creates no Service'    "$rbac" "resources: ['services']"
 expect_not_contains 'the driver role reads no event'        "$rbac" "resources: ['events']"
-# The gate sidecar's in-place resize (issue #773): patch on the resize subresource and no more.
+# The gate sidecar's in-place resize: patch on the resize subresource and no more.
 expect_contains     'the driver role resizes the gate sidecar' "$rbac" \
     "resources: ['pods/resize']
       verbs: ['patch']"
@@ -385,7 +385,7 @@ expect_contains     'the driver role reads the runner vitals' "$rbac" \
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
 
 # The dashboard mounts no workspaces claim (it checks nothing out), and the app release creates none of
-# its own. The driver is told how to create a thread's task volume (issue #775), not which claim to
+# its own. The driver is told how to create a thread's task volume, not which claim to
 # mount.
 expect_not_contains 'the dashboard mounts no workspaces claim' "$(cat "$work/rendered.yaml")" \
     "claimName: $STATE_RELEASE-workspaces"
@@ -442,7 +442,7 @@ render | grep 'value: "7200000"' >/dev/null && ok 'the job timeout renders as an
 render | grep -A1 'name: GATE_TIMEOUT_MS' | grep 'value: "1800000"' >/dev/null && ok 'the gate timeout renders as an integer' ||
     bad 'the gate timeout renders as an integer' "$(render | grep -A1 GATE_TIMEOUT_MS)"
 
-# The shared admission budgets (issue #831) reach the dashboard: empty is unlimited, a set one is an integer.
+# The shared admission budgets reach the dashboard: empty is unlimited, a set one is an integer.
 render | grep -A1 'name: ADMISSION_MAX_RUNNING$' | grep 'value: ""' >/dev/null && ok 'the admission budget defaults to unlimited' ||
     bad 'the admission budget defaults to unlimited' "$(render | grep -A1 ADMISSION_MAX_RUNNING)"
 render --set-string dashboard.admission.maxRunningPerRepo=3 | grep -A1 'name: ADMISSION_MAX_RUNNING_PER_REPO' |
@@ -485,7 +485,7 @@ render | grep 'atlassian-client-secret: ""' >/dev/null &&
     ok 'the generated Secret renders the Atlassian key empty by default' ||
     bad 'the generated Secret renders the Atlassian key empty by default' 'no atlassian-client-secret key'
 
-# Runner pod resources (issue #360): requests by default so Karpenter and the Cluster Autoscaler
+# Runner pod resources: requests by default so Karpenter and the Cluster Autoscaler
 # can size for the runner fleet — a zero-request pod schedules onto any free pod slot and
 # provisions nothing. Limits only when set: a memory limit on an agent run OOM-kills a big build
 # mid-work, the requests-only posture the dashboard pod above already carries deliberately.
@@ -513,7 +513,7 @@ emptied="$(render --set runner.resources.requests.cpu= --set runner.resources.re
 emptied_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$emptied")"
 expect_not_contains 'empty cpu requests forward nothing'           "$emptied_resources" 'RUNNER_CPU_REQUEST'
 expect_not_contains 'empty memory requests forward nothing'        "$emptied_resources" 'RUNNER_MEMORY_REQUEST'
-# Gate pod resources (issue #507): a gate runs the whole suite, so it requests more than a runner.
+# Gate pod resources: a gate runs the whole suite, so it requests more than a runner.
 expect_contains 'the driver forwards the gate cpu request'         "$runner_resources" 'name: GATE_CPU_REQUEST'
 # values-local.yaml lowers the gate request to fit one node; the chart default is pinned on the
 # EKS shape below, which renders without it.
@@ -702,7 +702,7 @@ expect_contains 'the driver keeps the production step long poll' "$(grep -A1 'na
 gh_driver_lane="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set-string driver.orphanMinMs=10000 --set-string driver.stepWaitMs=2000)")"
 expect_contains 'a lane lowers the orphan floor' "$(grep -A1 'name: DRIVER_ORPHAN_MIN_MS' <<<"$gh_driver_lane")" 'value: "10000"'
 expect_contains 'a lane lowers the step long poll' "$(grep -A1 'name: DRIVER_STEP_WAIT_MS' <<<"$gh_driver_lane")" 'value: "2000"'
-# The driver's scrape listener (issue #831): on by default behind the board token, and '' turns it off.
+# The driver's scrape listener: on by default behind the board token, and '' turns it off.
 expect_contains 'the driver scrape port defaults to 9464' "$(grep -A1 'name: DRIVER_METRICS_PORT' <<<"$gh_driver")" 'value: "9464"'
 expect_contains 'the driver names its scrape container port' "$(grep -B1 -A1 'name: metrics' <<<"$gh_driver")" 'containerPort: 9464'
 gh_driver_off="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set driver.metricsPort='')")"
@@ -743,7 +743,7 @@ refuses() { # refuses <name> <needle> <helm args...>
     fi
 }
 refuses 'a missing publicUrl is refused' 'auth.publicUrl is required' "${GH_SETS[@]}" --set auth.publicUrl=
-# The board-hosted MCP server (BEL-104): off by default, https-only when on, origins rendered as one comma list.
+# The board-hosted MCP server: off by default, https-only when on, origins rendered as one comma list.
 mcp_off="$(gh_render)"
 expect_contains 'MCP is off by default' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_off")" 'value: "false"'
 expect_contains 'no MCP origins render by default' "$(grep -A1 'name: MCP_TRUSTED_ORIGINS$' <<<"$mcp_off")" 'value: ""'
@@ -754,7 +754,7 @@ mcp_on="$(gh_render --set-string auth.publicUrl=https://board.example --set mcp.
 expect_contains 'MCP renders on under an https publicUrl' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_on")" 'value: "true"'
 expect_contains 'the trusted origins render as a comma list' "$(grep -A1 'name: MCP_TRUSTED_ORIGINS$' <<<"$mcp_on")" \
     'value: "https://a.example,https://b.example"'
-# The artifact store (#764): the dashboard runs as its own ServiceAccount, which carries the IRSA
+# The artifact store: the dashboard runs as its own ServiceAccount, which carries the IRSA
 # annotation, and the s3 backend refuses to render without a bucket.
 expect_contains 'the dashboard has its own ServiceAccount' "$gh" "serviceAccountName: $RELEASE-factory-dashboard"
 irsa="$(gh_render --set 'dashboard.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::1:role/factory')"
@@ -1003,7 +1003,7 @@ refuses 'gcp settings under the vault backend are refused' 'secretStore.gcp.* is
 gcp_byo="$(gh_render "${GCP_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
 expect_contains 'a managed secret-store Secret serves the gcp backend too' "$gcp_byo" 'name: managed-keys'
 
-# --- The optional ingress (#359): off by default, never disagreeing with auth.publicUrl --------
+# --- The optional ingress: off by default, never disagreeing with auth.publicUrl --------
 
 # Off by default in both profiles: the ClusterIP is the perimeter until the operator says
 # otherwise (docs/security.md), and the local profile fronts it with a port-forward.
@@ -1038,7 +1038,7 @@ expect_not_contains 'an empty className renders no ingressClassName' "$bare_ingr
 expect_not_contains 'empty annotations render no annotations key' "$bare_ingress" 'annotations:'
 expect_not_contains 'empty tls renders no tls key' "$bare_ingress" 'tls:'
 
-# MCP behind the ingress (BEL-108): the OAuth discovery documents (/.well-known/oauth-*) and the endpoint (/api/mcp)
+# MCP behind the ingress: the OAuth discovery documents (/.well-known/oauth-*) and the endpoint (/api/mcp)
 # live on the dashboard service, so the one `/` Prefix rule per host is the whole routing. A second, more specific
 # path rule would be a shadow that could send them elsewhere, and a host answering MCP must be the https origin.
 mcp_ingress_render="$(gh_render --set-string auth.publicUrl=https://factory.example --set mcp.enabled=true \
@@ -1067,7 +1067,7 @@ refuses 'a port-forward origin is refused as an ingress host' 'is not among ingr
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set auth.publicUrl=http://127.0.0.1:18080 \
     --set ingress.enabled=true --set 'ingress.hosts={factory.example}'
 
-# --- The registry prefix (#358): one value, every image the release names ---------------------
+# --- The registry prefix: one value, every image the release names ---------------------
 
 # Bare image names are the kind story: `kind load docker-image` side-loads them and IfNotPresent
 # resolves. On a remote cluster a bare name resolves to docker.io/library/* and every pod lands in
@@ -1142,7 +1142,7 @@ pulled="$(gh_render --set 'imagePullSecrets={regcred}')"
 expect_contains 'chart pods name the pull secret'      "$pulled" 'name: "regcred"'
 expect_contains 'the driver forwards the pull secret'  "$pulled" 'value: "regcred"'
 
-# The runner group's scheduling knobs (issue #361): forwarded to the driver as JSON, which is how
+# The runner group's scheduling knobs: forwarded to the driver as JSON, which is how
 # they reach every pod it specs. Unset, nothing renders — an untainted cluster sees the same spec
 # as before.
 expect_not_contains 'no runner scheduling var renders on defaults' "$gh" 'name: RUNNER_NODE_SELECTOR'
@@ -1194,7 +1194,7 @@ expect_contains 'the admission policy binds the driver identity' "$admission" \
 expect_contains 'the admission policy names the per-attempt Secret pattern' "$admission" \
     '^factory-job-[a-z0-9-]+-env$'
 expect_contains 'the admission policy fences deletes by label' "$admission" "'factory.job' in variables.target.metadata.labels"
-# The gate sidecar's resize (issue #773) changes the `gate` container alone.
+# The gate sidecar's resize changes the `gate` container alone.
 expect_contains 'the admission policy matches the gate resize' "$admission" "operations: ['UPDATE']
               resources: ['pods/resize']"
 expect_contains 'the admission policy lets a resize change only the gate' "$admission" "c.name == 'gate'"
@@ -1211,7 +1211,7 @@ expect_contains 'the admission policy holds a claim finalizers fixed on update' 
 expect_contains 'the admission policy holds a claim ownerReferences fixed on update' "$admission" \
     '(!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences)'
 expect_not_contains 'the admission policy admits no checkout claim update' "$admission" 'factory.revoked'
-# The Role's namespace-wide secrets `patch` (#829) reaches only a per-attempt Secret, and only its
+# The Role's namespace-wide secrets `patch` reaches only a per-attempt Secret, and only its
 # binding key: labels, type and owner kept, no other data key changed.
 expect_contains 'the admission policy matches secret updates' "$admission" "operations: ['UPDATE']
               resources: ['secrets']"
@@ -1296,7 +1296,7 @@ expect_contains 'the admission policy admits the launch pair on a runner Job age
 expect_contains 'the admission policy admits no capability past the launch pair' "$admission" \
     "c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])"
 
-# The chart-pod egress, split per component and port-scoped (#382). A runner reached every port on
+# The chart-pod egress, split per component and port-scoped. A runner reached every port on
 # all three before; now the dashboard is its serving port and the collector its two OTLP ports.
 # The driver stays portless — the gate endpoint is ephemeral, so no number exists to name — and
 # that rule's CONTINUED EXISTENCE is asserted too: dropping it would break every gate run, which
@@ -1308,7 +1308,7 @@ expect_contains 'the runner policy reaches the collector on the OTLP ports only'
 expect_contains 'the runner policy still reaches the driver on any port, for the ephemeral gate endpoint' \
     "$netpol" $'app.kubernetes.io/component: driver\n        - to:'
 
-# Node churn vs long runs (issue #362). The do-not-disrupt opt-out is off by default in both
+# Node churn vs long runs. The do-not-disrupt opt-out is off by default in both
 # profiles — an undisruptable runner pod pins its node for as long as its job runs — and the
 # PDBs are always on: the dashboard drains with at most one unavailable, the driver is protected
 # only above one replica, where a single-replica minAvailable would block drains forever.
@@ -1338,7 +1338,7 @@ helm lint charts/factory "${GH_SETS[@]}" --set driver.replicas=2 >/dev/null 2>&1
     ok 'helm lint passes above one driver replica' ||
     bad 'helm lint passes above one driver replica' 'lint failed'
 
-# --- The EKS-shaped render lane (#364): the cloud shape, rendered offline ----------------------
+# --- The EKS-shaped render lane: the cloud shape, rendered offline ----------------------
 #
 # The cluster phase refuses every non-kind context on purpose — it deletes runner Jobs — so no
 # automated lane ever installs this chart against a cloud cluster. What CAN be asserted without
@@ -1375,7 +1375,7 @@ fi
 # The chart renders no claim of its own; the class reaches the driver, which mints each task volume.
 expect_not_contains 'the EKS shape renders no claim' "$eks" 'kind: PersistentVolumeClaim'
 expect_contains 'the EKS shape names the EBS task volume class' "$(grep -A1 'name: TASK_VOLUME_STORAGE_CLASS' <<<"$eks")" 'value: "ebs-gp3"'
-# The chart's gate request (issue #507): a gate runs the whole suite, so it requests more than a runner.
+# The chart's gate request: a gate runs the whole suite, so it requests more than a runner.
 expect_contains 'the gate cpu request renders from the chart value' "$(grep -A1 'name: GATE_CPU_REQUEST' <<<"$eks")" 'value: "2"'
 expect_contains 'the gate memory request renders from the chart value' "$(grep -A1 'name: GATE_MEMORY_REQUEST' <<<"$eks")" 'value: "2Gi"'
 # The registry prefix composes with every image, and the wait image stays whole — the two rules
@@ -1390,8 +1390,8 @@ expect_contains 'the ALB class fronts the EKS ingress' "$eks_ingress" 'ingressCl
 expect_contains 'the ALB target type routes to pod IPs' "$eks_ingress" 'alb.ingress.kubernetes.io/target-type: ip'
 expect_contains 'the ALB healthcheck path is the liveness route' "$eks_ingress" \
     'alb.ingress.kubernetes.io/healthcheck-path: /api/health'
-# The runner group's scheduling: the driver is handed the node selector and tolerations as JSON
-# (issue #361), the tainted node group's contract, in the same render that names the storage class.
+# The runner group's scheduling: the driver is handed the node selector and tolerations as JSON,
+# the tainted node group's contract, in the same render that names the storage class.
 expect_contains 'the EKS shape hands the driver the runner node selector as JSON' "$eks" \
     'value: "{\"dedicated\":\"factory-runners\"}"'
 expect_contains 'the EKS shape hands the driver the runner tolerations as JSON' "$eks" \
@@ -1406,7 +1406,7 @@ expect_contains 'the EKS shape forwards the do-not-disrupt switch, value set' "$
 # reaches a private host, and never asserted anywhere until now.
 eks_netpol="$(awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' <<<"$eks")"
 expect_contains 'an allowed VPC endpoint cidr reaches the runner policy' "$eks_netpol" 'cidr: 10.5.5.5/32'
-# The port scoping (#382) survives the cloud value set: an EKS install must not quietly go back to
+# The port scoping survives the cloud value set: an EKS install must not quietly go back to
 # reaching every port on the dashboard and collector.
 expect_contains 'the EKS shape keeps the dashboard port scoping' "$eks_netpol" \
     $'app.kubernetes.io/component: dashboard\n          ports:'
@@ -1420,7 +1420,7 @@ expect_contains 'the EKS shape keeps the driver egress portless for the ephemera
 helm lint charts/factory "${EKS_SETS[@]}" >/dev/null 2>&1 && ok 'helm lint passes on the EKS shape' \
     || bad 'helm lint passes on the EKS shape' 'lint failed'
 
-# --- Phase three: the enforcing-CNI lane (issue #382) -------------------------------------------
+# --- Phase three: the enforcing-CNI lane -------------------------------------------
 #
 #   scripts/test-k8s.sh --netpol
 #
@@ -1634,7 +1634,7 @@ EOF
     # (`httpPutResponseHopLimit: 1`, docs/kubernetes.md). Recorded in docs/executor-testing.md
     # under "What no lane covers".
 
-    # The port scoping (#382), positive half: the dashboard stays reachable where it actually
+    # The port scoping, positive half: the dashboard stays reachable where it actually
     # serves. The negative half — 9999 on that same pod — is in DENIALS above rather than here,
     # precisely because it is the assertion this whole change exists for: asserted standalone it
     # would report `denied` if the dashboard's second listener had simply failed to bind, which is
@@ -1756,7 +1756,7 @@ begin_phase images
 # `factory-stub-kill-tools` its one tool signals everything it may (the tool-isolation section). It stands on
 # node + git as the uid-1000 `node` user, like the executor images: the startup sync and the other
 # supervised steps run IN the job's executor image (the task supervisor's container,
-# `driver/src/scripts/supervisor.cjs`), and every task has a checkout to sync (issue #263). It
+# `driver/src/scripts/supervisor.cjs`), and every task has a checkout to sync. It
 # starts through scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount
 # points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
 # entrypoints honor.
@@ -1853,7 +1853,7 @@ state_installed=1
 # The lease outlasts the orphan bound (a lost driver's group ends inside it) plus one heartbeat period
 # (a third of the lease): L >= orphan + L/3, so the bound is L - L/3 and the lease can be as short as the
 # bound allows. The orphan floor and the GET /step long poll are lowered with it (driver.orphanMinMs /
-# driver.stepWaitMs, #950): the floor outlasts the long poll by 5 s, and the driver refuses a pair the lease
+# driver.stepWaitMs): the floor outlasts the long poll by 5 s, and the driver refuses a pair the lease
 # cannot hold. 15 s: a 10 s bound over a 2 s long poll. Production keeps 30 s / 15 s.
 LANE_LEASE_S=15
 LANE_ORPHAN_S=$((LANE_LEASE_S - LANE_LEASE_S / 3))
@@ -1977,7 +1977,7 @@ await_blocked() { # await_blocked <runner pod> <release file> -> the agent is ru
     local until=$(($(date +%s) + 60))
     while [ "$(date +%s)" -lt "$until" ]; do
         # From the supervisor, on the same task volume: the agent container runs as root without
-        # DAC_OVERRIDE (issue #814).
+        # DAC_OVERRIDE.
         bounded 20 kubectl exec "$1" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "$2.ready-$1" \
             >/dev/null 2>&1 && return 0
         sleep 1
@@ -2073,7 +2073,7 @@ export FACTORY_TOKEN
 
 # The tracked repo: POST /api/jobs refuses a create whose repo the board does not track, and the
 # offline board's tracked list is its session_branch rows. With no GitHub the fixture is one such
-# row — and, for the runner's own clone (issue #775), an origin served inside the
+# row — and, for the runner's own clone, an origin served inside the
 # cluster: a git daemon pod and Service named for REPO_CLONE_BASE (`driver.repoCloneBase` above)
 # whose `<owner>/<name>.git` is a bare repository with one commit, so every task clones and
 # publishes with no network. scripts/test-jobs.sh serves its origin the same way, from a container.
@@ -2372,7 +2372,7 @@ expect_contains 'the refusal is the App-less board, said on stderr'  "$gh_result
 expect_contains "the helper's cache is a Memory emptyDir"           "$gh_result" 'github cache tmpfs'
 expect_contains 'the runner pod carries no GitHub token in its env'  "$gh_result" 'github no env token'
 
-# --- The agent's task title (BEL-252) --------------------------------------------------
+# --- The agent's task title --------------------------------------------------
 #
 # The task-title helper in the runner pod names its task on the board's attempt-pair route: the same image,
 # pair env and control socket as the docker executor. The board's task carries the title with origin `agent`.
@@ -2481,11 +2481,11 @@ fetch(process.argv[1], { headers })
 [ "$conn_after" = 0 ] && ok 'the requirement is closed once the connection is bound' ||
     bad 'the requirement is closed once the connection is bound' "open requirements: $conn_after"
 
-# --- The orphan reaper (issue #301), against the real apiserver ---------------------------------
+# --- The orphan reaper, against the real apiserver ---------------------------------
 #
 # An attempt's leftover the way a crashed attempt would have left it: a Job (suspended, so nothing
 # runs), labelled with the job id of the job that just succeeded — the board answers `succeeded`,
-# the reaper's table says gone. A declared service is a sidecar of its attempt's pod (issue #773),
+# the reaper's table says gone. A declared service is a sidecar of its attempt's pod,
 # so the Jobs are all the arm scans. The driver was installed with a 3s cadence, so one round must
 # do it. The release label rides the Job, because that is the selector the arm scans by.
 

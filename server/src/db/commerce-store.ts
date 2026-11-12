@@ -93,7 +93,7 @@ export function createCommerceStore({ sql, orgId, ready, now = () => new Date() 
         async enqueueUsage() {
             await ready;
             // The lease compares next_attempt_at with this clock, so it is stamped here, never by the column's
-            // database default: a row queued and leased within one millisecond would read as not due (BEL-163).
+            // database default: a row queued and leased within one millisecond would read as not due.
             const at = now();
             await sql`
                 insert into commerce_usage_report (org_id, job_id, claim_seq, next_attempt_at)

@@ -42,7 +42,7 @@ export interface ConnectedAppsPanelProps {
 }
 
 /**
- * The apps the member has connected to MCP, each ended with Disconnect (BEL-103). A failed read is an error line,
+ * The apps the member has connected to MCP, each ended with Disconnect. A failed read is an error line,
  * never "no connected apps"; the list shows only after the server has said what it holds.
  */
 export function ConnectedAppsPanel({ grants, loading, error, onRevoke }: ConnectedAppsPanelProps) {
