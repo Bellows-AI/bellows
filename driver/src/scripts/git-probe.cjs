@@ -16,6 +16,45 @@
 const { execFileSync } = require('node:child_process');
 
 const repo = process.env.REPO;
+// Every git call of the probe. Under the supervisor (GIT_HARDEN_REAL and GIT_HARDEN_MODULE set) the call is hardened
+// here, in this process, by the module the supervisor wrote: the same code the `git` shim runs, and per call it reads
+// the checkout's config again, so a setting written mid-probe is pinned like any other. That drops the node start the
+// shim costs each call (about 30 per probe). Refusals keep the shim's contract: the same stderr line, exit status
+// 126, the real git never run. A module that cannot load runs the shim at its absolute path, never `git` by name; a
+// shim that is also gone is a spawn failure, 126. Without the supervisor's env the call is plain `git`, as before.
+const REFUSED_EXIT = 126;
+/** @type {{ runCall: (args: string[], options: object) => any } | null | undefined} */
+let hardenModule;
+const loadedHarden = () => {
+    if (hardenModule === undefined) {
+        try {
+            hardenModule = require(/** @type {string} */ (process.env.GIT_HARDEN_MODULE));
+        } catch {
+            hardenModule = null;
+        }
+    }
+    return hardenModule;
+};
+/**
+ * @param {string[]} args
+ * @param {import('node:child_process').ExecFileSyncOptions} options
+ * @returns {any} the output: a Buffer or a string, as the options' `encoding` says
+ */
+const runGit = (args, options) => {
+    const env = options.env ?? process.env;
+    if (!env.GIT_HARDEN_REAL || !env.GIT_HARDEN_MODULE) return execFileSync('git', args, options);
+    const hardener = loadedHarden();
+    if (hardener) return hardener.runCall(args, options);
+    const shim = require('node:path').join(require('node:path').dirname(env.GIT_HARDEN_MODULE), 'git');
+    try {
+        return execFileSync(shim, args, options);
+    } catch (error) {
+        const failure = /** @type {Error & { status?: number | null, signal?: string | null }} */ (error);
+        if (failure.status != null || failure.signal) throw error;
+        process.stderr.write(`git: ${failure.message}\n`);
+        throw Object.assign(failure, { status: REFUSED_EXIT });
+    }
+};
 // The tree fingerprint (spelled identically in git-worktree.cjs, whose startup sync prints the
 // before-run one): HEAD plus a hash of the uncommitted state — the porcelain status, the tracked
 // diff and the untracked files' contents, `.factory/` excluded. Equal fingerprints mean the round
@@ -37,7 +76,7 @@ const hashTree = (cwd, hash, nested) => {
     const fs = require('node:fs');
     const path = require('node:path');
     /** @param {string[]} args */
-    const read = (args) => execFileSync('git', args, { cwd, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER });
+    const read = (args) => runGit(args, { cwd, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER });
     const hasCommit = () => {
         try {
             read(['rev-parse', '--verify', '--quiet', 'HEAD']);
@@ -66,7 +105,7 @@ const fingerprintOf = (cwd) => {
     try {
         const hash = require('node:crypto').createHash('sha256');
         hashTree(cwd, hash, false);
-        const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+        const head = runGit(['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
         return head + ':' + hash.digest('hex');
     } catch {
         return null;
@@ -152,9 +191,10 @@ const contentTreeOf = (cwd, hash) => {
     /**
      * @param {string[]} args
      * @param {object} [extra]
+     * @returns {Buffer}
      */
     const read = (args, extra = {}) =>
-        execFileSync('git', args, { cwd, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER, ...extra });
+        runGit(args, { cwd, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER, ...extra });
     /** @param {string[]} args */
     const text = (args) => read(args).toString('utf8').trim();
     if (hidesChanges(read, text)) throw new Error('a staged blob could hide a change');
@@ -233,8 +273,7 @@ const mutatedSince = (cwd, sinceMs) => {
     try {
         const fs = require('node:fs');
         const path = require('node:path');
-        const listed = execFileSync(
-            'git',
+        const listed = runGit(
             ['ls-files', '-z', '--cached', '--others', '--exclude-standard', ...FINGERPRINT_PATHSPEC],
             {
                 cwd,
@@ -290,7 +329,7 @@ const out = {
 };
 try {
     /** @param {string[]} a */
-    const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
+    const git = (...a) => runGit(a, { cwd: repo, encoding: 'utf8' }).trim();
     git('rev-parse', '--is-inside-work-tree');
     out.cloned = true;
     out.branch = git('branch', '--show-current');

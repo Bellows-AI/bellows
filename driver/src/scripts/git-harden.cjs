@@ -24,7 +24,7 @@
 // (git-lfs) still runs, and a config write landing between the one read of the config this makes
 // and the real git's own read goes unseen.
 
-const { spawnSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const REFUSED_EXIT = 126;
 /** The scopes git reports for config the driver's own image and home define. */
@@ -85,6 +85,7 @@ const REFUSED = /^remote\..+\.(receivepack|uploadpack|vcs)$/;
 const CREDENTIAL_HELPER = /^credential\.(?:.+\.)?helper$/;
 
 /** @typedef {{ scope: string, key: string, value: string }} ConfigEntry */
+/** @typedef {Error & { status?: number | null, signal?: string | null, stderr?: string }} ExecError */
 
 /**
  * `git config --list -z --show-scope` output as `{ scope, key, value }` entries.
@@ -248,22 +249,68 @@ function harden(realGit, args, options) {
     return { argv: hardened, env: hardenedEnv(env) };
 }
 
-/** The shim: `git-harden.cjs` copied as `git`, `GIT_HARDEN_REAL` naming the git it fronts. */
-function main() {
-    const real = process.env.GIT_HARDEN_REAL;
-    if (!real) {
-        process.stderr.write('git: the hardened git has no real git to run\n');
-        return REFUSED_EXIT;
-    }
-    const env = { ...process.env };
+/**
+ * One call's hardened plan: the real git to run, its argv and its environment. `GIT_HARDEN_REAL` names the git
+ * and, with `GIT_HARDEN_MODULE`, never reaches what runs. Throws, with the line a refusal prints in `stderr`,
+ * when there is no real git or the config the call would read cannot be read or names a command to run.
+ * @param {string[]} args
+ * @param {{ cwd: string | undefined, env: NodeJS.ProcessEnv }} options
+ */
+function planCall(args, options) {
+    const real = options.env.GIT_HARDEN_REAL;
+    if (!real)
+        throw Object.assign(new Error('no real git'), { stderr: 'git: the hardened git has no real git to run' });
+    const env = { ...options.env };
     delete env.GIT_HARDEN_REAL;
+    delete env.GIT_HARDEN_MODULE;
+    try {
+        return { real, ...harden(real, args, { cwd: options.cwd, env }) };
+    } catch (error) {
+        throw Object.assign(/** @type {Error} */ (error), {
+            stderr: `git: refused, ${/** @type {Error} */ (error).message}`,
+        });
+    }
+}
+
+/**
+ * `execFileSync(git, args, options)` hardened in this process, for a caller that cannot afford the shim's node start
+ * per call (the publish probe). Same contract as the shim: the config is read again for this call, a refusal prints the
+ * shim's line on stderr and throws with `status` 126 before any git work runs, and so does a git that does not start.
+ * @param {string[]} args
+ * @param {import('node:child_process').ExecFileSyncOptions & { cwd?: string }} options
+ */
+function runCall(args, options) {
+    /** @param {string} line */
+    const refused = (line) => {
+        process.stderr.write(`${line}\n`);
+        return Object.assign(new Error(line), { status: REFUSED_EXIT });
+    };
     let plan;
     try {
-        plan = harden(real, process.argv.slice(2), { cwd: process.cwd(), env });
+        plan = planCall(args, { cwd: options.cwd, env: options.env ?? process.env });
     } catch (error) {
-        process.stderr.write(`git: refused, ${/** @type {Error} */ (error).message}\n`);
+        throw refused(/** @type {ExecError} */ (error).stderr ?? '');
+    }
+    try {
+        return execFileSync(plan.real, plan.argv, { ...options, env: plan.env });
+    } catch (error) {
+        // Neither an exit nor a signal: the git did not start, which the shim reports as a refusal too.
+        const failure = /** @type {ExecError} */ (error);
+        if (failure.status == null && !failure.signal) throw refused(`git: ${failure.message}`);
+        throw error;
+    }
+}
+
+/** The shim: `git-harden.cjs` copied as `git`, `GIT_HARDEN_REAL` naming the git it fronts. */
+function main() {
+    let plan;
+    try {
+        plan = planCall(process.argv.slice(2), { cwd: process.cwd(), env: process.env });
+    } catch (error) {
+        process.stderr.write(`${/** @type {ExecError} */ (error).stderr}\n`);
         return REFUSED_EXIT;
     }
+    const real = plan.real;
     const ran = spawnSync(real, plan.argv, { env: plan.env, stdio: 'inherit' });
     if (ran.error) {
         process.stderr.write(`git: ${ran.error.message}\n`);
@@ -273,6 +320,16 @@ function main() {
     return ran.status ?? REFUSED_EXIT;
 }
 
-module.exports = { harden, hardeningPairs, refusalsOf, parseList, globalOptions, hardenedEnv, REFUSED_EXIT };
+module.exports = {
+    runCall,
+    planCall,
+    harden,
+    hardeningPairs,
+    refusalsOf,
+    parseList,
+    globalOptions,
+    hardenedEnv,
+    REFUSED_EXIT,
+};
 
 if (require.main === module) process.exitCode = main();

@@ -475,7 +475,7 @@ describe('EXECUTOR_TYPE_META', () => {
         expect(meta.configHelp).toMatch(/merged into the runner/);
         expect(meta.configHelp).toMatch(/hooks.*enabledPlugins.*extraKnownMarketplaces/);
         expect(meta.configHelp).toMatch(/CLAUDE_CODE_ENABLE_TELEMETRY.*OTEL_.*always wins/);
-        expect(meta.modelExample).toBe('claude-sonnet-4-5');
+        expect(meta.modelExample).toBe('claude-sonnet-5-5');
         expect(meta.modelHelp).toMatch(/alias/);
     });
 
@@ -488,6 +488,8 @@ describe('EXECUTOR_TYPE_META', () => {
         // OpenCode names a model by provider and model id; the example carries that shape and
         // nothing that looks like a live credential.
         expect(meta.modelExample).toMatch(/^[a-z-]+\/[a-z0-9.-]+$/);
+        // An id the live models.dev catalog lists as active: opencode refuses a deprecated one.
+        expect(meta.modelExample).toBe('anthropic/claude-sonnet-5-5');
         expect(meta.modelHelp).toMatch(/provider/);
     });
 

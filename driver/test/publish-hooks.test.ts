@@ -25,11 +25,14 @@ import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixt
  */
 /**
  * The directory the supervisor puts first on every step's PATH: the hardened `git`, written the way
- * `gitShimOf` writes it. Every step goes through it, the probe's own git calls included.
+ * `gitShimOf` writes it. Every `git` step goes through it; the probe hardens its own calls in-process with the module beside it.
  */
 const HARDENED_GIT = join(dirname(fileURLToPath(import.meta.url)), '../src/scripts/git-harden.cjs');
 const shimDir = mkdtempSync(join(tmpdir(), 'publish-hooks-shim-'));
 writeFileSync(join(shimDir, 'git'), `#!${process.execPath}\n${readFileSync(HARDENED_GIT, 'utf8')}`, { mode: 0o755 });
+// The module beside it, which the probe hardens its own git calls with, in-process.
+const HARDEN_MODULE = join(shimDir, 'git-harden.cjs');
+writeFileSync(HARDEN_MODULE, readFileSync(HARDENED_GIT, 'utf8'), { mode: 0o644 });
 const REAL_GIT = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
 // Every shim, probe and real git below is a fresh node start: one on-disk compile cache serves them all.
 const compileCache = join(shimDir, 'compile-cache');
@@ -70,6 +73,7 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
                 GIT_CONFIG_NOSYSTEM: '1',
                 PATH: `${shimDir}${delimiter}${process.env.PATH ?? ''}`,
                 GIT_HARDEN_REAL: REAL_GIT,
+                GIT_HARDEN_MODULE: HARDEN_MODULE,
                 NODE_COMPILE_CACHE: compileCache,
                 ...onHost(step.envLiterals),
             },

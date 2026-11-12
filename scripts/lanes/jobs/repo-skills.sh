@@ -49,7 +49,7 @@ repo_skill_lane() { # repo_skill_lane <claude|opencode> <with|without> [skills d
             --model fake-model -p 'list your skills')
     else
         run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe
-            -e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            -e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'list your skills')
     fi
     lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1

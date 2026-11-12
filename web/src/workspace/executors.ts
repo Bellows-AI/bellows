@@ -47,14 +47,14 @@ export const EXECUTOR_TYPE_META: Record<
     [CLAUDE_CODE]: {
         label: 'Claude Code',
         modelHelp: 'A Claude model id or an alias such as sonnet or opus.',
-        modelExample: 'claude-sonnet-4-5',
+        modelExample: 'claude-sonnet-5-5',
         configHelp:
             'This JSON is merged into the runner settings.json. hooks, enabledPlugins and extraKnownMarketplaces are stripped to preserve the runner guard hook and plugin install; everything else — model, env, permissions.allow — applies, except that the baked telemetry env (CLAUDE_CODE_ENABLE_TELEMETRY, OTEL_*) always wins over anything set here.',
     },
     [OPENCODE]: {
         label: 'OpenCode',
         modelHelp: 'The provider id and the model id, separated by a slash.',
-        modelExample: 'anthropic/claude-sonnet-4-5',
+        modelExample: 'anthropic/claude-sonnet-5-5',
         configHelp:
             'Tasks using this executor run OpenCode. This object is merged over its baked configuration; model and provider settings apply, while permission rules are ignored to preserve the runner fence.',
     },

@@ -202,8 +202,8 @@ task_title_lane() { # task_title_lane <claude|opencode>
         # OPENCODE_CONFIG_CONTENT is reserved at /api/env; the claim synthesizes it from the executor row's
         # config (job-store-claim-executor.ts), so the scripted endpoint rides the row. The key is a plain env name.
         api PUT /api/env/org '{"vars":[{"name":"ANTHROPIC_API_KEY","value":"fake-key","isSecret":true}]}' >/dev/null
-        api PUT /api/workspace/executors "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
-            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$fake_port")" >/dev/null
+        api PUT /api/workspace/executors "$(node -e 'const config = JSON.parse(process.argv[1]);
+            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$(lane_opencode_config "http://host.docker.internal:$fake_port/v1")")" >/dev/null
     else
         point_runners_at "$fake_port"
     fi

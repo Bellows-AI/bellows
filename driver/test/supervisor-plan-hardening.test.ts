@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,8 @@ import { readRepoFile } from './fixtures/repo-files.js';
  * Every driver-side step reaches `git` through the supervisor's hardened one (`scripts/git-harden.cjs`,
  * pinned vector by vector in git-harden.test.ts). This pins the seams that carry it: both executors
  * hand the supervisor the script, the supervisor puts it first on each step's PATH, and no helper
- * script names a git of its own or moves PATH out from under it.
+ * script names a git of its own or moves PATH out from under it. The publish probe is the one script that
+ * hardens its own calls in-process, with the module the supervisor writes beside the shim.
  */
 process.env.SUPERVISOR_NO_MAIN = '1';
 const SCRIPTS = join(dirname(fileURLToPath(import.meta.url)), '../src/scripts');
@@ -96,6 +97,59 @@ describe('the hardened git of the supervisor’s steps', () => {
 
         // The step asked for a PATH with no git on it; the shim dir is still in front of what it named.
         expect(result.stdout).toMatch(/factory-git-[^/]+\/git\n$/);
+    });
+
+    it('hands every step the hardening module it wrote, as the last word, in a private directory', async () => {
+        const supervisor = createRequire(import.meta.url)('../src/scripts/supervisor.cjs') as {
+            settingsOf(env: Record<string, string>): unknown;
+            spawnStep(
+                run: unknown,
+                step: { argv: string[]; cwd: string; env: Record<string, string>; timeoutMs: number }
+            ): Promise<{ result: { exitCode: number; stdout: string } }>;
+        };
+        const stub = '// stub\nmodule.exports = {};\n';
+        const run = {
+            settings: supervisor.settingsOf({
+                ...process.env,
+                [SUPERVISOR_ENV.gitHardenScript]: stub,
+            } as Record<string, string>),
+            stop: new AbortController(),
+            inflight: null,
+        };
+
+        const { result } = await supervisor.spawnStep(run, {
+            argv: ['sh', '-c', 'printf %s "$GIT_HARDEN_MODULE"'],
+            cwd: '/',
+            env: { GIT_HARDEN_MODULE: '/evil/git-harden.cjs', GIT_HARDEN_REAL: '/evil/git' },
+            timeoutMs: 20_000,
+        });
+
+        expect(result.stdout).toMatch(/factory-git-[^/]+\/git-harden\.cjs$/);
+        expect(readFileSync(result.stdout, 'utf8')).toBe(stub);
+        expect(statSync(result.stdout).mode & 0o777).toBe(0o644);
+        expect(statSync(dirname(result.stdout)).mode & 0o777).toBe(0o700);
+        // Owned by the supervisor's uid, so a tool uid can neither replace the module nor the directory entry.
+        expect(statSync(result.stdout).uid).toBe(process.getuid?.());
+        expect(statSync(dirname(result.stdout)).uid).toBe(process.getuid?.());
+    });
+
+    it('is the only route a script has to the real git: the probe runs every call through one hardened runner', () => {
+        const probe = readFileSync(join(SCRIPTS, 'git-probe.cjs'), 'utf8');
+        const others = readdirSync(SCRIPTS).filter(
+            (name) => /\.(cjs|sh)$/.test(name) && !/^(git-harden|git-probe)\.cjs$/.test(name)
+        );
+
+        // Exactly two raw spawns in the probe, both inside `runGit`: plain `git` with no supervisor, and the shim's absolute path.
+        expect(probe.match(/execFileSync\(/g)).toHaveLength(2);
+        expect(probe.match(/execFileSync\('git'/g)).toHaveLength(1);
+        // Its five call sites (the git sites the probe had before), not counting the definition.
+        expect(probe.match(/runGit\(/g)).toHaveLength(5);
+        expect(probe).not.toMatch(/spawnSync|exec\(|execSync/);
+        // Whoever names the real git, or the module, is the supervisor, the shim and the probe: nobody else.
+        const namers = others.filter((name) =>
+            /GIT_HARDEN_(REAL|MODULE)/.test(readFileSync(join(SCRIPTS, name), 'utf8'))
+        );
+        expect(namers).toEqual(['supervisor.cjs']);
     });
 
     it('is reached by name: no helper script runs an absolute git, and none replaces PATH', () => {

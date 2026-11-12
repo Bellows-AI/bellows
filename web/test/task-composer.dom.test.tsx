@@ -73,12 +73,23 @@ function openComposer(
 
 const KEYBOARD_LAUNCH = '{Control>}{Enter}{/Control}';
 
+/**
+ * The base-branch picker, queried fresh each time. It is disabled until the draft holds a
+ * repository, and the draft fills it in a render after the prompt first appears; a click on a
+ * disabled input is dropped and nothing reopens the menu, so a click waits for it to be enabled.
+ */
+const branchPicker = () => screen.getByRole('combobox', { name: /^Base branch/ }) as HTMLInputElement;
+const startButton = () => screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
+/** Start stays dark until the default executor lands; a click on it before then is dropped. */
+const startEnabled = () => waitFor(() => expect(startButton().disabled).toBe(false));
+const pickerEnabled = () => waitFor(() => expect(branchPicker().disabled).toBe(false));
+
 describe('the composer launch triggers', () => {
     it('share the button validation on the keyboard: an empty prompt never queues', async () => {
         const user = userEvent.setup();
         const { router, launches } = openComposer(reposReply(['web']));
         const prompt = await screen.findByLabelText('What should the agent do?');
-        await waitFor(() => expect(screen.getByRole('button', { name: /^Executor: / })).toBeTruthy());
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Executor: e2e-executor' })).toBeTruthy());
 
         // The shortcut is the button, never a bypass: an empty prompt sends nothing and says why.
         await user.click(prompt);
@@ -372,7 +383,8 @@ describe('the composer attachments', () => {
         const user = userEvent.setup();
         const { launches, router } = openWithAttachments({});
         await user.type(await screen.findByLabelText('What should the agent do?'), 'just words');
-        await user.click(await screen.findByRole('button', { name: 'Start task' }));
+        await startEnabled();
+        await user.click(startButton());
         await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
         const [only] = launches();
         expect(only!.body).not.toHaveProperty('attachments');
@@ -434,7 +446,8 @@ describe('the composer attachments', () => {
         await user.type(prompt, 'go');
         await user.upload(await attachInput(), textFile('a.txt'));
         await screen.findByText('Ready');
-        await user.click(screen.getByRole('button', { name: 'Start task' }));
+        await startEnabled();
+        await user.click(startButton());
         await waitFor(() => expect(prompt.readOnly).toBe(true));
 
         fireEvent.drop(prompt, { dataTransfer: { files: [textFile('late.txt')], types: ['Files'] } });
@@ -482,7 +495,8 @@ describe('the composer attachments', () => {
             await user.type(prompt, 'go');
             await user.upload(await attachInput(), textFile('a.txt'));
             await screen.findByText('Ready');
-            await user.click(screen.getByRole('button', { name: 'Start task' }));
+            await startEnabled();
+            await user.click(startButton());
             await waitFor(() => expect(prompt.readOnly).toBe(true));
 
             await act(() => router.navigate('/settings/repos'));
@@ -514,7 +528,8 @@ describe('the composer attachments', () => {
             await user.type(prompt, 'go');
             await user.upload(await attachInput(), textFile('a.txt'));
             await screen.findByText('Ready');
-            await user.click(screen.getByRole('button', { name: 'Start task' }));
+            await startEnabled();
+            await user.click(startButton());
             await waitFor(() => expect(prompt.readOnly).toBe(true));
 
             await user.click(screen.getByRole('button', { name: /^Repository: / }));
@@ -526,7 +541,8 @@ describe('the composer attachments', () => {
             expect(prompt.readOnly).toBe(false);
             expect(prompt.value).toBe('go');
             expect(screen.getByText('a.txt')).toBeTruthy();
-            await user.click(screen.getByRole('button', { name: 'Start task' }));
+            await startEnabled();
+            await user.click(startButton());
             await waitFor(() => expect(launches()).toHaveLength(2));
             const [first, second] = launches();
             expect(second!.headers['idempotency-key']).toBe(first!.headers['idempotency-key']);
@@ -556,10 +572,11 @@ describe('the composer base branch and skill menu', () => {
         const user = userEvent.setup();
         const { launches } = openComposer(reposReply(['web']), undefined, board);
         const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
-        await waitFor(() => expect(screen.getByRole('button', { name: /^Executor: / })).toBeTruthy());
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Executor: e2e-executor' })).toBeTruthy());
 
         await user.type(prompt, 'please /re');
         const menu = await screen.findByRole('listbox', { name: 'Skills' });
+        await waitFor(() => expect(within(menu).getAllByRole('option')).toHaveLength(SKILLS.length));
         expect(
             within(menu)
                 .getAllByRole('option')
@@ -589,7 +606,7 @@ describe('the composer base branch and skill menu', () => {
         const user = userEvent.setup();
         openComposer(reposReply(['web']), undefined, board);
         const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
-        await waitFor(() => expect(screen.getByRole('button', { name: /^Executor: / })).toBeTruthy());
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Executor: e2e-executor' })).toBeTruthy());
 
         await user.type(prompt, '/');
         const menu = await screen.findByRole('listbox', { name: 'Skills' });
@@ -600,15 +617,17 @@ describe('the composer base branch and skill menu', () => {
         const user = userEvent.setup();
         const { launches } = openComposer(reposReply(['web']), undefined, board);
         const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
-        await waitFor(() => expect(screen.getByRole('button', { name: /^Executor: / })).toBeTruthy());
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Executor: e2e-executor' })).toBeTruthy());
 
-        await user.click(screen.getByRole('combobox', { name: /^Base branch/ }));
+        await pickerEnabled();
+        await user.click(branchPicker());
         await user.click(await screen.findByRole('option', { name: 'feature-a' }));
 
         await user.type(prompt, 'check it /rev');
         await user.click(await screen.findByRole('option', { name: /^\/review/ }));
         expect(prompt.value).toBe('check it /review ');
-        await user.click(screen.getByRole('button', { name: 'Start task' }));
+        await startEnabled();
+        await user.click(startButton());
 
         await waitFor(() => expect(launches()).toHaveLength(1));
         expect(launches()[0]?.body).toMatchObject({
@@ -656,7 +675,8 @@ describe('the composer base branch and skill menu', () => {
         const user = userEvent.setup();
         const { router } = openComposer(reposReply(['web']), undefined, board);
         await screen.findByLabelText('What should the agent do?');
-        await user.click(screen.getByRole('combobox', { name: /^Base branch/ }));
+        await pickerEnabled();
+        await user.click(branchPicker());
         await user.click(await screen.findByRole('option', { name: 'feature-a' }));
 
         await act(() => router.navigate('/settings/repos'));
@@ -670,7 +690,8 @@ describe('the composer base branch and skill menu', () => {
         const user = userEvent.setup();
         openComposer(reposReply(['web', 'api']), undefined, board);
         await screen.findByLabelText('What should the agent do?');
-        const picker = () => screen.getByRole('combobox', { name: /^Base branch/ }) as HTMLInputElement;
+        const picker = branchPicker;
+        await pickerEnabled();
         await user.click(picker());
         await user.click(await screen.findByRole('option', { name: 'feature-a' }));
         expect(picker().placeholder).toBe('feature-a');

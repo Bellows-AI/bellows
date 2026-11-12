@@ -43,7 +43,7 @@ stop_lane() { # stop_lane <claude|opencode>
         run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model
             -p 'touch the step markers')
     else
-        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+        run+=(-e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'touch the step markers')
     fi
     # On its own, and 0 for both CLIs: opencode's `Error: Aborted` exit after the stop plugin's abort

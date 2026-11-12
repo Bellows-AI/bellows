@@ -92,8 +92,8 @@ ps_endpoint() { # ps_endpoint <name> <org skill, workspace skills, helper probes
 
 ps_point() { # ps_point <claude|opencode> <member token> <port> -> that member's runs reach the scripted model on <port>
     if [ "$1" = opencode ]; then
-        AUTH_HEADER="Bearer $2" api PUT /api/workspace/executors "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
-            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$3")" >/dev/null
+        AUTH_HEADER="Bearer $2" api PUT /api/workspace/executors "$(node -e 'const config = JSON.parse(process.argv[1]);
+            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$(lane_opencode_config "http://host.docker.internal:$3/v1")")" >/dev/null
     else
         AUTH_HEADER="Bearer $ps_admin" api PUT /api/env/org "{\"vars\":[{\"name\":\"ANTHROPIC_API_KEY\",\"value\":\"fake-key\",\"isSecret\":true},{\"name\":\"ANTHROPIC_BASE_URL\",\"value\":\"http://host.docker.internal:$3\",\"isSecret\":false}]}" >/dev/null
     fi

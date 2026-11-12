@@ -40,7 +40,7 @@ kill_lane() { # kill_lane <claude|opencode> <isolated|control>
         run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model
             -p 'touch the step markers')
     else
-        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+        run+=(-e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'touch the step markers')
     fi
     lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
@@ -112,7 +112,7 @@ skill_helper_lane() { # skill_helper_lane <claude|opencode>
             --model fake-model -p 'probe the skill helpers')
     else
         run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe
-            -e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            -e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'probe the skill helpers')
     fi
     lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
@@ -186,7 +186,7 @@ seam_run() { # seam_run <cli> <runner|plain> <steps json> <out json>: one script
         run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model -p 'cross the seam')
     else
         if [ "$shape" = runner ]; then run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe); fi
-        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+        run+=(-e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'cross the seam')
     fi
     lane_timed "$name" agent timeout 240 "${run[@]}" >"$work/$name.log" 2>&1

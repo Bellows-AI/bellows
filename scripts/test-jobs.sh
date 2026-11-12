@@ -787,6 +787,15 @@ lane_group_up() { # lane_group_up <name> <image> <control-url>
         --entrypoint node "$image" /supervisor.cjs >/dev/null
 }
 
+# opencode refuses a model id the live models.dev catalog marks deprecated, so the lane declares its
+# own model in the config: a declared id has no catalog entry to look up, merge or deprecate.
+LANE_OPENCODE_MODEL=fake-model
+
+lane_opencode_config() { # lane_opencode_config <baseURL> -> OPENCODE_CONFIG_CONTENT for the scripted model at <baseURL>
+    printf '{"model":"anthropic/%s","provider":{"anthropic":{"options":{"baseURL":"%s","apiKey":"fake-key"},"models":{"%s":{"name":"%s","tool_call":true,"limit":{"context":200000,"output":8192}}}}}}' \
+        "$LANE_OPENCODE_MODEL" "$1" "$LANE_OPENCODE_MODEL" "$LANE_OPENCODE_MODEL"
+}
+
 lane_group_agent_args() { # lane_group_agent_args <name>: the agent's half of the mailboxes, as argv words
     local name="$RUN_ID-$1"
     printf '%s\n' -v "lane-$name-in:/factory/in:ro" -v "lane-$name-out:/factory/out" \
