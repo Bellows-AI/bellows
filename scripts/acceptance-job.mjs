@@ -1,5 +1,5 @@
 // One job read (or POST) off the board, judged by shape, for the kubernetes and docker acceptance phases
-// (scripts/acceptance-lib.sh). argv: <GET|POST> <url> <id|brief|session|cause> [json body]; env ACC_AUTH is
+// (scripts/lane-lib.sh). argv: <GET|POST> <url> <id|brief|session|cause> [json body]; env ACC_AUTH is
 // the Authorization header value, when the board wants one.
 // Prints the value, or "unread: <why>" for a read that failed or came back misshapen, or "refused: <status> <body>"
 // for a POST the board answered other than 201: a failed or malformed read never yields a value a check can pass on.
