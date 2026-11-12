@@ -221,13 +221,6 @@ describe('the executor isolation record (#382)', () => {
         );
     });
 
-    // Issue #829: a driver the board cannot reach never learns its lease was lost.
-    it('states that a cut-off driver keeps contact past the adopter’s finalize wait', () => {
-        expect(prose(kubernetesDocs)).toContain(
-            "Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker). `driver/src/loop/loop-attempt.ts`."
-        );
-    });
-
     // Issue #829: a rebind is a Secret patch the kubelet delivers on its own sync, not a push.
     it('states how late a rebind reaches a live supervisor', () => {
         expect(prose(kubernetesDocs)).toContain(

@@ -40,6 +40,7 @@ export function attemptQuiesce(
             rt.live?.delete(job.id);
             if (state.graceTimer) clearTimeout(state.graceTimer);
             state.wake();
+            state.leaseExpiry.stop();
             await beating;
             // A review still running ends with its caller: cancelled, its row settled, the reviewer released.
             await cancelReviews(state);
@@ -168,13 +169,13 @@ async function stageAndReport(ctx: AttemptCtx, verdict: VerdictBody, after: Prom
         rt,
         `job ${job.id}: the staged verdict was not accepted`,
         () => rt.board.stageConclusion(job, verdict),
-        { budgetMs: rt.config.leaseSeconds * MS_PER_SECOND }
+        { budgetMs: rt.config.leaseSeconds * MS_PER_SECOND, leaseLapsed: state.leaseExpiry.signal }
     ).catch((e: Error) => {
         rt.log(`job ${job.id}: the ${verdict.status} verdict could not be staged: ${e.message}`);
         return null;
     });
     if (staged !== null && staged !== 'held') return unstaged(ctx, staged);
-    const answer = await rt.report(job, verdict, { after }).catch((e: Error) => {
+    const answer = await rt.report(job, verdict, { after, leaseLapsed: state.leaseExpiry.signal }).catch((e: Error) => {
         rt.log(
             `job ${job.id}: the ${verdict.status} verdict was not delivered, left to the lease unrewritten: ${e.message}`
         );
@@ -220,9 +221,9 @@ async function park(ctx: AttemptCtx, decision: Extract<EndDecision, { kind: 'par
         .catch((e: Error) => rt.log(`job ${job.id}: the work before the park failed, parking anyway: ${e.message}`));
     // Every park waits out the output pump: a write the park overtook would be refused, its tail lost.
     await state.drainOutput();
-    const verdict = await withBoardRetry(rt, `job ${job.id}: the stop was not accepted`, () =>
-        rt.board.suspend(job)
-    ).catch((e: Error) => {
+    const verdict = await withBoardRetry(rt, `job ${job.id}: the stop was not accepted`, () => rt.board.suspend(job), {
+        leaseLapsed: state.leaseExpiry.signal,
+    }).catch((e: Error) => {
         rt.log(`job ${job.id}: the board did not take the stop, left to the lease: ${e.message}`);
         return null;
     });
@@ -255,15 +256,19 @@ async function interrupt(
     );
     const recorded =
         reason.length > INTERRUPTION_REASON_MAX ? `${reason.slice(0, INTERRUPTION_REASON_MAX - 1)}…` : reason;
-    const answer = await withBoardRetry(rt, `job ${job.id}: the interruption was not accepted`, () =>
-        rt.board.interrupt(job, {
-            reason: recorded,
-            release: true,
-            ...(refused ? { refused } : {}),
-            ...(blocked ? { blocked } : {}),
-            ...(requirement ? { requirement } : {}),
-            ...(nodeLoss ? { nodeLoss } : {}),
-        })
+    const answer = await withBoardRetry(
+        rt,
+        `job ${job.id}: the interruption was not accepted`,
+        () =>
+            rt.board.interrupt(job, {
+                reason: recorded,
+                release: true,
+                ...(refused ? { refused } : {}),
+                ...(blocked ? { blocked } : {}),
+                ...(requirement ? { requirement } : {}),
+                ...(nodeLoss ? { nodeLoss } : {}),
+            }),
+        { leaseLapsed: state.leaseExpiry.signal }
     ).catch((e: Error) => {
         rt.log(`job ${job.id}: could not report the interruption: ${e.message}`);
         return null;

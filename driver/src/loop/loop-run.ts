@@ -18,6 +18,7 @@ import {
     runDeclaredGates,
     sizeGateForVerify,
 } from './loop-gates.js';
+import { armLeaseClock } from './loop-lease.js';
 import { drainTranscriptExport } from './loop-export.js';
 import { openChain, replayGates, runClaimSeqOf } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
@@ -703,6 +704,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     state.trace = (t) => log(transitionLine(job, t));
     // In flight for a drain's handover (`loop.ts`) until it settles.
     const over = registerLive(rt, job, state);
+    armLeaseClock(rt, job, state);
     const beating = heartbeat(rt, job, state);
     // Armed before the run so the runner can hand over tails from its first chunk; the pump's
     // snapshot is the liveness read the timeout note is built from (issue #339).

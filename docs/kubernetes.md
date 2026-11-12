@@ -65,10 +65,10 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - A taken-over run's agent gate requests reach the new holder the same way, and the agent holds no gate URL or
   token (`factory-gate` asks the control socket); an ad-hoc gate run in flight across the rebind is hung up on
   and re-asked, so it may run on both holders, never exactly once. `driver/src/loop/loop-gates.ts`.
-- Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was
-  lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter
-  then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker).
-  `driver/src/loop/loop-attempt.ts`.
+- A driver cut off from the board stops at its own lease clock, never at a failed beat: one lease after the last
+  acknowledged beat's send time it departs (runner and group left for the next claim, never a verdict) or kills a
+  runner not yet launched, and fences the conclusion's board calls; the review beat and the reclaim renew keep their own.
+  `driver/src/loop/loop-lease.ts`, `driver/test/loop-lease-lapse.test.ts`.
 - Stated limit: a rebind reaches a live supervisor only once the kubelet refreshes the attempt Secret's volume —
   up to its sync period (default one minute) plus its cache delay; docker's write is seen on the supervisor's next
   control poll. `driver/src/k8s/k8s-binding.ts`.

@@ -114,10 +114,12 @@ const MS_PER_SECOND = 1_000;
 function completeWithRetry(
     deps: Pick<LoopRuntime, 'board' | 'config' | 'log' | 'sleep'>,
     job: BoardJob,
-    result: Parameters<Board['complete']>[1]
+    result: Parameters<Board['complete']>[1],
+    leaseLapsed?: AbortSignal
 ) {
     return withBoardRetry(deps, `job ${job.id}: the verdict was not accepted`, () => deps.board.complete(job, result), {
         budgetMs: deps.config.leaseSeconds * MS_PER_SECOND,
+        ...(leaseLapsed ? { leaseLapsed } : {}),
     });
 }
 
@@ -272,9 +274,9 @@ export function createLoop({
     async function report(
         job: BoardJob,
         result: Parameters<Board['complete']>[1],
-        { after }: { after?: Promise<void> } = {}
+        { after, leaseLapsed }: { after?: Promise<void>; leaseLapsed?: AbortSignal } = {}
     ): Promise<LeaseState> {
-        const verdict = await completeWithRetry({ board, config, log, sleep }, job, result);
+        const verdict = await completeWithRetry({ board, config, log, sleep }, job, result, leaseLapsed);
         if (verdict.conflict) {
             log(
                 `job ${job.id}: the board refused the verdict: this attempt staged a different conclusion, which stands`

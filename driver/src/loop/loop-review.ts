@@ -1,5 +1,6 @@
 import type { BoardJob, ReviewAnswer, ReviewClaim } from '../board/board.js';
 import { withBoardRetry } from '../board/board-retry.js';
+import { leaseClock, leasedBeat } from './loop-lease.js';
 import { openReviewExport } from './loop-export.js';
 import { attachReviewInputs } from './loop-inputs.js';
 import { applyHeartbeatVerdict, down, type JobState, newReviewStop, settling } from './loop-attempt.js';
@@ -231,19 +232,26 @@ async function beatReview(
     const { review, stop, cause } = supervision;
     const every = Math.max(MIN_BEAT_MS, Math.floor((rt.config.leaseSeconds * MS_PER_SECOND) / BEAT_DIVISOR));
     let over = false;
+    // The review's own lease clock (BEL-317): a board that stays unreachable for a lease ends the review,
+    // its row left to the lease like any other lost one.
+    const clock = leaseClock(rt.config.leaseSeconds * MS_PER_SECOND, Date.now(), () => {
+        rt.log(`review ${review.id}: lease lapsed, board unreachable; the review stands down`);
+        stop.abort();
+    });
     void ended.then(() => {
         over = true;
+        clock.stop();
     });
     while (!over) {
         await Promise.race([rt.sleep(every), ended]);
         if (over) return;
-        const verdict = await rt.board
-            .heartbeat(review, AbortSignal.timeout(heartbeatPeriodMs(rt.config)))
-            .catch((e: Error) => {
-                // A beat that errors or times out is retried on the next one, within the lease.
-                rt.log(`review ${review.id}: the heartbeat failed: ${e.message}`);
-                return null;
-            });
+        const verdict = await leasedBeat(clock, () =>
+            rt.board.heartbeat(review, AbortSignal.timeout(heartbeatPeriodMs(rt.config)))
+        ).catch((e: Error) => {
+            // A beat that errors or times out is retried on the next one, within the lease.
+            rt.log(`review ${review.id}: the heartbeat failed: ${e.message}`);
+            return null;
+        });
         if (verdict === null) continue;
         if (verdict === 'lost' || verdict === 'removed') stop.abort();
         else if (verdict.cancelRequested) {

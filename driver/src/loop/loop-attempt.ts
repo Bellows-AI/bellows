@@ -3,6 +3,7 @@ import { deadServiceNote } from './loop-ledger.js';
 import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from '../runner.js';
 import type { DeadService } from '../runner.js';
 import type { RuntimeSample } from '../runner.js';
+import { type LeaseClock, leasedBeat } from './loop-lease.js';
 import { lostOf, recordEnding } from './loop-phase.js';
 import type { AttemptPhase, AttemptTransition, Ending } from './loop-phase.js';
 import type { LoopRuntime } from './loop-types.js';
@@ -170,6 +171,12 @@ export interface JobState {
     /** Resolves when a `handover` ending wins (`handOver`, `loop.ts`): the run in flight is abandoned there. */
     handedOver: Promise<void>;
     signalHandover: () => void;
+    /**
+     * The attempt's own lease clock (BEL-317): lapses one lease after the last acknowledged beat's SEND
+     * time, whether or not a beat is still in flight, and its signal fences the conclusion's board calls.
+     * Armed by `armLeaseClock` once the attempt exists; inert (never lapses) until then.
+     */
+    leaseExpiry: LeaseClock;
 }
 
 /**
@@ -227,6 +234,7 @@ export function newJobState(): JobState {
         handoverReason: null,
         handedOver,
         signalHandover,
+        leaseExpiry: { signal: new AbortController().signal, renewed: () => {}, stop: () => {} },
     };
 }
 
@@ -313,42 +321,7 @@ export function stopIfDraining(state: JobState): void {
     if (state.draining) recordEnding(state, 'stop');
 }
 
-/** The loser side of every setup race: the stand-down resolved, the step did not. */
-const RACE_LOST = Symbol('raceStep: the stand-down won');
-
-/**
- * Races one slow setup step against the attempt's stand-down, so a Stop (or a lost lease, or a
- * Remove) observed while the driver is "waiting for the executor" ends the wait within a
- * heartbeat's setup poll instead of the step's own unbounded duration (issue #126). Answers null
- * when the stand-down won and the step is STILL RUNNING: the caller stands the attempt down and
- * the step is abandoned to its own cleanup — which is why a rejection is swallowed here, the
- * abandoned step's finally is the only cleanup it needs and its verdict is nobody's business
- * anymore. A step that finished first answers `{ value }` even when the stand-down landed in the
- * same instant — the caller's own flag check decides.
- */
-export async function raceStep<T>(signal: AbortSignal, step: Promise<T>): Promise<{ value: T } | null> {
-    // A side-band subscriber, so the loser of the race can never become an unhandled rejection:
-    // subscribing neither consumes the step from the race nor changes its result. First, because
-    // the check below abandons the step with nobody left to read it — and an abandoned step that
-    // rejects must not take the driver with it.
-    step.catch(() => {});
-    // Already stood down: never even wait for the step, which is still running with nobody left
-    // to read it.
-    if (signal.aborted) return null;
-    let onAbort: () => void = () => {};
-    const lost = new Promise<typeof RACE_LOST>((resolve) => {
-        onAbort = () => resolve(RACE_LOST);
-        signal.addEventListener('abort', onAbort, { once: true });
-    });
-    try {
-        const outcome: T | typeof RACE_LOST = await Promise.race([step, lost] as const);
-        return outcome === RACE_LOST ? null : { value: outcome };
-    } finally {
-        // The attempt has as many steps as it has phases, and each subscribes: without this the
-        // signal would keep every step that finished first alive until the attempt ends.
-        signal.removeEventListener('abort', onAbort);
-    }
-}
+export { raceStep } from './loop-race.js';
 
 /**
  * A Stop on a launched attempt: raised once on the control endpoint, with the grace deadline
@@ -518,7 +491,7 @@ export async function applyHeartbeatVerdict(
  * when it renews the lease the verdict needs until the quiesce, whatever ending was recorded (issue #828).
  */
 const renewing = (state: JobState): boolean =>
-    state.phase !== 'ended' && (state.phase === 'concluding' || !down(state));
+    state.phase !== 'ended' && !state.leaseExpiry.signal.aborted && (state.phase === 'concluding' || !down(state));
 
 /** Whether the output pump still writes: until the attempt ends or loses its lease. */
 const pumping = (state: JobState): boolean => state.phase !== 'ended' && !lostOf(state);
@@ -530,7 +503,9 @@ async function beat(rt: LoopRuntime, job: BoardJob, state: JobState, complained:
     try {
         // Bounded by a lease third (one beat period): a request the board never answers must not stall the
         // beats past the lease. An aborted beat throws below and is inconclusive, never a verdict.
-        verdict = await board.heartbeat(job, AbortSignal.timeout(heartbeatPeriodMs(rt.config)));
+        verdict = await leasedBeat(state.leaseExpiry, () =>
+            board.heartbeat(job, AbortSignal.timeout(heartbeatPeriodMs(rt.config)))
+        );
         complained = false;
     } catch (e) {
         // A board that is briefly unreachable is not a lost lease. Keep working: the

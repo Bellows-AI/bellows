@@ -1,5 +1,6 @@
 import type { Board, BoardJob, Reclaim, ReclaimAck, ReclaimRenewal } from '../board/board.js';
 import { withBoardRetry } from '../board/board-retry.js';
+import { type LeaseClock, leaseClock } from './loop-lease.js';
 import type { DriverConfig } from '../config.js';
 import type { Runner } from '../runner.js';
 import type { ReclaimResult } from '../publish/publish.js';
@@ -110,7 +111,34 @@ export async function whileReclaimRenewed<T>(
     owned: ReclaimOwnership,
     work: () => Promise<T>
 ): Promise<Renewed<T>> {
-    if (!(await reclaimStillOwned(ctx, owned))) return { held: false };
+    // The renewal's own lease clock (BEL-317): a board that stays unreachable for a lease no longer owns
+    // this row to this driver, so the removal in flight is abandoned to settle unacked.
+    let lapse: () => void = () => {};
+    const lapsed = new Promise<'lapsed'>((resolve) => {
+        lapse = () => resolve('lapsed');
+    });
+    const clock = leaseClock(ctx.config.leaseSeconds * MS_PER_SECOND, Date.now(), lapse);
+    try {
+        return await renewedWhile(ctx, owned, work, { clock, lapsed });
+    } finally {
+        clock.stop();
+    }
+}
+
+async function renewedWhile<T>(
+    ctx: RenewContext,
+    owned: ReclaimOwnership,
+    work: () => Promise<T>,
+    { clock, lapsed }: { clock: LeaseClock; lapsed: Promise<'lapsed'> }
+): Promise<Renewed<T>> {
+    const firstSentAt = Date.now();
+    const first = await Promise.race([reclaimStillOwned(ctx, owned), lapsed]);
+    if (first === 'lapsed') {
+        ctx.log(`reclaim ${owned.id}: lease lapsed, board unreachable; the removal never started`);
+        return { held: false };
+    }
+    if (!first) return { held: false };
+    clock.renewed(firstSentAt);
     let settled = false;
     const running = work();
     const settle = running.then(
@@ -127,15 +155,23 @@ export async function whileReclaimRenewed<T>(
         for (;;) {
             await Promise.race([ctx.sleep(every, settle), settle]);
             if (settled) return;
+            const sentAt = Date.now();
             const answer = await renewOnce(ctx, owned, every);
             if (settled) return;
+            if (answer === 'held') clock.renewed(sentAt);
             if (answer === 'lost' || answer === 'missing') {
                 ctx.log(`reclaim ${owned.id}: the renew answered ${answer}; the removal in flight is left to settle`);
                 return;
             }
         }
     })();
-    return { held: true, value: await running };
+    const outcome = await Promise.race([running, lapsed]);
+    if (outcome === 'lapsed') {
+        settled = true;
+        ctx.log(`reclaim ${owned.id}: lease lapsed, board unreachable; the removal is left unacked to the lease`);
+        return { held: false };
+    }
+    return { held: true, value: outcome };
 }
 
 /** Everything one claimed reclaim row needs from the loop. `failureLog` is the loop's own throttle state. */
