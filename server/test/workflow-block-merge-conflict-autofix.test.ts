@@ -3,7 +3,7 @@ import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflows/workflow-
 import type { AuthoredWorkflowDefinition, BlockConfigValue } from '../src/db/workflows/workflow-schema.js';
 
 /**
- * The `builtin/merge-conflict-autofix` block's own expansion (issue #122) — what
+ * The `builtin/merge-conflict-autofix` block's own expansion — what
  * `workflow-block-compiler.test.ts` covers generically with fake descriptors, pinned here
  * against the real one: node/edge shape, namespacing, the `maxAttempts` retry bound, and that a
  * custom graph can reference the block on its own, independent of the seeded default workflow.

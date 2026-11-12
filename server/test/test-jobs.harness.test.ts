@@ -201,7 +201,7 @@ describe('the test-jobs harness', () => {
         expect(restart).toBeLessThan(SCRIPT.indexOf('begin_phase mcp'));
     });
 
-    // The bridge the claude entrypoint execs refuses any argv not ending in `-p <prompt>` (#536).
+    // The bridge the claude entrypoint execs refuses any argv not ending in `-p <prompt>`.
     it('the real-claude lanes pass the prompt last, as the driver does', () => {
         expect(SCRIPT).toContain(
             "--dangerously-skip-permissions --model fake-model\n            -p 'touch the step markers')"
@@ -217,7 +217,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toContain('want_exit');
     });
 
-    // The opencode message is the turn context, then the prompt (#518): the stub's final line.
+    // The opencode message is the turn context, then the prompt: the stub's final line.
     it('the opencode check reads the prompt off the message end, not the argv head', () => {
         expect(SCRIPT).not.toContain("'run --agent factory opencode prompt'");
         expect(SCRIPT).toContain('[ "$oc_last" = \'opencode prompt\' ]');
@@ -242,7 +242,7 @@ describe('the test-jobs harness', () => {
         expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# orphan reaper'"));
         expect(start).toBeLessThan(SCRIPT.indexOf("echo '# workflows'"));
         const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
-        // The helpers both recovery phases use sit at file scope (issue #829).
+        // The helpers both recovery phases use sit at file scope.
         expect(SCRIPT).toContain('--filter "label=factory.claim-seq=1"');
         expect(phase).toContain('kill -9 "$driver_pid"');
         expect(phase).toContain('kill -TERM "$driver_pid"');
@@ -366,7 +366,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain("TOOK_OVER='took over the running agent of claim 1, whose driver was lost'");
         expect(phase).toContain('supervisor: rebound to claim 2');
         expect(phase).toContain("resumed gates from claim 1's checkpoint");
-        // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).
+        // A group whose agent exited while its supervisor serves is taken over, never waited out.
         expect(phase).toContain('dk_log "$k4" "$TOOK_OVER"');
         expect(phase).toContain('dk_log "$k5" "$TOOK_OVER"');
         expect(phase).toContain('dk_log "$k4" "$ADOPTED" && bad \'k4: the finished runner was not waited out\'');

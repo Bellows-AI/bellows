@@ -551,8 +551,8 @@ describe('the real, shipped registry', () => {
             expect(Array.isArray(entry.configSchema)).toBe(true);
             expect(entry).not.toHaveProperty('expand');
         }
-        // Both reserved ids are real and available: merge-conflict-autofix (issue #122) and
-        // github-review-reconcile (issue #133) — each block's own compiler coverage lives in its
+        // Both reserved ids are real and available: merge-conflict-autofix and
+        // github-review-reconcile — each block's own compiler coverage lives in its
         // own sibling test file (workflow-block-merge-conflict-autofix.test.ts,
         // workflow-block-github-review-reconcile.test.ts).
         expect(catalog.find((b) => b.id === 'builtin/github-review-reconcile')?.available).toBe(true);

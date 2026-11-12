@@ -260,8 +260,8 @@ describe('GET /api/workflow-blocks', () => {
             expect(block).not.toHaveProperty('prompt');
             expect(block).not.toHaveProperty('script');
         }
-        // Both reserved ids are real and available: merge-conflict-autofix (issue #122) and
-        // github-review-reconcile (issue #133).
+        // Both reserved ids are real and available: merge-conflict-autofix and
+        // github-review-reconcile.
         expect(blocks.find((b: { id: string }) => b.id === 'builtin/github-review-reconcile')?.available).toBe(true);
         expect(blocks.find((b: { id: string }) => b.id === 'builtin/merge-conflict-autofix')?.available).toBe(true);
     });

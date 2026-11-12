@@ -133,7 +133,7 @@ describe('POST /api/jobs/:id/operations', () => {
         expect(calls.begin).toEqual([{ orgId: 'local', rootJobId: ROOT_ID, jobId: JOB_ID, ...BODY }]);
     });
 
-    // BEL-243: the pair one claim back on a task that still runs is transient; the helper retries with the new pair.
+    // the pair one claim back on a task that still runs is transient; the helper retries with the new pair.
     it('answers 503 LEASE_PENDING, no-store and retryable, to a pending attempt, and begins nothing', async () => {
         const { app, calls } = await boot({ attempt: { ok: false, pending: true } });
         const res = await post(app);

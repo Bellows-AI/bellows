@@ -3,7 +3,7 @@ import { DEFINITION_LIMIT, EXPANDED_DEFINITION_LIMIT } from '../src/db/workflows
 import { validateDefinition } from '../src/db/workflows/workflow-schema-validate.js';
 
 /**
- * Grammar-level coverage for the `kind: "block"` node (issue #204): the authored shape a workflow
+ * Grammar-level coverage for the `kind: "block"` node: the authored shape a workflow
  * may reference a board-owned, allowlisted block with. Registry lookup, availability and expansion
  * are NOT this module's concern — workflow-schema.ts stays registry-unaware, so these tests only
  * pin the structural grammar. Compiler behavior lives in workflow-block-compiler.test.ts.
