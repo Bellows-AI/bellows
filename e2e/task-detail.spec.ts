@@ -449,8 +449,8 @@ test.describe('the task detail page', () => {
         });
         await expect(interruptions).toContainText('not counted as failed attempts');
         await expect(interruptions.locator('.task-history-item')).toHaveText([
-            /Claim 1: the driver was drained/,
-            /Claim 2: infrastructure loss: the runner pod was deleted before it exited \(Evicted\)/,
+            /Claim 1: the driver was drained \(attempt refunded\)/,
+            /Claim 2: infrastructure loss: the runner pod was deleted before it exited \(Evicted\) \(attempt refunded\)/,
         ]);
         await expect(interruptions.locator('time')).toHaveCount(2);
         await page.screenshot({ path: `${SHOTS}/task-detail-interrupted.png`, fullPage: true });

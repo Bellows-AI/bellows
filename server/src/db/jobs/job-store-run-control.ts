@@ -156,6 +156,7 @@ export async function interruptJob(
         ...(blocked ? { blocked: true } : {}),
         ...(requirement ? { requirement: true } : {}),
         ...(nodeLoss ? { nodeLoss: true } : {}),
+        refunded: true,
     });
     // Blocked and requirement spend no budget, so both are accepted past a spent one; a node loss spends only
     // its own bound, accepted past a spent poison budget (see `releaseOpen`).
