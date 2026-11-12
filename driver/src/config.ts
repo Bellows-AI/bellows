@@ -348,6 +348,10 @@ const DEFAULT_REAP_INTERVAL_MS = 300_000;
 const DEFAULT_REAP_GRACE_MS = 600_000;
 /** The default TASK_VOLUME_EXPORT_ATTEMPTS: three rounds, then the volume goes and the loss is logged. */
 export const DEFAULT_TASK_VOLUME_EXPORT_ATTEMPTS = 3;
+const MS_PER_MINUTE = 60_000;
+const EXPORT_GIVE_UP_MIN_SPAN_MINUTES = 15;
+/** The least time between a thread's first failed export and the delete that gives its transcript bytes up. */
+export const EXPORT_GIVE_UP_MIN_SPAN_MS = EXPORT_GIVE_UP_MIN_SPAN_MINUTES * MS_PER_MINUTE;
 /** The upper bound on TASK_VOLUME_EXPORT_ATTEMPTS. */
 const MAX_TASK_VOLUME_EXPORT_ATTEMPTS = 100;
 /** The default TASK_VOLUME_TTL_MS: a day of idleness after a whole thread's last finalize. */

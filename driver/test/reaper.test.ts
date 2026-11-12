@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardLease, BoardThreadFacts } from '../src/board/board.js';
 import { LEASE_BATCH_MAX } from '../src/board/board.js';
+import { EXPORT_GIVE_UP_MIN_SPAN_MS } from '../src/config.js';
 import {
     createReaper,
     reapDecision,
@@ -577,6 +578,8 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
         answer: (root: string, call: number) => BoardLease | undefined;
         exported?: (root: string, signal: AbortSignal) => Promise<Exported>;
         attempts?: number;
+        /** The time between two sweeps; the default clears the give-up's minimum span. */
+        sweepSpacingMs?: number;
         withExportArm?: boolean;
         /** What the arm's delete answers, instead of removing the volumes. */
         reapAnswer?: () => ReapInconclusive;
@@ -608,6 +611,8 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
                       },
                   }),
         };
+        let clock = FINALIZED + 8 * 24 * HOUR;
+        const spacingMs = opts.sweepSpacingMs ?? EXPORT_GIVE_UP_MIN_SPAN_MS + 1;
         const reaper = createReaper({
             board: {
                 leases: async (ids) => {
@@ -626,7 +631,7 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
             graceMs: 0,
             volumePolicy: POLICY,
             ...(opts.attempts === undefined ? {} : { exportAttempts: opts.attempts }),
-            now: () => FINALIZED + 8 * 24 * HOUR,
+            now: () => clock,
             log: (m) => logs.push(m),
             observe: {
                 sweep: (outcome) => void outcomes.push(outcome),
@@ -634,11 +639,18 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
                 volumeExport: (result) => void (result === 'lost' ? lost.push(result) : undefined),
             },
         });
+        const timed = {
+            ...reaper,
+            sweep: async () => {
+                await reaper.sweep();
+                clock += spacingMs;
+            },
+        };
         const sweepAgain = async () => {
             calls.clear();
-            await reaper.sweep();
+            await timed.sweep();
         };
-        return { reaper, events, logs, outcomes, exports, lost, sweepAgain };
+        return { reaper: timed, events, logs, outcomes, exports, lost, sweepAgain };
     };
     const stable = (facts: BoardThreadFacts) => (root: string) => rowOf(root, facts);
 
@@ -779,7 +791,8 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
                 exported: async () => ({ result: 'never_started', why: 'no pod' }),
                 attempts: 1,
             });
-            await h.reaper.sweep();
+            await h.reaper.sweep(); // attempt 1 of 1 fails, but inside the minimum span: kept
+            await h.sweepAgain(); // past the span, the attempts are spent: the delete needs no further export
             expect(h.events).toEqual([`export ${ROOT_A}`, `reap ${ROOT_A}`]);
             expect(h.lost).toEqual(['lost']);
         });
@@ -793,7 +806,7 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
                 attempts: 2,
             });
             await h.reaper.sweep(); // A fails once; the one export of the round was A's
-            await h.sweepAgain(); // A fails twice and is deleted as a loss
+            await h.sweepAgain(); // A fails twice, over the minimum span, and is deleted as a loss
             expect(h.events).toEqual([`export ${ROOT_A}`, `export ${ROOT_A}`, `reap ${ROOT_A}`]);
             expect(h.lost).toEqual(['lost']);
         });
@@ -832,21 +845,42 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
                 attempts: 1,
                 reapAnswer: () => ({ removed: [], inconclusive: 'the daemon timed out' }),
             });
-            await h.reaper.sweep(); // attempt 1 fails: the delete is tried and unconfirmed
+            await h.reaper.sweep(); // attempt 1 fails inside the minimum span: kept
+            await h.sweepAgain(); // past the span: the delete is tried and unconfirmed
             await h.sweepAgain(); // no further export: the delete is retried straight away
             expect(h.events).toEqual([`export ${ROOT_A}`, `reap ${ROOT_A}`, `reap ${ROOT_A}`]);
         });
 
         it('treats a read that cannot confirm the thread after the last attempt as a keep', async () => {
-            let reads = 0;
+            let refuse = false;
             const h = harness({
                 listed: [volumesOf(ROOT_A)],
-                answer: (root) => (++reads > 2 ? undefined : rowOf(root, thread(NOT_WHOLE))),
+                // Past the sweep's own batch (call 0), every read of the root is refused once `refuse` is set.
+                answer: (root, call) => (refuse && call > 0 ? undefined : rowOf(root, thread(NOT_WHOLE))),
                 exported: failing,
                 attempts: 1,
             });
             await h.reaper.sweep();
+            refuse = true;
+            await h.sweepAgain(); // the attempts are spent and the span is over, but the thread cannot be confirmed
             expect(h.events).toEqual([`export ${ROOT_A}`]);
+        });
+
+        it('keeps the volumes while the failures fall inside the minimum span, however many there are', async () => {
+            const h = harness({
+                listed: [volumesOf(ROOT_A)],
+                answer: stable(thread(NOT_WHOLE)),
+                exported: failing,
+                attempts: 3,
+                sweepSpacingMs: 60_000,
+            });
+            // Minutes 0 to 14 after the first failure: more failures than attempts, a span below the minimum.
+            for (let round = 0; round < 15; round++) await h.reaper.sweep();
+            expect(h.events).toEqual(new Array(15).fill(`export ${ROOT_A}`));
+            expect(h.lost).toEqual([]);
+            await h.reaper.sweep(); // minute 15
+            expect(h.events.at(-1)).toBe(`reap ${ROOT_A}`);
+            expect(h.lost).toEqual(['lost']);
         });
     });
 
