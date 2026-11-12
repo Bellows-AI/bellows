@@ -123,6 +123,8 @@ function idleState(): FetchState {
  * restarts the fetch, so a dead database socket turns into a request loop. There is no bypass.
  */
 const ERROR_COOLDOWN_MS = 30_000;
+/** What a failed read tells a caller; the cause is only in the server log. */
+const TELEMETRY_UNREADABLE = 'Telemetry could not be read';
 const MS_PER_SECOND = 1000;
 
 /**
@@ -218,10 +220,10 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             return fetch;
         } catch (e) {
             lastFailure = e;
-            telemetryFailure = {
-                at: now(),
-                reason: e instanceof TelemetryError ? e.message : (e as Error).message,
-            };
+            // The driver's text can carry hosts, users and SQL: it goes to the log, and the reason a
+            // caller sees is fixed text.
+            console.error(`[stats] telemetry read failed: ${(e as Error).message}`);
+            telemetryFailure = { at: now(), reason: TELEMETRY_UNREADABLE };
             fetchState = {
                 ...fetchState,
                 state: 'error',

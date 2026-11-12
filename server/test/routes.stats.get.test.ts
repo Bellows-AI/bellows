@@ -193,7 +193,7 @@ describe('GET /api/stats: failure handling', () => {
         const telemetry = stubTelemetryClient({
             rollups: async () => {
                 calls += 1;
-                if (calls > 1) throw new Error('connection lost');
+                if (calls > 1) throw storeOutage('connect ECONNREFUSED 10.0.0.7:5432 (password=hunter2)');
                 return structuredClone(EMPTY_TELEMETRY);
             },
         });
@@ -209,7 +209,9 @@ describe('GET /api/stats: failure handling', () => {
         const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
         expect(body.telemetry).not.toBeNull();
         expect(body.meta.telemetry.stale).toBe(true);
-        expect(body.meta.telemetry.reason).toBe('connection lost');
+        expect(body.meta.telemetry.reason).toBe('Telemetry could not be read');
+        expect(JSON.stringify(body)).not.toContain('hunter2');
+        expect(JSON.stringify(body)).not.toContain('ECONNREFUSED');
     });
 
     it('answers a generic 503 when the first read fails cold on an outage, never echoing the database text', async () => {
