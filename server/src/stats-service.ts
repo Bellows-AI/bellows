@@ -94,6 +94,8 @@ export interface StatsService {
     /** Kicks off a refresh if one is warranted. Single-flight. */
     ensureFresh(): void;
     fetchState(): FetchState;
+    /** The error the last failed read threw, for logging and classifying; never for a response body. */
+    lastFailure(): unknown;
 }
 
 export interface StatsServiceDeps {
@@ -194,6 +196,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
 
     let fetchState = idleState();
     let telemetryFailure: { at: number; reason: string } | null = null;
+    let lastFailure: unknown = null;
 
     async function produceTelemetry(): Promise<TelemetrySnapshot> {
         // Set before the first await, so a request arriving in the same tick as the refresh sees
@@ -206,6 +209,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             await repos.list();
             const fetch = await telemetry.fetchRollups({ repos: repoNames() });
             telemetryFailure = null;
+            lastFailure = null;
             fetchState = {
                 ...fetchState,
                 state: 'idle',
@@ -213,6 +217,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             };
             return fetch;
         } catch (e) {
+            lastFailure = e;
             telemetryFailure = {
                 at: now(),
                 reason: e instanceof TelemetryError ? e.message : (e as Error).message,
@@ -326,5 +331,6 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
         },
 
         fetchState: () => fetchState,
+        lastFailure: () => lastFailure,
     };
 }
