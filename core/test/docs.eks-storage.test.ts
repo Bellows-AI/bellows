@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8');
 const here = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
 
-const kubernetes = read('../../docs/kubernetes.md');
+const kubernetes = read('../../docs/kubernetes.md') + read('../../docs/kubernetes-limits.md');
 const runbook = read('../../docs/eks-runbook.md');
 const chartReadme = read('../../charts/factory/README.md');
 const values = read('../../charts/factory/values.yaml');

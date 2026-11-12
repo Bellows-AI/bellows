@@ -11,8 +11,9 @@ OTLP ingest from the two executors, the SQL views over it, and the states the re
 | Usage reader: one repeatable-read snapshot of board evidence (`job_execution` x `job_execution_session`), branch evidence, points, spans, field totals and users, bound to the tenant before they reach memory; rollups rebuilt from it; the test-only global reconciliation | `server/src/telemetry/usage-facts.ts`, `core/src/usage-rollups.ts`, `server/src/telemetry/usage-reconciliation.ts` | `server/test-db/token-reconciliation.test.ts`, `server/test-db/telemetry.sql.test.ts` |
 | Views: `metric_point_used`, `metric_point_suppressed`, `session_source`, `session_branch_slice`, `session_field_total` (series reduction, the SQL twin of `reduceTokenObservations`) | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts` |
 | Executor OTEL endpoint rendering | `driver/src/telemetry-config.ts` | `driver/test/telemetry-shipping.test.ts` |
-| Run activity (`GET /api/jobs/:id/activity`): one repeatable-read `readUsageFacts(tx, org, {taskIds, edits})` per request (`fetchTaskFacts`), the run's amounts from core `runContributionsOf` placed in buckets over its segment span so buckets sum to `usage`; edit decisions are read only here; the batch report reads the member roots in its own snapshot; `gateActivityOf` / `prActivityOf` count each execution once by id across `job_gate_run`, the job's reused `gates[]` and `transcript_tool_event`, transcript-only calls kept apart as observed | `server/src/telemetry/run-activity.ts`, `server/src/telemetry/client.ts`, `server/src/telemetry/usage-facts.ts`, `core/src/usage-reduce.ts` | `server/test/run-activity.test.ts`, `server/test-db/token-reconciliation.test.ts` |
-| Transcript tool ingest: a claude chunk on `transcript` and an opencode chunk on `transcript-raw` is read alone after it is stored, every chunk again in offset order at finalize, never failing the upload; the call half is stored first and a result in any later chunk completes it (a result before its call completes at finalize); the run is fixed by the call half (the claim whose window holds its own time, a result inherits it), the session is the record's with the artifact's own kept apart, start/end times are kept when the record has them; only a lone `gh pr create`, gate or publish invocation can confirm (a compound line is unknown), a PR only from a paired result of the job's repo, a gate joins `job_gate_run` by `executionId` and a publish `job_pr_operation` by `operationId` (an id with no row stays unlinked) | `server/src/telemetry/transcript-tools.ts`, `server/src/routes/jobs/job-transcript-ingest.ts`, `job-handlers-artifacts.ts`, `server/src/db/jobs/job-store-transcript-tools.ts` | `server/test/transcript-tools.test.ts`, `server/test/routes.artifacts.test.ts`, `server/test-db/transcript-tool-event.test.ts` |
+| Run activity (`GET /api/jobs/:id/activity`): one repeatable-read `readUsageFacts` per request, buckets summing to `usage`; edit decisions are read only here; `gateActivityOf` / `prActivityOf` count each execution once by id, transcript-only calls kept apart as observed | `server/src/telemetry/run-activity.ts`, `server/src/telemetry/client.ts`, `server/src/telemetry/usage-facts.ts`, `core/src/usage-reduce.ts` | `server/test/run-activity.test.ts`, `server/test-db/token-reconciliation.test.ts` |
+| Transcript tool ingest: a claude chunk on `transcript` and an opencode chunk on `transcript-raw` is read after it is stored and again at finalize, never failing the upload; the call half is stored first and a result completes it in any later chunk | `server/src/telemetry/transcript-tools.ts`, `server/src/routes/jobs/job-transcript-ingest.ts`, `server/src/db/jobs/job-store-transcript-tools.ts` | `server/test/transcript-tools.test.ts`, `server/test-db/transcript-tool-event.test.ts` |
+| Confirmation: only a lone `gh pr create`, gate or publish invocation confirms (a compound line is unknown); a PR only from a paired result of the job's repo; a gate joins `job_gate_run` by `executionId`, a publish `job_pr_operation` by `operationId` (an id with no row stays unlinked) | `server/src/telemetry/transcript-tools.ts`, `server/src/routes/jobs/job-handlers-artifacts.ts` | `server/test/transcript-tools.test.ts`, `server/test/routes.artifacts.test.ts` |
 | Executor emission, collector config, branch reporter | `docker/{claude,opencode}-executor/`, `docker/executor-common/branch-reporter.cjs`, `docker/otel-collector.yaml`, `charts/factory/files/collector.yaml` | `docker/claude-executor/test.sh`, `driver/test/branch-reporter.test.ts` |
 
 Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.md](persistence.md).
@@ -20,34 +21,15 @@ Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.
 
 ## Invariants
 
-- **A cumulative counter is reduced to its high-water mark per raw series, never `sum(value)`** — in
-  `002_views.repeatable.sql` and again in `core/src/token-contributions.ts`; series are summed, and
-  unspecified temporality is never added. Guarded by `server/test-db/telemetry.sql.test.ts` and
-  `server/test-db/telemetry.token-reduction.test.ts`, which holds both to the same totals.
-- **Every view reads `metric_point_used`, never `metric_point`** — `session_source` picks one source
-  per session, OTEL over transcript; reading the table reintroduces the double count.
+- **A cumulative counter is reduced to its high-water mark per raw series, never `sum(value)`** — in `002_views.repeatable.sql` and again in `core/src/token-contributions.ts`; series are summed, and unspecified temporality is never added. Guarded by `server/test-db/telemetry.sql.test.ts` and `server/test-db/telemetry.token-reduction.test.ts`, which holds both to the same totals.
+- **Every view reads `metric_point_used`, never `metric_point`** — `session_source` picks one source per session, OTEL over transcript; reading the table reintroduces the double count.
 - **Nanosecond timestamps divide by `1e6`, not `1e9`** (`server/src/telemetry/otlp.ts`).
-- **Attribute keys are allowlisted; metric names are denylisted.** A new identity attribute is
-  dropped by default; an unknown metric still lands in `metric_point` unmapped. `attrs.series` is the
-  one-way sha256 digest of the full pre-allowlist attributes; the dropped values are never stored.
-- **A session key is `(agent, session id)` and has one owner, resolved before any join** (`core/src/usage-ownership.ts`):
-  the tenant's board evidence (an execution's author, repo and canonical task) or its branch reports. No
-  evidence, or evidence from a second organization, keeps the key out of every tenant read; two tasks or two
-  repos make it unresolved, never a `min()`. `server/test-db/token-reconciliation.test.ts`.
-- **No monetary field exists** — `claude_code.cost.usage` and `opencode.cost.usage` are refused at
-  the collector and again at the ingest route.
-- **`on conflict do nothing` on `metric_point`, never `do update`** — an update would move
-  `received_at`, the only way to tell a retry from a second export.
-- **The ingest route returns 5xx only for a genuine write failure** (exporters retry 5xx forever):
-  an unparseable body gets 200, a malformed branch report 400.
-- **A branch report's organization comes from the attempt's job id + lease token headers, never
-  from the report's `repo` field** (CWE-862). A refused report is a silent no-op.
-- **Both executors read `RUNNER_OTEL_ENDPOINT` from a managed-scope file the driver renders
-  root-owned** (`driver/src/telemetry-config.ts`): Claude's managed settings `env` block outranks
-  the container environment and any user- or repo-scope settings; opencode's file is named by
-  `OPENCODE_OTEL_CONFIG_PATH`.
-- **The collector exporter sets `compression: none`** — Fastify's JSON parser does not decompress,
-  so gzip means a 400 on every export.
-- **No org, repo, job, lease, pod or user id in any metric label value**: labels come from closed vocabularies
-  (route pattern, status class, verb, resource kind, docker command, outcome). A failed scrape-time read omits
-  its samples, never reports zero (`server/test/routes.prometheus.test.ts`).
+- **Attribute keys are allowlisted; metric names are denylisted.** A new identity attribute is dropped by default; an unknown metric still lands in `metric_point` unmapped. `attrs.series` is the one-way sha256 digest of the full pre-allowlist attributes; the dropped values are never stored.
+- **A session key is `(agent, session id)` and has one owner, resolved before any join** (`core/src/usage-ownership.ts`): the tenant's board evidence (an execution's author, repo and canonical task) or its branch reports. No evidence, or evidence from a second organization, keeps the key out of every tenant read; two tasks or two repos make it unresolved, never a `min()`. `server/test-db/token-reconciliation.test.ts`.
+- **No monetary field exists** — `claude_code.cost.usage` and `opencode.cost.usage` are refused at the collector and again at the ingest route.
+- **`on conflict do nothing` on `metric_point`, never `do update`** — an update would move `received_at`, the only way to tell a retry from a second export.
+- **The ingest route returns 5xx only for a genuine write failure** (exporters retry 5xx forever): an unparseable body gets 200, a malformed branch report 400.
+- **A branch report's organization comes from the attempt's job id + lease token headers, never from the report's `repo` field** (CWE-862). A refused report is a silent no-op.
+- **Both executors read `RUNNER_OTEL_ENDPOINT` from a managed-scope file the driver renders root-owned** (`driver/src/telemetry-config.ts`): Claude's managed settings `env` block outranks the container environment and any user- or repo-scope settings; opencode's file is named by `OPENCODE_OTEL_CONFIG_PATH`.
+- **The collector exporter sets `compression: none`** — Fastify's JSON parser does not decompress, so gzip means a 400 on every export.
+- **No org, repo, job, lease, pod or user id in any metric label value**: labels come from closed vocabularies (route pattern, status class, verb, resource kind, docker command, outcome). A failed scrape-time read omits its samples, never reports zero (`server/test/routes.prometheus.test.ts`).

@@ -32,32 +32,14 @@ null — never zero. Pinned by `core/test/docs.terminology.test.ts`.
 
 ## Invariants
 
-- **`ratio()` returns `null`, never `0`, on a zero denominator** (`core/test/metrics.invariants.test.ts`),
-  **and `sum()` in `core/src/telemetry.ts` returns `null` only when nothing was measured.**
-- **Two token sums are sanctioned, each labelled and shown beside its parts:** `inputTokens()` =
-  `input` + `cacheRead` + `cacheCreation` (hit rate is `cacheRead` over that), and the dashboard's
-  Total tokens = that plus `output` (`totalTokens()` in `web/src/components/usage/usage-format.ts`),
-  null when either side is unmeasured. Cached context counts on every request, so a Total is volume
-  processed, not unique context. Per-task distributions never sum: medians do not add.
-- **Every bucket in the window is seeded, including empty ones** — `bucketSeries()`; a series that
-  closes its own gaps overstates activity. Week and day bucketing stay in `core/src/metrics.ts`,
-  never `time_bucket()`.
-- **Scope (`org` / `mine`) is a read-time filter over the cached input, exactly like the range**,
-  so a scope switch never re-fetches — `server/test/routes.stats.scope.test.ts`.
-- **Repo scoping buckets, it never drops.** `otherRepoSessions` and `sessionsWithoutHook`
-  keep three states distinguishable. `sessionsWithoutHook` counts board-owned
-  sessions the hook never reported; they stay in `totals`, `otherRepoSessions` does not.
-- **Per token type, eligible timed usage equals run-assigned plus the reasoned unassigned parts in every view**
-  (model, org, task, run, series bucket); unlocated, unresolved and conflicting-owner usage stay beside
-  it, never inside — `core/test/usage-reduce.test.ts`.
-- **Per-task distributions exclude, they never zero**: nearest-rank, a measured zero participates, the
-  four types are never added; runs filter `job.repo`/creator, tokens the task owner, so the task sets
-  can differ (stated limit) — `core/src/task-usage.ts`, `core/test/task-usage.test.ts`.
+- **`ratio()` returns `null`, never `0`, on a zero denominator** (`core/test/metrics.invariants.test.ts`), **and `sum()` in `core/src/telemetry.ts` returns `null` only when nothing was measured.**
+- **Two token sums are sanctioned, each labelled and shown beside its parts:** `inputTokens()` = `input` + `cacheRead` + `cacheCreation` (hit rate is `cacheRead` over that), and the dashboard's Total tokens = that plus `output` (`totalTokens()` in `web/src/components/usage/usage-format.ts`), null when either side is unmeasured. Cached context counts on every request, so a Total is volume processed, not unique context. Per-task distributions never sum: medians do not add.
+- **Every bucket in the window is seeded, including empty ones** — `bucketSeries()`; a series that closes its own gaps overstates activity. Week and day bucketing stay in `core/src/metrics.ts`, never `time_bucket()`.
+- **Scope (`org` / `mine`) is a read-time filter over the cached input, exactly like the range**, so a scope switch never re-fetches — `server/test/routes.stats.scope.test.ts`.
+- **Repo scoping buckets, it never drops.** `otherRepoSessions` and `sessionsWithoutHook` keep three states distinguishable. `sessionsWithoutHook` counts board-owned sessions the hook never reported; they stay in `totals`, `otherRepoSessions` does not.
+- **Per token type, eligible timed usage equals run-assigned plus the reasoned unassigned parts in every view** (model, org, task, run, series bucket); unlocated, unresolved and conflicting-owner usage stay beside it, never inside — `core/test/usage-reduce.test.ts`.
+- **Per-task distributions exclude, they never zero**: nearest-rank, a measured zero participates, the four types are never added; runs filter `job.repo`/creator, tokens the task owner, so the task sets can differ (stated limit) — `core/src/task-usage.ts`, `core/test/task-usage.test.ts`.
 - **`telemetryStats()` takes an injectable `now`** — tests pin a frozen date; keep the injection point.
-- **No field named `cost`/`usd`/`price` exists in `TelemetryStats` or the task statistics**, and
-  `core/test/telemetry.stats.test.ts` and `core/test/task-usage.test.ts` assert their absence.
-- **Tokens exist only inside `telemetry.usage`**; `SessionRollup`, the totals and the session series
-  carry none — `core/test/telemetry.stats.test.ts`.
-- **`TELEMETRY_TTL_SECONDS` (default 30, floor 5) is the only cache floor** (`server/src/config.ts`). A
-  failed read serves the last good snapshot with 200 and cools down 30s, with no bypass
-  (`server/src/stats-service.ts`).
+- **No field named `cost`/`usd`/`price` exists in `TelemetryStats` or the task statistics**, and `core/test/telemetry.stats.test.ts` and `core/test/task-usage.test.ts` assert their absence.
+- **Tokens exist only inside `telemetry.usage`**; `SessionRollup`, the totals and the session series carry none — `core/test/telemetry.stats.test.ts`.
+- **`TELEMETRY_TTL_SECONDS` (default 30, floor 5) is the only cache floor** (`server/src/config.ts`). A failed read serves the last good snapshot with 200 and cools down 30s, with no bypass (`server/src/stats-service.ts`).

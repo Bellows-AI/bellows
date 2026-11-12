@@ -1,5 +1,5 @@
 /**
- * The object key layout (openspec/changes/task-owned-runner/design.md, "artifact store"):
+ * The object key layout:
  * `<prefix>/<org>/<member>/<root>/<job>/<claimSeq>/<executor>/<session>/<stream>/<offset:012>`.
  * Ids and integers only, never names, so every segment is a plain ASCII token and a key needs no
  * escaping on any backend.
