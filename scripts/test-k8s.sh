@@ -695,7 +695,7 @@ gh_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/
 expect_contains 'the driver has a liveness probe'      "$gh_driver" 'livenessProbe:'
 expect_contains 'the driver writes the heartbeat it reads' "$gh_driver" 'DRIVER_HEARTBEAT_FILE'
 expect_contains 'the driver drains before SIGKILL'     "$gh_driver" 'terminationGracePeriodSeconds: 600'
-expect_contains 'the driver hands over a minute before SIGKILL' "$(grep -A1 'name: DRIVER_HANDOVER_MS' <<<"$gh_driver")" 'value: "540000"'
+expect_contains 'the driver hands over at once on SIGTERM' "$(grep -A1 'name: DRIVER_HANDOVER_MS' <<<"$gh_driver")" 'value: "0"'
 expect_contains 'the driver gives a released group the default rebind grace' "$(grep -A1 'name: DRIVER_REBIND_GRACE_MS' <<<"$gh_driver")" 'value: "240000"'
 expect_contains 'the driver keeps the production orphan floor' "$(grep -A1 'name: DRIVER_ORPHAN_MIN_MS' <<<"$gh_driver")" 'value: "30000"'
 expect_contains 'the driver keeps the production step long poll' "$(grep -A1 'name: DRIVER_STEP_WAIT_MS' <<<"$gh_driver")" 'value: "15000"'
@@ -1882,6 +1882,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     --set "driver.repoCloneBase=git://$RELEASE-origin:9418" \
     --set-string driver.leaseSeconds="$LANE_LEASE_S" --set driver.terminationGracePeriodSeconds=70 \
+    --set-string driver.handoverMs=10000 \
     --set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))" --set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS" \
     --set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))" \
     -n "$NAMESPACE" >/dev/null || {

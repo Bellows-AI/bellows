@@ -570,7 +570,8 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
     it('installs the driver with a short lease, a short handover and a short rebind grace', () => {
         expect(script).toContain('LANE_LEASE_S=15');
         expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
-        // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
+        // The chart hands over at once by default; the lane's hard-kill case needs a 10 s window.
+        expect(installCall).toContain('--set-string driver.handoverMs=10000');
         expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
         // A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind
         // nodes, docs/kubernetes.md): the grace must outlast it, or the group ends before it can follow.

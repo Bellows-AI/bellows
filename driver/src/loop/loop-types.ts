@@ -46,6 +46,8 @@ export interface LoopRuntime {
     ) => Promise<LeaseState>;
     /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`). */
     live?: Map<string, LiveAttempt>;
+    /** Set once a drain's handover began: an attempt that registers on `live` after it is handed over too. */
+    handoverReason?: string;
 }
 
 /** An attempt in flight: `over` settles when its `runJob` has ended and torn it down. */
