@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { link, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { ObjectCallOptions, ObjectStore, PutResult } from './object-store.js';
+import { startIntervalLoop } from '../interval-loop.js';
 
 const NOT_FOUND = 'ENOENT';
 const ALREADY_EXISTS = 'EEXIST';
@@ -80,22 +81,16 @@ async function sweepDir(
 export function startTempSweep(
     sweep: () => Promise<TempSweepResult>,
     { intervalMs = SWEEP_INTERVAL_MS, log }: { intervalMs?: number; log: (line: string) => void }
-): () => void {
-    let running = false;
-    const timer = setInterval(() => {
-        if (running) return;
-        running = true;
-        sweep()
-            .then((r) => {
-                if (r.removed > 0) log(`swept ${r.removed} stale temp files`);
-            })
-            .catch((e: unknown) => log(`temp sweep failed: ${(e as Error).message}`))
-            .finally(() => {
-                running = false;
-            });
-    }, intervalMs);
-    timer.unref();
-    return () => clearInterval(timer);
+): () => Promise<void> {
+    return startIntervalLoop(
+        'artifacts',
+        async () => {
+            const r = await sweep();
+            if (r.removed > 0) log(`swept ${r.removed} stale temp files`);
+        },
+        intervalMs,
+        { onError: (e) => log(`temp sweep failed: ${e.message}`), immediate: false }
+    );
 }
 
 const errnoOf = (error: unknown): string | undefined => (error as NodeJS.ErrnoException).code;

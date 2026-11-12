@@ -1,23 +1,44 @@
 /**
- * Runs `pass` now and then on an interval, never overlapping itself; a throwing pass is logged under `label`
- * and the next tick is the retry. Returns the stop, which clears the timer only. Shared by every outbox
- * delivery loop (commerce, notifications).
+ * Runs `pass` now and then on an interval, never overlapping itself; a throwing pass is logged (by default under
+ * `label`, or by `onError`) and the next tick is the retry. Shared by every background loop on the board.
+ *
+ * The returned stop is the shutdown half (BEL-322): it clears the timer, aborts the `signal` the running pass was
+ * handed so it ends between items, and resolves once that pass has settled, so the pool is never closed under it.
+ * A stop called twice is the same promise. `immediate: false` skips the startup pass.
  */
-export function startIntervalLoop(label: string, pass: () => Promise<void>, intervalMs: number): () => void {
-    let running = false;
-    const tick = async () => {
-        if (running) return;
-        running = true;
-        try {
-            await pass();
-        } catch (e) {
-            console.error(`[${label}] pass failed: ${(e as Error).message}`);
-        } finally {
-            running = false;
-        }
+export function startIntervalLoop(
+    label: string,
+    pass: (signal: AbortSignal) => Promise<unknown>,
+    intervalMs: number,
+    {
+        onError = (e: Error) => console.error(`[${label}] pass failed: ${e.message}`),
+        immediate = true,
+    }: { onError?: (e: Error) => void; immediate?: boolean } = {}
+): () => Promise<void> {
+    const controller = new AbortController();
+    let inFlight: Promise<void> | undefined;
+    const tick = () => {
+        if (inFlight || controller.signal.aborted) return;
+        inFlight = (async () => {
+            try {
+                await pass(controller.signal);
+            } catch (e) {
+                onError(e as Error);
+            } finally {
+                inFlight = undefined;
+            }
+        })();
     };
-    void tick();
-    const timer = setInterval(() => void tick(), intervalMs);
+    if (immediate) tick();
+    const timer = setInterval(tick, intervalMs);
     timer.unref();
-    return () => clearInterval(timer);
+    let stopped: Promise<void> | undefined;
+    return () => {
+        stopped ??= (async () => {
+            clearInterval(timer);
+            controller.abort();
+            await inFlight;
+        })();
+        return stopped;
+    };
 }

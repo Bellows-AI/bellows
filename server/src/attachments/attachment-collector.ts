@@ -4,6 +4,7 @@ import type { ObjectStore } from '../artifacts/object-store.js';
 import type { ArtifactsConfig } from '../config-artifacts.js';
 import type { ServerMetrics } from '../metrics.js';
 import { UPLOAD_WRITE_BOUND_MS } from './attachment-store.js';
+import { startIntervalLoop } from '../interval-loop.js';
 
 /**
  * The attachment sweep (docs/persistence.md): abandoned drafts expire, files whose task is gone are
@@ -211,27 +212,13 @@ export function startAttachmentCollector(
     collector: AttachmentCollector,
     timedPass: <T>(loop: string, fn: () => Promise<T>) => Promise<T>,
     intervalMs = ATTACHMENT_COLLECT_INTERVAL_MS
-): () => void {
-    const controller = new AbortController();
-    let running = false;
-    const tick = async () => {
-        if (running || controller.signal.aborted) return;
-        running = true;
-        try {
-            await timedPass('attachment_collect', () => collector.collect({ signal: controller.signal }));
-        } catch (e) {
-            console.error(`[attachments] collect failed: ${(e as Error).message}`);
-        } finally {
-            running = false;
-        }
-    };
-    void tick();
-    const timer = setInterval(() => void tick(), intervalMs);
-    timer.unref();
-    return () => {
-        clearInterval(timer);
-        controller.abort();
-    };
+): () => Promise<void> {
+    return startIntervalLoop(
+        'attachments',
+        (signal) => timedPass('attachment_collect', () => collector.collect({ signal })),
+        intervalMs,
+        { onError: (e) => console.error(`[attachments] collect failed: ${e.message}`) }
+    );
 }
 
 /** Builds the process's collector over the artifact backend and starts its loop (wired once, from `main.ts`). */
@@ -247,7 +234,7 @@ export function startAttachmentSweep({
     artifacts: ArtifactBackend;
     config: ArtifactsConfig;
     metrics: Pick<ServerMetrics, 'timedPass'>;
-}): () => void {
+}): () => Promise<void> {
     const collector = createAttachmentCollector({
         sql,
         ready,

@@ -1,3 +1,4 @@
+import { startIntervalLoop } from '../interval-loop.js';
 import type { OAuthStore } from './oauth-store.js';
 
 const MS_PER_MINUTE = 60_000;
@@ -14,29 +15,16 @@ export function startOAuthSweep(
     intervalMs = OAUTH_SWEEP_INTERVAL_MS,
     /** More expiry work that rides the same pass (the upload capabilities, which only an MCP board mints). */
     alsoPurge: () => Promise<unknown> = async () => undefined
-): () => void {
-    let running = false;
-    let stopped = false;
-    const tick = async () => {
-        if (running || stopped) return;
-        running = true;
-        try {
-            await timedPass('oauth_purge', async () => {
+): () => Promise<void> {
+    return startIntervalLoop(
+        'oauth',
+        () =>
+            timedPass('oauth_purge', async () => {
                 await oauth.purgeExpired();
                 await oauth.deleteUnusedClients();
                 await alsoPurge();
-            });
-        } catch (e) {
-            console.error(`[oauth] purge failed: ${(e as Error).message}`);
-        } finally {
-            running = false;
-        }
-    };
-    void tick();
-    const timer = setInterval(() => void tick(), intervalMs);
-    timer.unref();
-    return () => {
-        stopped = true;
-        clearInterval(timer);
-    };
+            }),
+        intervalMs,
+        { onError: (e) => console.error(`[oauth] purge failed: ${e.message}`) }
+    );
 }
