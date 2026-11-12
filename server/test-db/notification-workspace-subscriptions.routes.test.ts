@@ -18,7 +18,7 @@ import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 
 /**
- * BEL-177: the personal subscription routes (`/api/workspace/notification-subscriptions`) through the real
+ * the personal subscription routes (`/api/workspace/notification-subscriptions`) through the real
  * app, org registry and auth store. A personal row is the caller's own; the org path never sees it.
  */
 const enabled = Boolean(process.env.DATABASE_URL);

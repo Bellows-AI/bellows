@@ -24,7 +24,7 @@ import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 
 /**
- * BEL-131: an org's notification subscriptions — org-bound CRUD (the outbox of BEL-129 fans an event out to them
+ * an org's notification subscriptions — org-bound CRUD (the outbox fans an event out to them
  * in SQL, see notification-outbox.test.ts). Every store is bound to one org at construction.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -289,7 +289,7 @@ describe('notification subscription store', () => {
     });
 });
 
-describe.skipIf(!enabled)('notification subscription store — owner scoping (BEL-177)', () => {
+describe.skipIf(!enabled)('notification subscription store — owner scoping', () => {
     it('the org list excludes personal rows and the personal list excludes org rows', async () => {
         const org = await store.create(ORG_OWNER, fields(), credential());
         const mine = await store.create(PERSONAL_OWNER, fields(), credential());
