@@ -1,5 +1,5 @@
 /**
- * The kill note a timed-out run leaves in its output tail (issue #339).
+ * The kill note a timed-out run leaves in its output tail.
  *
  * `[driver] killed after Nms` on its own cannot tell a run that hung from one that was still
  * making progress when the wall clock ran out. What the driver holds at the moment of the kill —

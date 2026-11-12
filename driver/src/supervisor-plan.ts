@@ -36,7 +36,7 @@ const MIN_HEARTBEAT_PERIOD_MS = 1_000;
 /** How long a group whose driver stopped answering keeps going: a share of the lease, so it ends inside it. */
 export const orphanBoundMs = (config: DriverConfig): number => orphanBoundOf(config.leaseSeconds, config.orphanMinMs);
 
-/** How long a released group waits for a newer holder: its lease, then the grace to find the group and bind it (#829). */
+/** How long a released group waits for a newer holder: its lease, then the grace to find the group and bind it. */
 export const takeoverBoundMs = (config: DriverConfig): number =>
     config.leaseSeconds * MS_PER_SECOND + config.rebindGraceMs;
 
@@ -45,7 +45,7 @@ export const heartbeatPeriodMs = (config: DriverConfig): number =>
     Math.max(MIN_HEARTBEAT_PERIOD_MS, Math.floor((config.leaseSeconds * MS_PER_SECOND) / SUPERVISOR_HEARTBEAT_DIVISOR));
 
 /**
- * How long the next claim waits for the supervisor of a group it adopts to end (#829): a lost driver
+ * How long the next claim waits for the supervisor of a group it adopts to end: a lost driver
  * still alive keeps contact until its next heartbeat learns the lease is gone (`heartbeatPeriodMs`),
  * the released group then waits `takeoverBoundMs` from that contact, and the wind-down (drain and
  * report) follows. It scales with the lease like the bounds it outlasts.
@@ -54,7 +54,7 @@ export const finalizeWaitMs = (config: DriverConfig): number =>
     SUPERVISOR_WINDDOWN_MS + heartbeatPeriodMs(config) + takeoverBoundMs(config);
 
 /**
- * The declared gate image of the attempt's group (issue #773), or null when the group runs no gate
+ * The declared gate image of the attempt's group, or null when the group runs no gate
  * container: the checkout declares neither gates nor setup, or the job has no worktree to run them
  * in. One decision for both executors' group specs; the image is asserted before it lands in one.
  */
@@ -92,7 +92,7 @@ export function supervisorLiterals(
 }
 
 /**
- * What the supervisor's finalize stage needs to checkpoint the task (issue #775): the script by
+ * What the supervisor's finalize stage needs to checkpoint the task: the script by
  * content, the tree and branch it works on, a directory on the volume, and — for opencode — the
  * session database. A job with no repository carries no tree: only an OpenCode one is configured, with the
  * database alone. None without a control endpoint (nowhere to upload to).
@@ -150,7 +150,7 @@ export const spentMs = (startedAt: string): number => {
 /**
  * The agent phase's backstop: the run budget plus the wind-down. The supervisor ends the agent at
  * the budget itself and reports within the wind-down; the docker driver's timer only ends a group
- * whose supervisor stopped doing that. A taken-over run (#829) has spent `elapsedMs` of the budget already.
+ * whose supervisor stopped doing that. A taken-over run has spent `elapsedMs` of the budget already.
  */
 export const agentBackstopMs = (config: DriverConfig, job: BoardJob, elapsedMs = 0): number =>
     Math.max(0, runTimeoutMs(config, job) - elapsedMs) + SUPERVISOR_WINDDOWN_MS;
@@ -158,7 +158,7 @@ export const agentBackstopMs = (config: DriverConfig, job: BoardJob, elapsedMs =
 /**
  * The backstop deadline of the whole group (the kubelet's, on the Job): the agent phase's plus the
  * steps the group serves before and after the agent — the sync, the gates, the helpers, the
- * publish, and the bound a released group waits for a newer holder after its agent went (#829). The
+ * publish, and the bound a released group waits for a newer holder after its agent went. The
  * driver ends the group itself long before; this only ends one it forgot.
  */
 export const backstopMs = (config: DriverConfig, job: BoardJob): number =>

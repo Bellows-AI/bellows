@@ -10,7 +10,7 @@ import type { StepResult } from './supervisor-contract.js';
 import { FIRST_GENERATION } from './task-volume.js';
 
 /**
- * Restoring a thread's task tree onto a replacement volume (issue #775). A volume is found by the
+ * Restoring a thread's task tree onto a replacement volume. A volume is found by the
  * thread's root label; its generation is the highest one listed. A thread whose volume is gone is
  * rebuilt from the board's checkpoint into the NEXT generation by `scripts/checkpoint-restore.cjs`,
  * run as a supervised step in the attempt's group; the older generation is deleted only after that

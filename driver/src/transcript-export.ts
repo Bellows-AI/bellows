@@ -51,7 +51,7 @@ export function exportsTranscript(job: BoardJob, session: RunSession | null): bo
 /**
  * The exporter's env: literals only — paths, the caps, its mailbox with the
  * supervisor and the relay socket in it. It holds no credential: the supervisor attaches its own
- * export-only token to what the exporter sends (#829). A drain or a flush whose holder stays
+ * export-only token to what the exporter sends. A drain or a flush whose holder stays
  * unreachable gives up only after a takeover has had its whole bound to land.
  */
 export function exportEnv(config: DriverConfig, job: BoardJob): [string, string][] {

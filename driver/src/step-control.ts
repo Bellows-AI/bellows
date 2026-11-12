@@ -12,7 +12,7 @@ import {
 } from './supervisor-contract.js';
 
 /**
- * The supervised-step channel (issue #771), one per control token — so one lease. The loop and the
+ * The supervised-step channel, one per control token — so one lease. The loop and the
  * runners SUBMIT a step (`submit`); the task supervisor, the only holder of the control token,
  * PULLS it (`GET /step`, a long poll) and answers it (`POST /step/:id`). A step is never a container
  * or a Job: it is a request the supervisor runs in its own container over the task volume.
@@ -64,7 +64,7 @@ export class StepTokenUnanswered extends Error {
 /**
  * Whether a step failed because its supervisor was lost — the channel closed, or the answer never
  * came, or a gate's GitHub token ask went unanswered — which is no verdict on the step itself: the
- * attempt was interrupted (issue #826).
+ * attempt was interrupted.
  */
 export const stepLost = (error: unknown): boolean =>
     error instanceof StepChannelClosed || error instanceof StepTimedOut || error instanceof StepTokenUnanswered;
@@ -82,14 +82,14 @@ export interface StepSink {
     /** A runner makes a group under the token: a fresh supervisor, with no contact, report or refusal yet. */
     attach(token: string): void;
     /**
-     * Cancels a gate step (issue #773): one not pulled yet is dropped and its waiter rejected; one the
+     * Cancels a gate step: one not pulled yet is dropped and its waiter rejected; one the
      * supervisor holds is named on its control poll (`cancels`) until its answer settles it — never a
      * step of its own, so a cancel never queues behind the step it cancels.
      */
     cancel(token: string, id: string): void;
     /**
      * The runner read the agent container over — docker's exited state, the pod's terminated one — before the
-     * supervisor reported (#920): the supervisor's control poll says so, and an agent that left no exit marker is
+     * supervisor reported: the supervisor's control poll says so, and an agent that left no exit marker is
      * read as lost at once instead of at its start or heartbeat window. Only a confirmed state is ever named here.
      */
     agentEnded(token: string): void;
@@ -121,7 +121,7 @@ export interface StepBroker extends StepSink {
     agentWasEnded(token: string): boolean;
     /**
      * Whether a gate step of this id is running under the token: pulled by the supervisor (not still queued)
-     * and not settled, cancelled-while-queued or released. The gate token route (BEL-258) serves only such a step.
+     * and not settled, cancelled-while-queued or released. The gate token route serves only such a step.
      */
     holdsGate(token: string, id: string): boolean;
     /**

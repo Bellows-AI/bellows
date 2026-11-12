@@ -18,7 +18,7 @@ import { stepLost } from './step-control.js';
 export class ServicesNotRunning extends Error {}
 
 /**
- * Waits until every service in `specs` is listed `running` (issue #560), re-listing every
+ * Waits until every service in `specs` is listed `running`, re-listing every
  * SERVICE_READY_POLL_MS. Throws naming a service listed dead at once, with the platform's words for
  * it when the listing has them; once `timeoutMs` — the part of the SERVICE_RESTART_TIMEOUT_MS budget
  * the caller has left — has passed on the clock (`pollFor`), it names what
@@ -78,7 +78,7 @@ function stillPending(
     return specs.map(({ name }) => name).filter((name) => !running.has(name));
 }
 
-/** Ends a restart the attempt stood down from (issue #560): nothing more is created or polled. */
+/** Ends a restart the attempt stood down from: nothing more is created or polled. */
 export function throwIfStoodDown(signal: AbortSignal | undefined): void {
     if (signal?.aborted) throw stoodDown();
 }

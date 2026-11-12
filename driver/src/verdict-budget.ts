@@ -1,5 +1,5 @@
 /**
- * The verdict's request budget (issue #820). Each tail the runner hands over is bounded, but the
+ * The verdict's request budget. Each tail the runner hands over is bounded, but the
  * agent tail, a failed gate's output and the driver's notes together — once JSON escapes a control
  * character into six bytes — can pass the board's body limit, and a 413 is a refusal no retry
  * changes. So the serialized complete body is measured and its output, oldest text first, gives way.

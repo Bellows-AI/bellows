@@ -39,7 +39,7 @@ export interface ServiceSpec {
 /** The services the claim's plan declares: what both executors start, and nothing the driver read itself. */
 export const plannedServices = (job: BoardJob): ServiceSpec[] => [...(job.services ?? [])];
 
-/** The address every declared name resolves to in the attempt's group (issue #773): its own loopback. */
+/** The address every declared name resolves to in the attempt's group: its own loopback. */
 export const SERVICE_ADDRESS = '127.0.0.1';
 
 /** The services an attempt's group runs: the plan's, unless this driver runs none (`RUNNER_SERVICES=0`). */
@@ -47,7 +47,7 @@ export const groupServices = (config: Pick<DriverConfig, 'servicesEnabled'>, job
     config.servicesEnabled ? plannedServices(job) : [];
 
 /**
- * The container hardening flags (issue #382), COPIED from docker.ts rather than imported — the
+ * The container hardening flags, COPIED from docker.ts rather than imported — the
  * same one-direction rule the mount string and the workspace-path regexes already follow (docker
  * imports services, never the reverse). The two spellings are pinned together in
  * driver/test/docker/, which asserts both modules' argv against one expectation, so a
@@ -89,7 +89,7 @@ export function recordDeclaredServices(job: BoardJob, specs: ServiceSpec[]): voi
     declaredFleets.set(job.leaseToken, specs);
 }
 
-/** The attempt's recorded fleet, whole: what a pre-gate restart (issue #560) starts again. */
+/** The attempt's recorded fleet, whole: what a pre-gate restart starts again. */
 export function declaredServiceSpecs(job: BoardJob): ServiceSpec[] {
     return declaredFleets.get(job.leaseToken) ?? [];
 }
@@ -150,7 +150,7 @@ function dialedHosts(
 }
 
 /**
- * Why this driver will not run the claim's services, or null (issue #773, R3-1). A declared name
+ * Why this driver will not run the claim's services, or null (R3-1). A declared name
  * goes into the group's hosts file (`127.0.0.1`), so a service spelled like a host its containers
  * dial would capture that traffic; the board cannot know this driver's endpoints, so the driver
  * refuses, case-insensitively. A `config` refusal at claim — nothing launches.
@@ -196,7 +196,7 @@ export function assertServiceSpec(job: BoardJob, spec: ServiceSpec): void {
 
 /**
  * The `docker run` argv for one service: detached, in the network namespace of its group's
- * supervisor (`holder`, issue #773), whose hosts file maps the service's name to loopback — which
+ * supervisor (`holder`), whose hosts file maps the service's name to loopback — which
  * is the whole feature, `redis://cache:6379` resolving inside the job — and labeled by job (what the re-claim fence searches for), by lease (what makes every teardown
  * and kill resolve to this attempt's fleet and nothing else), and by service (what makes a
  * leftover nameable in a log).

@@ -3,7 +3,7 @@ import type { DriverConfig } from './config.js';
 import { containerScript } from './container-scripts.js';
 
 /**
- * The task volume (issue #775): one volume per task thread, named by the thread's root job id, mounted
+ * The task volume: one volume per task thread, named by the thread's root job id, mounted
  * at one fixed path in every container of the attempt's group. The checkout, the agent's session
  * state, the caches and the review roots all live in it; no member, no other task and no shared claim
  * is reachable through it. Both executors name it identically (a docker named volume, a kubernetes
@@ -13,7 +13,7 @@ import { containerScript } from './container-scripts.js';
 /** Where every container of a task group mounts the task volume. */
 export const TASK_MOUNT = '/task';
 
-/** Where the supervisor's checkpoint script writes its parts on the task volume (issue #775); git-ignored with `.factory/`. */
+/** Where the supervisor's checkpoint script writes its parts on the task volume; git-ignored with `.factory/`. */
 export const CHECKPOINT_DIR = `${TASK_MOUNT}/.factory/checkpoint`;
 
 /** The pod volume and the mount name of the task volume. */
@@ -72,7 +72,7 @@ export function attachmentsDir(job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>): st
 }
 
 /**
- * Where the pinned org and workspace skills are installed (BEL-273): a base directory the claude CLI is given with
+ * Where the pinned org and workspace skills are installed: a base directory the claude CLI is given with
  * `--add-dir`, which reads `<base>/.claude/skills/<name>/`, and the same skills directory opencode reads through
  * `skills.paths`. On the task volume, outside the checkout, root-owned 0755/0644, so the tool uid reads the bundle
  * files and never changes them. One per thread; never under `/etc/claude-code`.
