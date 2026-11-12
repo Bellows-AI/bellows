@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { QueueTaskInput } from './api/useTasks.js';
+import type { QueueTaskInput } from './api/taskWrites.js';
 import type { Attachments } from './api/useAttachments.js';
 import { type UseRepoSkills, useRepoSkills } from './api/useRepoSkills.js';
 import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from './composer-draft.js';

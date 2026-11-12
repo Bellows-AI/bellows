@@ -766,7 +766,7 @@
     "web/src/api/useJobActivity.ts": 2,
     "web/src/api/useJobs.ts": 6,
     "web/src/api/usePersonalExecutorWrites.ts": 1,
-    "web/src/api/useTasks.ts": 3,
+    "web/src/api/useTasks.ts": 1,
     "web/src/api/useWorkflows.ts": 2,
     "web/src/api/useWorkspace.ts": 10,
     "web/src/brand.ts": 1,

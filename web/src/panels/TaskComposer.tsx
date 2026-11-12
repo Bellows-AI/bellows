@@ -3,7 +3,7 @@ import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headless
 import { Link } from 'react-router-dom';
 import { useDownwardAnchor } from '../anchor.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
-import type { QueueTaskInput } from '../api/useTasks.js';
+import type { QueueTaskInput } from '../api/taskWrites.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { attachmentHandlers } from './AttachmentPicker.js';
 import { ChatInput, type ChatInputSend } from './ChatInput.js';
