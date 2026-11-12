@@ -72,14 +72,11 @@ Every turn re-reads the whole context, so context size × turns is what a run co
 bind this conversation and every agent it spawns — copy them into each brief. There is no turn or
 token cap and no forced handoff: an agent stopped mid-task loses what its handoff did not carry.
 
-- **Read narrowly.** Locate with `git grep -n` first, then read only the range you need — at most
-  ~150 lines (`sed -n <a>,<b>p`, or Read with offset/limit). Never `cat` a whole source file or doc
-  to look for something, and never re-read a range already in context unless it changed since.
-- **Suite output stays on disk.** Run every suite to a log (`> <scratchpad>/<what>.log 2>&1`) and
-  read only the verdict and the failures (`tail -n 30`, `grep -n -E 'FAIL|Error'`). A green run
-  needs nothing beyond its exit code.
-- **Wait in one call.** A background command or `Monitor` wakes the run once, when it ends — never
-  a loop of sleeps or repeated status checks.
+- **Read narrowly, suites to disk, wait in one call.** Locate with `git grep -n` and read at most
+  ~150 lines; run every suite to a log and read only the verdict and the failures; wait for a
+  background command or `Monitor` once, never in a loop of sleeps or status checks. The
+  `implementer` agent (`.claude/agents/implementer.md`) carries these rules; any other agent you
+  spawn gets them copied into its brief.
 - **One implementer per commit, in sequence.** Implementation stays in this conversation by
   default. When the plan spans several commits and you delegate them, spawn one agent per commit:
   one Agent call per message, never a second launch while one runs, never two agents on the same
@@ -91,7 +88,7 @@ token cap and no forced handoff: an agent stopped mid-task loses what its handof
   stack of plan, amendments and reviews for the agent to reconcile; the acceptance tests and the
   command that verifies them; where it writes its notes. Its return, under 200 words, says which of
   implemented, committed (sha), verified (command and exit code), blocked or interrupted it is.
-- **Implementers are fresh agents, never forks.** A fork starts with this whole conversation.
+- **Implementers are fresh `implementer` agents, never forks.** A fork starts with this whole conversation.
   A review round's fixes go back to the implementer that wrote the commit, by `SendMessage` with
   the findings file's path. Only a stuck or lost implementer is replaced, by a fresh agent briefed
   with the findings file and its handoff.
