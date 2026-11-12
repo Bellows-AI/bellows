@@ -17,17 +17,7 @@ const FRAGMENTS = [
 ];
 
 /** Scripts not yet typed (BEL-319, 10c). Only ever shrinks: a script that gains `// @ts-check` leaves it. */
-const PENDING = new Set<string>([
-    'attachment-extract.cjs',
-    'attachment-fetch.cjs',
-    'checkpoint-restore.cjs',
-    'checkpoint.cjs',
-    'claude-export.cjs',
-    'opencode-readout.cjs',
-    'skill-install.cjs',
-    'supervisor.cjs',
-    'task-checkout.cjs',
-]);
+const PENDING = new Set<string>(['checkpoint-restore.cjs', 'checkpoint.cjs', 'supervisor.cjs', 'task-checkout.cjs']);
 
 const optedIn = (file: string): boolean =>
     readFileSync(join(SCRIPTS, file), 'utf8').split('\n', 3).includes('// @ts-check');
