@@ -1,11 +1,11 @@
 # CI
 
-Four workflows and no configured secret — the only credentials are `github.token` and the `npm` job's OIDC
+Five workflows and no configured secret — the only credentials are `github.token` and the `npm` job's OIDC
 token, and `core/test/ci-workflows.test.ts` pins every claim below.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Validation, the db suite (`test-db`) and the browser lane | `.github/workflows/ci.yml`, `vitest.db.config.ts` | `core/test/ci-workflows.test.ts` |
+| Validation, the db suite (`test-db`), the offline chart lane (`chart`: checksum-pinned helm, `helm lint` and `scripts/test-k8s.sh` template assertions on every pull request) and the browser lane | `.github/workflows/ci.yml`, `vitest.db.config.ts` | `core/test/ci-workflows.test.ts` |
 | Tag fold, buildkit mirror, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
 | CLI publish: `@bellows-ai/bellows-cli` on npmjs.org, trusted publishing, `VERSION` stamped over `0.0.0` | `.github/workflows/release-image.yml` (`npm`), `cli/package.json`, `cli/src/version.ts` | `core/test/ci-workflows.test.ts`, `cli/test/diagnostics.test.ts` |
 | Release command: refuses unless main's CI run for HEAD is green; patch bump, version-only commit, tag, atomic push; `--rc` tags HEAD `vX.Y.Z-rc`, `-rc-2`, … and pushes only the tag | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
@@ -15,6 +15,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 | Postgres mirror: the compose pin copied from `mirror.gcr.io` to `ghcr.io/bellows-ai/postgres:17`, weekly and on demand | `.github/workflows/mirror-images.yml` | `core/test/ci-workflows.test.ts` |
 | Digest pins: external `FROM`s and the chart's collector by index digest, re-resolved weekly into a pull request | `scripts/pin-digests.sh`, `.github/workflows/mirror-images.yml` (`pin-digests`), `charts/factory/templates/_helpers.tpl` | `driver/test/executor-images.test.ts`, `core/test/ci-workflows.test.ts`, `scripts/test-k8s.sh` |
 | Nightly/on-demand browser lane: `@nightly` specs and the specimen, never on the merge path | `.github/workflows/ui-nightly.yml`, `playwright.nightly.config.ts` | `core/test/ci-workflows.test.ts`, `core/test/e2e-config.test.ts` |
+| Nightly/on-demand kind lane (one `test-k8s.sh --cluster --phase` cell per phase but `bench`) and docker lane (`test:jobs` minus two phases), evidence bundles uploaded, red run opens or comments on one `Nightly lanes are red` issue via `github.token` | `.github/workflows/lanes-nightly.yml`, `scripts/test-k8s.sh`, `scripts/test-jobs.sh` | `core/test/ci-workflows.test.ts` |
 
 ## Invariants
 
@@ -61,7 +62,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   reads it only while the package grants this repository access.
 - `driver/test/executor-images.test.ts` and `driver/test/review-reply-script.test.ts` spawn real processes and can
   time out on a contended runner; re-run the job.
-- CI never runs `npm run test:jobs` or `npm run test:k8s`, and no lane runs a real cloud cluster
-  ([eks-runbook.md](eks-runbook.md)). `test:jobs` is out because of Linux docker networking: on
-  ubuntu-latest 9 checks (the compose-driver and question-round-trip phases of `scripts/test-jobs.sh`)
-  need host networking to reach the loopback-only open board ([executor-testing.md](executor-testing.md)).
+- No lane runs a real cloud cluster ([eks-runbook.md](eks-runbook.md)); pull-request CI runs only the offline chart phase of
+  `npm run test:k8s`, and the kind and docker lanes run nightly. The nightly docker lane leaves out the compose-driver and
+  question-round-trip phases of `scripts/test-jobs.sh`: on ubuntu-latest 9 checks need host networking to reach the
+  loopback-only open board ([executor-testing.md](executor-testing.md)).
