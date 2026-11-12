@@ -21,7 +21,7 @@ describe('startSkillSweep', () => {
             intervalMs: 3_600_000,
         });
         await vi_waitFor(() => pass);
-        stop();
+        await stop();
         expect(seen.flat()).toContain(90);
         expect(seen.flat()).not.toContain(30);
     });

@@ -367,7 +367,7 @@ describe('integration recovery loop', () => {
         release();
         await vi.advanceTimersByTimeAsync(1000);
         expect(pass).toHaveBeenCalledTimes(2);
-        stop();
+        await stop();
     });
 
     it('survives a pass that throws, logging a closed message and never the error text', async () => {
@@ -382,7 +382,7 @@ describe('integration recovery loop', () => {
         expect(pass).toHaveBeenCalledTimes(3);
         expect(lines.length).toBe(3);
         expect(lines.join('\n')).not.toContain('SECRET-VALUE');
-        stop();
+        await stop();
     });
 
     it('stops cleanly: no further tick, and the running pass is told to stop', async () => {
@@ -395,7 +395,7 @@ describe('integration recovery loop', () => {
         await vi.advanceTimersByTimeAsync(1000);
         expect(pass).toHaveBeenCalledTimes(2);
 
-        stop();
+        await stop();
         await vi.advanceTimersByTimeAsync(5000);
 
         expect(pass).toHaveBeenCalledTimes(2);

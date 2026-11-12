@@ -15,7 +15,7 @@ describe('startSecretCollector', () => {
         expect(collect).toHaveBeenCalledTimes(1);
         await vi.advanceTimersByTimeAsync(2500);
         expect(collect).toHaveBeenCalledTimes(3);
-        stop();
+        await stop();
         await vi.advanceTimersByTimeAsync(5000);
         expect(collect).toHaveBeenCalledTimes(3);
     });
@@ -30,7 +30,9 @@ describe('startSecretCollector', () => {
         release();
         await vi.advanceTimersByTimeAsync(1000);
         expect(collect).toHaveBeenCalledTimes(2);
-        stop();
+        const stopped = stop();
+        release();
+        await stopped;
     });
 
     it('survives a failing pass and logs the message only', async () => {
@@ -45,7 +47,7 @@ describe('startSecretCollector', () => {
         expect(collect).toHaveBeenCalledTimes(2);
         expect(error).toHaveBeenCalledTimes(1);
         expect(String(error.mock.calls[0]?.[0])).toContain('db down');
-        stop();
+        await stop();
         error.mockRestore();
     });
 });
