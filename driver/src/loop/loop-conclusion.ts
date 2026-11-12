@@ -9,7 +9,7 @@
 
 import { withBoardRetry } from '../board/board-retry.js';
 import type { BoardJob, LeaseState } from '../board/board.js';
-import type { JobState } from './loop-attempt.js';
+import { groupRetained, type JobState } from './loop-attempt.js';
 import { closeRunControl, departRunControl, releaseGateSession } from './loop-gates.js';
 import { handBackFence, leaveDecision, standDown } from './loop-fence.js';
 import { transition } from './loop-phase.js';
@@ -50,7 +50,7 @@ export function attemptQuiesce(
 /**
  * Ends the attempt as `decision` says: the durable board call, the quiesce, the teardown. Answers
  * what a verdict's complete answered, or null. A board call that does not land leaves the runner
- * standing (`JobState.keepGroup`) for the next claim; one answered `lost` is final, never retried.
+ * standing (`JobState.groupDisposition`) for the next claim; one answered `lost` is final, never retried.
  */
 export function end(ctx: AttemptCtx, decision: EndDecision): Promise<LeaseState | null> {
     ctx.ended ??= conclude(ctx, decision);
@@ -90,7 +90,7 @@ async function conclude(ctx: AttemptCtx, decision: EndDecision): Promise<LeaseSt
         return await land(ctx, decision, after);
     } finally {
         try {
-            if (ctx.state.ending?.kind === 'lost') retainForNewHolder(ctx.state);
+            settleGroup(ctx.state);
             await ctx.quiesce();
             await teardown(ctx);
         } finally {
@@ -114,7 +114,7 @@ async function land(ctx: AttemptCtx, decision: EndDecision, after: Promise<void>
         case 'leave':
             rt.log(`job ${job.id}: ${decision.log}`);
             // Past its launch the runner is the next claim's to adopt, never to finish.
-            if (state.launched) state.keepGroup = true;
+            if (state.launched) state.groupDisposition = 'keep';
             return null;
         case 'none':
             rt.log(decision.log);
@@ -124,7 +124,14 @@ async function land(ctx: AttemptCtx, decision: EndDecision, after: Promise<void>
 
 /** A lease the board answered as lost: past the launch the runner is the new holder's to fence or adopt, never to finish. */
 function retainForNewHolder(state: JobState): void {
-    if (state.launched) state.keepGroup = true;
+    if (state.launched) state.groupDisposition = 'keep';
+}
+
+/** The one place the group's fate is final, once the board call is over: `teardown` only reads it. */
+function settleGroup(state: JobState): void {
+    if (state.ending?.kind === 'lost') retainForNewHolder(state);
+    // A drain's handover leaves the runner to the next claim; a `keep` already says more (the claim stands).
+    if (state.ending?.kind === 'handover' && state.groupDisposition === 'end') state.groupDisposition = 'handover';
 }
 
 /** Tears the attempt's services down, saying so when it cannot. */
@@ -139,9 +146,9 @@ async function teardown(ctx: AttemptCtx): Promise<void> {
     // The attempt's task group (issue #771) lives from its sync to here, not to the agent's exit: its
     // supervisor serves the probe, the helpers and the publish. It ends while the control channel its
     // order travels is still open — and never for an attempt handed over by a drain, nor one whose
-    // outcome the board never took (`keepGroup`): either runner is left for the next claim to adopt.
+    // outcome the board never took (`keep`): either runner is left for the next claim to adopt.
     // The same retention governs the services it uses: they are reclaimed by that claim's fence.
-    const retained = state.ending?.kind === 'handover' || state.keepGroup;
+    const retained = groupRetained(state.groupDisposition);
     if (!retained) await rt.runner.finish(job).catch(() => undefined);
     // A retained group is left to a newer holder: hung up on, not closed on.
     if (retained) departRunControl(rt, state);
@@ -151,7 +158,7 @@ async function teardown(ctx: AttemptCtx): Promise<void> {
     if (!retained && (ctx.servicesStarted || ctx.setupDone)) await releaseServices(ctx);
     // A start the stand-down abandoned settles on its own time and is not waited for: its fleet goes then.
     if (!retained && ctx.abandonedServices) void ctx.abandonedServices.then(() => releaseServices(ctx));
-    if (!state.keepGroup) await handBackFence(ctx);
+    if (state.groupDisposition !== 'keep') await handBackFence(ctx);
 }
 
 /**
@@ -159,7 +166,7 @@ async function teardown(ctx: AttemptCtx): Promise<void> {
  * the heartbeat renewing the lease throughout (`phase` `concluding`), so the evidence the group holds
  * outlives every moment the verdict could still be lost. A stage the board answers as lost, removed
  * or another's settles at once with no verdict. A board that takes neither the stage nor the verdict
- * leaves the group and the claim standing (`keepGroup`) for the next claim to adopt. Each board call
+ * leaves the group and the claim standing (`keep`) for the next claim to adopt. Each board call
  * is retried for the lease, like a verdict.
  */
 async function stageAndReport(ctx: AttemptCtx, verdict: VerdictBody, after: Promise<void>): Promise<LeaseState | null> {
@@ -181,9 +188,9 @@ async function stageAndReport(ctx: AttemptCtx, verdict: VerdictBody, after: Prom
         );
         return null;
     });
-    state.keepGroup = staged !== 'held' && answer === null;
+    state.groupDisposition = staged !== 'held' && answer === null ? 'keep' : 'end';
     if (answer === 'lost') retainForNewHolder(state);
-    if (state.keepGroup) {
+    if (state.groupDisposition === 'keep') {
         rt.log(
             `job ${job.id}: neither the stage nor the verdict was accepted; the group and checkout claim are left for the next claim to adopt`
         );
@@ -198,7 +205,7 @@ function unstaged(ctx: AttemptCtx, answer: 'lost' | 'conflict' | 'removed'): Lea
         retainForNewHolder(ctx.state);
         return 'lost';
     }
-    ctx.state.keepGroup = false;
+    ctx.state.groupDisposition = 'end';
     rt.log(
         answer === 'removed'
             ? `job ${job.id}: removed before its verdict was staged; the queue owns the tree`
@@ -228,7 +235,7 @@ async function park(ctx: AttemptCtx, decision: Extract<EndDecision, { kind: 'par
         return null;
     });
     if (verdict === null) {
-        state.keepGroup = true;
+        state.groupDisposition = 'keep';
         return;
     }
     if (verdict === 'lost') retainForNewHolder(state);
@@ -285,10 +292,10 @@ async function interrupt(
     if (state.ending?.kind === 'handover') {
         // A drain's handover that was not taken is left to the lease, whatever the budget says.
         rt.log(`job ${job.id}: not handed over (${answer ?? 'unanswered'}); left to the lease`);
-        state.keepGroup = true;
+        state.groupDisposition = 'keep';
         return null;
     }
-    if (answer === null) state.keepGroup = true;
+    if (answer === null) state.groupDisposition = 'keep';
     const why = answer === 'exhausted' ? `${reason}, and the interruption budget is spent` : reason;
     return land(ctx, leaveDecision(job, why, exitCode), after);
 }
