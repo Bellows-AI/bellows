@@ -820,6 +820,15 @@ lane_group_up() { # lane_group_up <name> <image> <control-url>
         --entrypoint node "$image" /supervisor.cjs >/dev/null
 }
 
+# opencode refuses a model id the live models.dev catalog marks deprecated, so the lane declares its
+# own model in the config: a declared id has no catalog entry to look up, merge or deprecate.
+LANE_OPENCODE_MODEL=fake-model
+
+lane_opencode_config() { # lane_opencode_config <baseURL> -> OPENCODE_CONFIG_CONTENT for the scripted model at <baseURL>
+    printf '{"model":"anthropic/%s","provider":{"anthropic":{"options":{"baseURL":"%s","apiKey":"fake-key"},"models":{"%s":{"name":"%s","tool_call":true,"limit":{"context":200000,"output":8192}}}}}}' \
+        "$LANE_OPENCODE_MODEL" "$1" "$LANE_OPENCODE_MODEL" "$LANE_OPENCODE_MODEL"
+}
+
 lane_group_agent_args() { # lane_group_agent_args <name>: the agent's half of the mailboxes, as argv words
     local name="$RUN_ID-$1"
     printf '%s\n' -v "lane-$name-in:/factory/in:ro" -v "lane-$name-out:/factory/out" \
@@ -3372,7 +3381,7 @@ stop_lane() { # stop_lane <claude|opencode>
         run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model
             -p 'touch the step markers')
     else
-        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+        run+=(-e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'touch the step markers')
     fi
     # On its own, and 0 for both CLIs: opencode's `Error: Aborted` exit after the stop plugin's abort
@@ -3448,7 +3457,7 @@ kill_lane() { # kill_lane <claude|opencode> <isolated|control>
         run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model
             -p 'touch the step markers')
     else
-        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+        run+=(-e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'touch the step markers')
     fi
     lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
@@ -3520,7 +3529,7 @@ skill_helper_lane() { # skill_helper_lane <claude|opencode>
             --model fake-model -p 'probe the skill helpers')
     else
         run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe
-            -e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            -e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'probe the skill helpers')
     fi
     lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
@@ -3594,7 +3603,7 @@ seam_run() { # seam_run <cli> <runner|plain> <steps json> <out json>: one script
         run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model -p 'cross the seam')
     else
         if [ "$shape" = runner ]; then run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe); fi
-        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+        run+=(-e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'cross the seam')
     fi
     lane_timed "$name" agent timeout 240 "${run[@]}" >"$work/$name.log" 2>&1
@@ -3719,7 +3728,7 @@ repo_skill_lane() { # repo_skill_lane <claude|opencode> <with|without> [skills d
             --model fake-model -p 'list your skills')
     else
         run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe
-            -e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            -e "OPENCODE_CONFIG_CONTENT=$(lane_opencode_config "$host/v1")"
             "$image" --print-logs --log-level DEBUG run 'list your skills')
     fi
     lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
@@ -4036,8 +4045,8 @@ task_title_lane() { # task_title_lane <claude|opencode>
         # OPENCODE_CONFIG_CONTENT is reserved at /api/env; the claim synthesizes it from the executor row's
         # config (job-store-claim-executor.ts), so the scripted endpoint rides the row. The key is a plain env name.
         api PUT /api/env/org '{"vars":[{"name":"ANTHROPIC_API_KEY","value":"fake-key","isSecret":true}]}' >/dev/null
-        api PUT /api/workspace/executors "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
-            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$fake_port")" >/dev/null
+        api PUT /api/workspace/executors "$(node -e 'const config = JSON.parse(process.argv[1]);
+            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$(lane_opencode_config "http://host.docker.internal:$fake_port/v1")")" >/dev/null
     else
         point_runners_at "$fake_port"
     fi
@@ -4155,8 +4164,8 @@ ps_endpoint() { # ps_endpoint <name> <org skill, workspace skills, helper probes
 
 ps_point() { # ps_point <claude|opencode> <member token> <port> -> that member's runs reach the scripted model on <port>
     if [ "$1" = opencode ]; then
-        AUTH_HEADER="Bearer $2" api PUT /api/workspace/executors "$(node -e 'const config = { model: "anthropic/claude-sonnet-4-5", provider: { anthropic: { options: { baseURL: `http://host.docker.internal:${process.argv[1]}/v1`, apiKey: "fake-key" } } } };
-            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$3")" >/dev/null
+        AUTH_HEADER="Bearer $2" api PUT /api/workspace/executors "$(node -e 'const config = JSON.parse(process.argv[1]);
+            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$(lane_opencode_config "http://host.docker.internal:$3/v1")")" >/dev/null
     else
         AUTH_HEADER="Bearer $ps_admin" api PUT /api/env/org "{\"vars\":[{\"name\":\"ANTHROPIC_API_KEY\",\"value\":\"fake-key\",\"isSecret\":true},{\"name\":\"ANTHROPIC_BASE_URL\",\"value\":\"http://host.docker.internal:$3\",\"isSecret\":false}]}" >/dev/null
     fi
