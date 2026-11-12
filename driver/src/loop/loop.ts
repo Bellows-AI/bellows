@@ -122,6 +122,9 @@ function completeWithRetry(
     });
 }
 
+/** How long the exit waits, after the handover, on an attempt whose own ending began before it. */
+const ENDING_SETTLE_MS = 5_000;
+
 /**
  * The drain's handover: the attempts in flight — registered on `rt.live`, where each
  * `runJob` reports its own — and the latch `start()` stops waiting at.
@@ -140,11 +143,17 @@ export function handoverOf(rt: LoopRuntime) {
          */
         async settled(): Promise<void> {
             await done;
-            // Every attempt still registered: a late claim handed over in `registerLive`, and one whose
-            // own ending (a verdict, a retry) began before the handover and was left to it. Its
-            // write is the durable one, so the process does not exit under it; the lease clock
-            // bounds it and the pod's SIGKILL is the outer bound.
-            await Promise.all([...live.values()].map(({ over }) => over));
+            // Attempts handed over, a late claim among them, are waited on to the end. One whose own
+            // ending (a verdict, a retry) began before the handover is waited on for a bounded
+            // time only: its write is the durable one, but a suspend that never answers must not
+            // hold the exit past the leases already released.
+            const entries = [...live.values()];
+            const handed = entries.filter(({ state }) => state.ending?.kind === 'handover');
+            const ending = entries.filter(({ state }) => state.ending?.kind !== 'handover');
+            await Promise.all([
+                ...handed.map(({ over }) => over),
+                Promise.race([Promise.all(ending.map(({ over }) => over)), rt.sleep(ENDING_SETTLE_MS)]),
+            ]);
         },
         async run(reason: string): Promise<void> {
             const began = Date.now();

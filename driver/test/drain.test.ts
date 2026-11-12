@@ -152,7 +152,7 @@ describe('the driver drain on SIGTERM', () => {
         expect(startReturned).toBe(true);
     });
 
-    it('does not let start() return under a verdict already in flight when SIGTERM lands', async () => {
+    it('holds start() for a bounded time under a verdict already in flight when SIGTERM lands', async () => {
         const claimed = job(1);
         const board = stubBoard([claimed]);
         let answerComplete: () => void = () => {};
@@ -176,7 +176,7 @@ describe('the driver drain on SIGTERM', () => {
         await vi.advanceTimersByTimeAsync(10);
         await completeAsked;
         drain.onSignal();
-        await vi.advanceTimersByTimeAsync(10_000);
+        await vi.advanceTimersByTimeAsync(4_000);
         expect(startReturned).toBe(false);
         answerComplete();
         await vi.advanceTimersByTimeAsync(10_000);
