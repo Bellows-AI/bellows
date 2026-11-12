@@ -274,15 +274,22 @@ jobs:
             # included, and there is no unprefixed escape hatch — an absolute repository under a
             # set prefix is refused at render. So the mirror is part of the release, not an extra.
             # Read from the chart rather than pinned here: two pins drift, one cannot.
+            # The chart renders `repo:tag@sha256:…`, so the copy is made FROM the digest and checked
+            # against it: a mirror whose manifest differs would answer ImagePullBackOff on every node.
             # imagetools copies the manifest list as it stands, so both arches come along.
             - name: mirror the collector image the chart pins
               env:
                   REGISTRY: ${{ needs.tag.outputs.registry }}
               run: |
-                  COLLECTOR=$(awk '/repository: otel\/opentelemetry-collector-contrib/ { repo = $2 }
-                      repo && $1 == "tag:" { print repo ":" $2; exit }' charts/factory/values.yaml | tr -d "'")
-                  test -n "$COLLECTOR" || { echo 'the chart no longer pins a collector image here'; exit 1; }
-                  docker buildx imagetools create -t "$REGISTRY/$COLLECTOR" "$COLLECTOR"
+                  PIN=$(awk '/repository: otel\/opentelemetry-collector-contrib/ { repo = $2 }
+                      repo && $1 == "tag:" { tag = $2 }
+                      repo && $1 == "digest:" { print repo, tag, $2; exit }' charts/factory/values.yaml | tr -d "'")
+                  set -- $PIN
+                  repo=${1:-} tag=${2:-} digest=${3:-}
+                  test -n "$digest" || { echo 'the chart no longer pins a collector image and digest here'; exit 1; }
+                  docker buildx imagetools create -t "$REGISTRY/$repo:$tag" "$repo@$digest"
+                  mirrored=$(docker buildx imagetools inspect "$REGISTRY/$repo:$tag" --format '{{.Manifest.Digest}}')
+                  test "$mirrored" = "$digest" || { echo "mirror holds $mirrored, the chart pins $digest"; exit 1; }
 
     # The chart itself, as an OCI artifact beside the images it names. Without this the only way to
     # install a release is to clone the repository at the right tag, which no GitOps controller

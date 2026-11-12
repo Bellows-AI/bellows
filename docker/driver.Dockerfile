@@ -11,7 +11,7 @@
 # `npm run dev -w driver` as the host, so a restart can never serve a publisher older than the
 # checkout (issue #174).
 
-FROM mirror.gcr.io/library/node:24-alpine AS deps
+FROM mirror.gcr.io/library/node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Every workspace's manifest, or `npm ci` refuses the lockfile — even though only driver/ is built.
@@ -39,7 +39,7 @@ RUN npm run build -w driver
 FROM deps AS dev
 COPY --from=mirror.gcr.io/library/docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 
-FROM mirror.gcr.io/library/node:24-alpine AS runtime
+FROM mirror.gcr.io/library/node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # The client only. The daemon is the host's, reached through the socket mounted at run time.
@@ -53,6 +53,8 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
         /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
         /usr/local/bin/yarn /usr/local/bin/yarnpkg
 COPY --from=build /app/driver/dist driver/dist
-# Runs as root, unlike the dashboard. /var/run/docker.sock is root-owned on the host and a
-# non-root user cannot open it; see docs/security.md for what mounting it actually grants.
+# The `node` user, like the dashboard: the chart runs it as uid 1000 and mounts no socket. The docker
+# executor needs root for /var/run/docker.sock, which is root-owned on the host; docker-compose.yml
+# sets `user: "0"` on its driver (see docs/security.md for what mounting the socket grants).
+USER node
 CMD ["node", "driver/dist/index.js"]

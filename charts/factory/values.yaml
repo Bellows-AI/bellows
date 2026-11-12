@@ -36,6 +36,10 @@ dashboard:
         # Empty uses the chart's appVersion, so a chart version names the exact build it deploys
         # and an upgrade to a new build changes the pod spec — an untagged image never would.
         tag: ''
+        # Optional `sha256:…`, appended after the tag. Empty for the images this release builds: their
+        # digest does not exist until the release pushes them, so they stay addressed by appVersion
+        # (docs/ci.md).
+        digest: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
     # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp). Every
@@ -319,6 +323,7 @@ driver:
     image:
         repository: factory-driver
         tag: ''
+        digest: ''
     imagePullPolicy: IfNotPresent
     # Safe above one: each driver claims under its own pod name (DRIVER_WORKER), advertises its OWN
     # pod IP as the gate endpoint, and the re-claim fence's checkout claim keeps two drivers off
@@ -411,6 +416,9 @@ collector:
         # Pinned, never `latest`: the collector's config keys move between releases, and an
         # unpinned image is whichever version a node happened to cache first.
         tag: '0.161.0'
+        # The manifest-list digest of that tag, which the release mirrors under the registry prefix
+        # by digest (.github/workflows/release-image.yml). scripts/pin-digests.sh re-resolves it.
+        digest: 'sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1'
     imagePullPolicy: IfNotPresent
     resources:
         requests:

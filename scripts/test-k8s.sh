@@ -656,6 +656,19 @@ app_version="$(awk '/^appVersion:/ { gsub(/[^0-9.]/, "", $2); print $2 }' charts
 expect_contains 'the dashboard image defaults to the appVersion tag' "$gh" "image: factory-ai:$app_version"
 expect_contains 'the driver image defaults to the appVersion tag'    "$gh" "image: factory-driver:$app_version"
 expect_not_contains 'no chart image is untagged or :latest'           "$gh" 'opentelemetry-collector-contrib:latest'
+# A digest in the values reaches the pod spec: tag and digest together, so the tag still reads as the
+# version and the digest is what the node resolves. The collector, the one image this chart does not
+# build, carries one in the chart's defaults; the local profile blanks it (values-local.yaml).
+gh_collector="$(awk '$1 == "image:" && /opentelemetry-collector-contrib/ { print $2; exit }' <<<"$gh")"
+if [[ "$gh_collector" =~ :[0-9][^@]*@sha256:[0-9a-f]{64}$ ]]; then
+    ok 'the collector image is pinned by digest in the chart defaults'
+else
+    bad 'the collector image is pinned by digest in the chart defaults' "got '$gh_collector'"
+fi
+zero_digest="sha256:$(printf '%064d' 0)"
+expect_contains 'an image digest is appended to the tag' \
+    "$(gh_render --set-string "dashboard.image.digest=$zero_digest")" "image: factory-ai:$app_version@$zero_digest"
+expect_not_contains 'a blank digest leaves the tag alone' "$gh" "image: factory-ai:$app_version@"
 COLLECTOR_IMAGE="$(awk '$1 == "image:" && /opentelemetry-collector-contrib/ { print $2; exit }' "$work/rendered.yaml")"
 COLLECTOR_REF="$LANE_REGISTRY/$COLLECTOR_IMAGE"
 case "$COLLECTOR_IMAGE" in

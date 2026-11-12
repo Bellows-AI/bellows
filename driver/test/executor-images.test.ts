@@ -2245,3 +2245,80 @@ describe("the runner images' npm undici", () => {
         }
     });
 });
+
+// An image that downloads "whatever is latest" and a FROM that follows a moving tag are builds two
+// runs of the same commit cannot reproduce, and a swapped upstream artifact arrives unnoticed.
+// Binaries are pinned by version AND checksum per architecture; base images by index digest.
+describe('the images pin what they download and what they start from', () => {
+    const DOCKERFILES = [
+        'docker/Dockerfile',
+        'docker/driver.Dockerfile',
+        'docker/claude-executor/Dockerfile',
+        'docker/opencode-executor/Dockerfile',
+    ];
+    const EXECUTORS = ['docker/claude-executor/Dockerfile', 'docker/opencode-executor/Dockerfile'];
+    // acli, gh and the layer between them: the instructions both executors must spell identically
+    // (BuildKit keys a layer on them, not on the comments, which each image words for itself).
+    const sharedBlock = (file: string) => {
+        const text = read(file);
+        const start = text.indexOf('ARG TARGETARCH\n');
+        const end = text.indexOf('/usr/local/libexec/gh --version\n', start);
+        if (start < 0 || end < 0) return '';
+        return text
+            .slice(start, end)
+            .split('\n')
+            .filter((line) => !line.startsWith('#'))
+            .join('\n');
+    };
+    const argValue = (block: string, name: string) => new RegExp(`^ARG ${name}=(\\S+)$`, 'm').exec(block)?.[1];
+
+    it('downloads no `latest` artifact', () => {
+        for (const file of DOCKERFILES) expect(read(file), file).not.toMatch(/\/latest\//);
+    });
+
+    it('pins acli and gh by version and a sha256 per architecture, byte-identical in both images', () => {
+        const claude = sharedBlock(EXECUTORS[0]!);
+        expect(claude).not.toBe('');
+        expect(sharedBlock(EXECUTORS[1]!)).toBe(claude);
+        expect(argValue(claude, 'ACLI_VERSION')).toMatch(/^\d+\.\d+\.\d+/);
+        for (const name of ['ACLI_SHA256_amd64', 'ACLI_SHA256_arm64', 'GH_SHA256_amd64', 'GH_SHA256_arm64']) {
+            expect(argValue(claude, name), name).toMatch(/^[0-9a-f]{64}$/);
+        }
+    });
+
+    it('verifies every curl download against its architecture checksum before it is unpacked or installed', () => {
+        for (const file of EXECUTORS) {
+            const runs = (read(file).match(/^RUN (?:[^\n]*\\\n)*[^\n]*$/gm) ?? []).filter((run) =>
+                run.includes('curl')
+            );
+            expect(runs.length, file).toBeGreaterThanOrEqual(2);
+            for (const run of runs.filter((r) => /acli|gh_/.test(r))) {
+                const check = run.indexOf('sha256sum -c');
+                expect(check, `${file}: ${run.slice(0, 60)}`).toBeGreaterThan(run.indexOf('curl'));
+                expect(check).toBeLessThan(run.search(/&& (tar|mv|chmod) /));
+                expect(run).toMatch(/\$\{?(ACLI|GH)_SHA256_(amd64|arm64)\}?|"\$sha"/);
+                expect(run).toContain('$TARGETARCH');
+            }
+        }
+    });
+
+    it('starts every external FROM at an index digest, leaving stage references alone', () => {
+        for (const file of DOCKERFILES) {
+            const refs = [...read(file).matchAll(/^FROM (\S+)/gm)].map((m) => m[1]!).filter((ref) => ref.includes('/'));
+            expect(refs.length, file).toBeGreaterThan(0);
+            for (const ref of refs) expect(ref, file).toMatch(/:[\w.-]+@sha256:[0-9a-f]{64}$/);
+        }
+    });
+
+    it('runs the driver runtime stage as the node user', () => {
+        const runtime = read('docker/driver.Dockerfile').split(/^FROM .* AS runtime$/m)[1]!;
+        const users = [...runtime.matchAll(/^USER (\S+)$/gm)].map((m) => m[1]);
+        expect(users.at(-1)).toBe('node');
+        expect(runtime.indexOf('USER node')).toBeLessThan(runtime.indexOf('CMD '));
+    });
+
+    it('lets the compose driver, which holds the docker socket, stay root', () => {
+        const block = /^ {4}driver:\n((?: {8}.*\n|\n)+)/m.exec(read('docker-compose.yml'))?.[1];
+        expect(block).toMatch(/^ {8}user: ['"]?0['"]?$/m);
+    });
+});

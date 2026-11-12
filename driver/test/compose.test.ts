@@ -106,7 +106,9 @@ describe('the driver image stages', () => {
         // runs. `dev` must sit before it, runtime must still bake dist and run it, and nothing
         // may follow runtime — a stage appended after it would silently become what ships.
         const dev = driverDockerfile.indexOf('FROM deps AS dev');
-        const runtime = driverDockerfile.indexOf('FROM mirror.gcr.io/library/node:24-alpine AS runtime');
+        const runtime = driverDockerfile.search(
+            /^FROM mirror\.gcr\.io\/library\/node:24-alpine@sha256:[0-9a-f]{64} AS runtime$/m
+        );
         expect(dev).toBeGreaterThan(-1);
         expect(runtime).toBeGreaterThan(dev);
         expect(driverDockerfile.slice(runtime).match(/^FROM/gm)).toHaveLength(1);

@@ -13,7 +13,7 @@
 # -slim rather than the full image, for the reason docker/claude-executor/Dockerfile spells out:
 # the full tag's unused toolchain and media stack carried ~497 unfixed `linux-libc-dev` findings,
 # and the release scan gates on CRITICAL+HIGH.
-FROM mirror.gcr.io/library/node:24-bookworm-slim
+FROM mirror.gcr.io/library/node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
 
 # What -slim drops and the rest of this file needs: git (the agent shells out to it), curl (the
 # two downloads below) and the CA bundle both verify against. Deliberately NO compiler: a
@@ -63,22 +63,41 @@ RUN cd /tmp \
 # is deliberately not configured. TARGETARCH is amd64/arm64, which is exactly how the download
 # paths are named, so no mapping table is needed.
 ARG TARGETARCH
+# Pinned by version AND sha256 per architecture, never `latest`: two builds of the same commit must
+# install the same binary, and a swapped upstream artifact must fail the build, not ship. Atlassian
+# publishes no checksum file; these are the digests of the versioned tarballs, taken when the pin
+# was bumped (docs/security.md). The tarball unpacks to acli_<version>_linux_<arch>/acli.
+ARG ACLI_VERSION=1.3.40-stable
+ARG ACLI_SHA256_amd64=19c113789e8a66bf11a80dc18cf75e7e7ba239112005f4e9cd69db05f11ac526
+ARG ACLI_SHA256_arm64=b1880f66f299ab2b56528c90bbff50ca8263e7331868a31d0b6ca7b67f7469e5
 # --proto '=https' applies to the redirects -L follows, not just to the URL written here: without
 # it a redirect to http:// is honoured, and the binary this installs arrives over plain HTTP.
-RUN curl -fsSL --proto '=https' --tlsv1.2 -o /usr/local/bin/acli \
-        "https://acli.atlassian.com/linux/latest/acli_linux_${TARGETARCH}/acli" \
+RUN case "$TARGETARCH" in amd64) sha="$ACLI_SHA256_amd64" ;; arm64) sha="$ACLI_SHA256_arm64" ;; *) echo "no acli for $TARGETARCH" >&2; exit 1 ;; esac \
+    && curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/acli.tar.gz \
+        "https://acli.atlassian.com/linux/${ACLI_VERSION}/acli_${ACLI_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    && echo "${sha}  /tmp/acli.tar.gz" | sha256sum -c - \
+    && tar -xz -C /tmp -f /tmp/acli.tar.gz \
+    && mv "/tmp/acli_${ACLI_VERSION}_linux_${TARGETARCH}/acli" /usr/local/bin/acli \
     && chmod 0755 /usr/local/bin/acli \
+    && rm -rf /tmp/acli.tar.gz "/tmp/acli_${ACLI_VERSION}_linux_${TARGETARCH}" \
     && acli --version
 
 # GitHub CLI. The agent instructions point GitHub work at `gh`, and without it every one of those
 # instructions ends in "command not found". Static release tarball rather than apt, for the same
 # proxy reason as the base image choice.
 ARG GH_VERSION=2.103.0
-RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
-        | tar -xz -C /tmp \
+# From the release's own gh_<version>_checksums.txt:
+# https://github.com/cli/cli/releases/download/v2.103.0/gh_2.103.0_checksums.txt
+ARG GH_SHA256_amd64=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786
+ARG GH_SHA256_arm64=7f322df34e624d14f5ec0c4acb121fd6dfa14392fdbbd1066aa8e0a05ac3721e
+RUN case "$TARGETARCH" in amd64) sha="$GH_SHA256_amd64" ;; arm64) sha="$GH_SHA256_arm64" ;; *) echo "no gh for $TARGETARCH" >&2; exit 1 ;; esac \
+    && curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/gh.tar.gz \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+    && echo "${sha}  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar -xz -C /tmp -f /tmp/gh.tar.gz \
     && mkdir -p /usr/local/libexec \
     && mv "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/libexec/gh \
-    && rm -rf "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" \
+    && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" \
     && /usr/local/libexec/gh --version
 
 # ripgrep, opencode-only and BELOW the shared block so the layers above it stay shared with the
