@@ -12,11 +12,11 @@ POD_LOST='infrastructure loss: the runner pod was deleted'
 # What a gate or setup whose supervisor was lost records (`gateLossReason`, driver/src/loop-run.ts); the cause follows in parentheses.
 GATE_LOST='infrastructure loss: the task supervisor running the gates was lost'
 JOB_LOST='infrastructure loss: the runner job '
-# The interruption the next claim records for an attempt whose lease expired (issue #822).
+# The interruption the next claim records for an attempt whose lease expired.
 EXPIRED='the lease expired: its driver went silent'
 
 expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's lease is expired: by this call, or already on its own
-    # A short lease (15 s, #950) can run out while a case waits for the lost supervisor to end, and the next claim
+    # A short lease (15 s) can run out while a case waits for the lost supervisor to end, and the next claim
     # may have taken it since (claim_seq > 1): either way claim 1's lease is over, which is all the callers need.
     bounded 30 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
         env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "job=$1" \
@@ -39,10 +39,10 @@ if selected_phase recovery; then
 # stand-in) — an interruption, then the next attempt, in its session. d: the driver pod and its
 # runner Job deleted together — a replacement runner redoes the attempt in the lost session, on the
 # restored tree. e: the driver lost after its agent exited, while the supervisor still finalizes —
-# the surviving replica's claim takes the group over, never sweeps it or waits it out (issues #824, #829).
-# f: pinned org and workspace skills reach the runner pod and survive its deletion at the pinned sha set (BEL-273).
+# the surviving replica's claim takes the group over, never sweeps it or waits it out.
+# f: pinned org and workspace skills reach the runner pod and survive its deletion at the pinned sha set.
 # Each job refunds its interrupted attempt and records exactly one interruption; an expired lease
-# is that interruption (issue #822). Only this release's objects are touched, by label.
+# is that interruption. Only this release's objects are touched, by label.
 
 echo
 echo '# node disruption'
@@ -205,7 +205,7 @@ else
     expect_contains 'the next attempt resumes the session' "$(job_output "$evicted")" "--resume $(job_session "$evicted")"
 fi
 
-# d. The driver and its runner lost together (issue #822): nothing survives to adopt, so the next
+# d. The driver and its runner lost together: nothing survives to adopt, so the next
 #    claim redoes the attempt in a replacement runner — in the lost attempt's session, on its tree.
 #    The first runner marks the worktree's git-ignored .factory/ and blocks at its barrier; the
 #    replacement finds the mark and ends. Restored, not synced: the origin moves after the first
@@ -258,7 +258,7 @@ else
     expect_not_contains 'nothing was adopted' "$(driver_logs)" "job $lost: $ADOPTED"
 fi
 
-# e. The driver lost between its agent's exit and its supervisor's end (issue #824). The pod-IP step
+# e. The driver lost between its agent's exit and its supervisor's end. The pod-IP step
 #    channel refuses once the driver is gone, so the supervisor serves on until its orphan bound
 #    (30s, inside the lane lease) and only then reports and ends. A second replica is already up; the
 #    dead driver's claim is expired inside that bound, so the survivor claims a Job whose agent
@@ -332,7 +332,7 @@ expect_contains 'the failure names the image the registry does not have' "$(job_
 kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" "CLAUDE_EXECUTOR_IMAGE=$image_was" >/dev/null 2>&1
 kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
 
-# f. Pinned org and workspace skills (BEL-273), on the real kubelet. An admin publishes an org skill and the member a
+# f. Pinned org and workspace skills, on the real kubelet. An admin publishes an org skill and the member a
 #    workspace skill; the task's runner pod holds both, installed by the same script and read from the same task volume
 #    as the docker executor (the scripted model, the two real CLIs and the cross-member check are scripts/test-jobs.sh's
 #    pinned-skills phase). The member then publishes a new version and the runner pod is deleted mid-run: the resumed run
@@ -367,7 +367,7 @@ case "$skills_org$skills_ws" in
 *'"status":201'*'"status":201'*) ok 'the org skill and the workspace skill are published' ;;
 *) bad 'the org skill and the workspace skill are published' "org: $skills_org workspace: $skills_ws" ;;
 esac
-# BEL-286: the org switches a built-in off before the task is made, so the row carries a hidden built-in whatever the
+# the org switches a built-in off before the task is made, so the row carries a hidden built-in whatever the
 # earlier phases bound (the connection phase leaves the member a Jira connection, which un-hides factory-jira).
 skills_switch() { # skills_switch <true|false> — as the org admin minted above: only an admin manages org skills
     FACTORY_TOKEN="$skills_admin_token" node -e "$JS_HEADERS"'
@@ -413,7 +413,7 @@ else
     expect_contains 'the resumed run holds the org skill at the pinned sha' "$skills_out" "skills lane-org-skill $skills_org_sha"
     expect_contains 'the resumed run holds the workspace skill at the sha it was made with' "$skills_out" "skills lane-ws-skill $skills_ws_sha"
     expect_not_contains 'the resumed run does not hold the version published after the task was made' "$skills_out" "$skills_ws_sha2"
-    # BEL-286: this output is the resumed run's (a new pod, the same row), so the hidden set survives the pod loss.
+    # this output is the resumed run's (a new pod, the same row), so the hidden set survives the pod loss.
     expect_contains 'the resumed runner is told to hide the built-in the org switched off' "$skills_out" 'hidden factory-task-title'
     expect_contains "the org skill's helper file opens for the agent" "$skills_out" 'helper lane-org-skill/ref/helper.txt open'
     expect_contains "the workspace skill's helper file opens for the agent" "$skills_out" 'helper lane-ws-skill/ref/helper.txt open'
@@ -427,7 +427,7 @@ else
     expect_not_contains 'the control: the view builder did not refuse' "$skills_out" 'refused'
 fi
 
-# BEL-286: a task whose owner holds no Jira connection (the org admin minted above has none, so nothing binds by
+# a task whose owner holds no Jira connection (the org admin minted above has none, so nothing binds by
 # default) is made with factory-jira hidden: the row's skill_hidden is the stored decision the claim carries. The
 # switched-off built-in is the control that the column was read at all.
 skills_admin_exec="$(FACTORY_TOKEN="$skills_admin_token" http_status PUT "$BASE/api/workspace/executors" \

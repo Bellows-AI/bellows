@@ -30,7 +30,7 @@ const SHOTS = 'artifacts/ui';
 /** Queue a task through the real composer and land on its detail page. */
 async function queueTask(page: Page, command: string): Promise<string> {
     await page.goto('/tasks/new');
-    // The guided composer (#176): the prompt is a labelled field, the action is Start task.
+    // The guided composer: the prompt is a labelled field, the action is Start task.
     await page.getByLabel('What should the agent do?').fill(command);
     await page.getByRole('button', { name: 'Start task' }).click();
     await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
@@ -76,7 +76,7 @@ const header = (page: Page) => page.locator('.task-actions');
 
 test.describe('the task detail actions', () => {
     // queueTask starts through the real composer, which needs an executor to offer Start, and
-    // the real board's create, which refuses an executor the member does not hold (#1019).
+    // the real board's create, which refuses an executor the member does not hold.
     test.beforeEach(async ({ page }) => {
         await saveExecutor(page);
         await withExecutor(page);
@@ -759,7 +759,7 @@ async function stopShownTask(page: Page): Promise<void> {
     await expect(page.locator('.task-controls')).toContainText('Stopped · Needs review', { timeout: 10_000 });
 }
 
-test.describe('the task title (BEL-252)', () => {
+test.describe('the task title', () => {
     test.beforeEach(async ({ page }) => {
         await saveExecutor(page);
         await withExecutor(page);
@@ -879,7 +879,7 @@ test.describe('the task title (BEL-252)', () => {
     });
 });
 
-test.describe('the conversation scrolls on its own above a docked composer (BEL-263)', () => {
+test.describe('the conversation scrolls on its own above a docked composer', () => {
     type Thread = ReturnType<typeof authoredBy>;
 
     /** `count` finished exchanges ahead of `tail`, enough to overflow any viewport. */

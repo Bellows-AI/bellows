@@ -180,7 +180,7 @@ async function obtain(deps, key) {
         const { token, expiresAt, scopes, resource } = cached;
         return { ok: true, token, expiresAt, scopes, resource };
     }
-    // A helper with its own wall-clock budget (BEL-61) passes the part it has left, never a fresh one.
+    // A helper with its own wall-clock budget passes the part it has left, never a fresh one.
     const deadline = deps.now() + (deps.deadlineMs ?? DEADLINE_MS);
     let backoff = BACKOFF_MS;
     let tried = false;
@@ -210,7 +210,7 @@ async function obtain(deps, key) {
 }
 
 /**
- * A managed connection's credential, for a connection helper (BEL-61) to hand its tool. A typed
+ * A managed connection's credential, for a connection helper to hand its tool. A typed
  * stop is a result, never a throw; `exitCodeOf` maps it to the helper's exit status.
  */
 function connectionCredential(id, deps = defaultDeps()) {

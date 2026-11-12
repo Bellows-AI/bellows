@@ -1,6 +1,6 @@
 if selected_phase tool-isolation; then
 begin_phase tool-isolation
-# --- The agent's tool isolation (issue #814) ------------------------------------------------------
+# --- The agent's tool isolation ------------------------------------------------------
 #
 # The real CLIs again, now under the driver's own agent flags — root, every capability dropped but
 # the launch pair, no-new-privileges — against the endpoint's `--kill-tools` mode: each of two tool
@@ -69,7 +69,7 @@ claude_isolation_lanes() { kill_lane claude control; kill_lane claude isolated; 
 opencode_isolation_lanes() { kill_lane opencode control; kill_lane opencode isolated; }
 lane_pair claude_isolation_lanes opencode_isolation_lanes
 
-# --- Skill helper scripts under the tool uid (issue #1006) -----------------------------------------
+# --- Skill helper scripts under the tool uid -----------------------------------------
 #
 # The endpoint's `--probe-files` mode: its one tool call opens every file given, as the tool uid, and
 # marks `probe-<n>` open, denied or other. The files are every non-SKILL.md file under docker/skills/
@@ -149,7 +149,7 @@ claude_skill_lanes() { skill_helper_lane claude; }
 opencode_skill_lanes() { skill_helper_lane opencode; }
 lane_pair claude_skill_lanes opencode_skill_lanes
 
-# --- The seam between the CLI's uid and the tool uid (epic #1025: #1016, #1021, #1023, #1024) ----------
+# --- The seam between the CLI's uid and the tool uid (epic #1025: #1016) ----------
 #
 # The endpoint's `--steps` mode drives the real CLI through one scripted run: its own Read and Write
 # tools and its Bash tool, which runs as the tool uid. What each step does and how the results are

@@ -1,6 +1,6 @@
 if selected_phase driver-kill; then
 begin_phase driver-kill
-# --- Driver killed at each step of a run (issue #829) ----------------------------------------
+# --- Driver killed at each step of a run ----------------------------------------
 #
 # A driver that vanishes at any step of a run costs the task an interruption, never the task: the
 # next claim finishes it once. Each case kills a real driver at one step — before the agent starts

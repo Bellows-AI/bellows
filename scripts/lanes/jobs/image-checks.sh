@@ -4,7 +4,7 @@ begin_phase image-checks
 #
 # docker/<executor>/test.sh pins what the image bakes (entrypoint contract, managed settings, seeding,
 # skills paths, tool uid). Nothing else ran them, so claude-executor's drifted from the entrypoint
-# unnoticed (issue #1039). They run offline against the images `make runners` builds.
+# unnoticed. They run offline against the images `make runners` builds.
 
 echo
 echo '# executor image checks (docker/<executor>/test.sh against the built images)'

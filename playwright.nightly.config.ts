@@ -9,7 +9,7 @@ import base, { NIGHTLY_TAG, PORT_BASE, SPECIMEN_SPEC } from './playwright.config
  */
 const root = fileURLToPath(new URL('.', import.meta.url));
 const SPECIMEN_PORT_OFFSET = 3;
-/** The component-state specimen's test-only Vite server (#275): no database, nothing built. */
+/** The component-state specimen's test-only Vite server: no database, nothing built. */
 export const SPECIMEN_PORT = PORT_BASE + SPECIMEN_PORT_OFFSET;
 
 const chromium = base.projects?.find((project) => project.name === 'chromium');

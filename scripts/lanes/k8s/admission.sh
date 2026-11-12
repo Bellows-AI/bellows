@@ -5,7 +5,7 @@ begin_phase admission
 # driver's own ServiceAccount: admission runs in full, nothing is persisted.
 DRIVER_SA="system:serviceaccount:$NAMESPACE:$RELEASE-factory-driver"
 
-# The executor hardening (#382), in the two spellings these probes need. HARD_C goes INSIDE a
+# The executor hardening, in the two spellings these probes need. HARD_C goes INSIDE a
 # container's flow mapping; the pod half is in probe_pod's own body. Every probe below carries
 # both, because the policy now REQUIRES them — a probe shaped like the driver's own pod is a probe
 # that is hardened, and the ones that deliberately are not are the four at the end.
@@ -16,7 +16,7 @@ HARD_C='securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: 
 # unrelated message and none of them tests anything.
 HARD_POD='{seccompProfile: {type: RuntimeDefault}}'
 
-# The driver creates pods only through Jobs (issue #773): the Role grants no pod create and the
+# The driver creates pods only through Jobs: the Role grants no pod create and the
 # policy matches Jobs alone, so each probe is a Job whose pod template carries the spec lines.
 probe_pod() { # probe_pod <name> <extra spec lines> [<extra labels>] [<pod securityContext>]
     cat <<EOF
@@ -88,7 +88,7 @@ expect_contains 'the policy refuses a claim that is not a task volume' "$task_ot
 deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
 expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
 
-# The holder binding (#829): a per-attempt Secret's binding key is the one thing the driver may
+# The holder binding: a per-attempt Secret's binding key is the one thing the driver may
 # update on a Secret.
 PROBE_ENV="factory-job-00000000-0000-4000-8000-000000000829-env"
 kubectl create secret generic "$PROBE_ENV" -n "$NAMESPACE" --from-literal=KEEP=1 >/dev/null
@@ -184,7 +184,7 @@ launch_more="$(probe_job launchmore agent 'SETUID, NET_RAW' | as_driver)"
 expect_contains 'the policy refuses any other capability on the agent' "$launch_more" 'may not be privileged or add capabilities'
 launch_other="$(probe_job launchother supervisor 'SETUID' | as_driver)"
 expect_contains 'the policy refuses the launch pair on any other container' "$launch_other" 'may not be privileged or add capabilities'
-# A bare Pod is refused before admission: the Role grants no pod create at all (issue #773).
+# A bare Pod is refused before admission: the Role grants no pod create at all.
 bare_pod="$(as_driver <<EOF
 apiVersion: v1
 kind: Pod
@@ -204,14 +204,14 @@ no_drop="$(probe_pod nodrop \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: []}}}]' |
     as_driver)"
 expect_contains 'the policy refuses a container that drops nothing' "$no_drop" 'must drop ALL capabilities'
-# There is no opt-out (issue #773): the label a declared unhardened service once carried buys a
+# There is no opt-out: the label a declared unhardened service once carried buys a
 # container nothing.
 opted_out="$(probe_pod optout \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
     'factory.unhardened: "true"' | as_driver)"
 expect_contains 'the policy refuses the retired unhardened label its capabilities' "$opted_out" 'must drop ALL capabilities'
 
-# The task pod's shape (issue #773): its declared services are `svc-` sidecars named on its
+# The task pod's shape: its declared services are `svc-` sidecars named on its
 # loopback. The driver's own shape is the runner Job's dry run above; these refuse each way out.
 sidecar="$(probe_pod sidecar "    initContainers: [{name: svc-db, image: alpine, restartPolicy: Always, $HARD_C}]
     containers: [{name: c, image: alpine, $HARD_C}]
@@ -231,7 +231,7 @@ proxy="$(probe_pod proxy "    initContainers: [{name: proxy, image: alpine, rest
 expect_contains 'the policy refuses a restartable init container that is neither gate nor svc-' "$proxy" \
     'only as restartable init containers'
 
-# --- The agent's tool isolation (issue #814), on the real kubelet ----------------------------------
+# --- The agent's tool isolation, on the real kubelet ----------------------------------
 #
 # The stub's one tool runs through the CLI's shell — the tool broker — and signals everything its
 # uid may: `kill -TERM 1; kill -KILL -1`. Under the agent container's own securityContext (root, the
@@ -252,5 +252,5 @@ expect_contains 'the tool ran as the tool uid' "$(job_output "$isolated")" 'the 
 kubectl delete jobs -l "factory.job=$isolated,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
     --ignore-not-found --wait=false >/dev/null 2>&1
 
-# --- The workspace boundary, probed from inside a pod (issue #382) ------------------------------
+# --- The workspace boundary, probed from inside a pod ------------------------------
 fi

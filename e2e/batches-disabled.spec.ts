@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 /**
- * Batches off, as the browser shows it (BEL-264). The e2e board runs with `BATCHES_ENABLED=true`
+ * Batches off, as the browser shows it. The e2e board runs with `BATCHES_ENABLED=true`
  * (playwright.config.ts) for the batch specs, so this spec serves the session as a board with the
  * flag off would — the real `/api/auth/me` body with `batches: false` — and asserts the SPA's side:
  * no Batches link, direct batch URLs land on the dashboard, no batch API read. The server's own

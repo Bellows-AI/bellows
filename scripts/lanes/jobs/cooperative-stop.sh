@@ -1,6 +1,6 @@
 if selected_phase cooperative-stop; then
 begin_phase cooperative-stop
-# --- A cooperative Stop at the model-step boundary (issue #442) --------------------------------
+# --- A cooperative Stop at the model-step boundary --------------------------------
 #
 # The real `claude` and `opencode` binaries, in the real executor images (`make runners`), against
 # scripts/fake-model-endpoint.mjs: offline, deterministic, no credential. The endpoint also plays
@@ -38,7 +38,7 @@ stop_lane() { # stop_lane <claude|opencode>
     run+=(-v "$dir:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
     while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "stop-$cli")
     if [ "$cli" = claude ]; then
-        # `-p <prompt>` last: the bridge the entrypoint execs refuses any other shape (#536), and it
+        # `-p <prompt>` last: the bridge the entrypoint execs refuses any other shape, and it
         # is the shape the driver passes.
         run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model
             -p 'touch the step markers')

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// Claude Code's step boundary for a cooperative Stop (issue #442): the baked PostToolUse hook.
+// Claude Code's step boundary for a cooperative Stop: the baked PostToolUse hook.
 // After every tool call it checks the stop marker the mailbox agent (ctl-agent.cjs) writes; when it exists it
 // answers `{"continue": false}`, which ends the headless run before the model is asked for
 // another step. Reads only the marker — never the control credential. Fails open: any error

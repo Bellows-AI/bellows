@@ -1,6 +1,6 @@
 if selected_phase question-round-trip; then
 begin_phase question-round-trip
-# --- The question round trip: board + driver + the real claude-executor (issue #226) -------------
+# --- The question round trip: board + driver + the real claude-executor -------------
 #
 # The board and the driver are the real ones. The model is the scripted endpoint in `--ask` mode,
 # reached through the org env a member would configure, so the real claude CLI inside the real
@@ -107,7 +107,7 @@ connection_roundtrip_lane() {
     RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
 
     node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/factory-jira/jira.cjs issue ABC-1 && node /usr/local/share/factory-skills/factory-task-title/task-title.cjs \"Lane Jira subject\"; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
-    # BEL-252: the image's Jira skill carries the title hook (the scripted model cannot read prose, so the
+    # the image's Jira skill carries the title hook (the scripted model cannot read prose, so the
     # chained command below stands for an agent that follows it: the title call runs only after a read exit 0).
     docker run --rm --entrypoint cat "$image" /usr/local/share/factory-skills/factory-jira/SKILL.md 2>/dev/null | grep 'Naming the task after a ticket' >/dev/null &&
         ok 'the image ships the Jira skill title hook' || bad 'the image ships the Jira skill title hook' 'SKILL.md in the image lacks the section; make runners'
@@ -176,7 +176,7 @@ process.stdout.write(made.ok ? made.connectionId : "");
 
 connection_roundtrip_lane
 
-# The agent names its task (BEL-252), end to end for both CLIs. The real executor image runs the task-title
+# The agent names its task, end to end for both CLIs. The real executor image runs the task-title
 # helper (a scripted shell step) on the attempt pair its pod/container holds: the helper reaches the board's
 # agent-title route and the task carries the title with origin `agent`. The refusals (a user's title, the
 # change cap, a lapsed lease) are server/test-db/agent-title.test.ts's.

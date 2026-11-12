@@ -1,6 +1,6 @@
 if selected_phase review; then
 begin_phase review
-# --- The in-band reviewer (issue #774) ---------------------------------------------------------
+# --- The in-band reviewer ---------------------------------------------------------
 #
 # A task asks for a named review and waits on it, with ONE driver slot: the review is a step of the
 # caller's own task group, run in the group's `reviewer` container (uid 1002, the shared clone

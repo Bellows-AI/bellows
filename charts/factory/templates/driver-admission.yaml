@@ -355,7 +355,7 @@ spec:
                 !has(object.spec.volumeName) && !has(object.spec.dataSource) && !has(object.spec.dataSourceRef){{ with .Values.taskVolume.storageClass }} &&
                 has(object.spec.storageClassName) && object.spec.storageClassName == {{ . | squote }}{{ end }})
           message: 'a task volume claim is never ReadWriteMany and names no volume or data source, and takes the chart class'
-        # The one change the driver makes to a claim it created (issue #775): the unschedulable label.
+        # The one change the driver makes to a claim it created: the unschedulable label.
         - expression: >-
               request.kind.kind != 'PersistentVolumeClaim' || request.operation != 'UPDATE' ||
               (object.spec == oldObject.spec &&

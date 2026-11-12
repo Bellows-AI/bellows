@@ -172,16 +172,14 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the composer has no Title field (BEL-261)', async ({ page }) => {
+    test('the composer has no Title field', async ({ page }) => {
         await page.goto('/tasks/new');
         await expect(page.getByLabel('What should the agent do?')).toBeVisible();
         await expect(page.getByLabel('Title (optional)')).toHaveCount(0);
     });
 
     for (const width of [1440, 390] as const) {
-        test(`at ${width} wide, focusing the prompt brightens its border without moving any box (BEL-261)`, async ({
-            page,
-        }) => {
+        test(`at ${width} wide, focusing the prompt brightens its border without moving any box`, async ({ page }) => {
             await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
             await page.goto('/tasks/new');
             const prompt = page.getByLabel('What should the agent do?');
@@ -209,7 +207,7 @@ test.describe('the guided task composer', () => {
             expect(focused.prompt.box).toEqual(idle.prompt.box);
             expect(focused.prompt.borderWidth).toBe(idle.prompt.borderWidth);
             // The cue is the field's own border, a step brighter; a 1px outline drawn on that
-            // border keeps a ring on the focused element for the keyboard matrix (BEL-266).
+            // border keeps a ring on the focused element for the keyboard matrix.
             expect(focused.prompt.borderColor).not.toBe(idle.prompt.borderColor);
             expect(focused.prompt.outlineStyle).toBe('solid');
             expect(idle.prompt.outlineStyle).toBe('none');
@@ -348,7 +346,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         held.executors = held.executors.filter((row) => row.name !== 'doomed');
         // The clamp, and the notice that names it, are driven by the workspace answer — not by the
         // return itself. Wait for the answer that has actually dropped the profile: on a slower
-        // board the first one back can still carry it, and asserting before it lands races (#289).
+        // board the first one back can still carry it, and asserting before it lands races.
         const withoutDoomed = page.waitForResponse(async (response) => {
             if (new URL(response.url()).pathname !== '/api/workspace') return false;
             const body = (await response.json().catch(() => null)) as { executors?: { name: string }[] } | null;
@@ -418,7 +416,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         });
         // The pending window only exists once the remounted poll has actually asked. Waiting for
         // the request — which the route above holds — is what makes it deterministic; asserting
-        // the text straight after the return races a board that answers sooner (#289).
+        // the text straight after the return races a board that answers sooner.
         const polled = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/workspace');
         await page.goBack();
         await polled;

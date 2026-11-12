@@ -93,7 +93,7 @@ spec:
                         value: kubernetes
                       # Image locations only. The claimed task's selected executor profile chooses
                       # the CLI/image pair for that run. The registry prefix composes here the
-                      # same as everywhere, so the executor images cannot be left behind it (#358).
+                      # same as everywhere, so the executor images cannot be left behind it.
                       - name: CLAUDE_EXECUTOR_IMAGE
                         value: {{ include "factory.imageReference" (list $ $.Values.driver.executorImages.claudeCode) | quote }}
                       - name: OPENCODE_EXECUTOR_IMAGE
@@ -108,7 +108,7 @@ spec:
                         value: {{ join "," . | quote }}
                       {{- end }}
                       {{- with $.Values.runner.nodeSelector }}
-                      # The runner group's scheduling knobs (issue #361), forwarded as JSON onto
+                      # The runner group's scheduling knobs, forwarded as JSON onto
                       # every pod the driver specs — runner, gate, sync, reclaim, publish, helper,
                       # service. The tainted node group agent code lands on and the chart's own
                       # pods never touch; unset, pods schedule wherever the task volume can
@@ -129,7 +129,7 @@ spec:
                       - name: RUNNER_RUNTIME_CLASS
                         value: {{ . | quote }}
                       {{- end }}
-                      # The claim each thread's task volume is created with (issue #775).
+                      # The claim each thread's task volume is created with.
                       {{- with $.Values.taskVolume.storageClass }}
                       - name: TASK_VOLUME_STORAGE_CLASS
                         value: {{ . | quote }}
@@ -158,7 +158,7 @@ spec:
                         value: {{ $.Values.driver.jobTimeoutMs | quote }}
                       - name: GATE_TIMEOUT_MS
                         value: {{ $.Values.driver.gateTimeoutMs | quote }}
-                      # The orphan reaper (issue #301): the periodic sweep of service objects whose
+                      # The orphan reaper: the periodic sweep of service objects whose
                       # owning job is terminal, unknown, or running under another lease. Deletes are
                       # board-gated and attempt-scoped, so every replica can run one.
                       - name: DRIVER_REAP_INTERVAL_MS
@@ -169,10 +169,10 @@ spec:
                       # #792): their leases go back as interruptions and their runners stay up.
                       - name: DRIVER_HANDOVER_MS
                         value: {{ mul (max 0 (sub (int $.Values.driver.terminationGracePeriodSeconds) 60)) 1000 | quote }}
-                      # What a released run's group waits for a newer holder on top of the lease (#829).
+                      # What a released run's group waits for a newer holder on top of the lease.
                       - name: DRIVER_REBIND_GRACE_MS
                         value: {{ $.Values.driver.rebindGraceMs | quote }}
-                      # The orphan floor of a lost driver's group and the GET /step long poll it outlasts (#950).
+                      # The orphan floor of a lost driver's group and the GET /step long poll it outlasts.
                       # Production keeps both defaults; the kind lane lowers them with its lease, and the driver
                       # refuses a pair the lease cannot hold.
                       - name: DRIVER_ORPHAN_MIN_MS
@@ -195,7 +195,7 @@ spec:
                         value: 0.0.0.0
                       {{- with $.Values.driver.metricsPort }}
                       # The scrape listener (GET /metrics), behind the board token above; the driver
-                      # refuses to boot with a port, no token and this bind (issue #831).
+                      # refuses to boot with a port, no token and this bind.
                       - name: DRIVER_METRICS_PORT
                         value: {{ . | quote }}
                       {{- end }}
@@ -207,9 +207,9 @@ spec:
                       - name: RUNNER_SERVICES
                         value: {{ $.Values.driver.services | quote }}
                       {{- with $.Values.runner.resources }}
-                      # Resource requests and limits on every pod the driver specs (issue #360):
+                      # Resource requests and limits on every pod the driver specs:
                       # requests make the runner fleet Burstable and are what the autoscaler sizes
-                      # for; limits (issue #454) bound a runaway or hostile run.
+                      # for; limits bound a runaway or hostile run.
                       {{- with .requests }}
                       {{- with .cpu }}
                       - name: RUNNER_CPU_REQUEST
@@ -232,7 +232,7 @@ spec:
                       {{- end }}
                       {{- end }}
                       {{- with $.Values.runner.gateResources }}
-                      # The gate Jobs' own sizing (issue #507); each unset slot is the runner's.
+                      # The gate Jobs' own sizing; each unset slot is the runner's.
                       {{- with .requests }}
                       {{- with .cpu }}
                       - name: GATE_CPU_REQUEST

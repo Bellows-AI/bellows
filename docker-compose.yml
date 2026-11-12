@@ -59,7 +59,7 @@ services:
             # Alternatively mount the .pem and point GITHUB_APP_PRIVATE_KEY_FILE at it.
             GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
             GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-}
-            # The organizations are the App's installations, materialized at sign-in (#99): no
+            # The organizations are the App's installations, materialized at sign-in: no
             # org env exists. Install the App on every account this stack should serve.
             TELEMETRY_SOURCE: ${TELEMETRY_SOURCE:-postgres}
             TELEMETRY_TTL_SECONDS: ${TELEMETRY_TTL_SECONDS:-30}
@@ -166,7 +166,7 @@ services:
     # Like the dashboard above, this service runs the working tree, not a baked build: it used to
     # build docker/driver.Dockerfile's `runtime` stage, and an `up` or restart without `--build`
     # silently served the previous image's publisher — `/fix N` PRs went out without a closing
-    # keyword and merged with the issue still open (#174). The baked stage still exists and is
+    # keyword and merged with the issue still open. The baked stage still exists and is
     # still what deploys (the chart, scripts/test-k8s.sh); it is just not what compose runs.
     driver:
         build:
@@ -217,17 +217,17 @@ services:
             DRIVER_LEASE_SECONDS: ${DRIVER_LEASE_SECONDS:-300}
             DRIVER_JOB_TIMEOUT_MS: ${DRIVER_JOB_TIMEOUT_MS:-7200000}
             GATE_TIMEOUT_MS: ${GATE_TIMEOUT_MS:-600000}
-            # The orphan reaper (issue #301): the periodic sweep of service objects whose owning
+            # The orphan reaper: the periodic sweep of service objects whose owning
             # job is terminal, unknown to the board, or running under another lease. Interval 0
             # disables it; the grace keeps a fleet created moments before its verdict from being
             # raced by the attempt's own teardown.
             DRIVER_REAP_INTERVAL_MS: ${DRIVER_REAP_INTERVAL_MS:-300000}
             DRIVER_REAP_GRACE_MS: ${DRIVER_REAP_GRACE_MS:-600000}
-            # How long the reaper keeps a thread's task volume after its last attempt finalized
-            # (issue #775): the ttl when its checkpoint and artifacts are whole, the bound when not.
+            # How long the reaper keeps a thread's task volume after its last attempt finalized:
+            # the ttl when its checkpoint and artifacts are whole, the bound when not.
             TASK_VOLUME_TTL_MS: ${TASK_VOLUME_TTL_MS:-86400000}
             TASK_VOLUME_BOUND_MS: ${TASK_VOLUME_BOUND_MS:-604800000}
-            # Failed re-exports of a not-whole thread's transcript before its volume is deleted anyway (issue #938).
+            # Failed re-exports of a not-whole thread's transcript before its volume is deleted anyway.
             TASK_VOLUME_EXPORT_ATTEMPTS: ${TASK_VOLUME_EXPORT_ATTEMPTS:-3}
             # A stopping driver hands its runs over before docker's ten-second SIGKILL (issue
             # #792): the leases go back as interruptions, the runner containers keep running.
@@ -245,7 +245,7 @@ services:
             # runs this service against its 8129 board.
             - 'host.docker.internal:host-gateway'
         volumes:
-            # The working tree, live — same mount as the dashboard, same reason (issue #174). The
+            # The working tree, live — same mount as the dashboard, same reason. The
             # bind mount puts .env inside the container and the driver's dev script hands it to
             # node --env-file-if-exists; every variable that matters is set in `environment`
             # above, and node lets a real environment variable win over the file.
@@ -268,7 +268,7 @@ services:
                 condition: service_healthy
         restart: unless-stopped
 
-    # Plain Postgres: metric_point is a declaratively-partitioned table (#371), not a hypertable,
+    # Plain Postgres: metric_point is a declaratively-partitioned table, not a hypertable,
     # so no extension is involved and this is the same database a deployment points at — RDS,
     # Aurora or anything else speaking PG17. The service name is load-bearing in test-jobs.sh,
     # test-k8s.sh, the Makefile and playwright.config.ts — rename it in all four or in none.
@@ -336,7 +336,7 @@ services:
             timeout: 5s
             retries: 10
 
-    # S3-compatible object store for task artifacts (#764). RustFS: Apache-2.0, enforces
+    # S3-compatible object store for task artifacts. RustFS: Apache-2.0, enforces
     # `If-None-Match: *` create-only writes, and runs as a non-root uid from env alone. MinIO
     # publishes no community images any more. Buckets are created by their consumer, not here.
     s3:

@@ -134,7 +134,7 @@ IMAGE_REVIEW="factory-jobs-$RUN_ID-review"
 IMAGE_GH="factory-jobs-$RUN_ID-github"
 IMAGE_KILL="factory-jobs-$RUN_ID-kill"
 IMAGE_ACC="factory-jobs-$RUN_ID-acceptance"
-# The smoke origin (issue #775): a bare repository on a named volume, served by a git daemon on a
+# The smoke origin: a bare repository on a named volume, served by a git daemon on a
 # network the runners join (RUNNER_NETWORK), because a runner clones its task's checkout onto its
 # own task volume and mounts nothing else. REPO_CLONE_BASE names the daemon.
 ORIGIN_VOLUME="factory-jobs-$RUN_ID-origins"
@@ -153,7 +153,7 @@ COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
 # The file's path is fixed here (compose() and cleanup() name it); the file itself is written after the preflight.
 SECRETS_ENV_FILE_PATH="${TMPDIR:-/tmp}/factory-jobs-$RUN_ID-secrets.env"
 compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
-# The repository every task runs against (issue #263): a ready selection on the board and, in the
+# The repository every task runs against: a ready selection on the board and, in the
 # driver volume, a clone whose origin is a bare repository beside it — no GitHub, no network.
 SMOKE_REPO="factory-smoke/demo"
 
@@ -233,7 +233,7 @@ build_workspaces() { # build_workspaces <log>
     }
 }
 
-# --parallel (issue #887): the selected phases as groups (scripts/test-jobs-groups.mjs), each one
+# --parallel: the selected phases as groups (scripts/test-jobs-groups.mjs), each one
 # a separate `test-jobs.sh --phase` run — its own board fixture, database, images, network and
 # volumes (RUN_ID) and a ten-port slice from PORT — dealt to --slots concurrent slots. The shared
 # parts are done once here: Postgres, and the build of core, server and driver (every group runs from
@@ -393,7 +393,7 @@ cleanup() {
         docker volume rm "$ORIGIN_VOLUME" >/dev/null 2>&1
         docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_BASE" >/dev/null 2>&1
     fi
-    # Which attempts held a slot past LANE_SLOW_S, and which never ended (issue #829); a report, never a verdict.
+    # Which attempts held a slot past LANE_SLOW_S, and which never ended; a report, never a verdict.
     if [ -f "$work/driver.log" ]; then
         node "$REPO/scripts/lane-slow-jobs.mjs" "$work/driver.log" "${LANE_SLOW_S:-30}" >"$work/slow-jobs.txt" 2>&1 || true
         [ -s "$work/slow-jobs.txt" ] && printf '[slow-jobs] %s\n' "$(tail -n 1 "$work/slow-jobs.txt")"
@@ -560,7 +560,7 @@ write_bellows() { # write_bellows <contents>
         exit 1
     }
 }
-# The recovery helpers the node-disruption and driver-kill phases share (issues #796, #829).
+# The recovery helpers the node-disruption and driver-kill phases share.
 disruption_driver() { # disruption_driver [VAR=value ...] — a services-off driver on the prompt-executing stub
     env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
         RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
@@ -599,7 +599,7 @@ await_first_runner() { # await_first_runner <job-id> <status> [seconds] -> the c
 }
 
 runner_host() { # runner_host <runner container> -> the $HOSTNAME its commands see
-    # The agent joins its supervisor's network namespace (issue #773), and with it the supervisor's
+    # The agent joins its supervisor's network namespace, and with it the supervisor's
     # hostname: the short id of the container named by its network mode, not its own.
     docker inspect -f '{{.HostConfig.NetworkMode}}' "$1" 2>/dev/null | sed 's/^container://' | cut -c1-12
 }
@@ -608,7 +608,7 @@ await_released() { # await_released <runner container> -> success once the super
     # A driver lost before `go` leaves nothing to adopt: the group ends lost (supervisor exit 75) and the run is redone.
     local i=0
     while [ "$i" -lt 60 ]; do
-        # As the agent uid: the agent container runs as root without DAC_OVERRIDE (issue #814).
+        # As the agent uid: the agent container runs as root without DAC_OVERRIDE.
         docker exec --user 1000 "$1" sh -c 'test -f /factory/in/agent/go' >/dev/null 2>&1 && return 0
         sleep 1
         i=$((i + 1))
@@ -634,7 +634,7 @@ last_attempt() { # last_attempt <id> -> the job allowed one attempt, so an expir
 
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
 TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
-# The interruption the next claim records for an attempt whose lease expired (issue #822).
+# The interruption the next claim records for an attempt whose lease expired.
 EXPIRED='the lease expired: its driver went silent'
 # The adopting claim settles only once the lost driver's supervisor exits, and with no driver left to
 # order its `finish` that is orphanBoundMs after its last answered call (a quarter of the lease,
@@ -646,7 +646,7 @@ LANE_ORPHAN_S=30
 LANE_MARGIN_S=40
 ADOPT_S=$((LANE_ORPHAN_S + LANE_LEASE_S + ${LANE_REBIND_GRACE_MS:-20000} / 1000 + LANE_MARGIN_S))
 
-# Barriers and counters for the driver-kill phase (issue #829). Every container of a run — setup,
+# Barriers and counters for the driver-kill phase. Every container of a run — setup,
 # gates, the agent, the publish steps — mounts the thread's task volume at /task, so a file under
 # $LANE_DIR is one every one of them sees; the publish's own state (the gh stand-in's PR list and
 # hold) sits beside it in /task/.lane-gh, the origin's push log in the bare origin on $ORIGIN_VOLUME.
@@ -742,7 +742,7 @@ lane_left() { # lane_left <job id> -> success only when docker answered both rea
     }
 }
 
-# The driver-log and leftovers checks the driver-kill and capacity phases share (issues #829, #831).
+# The driver-log and leftovers checks the driver-kill and capacity phases share.
 dk_log() { # dk_log <job id> <text> -> success once the driver log carries the line
     grep -qF "job $1: $2" "$work/driver.log"
 }
@@ -942,8 +942,8 @@ echo 'building the stub runner images'
 # prompt every round pushed the fix node's FIXED-ONE-ROUND marker past the cut.
 # Every stub stands on scripts/stub-runner.Dockerfile: node + git as the uid-1000 `node` user, like
 # the executor images — the driver runs the startup sync and the other git steps IN the job's
-# executor image (`--entrypoint node`), and every task has a checkout to sync (issue #263) — and the
-# images' tool isolation (issue #814). Each executor stub starts through factory-launch and
+# executor image (`--entrypoint node`), and every task has a checkout to sync — and the
+# images' tool isolation. Each executor stub starts through factory-launch and
 # scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount points: the task
 # supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
@@ -1039,7 +1039,7 @@ compose exec -T postgres psql -U factory -d "$DB" -c 'truncate job, workflow cas
 }
 
 # A create must name a tracked repo, and an offline board's tracked list is its session_branch rows: the
-# fixture is one row for the smoke repo. The runner clones the origin (issue #775) onto its own task
+# fixture is one row for the smoke repo. The runner clones the origin onto its own task
 # volume. The author is AUTH_MODE=none's stand-in, read from /api/auth/me; the board names its tree
 # `<org>/<user id>` on every claim (asserted below).
 member="$(body "$(api GET /api/auth/me)")"

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * The agent's run-control proxy (issue #814). The agent's tools run as their own uid and hold no
+ * The agent's run-control proxy. The agent's tools run as their own uid and hold no
  * run-control credential at all: the supervisor serves a relay socket in the agent's own mailbox
  * (`$FACTORY_CTL_OUT/control.sock`, owner-only) that adds the agent's token and follows whichever
- * driver holds the run (issue #829). This proxy, started by the entrypoint only where that socket
+ * driver holds the run. This proxy, started by the entrypoint only where that socket
  * exists, lets the tools reach it, and the routes the baked skills call are all that cross:
  *
  *   POST /publish        the draft publication (the factory-github skill)
@@ -32,7 +32,7 @@ const PUBLISH_PATH = '/publish';
 const REVIEW_PATH = '/review';
 const CONNECTION_PATH = '/connection';
 const GATE_RUN_PATH = '/gate/run';
-/** The supervisor's answer to which lease pair the agent holds now (`relayRequest`, #1045): read by `attempt-pair.cjs`. */
+/** The supervisor's answer to which lease pair the agent holds now (`relayRequest`): read by `attempt-pair.cjs`. */
 const ATTEMPT_PATH = '/attempt';
 const REVIEW_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 /** Far past any publish or review request; the board bounds its own bodies too. */

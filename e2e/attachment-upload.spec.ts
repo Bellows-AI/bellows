@@ -4,7 +4,7 @@ import { AUTH_PORT } from '../playwright.config.js';
 import { throughSignIn } from './signin.js';
 
 /**
- * The browser upload page an MCP client hands out (BEL-248; docs/mcp.md): `<origin>/attachments/upload#fcu_…`. The
+ * The browser upload page an MCP client hands out (docs/mcp.md): `<origin>/attachments/upload#fcu_…`. The
  * link is minted through the server as a signed-in member, then opened in a fresh, signed-out browser context: the
  * capability in the fragment is the only credential. The page's states are web/test/AttachmentUploadPage.dom.test.tsx's.
  *

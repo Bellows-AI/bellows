@@ -1,6 +1,6 @@
 if selected_phase capacity; then
 begin_phase capacity
-# --- Competing driver replicas under one shared budget (issue #831) ------------------------------
+# --- Competing driver replicas under one shared budget ------------------------------
 #
 # The dashboard runs with ADMISSION_MAX_RUNNING=2 and the driver Deployment with two replicas, each
 # able to run two tasks: four against a budget of two. A heavy member queues three tasks before a light

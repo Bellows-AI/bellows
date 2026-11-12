@@ -1,6 +1,6 @@
 if selected_phase ask-user-question; then
 begin_phase ask-user-question
-# --- AskUserQuestion answered inside the same Claude run (issue #226) ----------------------------
+# --- AskUserQuestion answered inside the same Claude run ----------------------------
 #
 # The real claude-executor image against the same scripted endpoint in `--ask` mode. The model's
 # first reply is an AskUserQuestion tool call; the bridge POSTs it to the endpoint's /question,

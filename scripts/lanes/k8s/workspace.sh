@@ -2,7 +2,7 @@ if selected_phase workspace; then
 begin_phase workspace
 #
 # The admission probes above prove the driver cannot SPEC a pod that mounts a claim that is not a
-# task volume. This proves a pod that mounted its own thread's task volume (issue #775) cannot
+# task volume. This proves a pod that mounted its own thread's task volume cannot
 # REACH another thread's — the other half, and the half a policy cannot give you. Each thread has
 # its own claim, so the other volume is not merely unreadable, it is absent from the pod:
 # traversal and symlinks have nothing to resolve against. That is a property worth proving rather
@@ -90,5 +90,5 @@ expect_not_contains 'the other thread volume is not reachable' "$probe_out" 'the
 
 kubectl delete pod fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
 
-# --- Node disruption (issue #796) ---------------------------------------------------------------
+# --- Node disruption ---------------------------------------------------------------
 fi

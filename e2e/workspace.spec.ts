@@ -3,8 +3,8 @@ import type { Page } from '@playwright/test';
 import { throughSignIn } from './signin.js';
 
 /**
- * The workspace section of Settings, the repositories section that lists the tracked repositories
- * (#181, #777), and the one failure that shows up only in production.
+ * The workspace section of Settings, the repositories section that lists the tracked repositories,
+ * and the one failure that shows up only in production.
  *
  * On the `auth` project, because every route here needs a signed-in member — and because the
  * `chromium` project is the visual regression check for the dashboard and should not churn over

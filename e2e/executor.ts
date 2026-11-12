@@ -66,7 +66,7 @@ export async function trackRepos(page: Page, repos: { owner: string; name: strin
  * A task cannot start without one (docs/workspace.md), and the open board deliberately has no
  * executor profile, so its `/api/workspace` always answers `executors: []` and Start stays dark
  * behind "Configure an executor". Only the lists are replaced: the rest of the answer is the real
- * server's. The board refuses a task whose executor its scope does not hold (#1019), so a spec
+ * server's. The board refuses a task whose executor its scope does not hold, so a spec
  * whose launch reaches the real `POST /api/jobs` also saves the executor with `saveExecutor`.
  * The tracked list carries `E2E_REPO`.
  */

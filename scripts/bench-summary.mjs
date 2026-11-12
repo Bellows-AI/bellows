@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Reads what `scripts/test-k8s.sh --cluster --phase bench` wrote per cell (issue #831) and prints one
+// Reads what `scripts/test-k8s.sh --cluster --phase bench` wrote per cell and prints one
 // TSV row per cell: measured columns only, no cause column. A read that failed, a scrape that is
 // missing, a counter that went down (a restart) or a bucket bound past the last one is `?`, never 0;
 // a column a kind of cell does not measure is `-`.

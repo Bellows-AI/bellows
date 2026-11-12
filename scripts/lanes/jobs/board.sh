@@ -113,7 +113,7 @@ api POST "/api/jobs/$fu_id/complete" \
 [ "$workspace_path" = "$member_path" ] && ok 'the claim names the provisioned member tree' ||
     bad 'the claim names the provisioned member tree' "claim '$workspace_path', provisioned '$member_path'"
 
-# Retry (issue #326): a finished run whose driver died before reporting a session queues a fresh
+# Retry: a finished run whose driver died before reporting a session queues a fresh
 # attempt of the thread head's command in the SAME thread: no session resumed, the command
 # delivered fresh, the same worktree root.
 retry_id="$(create_job 'retry me')"

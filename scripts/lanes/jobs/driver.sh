@@ -92,9 +92,9 @@ start_driver "$IMAGE_OK"
 oc="$(create_job 'opencode prompt' opencode)"
 expect_contains 'an opencode driver runs its job' "$(await_settled "$oc")" succeeded
 oc_body="$(body "$(api GET "/api/jobs/$oc")")"
-# The reserved `factory` primary agent carries the board's master prompt (issue #244), so the
+# The reserved `factory` primary agent carries the board's master prompt, so the
 # headless form is `run --agent factory <message>`. The message is the turn context, then the prompt
-# (#518, 87eaca1f): the stub re-echoes the last argument on its final line, so that line is the
+# (87eaca1f): the stub re-echoes the last argument on its final line, so that line is the
 # prompt's own.
 expect_contains 'the opencode argv reached it' "$(field "$oc_body" output)" 'run --agent factory '
 oc_last="$(node -e 'process.stdout.write(process.argv[1].trimEnd().split("\n").at(-1))' "$(field "$oc_body" output)")"

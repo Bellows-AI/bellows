@@ -1,6 +1,6 @@
 if [ "$PHASE" = drain ]; then
 begin_phase drain
-# --- Node drain on a multi-node cluster (issue #829) --------------------------------------------
+# --- Node drain on a multi-node cluster --------------------------------------------
 #
 # Explicit only: it needs a cluster made with `make cluster LAYOUT=drain` (a control plane and three
 # workers labelled factory.lane/shared), so no other phase includes it. D1 drains the node the

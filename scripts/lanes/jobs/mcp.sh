@@ -1,6 +1,6 @@
 if selected_phase mcp; then
 begin_phase mcp
-# --- A task settles through the MCP server (BEL-108) ------------------------------------------
+# --- A task settles through the MCP server ------------------------------------------
 #
 # The board (AUTH_MODE=github, MCP_ENABLED) and the driver are the real ones, the runner is the prompt-executing
 # stub, and the member is signed in through e2e/stub-idp.mjs: the same stand-in the browser specs use, pointed at by

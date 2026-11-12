@@ -1,6 +1,6 @@
 if selected_phase control; then
 #
-# The supervisor's control routes on a real apiserver (issue #770). a: a cooperative Stop — the
+# The supervisor's control routes on a real apiserver. a: a cooperative Stop — the
 # supervisor relays it to the agent, which ends on its own; the run is cancelled, never verified or
 # published. b: a question, then the run budget — the budget pauses while the question waits (the
 # runner Job's deadline lifted and saved), resumes on the answer with what was left of it, and the
