@@ -25,6 +25,12 @@ dashboard:
         repository: factory-ai
         tag: latest
 
+# The collector is pulled and pushed to the lane's registry (`make runners`, scripts/test-k8s.sh), and a
+# copy made that way has a different digest than the chart's pin; the local profile runs it by tag.
+collector:
+    image:
+        digest: ''
+
 # The database lives in the `factory-state` release (charts/factory-local-state), not this one, so
 # uninstalling this release keeps it. This value is that release's object name: `<release>-postgres`.
 database:

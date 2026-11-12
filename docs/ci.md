@@ -13,6 +13,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 | Merge queue: `merge_group` runs `validate` and `test-db` (never `e2e`); red-main alert: `notify-red-main` opens or comments on one `CI is red on main` issue via `github.token` | `.github/workflows/ci.yml` | `core/test/ci-workflows.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
 | Postgres mirror: the compose pin copied from `mirror.gcr.io` to `ghcr.io/bellows-ai/postgres:17`, weekly and on demand | `.github/workflows/mirror-images.yml` | `core/test/ci-workflows.test.ts` |
+| Digest pins: external `FROM`s and the chart's collector by index digest, re-resolved weekly into a pull request | `scripts/pin-digests.sh`, `.github/workflows/mirror-images.yml` (`pin-digests`), `charts/factory/templates/_helpers.tpl` | `driver/test/executor-images.test.ts`, `core/test/ci-workflows.test.ts`, `scripts/test-k8s.sh` |
 | Nightly/on-demand browser lane: `@nightly` specs and the specimen, never on the merge path | `.github/workflows/ui-nightly.yml`, `playwright.nightly.config.ts` | `core/test/ci-workflows.test.ts`, `core/test/e2e-config.test.ts` |
 
 ## Invariants
@@ -42,7 +43,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   (`--exit-code 1`, `CRITICAL,HIGH`), narrowed only by `--ignore-unfixed` and `--skip-files /usr/local/bin/acli`.
 - **All four images the chart renders are built, each architecture natively**, pushed as `<image>:<tag>-<arch>` and
   merged by `manifest`; `--provenance=false` keeps the merge from nesting manifest lists. The collector image is
-  mirrored too, its version read from `charts/factory/values.yaml`.
+  mirrored too, its tag and digest read from `charts/factory/values.yaml` and copied by digest, then checked against it.
 - **The chart publishes after `manifest`, never beside it.** `--version` is the tag minus its `v`; `--app-version`
   is the tag exactly, which `factory.image` falls back to. Each package's first push is private
   ([eks-runbook.md](eks-runbook.md), step 3).
@@ -52,6 +53,10 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 
 ## Stated limits
 
+- **The four images this release builds stay tag-addressed** by the chart's appVersion: their digest does not exist
+  until `manifest` pushes them, so `values.yaml` leaves their `digest:` empty. Everything external is digest-pinned.
+- **The weekly re-pin pull request is opened with `github.token`, so CI does not run on it** until a maintainer re-pushes
+  it, and the repository must allow Actions to create pull requests.
 - CI cannot pull `ghcr.io/bellows-ai/postgres:17` until `mirror-images.yml` has run once; a fork pull request
   reads it only while the package grants this repository access.
 - `driver/test/executor-images.test.ts` and `driver/test/review-reply-script.test.ts` spawn real processes and can

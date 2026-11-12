@@ -172,7 +172,7 @@ describe('ci workflows', () => {
     });
 
     it('runs on the node major the runtime image ships', () => {
-        const imageMajor = /FROM mirror\.gcr\.io\/library\/node:(\d+)-alpine AS runtime/.exec(
+        const imageMajor = /FROM mirror\.gcr\.io\/library\/node:(\d+)-alpine@sha256:[0-9a-f]{64} AS runtime/.exec(
             read('docker/Dockerfile')
         )?.[1];
         expect(imageMajor).toBeTruthy();
@@ -240,7 +240,7 @@ describe('ci workflows', () => {
         expect(mirror.permissions).toEqual({});
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
-        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault']);
+        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault', 'pin-digests']);
         expect(job.env!.SOURCE).toBe(composePostgres());
         expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
@@ -252,6 +252,23 @@ describe('ci workflows', () => {
         expect(commands).toContain("tr 'A-Z' 'a-z'");
         expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
         expect(read(MIRROR)).not.toMatch(/secrets\./);
+    });
+
+    // The base images and the chart's collector are pinned by digest (scripts/pin-digests.sh); a pin
+    // nobody refreshes is a stale image, so the weekly run re-resolves them and opens a pull request.
+    // Write access is on that one job: the others only push images.
+    it('re-pins the base image digests weekly through a pull request, with write access on that job only', () => {
+        const mirror = workflow(MIRROR);
+        const job = mirror.jobs['pin-digests']!;
+        expect(job.permissions).toEqual({ contents: 'write', 'pull-requests': 'write' });
+        for (const [name, other] of Object.entries(mirror.jobs)) {
+            if (name !== 'pin-digests')
+                expect(other.permissions, name).toEqual({ contents: 'read', packages: 'write' });
+        }
+        const commands = runs(job).join('\n');
+        expect(commands).toContain('sh scripts/pin-digests.sh');
+        expect(commands).toContain('gh pr create');
+        expect(read('scripts/pin-digests.sh')).toContain('imagetools inspect');
     });
 
     it('pins the moto emulator to an exact release, opt-in under the secrets-aws compose profile', () => {
@@ -494,6 +511,19 @@ describe('ci workflows', () => {
         // Read from the chart rather than pinned here: two pins drift, one cannot.
         expect(mirror!.run).toContain('charts/factory/values.yaml');
         expect(mirror!.run).not.toMatch(/collector-contrib:[\d.]+/);
+    });
+
+    // The chart renders `repo:tag@sha256:…` under the registry prefix; a mirror copy made by tag
+    // alone can hold a different manifest list than the digest names, and the node then answers
+    // ImagePullBackOff. The copy reads the digest from the chart too and is made from it.
+    it('mirrors the collector by the digest the chart pins', () => {
+        const manifest = workflow(RELEASE).jobs.manifest!;
+        const mirror = runSteps(manifest).find((step) => step.run.includes('opentelemetry-collector-contrib'))!;
+        expect(mirror.run).toContain('digest:');
+        expect(mirror.run).toMatch(/imagetools create -t "\$REGISTRY\/[^"]+" "[^"]*@\$[^"]+"/);
+        expect(read('charts/factory/values.yaml')).toMatch(
+            /repository: otel\/opentelemetry-collector-contrib\n(?: {8}#[^\n]*\n)* {8}tag: '[\d.]+'\n(?: {8}#[^\n]*\n)* {8}digest: 'sha256:[0-9a-f]{64}'/
+        );
     });
 
     // A release nobody can resolve by version is a release only this repository can install. The
