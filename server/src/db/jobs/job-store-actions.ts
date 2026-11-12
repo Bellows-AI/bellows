@@ -31,7 +31,6 @@ import { commitStagedForStop } from './job-store-conclusions.js';
 import { stagedFingerprint } from './job-store-staged.js';
 import { recordCreateDecisionInTx, recordFollowUpDecisionInTx } from './job-store-skill-pin.js';
 import { threadRefusalOf } from './job-store-thread-refusal.js';
-import { TERMINAL_STATUSES } from '../task-summary.js';
 import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
 import type {
     CancelWaitResult,
@@ -52,6 +51,7 @@ import { markExecutionsRemoved, recordLaunchOutcome } from './job-store-provenan
 import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import type { ParamValues, WorkflowDefinition } from '../workflows/workflow-schema.js';
 import type { ExecutorScope } from '@factory-ai/core';
+import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
 
 /** The job and thread transitions the board writes: create, follow up, retry, edit, done, stop, remove, waits, reopen, and the worker-initiated suspend and interrupt. */
 export interface JobActionStore {
@@ -470,7 +470,7 @@ async function threadBusyInTx(tx: TransactionSql, orgId: string, rootJobId: stri
         select exists (
             select 1 from job m
             where m.org_id = ${orgId} and m.root_job_id = ${rootJobId}
-              and m.status not in ${tx([...TERMINAL_STATUSES])}
+              and not ${terminalFragment(tx, 'm.status')}
         ) as busy
     `;
     if (typeof row?.busy !== 'boolean') throw new Error('the thread busy read returned no answer');
@@ -500,7 +500,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                 select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode
                 from job
                 where org_id = ${orgId} and id = ${parentId}
-                  and status in ('succeeded','failed','dead','stopped')
+                  and ${terminalFragment(tx)}
                   and (${admin}::boolean or (
                       select r.execution_user_id from job r where r.org_id = ${orgId} and r.id = job.root_job_id
                   ) is not distinct from ${createdBy})
@@ -544,12 +544,12 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
             where not exists (
                 select 1 from job m
                 where m.org_id = ${orgId} and m.root_job_id = parent.root_job_id
-                  and m.status not in ${tx([...TERMINAL_STATUSES])}
+                  and not ${terminalFragment(tx, 'm.status')}
             )
               and not exists (
                 select 1 from job d
                 where d.org_id = ${orgId} and d.root_job_id = parent.root_job_id
-                  and d.done_at is not null
+                  and ${doneFragment(tx, 'd')}
             )
             returning id
         `;
@@ -657,7 +657,7 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
                   and review_of is null
                   -- A running or queued member answers not_finished: locking it here would wait on a row
                   -- a claim or a verdict holds while that one waits on the lock above (BEL-157).
-                  and status in ${tx([...TERMINAL_STATUSES])}
+                  and ${terminalFragment(tx)}
                 for update
             ),
             head as (
@@ -677,14 +677,14 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
                   from job m
                   where m.org_id = ${orgId}
                     and m.root_job_id = head.root_job_id
-                    and m.status not in ${tx([...TERMINAL_STATUSES])}
+                    and not ${terminalFragment(tx, 'm.status')}
               )
               and not exists (
                   select 1
                   from job d
                   where d.org_id = ${orgId}
                     and d.root_job_id = head.root_job_id
-                    and d.done_at is not null
+                    and ${doneFragment(tx, 'd')}
               )
             returning id
         `;
@@ -771,7 +771,7 @@ export async function markJobDone(
         const rows = await tx<{ status: JobStatus; done_at: Date; root_job_id: string }[]>`
             update job set done_at = coalesce(done_at, now()), done_by = coalesce(done_by, ${doneBy})
             where org_id = ${orgId} and id = ${id}
-              and status in ${tx([...TERMINAL_STATUSES])}
+              and ${terminalFragment(tx)}
             returning status, done_at, root_job_id
         `;
         const row = rows[0];
@@ -1299,7 +1299,7 @@ export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<Jo
         // idempotent: the second call answers this, the state the first one left behind.
         const [members] = await tx<{ done: number }[]>`
             select count(*)::int as done from job
-            where org_id = ${orgId} and root_job_id = ${rootJobId} and done_at is not null
+            where org_id = ${orgId} and root_job_id = ${rootJobId} and ${doneFragment(tx)}
         `;
         if (!members || members.done === 0) return 'not_done';
 
@@ -1319,7 +1319,7 @@ export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<Jo
         // cleared wherever it sits, which is what makes the follow-up possible again.
         await tx`
             update job set done_at = null, done_by = null
-            where org_id = ${orgId} and root_job_id = ${rootJobId} and done_at is not null
+            where org_id = ${orgId} and root_job_id = ${rootJobId} and ${doneFragment(tx)}
         `;
         // A merge closure's marker (issue #390) is the discriminator complete's transition reads:
         // gone with the stamps, so a thread the user reopens after an automatic Done walks its

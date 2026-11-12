@@ -1,5 +1,5 @@
 import type { TransactionSql } from 'postgres';
-import { TERMINAL_STATUSES } from '../task-summary.js';
+import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
 
 /**
  * Names the precondition a follow-up's or a retry's conditional insert failed on, for the thread
@@ -21,12 +21,12 @@ export async function threadRefusalOf(
         select exists (
             select 1 from job m
             where m.org_id = ${orgId} and m.root_job_id = named.root_job_id
-              and m.status not in ${tx([...TERMINAL_STATUSES])}
+              and not ${terminalFragment(tx, 'm.status')}
         ) as busy,
         exists (
             select 1 from job d
             where d.org_id = ${orgId} and d.root_job_id = named.root_job_id
-              and d.done_at is not null
+              and ${doneFragment(tx, 'd')}
         ) as done
         from job named
         where named.org_id = ${orgId} and named.id = ${id}

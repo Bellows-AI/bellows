@@ -40,6 +40,7 @@ import { entersBlockHelperNode, settleBlockWaits } from '../workflows/workflow-b
 import { applyMergeClosureIfMerged, mergeClosureMarkerSet, prLockKey, settleIfMergeClosed } from './job-store-merge.js';
 import type { WorkflowDefinition, ParamValues } from '../workflows/workflow-schema.js';
 import type { RecordedEvidence } from '../evidence-policy.js';
+import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
 
 /** The lease-fenced writes a running attempt reports: heartbeat, session, progress, gates, completion. */
 export interface JobWorkerStore {
@@ -585,8 +586,8 @@ async function settleVerdict(
     // which is exactly why this read runs after the insert decision.
     const [thread] = await tx<{ total: number; terminal: number; done: number }[]>`
         select count(*)::int as total,
-               count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal,
-               count(*) filter (where done_at is not null)::int as done
+               count(*) filter (where ${terminalFragment(tx)})::int as terminal,
+               count(*) filter (where ${doneFragment(tx)})::int as done
         from job
         where org_id = ${orgId} and root_job_id = ${rootJobId}
     `;
