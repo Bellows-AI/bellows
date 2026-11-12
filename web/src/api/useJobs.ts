@@ -135,6 +135,9 @@ export interface JobInterruption {
     reason: string;
     claimSeq: number;
     nodeLoss?: true;
+    leaseExpired?: true;
+    /** Whether the attempt was refunded; absent on an entry written before the field existed. */
+    refunded?: boolean;
 }
 
 export interface Job {

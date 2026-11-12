@@ -94,6 +94,8 @@ export interface StatsService {
     /** Kicks off a refresh if one is warranted. Single-flight. */
     ensureFresh(): void;
     fetchState(): FetchState;
+    /** The error the last failed read threw, for logging and classifying; never for a response body. */
+    lastFailure(): unknown;
 }
 
 export interface StatsServiceDeps {
@@ -121,6 +123,8 @@ function idleState(): FetchState {
  * restarts the fetch, so a dead database socket turns into a request loop. There is no bypass.
  */
 const ERROR_COOLDOWN_MS = 30_000;
+/** What a failed read tells a caller; the cause is only in the server log. */
+const TELEMETRY_UNREADABLE = 'Telemetry could not be read';
 const MS_PER_SECOND = 1000;
 
 /**
@@ -194,6 +198,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
 
     let fetchState = idleState();
     let telemetryFailure: { at: number; reason: string } | null = null;
+    let lastFailure: unknown = null;
 
     async function produceTelemetry(): Promise<TelemetrySnapshot> {
         // Set before the first await, so a request arriving in the same tick as the refresh sees
@@ -206,6 +211,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             await repos.list();
             const fetch = await telemetry.fetchRollups({ repos: repoNames() });
             telemetryFailure = null;
+            lastFailure = null;
             fetchState = {
                 ...fetchState,
                 state: 'idle',
@@ -213,10 +219,11 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             };
             return fetch;
         } catch (e) {
-            telemetryFailure = {
-                at: now(),
-                reason: e instanceof TelemetryError ? e.message : (e as Error).message,
-            };
+            lastFailure = e;
+            // The driver's text can carry hosts, users and SQL: it goes to the log, and the reason a
+            // caller sees is fixed text.
+            console.error(`[stats] telemetry read failed: ${(e as Error).message}`);
+            telemetryFailure = { at: now(), reason: TELEMETRY_UNREADABLE };
             fetchState = {
                 ...fetchState,
                 state: 'error',
@@ -326,5 +333,6 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
         },
 
         fetchState: () => fetchState,
+        lastFailure: () => lastFailure,
     };
 }

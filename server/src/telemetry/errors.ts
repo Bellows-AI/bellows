@@ -7,8 +7,8 @@ export type TelemetryErrorCode = 'UNREACHABLE' | 'AUTH' | 'MIGRATION' | 'QUERY' 
 export class TelemetryError extends Error {
     readonly code: TelemetryErrorCode;
 
-    constructor(message: string, code: TelemetryErrorCode) {
-        super(message);
+    constructor(message: string, code: TelemetryErrorCode, options?: ErrorOptions) {
+        super(message, options);
         this.name = 'TelemetryError';
         this.code = code;
     }

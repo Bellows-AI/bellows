@@ -28,7 +28,7 @@ The status you see on a task is the state of its newest job, plus what you still
 | <span className="status status-done">Done</span> | You marked the task done. |
 
 <Note>
-A job whose runner vanished (for example a lost node) shows as **Failed**. Infrastructure losses are retried for you and listed on the task as interruptions. They do not count as a failed attempt. A lost node, such as reclaimed spot capacity, is retried within its own, larger limit than other interruptions; see [Limits](/reference/limits).
+A job whose runner vanished (for example a lost node) shows as **Failed**. Infrastructure losses are retried for you and listed on the task as interruptions. They do not count as a failed attempt, and each interruption on the task says whether its attempt was refunded. A lost node, such as reclaimed spot capacity, is retried within its own, larger limit than other interruptions; see [Limits](/reference/limits).
 </Note>
 
 ## What moves a task

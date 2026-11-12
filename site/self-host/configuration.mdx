@@ -33,7 +33,7 @@ Bellows is configured with environment variables only. Locally they come from `.
 | `GITHUB_OAUTH_CLIENT_SECRET` | github mode | none | Client secret of the OAuth App. |
 | `SESSION_SECRET` | github mode | none | Signs the session cookie. At least 32 characters. Changing it signs everyone out. |
 | `SESSION_TTL_HOURS` | | `336` (14 days) | Session lifetime in hours. Positive integer. |
-| `COOKIE_SECURE` | | off | Sets `Secure` on the session cookie. Turn on behind TLS. |
+| `COOKIE_SECURE` | | follows `PUBLIC_URL` | Sets `Secure` on the session cookie: on for an `https` `PUBLIC_URL`, off for `http`. Set `0` or `1` to override. |
 | `JOB_BOARD_TOKEN` | github mode | none | Shared secret the driver presents on the worker routes. At least 32 characters. Set the same value on the server and the driver. |
 | `INGEST_TOKEN` | | unset | Optional shared secret for the telemetry ingest routes, sent as `X-Factory-Ingest-Token`. Unset leaves them open. |
 | `GITHUB_WEBHOOK_SECRET` | | unset | HMAC secret for the App's installation webhook at `<PUBLIC_URL>/api/github/webhook`. At least 32 characters. Unset removes the route. |

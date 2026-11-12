@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { EMPTY_TELEMETRY, harness, stubTelemetryClient } from './helpers.js';
+import { ERROR_CODES } from '@factory-ai/core';
+import { TelemetryError } from '../src/telemetry/errors.js';
+import { storeOutage } from './helpers-outage.js';
 import { HTTP_ACCEPTED, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
 
+const HTTP_INTERNAL_SERVER_ERROR = 500;
 const track = trackApps();
 
 describe('GET /api/stats: payload and attribution', () => {
@@ -189,7 +193,7 @@ describe('GET /api/stats: failure handling', () => {
         const telemetry = stubTelemetryClient({
             rollups: async () => {
                 calls += 1;
-                if (calls > 1) throw new Error('connection lost');
+                if (calls > 1) throw storeOutage('connect ECONNREFUSED 10.0.0.7:5432 (password=hunter2)');
                 return structuredClone(EMPTY_TELEMETRY);
             },
         });
@@ -205,13 +209,16 @@ describe('GET /api/stats: failure handling', () => {
         const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
         expect(body.telemetry).not.toBeNull();
         expect(body.meta.telemetry.stale).toBe(true);
-        expect(body.meta.telemetry.reason).toBe('connection lost');
+        expect(body.meta.telemetry.reason).toBe('Telemetry could not be read');
+        expect(JSON.stringify(body)).not.toContain('hunter2');
+        expect(JSON.stringify(body)).not.toContain('ECONNREFUSED');
     });
 
-    it('answers 503 when the first read fails cold', async () => {
+    it('answers a generic 503 when the first read fails cold on an outage, never echoing the database text', async () => {
+        const raw = 'connect ECONNREFUSED 10.0.0.7:5432 (user=svc password=hunter2)';
         const telemetry = stubTelemetryClient({
             rollups: async () => {
-                throw new Error('connection refused');
+                throw storeOutage(raw);
             },
         });
         const h = await harness({ telemetry });
@@ -222,7 +229,46 @@ describe('GET /api/stats: failure handling', () => {
 
         const res = await app.inject({ method: 'GET', url: '/api/stats' });
         expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
-        expect(res.json().error).toBe('connection refused');
+        expect(res.json().code).toBe(ERROR_CODES.UNAVAILABLE);
+        expect(res.body).not.toContain('ECONNREFUSED');
+        expect(res.body).not.toContain('hunter2');
+    });
+
+    it('answers a generic 500 with the request id when the first read fails cold on anything else', async () => {
+        const raw = 'relation "usage_fact" does not exist';
+        const telemetry = stubTelemetryClient({
+            rollups: async () => {
+                throw new TelemetryError(raw, 'QUERY');
+            },
+        });
+        const h = await harness({ telemetry });
+        const app = track(h.app);
+
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const res = await app.inject({ method: 'GET', url: '/api/stats' });
+        expect(res.statusCode).toBe(HTTP_INTERNAL_SERVER_ERROR);
+        expect(res.json().code).toBe(ERROR_CODES.INTERNAL);
+        expect(res.json().requestId).toEqual(expect.any(String));
+        expect(res.body).not.toContain('usage_fact');
+    });
+
+    it('classifies an outage wrapped by the telemetry client as a 503', async () => {
+        const telemetry = stubTelemetryClient({
+            rollups: async () => {
+                throw new TelemetryError('wrapped driver text', 'QUERY', { cause: storeOutage() });
+            },
+        });
+        const h = await harness({ telemetry });
+        const app = track(h.app);
+
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const res = await app.inject({ method: 'GET', url: '/api/stats' });
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(res.body).not.toContain('wrapped driver text');
     });
 
     it('does not retry on every request while the failure is fresh', async () => {
