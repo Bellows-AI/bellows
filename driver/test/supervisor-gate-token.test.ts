@@ -21,7 +21,7 @@ import { GATE_FILES, GATE_TOKEN_PATH, MAILBOX_FILES, MAILBOXES } from '../src/su
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /*
- * The whole path of a gate's GitHub token ask (BEL-258): the real supervisor.cjs in-process, a fake
+ * The whole path of a gate's GitHub token ask: the real supervisor.cjs in-process, a fake
  * driver that mints a token per `POST /gate-token`, and the gate container's loop PLAYED in JS (the
  * real one ends every process of its user): it puts the real helper first on the PATH (`FACTORY_GATE_BIN`) and runs
  * each request under the real gate shell. A fake `gh` records the `GH_TOKEN` it was handed.

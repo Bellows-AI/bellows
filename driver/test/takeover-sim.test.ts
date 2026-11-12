@@ -1,5 +1,5 @@
 /**
- * Driver loss, takeover and adoption (#829) in seconds: the kind lane's takeover and recovery cases
+ * Driver loss, takeover and adoption in seconds: the kind lane's takeover and recovery cases
  * (`scripts/test-k8s.sh`, t1-t5 and the drain) against a compressed world (`fixtures/takeover-sim.ts`),
  * each across a timing matrix of lease, rebind grace and the kubelet's Secret refresh. A scenario
  * names the lane case it mirrors; its expectations are the lane's.
@@ -269,7 +269,7 @@ describe('takeover simulation, a supervisor that wound down before the rebind re
     }, 40_000);
 });
 
-describe("takeover simulation, the agent's gate request (BEL-88)", () => {
+describe("takeover simulation, the agent's gate request", () => {
     it('a job that declares no gates answers its agent\'s gate request "no gates"', async () => {
         const s = new Sim(scaled(15));
         try {

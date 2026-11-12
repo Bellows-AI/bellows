@@ -6,8 +6,8 @@ import { SYNC_FAILURE_KINDS } from '../src/publish/publish.js';
 import { git, hasGit, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The task checkout script (issue #775) against real git, offline: the clone, the retry, and the
- * deterministic refusals (issue #666) that carry a `kind`. A conflict is no refusal: it is handed to the agent with its paths (issue #661).
+ * The task checkout script against real git, offline: the clone, the retry, and the
+ * deterministic refusals that carry a `kind`. A conflict is no refusal: it is handed to the agent with its paths.
  */
 describe.skipIf(!hasGit())('the task checkout script', () => {
     const fx = setupWorktreeFixture();

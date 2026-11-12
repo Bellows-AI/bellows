@@ -164,7 +164,7 @@ interface Driver {
     url: string;
     stop: boolean;
     kill: boolean;
-    /** The driver read the agent container ended (#920): `/control` says so beside the stop and the kill. */
+    /** The driver read the agent container ended: `/control` says so beside the stop and the kill. */
     agentEnded: boolean;
     /** The gate steps the driver cancelled: what `/control` answers beside the stop and the kill. */
     cancel: string[];
@@ -411,7 +411,7 @@ function run(driver: Driver | null, env: Record<string, string> = {}) {
         review: dir('review'),
     };
     for (const path of Object.values(box)) mkdirSync(path, { recursive: true });
-    // The agent's own directories inside its two mailboxes, which the supervisor creates (issue #814).
+    // The agent's own directories inside its two mailboxes, which the supervisor creates.
     const agent = { in: join(box.in, AGENT_MAILBOX_DIR), out: join(box.out, AGENT_MAILBOX_DIR) };
     const logs: string[] = [];
     const done = superviseTracked(
@@ -2500,7 +2500,7 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         await finish(supervised);
     });
 
-    describe("POST /gate/run, the agent's ad-hoc gate run (BEL-88)", () => {
+    describe("POST /gate/run, the agent's ad-hoc gate run", () => {
         const GATE = '{"gate":"verify"}';
         const gateRun = (socket: string, body: Buffer | string = GATE) =>
             viaSocket(socket, 'POST', '/gate/run', { body });
@@ -2974,7 +2974,7 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
     });
 });
 
-// BEL-60 slice 4: a step's GitHub token never survives in the output the supervisor keeps or returns.
+// A step's GitHub token never survives in the output the supervisor keeps or returns.
 describe('the supervisor run: a gate step’s injected GitHub token in its output', () => {
     const TOKENS = { GITHUB_TOKEN: 'ghs_gatetoken0123456789', GH_TOKEN: 'ghs_ghtoken9876543210' };
     // The fake loop plays `echo $GITHUB_TOKEN $GH_TOKEN`: the env file the supervisor staged, read back as output.

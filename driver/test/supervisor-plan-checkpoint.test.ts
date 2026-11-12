@@ -7,7 +7,7 @@ import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { boardJob } from './fixtures/board-job.js';
 
 /**
- * The environment the supervisor's finalize stage is configured by (issue #775) — one function both
+ * The environment the supervisor's finalize stage is configured by — one function both
  * executors build their supervisor container from (`k8s-podspec.ts`, `docker-group.ts`), so the
  * checkpoint cannot exist on one and not the other.
  */

@@ -9,7 +9,7 @@ import { SUPERVISOR_ENV, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /**
- * The supervisor's finalize stage takes the attempt's checkpoint (issue #775) after the driver has
+ * The supervisor's finalize stage takes the attempt's checkpoint after the driver has
  * ordered the end — so after the publish — and before the report is final: it runs the checkpoint
  * script, uploads a header line then the script's parts as binary chunks through the driver's
  * control endpoint, and closes the stream with a manifest. The script is a fake here; its own

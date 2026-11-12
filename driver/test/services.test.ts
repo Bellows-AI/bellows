@@ -90,7 +90,7 @@ describe('the service container arguments', () => {
         expect(line).toEqual([
             'run',
             '-d',
-            // The default hardening (#382) — this service declared no opt-out.
+            // The default hardening — this service declared no opt-out.
             '--cap-drop',
             'ALL',
             '--security-opt',

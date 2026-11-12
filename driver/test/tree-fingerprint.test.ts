@@ -91,7 +91,7 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
         expect(probed()).toBe(moded);
     });
 
-    // ---- the evidence binding (issue #825): what moves the fingerprint is what a publish would ship -
+    // ---- the evidence binding: what moves the fingerprint is what a publish would ship -
     it('stays put when a git-ignored artifact is written after it, and moves on publishable content', () => {
         fx.sync();
         writeFileSync(join(fx.checkout(), '.gitignore'), 'dist/\n');

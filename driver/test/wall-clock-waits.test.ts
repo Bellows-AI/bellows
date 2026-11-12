@@ -1,5 +1,5 @@
 /**
- * The verdict, end, kill and adoption waits (#869) are bounded by wall-clock time on one poll, and
+ * The verdict, end, kill and adoption waits are bounded by wall-clock time on one poll, and
  * every request inside a poll gets the time left. Each case moves the clock INSIDE the request, so
  * a wait bounded by a count of polls would keep going long past its bound.
  */

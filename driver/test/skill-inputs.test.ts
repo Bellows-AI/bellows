@@ -167,7 +167,7 @@ describe('deliverSkills', () => {
         expect(reads.sort()).toEqual([V1, V2]);
     });
 
-    it('leaves a pinned org skill to the checkout that holds it, and still installs a workspace skill (BEL-286)', async () => {
+    it('leaves a pinned org skill to the checkout that holds it, and still installs a workspace skill', async () => {
         mkdirSync(join(root, 'widgets', '.claude', 'skills', 'org-style'), { recursive: true });
         writeFileSync(join(root, 'widgets', '.claude', 'skills', 'org-style', 'SKILL.md'), 'repo copy\n');
         const { tar, pin: mine } = skillOf('mine', V2, undefined, 'workspace');

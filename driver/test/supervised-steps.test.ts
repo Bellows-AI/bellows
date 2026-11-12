@@ -36,7 +36,7 @@ import {
 import { type HelperPlan, lookupHelper } from '../src/helpers.js';
 
 /**
- * The supervised steps (issue #771): what the sync, the probe, the publish, the helpers and the
+ * The supervised steps: what the sync, the probe, the publish, the helpers and the
  * reclaim ask of an attempt's supervisor, and the one rule about credentials — they ride the step,
  * and the agent container's spec never names, mounts or carries one.
  */
