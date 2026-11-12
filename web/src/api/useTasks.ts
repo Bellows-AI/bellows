@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import type { ExecutorScope, TaskTitleOrigin } from '@factory-ai/core';
+import type { TaskTitleOrigin } from '@factory-ai/core';
 import { type AnswerOutcome, postAnswer } from './answer-question.js';
-import { refusalOf } from './refusal.js';
+import { refetchOnVisible } from './usePoll.js';
+import { fetchDepthPages, landRebuild, loadMoreTasksPage, TaskAuthExpired, fetchTaskPage } from './taskPages.js';
+import {
+    followUpOnTask,
+    postTaskAction,
+    queueTask,
+    renameTask,
+    type QueueTaskInput,
+    type RenameOutcome,
+    type SubmittedFiles,
+} from './taskWrites.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
-import { JSON_HEADERS } from '@factory-ai/core';
 
 /**
  * The client's copy of the task-summary read model (`GET /api/tasks`): one row per thread ROOT,
@@ -160,227 +168,11 @@ export interface UseTasks {
     };
 }
 
-/**
- * A rename's answer (BEL-252): saved, refused because the title moved on since the page rendered it
- * (`stale` carries what the board holds now), or failed with a sentence to show.
- */
-export type RenameOutcome =
-    | { state: 'saved' }
-    | { state: 'stale'; title: string; revision: number }
-    | { state: 'failed'; error: string };
-
-/** What starting a task takes — bundled so the queueing call stays under the param-count limit.
- * A null `workflow` is objective mode: the prompt runs as written. */
-export interface QueueTaskInput {
-    command: string;
-    repo: string | null;
-    executor: string;
-    /** The scope `executor` names (issue 391): the author's own profiles or the organization's. */
-    executorScope: ExecutorScope;
-    workflow: string | null;
-    workflowParams: Record<string, string> | null;
-    /** The branch the task works from; null is the repository's default branch. */
-    baseBranch?: string | null;
-    /** Built-in skills the prompt names with a `/name` token; absent when it names none. */
-    skills?: string[];
-    /** Completed upload ids; absent for a text-only task, so that body is unchanged. */
-    attachments?: string[];
-    /** Sent as the `Idempotency-Key` header, never in the body; set beside `attachments`. */
-    idempotencyKey?: string;
-}
-
-/** The uploaded files a submission carries, and the key that makes its retry safe. */
-export interface SubmittedFiles {
-    attachments: string[];
-    idempotencyKey: string;
-}
-
-const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
-
 /** The first-page failure: the retained refresh error with nothing beside it. Exported pure so
  * the offline suite pins the depth test — a failed refresh WITH rows keeps the rows beside the
  * banner; without them it IS the page's inline error, and the skeleton state never swallows it. */
 export function firstPageError(items: TaskSummary[] | null, refreshError: string | null): string | null {
     return items === null ? refreshError : null;
-}
-
-/** Raised when a page answers 401 — the caller hands the session gate the news and stops quietly. */
-export class TaskAuthExpired extends Error {}
-
-const firstPageUrl = (query: string): string => (query === '' ? '/api/tasks' : `/api/tasks?${query}`);
-const morePageUrl = (query: string, cursor: string): string =>
-    `/api/tasks?${query === '' ? '' : `${query}&`}cursor=${encodeURIComponent(cursor)}`;
-
-/**
- * One page read for the org poll's chain: refusals raise (the catch in `poll` keeps the last good
- * rows whole — never a half-rebuilt page), and a 401 raises {@link TaskAuthExpired} so the poll
- * stops quietly at the gate rather than bannering an error that would recur every tick.
- */
-async function fetchTaskPage(url: string, signal: AbortSignal): Promise<TaskListResponse> {
-    const response = await fetch(url, { signal });
-    if (response.status === HTTP_STATUS_UNAUTHORIZED) throw new TaskAuthExpired();
-    if (!response.ok) {
-        throw new Error((await refusalOf(response)).error);
-    }
-    return (await response.json()) as TaskListResponse;
-}
-
-/** One older page, for `loadMore` — the same refusal handling as `fetchTaskPage`, but the failure
- * text is Load-more's own. */
-async function fetchMorePage(query: string, cursor: string, signal: AbortSignal): Promise<TaskListResponse> {
-    const response = await fetch(morePageUrl(query, cursor), { signal });
-    if (response.status === HTTP_STATUS_UNAUTHORIZED) throw new TaskAuthExpired();
-    if (!response.ok) {
-        throw new Error((await refusalOf(response, 'Could not load more tasks')).error);
-    }
-    return (await response.json()) as TaskListResponse;
-}
-
-/**
- * Appends an older page's rows to the loaded ones, deduped by id. The keyset contract says no
- * duplicates; a task whose activity stamp moved between page reads could straddle two of them
- * anyway, and one row twice would be a visible lie. Latest activity wins the spot.
- */
-function mergeTaskPage(prev: TaskSummary[] | null, items: TaskSummary[]): TaskSummary[] {
-    if (prev === null) return items;
-    const known = new Set(prev.map((task) => task.id));
-    return [...prev, ...items.filter((task) => !known.has(task.id))];
-}
-
-/** The setters `loadMore` hands one older page's landing to — bundled so `loadMoreTasksPage` stays
- * under the param-count limit. */
-interface LoadMoreSetters {
-    setNavigation: (navigation: TaskNavigation) => void;
-    setItems: (updater: (prev: TaskSummary[] | null) => TaskSummary[]) => void;
-    setNextCursor: (cursor: string | null) => void;
-    setLoadMoreError: (error: string | null) => void;
-    onDepthIncrement: () => void;
-}
-
-/**
- * One Load-more page, start to landing: the last good rows and cursor stay as they are on any
- * failure, and a 401 is handed to the gate rather than reported as this call's own error.
- */
-async function loadMoreTasksPage(
-    query: string,
-    cursor: string,
-    signal: AbortSignal,
-    setters: LoadMoreSetters
-): Promise<void> {
-    try {
-        const body = await fetchMorePage(query, cursor, signal);
-        if (signal.aborted) return;
-        setters.setNavigation(body.navigation);
-        setters.setItems((prev) => mergeTaskPage(prev, body.page.items));
-        setters.setNextCursor(body.page.nextCursor);
-        setters.onDepthIncrement();
-    } catch (e) {
-        if (signal.aborted) return;
-        if (e instanceof TaskAuthExpired) {
-            reportUnauthenticated();
-            return;
-        }
-        setters.setLoadMoreError((e as Error).message);
-    }
-}
-
-/**
- * The most pages one refresh will rebuild. The chain is inherently serial — page n+1's cursor is
- * only known once page n answered — so an uncapped depth turns a member who clicked Load more ten
- * times into eleven sequential `GET /api/tasks` round trips every three seconds. Past the cap the
- * deeper pages simply go stale — they are NOT re-read, and {@link refreshLanding} keeps them on
- * screen rather than dropping them.
- */
-export const MAX_REFRESH_DEPTH = 3;
-
-/**
- * Lands one rebuild onto the rows already on screen. When the rebuild reached the loaded depth —
- * or the list shrank and the chain ran out of cursors — the rebuild IS the list, and the loaded
- * depth follows it. When the cap stopped the chain short of the loaded depth while the list still
- * had more, the pages past the cap were never re-read: replacing the list with the capped rebuild
- * would make rows the member is reading disappear every tick and collapse the loaded depth to the
- * cap, so those rows are kept (deduped by id, the rebuild's position winning) and the caller
- * leaves the cursor and the depth where Load more put them.
- */
-export function refreshLanding(
-    prev: TaskSummary[] | null,
-    loadedDepth: number,
-    rebuilt: { items: TaskSummary[]; nextCursor: string | null; pages: number }
-): { items: TaskSummary[]; capped: boolean } {
-    const capped = rebuilt.nextCursor !== null && loadedDepth > rebuilt.pages;
-    if (!capped) return { items: rebuilt.items, capped: false };
-    return { items: mergeTaskPage(rebuilt.items, prev ?? []), capped: true };
-}
-
-/**
- * Reads enough successive keyset pages to REBUILD a previously loaded depth, deduped by task id
- * (first occurrence wins — the newest position). Exported with the fetch injected so the offline
- * suite can drive the whole chain: a plain first-page swap on refresh would collapse the pages
- * the member already paged through, every three seconds while anything runs.
- *
- * The rebuild reads at most {@link MAX_REFRESH_DEPTH} pages however deep the member paged.
- *
- * Returns page one's navigation (org-wide, so any page could serve it — the first is simply the
- * freshest), the merged rows, the cursor of the LAST page read (null when the list shrank below
- * the old depth — the loaded depth collapses to what the list still serves), and how many pages
- * the chain actually read.
- */
-export async function fetchDepthPages(
-    fetchPage: (url: string) => Promise<TaskListResponse>,
-    query: string,
-    depth: number
-): Promise<{
-    navigation: TaskNavigation;
-    items: TaskSummary[];
-    nextCursor: string | null;
-    pages: number;
-}> {
-    const first = await fetchPage(firstPageUrl(query));
-    const items: TaskSummary[] = [];
-    const known = new Set<string>();
-    for (const task of first.page.items) {
-        if (!known.has(task.id)) {
-            known.add(task.id);
-            items.push(task);
-        }
-    }
-    let cursor = first.page.nextCursor;
-    let pages = 1;
-    while (cursor !== null && pages < Math.min(depth, MAX_REFRESH_DEPTH)) {
-        const next = await fetchPage(morePageUrl(query, cursor));
-        for (const task of next.page.items) {
-            if (!known.has(task.id)) {
-                known.add(task.id);
-                items.push(task);
-            }
-        }
-        cursor = next.page.nextCursor;
-        pages += 1;
-    }
-    return { navigation: first.navigation, items, nextCursor: cursor, pages };
-}
-
-/**
- * Lands one rebuild on the poll's state. A rebuild that reached the loaded depth replaces the
- * list and owns the cursor and the depth; a CAPPED one keeps the pages past the cap on screen
- * (see {@link refreshLanding}) and leaves the cursor and the depth where Load more put them, so
- * neither the rows nor the loaded depth collapse to the cap every tick.
- */
-function landRebuild(
-    rebuilt: { navigation: TaskNavigation; items: TaskSummary[]; nextCursor: string | null; pages: number },
-    depthRef: { current: number },
-    setters: {
-        setNavigation: (navigation: TaskNavigation) => void;
-        setItems: (updater: (prev: TaskSummary[] | null) => TaskSummary[]) => void;
-        setNextCursor: (cursor: string | null) => void;
-    }
-): void {
-    const loadedDepth = depthRef.current;
-    setters.setNavigation(rebuilt.navigation);
-    setters.setItems((prev) => refreshLanding(prev, loadedDepth, rebuilt).items);
-    if (refreshLanding(null, loadedDepth, rebuilt).capped) return;
-    setters.setNextCursor(rebuilt.nextCursor);
-    depthRef.current = rebuilt.pages;
 }
 
 const VISIBLE_MOVING_POLL_MS = 3_000;
@@ -395,105 +187,6 @@ const HIDDEN_IDLE_POLL_MS = 60_000;
 function nextOrgPollDelay(moving: boolean): number {
     if (document.hidden) return moving ? HIDDEN_MOVING_POLL_MS : HIDDEN_IDLE_POLL_MS;
     return moving ? VISIBLE_MOVING_POLL_MS : VISIBLE_IDLE_POLL_MS;
-}
-
-/** Starts a task. A 401 is handed to the gate rather than reported as this call's own error. */
-async function queueTask(input: QueueTaskInput): Promise<QueueResult> {
-    try {
-        const { idempotencyKey, ...body } = input;
-        const response = await fetch('/api/jobs', {
-            method: 'POST',
-            headers:
-                idempotencyKey === undefined
-                    ? JSON_HEADERS
-                    : { ...JSON_HEADERS, [IDEMPOTENCY_KEY_HEADER]: idempotencyKey },
-            body: JSON.stringify(body),
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { id: null, error: 'Your session expired' };
-        }
-        if (!response.ok) {
-            return { id: null, error: (await refusalOf(response, 'Could not queue the task')).error };
-        }
-        const created = (await response.json()) as { id: string };
-        return { id: created.id, error: null };
-    } catch (e) {
-        return { id: null, error: (e as Error).message };
-    }
-}
-
-/** Queues a follow-up on an existing thread — the same wire shape as `queueTask`, one thread id. */
-async function followUpOnTask(id: string, command: string, files?: SubmittedFiles): Promise<QueueResult> {
-    try {
-        const response = await fetch(`/api/jobs/${id}/follow-up`, {
-            method: 'POST',
-            headers:
-                files === undefined
-                    ? JSON_HEADERS
-                    : { ...JSON_HEADERS, [IDEMPOTENCY_KEY_HEADER]: files.idempotencyKey },
-            body: JSON.stringify(files === undefined ? { command } : { command, attachments: files.attachments }),
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { id: null, error: 'Your session expired' };
-        }
-        if (!response.ok) {
-            return { id: null, error: (await refusalOf(response, 'Could not queue the follow-up')).error };
-        }
-        const body = (await response.json()) as { id: string };
-        return { id: body.id, error: null };
-    } catch (e) {
-        return { id: null, error: (e as Error).message };
-    }
-}
-
-const HTTP_STATUS_CONFLICT = 409;
-
-/** `PUT /api/jobs/:id/title`: compare-and-set on the revision the page rendered. A 409 names the current title. */
-async function renameTask(id: string, title: string, revision: number): Promise<RenameOutcome> {
-    try {
-        const response = await fetch(`/api/jobs/${id}/title`, {
-            method: 'PUT',
-            headers: JSON_HEADERS,
-            body: JSON.stringify({ title, revision }),
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { state: 'failed', error: 'Your session expired' };
-        }
-        if (response.status === HTTP_STATUS_CONFLICT) {
-            const current = (await response.json().catch(() => ({}))) as { title?: unknown; revision?: unknown };
-            if (typeof current.title === 'string' && typeof current.revision === 'number') {
-                return { state: 'stale', title: current.title, revision: current.revision };
-            }
-        }
-        if (!response.ok)
-            return { state: 'failed', error: (await refusalOf(response, 'Could not rename the task')).error };
-        return { state: 'saved' };
-    } catch (e) {
-        return { state: 'failed', error: (e as Error).message };
-    }
-}
-
-/**
- * The shared shape of `markDone`/`stop`/`remove`: a bare POST that answers no body worth keeping,
- * where only the fallback `verb` differs between the three routes.
- */
-async function postTaskAction(url: string, verb: string): Promise<string | null> {
-    try {
-        const response = await fetch(url, { method: 'POST' });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return 'Your session expired';
-        }
-        if (!response.ok) {
-            return (await refusalOf(response, verb)).error;
-        }
-        return null;
-    } catch (e) {
-        return (e as Error).message;
-    }
 }
 
 /**
@@ -634,7 +327,6 @@ function useOrgTaskPoll(enabled: boolean, query: string): OrgTaskPoll {
             if (signal.aborted) return;
             if (e instanceof TaskAuthExpired) {
                 setRefreshing(false);
-                reportUnauthenticated();
                 return;
             }
             setRefreshError((e as Error).message);
@@ -677,6 +369,15 @@ function useOrgTaskPoll(enabled: boolean, query: string): OrgTaskPoll {
             }),
         [start, enabled, query]
     );
+
+    // A tab coming back to the front asks now instead of waiting out a hidden-pace tick (up to a minute).
+    useEffect(() => {
+        const onVisibilityChange = () => {
+            if (refetchOnVisible(enabledRef.current, document.hidden, timer.current !== null)) start();
+        };
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    }, [start]);
 
     const loadMore = useCallback(() => {
         const cursor = nextCursor;

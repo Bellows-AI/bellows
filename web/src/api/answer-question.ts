@@ -1,6 +1,6 @@
-import { ERROR_CODES, JSON_HEADERS } from '@factory-ai/core';
+import { ERROR_CODES } from '@factory-ai/core';
+import { request } from './request.js';
 import type { AuthorRef } from './useJobs.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 /**
  * What one answer POST settled to. `answered` covers our own 200 and a 409 another member won —
@@ -32,27 +32,16 @@ export async function postAnswer(
     questionId: string,
     answers: Record<string, string>
 ): Promise<AnswerOutcome> {
-    try {
-        const response = await fetch(`/api/jobs/${jobId}/questions/${questionId}/answer`, {
-            method: 'POST',
-            headers: JSON_HEADERS,
-            body: JSON.stringify({ answers }),
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { state: 'failed', error: 'Your session expired' };
-        }
-        if (response.ok) return answered((await response.json()) as AnsweredBody);
-        // Read once: the 409 arms need the body's code AND, for an answered one, the winner's answer.
-        const body = (await response.json().catch(() => ({}))) as Partial<AnsweredBody> & {
-            code?: string;
-            error?: string;
-        };
-        if (body.code === ERROR_CODES.QUESTION_ANSWERED && body.answers) return answered(body as AnsweredBody);
-        if (body.code === ERROR_CODES.QUESTION_EXPIRED) return { state: 'expired' };
-        if (body.code === ERROR_CODES.QUESTION_CLOSED) return { state: 'closed' };
-        return { state: 'failed', error: body.error ?? `Could not send your answer (${response.status})` };
-    } catch (e) {
-        return { state: 'failed', error: (e as Error).message };
-    }
+    const result = await request<AnsweredBody>(`/api/jobs/${jobId}/questions/${questionId}/answer`, {
+        method: 'POST',
+        body: { answers },
+        verb: 'Could not send your answer',
+    });
+    if (result.ok) return answered(result.value);
+    // The 409 arms need the body's code AND, for an answered one, the winner's answer.
+    const body = (result.body ?? {}) as unknown as Partial<AnsweredBody>;
+    if (result.code === ERROR_CODES.QUESTION_ANSWERED && body.answers) return answered(body as AnsweredBody);
+    if (result.code === ERROR_CODES.QUESTION_EXPIRED) return { state: 'expired' };
+    if (result.code === ERROR_CODES.QUESTION_CLOSED) return { state: 'closed' };
+    return { state: 'failed', error: result.error };
 }

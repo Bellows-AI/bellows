@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { QueueTaskInput } from '../api/useTasks.js';
+import type { QueueTaskInput } from '../api/taskWrites.js';
 import { trackedRepos } from '../api/useRepos.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { PageHeader } from '../components/PageHeader.js';

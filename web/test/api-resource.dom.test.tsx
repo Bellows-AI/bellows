@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { mutate } from '../src/api/mutate.js';
-import { subscribeUnauthenticated } from '../src/api/useSession.js';
+import { subscribeUnauthenticated } from '../src/api/unauthenticated.js';
 import { useResource } from '../src/api/useResource.js';
 import './dom.js';
 
@@ -80,7 +80,7 @@ describe('mutate', () => {
 
     it('turns a malformed success body into an error rather than a rejection', async () => {
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not json', { status: 200 })));
-        const result = await mutate('/api/x', { method: 'POST', body: {} }, (response) => response.json());
+        const result = await mutate('/api/x', { method: 'POST', body: {} }, (body) => body);
         expect(result.ok).toBe(false);
     });
 });

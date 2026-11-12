@@ -40,7 +40,7 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
             const result = await mutate(
                 base,
                 { method: 'POST', body: { label }, verb: 'Could not create the token' },
-                async (response) => ((await response.json()) as { token: string }).token
+                (body) => (body as { token: string }).token
             );
             if (!result.ok) return { ok: false, error: result.error };
             refresh();

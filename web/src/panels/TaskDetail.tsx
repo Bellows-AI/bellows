@@ -1,7 +1,7 @@
 import { type MutableRefObject, type ReactNode, useEffect, useRef } from 'react';
 import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
-import type { SubmittedFiles } from '../api/useTasks.js';
+import type { SubmittedFiles } from '../api/taskWrites.js';
 import { type ComposerDraftStore, threadScope } from '../composer-draft.js';
 import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';

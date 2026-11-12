@@ -7,10 +7,9 @@ import {
     OCTET_STREAM_CONTENT_TYPE,
 } from '@factory-ai/core';
 import type { DraftAttachment, FileDraft } from '../composer-draft.js';
-import { refusalOf } from './refusal.js';
+import { request } from './request.js';
 import { newIdempotencyKey } from './useBatches.js';
 import { sizeLabel } from '../panels/AttachmentList.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 
@@ -18,30 +17,22 @@ export type UploadResult = { ok: true; meta: AttachmentMeta } | { ok: false; err
 
 /** Uploads one file as a raw body; the display name rides percent-encoded in a header. */
 export async function uploadAttachment(file: File, uploadKey: string): Promise<UploadResult> {
-    try {
-        const response = await fetch('/api/attachments', {
-            method: 'POST',
-            headers: {
-                [CONTENT_TYPE_HEADER]: OCTET_STREAM_CONTENT_TYPE,
-                [ATTACHMENT_NAME_HEADER]: encodeURIComponent(file.name),
-                [IDEMPOTENCY_KEY_HEADER]: uploadKey,
-            },
-            body: file,
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false, error: 'Your session expired' };
-        }
-        if (!response.ok) return { ok: false, error: (await refusalOf(response, 'Could not upload the file')).error };
-        return { ok: true, meta: (await response.json()) as AttachmentMeta };
-    } catch (e) {
-        return { ok: false, error: (e as Error).message };
-    }
+    const result = await request<AttachmentMeta>('/api/attachments', {
+        method: 'POST',
+        headers: {
+            [CONTENT_TYPE_HEADER]: OCTET_STREAM_CONTENT_TYPE,
+            [ATTACHMENT_NAME_HEADER]: encodeURIComponent(file.name),
+            [IDEMPOTENCY_KEY_HEADER]: uploadKey,
+        },
+        body: file,
+        verb: 'Could not upload the file',
+    });
+    return result.ok ? { ok: true, meta: result.value } : { ok: false, error: result.error };
 }
 
 /** Best effort: a draft the board keeps is swept by its TTL, so a failed delete is not worth a message. */
 function deleteUploaded(id: string): void {
-    void fetch(`/api/attachments/${id}`, { method: 'DELETE' }).catch(() => undefined);
+    void request(`/api/attachments/${id}`, { method: 'DELETE', empty: true });
 }
 
 /** The board's limits, read once per mount. Null while unread, and for good when the board has no storage. */
@@ -49,12 +40,9 @@ export function useAttachmentLimits(): AttachmentLimits | null {
     const [limits, setLimits] = useState<AttachmentLimits | null>(null);
     useEffect(() => {
         let live = true;
-        void fetch('/api/attachments/limits')
-            .then(async (response) => (response.ok ? ((await response.json()) as AttachmentLimits) : null))
-            .catch(() => null)
-            .then((read) => {
-                if (live) setLimits(read);
-            });
+        void request<AttachmentLimits>('/api/attachments/limits').then((result) => {
+            if (live) setLimits(result.ok ? result.value : null);
+        });
         return () => {
             live = false;
         };

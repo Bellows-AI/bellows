@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExecutorScope } from '@factory-ai/core';
-import { JSON_HEADERS } from '@factory-ai/core';
 import { usePersonalExecutorWrites } from './usePersonalExecutorWrites.js';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 export interface WorkspaceExecutor {
     /** The row's id: the by-id remove and suspend routes address it (issue 440). */
@@ -91,19 +89,8 @@ async function putJson(
     body: unknown,
     fallbackError: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-    try {
-        const response = await fetch(url, { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body) });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false as const, error: 'Your session expired' };
-        }
-        if (!response.ok) {
-            return { ok: false as const, error: (await refusalOf(response, fallbackError)).error };
-        }
-        return { ok: true as const };
-    } catch (e) {
-        return { ok: false as const, error: (e as Error).message };
-    }
+    const result = await request(url, { method: 'PUT', body, verb: fallbackError, empty: true });
+    return result.ok ? { ok: true } : { ok: false, error: result.error };
 }
 
 /**
@@ -129,26 +116,15 @@ const isExecutorFull = (row: unknown): row is WorkspaceExecutorFull =>
 export const listExecutorConfigs = async (): Promise<
     { ok: true; executors: WorkspaceExecutorFull[] } | { ok: false; error: string }
 > => {
-    try {
-        const response = await fetch('/api/workspace/executors');
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false as const, error: 'Your session expired' };
-        }
-        if (!response.ok) {
-            return {
-                ok: false as const,
-                error: (await refusalOf(response, 'Could not load the executors')).error,
-            };
-        }
-        const rows: unknown = ((await response.json()) as { executors?: unknown }).executors;
-        if (!Array.isArray(rows) || !rows.every(isExecutorFull)) {
-            return { ok: false as const, error: 'Could not load the executors: unexpected response shape.' };
-        }
-        return { ok: true as const, executors: rows };
-    } catch (e) {
-        return { ok: false as const, error: (e as Error).message };
-    }
+    const result = await request<{ executors: WorkspaceExecutorFull[] }>('/api/workspace/executors', {
+        verb: 'Could not load the executors',
+        guard: (body): body is { executors: WorkspaceExecutorFull[] } => {
+            const rows = (body as { executors?: unknown } | null)?.executors;
+            return Array.isArray(rows) && rows.every(isExecutorFull);
+        },
+        malformed: 'Could not load the executors: unexpected response shape.',
+    });
+    return result.ok ? { ok: true, executors: result.value.executors } : { ok: false, error: result.error };
 };
 
 /**
@@ -156,31 +132,15 @@ export const listExecutorConfigs = async (): Promise<
  * preference naming no accessible profile is the route's 404. Module-level like the other
  * on-demand fetches above: it captures no hook state.
  */
-export const putDefaultExecutor = async (
+export const putDefaultExecutor = (
     scope: ExecutorScope,
     name: string
-): Promise<{ ok: true } | { ok: false; error: string }> => {
-    try {
-        const response = await fetch('/api/workspace/executors/default', {
-            method: 'PUT',
-            headers: JSON_HEADERS,
-            body: JSON.stringify({ executor: name, executorScope: scope }),
-        });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false as const, error: 'Your session expired' };
-        }
-        if (!response.ok) {
-            return {
-                ok: false as const,
-                error: (await refusalOf(response, 'Could not save the default executor')).error,
-            };
-        }
-        return { ok: true as const };
-    } catch (e) {
-        return { ok: false as const, error: (e as Error).message };
-    }
-};
+): Promise<{ ok: true } | { ok: false; error: string }> =>
+    putJson(
+        '/api/workspace/executors/default',
+        { executor: name, executorScope: scope },
+        'Could not save the default executor'
+    );
 
 export function useWorkspace(): UseWorkspace {
     const [data, setData] = useState<WorkspacePayload | null>(null);
@@ -188,29 +148,17 @@ export function useWorkspace(): UseWorkspace {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const poll = useCallback(async (signal: AbortSignal) => {
-        try {
-            const response = await fetch('/api/workspace', { signal });
-
-            // Handed to the gate rather than rendered as a banner, for the reason useStats gives.
-            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                reportUnauthenticated();
-                setLoading(false);
-                return;
-            }
-            if (!response.ok) {
-                // Deliberately does not clear `data`: what is on screen is still the last true answer.
-                setError((await refusalOf(response)).error);
-                setLoading(false);
-                return;
-            }
-            setData((await response.json()) as WorkspacePayload);
+        const result = await request<WorkspacePayload>('/api/workspace', { signal });
+        // A superseded read leaves state alone; a 401 went to the gate, which swaps the tree.
+        if (result.aborted) return;
+        if (result.ok) {
+            setData(result.value);
             setError(null);
-            setLoading(false);
-        } catch (e) {
-            if (signal.aborted) return;
-            setError((e as Error).message);
-            setLoading(false);
+        } else if (!result.unauthenticated) {
+            // Deliberately does not clear `data`: what is on screen is still the last true answer.
+            setError(result.error);
         }
+        setLoading(false);
     }, []);
 
     // One read at a time: a newer read aborts the one in flight. No timers — the lists change only

@@ -1,7 +1,5 @@
 import type { ExecutorScope } from '@factory-ai/core';
-import { JSON_HEADERS } from '@factory-ai/core';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { request } from './request.js';
 
 /**
  * The organization executor profiles' client half (issue 391): the administrators' CRUD over the
@@ -50,50 +48,27 @@ const isOrgExecutorFull = (row: unknown): row is OrgExecutorFull =>
 export const listOrgExecutorConfigs = async (): Promise<
     { ok: true; executors: OrgExecutorFull[] } | { ok: false; error: string }
 > => {
-    try {
-        const response = await fetch('/api/org/executors');
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false as const, error: 'Your session expired' };
-        }
-        if (!response.ok) {
-            return { ok: false as const, error: (await refusalOf(response, 'Could not load the executors')).error };
-        }
-        const rows: unknown = ((await response.json()) as { executors?: unknown }).executors;
-        if (!Array.isArray(rows) || !rows.every(isOrgExecutorFull)) {
-            return { ok: false as const, error: 'Could not load the executors: unexpected response shape.' };
-        }
-        return { ok: true as const, executors: rows };
-    } catch (e) {
-        return { ok: false as const, error: (e as Error).message };
-    }
+    const result = await request<{ executors: OrgExecutorFull[] }>('/api/org/executors', {
+        verb: 'Could not load the executors',
+        guard: (body): body is { executors: OrgExecutorFull[] } => {
+            const rows = (body as { executors?: unknown } | null)?.executors;
+            return Array.isArray(rows) && rows.every(isOrgExecutorFull);
+        },
+        malformed: 'Could not load the executors: unexpected response shape.',
+    });
+    return result.ok ? { ok: true, executors: result.value.executors } : { ok: false, error: result.error };
 };
 
 /** One executor write, shared by the org CRUD and the personal by-id routes (issue 440). */
 export async function executorWrite(
     url: string,
-    method: string,
+    method: 'POST' | 'PUT' | 'DELETE',
     body: unknown,
     fallbackError: string
 ): Promise<string | null> {
-    try {
-        // A bodyless write (DELETE) sends no content type either: Fastify refuses a request that
-        // declares `application/json` and then carries nothing, with a 400 the handler never sees.
-        const response = await fetch(
-            url,
-            body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) }
-        );
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return 'Your session expired';
-        }
-        if (!response.ok) {
-            return (await refusalOf(response, fallbackError)).error;
-        }
-        return null;
-    } catch (e) {
-        return (e as Error).message;
-    }
+    // A bodyless write (DELETE) sends no content type either: `request` only declares JSON with a body.
+    const result = await request(url, { method, body, verb: fallbackError, empty: true });
+    return result.ok ? null : result.error;
 }
 
 export const createOrgExecutor = (input: OrgExecutorInput): Promise<string | null> =>

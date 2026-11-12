@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AttachmentMeta, JobMode, TaskTitleOrigin } from '@factory-ai/core';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { usePoll } from './usePoll.js';
 
 /**
  * The client's copy of the job board's row. List responses omit `output` (it is unbounded), so it
@@ -323,35 +321,7 @@ export interface QueueResult {
 const VISIBLE_THREAD_POLL_MS = 2_000;
 const HIDDEN_THREAD_POLL_MS = 15_000;
 
-const threadPollDelay = () => (document.hidden ? HIDDEN_THREAD_POLL_MS : VISIBLE_THREAD_POLL_MS);
-
-/**
- * One thread poll's answer, kept out of `useThread` itself so the hook only has to react to it:
- * a stale answer from an aborted chain must not land on the newly selected task, which is why
- * an abort mid-fetch resolves to its own outcome rather than falling into `error`.
- */
-type ThreadPollOutcome =
-    | { kind: 'aborted' }
-    | { kind: 'unauthorized' }
-    | { kind: 'error'; message: string }
-    | { kind: 'ok'; jobs: Job[]; terminal: boolean };
-
-async function pollThreadOnce(id: string, signal: AbortSignal): Promise<ThreadPollOutcome> {
-    try {
-        const response = await fetch(`/api/jobs/${id}/thread`, { signal });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) return { kind: 'unauthorized' };
-        if (!response.ok) {
-            if (signal.aborted) return { kind: 'aborted' };
-            return { kind: 'error', message: (await refusalOf(response)).error };
-        }
-        const body = (await response.json()) as { jobs: Job[] };
-        if (signal.aborted) return { kind: 'aborted' };
-        return { kind: 'ok', jobs: body.jobs, terminal: body.jobs.every((task) => isTerminal(task.status)) };
-    } catch (e) {
-        if (signal.aborted) return { kind: 'aborted' };
-        return { kind: 'error', message: (e as Error).message };
-    }
-}
+const threadPollDelay = (hidden: boolean) => (hidden ? HIDDEN_THREAD_POLL_MS : VISIBLE_THREAD_POLL_MS);
 
 /**
  * One task's whole conversation — the root job and every follow-up after it, oldest first — from
@@ -367,54 +337,14 @@ async function pollThreadOnce(id: string, signal: AbortSignal): Promise<ThreadPo
  * member's own follow-up, and `refresh` re-arms for exactly that.
  */
 export function useThread(id: string | null): { jobs: Job[] | null; error: string | null; refresh: () => void } {
-    const [jobs, setJobs] = useState<Job[] | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const timer = useRef<number | null>(null);
-    const controller = useRef<AbortController | null>(null);
-    const idRef = useRef(id);
-    idRef.current = id;
-
-    const poll = useCallback(async (signal: AbortSignal) => {
-        if (signal.aborted) return;
-        const current = idRef.current;
-        if (current === null) return;
-        const outcome = await pollThreadOnce(current, signal);
-        if (outcome.kind === 'aborted') return;
-        if (outcome.kind === 'unauthorized') {
-            reportUnauthenticated();
-            return;
-        }
-        if (outcome.kind === 'error') {
-            setError(outcome.message);
-            timer.current = window.setTimeout(() => void poll(signal), threadPollDelay());
-            return;
-        }
-        setJobs(outcome.jobs);
-        setError(null);
-        if (outcome.terminal) return;
-        timer.current = window.setTimeout(() => void poll(signal), threadPollDelay());
-    }, []);
-
-    const start = useCallback(() => {
-        controller.current?.abort();
-        if (timer.current !== null) window.clearTimeout(timer.current);
-        const own = new AbortController();
-        controller.current = own;
-        void poll(own.signal);
-    }, [poll]);
-
-    useEffect(() => {
-        // Every id change is a different question: the previous task's answer must not render
-        // under the new one while its first fetch is in flight.
-        setJobs(null);
-        setError(null);
-        if (id === null) return;
-        start();
-        return () => {
-            controller.current?.abort();
-            if (timer.current !== null) window.clearTimeout(timer.current);
-        };
-    }, [id, start]);
-
-    return { jobs, error, refresh: start };
+    // Every id change is a different question: `usePoll` keys the answer to the URL, so the previous
+    // task's rows never render under the new one while its first fetch is in flight.
+    const polled = usePoll<{ jobs: Job[] }>(id === null ? null : `/api/jobs/${id}/thread`, {
+        refetchOnVisible: true,
+        next: (outcome, hidden) =>
+            outcome.kind === 'ok' && outcome.value.jobs.every((task) => isTerminal(task.status))
+                ? null
+                : threadPollDelay(hidden),
+    });
+    return { jobs: polled.data?.jobs ?? null, error: polled.error, refresh: polled.refresh };
 }

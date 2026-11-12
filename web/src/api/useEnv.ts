@@ -76,7 +76,7 @@ export function useEnv(): UseEnv {
             const result = await mutate(
                 url,
                 { method: 'PUT', body, verb: 'Could not save' },
-                async (response) => ((await response.json()) as { vars: EnvVarView[] }).vars
+                (body) => (body as { vars: EnvVarView[] }).vars
             );
             return result.ok ? { error: null, vars: result.value } : { error: result.error, vars: [] };
         } finally {

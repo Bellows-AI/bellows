@@ -1,7 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DateRange, OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { usePoll } from './usePoll.js';
 
 export interface TelemetryMeta {
     /**
@@ -85,26 +83,18 @@ export function nextStatsPollDelay(outcome: StatsPollOutcome, live: boolean, hid
     return hidden ? HIDDEN_REFRESH_MS : VISIBLE_REFRESH_MS;
 }
 
-function settledOutcome(stale: boolean): StatsPollOutcome {
-    return stale ? 'stale' : 'fresh';
-}
+/** What `/api/stats` answers: the figures (200) or, while GitHub is still being read, the progress (202). */
+type StatsBody = StatsPayload | { fetch: FetchState };
 
-/**
- * Whether a tab coming back to the front should ask now instead of waiting out its armed tick. A
- * tick armed while hidden waits the hidden pace, so an open dashboard would otherwise show its old
- * snapshot for up to a minute. `armed` is false while a request is in flight — that one re-arms
- * itself at the visible pace, and asking again would overlap it.
- */
-export function refetchOnVisible(live: boolean, hidden: boolean, armed: boolean): boolean {
-    return live && !hidden && armed;
-}
+const isStatsBody = (body: unknown, status: number): body is StatsBody => {
+    const candidate = body as Partial<StatsPayload> & { fetch?: unknown };
+    return status === HTTP_STATUS_ACCEPTED
+        ? candidate?.fetch !== undefined
+        : candidate?.telemetry?.totals !== undefined && candidate.meta !== undefined;
+};
 
-function armNext(timer: { current: number | null }, delay: number | null, tick: () => void): void {
-    if (delay === null) return;
-    timer.current = window.setTimeout(() => {
-        timer.current = null;
-        tick();
-    }, delay);
+function settledOutcome(body: StatsBody): StatsPollOutcome {
+    return (body as StatsPayload).meta.stale ? 'stale' : 'fresh';
 }
 
 /**
@@ -113,88 +103,30 @@ function armNext(timer: { current: number | null }, delay: number | null, tick: 
  * dashboard always shows current figures — and keeps the chain running while it stays on.
  */
 export function useStats(query: string, live: boolean): UseStats {
-    const [data, setData] = useState<StatsPayload | null>(null);
-    const [progress, setProgress] = useState<FetchState | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const [pending, setPending] = useState(true);
-    const timer = useRef<number | null>(null);
-
-    const poll = useCallback(
-        async (signal: AbortSignal) => {
-            // No abort guard needed: a tick armed on an aborted signal rejects in fetch and ends
-            // in the catch's own `signal.aborted` return, without a request.
-            const rearm = (outcome: StatsPollOutcome) =>
-                armNext(timer, nextStatsPollDelay(outcome, live, document.hidden), () => void poll(signal));
-            try {
-                const response = await fetch(`/api/stats?${query}`, { signal });
-
-                if (response.status === HTTP_STATUS_ACCEPTED) {
-                    const body = (await response.json()) as { fetch: FetchState };
-                    setProgress(body.fetch);
-                    setPending(true);
-                    rearm('progress');
-                    return;
-                }
-
-                // Its own branch, ahead of the generic one below. The poll re-arms every two seconds
-                // while a fetch is in progress, so a session expiring mid-poll is not exceptional —
-                // and in the generic branch it renders a banner that never clears, because every
-                // request that follows 401s too. Handing it to the gate is the only thing that can
-                // actually resolve it.
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    reportUnauthenticated();
-                    setPending(false);
-                    return;
-                }
-
-                if (!response.ok) {
-                    // Deliberately does not clear `data`: an outage leaves
-                    // whatever is on screen the most accurate view available.
-                    setError((await refusalOf(response)).error);
-                    setPending(false);
-                    rearm('error');
-                    return;
-                }
-
-                const body = (await response.json()) as StatsPayload;
-                if (!body?.telemetry?.totals || !body?.meta) throw new Error('Malformed /api/stats response');
-                setData(body);
-                setProgress(null);
-                setError(null);
-                setPending(false);
-                rearm(settledOutcome(body.meta.stale));
-            } catch (e) {
-                if (signal.aborted) return;
-                setError((e as Error).message);
-                setPending(false);
-                rearm('error');
-            }
-        },
-        [query, live]
-    );
-
-    useEffect(() => {
-        const controller = new AbortController();
-        setPending(true);
-        void poll(controller.signal);
-        const onVisibilityChange = () => {
-            if (!refetchOnVisible(live, document.hidden, timer.current !== null)) return;
-            window.clearTimeout(timer.current!);
-            timer.current = null;
-            void poll(controller.signal);
-        };
-        document.addEventListener('visibilitychange', onVisibilityChange);
-        return () => {
-            controller.abort();
-            document.removeEventListener('visibilitychange', onVisibilityChange);
-            if (timer.current !== null) window.clearTimeout(timer.current);
-        };
-    }, [poll, live]);
-
+    const polled = usePoll<StatsBody>(`/api/stats?${query}`, {
+        // The 202 is the board's "still fetching from GitHub": its body is the progress, not figures.
+        isPartial: (status) => status === HTTP_STATUS_ACCEPTED,
+        // Deliberately keeps `data` on an outage: whatever is on screen is the most accurate view available.
+        guard: isStatsBody,
+        malformed: 'Malformed /api/stats response',
+        next: (outcome, hidden) =>
+            nextStatsPollDelay(
+                outcome.kind === 'partial'
+                    ? 'progress'
+                    : outcome.kind === 'error'
+                      ? 'error'
+                      : settledOutcome(outcome.value),
+                live,
+                hidden
+            ),
+        refetchOnVisible: live,
+        keepOnUrlChange: true,
+        restartKey: live,
+    });
     return {
-        data,
-        loading: pending && data === null,
-        progress,
-        error,
+        data: polled.data as StatsPayload | null,
+        loading: polled.loading && polled.data === null,
+        progress: (polled.partial as { fetch: FetchState } | null)?.fetch ?? null,
+        error: polled.error,
     };
 }
