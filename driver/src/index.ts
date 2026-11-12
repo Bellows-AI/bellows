@@ -49,6 +49,10 @@ const board = createBoard({
     leaseSeconds: config.leaseSeconds,
     token: config.boardToken,
     fetch: metrics.fetch,
+    onMalformedClaim: (fields) => {
+        console.error(`[driver] the board delivered a malformed claim (${fields.join(', ')}); left to its lease`);
+        metrics.malformedClaim(fields);
+    },
 });
 // EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on
 // the first claim: a driver asked for kubernetes outside a cluster should say so at startup.

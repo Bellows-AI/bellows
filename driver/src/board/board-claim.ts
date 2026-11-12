@@ -37,6 +37,68 @@ const servicePlanOf = (value: unknown): Pick<BoardJob, 'services'> & { refusal: 
     return { refusal: null, services: value };
 };
 
+type Check = (value: unknown) => boolean;
+const isString: Check = (value) => typeof value === 'string';
+const isNumber: Check = (value) => typeof value === 'number' && Number.isFinite(value);
+const isBoolean: Check = (value) => typeof value === 'boolean';
+const orNull =
+    (check: Check): Check =>
+    (value) =>
+        value === null || check(value);
+const isStringMap: Check = (value) => isRecord(value) && !Array.isArray(value) && Object.values(value).every(isString);
+
+/** The fields every claim carries: a claim missing or mistyping one is not something to run. */
+const REQUIRED: Record<string, Check> = {
+    id: isString,
+    command: isString,
+    attempts: isNumber,
+    claimSeq: isNumber,
+    leaseToken: isString,
+    leaseExpiresAt: isString,
+};
+
+/** The fields the driver reads when they are present; a present field of the wrong type is the board breaking its contract. */
+const TYPED: Record<string, Check> = {
+    maxAttempts: isNumber,
+    lastAttempt: isBoolean,
+    ownSession: isBoolean,
+    continuesInterrupted: isBoolean,
+    followUp: isBoolean,
+    rootCommand: isString,
+    resumeSessionId: orNull(isString),
+    userId: orNull(isString),
+    workspacePath: orNull(isString),
+    rootJobId: orNull(isString),
+    baseBranch: orNull(isString),
+    repo: orNull(isString),
+    env: isStringMap,
+    gateEnv: isStringMap,
+    supervisorEnv: isStringMap,
+    planRevision: isString,
+    groupLease: isString,
+    claimHolder: isString,
+    taskGeneration: isNumber,
+    agent: (value) => value === false,
+    publish: isBoolean,
+    gates: orNull((value) => isRecord(value) && isString(value.image) && Array.isArray(value.gates)),
+};
+
+/** A claim read off the wire: the job, or the names of the fields that make it malformed. */
+export type ParsedClaim = { claim: BoardJob } | { malformed: string[] };
+
+/**
+ * Validates the claim's relied-on fields at the boundary (BEL-318). A malformed claim is
+ * inconclusive, never a verdict: the caller logs it and leaves the job to its lease.
+ */
+export function parseClaim(raw: unknown): ParsedClaim {
+    if (!isRecord(raw) || Array.isArray(raw)) return { malformed: ['claim'] };
+    const malformed = [
+        ...Object.entries(REQUIRED).filter(([name, check]) => !check(raw[name])),
+        ...Object.entries(TYPED).filter(([name, check]) => raw[name] !== undefined && !check(raw[name])),
+    ].map(([name]) => name);
+    return malformed.length > 0 ? { malformed } : { claim: claimOf(raw as Partial<BoardJob>) };
+}
+
 /** A claim off the wire, read into the shape the loop works with: every optional field defaulted or dropped. */
 export function claimOf(wire: Partial<BoardJob>): BoardJob {
     // Destructured out rather than left in the base spread: an invalid (non-array) value
