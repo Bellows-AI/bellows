@@ -248,7 +248,7 @@ async function leaseRunning(
     const [live] =
         await tx`select 1 from job where org_id = ${orgId} and id = ${reviewId} and status = 'running' for update`;
     if (!live) return undefined;
-    const expiry = tx.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
+    const expiry = tx.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString(), leaseExpired: true });
     await tx`
         update job set
             lease_token = gen_random_uuid(),
@@ -256,7 +256,7 @@ async function leaseRunning(
             claimed_by = ${caller.claimed_by},
             lease_expires_at = ${caller.lease_expires_at},
             review_caller_seq = ${caller.claim_seq},
-            interruptions = interruptions || jsonb_build_array(${expiry}::jsonb || jsonb_build_object('claimSeq', claim_seq)),
+            interruptions = interruptions || jsonb_build_array(${expiry}::jsonb || jsonb_build_object('claimSeq', claim_seq, 'refunded', true)),
             started_at = now(),
             wall_clock_ms = case when started_at is null then wall_clock_ms else ${wallTick} end,
             runtime = null

@@ -139,7 +139,7 @@ async function commitOne(
     const stopping = stop !== undefined;
     const taken = await tx<{ id: string }[]>`
         update job set
-            interruptions = interruptions || jsonb_build_array(${entry}::jsonb || jsonb_build_object('claimSeq', claim_seq)),
+            interruptions = interruptions || jsonb_build_array(${entry}::jsonb || jsonb_build_object('claimSeq', claim_seq, 'refunded', false)),
             cancel_requested_at = case when ${stopping} then coalesce(cancel_requested_at, now()) else cancel_requested_at end,
             stopped_by = case when ${stopping} then coalesce(stopped_by, ${stop?.stoppedBy ?? null}) else stopped_by end
         where org_id = ${orgId} and id = ${id}

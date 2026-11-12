@@ -76,6 +76,12 @@ function executionPairs(jobs: Job[]): [string, ReactNode][] {
     return rows.filter(([, value]) => value !== null && value !== undefined);
 }
 
+/** Whether the interruption's attempt was refunded; nothing for an entry written before the board recorded it. */
+function refundNote(refunded: boolean | undefined): string {
+    if (refunded === undefined) return '';
+    return refunded ? ' (attempt refunded)' : ' (attempt spent)';
+}
+
 /** Each attempt the infrastructure took (issue 796), refunded rather than counted — so an
  * interrupted task reads apart from a failed retry. Nothing when none was. */
 function Interruptions({ interruptions, runs }: { interruptions: ThreadInterruption[]; runs: number }) {
@@ -90,6 +96,7 @@ function Interruptions({ interruptions, runs }: { interruptions: ThreadInterrupt
                         <span>
                             {runs > 1 ? `Run ${item.run}, claim ${item.claimSeq}` : `Claim ${item.claimSeq}`}:{' '}
                             {item.reason}
+                            {refundNote(item.refunded)}
                         </span>
                         <RelativeTime at={item.at} />
                     </li>

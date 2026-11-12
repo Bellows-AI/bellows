@@ -154,6 +154,25 @@ describe('TaskOutcome', () => {
         expect(rail).toContain('dateTime="2026-09-01T12:05:00.000Z"');
     });
 
+    it('says per interruption whether its attempt was refunded, and nothing for an entry that predates the field', () => {
+        const rail = railOf(
+            renderDetail({
+                jobs: [
+                    job({
+                        interruptions: [
+                            { at: '2026-09-01T12:05:00.000Z', reason: 'drained', claimSeq: 1, refunded: true },
+                            { at: '2026-09-01T12:06:00.000Z', reason: 'silent', claimSeq: 2, refunded: false },
+                            { at: '2026-09-01T12:07:00.000Z', reason: 'old', claimSeq: 3 },
+                        ],
+                    }),
+                ],
+            })
+        );
+        expect(rail).toContain('Claim 1: drained (attempt refunded)');
+        expect(rail).toContain('Claim 2: silent (attempt spent)');
+        expect(rail).toContain('Claim 3: old<');
+    });
+
     it('renders no Interruptions section when nothing was interrupted', () => {
         expect(railOf(renderDetail({ jobs: [job()] }))).not.toContain('Interruptions');
     });

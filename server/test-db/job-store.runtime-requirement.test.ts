@@ -107,7 +107,7 @@ describe.skipIf(!enabled)('runtime connection requirement — database', () => {
         expect(await store.get(id)).toMatchObject({ status: 'queued', attempts: 0, failureKind: null });
         const job = await store.get(id);
         expect(job!.interruptions).toEqual([
-            { at: expect.any(String), reason: SENTENCE, claimSeq: 1, requirement: true },
+            { at: expect.any(String), reason: SENTENCE, claimSeq: 1, requirement: true, refunded: true },
         ]);
         expect(await store.claim(WORKER, LEASE_SECONDS)).toBeNull();
     });
