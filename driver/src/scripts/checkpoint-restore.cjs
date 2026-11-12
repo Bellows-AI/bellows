@@ -1,3 +1,4 @@
+// @ts-check
 // The task tree, rebuilt from the thread's checkpoint on a replacement volume (issue #775): the
 // counterpart of checkpoint.cjs. The checkpoint stream is one JSON header line, then the git bundle
 // of the whole tree's commit (against what the remote already had), then the OpenCode snapshot. The
@@ -56,13 +57,17 @@ const GONE_FROM_REMOTE =
     /not our ref|couldn't find remote ref|unadvertised object|no such remote ref|not found|does not appear to be|invalid object/i;
 
 const checkout = process.env.CHECKOUT;
-const remote = process.env.REMOTE;
+const remote = /** @type {string} */ (process.env.REMOTE);
 const branch = process.env.BRANCH;
 const url = process.env.RESTORE_URL;
 const token = process.env.RESTORE_TOKEN;
 const credHelper = process.env.CRED_HELPER;
-const sessionsDir = process.env.SESSIONS_DIR;
-const opencodeDb = process.env.OPENCODE_DB;
+const sessionsDir = /** @type {string} */ (process.env.SESSIONS_DIR);
+const opencodeDb = /** @type {string} */ (process.env.OPENCODE_DB);
+/** @typedef {{ offset: number, length: number, sha256: string }} Chunk */
+/** @typedef {{ route: string, params: Record<string, any> }} Source */
+/** @typedef {{ jobId: string, claimSeq: number, session: string, chunks: Chunk[], bytes: number }} Stream */
+/** @typedef {{ tip: string, parent: string | null, branch: string | null, bundleBytes: number, sqliteBytes: number, truncated: boolean }} Header */
 const SESSION_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 
 class Unrestorable extends Error {}
@@ -70,38 +75,60 @@ class Unrestorable extends Error {}
 class Absent extends Unrestorable {}
 /** Bytes that do not match the digest the board listed: retried like a transport fault, then final for a session. */
 class Corrupt extends Error {}
+/** @param {string} message */
 const unrestorable = (message) => new Unrestorable(message);
 
+/** @param {any} e */
 const detail = (e) => String((e && e.stderr) || (e && e.message) || e).slice(0, GIT_ERROR_MAX_LENGTH);
+/** @param {string} p */
 const exists = (p) => {
     try {
         fs.statSync(p);
         return true;
     } catch (e) {
-        if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false;
+        if (
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOENT' ||
+            /** @type {NodeJS.ErrnoException} */ (e).code === 'ENOTDIR'
+        )
+            return false;
         throw e;
     }
 };
 
+/** @param {string[]} args */
 const withCredentials = (args) =>
     credHelper ? ['-c', 'credential.helper=' + credHelper, '-c', 'http.followRedirects=initial', ...args] : args;
 // `offline`: a read that must never lazily fetch a partial clone's missing object (it asks whether one is there).
+/**
+ * @param {string} cwd
+ * @param {string[]} args
+ * @param {string} [input]
+ * @param {boolean} [offline]
+ * @returns {string}
+ */
 const git = (cwd, args, input, offline = false) =>
-    execFileSync('git', withCredentials(args), {
-        cwd,
-        encoding: 'utf8',
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(offline ? { GIT_NO_LAZY_FETCH: '1' } : {}) },
-        maxBuffer: GIT_MAX_BUFFER,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        ...(input === undefined ? {} : { input }),
-    }).trim();
+    /** @type {string} */ (
+        execFileSync('git', withCredentials(args), {
+            cwd,
+            encoding: 'utf8',
+            env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(offline ? { GIT_NO_LAZY_FETCH: '1' } : {}) },
+            maxBuffer: GIT_MAX_BUFFER,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            ...(input === undefined ? {} : { input }),
+        })
+    ).trim();
 
+/** @param {number} ms */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** One try at a chunk: its bytes checked against the board's digest; 404/410 mean the board dropped it. */
+/**
+ * @param {Source} source
+ * @param {Chunk} chunk
+ */
 const readChunk = async (source, chunk) => {
     const response = await fetch(
-        `${url}${source.route}?${new URLSearchParams({ ...source.params, offset: chunk.offset })}`,
+        `${url}${source.route}?${new URLSearchParams(/** @type {any} */ ({ ...source.params, offset: chunk.offset }))}`,
         {
             headers: { authorization: `Bearer ${token}` },
         }
@@ -110,7 +137,7 @@ const readChunk = async (source, chunk) => {
         throw unrestorable('the board no longer has the checkpoint bytes at offset ' + chunk.offset);
     }
     if (!response.ok) throw new Error('the control endpoint answered ' + response.status);
-    const body = await response.json();
+    const body = /** @type {any} */ (await response.json());
     const bytes = Buffer.from(String(body.bytes), 'base64');
     const digest = crypto.createHash('sha256').update(bytes).digest('hex');
     if (bytes.length !== chunk.length || digest !== chunk.sha256 || body.sha256 !== chunk.sha256) {
@@ -120,6 +147,10 @@ const readChunk = async (source, chunk) => {
 };
 
 /** One chunk of the stream, retried with a growing pause; a dropped chunk is final. */
+/**
+ * @param {Source} source
+ * @param {Chunk} chunk
+ */
 const fetchChunk = async (source, chunk) => {
     let last = null;
     for (let tries = 1; tries <= CHUNK_TRIES; tries += 1) {
@@ -134,6 +165,7 @@ const fetchChunk = async (source, chunk) => {
     throw last;
 };
 
+/** @type {Source} */
 const CHECKPOINT_SOURCE = { route: '/checkpoint/restore', params: {} };
 
 /**
@@ -141,6 +173,12 @@ const CHECKPOINT_SOURCE = { route: '/checkpoint/restore', params: {} };
  * before `from` (the exporter restarts at 0 when it counts a file as fresh) but never after it: a chunk past the
  * bytes held so far is a gap. Bytes a chunk shares with what is already written must be identical. Returns
  * `{ end, length }`: where the file now ends and the sum of this stream's chunk lengths.
+ */
+/**
+ * @param {number} fd
+ * @param {Source} source
+ * @param {Chunk[]} chunks
+ * @param {number} [from]
  */
 const append = async (fd, source, chunks, from = 0) => {
     let end = from;
@@ -164,6 +202,10 @@ const append = async (fd, source, chunks, from = 0) => {
     return { end, length };
 };
 
+/**
+ * @param {string} file
+ * @param {Chunk[]} chunks
+ */
 const download = async (file, chunks) => {
     const fd = fs.openSync(file, 'w');
     try {
@@ -173,6 +215,10 @@ const download = async (file, chunks) => {
     }
 };
 
+/**
+ * @param {string} route
+ * @returns {Promise<any>}
+ */
 const getJson = async (route) => {
     const response = await fetch(url + route, { headers: { authorization: `Bearer ${token}` } });
     if (!response.ok) throw new Error('the control endpoint answered ' + response.status);
@@ -184,6 +230,10 @@ const getJson = async (route) => {
  * order the attempts ran (the thread's rows by creation, then claim sequence). Every stream must be gapless
  * and as long as the board says; a chunk that stays wrong through the retries is the board's bytes being bad.
  */
+/**
+ * @param {string} file
+ * @param {Stream[]} streams
+ */
 const downloadSession = async (file, streams) => {
     const fd = fs.openSync(file, 'w+');
     // The exporter keeps a file's byte offsets across attempts: a resumed session's later stream starts where
@@ -191,6 +241,7 @@ const downloadSession = async (file, streams) => {
     let end = 0;
     try {
         for (const stream of streams) {
+            /** @type {Source} */
             const source = {
                 route: '/checkpoint/transcripts/chunk',
                 params: { jobId: stream.jobId, claimSeq: stream.claimSeq, session: stream.session },
@@ -220,13 +271,16 @@ const downloadSession = async (file, streams) => {
 };
 
 // Files made beside their final place and renamed into it only once everything verified; a failure removes them.
+/** @type {string[]} */
 const temps = [];
 
 /** The session files, as `{temp, final}` pairs, all downloaded and verified; nothing is renamed yet. */
+/** @param {boolean} [keepExisting] */
 const downloadSessions = async (keepExisting = false) => {
     const { streams } = await getJson('/checkpoint/transcripts');
     if (!Array.isArray(streams)) throw new Error('the transcript listing is unreadable');
-    const rows = [...new Set(streams.map((s) => s.jobId))];
+    const rows = [...new Set(streams.map((/** @type {Stream} */ s) => s.jobId))];
+    /** @type {Map<string, Stream[]>} */
     const bySession = new Map();
     for (const stream of streams) {
         if (typeof stream.session !== 'string' || !SESSION_NAME.test(stream.session)) {
@@ -235,6 +289,7 @@ const downloadSessions = async (keepExisting = false) => {
         bySession.set(stream.session, [...(bySession.get(stream.session) ?? []), stream]);
     }
     fs.mkdirSync(sessionsDir, { recursive: true });
+    /** @type {{ temp: string, final: string }[]} */
     const files = [];
     for (const [session, parts] of bySession) {
         if (keepExisting && exists(path.join(sessionsDir, `${session}.jsonl`))) continue;
@@ -248,9 +303,16 @@ const downloadSessions = async (keepExisting = false) => {
 };
 
 /** The bytes of `file` from `start` up to (not including) the first `delimiter`, read block by block. */
+/**
+ * @param {string} file
+ * @param {number} start
+ * @param {string} delimiter
+ * @param {number} max
+ */
 const readUntil = (file, start, delimiter, max) => {
     const fd = fs.openSync(file, 'r');
     try {
+        /** @type {Buffer[]} */
         const parts = [];
         let position = start;
         let total = 0;
@@ -275,6 +337,12 @@ const readUntil = (file, start, delimiter, max) => {
 };
 
 /** Copies `length` bytes of `from` (starting at `start`) into `to`. */
+/**
+ * @param {string} from
+ * @param {number} start
+ * @param {number} length
+ * @param {string} to
+ */
 const copyRange = (from, start, length, to) => {
     const input = fs.openSync(from, 'r');
     const output = fs.openSync(to, 'w');
@@ -294,6 +362,7 @@ const copyRange = (from, start, length, to) => {
 };
 
 /** The commits the bundle says it needs: the `-<sha> <comment>` lines of its own header. */
+/** @param {string} bundle */
 const prerequisitesOf = (bundle) => {
     const head = readUntil(bundle, 0, '\n\n', BUNDLE_HEAD_MAX_BYTES).toString('utf8');
     const lines = head.split('\n');
@@ -309,6 +378,11 @@ const prerequisitesOf = (bundle) => {
 };
 
 /** The commits of `shas` the repository lacks. */
+/**
+ * @param {string} repo
+ * @param {string[]} shas
+ * @returns {string[]}
+ */
 const missingOf = (repo, shas) => {
     if (shas.length === 0) return [];
     const out = git(repo, ['cat-file', '--batch-check'], shas.map((sha) => `${sha}^{commit}\n`).join(''), true);
@@ -326,6 +400,10 @@ const assertCredentialedOrigin = () => {
     }
 };
 
+/**
+ * @param {string} repo
+ * @param {string[]} shas
+ */
 const ensureAllPresent = (repo, shas) => {
     let missing = missingOf(repo, shas);
     for (let i = 0; i < missing.length; i += FETCH_BATCH) {
@@ -346,6 +424,10 @@ const ensureAllPresent = (repo, shas) => {
 };
 
 /** Whether `name` is a branch name git accepts: false for a non-string or a name `check-ref-format` rejects. */
+/**
+ * @param {string} repo
+ * @param {unknown} name
+ */
 const validBranch = (repo, name) => {
     if (typeof name !== 'string' || !name) return false;
     try {
@@ -357,6 +439,7 @@ const validBranch = (repo, name) => {
 };
 
 /** Git-ignores the `.factory/` state namespace, as the startup sync does: the checkpoint never carries it. */
+/** @param {string} repo */
 const excludeFactoryState = (repo) => {
     let exclude = git(repo, ['rev-parse', '--git-path', 'info/exclude']);
     if (!path.isAbsolute(exclude)) exclude = path.resolve(repo, exclude);
@@ -364,6 +447,11 @@ const excludeFactoryState = (repo) => {
     fs.appendFileSync(exclude, FACTORY_STATE_EXCLUDE + '\n');
 };
 
+/**
+ * @param {string} repo
+ * @param {Header} header
+ * @param {string} bundle
+ */
 const rebuild = (repo, header, bundle) => {
     ensureAllPresent(repo, prerequisitesOf(bundle));
     git(repo, ['bundle', 'unbundle', bundle], undefined, true);
@@ -386,6 +474,11 @@ const rebuild = (repo, header, bundle) => {
 };
 
 /** The OpenCode snapshot out of the stream into a temp file beside the database. */
+/**
+ * @param {string} stream
+ * @param {Header} header
+ * @param {number} start
+ */
 const stageDatabase = (stream, header, start) => {
     fs.mkdirSync(path.dirname(opencodeDb), { recursive: true });
     const temp = opencodeDb + '.restore';
@@ -395,6 +488,7 @@ const stageDatabase = (stream, header, start) => {
 };
 
 /** The database replaced whole: its WAL and SHM belong to the file being replaced and would corrupt the new one. */
+/** @param {string} temp */
 const installDatabase = (temp) => {
     fs.rmSync(opencodeDb + '-wal', { force: true });
     fs.rmSync(opencodeDb + '-shm', { force: true });
@@ -491,6 +585,7 @@ const main = async () => {
     }
 };
 
+/** @param {unknown} verdict */
 const say = (verdict) => process.stdout.write(JSON.stringify(verdict) + '\n');
 void main().then(say, (e) =>
     say(
