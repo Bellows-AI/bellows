@@ -1,7 +1,7 @@
--- Legacy Jira API-token connections end (BEL-61). Jira is reached through an OAuth grant now; nothing lists, binds or
+-- Legacy Jira API-token connections end. Jira is reached through an OAuth grant now; nothing lists, binds or
 -- serves a `legacy_api_token` row, and a task never takes another identity in its place. Data only, no schema
 -- contract: the `credential` check, `kind`, `email not null` and the 094 triggers stay until the contract release
--- (BEL-158). Each statement names its rows by an explicit predicate. This file must contain NO `create extension`,
+--. Each statement names its rows by an explicit predicate. This file must contain NO `create extension`,
 -- per 005's header.
 
 -- 1. A thread bound to a still-active legacy connection that holds a queued job (the root, or a follow-up beneath a

@@ -1,4 +1,4 @@
--- Attachment upload capabilities (BEL-248): a short-lived, single-use grant to upload ONE file for a member, handed
+-- Attachment upload capabilities: a short-lived, single-use grant to upload ONE file for a member, handed
 -- to a client that cannot send bytes through MCP. The capability itself is a bearer secret and is never stored: only
 -- its sha256 is. It is bound to the account, the org and the ONE credential it was minted under (an OAuth grant
 -- family, a web session or a personal access token), so revoking the grant, signing out, revoking the token or

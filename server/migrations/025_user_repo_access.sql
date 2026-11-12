@@ -1,4 +1,4 @@
--- GitHub-org sync (#66): how a membership row was born, and what a member's GitHub account can
+-- GitHub-org sync: how a membership row was born, and what a member's GitHub account can
 -- actually reach.
 --
 -- `auto_joined` records provenance on org_membership. A row born from auth.auto_join_github_org is

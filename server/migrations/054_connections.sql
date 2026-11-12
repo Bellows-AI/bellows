@@ -1,4 +1,4 @@
--- Managed connector connections (issue #546): a Jira site an org admin or a member authorizes, which
+-- Managed connector connections: a Jira site an org admin or a member authorizes, which
 -- a task may use through the board's connector proxy. The platform owns the credential: it is never
 -- delivered to a runner, and the proxy re-checks the connection on every call.
 --

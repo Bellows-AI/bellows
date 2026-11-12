@@ -1,4 +1,4 @@
--- Launch parameters, frozen beside the snapshot (issue #127).
+-- Launch parameters, frozen beside the snapshot.
 --
 -- A workflow may declare required parameters (definition.params — the grammar's top-level key,
 -- validated by workflow-schema.ts, every declared param REQUIRED at launch). The values a member

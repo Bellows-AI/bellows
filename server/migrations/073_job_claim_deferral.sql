@@ -1,4 +1,4 @@
--- A claim's reservation of its candidate while it prepares (issue #822): the plan read runs outside
+-- A claim's reservation of its candidate while it prepares: the plan read runs outside
 -- every lock, so the row is reserved for `CLAIM_PREPARE_SECONDS` and other claimers pass it by. A
 -- successful acquisition clears it; a preparation that failed or was abandoned leaves it set — the
 -- candidate's backoff — and the row queues as of its end: behind every candidate queued before

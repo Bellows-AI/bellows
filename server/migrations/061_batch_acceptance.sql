@@ -1,4 +1,4 @@
--- Batch acceptance (issue #580): the durable evidence a task's gate passed.
+-- Batch acceptance: the durable evidence a task's gate passed.
 --
 --   batch_acceptance  one row per accepted attempt of a task. `kind` 'pr_merged' is written by the
 --                 reconcile pass from a recorded PR (job_pr) and its observed merge (pr_merge),

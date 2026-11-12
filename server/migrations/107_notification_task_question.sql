@@ -1,4 +1,4 @@
--- Notifications: task.question when a running agent asks a question a person can answer (BEL-135). One event per
+-- Notifications: task.question when a running agent asks a question a person can answer. One event per
 -- question, not per job: a job holds several, so the id is md5(job_id || '/' || question_id || '/task.question'),
 -- the job id in the hash because question_id is only unique within its job. The event snapshots the asked texts in
 -- ask order (`questions`) and the asking `question_id`; headers and options never ride the event. Emission is an

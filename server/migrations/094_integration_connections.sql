@@ -1,4 +1,4 @@
--- Integration connections (BEL-59): the principal/grant model under managed connections, expand only
+-- Integration connections: the principal/grant model under managed connections, expand only
 -- (docs/persistence.md: a release only expands).
 --
 -- `integration_grant` is the credential lineage of one external account (one refresh chain, CAS on

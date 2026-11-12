@@ -1,4 +1,4 @@
--- A task's execution mode, stored durably on every job row (issue #543): 'objective' is an
+-- A task's execution mode, stored durably on every job row: 'objective' is an
 -- ordinary claimable job with no workflow snapshot, node, successor or wait; 'workflow' walks a
 -- named workflow's frozen graph. The root decides, and follow-ups, retries and workflow
 -- successors inherit it.

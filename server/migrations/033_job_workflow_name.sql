@@ -1,4 +1,4 @@
--- The workflow's NAME, frozen on the job at create (issue #175).
+-- The workflow's NAME, frozen on the job at create.
 --
 -- job.workflow_id names the definition a thread walked, but the id is opaque on every read that
 -- is not a workflow join, and the workflow row is deletable by design (027: job is an audit

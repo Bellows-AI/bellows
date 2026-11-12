@@ -1,4 +1,4 @@
--- Staged conclusions (issue #821): an attempt's final envelope, staged under its lease before the
+-- Staged conclusions: an attempt's final envelope, staged under its lease before the
 -- driver completes and tears the attempt down. Immutable, one per attempt — keyed by the lease
 -- token. The board commits it as the attempt's verdict when the lease expires before the driver's
 -- complete lands, and refuses any other settle under that token, so a board outage after the

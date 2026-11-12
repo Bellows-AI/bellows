@@ -1,4 +1,4 @@
--- BEL-54: an environment secret is one record in the secret store (docs/secrets.md); the row keeps only
+-- an environment secret is one record in the secret store (docs/secrets.md); the row keeps only
 -- the opaque reference and the stored version it was written at, and `value` is null for it.
 --
 -- ADDITIONS ONLY, and no check constraint or trigger tying `value` to `secret_ref`: a pod still running the

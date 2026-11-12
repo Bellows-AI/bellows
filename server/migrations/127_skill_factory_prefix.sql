@@ -1,4 +1,4 @@
--- Built-in skills move to the reserved `factory-` namespace (BEL-269): backend-fix is now factory-fix and every
+-- Built-in skills move to the reserved `factory-` namespace: backend-fix is now factory-fix and every
 -- other built-in is `factory-<name>`. A follow-up or retry of any thread, finished or not, reads the root job's
 -- `skills`, so every row is rewritten, not only open ones. A name outside the seven is left alone.
 update job

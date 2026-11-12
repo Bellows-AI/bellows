@@ -1,4 +1,4 @@
--- Organization-scoped executor profiles (issue 391): an administrator configures one executor for
+-- Organization-scoped executor profiles: an administrator configures one executor for
 -- the whole team, and every member may select it.
 --
 -- ONE TABLE, SIBLING SCOPES — the shape 027_workflows.sql chose for workflow definitions and 017
@@ -79,7 +79,7 @@ alter table job drop constraint if exists executor_scope_ck;
 alter table job add constraint executor_scope_ck
     check (executor_scope is null or executor_scope in ('user', 'org'));
 
--- The block-wait park (issue #231) copies the continuation's labels onto the round row and back
+-- The block-wait park copies the continuation's labels onto the round row and back
 -- at wake — executor included, so executor_scope rides the same round trip: a parked org-scope
 -- continuation wakes onto the same scope it parked with, never the author's personal rows.
 alter table workflow_round add column if not exists executor_scope text;

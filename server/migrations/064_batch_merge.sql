@@ -1,4 +1,4 @@
--- Batch protected automerge and verified stage progression (issue #633).
+-- Batch protected automerge and verified stage progression.
 --
 --   batch_merge  one row per merge intent: the board's decision to ask GitHub to merge one task's
 --                PR, with the observation it was made on (`observation_revision`, `head_sha`,

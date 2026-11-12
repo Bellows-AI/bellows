@@ -28,7 +28,7 @@
 -- into the configured org exactly once, by adoptOrg() in db/migrate.ts. config.ts refuses any id
 -- beginning with '__' so the namespace cannot be squatted.
 --
--- This file must contain NO `create extension`. There is none anywhere in the schema since #371,
+-- This file must contain NO `create extension`. There is none anywhere in the schema since the schema dropped its last one,
 -- and core/test/migrations.sql.test.ts asserts that rather than asking for it: the chart's
 -- database.url has to be able to name an RDS or Aurora instance with nothing installed in it. An
 -- extension also misbehaves inside a transaction, and without one postgres wraps the whole

@@ -1,4 +1,4 @@
--- #846: the metric_point dedupe identity. The old key (metric, session_id, time, source,
+-- The metric_point dedupe identity. The old key (metric, session_id, time, source,
 -- md5(attrs)) left agent, temporality and start_time out, and null session ids never collided
 -- (null <> null in a unique index), so an identical retry of a null-session point duplicated.
 -- Raw series that differ only in an allowlist-dropped attribute are told apart by attrs.series,

@@ -1,4 +1,4 @@
--- Batch runtime (issue #579): what dispatch writes against a started batch's frozen plan.
+-- Batch runtime: what dispatch writes against a started batch's frozen plan.
 --
 --   batch.cancelled_at / completed_at   the lifecycle's two terminal stamps; `status` stays
 --                 'started' (059's check), so a cancelled or finished batch is still a started one.

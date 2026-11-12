@@ -31,7 +31,7 @@ create table if not exists pull_request (
     deletions           integer     not null,
     changed_files       integer     not null,
     -- AUTHORITATIVE totals, straight from the provider. NEVER count(*) of the child rows below:
-    -- those lists are capped at 100 per fetch and #149 really does have 397 reviews, so a
+    -- those lists are capped at 100 per fetch and a real PR can have 397 reviews, so a
     -- count(*) would undercount with nothing anywhere reporting an error.
     commit_count        integer     not null,
     review_count        integer     not null,

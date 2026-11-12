@@ -1,4 +1,4 @@
--- Durable mutation idempotency (issue #589). The create, follow-up and retry routes accept an
+-- Durable mutation idempotency. The create, follow-up and retry routes accept an
 -- `Idempotency-Key`; the key lives ON the job row the mutation inserted, so the mutation and its
 -- stored result commit or roll back together — there is no second table to drift from the first.
 --

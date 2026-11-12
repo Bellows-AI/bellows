@@ -1,9 +1,9 @@
--- Notification events (BEL-128): the durable record that a task reached a verdict a person should hear about.
+-- Notification events: the durable record that a task reached a verdict a person should hear about.
 -- A deferred constraint trigger on job.status re-reads the row's FINAL status at commit and maps it:
 -- succeeded -> task.ready, failed or dead -> task.blocked, anything else -> no event. The settle that writes the
 -- status and the event commit together, and a rolled-back settle leaves neither. A policy refusal rewrites
--- succeeded -> failed inside one transaction, so it yields task.blocked only. BEL-133/134 narrow which rows
--- emit (this emits for every job row) and BEL-135 emits task.question. The event copies the raw command; the
+-- succeeded -> failed inside one transaction, so it yields task.blocked only. later migrations narrow which rows
+-- emit (this emits for every job row) and add task.question. The event copies the raw command; the
 -- title is derived only in core (core/src/task-title.ts). No FK to job: removing a task keeps its event.
 -- Expand only (docs/persistence.md: a release only expands). This file must contain NO `create extension`, per
 -- 005's header.

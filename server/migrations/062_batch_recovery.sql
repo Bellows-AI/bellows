@@ -1,4 +1,4 @@
--- Batch recovery (issue #581): the budgets the plan freezes and the state bounded recovery writes.
+-- Batch recovery: the budgets the plan freezes and the state bounded recovery writes.
 --
 --   batch.infra_retries / repairs / time_limit_minutes   the plan's recovery budgets, frozen at
 --                 start with the rest of the plan (core's constants are the authority; the column

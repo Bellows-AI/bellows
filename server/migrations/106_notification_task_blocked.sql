@@ -1,4 +1,4 @@
--- Notifications: task.blocked only when a person must act (BEL-134). A failed or dead job row is a blocked
+-- Notifications: task.blocked only when a person must act. A failed or dead job row is a blocked
 -- event only when it is the thread's head (no newer row in its thread), is not a review job (review_of), is not
 -- already done (done_at), is not bound to a batch (the batch decides its own recovery) and no parked workflow
 -- round under an open wait continues it. So a failure whose verdict queued a successor or re-parked into a

@@ -1,4 +1,4 @@
--- Personal (fat_) and organization (oat_) access tokens, minted from the settings UI (#70).
+-- Personal (fat_) and organization (oat_) access tokens, minted from the settings UI.
 --
 -- Same shape as session and worker_token: only the sha-256 is stored, so the row is a bearer
 -- credential at rest, and the token itself is shown exactly once at creation.

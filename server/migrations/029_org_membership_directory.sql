@@ -1,4 +1,4 @@
--- Membership becomes the materialized fact GitHub reported at last sign-in (#99).
+-- Membership becomes the materialized fact GitHub reported at last sign-in.
 --
 -- INVITES RETIRE. A membership now always names an account — the person GitHub showed us at
 -- sign-in — so unclaimed invite rows, the only rows in this table without one, are deleted.
@@ -12,8 +12,8 @@
 -- mutable label GitHub may rename, and a rename must UPDATE the row rather than insert a second
 -- one. The login stays as a maintained column with its lowercase check.
 --
--- Per-user repo scoping (#66) retires with auto-join: it existed only to intersect the
--- installation with what each member's GitHub account could reach, and #99 settles that repo
+-- Per-user repo scoping retires with auto-join: it existed only to intersect the
+-- installation with what each member's GitHub account could reach, and repo
 -- permissions are NOT projected into Factory — installation access is the boundary.
 
 delete from org_membership where user_id is null;

@@ -1,4 +1,4 @@
--- Phase checkpoints (issue #829): the post-run phases of an attempt — gates, post-run helpers,
+-- Phase checkpoints: the post-run phases of an attempt — gates, post-run helpers,
 -- publish — leave their outcome here under the attempt's lease, so the driver that adopts or takes
 -- over the run resumes after the last phase that finished instead of running every one again.
 -- Written only after a phase returns, so a phase that started and did not finish has no row.

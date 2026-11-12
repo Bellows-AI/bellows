@@ -1,4 +1,4 @@
--- A task's own title (BEL-252), stored on the thread ROOT only: a follow-up, retry, workflow successor and review
+-- A task's own title, stored on the thread ROOT only: a follow-up, retry, workflow successor and review
 -- row never carries one. `title` null reads as the deterministic fallback derived from the command (core
 -- task-title.ts); only `user` and `agent` origins are stored. `title_revision` is the compare-and-set token a
 -- rename sends back. `job_title_event` is the audit of every title write. Expand only (docs/persistence.md: a

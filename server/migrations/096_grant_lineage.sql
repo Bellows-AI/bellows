@@ -1,4 +1,4 @@
--- Grant lineage (BEL-138): one integration_grant is one refresh lineage, so the lineage's claim, its
+-- Grant lineage: one integration_grant is one refresh lineage, so the lineage's claim, its
 -- SecretStore operation and its destroy state live on the grant row. Expand only (docs/persistence.md): every
 -- column is nullable and no old writer sets one, so a pod still on 094 inserts and updates grants as before.
 --

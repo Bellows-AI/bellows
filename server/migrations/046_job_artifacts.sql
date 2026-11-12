@@ -1,4 +1,4 @@
--- Run artifacts (issue #325): the full-run log and the agent transcript of one attempt, uploaded
+-- Run artifacts: the full-run log and the agent transcript of one attempt, uploaded
 -- by the driver at close and served by GET /api/jobs/:id/log and GET /api/jobs/:id/transcript.
 --
 -- One row per (job, kind, attempt): the driver uploads the full runner output (tail-kept, capped

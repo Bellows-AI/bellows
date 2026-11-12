@@ -1,4 +1,4 @@
--- Independent reviewer invocation (issue #549). A named-profile review is a job row of its OWN
+-- Independent reviewer invocation. A named-profile review is a job row of its OWN
 -- thread (root_job_id = its own id, so it never contends with the caller for the thread's one
 -- running row and gets its own worktree), linked to the caller by `review_of`.
 --

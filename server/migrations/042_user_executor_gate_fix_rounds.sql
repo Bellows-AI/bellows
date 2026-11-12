@@ -1,4 +1,4 @@
--- The default-workflow gate-repair round limit (issue #49): how many bounded gate-fix rounds an
+-- The default-workflow gate-repair round limit: how many bounded gate-fix rounds an
 -- ordinary task may spend repairing a failed gate before the thread rests. One column per
 -- executor row, the same shape 040 chose for is_default — user_executor is rewritten wholesale by
 -- replace() on every PUT, so a foreign preference table would lose its link on every save; a

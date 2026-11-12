@@ -1,4 +1,4 @@
--- The merged-PR ledger and the per-thread closure marker it drives (issue #390): a verified
+-- The merged-PR ledger and the per-thread closure marker it drives: a verified
 -- `pull_request` `closed` delivery with `merged: true` marks every task thread published to that
 -- PR done — automatically, with no local actor.
 --

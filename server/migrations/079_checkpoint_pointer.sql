@@ -1,4 +1,4 @@
--- Issue #775: the task's newest checkpoint. The supervisor's finalize stage uploads the branch
+-- The task's newest checkpoint. The supervisor's finalize stage uploads the branch
 -- bundle and the session database as the `checkpoint` artifact stream; its manifest finalizing
 -- advances this pointer, in the same transaction, on the thread's ROOT row — and only when the
 -- manifest's claim_seq is the claim sequence the uploading job row holds now. A superseded

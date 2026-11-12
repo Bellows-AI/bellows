@@ -1,4 +1,4 @@
--- Batch recovery by evidence (issue #581).
+-- Batch recovery by evidence.
 --
 --   job.failure_cause  what lies under a `gate`, `publish` or `helper` failure, as the driver
 --                      classified it: `verification`, `conflict`, `denied`, `config`, `transport`

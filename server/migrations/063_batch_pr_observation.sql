@@ -1,4 +1,4 @@
--- Batch PR observation (issue #632): the board's durable view of each batch task's PR after the
+-- Batch PR observation: the board's durable view of each batch task's PR after the
 -- run published it — state, head, target, checks, mergeability — read from GitHub, never inferred
 -- from a run's failure_kind.
 --
