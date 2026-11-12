@@ -276,7 +276,7 @@ export const threadOwnerOf = (job: Job) => job.executionUser ?? job.author;
 
 /**
  * Whether the viewer may send a follow-up on `latest` — the row the follow-up is posted to. The
- * owner check mirrors the board's null-safe one on the thread root (`job-store-actions.ts`,
+ * owner check mirrors the board's null-safe one on the thread root (`job-store-thread-actions.ts`,
  * `execution_user_id is not distinct from`): a null owner matches only a null viewer, and a
  * signed-in admin may continue any member's task. A loading session
  * answers `pending` first, so the author's own task never flashes a refusal.

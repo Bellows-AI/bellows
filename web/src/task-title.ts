@@ -12,7 +12,7 @@ export interface TitledTask {
 }
 
 /**
- * The ONE name a task wears in the header, sidebar, inbox and dialogs (BEL-252): the stored title, else the
+ * The ONE name a task wears in the header, sidebar, inbox and dialogs: the stored title, else the
  * capped first line of the command, else `Task #<short id>` for a prompt with no text — never an empty heading.
  */
 export function taskTitleText(task: TitledTask): string {

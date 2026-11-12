@@ -10,7 +10,7 @@ import { SkillViewFrame } from './SkillView.js';
 import { ScrollRegion } from '../components/ScrollRegion.js';
 
 /**
- * The Built-in section of the Skills page (BEL-272): the skills that ship with Bellows, read-only, with
+ * The Built-in section of the Skills page: the skills that ship with Bellows, read-only, with
  * one org-wide switch an admin can flip. It reads the catalog (`GET /api/skills`) and the caller's
  * connections itself. A failed catalog read is an alert, never an empty table, and a failed connections
  * read is `'unknown'`: no row then claims a connection is missing.

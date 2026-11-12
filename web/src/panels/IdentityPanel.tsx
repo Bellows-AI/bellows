@@ -53,7 +53,7 @@ export function IdentityPanel({ session }: { session: Session }) {
                     // the sentence above explains why.
                     ['GitHub id', local ? '—' : <span className="mono">{user.githubUserId}</span>],
                     ['Role', role],
-                    // 'First seen' — there are no invites any more (#99); the row's creation is
+                    // 'First seen' — there are no invites any more; the row's creation is
                     // the first sign-in that reported this membership.
                     ['First seen', taskTime(membership.invitedAt)],
                     ['Member since', taskTime(membership.claimedAt)],

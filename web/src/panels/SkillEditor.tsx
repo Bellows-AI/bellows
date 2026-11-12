@@ -17,7 +17,7 @@ import { useGuardedDraft, useUnsavedChanges } from '../components/UnsavedChanges
 import type { SkillEditorTarget } from './SkillsSection.js';
 
 /**
- * The inline skill editor (BEL-272): write SKILL.md, upload a .zip, edit a stored skill's SKILL.md, or
+ * The inline skill editor: write SKILL.md, upload a .zip, edit a stored skill's SKILL.md, or
  * upload a new version. One card at a time, so one guarded draft id. A refusal is shown inline with the
  * server's own words and the draft is kept; the zip is posted whole, and SKILL.md names the skill.
  */

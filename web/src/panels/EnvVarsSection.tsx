@@ -368,7 +368,7 @@ function EnvSaveBar({ editor }: { editor: EnvEditor }) {
 }
 
 /**
- * One environment scope on a settings page (BEL-262): the editor itself, inline — no dialog.
+ * One environment scope on a settings page: the editor itself, inline — no dialog.
  * Variables and Secrets are tabs over ONE draft; rows read as text and open one at a time for
  * editing; the raw `.env` text (variables only) edits the same draft. Nothing is persisted until
  * Save, which sends the whole list; the save bar shows only while there is something to save.

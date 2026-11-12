@@ -1,5 +1,5 @@
 /**
- * How the SPA names an MCP client and its access (BEL-103), shared by the consent screen and the
+ * How the SPA names an MCP client and its access, shared by the consent screen and the
  * connected-apps panel so both say the same thing about the same app.
  */
 

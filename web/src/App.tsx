@@ -53,10 +53,10 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
             yet — the pending cookie, not a session cookie, is what the page stands on — so the
             sidenav and the stats poll have nothing to stand on either. */}
         <Route path="onboarding" element={<OnboardingPage />} />
-        {/* The MCP consent screen (BEL-103): signed-in only (the gate holds it), and outside the shell,
+        {/* The MCP consent screen: signed-in only (the gate holds it), and outside the shell,
             which would start polls for a page that exists to answer one question. */}
         <Route path="oauth/consent" element={<OAuthConsentPage />} />
-        {/* The MCP attachment handoff (BEL-248): signed out is fine, the single-use link in the fragment is
+        {/* The MCP attachment handoff: signed out is fine, the single-use link in the fragment is
             the credential (LoginGate steps past it), and like the consent screen it sits outside the shell. */}
         <Route path={UPLOAD_PAGE_ROUTE.slice(1)} element={<AttachmentUploadPage />} />
         <Route element={<AppShell />}>
@@ -88,7 +88,7 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
             </Route>
             {/* Batches (docs/batches.md): the list, a blank draft, and one batch — a draft opens its
                 editor, a started batch its monitor. `new` precedes `:id` for the reason tasks' does. Behind
-                the deployment flag (BEL-264): off, `BatchesGate` redirects to the dashboard. */}
+                the deployment flag: off, `BatchesGate` redirects to the dashboard. */}
             <Route path="batches" element={<BatchesGate />}>
                 <Route index element={<BatchesPage />} />
                 <Route path="new" element={<BatchNewPage />} />

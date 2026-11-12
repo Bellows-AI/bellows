@@ -10,7 +10,7 @@ import { ADMIN_ROLE } from '@factory-ai/core';
 
 /**
  * The account page's sections for one session: identity, then — in github mode — the tracked
- * organizations and the access tokens minted from here (#70). Sections stack as plain
+ * organizations and the access tokens minted from here. Sections stack as plain
  * `section.panel`s — the vocabulary every other page uses — so a new concern is one more block,
  * not a nav framework. Presentational, so the SSR suite drives it without a session fetch.
  *
@@ -63,7 +63,7 @@ export function AccountSections({ session }: { session: Session }) {
 }
 
 /**
- * The member's own account (#70). Reached from the app bar's user menu at `/account`, not the
+ * The member's own account. Reached from the app bar's user menu at `/account`, not the
  * sidenav: it is personal, not a section of the dashboard. `/settings/*` belongs to the
  * organization's settings tree (issue 150).
  */

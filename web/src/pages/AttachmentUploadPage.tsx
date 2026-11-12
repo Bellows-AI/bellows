@@ -53,7 +53,7 @@ function UploadShell({
 }
 
 /**
- * The page an MCP client opens to hand a file to the board (BEL-248; docs/mcp.md). It works signed out: the
+ * The page an MCP client opens to hand a file to the board (docs/mcp.md). It works signed out: the
  * single-use link in the fragment is the credential, sent only as the PUT path. One file per link, so after a
  * success there is nothing left to do here but return to the app.
  */

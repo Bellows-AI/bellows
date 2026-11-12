@@ -185,7 +185,7 @@ function useTaskRemoval(id: string | null, tasks: UseTasks, latest: Job | null, 
 }
 
 /**
- * The rename dialog's own state (BEL-252). Saving sends the revision the page rendered; a stale answer keeps
+ * The rename dialog's own state. Saving sends the revision the page rendered; a stale answer keeps
  * the dialog open on the board's current title and retries on ITS revision. A saved rename re-arms the thread
  * poll — a terminal task's poll has stopped, so without that refetch its header would keep the old name.
  * Reset per task by the same generation rule as `useTaskRemoval`.
