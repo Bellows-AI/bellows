@@ -1,0 +1,106 @@
+name: Lanes nightly
+
+# The kind lane (scripts/test-k8s.sh --cluster, one cell per phase) and the docker lane
+# (scripts/test-jobs.sh) cost too much for the merge path, so they run once a day and on demand. A red
+# run opens or comments on one issue, with the failing cell's evidence bundle uploaded beside it.
+on:
+    schedule:
+        - cron: '47 2 * * *'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: lanes-nightly
+    cancel-in-progress: false
+
+jobs:
+    kind:
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        strategy:
+            fail-fast: false
+            matrix:
+                # Every phase `scripts/test-k8s.sh --help` names, bench excepted: it takes an hour or more.
+                phase: [smoke, admission, workspace, recovery, services, takeover, control, acceptance, capacity, mcp, drain]
+        steps:
+            - uses: actions/checkout@v4
+            - name: install helm by checksum
+              env:
+                  HELM_VERSION: v3.16.4
+                  HELM_SHA256: fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179
+              run: |
+                  curl -fsSL -o /tmp/helm.tar.gz \
+                      "https://get.helm.sh/helm-$HELM_VERSION-linux-amd64.tar.gz"
+                  printf '%s  /tmp/helm.tar.gz\n' "$HELM_SHA256" | sha256sum -c -
+                  tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
+                  install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+                  helm version --short
+            # kind and kubectl ship on ubuntu-latest; the drain phase alone needs the three-worker layout.
+            - name: scripts/kind-cluster.sh create
+              env:
+                  LAYOUT: ${{ matrix.phase == 'drain' && 'drain' || '' }}
+              run: sh scripts/kind-cluster.sh create ci
+            - name: scripts/test-k8s.sh --cluster --phase ${{ matrix.phase }}
+              env:
+                  PHASE: ${{ matrix.phase }}
+              run: scripts/test-k8s.sh --cluster --phase "$PHASE"
+            - if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: k8s-evidence-${{ matrix.phase }}
+                  path: artifacts/k8s/evidence-*
+                  retention-days: 7
+                  if-no-files-found: warn
+
+    jobs:
+        runs-on: ubuntu-latest
+        timeout-minutes: 120
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '24'
+                  cache: npm
+            - name: npm ci
+              run: npm ci
+            # Every phase but compose-driver and question-round-trip, which need host networking
+            # to reach the loopback-only open board (docs/ci.md).
+            - name: npm run test:jobs
+              run: >-
+                  npm run test:jobs -- --phase
+                  board,driver,github-credential,services,orphan-reaper,node-disruption,driver-kill,run-deadline,capacity,review,workflows,acceptance,auth,cooperative-stop,tool-isolation,image-checks,ask-user-question,pinned-skills,repo-skills,mcp
+            - if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: jobs-evidence
+                  path: artifacts/jobs/evidence-*
+                  retention-days: 7
+                  if-no-files-found: warn
+
+    # The same alert ci.yml's notify-red-main sends for main: one open issue, found by its fixed
+    # title, collects a comment per red night. The only credential is the job's github.token.
+    notify-red-nightly:
+        if: failure()
+        needs: [kind, jobs]
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions:
+            issues: write
+        env:
+            GH_TOKEN: ${{ github.token }}
+            GH_REPO: ${{ github.repository }}
+            TITLE: 'Nightly lanes are red'
+            BODY: >-
+                The nightly lanes failed on ${{ github.sha }}: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        steps:
+            - name: open or comment on the red-nightly issue
+              run: |
+                  number=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
+                      --jq "map(select(.title == \"$TITLE\"))[0].number // empty")
+                  if [ -n "$number" ]; then
+                      gh issue comment "$number" --body "$BODY"
+                  else
+                      gh issue create --title "$TITLE" --body "$BODY"
+                  fi

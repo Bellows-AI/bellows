@@ -187,12 +187,34 @@ jobs:
                   retention-days: 7
                   if-no-files-found: warn
 
+    # The chart's admission policy, NetworkPolicy and security decisions are rendered here, not read as
+    # text: `helm lint` and the offline phase of scripts/test-k8s.sh need no cluster, no docker and
+    # no database. Helm is the checksum-verified tarball release-image.yml installs, not an action.
+    chart:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        env:
+            HELM_VERSION: v3.16.4
+            HELM_SHA256: fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179
+        steps:
+            - uses: actions/checkout@v4
+            - name: install helm by checksum
+              run: |
+                  curl -fsSL -o /tmp/helm.tar.gz \
+                      "https://get.helm.sh/helm-$HELM_VERSION-linux-amd64.tar.gz"
+                  printf '%s  /tmp/helm.tar.gz\n' "$HELM_SHA256" | sha256sum -c -
+                  tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
+                  install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+                  helm version --short
+            - name: scripts/test-k8s.sh
+              run: scripts/test-k8s.sh
+
     notify-red-main:
         # A red push to main used to wait for a person to notice. One open issue, found by its fixed
         # title, collects a comment per red run. A tag run (workflow_call) and a merge-queue run
         # have another ref, so neither alerts. The only credential is the job's github.token.
         if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        needs: [validate, test-db, e2e]
+        needs: [validate, test-db, chart, e2e]
         runs-on: ubuntu-latest
         timeout-minutes: 5
         permissions:
