@@ -6,7 +6,7 @@ import type { ReaperArm, ReaperObserver, VolumeThread } from './reaper.js';
 import { generationOfName, taskRootOf } from './task-volume.js';
 
 /**
- * The reaper's export-before-delete (issue #938): a thread that is not whole may hold transcript records
+ * The reaper's export-before-delete: a thread that is not whole may hold transcript records
  * only its volume knows are unacknowledged, so its volume is deleted only after an export proved a drain
  * or `attempts` of them failed over at least `EXPORT_GIVE_UP_MIN_SPAN_MS`. The platform arms run the exporter (`ReaperArm.exportVolume`); this file
  * decides when, how often and what a result licenses.

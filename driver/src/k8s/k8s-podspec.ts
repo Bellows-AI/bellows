@@ -106,10 +106,10 @@ export interface RunnerPodContainer {
     imagePullPolicy: string;
     /** `Always` makes an init container a native sidecar: the gate and the services, up beside the main containers. */
     restartPolicy?: 'Always';
-    /** A service sidecar's generation probe (issue #773): what the kubelet restarts it on. */
+    /** A service sidecar's generation probe: what the kubelet restarts it on. */
     livenessProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
     resources?: PodResources;
-    /** The executor hardening (#382) — `containerHardeningField`, always present. */
+    /** The executor hardening — `containerHardeningField`, always present. */
     securityContext: ContainerSecurityContext;
     env: EnvVar[];
     /** The supervisor and the exporter run a script by content; the agent runs its image's entrypoint. */
@@ -146,10 +146,10 @@ export interface RunnerJobSpec {
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
-                /** The executor hardening (#382) — `podHardeningField`, always present. */
+                /** The executor hardening — `podHardeningField`, always present. */
                 securityContext: PodSecurityContext;
                 imagePullSecrets?: { name: string }[];
-                /** The declared service names on the pod's own loopback (issue #773); absent with none. */
+                /** The declared service names on the pod's own loopback; absent with none. */
                 hostAliases?: { ip: string; hostnames: string[] }[];
                 /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
                 nodeSelector?: Record<string, string>;
@@ -157,7 +157,7 @@ export interface RunnerJobSpec {
                 affinity?: Record<string, unknown>;
                 /** The runner RuntimeClass — `schedulingField`, absent when unset. */
                 runtimeClassName?: string;
-                /** The gate and service sidecars (issue #773). */
+                /** The gate and service sidecars. */
                 initContainers?: RunnerPodContainer[];
                 /** The agent, the supervisor beside it and, for a run that exports its transcript, the exporter. */
                 containers: RunnerPodContainer[];
@@ -169,7 +169,7 @@ export interface RunnerJobSpec {
 
 /**
  * The model credentials by reference: each `passEnv` name read from the bring-your-own credentials
- * Secret. The agent container and the reviewer sidecar (issue #774) carry this and no other Secret.
+ * Secret. The agent container and the reviewer sidecar carry this and no other Secret.
  */
 export function credentialsSecretEnv(config: DriverConfig): EnvVar[] {
     const env: EnvVar[] = [];
@@ -206,8 +206,8 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
     const env: EnvVar[] = credentialsSecretEnv(config);
     // The board's stacked environment, same discipline: names in the pod spec, values in the
     // per-attempt Secret (created before the Job — see create()). claimEnv has already dropped the
-    // reserved names; the gate registration key (`job.gateEnv`) is the driver's and is no agent env
-    // (BEL-88). NOT optional: this driver created this exact Secret moments earlier under
+    // reserved names; the gate registration key (`job.gateEnv`) is the driver's and is no agent env.
+    // NOT optional: this driver created this exact Secret moments earlier under
     // this attempt's own lease token, so a missing key is a bug and must fail loud
     // (CreateContainerConfigError) rather than start the pod silently without its env.
     const secretEnv = runnerClaimEnv(job);
@@ -301,7 +301,7 @@ const SERVICE_PROBE_PERIOD_SECONDS = 2;
 const SERVICE_PROBE_FAILURES = 1;
 
 /**
- * One declared service as a native sidecar of the task pod (issue #773): up beside the supervisor
+ * One declared service as a native sidecar of the task pod: up beside the supervisor
  * for the whole group and reached on the pod's own loopback by its declared name (`hostAliases`).
  * Hardened like every container — the declared `user:` is its uid:gid, an image default otherwise —
  * with the claim's environment as literals: those were already world-readable in the author's
@@ -350,7 +350,7 @@ function servicesPodFields(services: readonly ServiceSpec[]): {
 }
 
 /**
- * The gate container (issue #773): the declared gate image as a native sidecar, up beside the
+ * The gate container: the declared gate image as a native sidecar, up beside the
  * supervisor for the whole group, running the gate loop over the mailbox only the two of them mount
  * (`scripts/gate-loop.sh`). Its working directory is that mailbox: each request names its worktree,
  * which the sync may have recreated since. It writes the shared task worktree, so it writes as the
@@ -377,7 +377,7 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
 }
 
 /**
- * The reviewer container (issue #774): the executor image as a native sidecar, dormant beside the
+ * The reviewer container: the executor image as a native sidecar, dormant beside the
  * supervisor for the whole group, running the review loop over the review mailbox only the two of
  * them mount (`scripts/review-loop.sh`). It runs as REVIEWER_UID — not the CLI's, the tool's or the
  * gate's — so none of them can signal a review, and it holds nothing a publication needs: no
@@ -453,7 +453,7 @@ function exporterContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
  * WORKDIR is the one literal value: a path, not a credential. Every forwarded credential is a
  * NAME only — the value lives in a Secret the cluster already holds, and `valueFrom` is what
  * keeps it out of the pod spec, which anyone who can `get pods` can read. A repo job starts in its
- * task worktree (issue #35), the same tree the docker runner's WORKDIR names (`runWorkingDir`),
+ * task worktree, the same tree the docker runner's WORKDIR names (`runWorkingDir`),
  * because the close-time readout scopes the session scrape by this exact string.
  */
 /** The agent's GitHub token cache volume (`CREDENTIAL_CACHE_DIR`). */
@@ -535,19 +535,19 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // NAME only — the value lives in a Secret the cluster already holds, and `valueFrom` is what
     // keeps it out of the pod spec, which anyone who can `get pods` can read.
     //
-    // A repo job starts in its task worktree (issue #35), the same tree the docker runner's
+    // A repo job starts in its task worktree, the same tree the docker runner's
     // WORKDIR names; a command-only job starts at the member root, where it always did. One
     // expression with docker's (runWorkingDir), because the close-time readout scopes the session
     // scrape by this exact string — a scope key that drifted from the runner's would answer
     // nothing. Asserted from the same line dockerArgs asserts it from.
     assertWorktreeResolvable(job);
-    // A node that launches no agent (issue #503) still gets its group — the sync, the gates' tree
+    // A node that launches no agent still gets its group — the sync, the gates' tree
     // probe and the publish are the supervisor's — but no agent container, and so no member env.
     const agentless = job.agent === false;
     const agent = agentless ? null : agentPart(config, job, session);
     const exporting = !agentless && exportsTranscript(job, session);
     // The declared gates and setup run in the group's own gate container, and the declared services
-    // beside it on the pod's loopback (issue #773).
+    // beside it on the pod's loopback.
     const gateImage = gateImageOf(job);
     const reviewing = (job.reviewerProfiles?.length ?? 0) > 0;
     const services = groupServices(config, job);
@@ -580,7 +580,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                 [LEASE_LABEL]: job.leaseToken,
                 ...releaseLabel(config),
             },
-            // What the claim that supersedes a dead driver adopts this run by (issue #792).
+            // What the claim that supersedes a dead driver adopts this run by.
             annotations: {
                 [CLAIM_SEQ_MARK]: String(job.claimSeq),
                 ...(session ? { [SESSION_MARK]: session.id } : {}),
@@ -611,7 +611,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                     // Claude container the driver's own job-creating credentials — the docker
                     // socket riding along with the dashboard, refused here for the same reason.
                     automountServiceAccountToken: false,
-                    // The agent's own commands run in this container (issue #382): the runtime's
+                    // The agent's own commands run in this container: the runtime's
                     // seccomp profile over the whole pod, every capability dropped and no
                     // escalation back out of the drop on the container below.
                     securityContext: {
@@ -705,7 +705,7 @@ export function readerJobSpec(
 }
 
 /**
- * The one-shot exporter Job of the reaper's export-before-delete (issue #938): the task volume's newest claim
+ * The one-shot exporter Job of the reaper's export-before-delete: the task volume's newest claim
  * mounted by the transcript exporter alone, after the thread's group has ended. A Job and no bare pod, so the
  * runner network policy and the kubelet's deadline treat it like every other driver-specced pod. It carries
  * `factory.job` (the policy and the driver's admission policy select by it) with a value no attempt's selector
@@ -838,7 +838,7 @@ export const secretBody = (job: BoardJob, name: string, env: Record<string, stri
     metadata: {
         name,
         labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken },
-        // The Job the Secret was created after (issue #821): the API server's garbage collector
+        // The Job the Secret was created after: the API server's garbage collector
         // deletes the Secret once that Job is gone, whatever became of the driver. No
         // `blockOwnerDeletion`, so no extra permission on the owner is needed.
         ...(owner
@@ -863,7 +863,7 @@ export interface ListedRunnerJob {
 
 /**
  * A runner Job of `pair` that runs an agent. A supervisor-only group (an agentless node, the group
- * made after an adoption) ran no agent and is no run; a Job its driver suspended (issue #821) is none.
+ * made after an adoption) ran no agent and is no run; a Job its driver suspended is none.
  */
 export const agentRunJob = (item: ListedRunnerJob, pair: BoardJob): boolean =>
     item.metadata?.name === runnerJobName(pair) &&
@@ -872,7 +872,7 @@ export const agentRunJob = (item: ListedRunnerJob, pair: BoardJob): boolean =>
 
 /**
  * A runner Job of `pair` that ran an agent and finished — the one shape of Job a later claim adopts
- * as it is listed (issue #792); one whose supervisor is still finalizing is waited out first (#824).
+ * as it is listed; one whose supervisor is still finalizing is waited out first.
  */
 export const finishedAgentRun = (item: ListedRunnerJob, pair: BoardJob): boolean =>
     agentRunJob(item, pair) && ((item.status?.succeeded ?? 0) >= 1 || (item.status?.failed ?? 0) >= 1);
@@ -898,7 +898,7 @@ export function pullSecretsField(config: DriverConfig): { imagePullSecrets?: { n
 }
 
 /**
- * The task volume's volumeMount (issue #775), read-write unless the caller marks it read-only; a
+ * The task volume's volumeMount, read-write unless the caller marks it read-only; a
  * `subPath` narrows it to one directory of the volume (the reviewer's home).
  */
 export function taskMount(options: { readOnly?: boolean; subPath?: string; mountPath?: string } = {}): RunnerMount {

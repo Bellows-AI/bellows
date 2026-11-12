@@ -52,7 +52,7 @@ export interface PublishPlan {
     branch: string;
     /**
      * The commit message — and the PR title's FALLBACK, for a branch the summarizer cannot
-     * read (issue #82): the command's first line, with the issue reference appended.
+     * read: the command's first line, with the issue reference appended.
      */
     title: string;
     /** The issue the thread's root command (else the job's own) names — the PR body closes it. */
@@ -113,7 +113,7 @@ export interface GitState {
     fingerprint: string | null;
     /** Confirmed: nothing uncommitted and no diff of HEAD against the base. False also when unknown. */
     noChange: boolean;
-    /** Unmerged paths the tree still holds (issue #661); empty when none. */
+    /** Unmerged paths the tree still holds; empty when none. */
     conflicts: string[];
     /** A rebase is stopped in the tree, conflicted or resolved but not continued. */
     rebasing: boolean;
@@ -154,8 +154,8 @@ export interface PublishResult {
     /** What lies under a failed publish (`publishCauseOf` or the transport's own); null when it did not fail. */
     cause: FailureCause | null;
     /**
-     * The id minted for the PR operation this publish performed and handed to `PublishOptions.recordPrOperation`
-     * (issue #983); absent when nothing was recorded for it.
+     * The id minted for the PR operation this publish performed and handed to `PublishOptions.recordPrOperation`;
+     * absent when nothing was recorded for it.
      */
     operationId?: string;
 }
@@ -170,7 +170,7 @@ export interface PublishOptions {
     revision?: string;
     /** Open a NEW pull request as a draft — the agent's mid-run publish. An existing PR is reused as it is. */
     draft?: boolean;
-    /** Receives each PR operation as it happens (issue #983); best effort, never part of the publish's verdict. */
+    /** Receives each PR operation as it happens; best effort, never part of the publish's verdict. */
     recordPrOperation?: PrOperationRecorder;
 }
 
@@ -188,7 +188,7 @@ export type SyncFailureKind =
     | 'skill_unavailable';
 
 /**
- * The turn context a conflict handed over by the sync adds (issue #661): the paths, and what the
+ * The turn context a conflict handed over by the sync adds: the paths, and what the
  * agent does about them. Appended to the board's own context, which it never replaces.
  */
 export const withConflictContext = (turnContext: string | undefined, paths: readonly string[]): string =>
@@ -254,7 +254,7 @@ export const publishNothing = (reason: string): PublishResult => ({
 export const STALE_REVISION_REASON =
     'the checkout changed after the required evidence was taken — nothing was pushed; re-run the gates (and review) over the current work';
 
-/** Why a bound publish pushed nothing: its own git steps' hooks moved the content (issue #825). */
+/** Why a bound publish pushed nothing: its own git steps' hooks moved the content. */
 export const PUBLISH_MOVED_REASON =
     "the publish's own git steps changed the content after the required evidence was taken (a repository hook) — nothing was pushed; re-run the gates (and review) over the current work";
 
@@ -280,7 +280,7 @@ const staleRefusal = (reason: string): PublishResult => ({ ...publishFailed(reas
 const PUBLISH_CAUSES: readonly [FailureCause, RegExp][] = [
     // GitHub answers a rate limit with a 403 too; it passes, so it is transport, read before `denied`.
     ['transport', /rate limit exceeded|secondary rate limit|HTTP 429|returned error: 429/i],
-    // The task supervisor's channel (issue #771): a step whose answer never came, or an attempt gone.
+    // The task supervisor's channel: a step whose answer never came, or an attempt gone.
     ['transport', /supervisor channel closed|was not answered in time/],
     [
         'denied',
@@ -307,8 +307,8 @@ const CREDENTIAL_REJECTED = /Invalid username or token|Authentication failed|cou
 const GITHUB_SERVER_ERROR = /returned error: 5\d\d|HTTP 5\d\d|GraphQL: Something went wrong/;
 
 /**
- * Whether asking for a NEW GitHub token and publishing again can turn this failure into a landing
- * (BEL-253): a missing token (`tokenMissing`, the board's reclaim lease still pending), a token
+ * Whether asking for a NEW GitHub token and publishing again can turn this failure into a landing:
+ * a missing token (`tokenMissing`, the board's reclaim lease still pending), a token
  * GitHub rejected, or a GitHub 5xx. A refusal, a conflict and a stale revision are never retried.
  */
 export function publishRetryable(result: PublishResult, tokenMissing: boolean): boolean {
@@ -353,8 +353,8 @@ const repoSegmentOf = (job: Pick<BoardJob, 'repo'>): string | null => {
 /**
  * The key the task's checkout is filed under (its gate environment's): `<thread root id>/<repo
  * segment>` — or null when the job names no repository (a command-only job runs at the task
- * volume's root) or either half fails its assertion. One task thread = one volume = one checkout
- * (issue #775): every attempt of the job, and every follow-up resuming its session, lands in the
+ * volume's root) or either half fails its assertion. One task thread = one volume = one checkout:
+ * every attempt of the job, and every follow-up resuming its session, lands in the
  * same tree.
  */
 export function checkoutKey(job: BoardJob): string | null {
@@ -369,7 +369,7 @@ export function checkoutDir(job: BoardJob): string | null {
     return segment && UUID.test(job.rootJobId ?? job.id) ? `${TASK_MOUNT}/${segment}` : null;
 }
 
-/** Where the task's checkout is cloned from (issue #775): `<cloneBase>/<owner>/<name>.git`, or null for a repo label with another shape. */
+/** Where the task's checkout is cloned from: `<cloneBase>/<owner>/<name>.git`, or null for a repo label with another shape. */
 export function remoteUrl(config: Pick<DriverConfig, 'cloneBase'>, job: BoardJob): string | null {
     const [owner, name, ...rest] = job.repo?.split('/') ?? [];
     const part = /^[A-Za-z0-9._-]+$/;
@@ -387,7 +387,7 @@ export function remoteUrl(config: Pick<DriverConfig, 'cloneBase'>, job: BoardJob
     return repoSegmentOf(job) ? `${config.cloneBase}/${owner}/${name}.git` : null;
 }
 
-/** The directory of the task volume that holds every review root of the thread (issue #774). */
+/** The directory of the task volume that holds every review root of the thread. */
 export const REVIEW_ROOTS_DIR = `${TASK_MOUNT}/.factory/reviews`;
 
 /** One review's worktree: `/task/.factory/reviews/<review root id>`, or null when it has no place on the volume. */
@@ -536,7 +536,7 @@ export async function probeTreeFingerprint(job: BoardJob, runStep: RunPublishSte
 }
 
 /**
- * What one probe around a gate run measured (issue #983): the tree fingerprint and, when asked since a
+ * What one probe around a gate run measured: the tree fingerprint and, when asked since a
  * moment, whether any shipped path was touched at or after it. Each is null when unknown; only a
  * confirmed `false` says untouched.
  */
@@ -572,7 +572,7 @@ export async function probeGateTree(
 }
 
 /**
- * Whether the task's checkout holds no change at all (issue #1020): nothing uncommitted and no diff
+ * Whether the task's checkout holds no change at all: nothing uncommitted and no diff
  * against the claim's base. Only a confirmed read answers true; a probe that failed, timed out or
  * found no checkout answers false, so the gates run.
  */
@@ -633,7 +633,7 @@ const gitRead = async (step: RunPublishStep, label: string, args: string[]): Pro
  * (the agent does not need one to edit); a fallback is applied only when the probe found none,
  * so a member-configured identity is never overridden. The supervisor's git runs no hook of the
  * checkout (`scripts/git-harden.cjs`: the tool uid writes them), so nothing rewrites the staged
- * tree. A `bound` publish (issue #825) still stages hook-free by argument and answers whether the
+ * tree. A `bound` publish still stages hook-free by argument and answers whether the
  * commit still holds exactly the staged tree; an unbound one answers true.
  */
 async function commitDirtyTree(step: RunPublishStep, state: GitState, title: string, bound: boolean): Promise<boolean> {
@@ -664,7 +664,7 @@ async function commitDirtyTree(step: RunPublishStep, state: GitState, title: str
 
 /**
  * Puts the work on its task branch and commits it. A bound publish (`revision`) ships only the
- * content its evidence assessed (issue #825): a switch or a commit that moved the content answers
+ * content its evidence assessed: a switch or a commit that moved the content answers
  * null — refused like any other move — never a branch to push.
  */
 async function branchAndCommit(
@@ -706,7 +706,7 @@ export async function publishCheckout(
         try {
             return await runStep(publish);
         } catch (e) {
-            // A lost supervisor keeps its class: it is the attempt's interruption, not a step's failure (#925).
+            // A lost supervisor keeps its class: it is the attempt's interruption, not a step's failure.
             if (stepLost(e)) throw e;
             throw new Error(`${publish.label}: ${(e as Error).message.slice(0, STEP_ERROR_MAX_CHARS)}`);
         }

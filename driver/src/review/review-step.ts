@@ -36,7 +36,7 @@ import { type StepResult, SUPERVISOR_ENV } from '../supervisor-contract.js';
 import { deliverTaskInputs } from '../task-inputs.js';
 
 /**
- * One named reviewer's run as supervised steps of its CALLER's task group (issue #774): the
+ * One named reviewer's run as supervised steps of its CALLER's task group: the
  * reviewer's home on the task volume, the restore of its worktree at the snapshot ref the caller
  * froze, and the review itself, which the supervisor hands to the reviewer container. Every step
  * rides the caller's control channel (`controlTokenOf(caller)`) and is named by the review's own

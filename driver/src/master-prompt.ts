@@ -1,5 +1,5 @@
 /**
- * The driver's half of the board-owned master prompt (issue #244): validating the claim carries
+ * The driver's half of the board-owned master prompt: validating the claim carries
  * one, and turning it into each executor's own delivery mechanics. The server owns what the text
  * SAYS (server/src/db/master-prompt.ts); this file owns nothing about meaning — only how each CLI
  * is told it, which is why it is the one thing docker and kubernetes must build identically.
@@ -52,7 +52,7 @@ export const TURN_CONTEXT_ENV = 'FACTORY_TURN_CONTEXT';
 /**
  * The claim's per-node turn context, never in the system prompt: the system prompt precedes the
  * conversation, so a per-node byte there would re-write a resumed session's whole history to the
- * prompt cache on every node transition (issue #509). Claude Code takes it as env for its baked
+ * prompt cache on every node transition. Claude Code takes it as env for its baked
  * UserPromptSubmit hook, so `-p` stays the bare command and a `/skill` command still expands.
  */
 export function claudeTurnContextEnv(job: BoardJob): [string, string][] {
@@ -95,7 +95,7 @@ function withoutReservedAgent(value: unknown): Record<string, unknown> {
 
 /**
  * Merges the reserved `factory` primary agent into whatever `OPENCODE_CONFIG_CONTENT` the claim
- * already carries (the member's own baked model/permission/plugin config, issue #91) — without
+ * already carries (the member's own baked model/permission/plugin config) — without
  * dropping any of it. Any member-declared `agent.factory` is replaced wholesale, never merged
  * field-by-field with it: a member's own `prompt`, `mode`, or `disable` on that name is exactly
  * the override this feature must refuse, and a partial merge would still let a member turn the

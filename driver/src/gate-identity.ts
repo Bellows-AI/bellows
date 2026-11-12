@@ -3,7 +3,7 @@ import type { BoardJob, DeclaredGate } from './board/board.js';
 import { envBodyRecord } from './gates.js';
 
 /**
- * The identity of one gate run's configuration (issue #983): the command, its timeout, the image,
+ * The identity of one gate run's configuration: the command, its timeout, the image,
  * setup, cache, services and the env the run gets, as one HMAC-SHA256 hex digest. A gate run is reused
  * at completion only when this is equal, so a changed env VALUE must change it; the digest is keyed by
  * a secret every driver of the board shares (`JOB_BOARD_TOKEN`), so identities stay comparable across

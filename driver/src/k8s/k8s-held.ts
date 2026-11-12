@@ -25,7 +25,7 @@ function heldContainerOf(name: string | undefined): HeldContainer {
 
 /**
  * The held container and its image: the status's own, else — for a sidecar — the image the pod spec
- * gave it (#773), never the executor image a caller would otherwise fill in.
+ * gave it, never the executor image a caller would otherwise fill in.
  */
 export function heldOf(holder: K8sContainerStatus | undefined, pod: K8sPod | undefined): HeldImage | null {
     if (!holder) return null;

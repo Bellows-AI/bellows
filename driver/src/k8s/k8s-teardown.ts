@@ -65,7 +65,7 @@ export async function deleteSecretAcked(
 
 /**
  * The pods that can still write the attempt's tree: every pod of the (job, lease) pair — its runner
- * pod, whose gate and service sidecars go with it (issue #773), and any aux pod of the pair.
+ * pod, whose gate and service sidecars go with it, and any aux pod of the pair.
  */
 export const writerPodsPath = (namespace: string, pair: BoardJob): string =>
     `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${pair.id},${LEASE_LABEL}=${pair.leaseToken}`)}`;
@@ -272,7 +272,7 @@ export function holderUnconfirmed(deps: K8sDeps, holder: string): boolean {
 }
 
 /**
- * Ends every unconfirmed group of `holder` again, each Job read first (#869): one gone or ended is
+ * Ends every unconfirmed group of `holder` again, each Job read first: one gone or ended is
  * ended with `keep` — its run is adoptable, and was never reason to delete; one read still pending
  * did not end the first time and is ended destructively; one that cannot be read stays unconfirmed
  * and held, for the next call. True once none is left unconfirmed.

@@ -12,7 +12,7 @@ import {
     taskVolumeSpec,
 } from '../task-volume.js';
 
-/** The task volumes of a namespace (issue #775). */
+/** The task volumes of a namespace. */
 export const taskVolumesPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/persistentvolumeclaims`;
 
 /** One claim of a listing: its generation and whether it is being deleted (its name is taken, but it cannot be mounted). */
@@ -23,7 +23,7 @@ interface ListedVolume {
 }
 
 /**
- * The thread's task volumes by its root label (issue #775). Only a 200 whose items are all this
+ * The thread's task volumes by its root label. Only a 200 whose items are all this
  * thread's claims counts, so an empty list is the one proof of absence; a refusal, a transport
  * failure and a malformed item throw, and nothing is created or restored on them.
  */

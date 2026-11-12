@@ -40,14 +40,14 @@ export interface RunOutcome {
     refused?: boolean;
     /**
      * Set when the platform took the runner away before it exited — its pod deleted, evicted or
-     * its node removed, its container removed (issue #560) — and says how. No verdict of the
+     * its node removed, its container removed — and says how. No verdict of the
      * agent's exists, so the loop reports none: it leaves the job to the lease, which re-offers it.
      */
     infraLoss?: string;
     /**
      * Set with `infraLoss` only when the executor saw the runner itself taken away (its container removed, its pod
      * evicted or gone; `TerminationEvidence.vanished`), never for a supervisor that ended badly or an agent that
-     * was killed (BEL-302): the hand-back then stays out of the poison interruption budget.
+     * was killed: the hand-back then stays out of the poison interruption budget.
      */
     infraNodeLoss?: true;
     /** For a container that never started: the cause the platform's refusal proves (`startupCauseOf`), if any. */
@@ -130,7 +130,7 @@ export interface RunOutcome {
      */
     blockedLine?: string;
     /**
-     * The run's full output, tail-kept at ARTIFACT_LIMIT bytes (issue #325) — the artifact the
+     * The run's full output, tail-kept at ARTIFACT_LIMIT bytes — the artifact the
      * loop uploads to the board at close, where the rolling tail the verdict carries is only the
      * end of the run. Absent when the runner captured none (a refused start, a kubernetes pod
      * whose log was already gone) — no artifact is uploaded, never an empty one.
@@ -184,7 +184,7 @@ export interface DeadService extends ServiceStatus {
 export const SERVICE_LOG_TAIL_LINES = 20;
 
 /**
- * How long a restarted fleet has to reach running (issue #560), in seconds: long enough for a
+ * How long a restarted fleet has to reach running, in seconds: long enough for a
  * cluster autoscaler to bring a node up under the replacement pods.
  */
 export const SERVICE_RESTART_TIMEOUT_S = 300;
@@ -212,7 +212,7 @@ export const DEAD_SERVICE_STATES: ReadonlySet<string> = new Set(['exited', 'dead
 const CAPABILITY_DROP_SIGNATURE = /failed switching to|(?:chown|gosu|su-exec)\b[^\n]*operation not permitted/i;
 
 /**
- * The fix for a service that died on the capability-drop signature (issue #487), or null. Services
+ * The fix for a service that died on the capability-drop signature, or null. Services
  * start with every capability dropped, so a stock image that chowns its data dir or switches user
  * as root cannot boot.
  */
@@ -227,13 +227,13 @@ export function serviceHint(logTail: string): string | null {
 /** How many hex digits of the command's sha256 `commandMark` keeps: a label-sized value. */
 const COMMAND_MARK_HEX = 16;
 
-/** The command a runner ran, as its adoption mark (`COMMAND_MARK`, issue #792). */
+/** The command a runner ran, as its adoption mark (`COMMAND_MARK`). */
 export const commandMark = (command: string): string =>
     createHash('sha256').update(command).digest('hex').slice(0, COMMAND_MARK_HEX);
 
 /**
- * A finished runner of an earlier claim of the same job, read by the claim that superseded it
- * (issue #792): its driver died, the runner did not. `outcome` is what `run` would have answered
+ * A finished runner of an earlier claim of the same job, read by the claim that superseded it:
+ * its driver died, the runner did not. `outcome` is what `run` would have answered
  * it; `claimSeq` the earlier claim it ran under.
  */
 export interface AdoptedRun {
@@ -242,8 +242,8 @@ export interface AdoptedRun {
 }
 
 /**
- * A released group whose agent still runs, taken over by the claim that superseded its driver
- * (#829): `prior` names the lease its objects carry, `session` the conversation it runs. Nothing of
+ * A released group whose agent still runs, taken over by the claim that superseded its driver:
+ * `prior` names the lease its objects carry, `session` the conversation it runs. Nothing of
  * it was read as an end; the loop rebinds its supervisor to the new claim and the run continues.
  */
 export interface LiveRun {
@@ -252,12 +252,12 @@ export interface LiveRun {
     claimSeq: number;
     session: string | null;
     startedAt: string;
-    /** Drops this process's memory of the group's end; the takeover that finds the group finished calls it (#928). */
+    /** Drops this process's memory of the group's end; the takeover that finds the group finished calls it. */
     forget(): void;
 }
 
 /**
- * The job as the group it runs in addresses it (#829): a taken-over attempt names the objects of the
+ * The job as the group it runs in addresses it: a taken-over attempt names the objects of the
  * lease the group was created under (`groupLease`), and the claim holder — who the checkout claim is
  * kept for — is carried apart. Every attempt-scoped runner method takes the job through it; an
  * attempt that took nothing over is its own group.
@@ -267,8 +267,8 @@ export const ownGroup = (job: BoardJob): BoardJob =>
 
 /**
  * Thrown by `Runner.adopt` once a finished run was read but something of an earlier attempt could
- * not be confirmed gone (issue #821), or an earlier runner could not be read far enough to tell
- * whether it is a run to adopt (#824): the attempt is left to its lease, never run afresh over the
+ * not be confirmed gone, or an earlier runner could not be read far enough to tell
+ * whether it is a run to adopt: the attempt is left to its lease, never run afresh over the
  * tree that run left — the next claim adopts it again.
  */
 export class AdoptionBlocked extends Error {}
@@ -283,19 +283,19 @@ export class LeftoverTerminating extends Error {}
 
 /**
  * A read that proves nothing — a transport failure past its retries, an answer that is neither the
- * thing nor its confirmed absence, a body that is not the shape asked for (#824). Never read as
+ * thing nor its confirmed absence, a body that is not the shape asked for. Never read as
  * empty or gone: whoever decides a delete or a negative verdict on it stands down instead.
  */
 export class Inconclusive extends Error {}
 
 /**
- * A typed read's answer (#869): the value, the object's confirmed absence, or a read that proves
+ * A typed read's answer: the value, the object's confirmed absence, or a read that proves
  * nothing — never an empty value invented from an answer that was not one. Whoever decides a delete
  * or a negative verdict on it branches on all three.
  */
 export type Read<T> = { kind: 'value'; value: T } | { kind: 'absent' } | { kind: 'inconclusive'; reason: string };
 
-/** What `Runner.groupTakenAway` read (BEL-316): the group's loss confirmed, its survival confirmed, or neither. */
+/** What `Runner.groupTakenAway` read: the group's loss confirmed, its survival confirmed, or neither. */
 export type GroupTakenAway = 'taken' | 'kept' | 'unknown';
 
 /** Thrown by `Runner.adopt` once the attempt stood down mid-adoption: nothing more of it is its to delete. */
@@ -326,7 +326,7 @@ export interface Runner {
      * The attempt's declared services that are no longer running — exited, whatever the code —
      * each with its exit, the platform's reason and its last log lines. The loop asks right
      * before the declared gates: a gate against a dead service fails on an environment the
-     * agent cannot fix (issue #423). Empty when services are off or every one is alive; a read
+     * agent cannot fix. Empty when services are off or every one is alive; a read
      * that fails throws, and the loop runs the gates as if it had answered empty.
      */
     deadServices(job: BoardJob): Promise<DeadService[]>;
@@ -342,7 +342,7 @@ export interface Runner {
     startServices(job: BoardJob, signal?: AbortSignal): Promise<RunOutcome | null>;
     /**
      * Recreates the attempt's declared fleet from the recorded specs and waits until every
-     * service runs, up to SERVICE_RESTART_TIMEOUT_MS (issue #560). The loop calls it when a
+     * service runs, up to SERVICE_RESTART_TIMEOUT_MS. The loop calls it when a
      * service is found dead before the declared gates: services are stateless fixtures, so a
      * fleet the platform took away is put back rather than failing finished work. Throws when the
      * fleet cannot be brought back; the message is the verdict's. `signal` is the attempt's
@@ -392,14 +392,14 @@ export interface Runner {
      */
     probeTree(job: BoardJob, signal?: AbortSignal): Promise<string | null>;
     /**
-     * The tree fingerprint and, for a `sinceMs`, the mutation guard (`mutatedSince`, issue #983): the
+     * The tree fingerprint and, for a `sinceMs`, the mutation guard (`mutatedSince`): the
      * probes the gate manager runs inside the checkout's queue around one gate. Over the same transport
      * as `probeTree`; nothing here throws for an unknown — it is null, never a guess.
      */
     probeGateTree(job: BoardJob, sinceMs: number | null, signal?: AbortSignal): Promise<TreeProbe>;
     /**
      * True only when the task's checkout is confirmed to hold no change — nothing uncommitted, no
-     * diff against its base (issue #1020) — over the same transport as `probeTree`; the loop skips
+     * diff against its base — over the same transport as `probeTree`; the loop skips
      * the close-time gates on it. Anything unconfirmed answers false.
      */
     probeNoChange(job: BoardJob, signal?: AbortSignal): Promise<boolean>;
@@ -407,16 +407,16 @@ export interface Runner {
      * Reads and takes down a FINISHED runner an earlier claim of this job left behind (issue
      * #792), before this attempt's sync touches the tree that run left: its verdict, log and
      * session are this attempt's outcome instead of a second run. A RELEASED group whose agent still
-     * runs answers a `LiveRun` instead (#829), taken over rather than read. Null when there is none — no
+     * runs answers a `LiveRun` instead, taken over rather than read. Null when there is none — no
      * earlier runner, one not yet released, or one the platform took away. The earlier attempt's
      * objects are swept only once read. Under kubernetes it takes the checkout claim, which the
      * attempt holds from here as the sync would have taken it. `signal` is the attempt's stand-down:
-     * an adoption still waiting on a finalizing supervisor (#824) is abandoned and deletes nothing.
+     * an adoption still waiting on a finalizing supervisor is abandoned and deletes nothing.
      */
     adopt(job: BoardJob, signal?: AbortSignal): Promise<AdoptedRun | LiveRun | null>;
     /**
      * Freezes the task tree's current state under a snapshot ref of the shared clone, for a named
-     * reviewer to start from (issue #549) — over the same transport `probeTree` uses, so both
+     * reviewer to start from — over the same transport `probeTree` uses, so both
      * executors do it identically. Writes only a ref, never overwrites one (a repeated request
      * finds the first snapshot), and moves nothing the agent has.
      */
@@ -427,7 +427,7 @@ export interface Runner {
      * of the thread) or rebase it onto the new default, keeping its commits. A claim that
      * CONTINUES a session (a follow-up) RESTORES instead: no fetch, no
      * rebase — the tree is kept exactly as the run before it left it, or recreated from the
-     * surviving thread branch (issue #58: git operations that touch the remote belong to the
+     * surviving thread branch (git operations that touch the remote belong to the
      * task's beginning and end, never its middle). Called before the runner spawns, so a task
      * starts from the code it is meant to continue. Answers { ok: false, reason } rather than
      * throwing; the loop turns that into the verdict. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a
@@ -443,7 +443,7 @@ export interface Runner {
         githubToken?: string
     ): Promise<SyncResult>;
     /**
-     * Ends the attempt's task group (issue #771): the supervisor that ran the sync, serves the
+     * Ends the attempt's task group: the supervisor that ran the sync, serves the
      * probe, the helpers and the publish, and held the agent. The group exists from the attempt's
      * first step, not from the agent's start, and `run` leaves it alive — so the loop finishes it,
      * on every way the attempt ends, while the run-control channel its order travels is still open.
@@ -453,7 +453,7 @@ export interface Runner {
     /**
      * Reclaims the task worktree after the thread's LAST job is terminal: removes the per-thread
      * tree and prunes its admin entry, so a finished or deleted task does not leave its tree
-     * squatting on the member volume forever (issue #47). Best-effort by contract: the loop calls
+     * squatting on the member volume forever. Best-effort by contract: the loop calls
      * it after a verdict precisely because the verdict is already safe on the board — a reclaim
      * that refuses (a path that is not the sync's own worktree, a daemon that says no) must never
      * turn a done task back into a failed one, and the loop logs and moves on. Refusal keeps the
@@ -473,25 +473,25 @@ export interface Runner {
      */
     releaseFence?(job: BoardJob): Promise<void>;
     /**
-     * Whether the executor confirms the attempt's task group was taken away (BEL-302): its pod evicted, marked
+     * Whether the executor confirms the attempt's task group was taken away: its pod evicted, marked
      * for disruption or gone, its supervisor container removed. `taken` only on that confirmation, `kept` only
      * when the read confirms the group is still there; any doubt, a failed, timed-out or aborted read, is `unknown`.
      */
     groupTakenAway(job: BoardJob, signal: AbortSignal): Promise<GroupTakenAway>;
     /**
-     * Runs one declared block-helper step (issue #207): an allowlisted, board-owned script an
+     * Runs one declared block-helper step: an allowlisted, board-owned script an
      * expanded workflow `block` node names to run before or after its agent turn. `call.token` is a
      * fresh GitHub installation token, minted by the loop immediately before a github-writing
      * helper (`plan.githubWriting`); a read-only helper gets none and the transport runs it with
      * the claim env untouched. A job with no `helperPlans` never calls it. An aborted `call.signal` (the
      * attempt's stand-down) ends a kubernetes helper's poll and reaps its Job; on docker it
      * detaches the client and the container is removed by name, a github-writing one included.
-     * `call.effectId` names the call's logical effect across claims (`helperEffectId`, issue #826). A
+     * `call.effectId` names the call's logical effect across claims (`helperEffectId`). A
      * lost supervisor rejects (`stepLost`) rather than answering a helper failure.
      */
     runHelper(job: BoardJob, plan: HelperPlan, call?: HelperCall): Promise<HelperResult>;
     /**
-     * Runs one declared gate (or the setup) in the attempt's task group (issue #773): a supervised
+     * Runs one declared gate (or the setup) in the attempt's task group: a supervised
      * step the supervisor hands the group's gate container — the declared image, over the task
      * worktree. A group is made on demand for an attempt whose sync made none (an adopted run, an
      * agent-less node), as for every other step. An abort of `signal` cancels it through the step
@@ -499,19 +499,19 @@ export interface Runner {
      */
     runGate(job: BoardJob, gate: GateStepRequest, signal?: AbortSignal): Promise<StepResult>;
     /**
-     * Asks the platform to resize the gate container's requests in place (issue #773): low (`idle`)
+     * Asks the platform to resize the gate container's requests in place: low (`idle`)
      * while the agent runs, the configured gate requests (`verify`) for the setup and the declared
      * gates. Best-effort: false when the request was not made or refused — never awaited for the
      * kubelet to apply it, never a verdict. Docker has nothing to resize and answers false.
      */
     resizeGate(job: BoardJob, phase: GateSizing): Promise<boolean>;
     /**
-     * The same for the reviewer container (issue #774): low (`idle`) between reviews, the runner's
+     * The same for the reviewer container: low (`idle`) between reviews, the runner's
      * own requests (`run`) while one runs. Best-effort, as `resizeGate`; docker answers false.
      */
     resizeReviewer(job: BoardJob, phase: ReviewerSizing): Promise<boolean>;
     /**
-     * Runs one named reviewer's review in the CALLER's task group (issue #774): the reviewer's home,
+     * Runs one named reviewer's review in the CALLER's task group: the reviewer's home,
      * its worktree restored at the snapshot ref, and the executor run in the group's reviewer
      * container, as supervised steps over the caller's control channel. `session` resumes the
      * review's own session (a re-leased review). The answer is the review step's result; a setup
@@ -526,14 +526,14 @@ export interface Runner {
         control?: ReviewControl
     ): Promise<StepResult>;
     /**
-     * Writes `binding` where the group's live supervisor follows a newer holder (#829): the attempt
+     * Writes `binding` where the group's live supervisor follows a newer holder: the attempt
      * Secret's binding key on kubernetes, a supervisor-only volume on docker. Resolves only once the
      * write is confirmed; any rejection means "maybe written", never "not written". It reads nothing,
      * revokes nothing and never consults the driver's own groups (the group may be another driver's).
      */
     rebind(group: BoardJob, binding: SupervisorBinding, signal: AbortSignal): Promise<void>;
     /**
-     * Whether a PRIOR group's supervisor can still pick up a rebind (#928): `true` while it runs and has not
+     * Whether a PRIOR group's supervisor can still pick up a rebind: `true` while it runs and has not
      * logged `SUPERVISOR_SERVED_LINE`, `false` once it stopped serving, terminated, or its pod or Job ended, and
      * `absent` when the group is confirmed gone. Anything unconfirmed (a failed, timed-out or malformed read) is
      * `inconclusive`, never an end: the wait for the rebound supervisor goes on. One request per object, no retries,
@@ -542,7 +542,7 @@ export interface Runner {
     supervisorServing(group: BoardJob, bound: Bound): Promise<Read<boolean>>;
     /**
      * The attempt was abandoned — its lease lost past the launch, or a drain's handover — and its
-     * group is the next holder's (#829): ends every in-process timer, interval and poll this runner
+     * group is the next holder's: ends every in-process timer, interval and poll this runner
      * started for `job.leaseToken` (the run's backstop deadline, the cache watch, the verdict poll),
      * so none kills, deletes or records a kill against a group this process no longer owns. It
      * touches nothing of the group itself and is safe to call twice or for a run not in flight.
@@ -551,7 +551,7 @@ export interface Runner {
 }
 
 /**
- * How each Runner member addresses the group (#829): `group` members take the attempt's job through
+ * How each Runner member addresses the group: `group` members take the attempt's job through
  * `ownGroup` (they act on the group's objects), `attempt` members act on the claim's own — the adoption
  * that takes over, the checkout sync and reclaim, the binding write to a PRIOR group. A new member is
  * classified here or it does not compile.
@@ -590,7 +590,7 @@ const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
 };
 
 /**
- * The runner whose attempt-scoped members address the group the attempt took over (#829): each
+ * The runner whose attempt-scoped members address the group the attempt took over: each
  * `group` member is called with `ownGroup(job)`, its first argument, so a taken-over attempt reaches
  * the prior lease's objects while the claim it holds is carried as `claimHolder`.
  */
@@ -622,7 +622,7 @@ const OUTPUT_LIMIT_KIB = 64;
 export const OUTPUT_LIMIT = OUTPUT_LIMIT_KIB * BYTES_PER_KIB;
 
 /**
- * The full-run log and transcript artifact cap (issue #325): how much of a run's output the
+ * The full-run log and transcript artifact cap: how much of a run's output the
  * driver keeps for the board's artifact upload, tail-kept — a run that fails says why at the
  * end, and the head is banner. The server's route re-bounds the stored content to the same
  * figure; the value is copied there, per this package's zero-dependency rule.
@@ -658,7 +658,7 @@ const UTF8_CONTINUATION = 0x80;
 /**
  * The last `limit` bytes of `bytes`, decoded from the first character boundary inside them: a
  * multibyte character the limit cuts is dropped whole, never decoded to a U+FFFD that re-encodes
- * past the limit (issue #825).
+ * past the limit.
  */
 function decodeTail(bytes: Uint8Array, limit: number): string {
     let start = bytes.length - limit;
@@ -683,7 +683,7 @@ export function reportTail(logText: string): string {
 
 /**
  * Tail-keeps `text` to `limit` UTF-8 bytes, answering whether a cut happened — the accumulator
- * and artifact reads' shape (issue #325), where the truncated flag must be earned by an actual
+ * and artifact reads' shape, where the truncated flag must be earned by an actual
  * cut, never guessed. The same byte-true rule as `tailBytes`, plus the flag.
  */
 export function tailKept(text: string, limit: number): { content: string; truncated: boolean } {

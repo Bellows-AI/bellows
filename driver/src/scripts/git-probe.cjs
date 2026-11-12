@@ -72,7 +72,7 @@ const fingerprintOf = (cwd) => {
         return null;
     }
 };
-// The content key (issue #983): the tree a gate run saw, as file contents alone — the git tree id of
+// The content key: the tree a gate run saw, as file contents alone — the git tree id of
 // the work tree as `git add -A` would stage it, `.factory/` excluded, plus each nested repository's
 // own key (a submodule, an untracked repo). HEAD is not part of it, so a publish committing the same
 // bytes keeps it. Built in a throwaway index and object directory (the repo's objects read through

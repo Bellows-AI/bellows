@@ -46,7 +46,7 @@ export interface RunnerPlan {
 }
 
 /**
- * The run's checkout, asserted: a repo job runs in its task worktree (issue #35) — one per task
+ * The run's checkout, asserted: a repo job runs in its task worktree — one per task
  * thread, branched off the remote default — and a command-only job at the member root, where it
  * always started. A repo label this driver cannot resolve a worktree for is refused before any
  * container or pod spec exists, on both platforms, from this one line.
@@ -79,7 +79,7 @@ const baseBranchEnv = (job: BoardJob): [string, string][] => {
 };
 
 /**
- * BEL-273: where the pinned org and workspace skills were installed (`deliverSkills`), when the claim pins any. The
+ * where the pinned org and workspace skills were installed (`deliverSkills`), when the claim pins any. The
  * runner is told by one env name the opencode entrypoint merges into `skills.paths` (and its `external_directory`
  * allow); claude is given the base directory with `--add-dir` (`claudeSkillArgs`). Never a path under `/etc/claude-code`.
  */
@@ -99,7 +99,7 @@ const workspaceSkillsEnv = (job: BoardJob): [string, string][] => {
 const claudeSkillArgs = (job: BoardJob): string[] => (hasPinnedSkills(job) ? ['--add-dir', SKILLS_ROOT] : []);
 
 /**
- * BEL-286: the built-in skills this task does not list, as one comma list the runner entrypoints read. Both executors,
+ * the built-in skills this task does not list, as one comma list the runner entrypoints read. Both executors,
  * main agent and reviewer (`reviewerPlan` builds on this plan), always carry the variable: empty means nothing is hidden.
  * A claim whose `skillHidden` this client could not read throws here, so no container starts on a guess.
  */
@@ -215,11 +215,11 @@ function claudePlan(
     // Auto mode is pinned on the command line as well as in managed settings: a resumed session
     // otherwise restores the mode it recorded, and default mode denies every unlisted command.
     cliArgs.push(...(config.skipPermissions ? ['--dangerously-skip-permissions'] : ['--permission-mode', 'auto']));
-    // The board-owned Factory execution context (issue #244), through Claude Code's own
+    // The board-owned Factory execution context, through Claude Code's own
     // system-instruction channel — additive to its built-in system prompt, never a replacement.
     // It is the same text on every claim of a thread; the per-node turn context rides the env above.
     cliArgs.push(...claudeSystemPromptArgs(job));
-    // Framed as a continuation when the claim continues an interrupted attempt (issue #822).
+    // Framed as a continuation when the claim continues an interrupted attempt.
     cliArgs.push('-p', agentPrompt(job, attachmentsPath));
     return { envPairs, cliArgs };
 }
@@ -236,14 +236,14 @@ export function runnerPlan(
         : claudePlan(config, job, session, attachmentsPath);
 }
 
-/** The executor image's ENTRYPOINT as argv, which a reviewer container runs as a command (issue #774). */
+/** The executor image's ENTRYPOINT as argv, which a reviewer container runs as a command. */
 const entrypointArgv = (job: BoardJob): string[] => [
     '/usr/local/bin/factory-launch',
     job.executorType === OPENCODE ? '/usr/local/bin/opencode-executor' : '/usr/local/bin/claude-executor',
 ];
 
 /**
- * What the reviewer container runs for one review (issue #774): the executor entrypoint's argv, and
+ * What the reviewer container runs for one review: the executor entrypoint's argv, and
  * the plan's env with the two places a run keeps session state moved into the reviewer's own home
  * (`REVIEWER_HOME`, mounted from the task volume read-write) — the transcript store and opencode's
  * database would otherwise sit in the member tree, which the reviewer mounts read-only.

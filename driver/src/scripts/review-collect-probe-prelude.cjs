@@ -1,8 +1,8 @@
 'use strict';
 
 /*
- * The github-review-reconcile block's collect adapter (issue #133) — PRELUDE half. Maps the
- * generic block-helper transport's bounded HELPER_INPUT (issue #207) onto the REPO/PR environment
+ * The github-review-reconcile block's collect adapter — PRELUDE half. Maps the
+ * generic block-helper transport's bounded HELPER_INPUT onto the REPO/PR environment
  * issue #201's review-collect.cjs reads, and captures its one stdout verdict instead of letting it
  * reach the real stdout — review-collect-probe-postlude.cjs (concatenated after it, with the
  * unmodified review-collect.cjs content sandwiched between the two inside a bare block) restores
@@ -13,7 +13,7 @@
  *
  * Environment:
  *   HELPER_INPUT  {"publication": {repo, prNumber, ...} | null} — issue #207's bounded plan input,
- *                 the thread's structured PR identity (issue #202), injected generically by the
+ *                 the thread's structured PR identity, injected generically by the
  *                 board's resolveClaimHelperPlans. Absent or malformed leaves REPO/PR unset, so
  *                 the embedded review-collect.cjs answers its own "invalid REPO/PR" refusal.
  */

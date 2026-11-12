@@ -24,7 +24,7 @@ export interface Fault {
     gatesStillRun: boolean;
     /** Why the gates were skipped over this fault; set exactly when `gatesStillRun` is false. */
     skipWhy: string | null;
-    /** What lies under a `gate`, `publish` or `helper` fault (issue #581); absent on every other kind. */
+    /** What lies under a `gate`, `publish` or `helper` fault; absent on every other kind. */
     cause?: FailureCause;
 }
 
@@ -166,7 +166,7 @@ export function agentFaults(outcome: RunOutcome): Fault[] {
 
 /**
  * One dead service in the verdict output: how it ended — or, for one the platform no longer lists,
- * why it went — what became of the pre-gate restart (issue #560), then what it last printed.
+ * why it went — what became of the pre-gate restart, then what it last printed.
  */
 export function deadServiceNote(dead: DeadService, gatesSkipped: boolean, restarted = false): string {
     const how =
@@ -186,7 +186,7 @@ export function deadServiceNote(dead: DeadService, gatesSkipped: boolean, restar
 
 /**
  * Whether only the declared services failed finished work — or, with `gatesToo`, the declared
- * gates — which then publishes as a draft (issues #560, #573): a failed gate is a finding to
+ * gates — which then publishes as a draft: a failed gate is a finding to
  * report, not a publication refusal. A repository's explicit `policy: gates: required` still
  * refuses it (`evidenceDecision`).
  */
@@ -260,7 +260,7 @@ export function kindOf(ledger: Ledger): FailureKind | null {
     return RANK.find((kind) => ledger.some((fault) => fault.kind === kind)) ?? null;
 }
 
-/** The cause of the fault `kindOf` names (issue #581); null when that kind carries none. */
+/** The cause of the fault `kindOf` names; null when that kind carries none. */
 export function causeOf(ledger: Ledger): FailureCause | null {
     const kind = kindOf(ledger);
     return ledger.find((fault) => fault.kind === kind)?.cause ?? null;

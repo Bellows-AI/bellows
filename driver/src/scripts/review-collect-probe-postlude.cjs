@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * The github-review-reconcile block's collect adapter (issue #133) — POSTLUDE half. Restores real
+ * The github-review-reconcile block's collect adapter — POSTLUDE half. Restores real
  * stdout, reshapes the embedded review-collect.cjs's own verdict (captured by
  * review-collect-probe-prelude.cjs) into the versioned envelope the generic helper transport
  * expects, and decides the block's own outcome deterministically — no model judgment involved.
@@ -9,7 +9,7 @@
  * github-review-reconcile.ts): both run this exact helper, so re-entering the wait always
  * re-fetches full state before deciding again.
  *
- * Outcomes, each answered as a PRE-helper `conclude` (issue #230) except REVIEW-ACTIONABLE, which
+ * Outcomes, each answered as a PRE-helper `conclude` except REVIEW-ACTIONABLE, which
  * lets the node's own agent turn (the block's `repair` node, reached via a marker edge) launch
  * with a digest state file already written to the worktree — the generic transport surfaces only
  * ok/fail to the loop, never a helper's own output, to the agent that follows (the same reason

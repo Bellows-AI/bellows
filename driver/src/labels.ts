@@ -13,7 +13,7 @@ export const SERVICE_LABEL = 'factory.service';
  */
 export const BOARD_LABEL = 'factory.board';
 /**
- * The claim sequence and session a runner ran under (issue #792) — a kubernetes runner Job's
+ * The claim sequence and session a runner ran under — a kubernetes runner Job's
  * annotations, a docker runner container's labels — so the claim that supersedes a dead driver
  * can adopt the newest finished runner and report its session.
  */
@@ -44,7 +44,7 @@ export const KILL_MARK_PREFIX = 'factory.kill.';
  */
 export const ROLE_LABEL = 'factory.role';
 /**
- * A volume export's workload (issue #938), a docker container or a kubernetes pod: the thread root whose task
+ * A volume export's workload, a docker container or a kubernetes pod: the thread root whose task
  * volume it drains. It carries neither the job-and-lease pair nor the role label, so no group scan meets it.
  */
 export const VOLUME_EXPORT_LABEL = 'factory.volume-export';

@@ -8,8 +8,8 @@ import type { DeadlineRegistry } from '../run-deadline.js';
 
 /**
  * The in-process timers of one docker run, and the one call that ends them. Both kill the run's
- * group, so both end the moment the run does — and the moment it is abandoned to the next holder
- * (#829): a group this process no longer owns is never killed from here, nor a kill written for the
+ * group, so both end the moment the run does — and the moment it is abandoned to the next holder:
+ * a group this process no longer owns is never killed from here, nor a kill written for the
  * next holder to read.
  */
 export function armRunTimers(

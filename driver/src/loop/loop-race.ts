@@ -4,7 +4,7 @@ const RACE_LOST = Symbol('raceStep: the stand-down won');
 /**
  * Races one slow setup step against the attempt's stand-down, so a Stop (or a lost lease, or a
  * Remove) observed while the driver is "waiting for the executor" ends the wait within a
- * heartbeat's setup poll instead of the step's own unbounded duration (issue #126). Answers null
+ * heartbeat's setup poll instead of the step's own unbounded duration. Answers null
  * when the stand-down won and the step is STILL RUNNING: the caller stands the attempt down and
  * the step is abandoned to its own cleanup — which is why a rejection is swallowed here, the
  * abandoned step's finally is the only cleanup it needs and its verdict is nobody's business

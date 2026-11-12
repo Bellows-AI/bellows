@@ -65,7 +65,7 @@ export function startupRefusalOf(e: unknown, held?: HeldContainer & { image: str
 export type Spawn = typeof spawn;
 
 /**
- * One child stream read as text, through a decoder of its own (issue #825): a multibyte character
+ * One child stream read as text, through a decoder of its own: a multibyte character
  * split across two chunks decodes once, whole, never as a U+FFFD per half, and the bytes of a
  * character the stream ended inside are flushed at its end, never dropped.
  */
@@ -111,7 +111,7 @@ export function untilStandDown(execDocker: ExecDocker, signal?: AbortSignal): Ex
 export const ATTEMPT_COMMAND_TIMEOUT_MS = 600_000;
 
 /**
- * `execDocker` for an attempt's own commands (#869): each ends by `ATTEMPT_COMMAND_TIMEOUT_MS`
+ * `execDocker` for an attempt's own commands: each ends by `ATTEMPT_COMMAND_TIMEOUT_MS`
  * unless it names its own bound, and by `signal`, the attempt's kill. Teardown is not made with it.
  */
 export function attemptExec(execDocker: ExecDocker, signal: AbortSignal): ExecDocker {
@@ -120,7 +120,7 @@ export function attemptExec(execDocker: ExecDocker, signal: AbortSignal): ExecDo
 }
 
 /**
- * `execDocker` held to a wait (#869): refusing every call once the absolute `bound.deadline` has
+ * `execDocker` held to a wait: refusing every call once the absolute `bound.deadline` has
  * passed, ending each by it, and killing the one in flight when `bound.signal` aborts. The docker
  * twin of `withSignal(boundedBy(deps, deadline), signal)`.
  */
@@ -174,17 +174,17 @@ export function alreadyGone(e: unknown): boolean {
 /**
  * Whether a docker read was refused because the named object does not exist, in docker's own words
  * for `kinds` (`no such container`, `no such volume`) — never a generic "not found", which a
- * daemon, a proxy or a registry can say of anything (#824).
+ * daemon, a proxy or a registry can say of anything.
  */
 export function noSuchObject(e: unknown, kinds: readonly string[]): boolean {
     return new RegExp(`no such (${kinds.join('|')})`, 'i').test(refusalText(e));
 }
 
 /**
- * Whether the daemon answers that the group's supervisor container no longer exists (BEL-302): `docker rm`,
+ * Whether the daemon answers that the group's supervisor container no longer exists: `docker rm`,
  * a restarted host, a reaped node. Only docker's own "no such container" answer confirms it — a supervisor that
  * is running or merely exited (its own crash) is `kept`; an unreachable daemon, a timeout and an unreadable answer
- * settle nothing and are `unknown` (BEL-316).
+ * settle nothing and are `unknown`.
  */
 export async function supervisorRemoved(execDocker: ExecDocker, job: BoardJob): Promise<GroupTakenAway> {
     try {
@@ -228,7 +228,7 @@ export const CONTAINER_ID = /^[0-9a-f]{12,64}$/;
 export const DOCKER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 
 /**
- * A docker read's answer (#869): what the daemon said, parsed by the listing's own parser. A
+ * A docker read's answer: what the daemon said, parsed by the listing's own parser. A
  * refusal, and an answer the parser cannot read, are `inconclusive` — never an empty list; only
  * the daemon's own `no such <kind>` for a kind in `absentOn` is `absent`.
  */
@@ -287,7 +287,7 @@ export const LEASE_FORMAT = (field: 'ID' | 'Name'): string => `{{.${field}}}\t{{
 /**
  * A `LEASE_FORMAT` listing narrowed to the job's OTHER attempts: this attempt's own — the services
  * and the gate environment the loop started before the runner — are never a leftover, and neither
- * is the earlier run it adopted (`spared`, issue #821), kept until the reaper takes it. `kept.grammar` is
+ * is the earlier run it adopted (`spared`), kept until the reaper takes it. `kept.grammar` is
  * the first field's: container ids for `ps`, names for networks and volumes. Throws
  * `${what}: <reason>` when the listing cannot be read, so the fence removes nothing on it.
  */
@@ -298,7 +298,7 @@ export async function listOtherAttemptsOrThrow(
     kept: { leaseToken: string; spared?: string | undefined; grammar: RegExp }
 ): Promise<string[]> {
     // Every row names the attempt it belongs to: a lease that is no lease would make the row an
-    // "other attempt" and so a delete target (#869).
+    // "other attempt" and so a delete target.
     const parse = (stdout: string): string[][] | null => {
         const rows = tabRows(2, kept.grammar)(stdout);
         return rows?.every(([, lease = '']) => UUID_SHAPE.test(lease)) ? rows : null;
@@ -333,7 +333,7 @@ export async function removeEachTolerantly(
 /**
  * Auxiliary services (issue #6) for one attempt: starts each service of the claim's plan
  * (`BoardJob.services`, resolved and validated by the board) in the network namespace of the
- * attempt's group supervisor (issue #773), whose hosts file already names every one on loopback,
+ * attempt's group supervisor, whose hosts file already names every one on loopback,
  * each step with its own verdict. The driver reads no file — an author's refusal never reaches
  * here, it failed the task at the claim (`BoardJob.planRefusal`). Answers whether any started.
  *
@@ -402,7 +402,7 @@ export async function closedStateOf(
     } catch (e) {
         const started = code !== CONTAINER_GONE;
         // A container that ran and is gone before its own close was removed under the run —
-        // the driver's kill only kills (issue #560). Its exit is the removal's, not the agent's.
+        // the driver's kill only kills. Its exit is the removal's, not the agent's.
         const removed = started && !ctx.timedOut && alreadyGone(e);
         return {
             started,
@@ -436,7 +436,7 @@ export async function dockerRunVerdict(
         output: string;
         timedOut: boolean;
         cacheLost: string | null;
-        /** The full-run log the accumulator kept (issue #325); absent when nothing ran. */
+        /** The full-run log the accumulator kept; absent when nothing ran. */
         fullLog?: string;
         logTruncated?: boolean;
         /** The cause a refused create's own stderr proves (#824 D11): the refusal is the evidence. */
@@ -469,14 +469,14 @@ export async function dockerRunVerdict(
         ...(infraLoss ? { infraLoss } : {}),
         ...(startupCause ? { startupCause } : {}),
         cacheLost: ctx.cacheLost,
-        // The artifact the loop uploads at close (issue #325); present only when the
+        // The artifact the loop uploads at close; present only when the
         // accumulator actually ran — a refused start has no log and uploads nothing.
         ...(ctx.fullLog !== undefined ? { fullLog: ctx.fullLog, logTruncated: ctx.logTruncated === true } : {}),
     };
 }
 
 /**
- * Whether the daemon confirms the runner container over (#920): `exited` or `dead`, never running, created or
+ * Whether the daemon confirms the runner container over: `exited` or `dead`, never running, created or
  * paused. A failed, timed-out or unparsable answer is no confirmation — the container may still run — so the
  * caller says nothing to the supervisor and its own windows stay the bound.
  */
@@ -493,7 +493,7 @@ export async function agentContainerEnded(execDocker: ExecDocker, job: BoardJob)
 }
 
 /**
- * Tells the supervisor, which cannot see the container, that the agent container is over (#920): an agent that died
+ * Tells the supervisor, which cannot see the container, that the agent container is over: an agent that died
  * before it wrote an exit marker is read as lost in seconds, not at its start or heartbeat window. `confirmed` is
  * an end the caller already holds the daemon's word for; otherwise the daemon is asked, and no answer says nothing.
  */
@@ -540,8 +540,8 @@ export interface RunnerFiles {
 }
 
 /**
- * Creates the runner container and copies its telemetry config in before anything starts
- * (issue #452): the file decides where telemetry goes and what it carries, and the container runs
+ * Creates the runner container and copies its telemetry config in before anything starts:
+ * the file decides where telemetry goes and what it carries, and the container runs
  * as the agent's uid, so it arrives from outside, as a root-owned 0444 archive (telemetryConfigTar).
  * A refusal of either step is the daemon's and reads the way a refused `docker run` did — a
  * container that never started, its leftover removed — so it comes back as an outcome; null means
@@ -648,7 +648,7 @@ export const servicePsArgs = (job: BoardJob): string[] => [
 ];
 
 /**
- * The pre-gate restart (issues #560, #773): EVERY recorded service's container removed and run
+ * The pre-gate restart: EVERY recorded service's container removed and run
  * again into the same network namespace — its group supervisor's, whose hosts file still names it —
  * then waited until every one runs. Every failure throws; a stand-down ends it and removes whatever
  * it had started again.

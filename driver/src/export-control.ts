@@ -17,11 +17,11 @@ export const EXPORT_PATH = '/export';
 export const EXPORT_CHUNK_PATH = `${EXPORT_PATH}/chunk`;
 export const EXPORT_MANIFEST_PATH = `${EXPORT_PATH}/manifest`;
 export const EXPORT_STATE_PATH = `${EXPORT_PATH}/state`;
-/** The checkpoint routes (issue #775): the supervisor's own, at finalize — not the exporter's. */
+/** The checkpoint routes: the supervisor's own, at finalize — not the exporter's. */
 export const CHECKPOINT_PATH = '/checkpoint';
 export const CHECKPOINT_CHUNK_PATH = `${CHECKPOINT_PATH}/chunk`;
 export const CHECKPOINT_MANIFEST_PATH = `${CHECKPOINT_PATH}/manifest`;
-/** `GET /checkpoint/restore?offset=`: one chunk of the thread's checkpoint, read by the restore step (issue #775). */
+/** `GET /checkpoint/restore?offset=`: one chunk of the thread's checkpoint, read by the restore step. */
 export const CHECKPOINT_RESTORE_PATH = `${CHECKPOINT_PATH}/restore`;
 export const CHECKPOINT_TRANSCRIPTS_PATH = `${CHECKPOINT_PATH}/transcripts`;
 export const CHECKPOINT_TRANSCRIPT_CHUNK_PATH = `${CHECKPOINT_TRANSCRIPTS_PATH}/chunk`;

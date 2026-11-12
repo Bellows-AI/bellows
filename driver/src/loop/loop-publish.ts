@@ -49,7 +49,7 @@ async function pushDraft(
     try {
         result = await publishWithRetry({ rt, job, state }, { what: 'the draft publish', options }, gone);
     } catch (e) {
-        // A supervisor lost under the push is the attempt's end, not a verdict on the draft (#925).
+        // A supervisor lost under the push is the attempt's end, not a verdict on the draft.
         if (stepLost(e)) return 'gone';
         throw e;
     }

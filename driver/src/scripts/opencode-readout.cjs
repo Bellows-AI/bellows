@@ -7,7 +7,7 @@
 // in the agent's own words). One JSON line on stdout; a failure prints one parseable error
 // line — an empty answer and a broken query are otherwise indistinguishable to the parse.
 //
-// The same read exports the task's session records (issues #735, #767). Every read runs inside ONE
+// The same read exports the task's session records. Every read runs inside ONE
 // read transaction, so the raw rows, the normalized stream and the summary line describe a single
 // consistent snapshot of the database — never a live file copy, never rows from two moments. When
 // EXPORT_LIMIT_BYTES is set, the lines BEFORE the final summary line are the export, each tagged

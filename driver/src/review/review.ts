@@ -88,7 +88,7 @@ export interface ReviewCollection {
     reviews: SubmittedReview[];
     inline: ReviewCommentItem[];
     threads: ReviewThread[];
-    /** The item keys a Factory reply already answered, read from every comment before the caps (issue #826). */
+    /** The item keys a Factory reply already answered, read from every comment before the caps. */
     addressed: string[];
     requestedReviewers: { users: string[]; teams: string[] };
     decision: string | null;

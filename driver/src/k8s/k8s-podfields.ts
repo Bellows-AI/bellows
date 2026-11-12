@@ -7,8 +7,8 @@ import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from 
 
 /**
  * The pod-spec field builders the driver renders from its own configuration — the resource
- * requests/limits (issue #360), the runner group's scheduling knobs (issue #361) and the
- * voluntary-disruption opt-out (issue #362). One file because each is "config in, one optional
+ * requests/limits, the runner group's scheduling knobs and the
+ * voluntary-disruption opt-out. One file because each is "config in, one optional
  * pod-spec field out", every one absent when unconfigured so an untouched cluster sees the spec
  * it always saw, and both spec files (`k8s-podspec.ts`, `k8s-auxspec.ts`) spread them. See
  * docs/kubernetes.md for the module map.
@@ -53,7 +53,7 @@ export function resourcesField(config: DriverConfig, block = config.runnerResour
     return Object.keys(resources).length > 0 ? { resources } : {};
 }
 
-/** What the gate container asks for while the agent runs (issue #773): the measured idle loop, no more. */
+/** What the gate container asks for while the agent runs: the measured idle loop, no more. */
 const GATE_IDLE_REQUESTS = { cpu: '100m', memory: '128Mi' } as const;
 
 /** The smaller of two quantities, by the parser `toNumber`; the first when the second is absent. */
@@ -61,7 +61,7 @@ const smaller = (a: string, b: string | null, toNumber: (q: string) => string): 
     b !== null && Number(toNumber(b)) < Number(toNumber(a)) ? b : a;
 
 /**
- * The gate container's requests at one phase (issue #773): `idle` while the agent runs — the idle
+ * The gate container's requests at one phase: `idle` while the agent runs — the idle
  * loop's figures, never above what the gate is configured to request or limited to — and `verify`,
  * the configured gate requests (GATE_*, over RUNNER_*) for the setup and the gates. A slot with no
  * configured request keeps its idle figure at verify: a resize cannot take a request away.
@@ -85,11 +85,11 @@ export function gateResourcesField(config: DriverConfig): { resources: PodResour
     return { resources: { requests: gateRequests(config, 'idle'), ...(limits ? { limits } : {}) } };
 }
 
-/** What the reviewer container asks for while no review runs (issue #774): a sleeping loop, no more. */
+/** What the reviewer container asks for while no review runs: a sleeping loop, no more. */
 const REVIEWER_IDLE_REQUESTS = { cpu: '50m', memory: '64Mi' } as const;
 
 /**
- * The reviewer container's requests at one phase (issue #774): `idle` while no review runs, `run`
+ * The reviewer container's requests at one phase: `idle` while no review runs, `run`
  * the runner's own requests (RUNNER_*) for the review — a reviewer is an agent. A slot with no
  * configured request keeps its idle figure at run: a resize cannot take a request away.
  */
@@ -132,7 +132,7 @@ export function schedulingField(config: DriverConfig): SchedulingField {
 }
 
 /**
- * The voluntary-disruption opt-out (issue #362), as pod metadata: both keys, because Karpenter
+ * The voluntary-disruption opt-out, as pod metadata: both keys, because Karpenter
  * consolidation reads `karpenter.sh/do-not-disrupt` while the cluster-autoscaler's scale-down
  * reads `cluster-autoscaler.kubernetes.io/safe-to-evict`, and to an operator they are one switch,
  * not a vendor choice. Neither survives an explicit `kubectl drain` — a drain evicts through the
@@ -152,7 +152,7 @@ export function doNotDisruptField(config: DriverConfig): { annotations?: Record<
 }
 
 /**
- * The pod-level half of the executor hardening (issue #382): the runtime's own seccomp profile.
+ * The pod-level half of the executor hardening: the runtime's own seccomp profile.
  * Pod level and not container level on purpose — seccomp applies to every container the pod ever
  * grows, so naming it once is what keeps a future sidecar from being born unfiltered.
  * `RuntimeDefault` is the container runtime's profile, which blocks the syscalls a container has
@@ -169,7 +169,7 @@ export function doNotDisruptField(config: DriverConfig): { annotations?: Record<
 export interface PodSecurityContext {
     runAsUser?: number;
     runAsGroup?: number;
-    /** The group a fresh task volume's root is made writable for (issue #775). */
+    /** The group a fresh task volume's root is made writable for. */
     fsGroup?: number;
     fsGroupChangePolicy?: 'OnRootMismatch';
     seccompProfile?: { type: 'RuntimeDefault' };
@@ -180,7 +180,7 @@ export function podHardeningField(): { seccompProfile: { type: 'RuntimeDefault' 
 }
 
 /**
- * The container-level half (issue #382), and the half with teeth:
+ * The container-level half, and the half with teeth:
  *
  *   - `capabilities.drop: [ALL]` — a capability is a slice of root the kernel hands a process
  *     without asking anyone, and an agent run needs none of them: it reads, writes and compiles
@@ -211,7 +211,7 @@ export function containerHardeningField(): { securityContext: ContainerSecurityC
 }
 
 /**
- * The agent container's hardening (issue #814): `containerHardeningField`, started as root with the
+ * The agent container's hardening: `containerHardeningField`, started as root with the
  * two capabilities its tool broker keeps to start each command as the tool uid. factory-launch
  * drops both, and root, before the CLI starts; the admission policy allows them on `agent` alone.
  */
@@ -245,7 +245,7 @@ export type RunnerVolume =
     | TelemetryConfigVolume
     | BindingVolume;
 
-/** The supervisor's holder binding (#829): one optional item of the attempt Secret, absent until a rebind. */
+/** The supervisor's holder binding: one optional item of the attempt Secret, absent until a rebind. */
 export interface BindingVolume {
     name: string;
     secret: { secretName: string; items: { key: string; path: string }[]; defaultMode: number; optional: true };
@@ -287,8 +287,8 @@ export const mailboxMount = (box: Mailbox, access: 'ro' | 'rw'): RunnerMount => 
 });
 
 /**
- * The runner's volumes: the thread's task volume at its fixed mount (issue #775), and its telemetry
- * config read-only from the attempt Secret `secretName` (issue #452).
+ * The runner's volumes: the thread's task volume at its fixed mount, and its telemetry
+ * config read-only from the attempt Secret `secretName`.
  */
 export function runnerVolumesField(
     config: DriverConfig,

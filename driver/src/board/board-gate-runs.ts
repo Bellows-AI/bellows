@@ -1,5 +1,5 @@
 /**
- * The gate-run record's two board calls (issue #983). Split out of `board.ts` for its line budget;
+ * The gate-run record's two board calls. Split out of `board.ts` for its line budget;
  * `createBoard` is the only importer. Neither throws: a write the board did not take and a read it
  * did not answer are both "nothing confirmed" — the write's caller refuses or goes on as its policy
  * says, and a read that is not fully readable reuses nothing.

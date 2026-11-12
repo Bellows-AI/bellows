@@ -11,7 +11,7 @@ export type SupervisorState = 'running' | 'gone' | 'unread';
 const NO_SUCH = /No such (object|container)/i;
 
 /**
- * Reads the supervisor container of a started group (#924). `gone` only when the daemon answered that the
+ * Reads the supervisor container of a started group. `gone` only when the daemon answered that the
  * container exited or no longer exists; a failed, timed-out or unparsable answer is `unread`, never `gone`.
  */
 export async function readSupervisorState(execDocker: ExecDocker, job: BoardJob): Promise<SupervisorState> {
@@ -28,7 +28,7 @@ export async function readSupervisorState(execDocker: ExecDocker, job: BoardJob)
 }
 
 /**
- * Whether an earlier group's supervisor can still pick up a rebind (#928), as `Runner.supervisorServing`
+ * Whether an earlier group's supervisor can still pick up a rebind, as `Runner.supervisorServing`
  * reads it: a container the daemon says is gone is `absent`, one exited has stopped, one running has stopped
  * once its log carries `SUPERVISOR_SERVED_LINE`. A failed, timed-out or unparsable answer is inconclusive.
  */

@@ -1,14 +1,14 @@
 import type { Board } from './board/board.js';
 
 /**
- * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left
+ * One row of the board's removed-thread queue: a Remove deleted the thread and left
  * the tree for somebody to take down. The lease claims the row so the reclaim is mutually
  * exclusive with a live attempt's startup sync; the row is deleted when the work is acked.
  */
 export interface Reclaim {
     /** The queue row's own id — the work order's name. */
     id: string;
-    /** This acquisition's own token (issue #821): the ack, the renew and the checkout claim ride it. */
+    /** This acquisition's own token: the ack, the renew and the checkout claim ride it. */
     token: string;
     /** The thread whose tree the removed job left behind. */
     rootJobId: string;
@@ -37,8 +37,8 @@ function answerOf<T extends 'ok' | 'held'>(response: Response, ok: T): T | 'lost
 }
 
 /**
- * The worktree-reclaim queue's calls (issue #41): claim a row for the driver's lease, then renew and
- * ack it under the acquisition's own token (issue #821), never the worker name.
+ * The worktree-reclaim queue's calls: claim a row for the driver's lease, then renew and
+ * ack it under the acquisition's own token, never the worker name.
  */
 export function reclaimCalls(
     post: Post,

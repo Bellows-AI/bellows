@@ -1,5 +1,5 @@
 // @ts-check
-// The merge-conflict-autofix block's deterministic preflight (issue #122): runs as a PRE
+// The merge-conflict-autofix block's deterministic preflight: runs as a PRE
 // block-helper (issue #207's transport) in the task worktree — the docker/kubernetes transports
 // both set the container's working directory to it, so every git call below runs against
 // process.cwd() with no REPO/WORKTREE env needed, unlike the sync's own git-worktree.cjs. One
@@ -10,8 +10,8 @@
 // follows, and that agent is how the issue's "invoke an agent only when conflicts need judgment"
 // prompt reads this verdict.
 //
-// Input (HELPER_INPUT, issue #207): {"publication": {repo, prNumber, prUrl, headBranch,
-// baseBranch} | null} — the thread's structured PR identity (issue #202), injected generically by
+// Input (HELPER_INPUT): {"publication": {repo, prNumber, prUrl, headBranch,
+// baseBranch} | null} — the thread's structured PR identity, injected generically by
 // the board's resolveClaimHelperPlans. No publication recorded for this thread is a hard
 // precondition failure: there is nothing here to reconcile.
 //
@@ -25,7 +25,7 @@
 // Verdicts, three shapes only — a "stale/refused" checkout state (wrong branch, no publication)
 // is instead an ok:false helper FAILURE: the row fails without ever spawning the agent, and the
 // next trigger of this block re-probes fresh, which is what the issue's "abort safely and
-// re-probe" asks for. The first two need no agent (issue #503): the probe answers
+// re-probe" asks for. The first two need no agent: the probe answers
 // control:"conclude" with the workflow marker as the last line of its output.
 //   up-to-date  — the branch already contains its base branch's tip. No rebase attempted.
 //                 Concludes MERGE-UP-TO-DATE.

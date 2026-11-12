@@ -1,5 +1,5 @@
 /**
- * The driver's own lease clock (BEL-317). The board expires a lease the driver stopped renewing, so a
+ * The driver's own lease clock. The board expires a lease the driver stopped renewing, so a
  * driver that cannot reach the board must stop acting on the run at the same moment: it departs and
  * leaves the group for the next claim to adopt. The clock is a timer of its own, never a check after a
  * failed beat — a beat that never returns must still depart at expiry.

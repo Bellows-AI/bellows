@@ -90,7 +90,7 @@ export const jobsSelectorPath = (namespace: string, job: BoardJob): string => by
  * and the atom that makes the re-claim fence a mutex instead of a GET-then-POST race. The
  * apiserver's name uniqueness arbitrates — POST it and a `409` means somebody else holds the
  * checkout — while `data.claimSeq` (the board's monotonic per-job claim sequence, never a clock
- * and never the refundable attempt counter, issue #559) orders the contenders: a claim whose
+ * and never the refundable attempt counter) orders the contenders: a claim whose
  * sequence is ahead of ours is our replacement's, and we stand down. A ConfigMap and not a Secret
  * because the protocol needs `get`, and granting `get` on secrets would expose every attempt's env
  * values; this object carries a holder token and a claim sequence, both already known to the driver.

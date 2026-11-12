@@ -4,7 +4,7 @@ import { connectionOutcomesOf } from './board-connection.js';
 import { skillHiddenFields, skillPinFields } from './board-skills.js';
 import { isExecutorType } from '../executors.js';
 
-/** The claim off the wire: every optional field read defensively, defaulted or dropped (issue #774 reviewer profiles, #769 plan, BEL-273 skill pin). */
+/** The claim off the wire: every optional field read defensively, defaulted or dropped (reviewer profiles, the plan, the skill pin). */
 
 /** A claim text field read defensively: the string the board sent, else null. */
 const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
@@ -87,7 +87,7 @@ const TYPED: Record<string, Check> = {
 export type ParsedClaim = { claim: BoardJob } | { malformed: string[] };
 
 /**
- * Validates the claim's relied-on fields at the boundary (BEL-318). A malformed claim is
+ * Validates the claim's relied-on fields at the boundary. A malformed claim is
  * inconclusive, never a verdict: the caller logs it and leaves the job to its lease.
  */
 export function parseClaim(raw: unknown): ParsedClaim {
@@ -139,7 +139,7 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
     };
 }
 
-/** The claim's reviewer profile names, or nothing: an empty or malformed list reads as no reviewer (issue #774). */
+/** The claim's reviewer profile names, or nothing: an empty or malformed list reads as no reviewer. */
 function reviewerProfilesOf(value: unknown): { reviewerProfiles?: readonly string[] } {
     const names = Array.isArray(value) ? (value as unknown[]) : [];
     return names.length > 0 && names.every((name) => typeof name === 'string')

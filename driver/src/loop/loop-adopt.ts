@@ -7,7 +7,7 @@ import { awaitFirstContact, controlTokenOf } from '../supervised-steps.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../supervisor-contract.js';
 
 /**
- * Adopts the finished runner an earlier claim left behind (issue #792) — before the sync, which
+ * Adopts the finished runner an earlier claim left behind — before the sync, which
  * would rewrite the tree that run left. A read that fails is no verdict: the attempt is left to its
  * lease, and the next claim adopts what survived. The earlier attempt is recorded as an interruption
  * under this claim's lease, best-effort (`recordAdopted`): the step answers it as data and
@@ -30,7 +30,7 @@ export async function adoptStep(
             state.groupDisposition = 'keep';
             return blockedHalt(e);
         }
-        // A read run that could not be secured (issue #821), or an earlier run that could not be read at
+        // A read run that could not be secured, or an earlier run that could not be read at
         // all, is no reason to run afresh over its tree: an unconfirmed read never licenses the sweep.
         const why =
             e instanceof AdoptionBlocked ? 'could not adopt the finished runner' : 'could not read an earlier runner';
@@ -64,11 +64,11 @@ export async function recordAdopted(ctx: AttemptCtx, { reason, claimSeq }: Adopt
         .catch((e: Error) => rt.log(`job ${job.id}: could not record the adopted interruption: ${e.message}`));
 }
 
-/** The wait for the rebound supervisor ended because the earlier group is confirmed finished (#928). */
+/** The wait for the rebound supervisor ended because the earlier group is confirmed finished. */
 class EarlierGroupEnded extends Error {}
 
 /**
- * Takes over the agent a lost driver left RUNNING (issue #829): the supervisor's binding is rewritten
+ * Takes over the agent a lost driver left RUNNING: the supervisor's binding is rewritten
  * to this claim, and only a first poll of the new endpoint within `SUPERVISOR_REBIND_DELIVERY_MS` proves it
  * took, or the earlier group is confirmed finished meanwhile (`supervisorServing`: it stopped serving, so it will
  * never poll the new endpoint), when the claim adopts it once more as a finished runner. Until then the attempt owns nothing (`groupLease` unset, the group kept), so every way out of it

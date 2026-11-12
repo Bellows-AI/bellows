@@ -103,7 +103,7 @@ async function holdsLiveLease(deps: K8sDeps, job: BoardJob): Promise<boolean> {
  * claim sequence, never by `attempts`: a stop or an interruption refunds an attempt, and a
  * replacement must still read as newer than every claim before it. A field that is present is
  * digits within the safe integers (`asClaim`): `Number('')` is 0 and a long run of digits is
- * Infinity, and neither may read as an ordered claim (#869).
+ * Infinity, and neither may read as an ordered claim.
  */
 const claimSeqOf = (raw: string | undefined): number => (raw === undefined ? Number.NaN : Number(raw));
 
@@ -122,7 +122,7 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
     const claim = read.value;
     const holder = job.claimHolder ?? job.leaseToken;
     if (claim.data?.holder === holder) {
-        // Our own claim, kept because a group of ours could not be confirmed ended (issue #821): a
+        // Our own claim, kept because a group of ours could not be confirmed ended: a
         // retry under the same holder — a reclaim offered again — may not start beside it.
         if (!(await retryUnconfirmed(deps, holder))) {
             throw new Error(
@@ -132,7 +132,7 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
         }
         return 'ours';
     }
-    // A claim that names no holder is no claim to order against or release (#869).
+    // A claim that names no holder is no claim to order against or release.
     if (!claim.data?.holder) throw new Error(`${CLAIM_READ} answered a claim with no holder`);
     const claimSeq = claimSeqOf(claim.data.claimSeq);
     if (Number.isFinite(claimSeq) && claimSeq >= job.claimSeq) {
@@ -196,7 +196,7 @@ export interface ObservedClaim {
 const CLAIM_READ = 'reading the checkout claim';
 
 /**
- * A claim as far as its shape is read (#869): `metadata` and `data` records when they are there at
+ * A claim as far as its shape is read: `metadata` and `data` records when they are there at
  * all; the uid a non-empty string, the creation time RFC 3339, the annotations strings; the holder a
  * lease (a holder that is no lease is no ownership change to act on) and the claim sequence digits
  * within the safe integers. An absent holder or sequence stays absent: the callers read it as such.
@@ -219,7 +219,7 @@ const asClaim = (value: unknown): K8sClaim | null => {
 };
 
 /**
- * The job's checkout claim as a typed read (#869): the claim, its confirmed absence, or an answer
+ * The job's checkout claim as a typed read: the claim, its confirmed absence, or an answer
  * that proves nothing — a transport failure, a refusal, a body that is no claim. `once` is one GET;
  * otherwise the verdict reads' patience.
  */
@@ -251,7 +251,7 @@ export function observedOf(read: Read<K8sClaim>): ObservedClaim | null {
 }
 
 /**
- * THE one hand-back and the one deletion of a checkout claim (issue #821): the claim goes only
+ * THE one hand-back and the one deletion of a checkout claim: the claim goes only
  * once every group of its holder is confirmed ended. `groups` are ended here first, through
  * `endRunnerJob`, recorded against the holder; a group of the holder still live in this runner
  * (`deps.groups`), or one ended before and still unconfirmed, keeps the claim too. `observed` is
@@ -273,7 +273,7 @@ export async function releaseClaimAfterGroupEnd(
 ): Promise<boolean> {
     const unproven = ends.onUnproven ?? (() => undefined);
     const claimNow = () => readObserved(deps, job, unproven);
-    // A taken-over group is addressed by its own lease (`ownGroup`); the claim is its holder's (#829).
+    // A taken-over group is addressed by its own lease (`ownGroup`); the claim is its holder's.
     const holder = ends.observed?.holder ?? job.claimHolder ?? job.leaseToken;
     if (ends.observed) {
         const now = await claimNow();
@@ -302,7 +302,7 @@ export async function readObserved(
     return observed;
 }
 
-/** The lease a taken-over attempt's group lives under (#829): `job` as the loop has it, or as `ownGroup` addresses it. */
+/** The lease a taken-over attempt's group lives under: `job` as the loop has it, or as `ownGroup` addresses it. */
 const groupLeaseOf = (job: BoardJob): string | undefined =>
     job.groupLease ?? (job.claimHolder ? job.leaseToken : undefined);
 
@@ -367,7 +367,7 @@ type SweptItem = ListedRunnerJob & {
 /**
  * Whether the sweep leaves a listed object alone: the finished agent run THIS attempt adopted and
  * is continuing to its verdict (`deps.adopted`), or a pod of it — the evidence a later claim adopts
- * again if this one is lost first (issue #821). It writes nothing: its pod ran to its end. Every
+ * again if this one is lost first. It writes nothing: its pod ran to its end. Every
  * other finished run goes, before a fresh sync can change the tree its outcome was read against.
  */
 function spared(deps: K8sDeps, { job, kind, kept }: SweepScope, item: SweptItem): boolean {
@@ -406,7 +406,7 @@ function namedItemsOf(deps: K8sDeps, scope: SweepScope, items: SweptItem[]): Omi
 }
 
 /**
- * Whether the run this attempt adopted is a LIVE group it took over (#829): still running, so the
+ * Whether the run this attempt adopted is a LIVE group it took over: still running, so the
  * sweep spares it on its name and lease, not on a status that shows it ended.
  */
 function adoptedLive(deps: K8sDeps, job: BoardJob): boolean {
@@ -421,7 +421,7 @@ function adoptedLive(deps: K8sDeps, job: BoardJob): boolean {
 const endedStatus = (status: unknown): boolean => isRecord(status) && jobOutcome(status) !== 'pending';
 
 /**
- * One leftover as the sweep reads it (#869): an identified object whose lease label, when it has
+ * One leftover as the sweep reads it: an identified object whose lease label, when it has
  * one, is a lease (the `!=` selector matches an object with none) — a corrupt one would become an
  * attempt identity the sweep derives Secrets and sparing from. The Job this attempt adopted must
  * also name its lease and carry a readable spec: the sweep spares it only on that evidence, and
@@ -502,7 +502,7 @@ async function verifyClaimHeldForSweep(deps: K8sDeps, job: BoardJob): Promise<'o
 
 /**
  * The Secrets of every leftover lease, by derived name, acknowledged — BEFORE any Job of theirs is
- * deleted (issue #821): a Secret has no owner, and once its Job is gone nothing can derive its name
+ * deleted: a Secret has no owner, and once its Job is gone nothing can derive its name
  * again. False when any one delete failed; the round then deletes nothing.
  */
 async function deleteLeftoverSecrets(deps: K8sDeps, job: BoardJob, fleets: SweepFleet[]): Promise<boolean> {
@@ -511,7 +511,7 @@ async function deleteLeftoverSecrets(deps: K8sDeps, job: BoardJob, fleets: Sweep
     for (const lease of leases) {
         const pair = { ...job, leaseToken: lease };
         // The adopted run's lease keeps its Job listed: its Secrets stay derivable from it, and
-        // their cleanup is never what holds a recovered run back (issue #821).
+        // their cleanup is never what holds a recovered run back.
         if (adopted !== undefined && runnerName(pair) === adopted) continue;
         if ((await deleteSecretAcked(deps, secretName(pair))) === 'failed') return false;
     }
@@ -561,7 +561,7 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: A
         stuck = undefined;
         const { fleets, conclusive } = await probeLeftoverFleets(round, job);
         // Inconclusive: keep polling within the same bound, deleting nothing — a kind that proved
-        // nothing may be the Job listing that spares the adopted run's pods (#869).
+        // nothing may be the Job listing that spares the adopted run's pods.
         if (!conclusive) {
             unmet = `the fence of job ${job.id} could not confirm the checkout empty`;
             return;
@@ -587,7 +587,7 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: A
         // Every leftover already accepted its delete: asking again is redundant and its failure must not hide the verdict.
         if (stuck === undefined) await deleteSweepFleets(round, fleets);
         // No delete's answer is proof the checkout is free — a 409 on a uid precondition is
-        // another incarnation under the name (issue #821): only a fresh, conclusive empty list
+        // another incarnation under the name: only a fresh, conclusive empty list
         // lets it go.
         unmet = `the leftover objects of job ${job.id} never disappeared after their delete`;
     });
@@ -598,7 +598,7 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: A
 }
 
 /**
- * A post-create stand-down ends this attempt's own Job the acknowledged way (issue #821): Secrets
+ * A post-create stand-down ends this attempt's own Job the acknowledged way: Secrets
  * first, then the Job, confirmed gone. One that cannot be confirmed is held against this attempt's
  * token, which keeps the checkout claim until a later teardown confirms it.
  */
@@ -611,7 +611,7 @@ async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promi
  * OTHER attempts and runs the pre-create claim
  * verify; `launch` creates the Job suspended, then its env Secret, runs the post-create verify and
  * only then resumes the Job. A Secret therefore never exists without a Job the fence and the reaper
- * can derive its name from (issue #821), and no pod starts before the claim is verified.
+ * can derive its name from, and no pod starts before the claim is verified.
  */
 export async function prepare(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     // Step one: TAKE THE CHECKOUT.

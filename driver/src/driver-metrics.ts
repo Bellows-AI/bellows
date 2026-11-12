@@ -1,5 +1,5 @@
 /**
- * The driver's Prometheus series (issue #831): what it spends on the board, the cluster API, the
+ * The driver's Prometheus series: what it spends on the board, the cluster API, the
  * docker daemon, its supervised steps and its orphan reaper, on either executor. Every label value is
  * from a closed vocabulary (an endpoint pattern, a verb, a resource kind, a docker command, an
  * outcome) — never a job, lease, pod, org or repo id. docs/telemetry.md.

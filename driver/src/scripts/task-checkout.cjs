@@ -1,5 +1,5 @@
 // @ts-check
-// The startup sync of the task's own checkout (issue #775): make `/task/<repo>` — an independent
+// The startup sync of the task's own checkout: make `/task/<repo>` — an independent
 // clone on the task volume, no shared base clone and no linked worktree — reflect the remote
 // default, so every run starts from the code, and the declared gates, that main actually has. One
 // execFileSync per git call: no value can become a command. One JSON verdict on stdout:
@@ -32,7 +32,7 @@
 //                 the fetch carries `-c http.followRedirects=initial`, which permits same-host
 //                 redirects only, never a hop to another host or scheme.
 //
-// REVIEW mode, set by REVIEW_REF (issue #549): a named reviewer's claim. The review has no session
+// REVIEW mode, set by REVIEW_REF: a named reviewer's claim. The review has no session
 // and no earlier tree, so its worktree is a linked worktree of the task's checkout:
 //   REPO        — the task's checkout, where the review's worktree is created FROM;
 //   WORKTREE    — the review's own tree; BRANCH its branch, created AT REVIEW_REF on the first
@@ -45,7 +45,7 @@
 // works whether or not the previous run left uncommitted edits; the edits are stashed for the
 // rebase and reapplied on the new base. Git exits 0 even when the reapplied STASH conflicts (the
 // rebase itself succeeded), so the script re-checks for unmerged entries. A conflict is HANDED
-// OVER, never refused (issue #661): the conflicted rebase (or the markers, the stash retained for
+// OVER, never refused: the conflicted rebase (or the markers, the stash retained for
 // recovery) is left in the tree and the verdict is `{ok:true, conflicts:[paths]}`, so the driver
 // starts the run with the conflicting paths in its turn context and the agent resolves them. A
 // tree a previous attempt left conflicted — a rebase in progress, or unmerged entries — is handed

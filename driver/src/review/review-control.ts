@@ -2,7 +2,7 @@ import type { BoardJobStatus, ReviewReport } from '../board/board.js';
 import { parseJsonObject } from '../json-parse.js';
 
 /**
- * The control endpoint's reviewer routes (issue #549), one set per control token — so one lease:
+ * The control endpoint's reviewer routes, one set per control token — so one lease:
  * `POST /review {key, profile}` asks for a named reviewer's separate run over the task's tree as it
  * stands now, and `GET /review/<key>` reads its progress and verdict. The agent names a key and a
  * profile and nothing else: the revision is what the DRIVER measures, the snapshot is what the

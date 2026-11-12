@@ -1,10 +1,10 @@
 'use strict';
 
 /*
- * The github-review-reconcile block's reply adapter (issue #133) — POSTLUDE half. Restores real
+ * The github-review-reconcile block's reply adapter — POSTLUDE half. Restores real
  * stdout, reshapes review-reply.cjs's own verdict (captured by review-reply-probe-middle.cjs) into
  * the versioned envelope the generic helper transport expects, and always answers as a PRE-helper
- * `conclude` (issue #230) on a well-formed run — the `reply` node never launches an agent turn; it
+ * `conclude` on a well-formed run — the `reply` node never launches an agent turn; it
  * is purely mechanical, matching the block's contract that only `repair` may edit code or judge
  * feedback.
  *

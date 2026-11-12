@@ -98,7 +98,7 @@ import {
 import { createDeadlineRegistry, type DeadlineRegistry } from '../run-deadline.js';
 import { settleEnd } from '../termination.js';
 
-/** The docker CLI, exported so the driver can wrap it with its metrics (issue #831). */
+/** The docker CLI, exported so the driver can wrap it with its metrics. */
 export const defaultExecDocker: ExecDocker = (args, { input, ...options } = {}) => {
     const pending = run('docker', args, { ...options, encoding: 'utf8' });
     // A CLI that exits before reading its stdin must not crash the driver with an EPIPE.
@@ -116,7 +116,7 @@ export const defaultExecDocker: ExecDocker = (args, { input, ...options } = {}) 
 const GROUP_EXIT_WAIT_MS = 20_000;
 /**
  * How long `finish` waits for the group's supervisor to exit by itself before it kills the group:
- * its exit, and the checkpoint it takes at finalize (issue #775) under its own bound.
+ * its exit, and the checkpoint it takes at finalize under its own bound.
  */
 const GROUP_END_WAIT_MS = GROUP_EXIT_WAIT_MS + SUPERVISOR_CHECKPOINT_MS;
 
@@ -157,7 +157,7 @@ interface RunnerDeps {
      */
     ledger: KillLedger;
     deadlines: DeadlineRegistry;
-    /** Each adopting lease's adopted earlier lease (`dockerAdopt`): its fences keep that group (issue #821). */
+    /** Each adopting lease's adopted earlier lease (`dockerAdopt`): its fences keep that group. */
     adopted: Map<BoardJob['leaseToken'], BoardJob['leaseToken']>;
 }
 
@@ -187,9 +187,9 @@ interface RunnerDeps {
  * between the ps and its rm is the fence succeeding, not failing.
  */
 async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
-    // An adoption's fence stops at its attempt's stand-down: no call of it is made after (#824).
+    // An adoption's fence stops at its attempt's stand-down: no call of it is made after.
     const execDocker = attemptExec(deps.execDocker, signal);
-    // The run this attempt adopted is kept, as kubernetes keeps its Job, for a later claim (issue #821).
+    // The run this attempt adopted is kept, as kubernetes keeps its Job, for a later claim.
     const kept = { leaseToken: job.leaseToken, spared: deps.adopted.get(job.leaseToken) };
     const containerIds = await listOtherAttemptsOrThrow(
         execDocker,
@@ -220,7 +220,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob, signal: Abort
     );
 }
 
-/** The daemon seam of one attempt: ends with its kill and a deadline per command (#869). */
+/** The daemon seam of one attempt: ends with its kill and a deadline per command. */
 const attemptExecOf = (deps: RunnerDeps, job: BoardJob): ExecDocker =>
     attemptExec(deps.execDocker, deps.ledger.signal(job));
 
@@ -232,14 +232,14 @@ async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
         sleep: deps.sleep,
         signal: deps.ledger.signal(job),
         // A supervisor seen running and then confirmed over or removed is an infrastructure loss now, not at
-        // the bound (#924, the kubernetes pod lost before first contact). A read that did not answer, and a
+        // the bound (the kubernetes pod lost before first contact). A read that did not answer, and a
         // container never seen running, prove nothing.
         probe: async (bound) => {
             const state = await readSupervisorState(boundedExec(exec, bound), job);
             if (state === 'running') seenRunning = true;
             else if (state === 'gone' && seenRunning) {
                 // `gone` also reads a supervisor that exited: only a container the daemon no longer knows is the
-                // platform's doing (BEL-302), so the removal is asked for again.
+                // platform's doing, so the removal is asked for again.
                 const removed = await supervisorRemoved(boundedExec(exec, bound), job);
                 throw new StartupRefused(
                     `the task supervisor ${supervisorName(job)} was lost before it made contact`,
@@ -309,7 +309,7 @@ async function ensureGroup(
 /**
  * Ends the attempt's group by order, waits (bounded) for its supervisor to exit, and removes it —
  * every time: a group a kill already took out of `groups` was only stopped, and its supervisor,
- * exporter and mailboxes are still this attempt's to remove (issue #821). Never throws.
+ * exporter and mailboxes are still this attempt's to remove. Never throws.
  */
 async function finishGroup(deps: RunnerDeps, job: BoardJob): Promise<void> {
     if (deps.groups.delete(job.leaseToken)) {
@@ -328,7 +328,7 @@ async function finishGroup(deps: RunnerDeps, job: BoardJob): Promise<void> {
  * supervised step. The fence BEFORE the sync: the sync is the first writer on the task worktree, so
  * a previous attempt's containers must be off the daemon before the worktree script starts. A
  * starting claim gets fetch + create-or-rebase; a continuing claim gets RESTORE=1 — no fetch, no
- * rebase, nothing that touches the remote (issue #58). A conflicting rebase aborts itself in the
+ * rebase, nothing that touches the remote. A conflicting rebase aborts itself in the
  * script and answers { ok: false } with the reason — the loop fails the run before it starts
  * rather than leaving the worktree mid-rebase for every later turn to trip over.
  */
@@ -369,7 +369,7 @@ async function dockerSyncCheckout(
 }
 
 /*
- * The terminal reclaim is an acknowledged no-op (issue #775): the thread's tree lives on its own task
+ * The terminal reclaim is an acknowledged no-op: the thread's tree lives on its own task
  * volume, which only the reaper may delete, so there is no linked worktree to remove.
  */
 async function dockerReclaimWorktree(): Promise<ReclaimResult> {
@@ -394,7 +394,7 @@ const gateDeps = (deps: RunnerDeps, job: BoardJob): DockerGateDeps => ({
 });
 
 /**
- * The declared services, in the network namespace of the attempt's group supervisor (issue #773):
+ * The declared services, in the network namespace of the attempt's group supervisor:
  * the sync's group, or one made now for an attempt that synced none, before any service starts.
  */
 async function dockerStartServices(deps: RunnerDeps, job: BoardJob, signal?: AbortSignal): Promise<RunOutcome | null> {
@@ -413,7 +413,7 @@ async function dockerStartServices(deps: RunnerDeps, job: BoardJob, signal?: Abo
 }
 
 /**
- * The attempt's dead services (issue #423) — `exited` or `dead` in the sample's own fleet read,
+ * The attempt's dead services — `exited` or `dead` in the sample's own fleet read,
  * each inspected for how it ended and tailed for what it last printed, stderr included: an
  * entrypoint's refusal lands there. An unreadable fleet throws; an unreadable inspect or log
  * costs its detail, never the finding.
@@ -450,7 +450,7 @@ async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<Dead
 const RESUMED_EXIT_WAIT_MS = 30_000;
 
 /**
- * The exit code of a taken-over runner container (#829), read with a bounded `docker wait` once its
+ * The exit code of a taken-over runner container, read with a bounded `docker wait` once its
  * followed log has closed — `docker logs -f` exits 0 whatever the container did. A stream that closed
  * with an error is no end of the run (the container may still run); a wait that cannot say rejects,
  * which the loop leaves to its lease. `wait` is the uncancelled daemon seam: a killed run's exit is still read.
@@ -490,14 +490,14 @@ async function dockerRun(
 
     /*
      * Auxiliary services (issue #6) were started by the loop (`startServices`) before the gate
-     * environment and its setup, in the group supervisor's network namespace the runner joins too
-     * (issue #773); the fence above spares them as this attempt's own. A kill that lands while an
+     * environment and its setup, in the group supervisor's network namespace the runner joins too;
+     * the fence above spares them as this attempt's own. A kill that lands while an
      * await below is pending must stop the attempt: the check runs after the claim-env file write
      * and after the create/copy — the last awaits before the spawn — so the gap between that final
      * check and spawnFn is synchronous.
      */
 
-    // A group taken over from a lost driver (#829) has its runner container up and released: nothing
+    // A group taken over from a lost driver has its runner container up and released: nothing
     // is created, no env file written and no `go` ordered; the run attaches to the container's log.
     const created = resumed ? null : await createRunner(deps, attemptExecOf(deps, job), job, session);
     if (created?.refused) return created.refused;
@@ -552,7 +552,7 @@ async function dockerRun(
         const cacheState: { cacheLost: string | null } = { cacheLost: null };
 
         let output = '';
-        // The full-log accumulator (issue #325): everything the stream printed, tail-kept at
+        // The full-log accumulator: everything the stream printed, tail-kept at
         // ARTIFACT_LIMIT bytes — the artifact the loop uploads at close, of which the rolling
         // tail above is only the end. Kept separately from `output`, whose window is the
         // report's, and grown by the same chunks.
@@ -732,7 +732,7 @@ export function createDockerRunner(
             runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
         rebind: (group, binding, signal) => rebindGroup(execDocker, group, binding, signal),
         supervisorServing: (group, bound) => supervisorServing(execDocker, group, bound),
-        // A lost supervisor is a node loss only when its container is confirmed removed (BEL-302).
+        // A lost supervisor is a node loss only when its container is confirmed removed.
         groupTakenAway: (job, signal) => groupRemoved(execDocker, job, signal),
         abandon: (job) => ledger.abandon(job),
         sampleRuntime: (job) => dockerSampleRuntime(attemptExecOf(deps, job), deps.config, job),

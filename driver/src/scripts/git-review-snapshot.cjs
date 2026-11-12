@@ -1,5 +1,5 @@
 // @ts-check
-// The review snapshot (issue #549): freezes the task worktree's CURRENT state — HEAD plus every
+// The review snapshot: freezes the task worktree's CURRENT state — HEAD plus every
 // uncommitted and untracked file, `.factory/` excluded — as one commit under a ref of the shared
 // clone, so a reviewer's own worktree can start from exactly the tree it was asked about while the
 // agent keeps editing. One execFileSync per git call, no shell: no value can become a command. One

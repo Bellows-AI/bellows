@@ -1,7 +1,7 @@
 /** How many times a board call that must land is tried: the verdict and a question report. */
 export const BOARD_CALL_ATTEMPTS = 5;
 const BOARD_CALL_BACKOFF_MS = 1_000;
-/** The longest single backoff once a budget lets the doubling run on (issue #820). */
+/** The longest single backoff once a budget lets the doubling run on. */
 const BOARD_CALL_MAX_BACKOFF_MS = 30_000;
 
 const HTTP_REQUEST_TIMEOUT = 408;
@@ -62,10 +62,10 @@ const spent = (attempt: number, waitedMs: number, budgetMs?: number): boolean =>
 /**
  * Retries a board call that threw (a 5xx, a dropped connection) with doubling backoff; the last
  * throw propagates. A board VERDICT — 409, 404 — is an answer and returns, so it is never retried,
- * and neither is a deterministic refusal (a 400, a 413): it throws at once (issue #820).
+ * and neither is a deterministic refusal (a 400, a 413): it throws at once.
  * `what` opens the log line ("job <id>: the verdict was not accepted"). Without `budgetMs` the call
  * is tried `BOARD_CALL_ATTEMPTS` times; with it, until the summed backoff would pass the budget.
- * `leaseLapsed` fences the retry on the driver's lease clock (BEL-317): no call starts once it aborts, and
+ * `leaseLapsed` fences the retry on the driver's lease clock: no call starts once it aborts, and
  * one in flight or a backoff is abandoned with `LeaseLapsedError`, never retried.
  */
 export async function withBoardRetry<T>(

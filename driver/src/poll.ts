@@ -39,7 +39,7 @@ export async function pollFor<T>(
     const abandoned = opts.abandoned ?? ((): Error => new Error('the wait was abandoned: its signal aborted'));
     const started = Date.now();
     const deadline = started + ms;
-    // The first poll always runs, even with no budget: an `undefined` answer follows a read (#869),
+    // The first poll always runs, even with no budget: an `undefined` answer follows a read,
     // and a step whose requests the spent `deadline` refuses reports the read as unconfirmed.
     for (let polls = 0; polls === 0 || Math.max(polls * everyMs, Date.now() - started) < ms; polls += 1) {
         if (signal?.aborted) throw abandoned();

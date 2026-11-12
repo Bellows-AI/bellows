@@ -4,7 +4,7 @@
 /*
  * The PR summary: one JSON line {title, body} describing what the task branch did, for the
  * publish flow to open the pull request with. The driver never sees the commits — they live
- * only in the task worktree — and the job command is a prompt, not a summary (issue #82: a PR
+ * only in the task worktree — and the job command is a prompt, not a summary (a PR
  * titled "try again?" is the failure this replaces; issue #389: a title copied from the
  * branch's FIRST commit names its setup, not its outcome).
  *
@@ -14,9 +14,9 @@
  *         back — a summary is decoration, never worth failing a publish that already pushed.
  *   BACKSTOP_TITLE  the driver's plan.title — the subject of the commit the publish itself just
  *         created from the uncommitted leftovers. Commits with that subject are excluded from
- *         the title selection: the prompt is never authoritative (issue #389).
+ *         the title selection: the prompt is never authoritative.
  *
- * The title is SELECTED, not copied (issue #389): every commit is scored by how much of its
+ * The title is SELECTED, not copied: every commit is scored by how much of its
  * churn survives in the branch's final diff against BASE — a commit whose changes were
  * reverted or superseded scores nothing — and the heaviest survivor names the PR, the earliest
  * winning a tie (so a branch whose commits all tie reads exactly as the old first-subject
@@ -48,8 +48,8 @@ const FIELD_SEPARATOR = '\u001f';
 const NUMSTAT_BINARY = '-';
 /**
  * A test file: a `tests?`/`__tests__` path segment, a `.test.`/`.spec.` double extension, or
- * a `test_*` basename. The two dominant conventions, deliberately not a per-language matrix
- * (issue #389): a misclassified layout only tilts which surviving commit names the PR.
+ * a `test_*` basename. The two dominant conventions, deliberately not a per-language matrix:
+ * a misclassified layout only tilts which surviving commit names the PR.
  */
 const TEST_FILE = /(^|\/)(tests?|__tests__)(\/|$)|\.(test|spec)\.[^/]+$|(^|\/)test_[^/]*$/i;
 
@@ -135,15 +135,15 @@ function survivingSplit(files, finalChurn) {
 }
 
 /**
- * The title rule (issue #389): among commits whose surviving weight is positive, prefer those
+ * The title rule: among commits whose surviving weight is positive, prefer those
  * that changed source in the final diff; the heaviest survivor names the PR, earliest on a
  * tie. An all-test branch falls back to its test commits; a branch with no measurable churn
  * at all (empty commits, merges only) falls back to every commit — the old first-subject
  * behavior. Single-commit branches always resolve to their only subject.
  *
  * BACKSTOP_TITLE (set by the driver to plan.title) names the publish's OWN just-created
- * commit — its subject is the command's first line, and the prompt is never authoritative
- * (issue #389): commits whose subject normalizes to it are excluded from every pool. When it
+ * commit — its subject is the command's first line, and the prompt is never authoritative:
+ * commits whose subject normalizes to it are excluded from every pool. When it
  * is the branch's only commit the selection answers null and the driver's plan.title fallback
  * lands anyway — the same string it would have been. The commit itself keeps its place in the
  * body's commit list.

@@ -53,7 +53,7 @@ export const CONTROL_PATH = '/control';
 export const PUBLISH_PATH = '/publish';
 /** The question routes beside it: `POST /question`, `GET /question/:questionId`. */
 export const QUESTION_PATH = '/question';
-/** The reviewer routes beside them (issue #549): `POST /review`, `GET /review/:key`. */
+/** The reviewer routes beside them: `POST /review`, `GET /review/:key`. */
 export const REVIEW_PATH = '/review';
 /** The agent's ad-hoc gate run: `POST /gate/run {gate, filter?}`, served by the gate server's own run logic. */
 export const GATE_RUN_PATH = '/gate/run';
@@ -91,18 +91,18 @@ export interface ControlChannel {
     /**
      * Opens the transcript exporter's own token beside the open supervisor `token`: the export routes, no
      * other. With `exporter` the token is bound to that relay instead of the attempt's own — a review's
-     * close-time export (issue #774) rides the caller's group under the review row's identity.
+     * close-time export rides the caller's group under the review row's identity.
      */
     grantExporter(token: string, exporterToken: string, exporter?: ExportRelay): void;
     /** Closes a bound exporter token once its step is over; the attempt's own tokens are not touched. */
     revokeExporter(exporterToken: string): void;
     /** Gives an open token its transcript exporter's relay: the `/export` routes answer 400 until then. */
     attachExporter(token: string, exporter: ExportRelay): void;
-    /** Gives an open token the relay of its supervisor's checkpoint (issue #775): the `/checkpoint` routes answer 400 until then. */
+    /** Gives an open token the relay of its supervisor's checkpoint: the `/checkpoint` routes answer 400 until then. */
     attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
     /** Gives an open token the relay of its agent's connection ask: `/connection` answers 503 until then. */
     attachConnection(token: string, connection: ConnectionRelay): void;
-    /** Gives an open token the relay of its supervisor's gate token ask (BEL-258): `/gate-token` answers 503 until then. */
+    /** Gives an open token the relay of its supervisor's gate token ask: `/gate-token` answers 503 until then. */
     attachGateToken(token: string, gateToken: GateTokenRelay): void;
     /**
      * Gives an open token the door of its agent's ad-hoc gate runs (`POST /gate/run`): 503 retryable until then, so a run
@@ -126,7 +126,7 @@ export interface ControlChannel {
     /** Ends the attempt: its stop flag and its questions are dropped, and every token of it gets 401. */
     close(token: string): void;
     /**
-     * Leaves the attempt to a newer holder (#829): like `close`, but every token of it — the supervisor's, the
+     * Leaves the attempt to a newer holder: like `close`, but every token of it — the supervisor's, the
      * agent's, the exporter's — is hung up on for `forMs` instead of answered 401, which a live supervisor
      * reads as the end of its attempt. Past the bound the tokens are unknown, as any closed token is.
      */
@@ -232,7 +232,7 @@ function serveSupervisorStep(
 
 /**
  * `GET /control`'s answer: the stop and kill orders, the gate steps the driver cancelled when there are any,
- * and `agentEnded` once the runner read the agent container over (#920).
+ * and `agentEnded` once the runner read the agent container over.
  */
 function controlAnswer(steps: StepBroker, token: string, orders: { stop: boolean; kill: boolean }) {
     const cancel = steps.cancels(token);
@@ -382,7 +382,7 @@ function respondAnswer(reply: ServerResponse, answer: BodyAnswer | InputAnswer |
     }
 }
 
-/** The tokens of attempts left to a newer holder (#829): remembered, to be hung up on, until their bound passes. */
+/** The tokens of attempts left to a newer holder: remembered, to be hung up on, until their bound passes. */
 function createDepartures() {
     const timers = new Map<string, NodeJS.Timeout>();
     return {

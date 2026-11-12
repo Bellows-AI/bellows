@@ -13,7 +13,7 @@ export interface Interruption {
      */
     requirement?: boolean;
     /**
-     * The platform took the attempt away (a drained driver, an evicted runner; BEL-302): released outside the
+     * The platform took the attempt away (a drained driver, an evicted runner): released outside the
      * poison interruption budget, counted against the board's far looser node-loss bound.
      */
     nodeLoss?: boolean;

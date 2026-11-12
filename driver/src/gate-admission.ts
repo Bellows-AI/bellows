@@ -1,5 +1,5 @@
 /**
- * Which ad-hoc gate runs a token has in flight, and whether it still admits more (issue #983): the
+ * Which ad-hoc gate runs a token has in flight, and whether it still admits more: the
  * completion pass closes a token and drains it before it reads the gate record, so no ad-hoc run is
  * left on its way to a verdict the pass would not see.
  */

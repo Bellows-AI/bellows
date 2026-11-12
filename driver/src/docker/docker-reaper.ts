@@ -9,10 +9,10 @@ import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, generationOfName } from '../task-vol
 import { parseDockerTimestamp, parseRfc3339 } from '../timestamps.js';
 
 /**
- * The docker half of the orphan reaper (issue #301): label-filtered `docker ps` and `volume ls`,
+ * The docker half of the orphan reaper: label-filtered `docker ps` and `volume ls`,
  * and container and volume removal — the twin of `dockerServiceTeardown` and the docker fence
  * acting on what an attempt can never tear down itself. No network is an attempt's: its group
- * shares its supervisor's namespace (issue #773). Scope: the SERVICE and GATE labels (issue #667) and an attempt's task group (issue
+ * shares its supervisor's namespace. Scope: the SERVICE and GATE labels and an attempt's task group (issue
  * #821) — every container carrying the ROLE label (agent, supervisor, exporter) and every volume
  * carrying the job and lease labels (its mailboxes and kill markers). An exited runner container
  * is unread: the next claim adopts it. A scan any one list or inspect of which the daemon refused
@@ -23,7 +23,7 @@ import { parseDockerTimestamp, parseRfc3339 } from '../timestamps.js';
  * Docker's `CreatedAt` spelling — `2026-09-14 10:00:00 +0000 UTC` — into epoch millis. Not a
  * RFC3339 string, so `Date.parse` alone would be gambling on the engine. Unparsable answers null,
  * never the epoch: a date that cannot be read must not put a group out of its grace window and
- * license a reap (#869) — the scan that met it is inconclusive.
+ * license a reap — the scan that met it is inconclusive.
  */
 export const parseDockerCreatedAt = parseDockerTimestamp;
 
@@ -59,7 +59,7 @@ const fieldsOf = (
 
 /**
  * The job and lease pair a row's labels carry; `'out-of-scope'` for a row the reaper leaves alone;
- * null for a row whose job or lease label is present but no uuid (#869) — it would become the attempt
+ * null for a row whose job or lease label is present but no uuid — it would become the attempt
  * identity the grouping files the row under, so the whole listing is inconclusive.
  */
 const pairOf = (
@@ -98,7 +98,7 @@ const parsePsRow = (line: string, scopeLabel: string, board: string): PsRow | 'o
     const name = fields.Names;
     // The objects are named by ID, not by container name: the id is what the removal argv uses,
     // and a name could address whatever owns it at removal time. An exited runner is the next
-    // claim's to adopt (issue #792): never reaped unread.
+    // claim's to adopt: never reaped unread.
     const exitedRunner =
         scopeLabel === ROLE_LABEL &&
         fields.State === 'exited' &&
@@ -312,7 +312,7 @@ const taskVolumeRows = (stdout: string, board: string): VolumeListing | null => 
 };
 
 /**
- * Every task volume (issue #775), all generations, by its root label, grouped by thread, each with its
+ * Every task volume, all generations, by its root label, grouped by thread, each with its
  * creation time (null when the daemon would not say). Null when the daemon refused the list or a line of
  * it is not a volume record.
  */

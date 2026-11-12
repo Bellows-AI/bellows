@@ -47,7 +47,7 @@ import {
 import { SUPERVISOR_CHECKPOINT_MS } from '../supervisor-contract.js';
 
 /**
- * The kubernetes task group of one attempt (issue #771): the one Job whose pod holds the supervisor,
+ * The kubernetes task group of one attempt: the one Job whose pod holds the supervisor,
  * the agent and the exporter, created by the attempt's first step — the sync — and ended by its
  * last, rather than by the agent's exit. Everything the attempt does on the task worktree that is
  * not the agent's own work (the sync, the tree probe, the review snapshot, the publish, the
@@ -64,7 +64,7 @@ export interface TaskGroup {
     agent: boolean;
     /** The incarnation this runner created: its teardown deletes that one only. */
     uids: IncarnationUids;
-    /** Taken over from a lost driver (#829): this runner created none of it, and orders no `go`. */
+    /** Taken over from a lost driver: this runner created none of it, and orders no `go`. */
     resumed?: boolean;
 }
 
@@ -76,9 +76,9 @@ export const runnerGroupOf = (job: BoardJob, uids?: IncarnationUids): GroupRef =
 });
 
 /**
- * Whether one successful, well-formed pod list of the runner Job proves its pod was taken away (BEL-302): the
+ * Whether one successful, well-formed pod list of the runner Job proves its pod was taken away: the
  * pod gone from the list, evicted, or marked a disruption target (`runnerLossOf`). Any other read — a failed
- * request, a non-2xx answer, a body that is no pod list — proves nothing and answers `unknown` (BEL-316); a pod
+ * request, a non-2xx answer, a body that is no pod list — proves nothing and answers `unknown`; a pod
  * that is still live with its supervisor crashed or OOM-killed inside it is `kept`.
  */
 export async function runnerPodTakenAway(deps: K8sDeps, jobName: string): Promise<GroupTakenAway> {
@@ -94,7 +94,7 @@ export async function runnerPodTakenAway(deps: K8sDeps, jobName: string): Promis
  * Forgets the attempt's group, its end marked pending first — synchronously, before anything is
  * awaited — so no concurrent hand-back of the claim slips in while it is torn down. Answers what
  * the runner knew of it (its incarnation), or undefined for a group it never created. The end is pending
- * against the claim's holder, which a taken-over group's lease (`ownGroup`) is not (#829).
+ * against the claim's holder, which a taken-over group's lease (`ownGroup`) is not.
  */
 export function forgetGroup(deps: K8sDeps, job: BoardJob): TaskGroup | undefined {
     const known = groupsOf(deps).get(job.leaseToken);
@@ -108,7 +108,7 @@ interface ListedGroupJob {
     metadata: { name: string; uid: string; labels: Record<string, string> };
 }
 
-/** A listed group Job (#869): identified by name and uid, and carrying the lease its pair is named by. */
+/** A listed group Job: identified by name and uid, and carrying the lease its pair is named by. */
 const asHolderGroup = (value: unknown): ListedGroupJob | null => {
     const item = asIdentified<ListedGroupJob>(value);
     return item && isLease(item.metadata.labels?.[LEASE_LABEL]) ? item : null;
@@ -144,7 +144,7 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
 
 /**
  * Waits until the group's supervisor has pulled from the driver at least once, failing at once on a
- * held container whose words prove why (issue #302; typed by #824 D11) and past `GROUP_UP_WAIT_MS` —
+ * held container whose words prove why (typed by #824 D11) and past `GROUP_UP_WAIT_MS` —
  * elapsed time, not a count of polls (`awaitFirstContact`) — on anything else; a driver kill ends the wait at once. At the bound, a pod the platform was still
  * bringing up (none yet, or none of its containers started) is a transient refusal; a back-off that
  * never named its cause, a supervisor that runs without answering, or lists that never answered prove
@@ -166,7 +166,7 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
             const refused = startRefusalOf(image, pull, true);
             if (refused) throw refused;
             // A pod seen and then gone, or marked for removal, is an infrastructure loss now: waiting on the
-            // bound would idle a replacement for GROUP_UP_WAIT_MS (#924). A `none` before any pod, and an
+            // bound would idle a replacement for GROUP_UP_WAIT_MS. A `none` before any pod, and an
             // unread list, prove nothing.
             if (pull.disrupted || (seen.pod && pull.podState === 'none'))
                 throw new StartupRefused(
@@ -186,7 +186,7 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
     if (seen.unproven) throw new Error(seen.unproven);
     const why = `the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms`;
     if (seen.affinity) {
-        // An infrastructure loss (#775), never a run failure: the volume sits in a zone no node can take. It is
+        // An infrastructure loss, never a run failure: the volume sits in a zone no node can take. It is
         // marked so no claim adopts it again; the next one restores the thread into a new generation.
         // Only under the checkout claim: an attempt another one has taken over labels no volume.
         const unmarked = await (async () => {
@@ -239,7 +239,7 @@ export async function ensureGroup(
 /**
  * Whether the group's runner Job is confirmed over: gone (404), terminal, or marked by the Job controller
  * as failing (`FailureTarget`/`Failed` True — the pod already counted failed, still terminating). A read that
- * fails, times out or is malformed throws, and is no end (#967).
+ * fails, times out or is malformed throws, and is no end.
  */
 async function runnerJobEnded(
     deps: K8sDeps,
@@ -264,7 +264,7 @@ async function runnerJobEnded(
 
 /**
  * Watches the group for its whole life, from its supervisor's first contact: a runner Job that ends
- * under steps still waiting on its supervisor releases them at once (#967), however the agent's run stands.
+ * under steps still waiting on its supervisor releases them at once, however the agent's run stands.
  * `held` is the token the group is recorded under, `job` the attempt whose steps it serves.
  */
 export function watchRunnerGroup(deps: K8sDeps, job: BoardJob, group: TaskGroup, held: string): void {
@@ -296,7 +296,7 @@ export async function takeGroupDown(deps: K8sDeps, job: BoardJob): Promise<void>
     await releaseClaimAfterGroupEnd(deps, job, { groups: [runnerGroupOf(job, known?.uids)] });
 }
 
-/** How a Job stood at the end of the wait: `unread` when its last read proved nothing (#869). */
+/** How a Job stood at the end of the wait: `unread` when its last read proved nothing. */
 type JobEnd = 'ended' | 'running' | 'unread';
 
 /**
@@ -335,7 +335,7 @@ export async function finishGroup(deps: K8sDeps, job: BoardJob): Promise<void> {
     if (!groupsOf(deps).has(job.leaseToken)) {
         // A group already taken away (a kill) whose end went unconfirmed is ended again here, and
         // its claim given back once it is. The end is recorded under the claim's holder, which a
-        // taken-over group's lease (`ownGroup`) is not (#829).
+        // taken-over group's lease (`ownGroup`) is not.
         const holder = job.claimHolder ?? job.leaseToken;
         if (holderUnconfirmed(deps, holder) && (await retryUnconfirmed(deps, holder))) {
             await releaseClaimAfterGroupEnd(deps, job);
@@ -346,7 +346,7 @@ export async function finishGroup(deps: K8sDeps, job: BoardJob): Promise<void> {
     await orderFinish(stepHostOf(deps), job).catch(() => undefined);
     // A supervisor-only group ran no agent: its Job is no run to adopt, and ends destructively.
     // An unread Job is never deleted on that: held, kept, and ended again once it reads (`retryUnconfirmed`).
-    // The supervisor's exit, after the checkpoint it takes at finalize (issue #775) under its own bound.
+    // The supervisor's exit, after the checkpoint it takes at finalize under its own bound.
     const ends = await jobEndsWithin(deps, runnerName(job), GROUP_END_WAIT_MS + SUPERVISOR_CHECKPOINT_MS);
     const keep = ends !== 'running' && known.agent;
     await releaseClaimAfterGroupEnd(deps, job, { groups: [{ ...runnerGroupOf(job, known.uids), keep }] });
