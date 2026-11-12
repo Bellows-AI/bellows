@@ -73,7 +73,7 @@ bind this conversation and every agent it spawns — copy them into each brief. 
 token cap and no forced handoff: an agent stopped mid-task loses what its handoff did not carry.
 
 - **Read narrowly, suites to disk, wait in one call.** Locate with `git grep -n` and read at most
-  ~150 lines; run every suite to a log and read only the verdict and the failures; wait for a
+  ~150 lines, never `cat` a whole source file or doc to look for something, and never re-read a range already in context unless it changed; run every suite to a log and read only the verdict and the failures; wait for a
   background command or `Monitor` once, never in a loop of sleeps or status checks. The
   `implementer` agent (`.claude/agents/implementer.md`) carries these rules; any other agent you
   spawn gets them copied into its brief.

@@ -17,7 +17,7 @@ const WIDE = new Set(['auth.md', 'design-system.md', 'jobs.md', 'kubernetes.md']
 const RUNBOOKS = new Set(['eks-runbook.md', 'jira-app-runbook.md']);
 const CELL_CAP = 300;
 const EXT = 'ts|tsx|mts|mjs|cjs|js|sql|sh|md|yaml|yml|json|grit|tpl|toml|mdx';
-const PATH = new RegExp(`^[\\w.@/-]+\\.(${EXT})$`);
+const PATH = new RegExp(`^[\\w.@/{},-]+\\.(${EXT})$`);
 
 const files = readdirSync(DOCS)
     .filter((name) => name.endsWith('.md'))
@@ -25,11 +25,17 @@ const files = readdirSync(DOCS)
 const read = (name: string): string => readFileSync(join(DOCS, name), 'utf8');
 const linesOf = (text: string): string[] => text.replace(/\n$/, '').split('\n');
 
+const expandBraces = (path: string): string[] => {
+    const m = /\{([^{}]+)\}/.exec(path);
+    if (!m) return [path];
+    return (m[1] ?? '').split(',').flatMap((alt) => expandBraces(path.replace(m[0], alt)));
+};
+
 const pathsIn = (text: string): string[] => {
     const found: string[] = [];
     for (const [, span] of text.matchAll(/`([^`\s]+)`/g)) {
         const bare = (span ?? '').replace(new RegExp(`(\\.(?:${EXT})):[\\w.:-]*$`), '$1');
-        if (bare.includes('/') && PATH.test(bare)) found.push(bare);
+        if (bare.includes('/') && PATH.test(bare)) found.push(...expandBraces(bare));
     }
     return found;
 };

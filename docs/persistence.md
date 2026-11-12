@@ -30,7 +30,7 @@ database-free through the in-memory stores in `server/test/helpers*.ts`.
 
 - **Applied migrations are immutable, comments included.** `schema_migrations.checksum` holds `sha256(body)`; a
   mismatch refuses boot (`MigrationChecksumError`, no retry, `ready` stays rejected so routes answer 503), and a
-  null checksum is back-filled once with the shipped hash. Repeatables are exempt.
+  null checksum is back-filled once with the shipped hash. Repeatables are exempt. A removed feature's schema is a new `drop` migration (`023_drop_pull_requests.sql`), children before parents.
   `server/test-db/migrate.checksum.test.ts`.
 - **The ten duplicate-prefix pairs are frozen.** The ledger key is the filename, so a rename re-applies the file;
   a new file takes an unused number. `server/test/migrations-numbering.test.ts`.
