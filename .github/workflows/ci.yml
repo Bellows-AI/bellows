@@ -10,6 +10,9 @@ on:
         # `npm run release` pushes a VERSION-only commit with its v* tag; the tag's release workflow
         # validates that commit through workflow_call, which path filters never reach.
         paths-ignore: [VERSION]
+    # The merge queue (a repository setting) builds each candidate on its own branch and waits for
+    # validate and test-db; e2e stays post-merge, so it never runs here.
+    merge_group:
     # Called by release-image.yml so a v* tag runs exactly these gates, once, with no copy.
     workflow_call:
 
@@ -183,3 +186,30 @@ jobs:
                   path: artifacts/ui
                   retention-days: 7
                   if-no-files-found: warn
+
+    notify-red-main:
+        # A red push to main used to wait for a person to notice. One open issue, found by its fixed
+        # title, collects a comment per red run. A tag run (workflow_call) and a merge-queue run
+        # have another ref, so neither alerts. The only credential is the job's github.token.
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        needs: [validate, test-db, e2e]
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions:
+            issues: write
+        env:
+            GH_TOKEN: ${{ github.token }}
+            GH_REPO: ${{ github.repository }}
+            TITLE: 'CI is red on main'
+            BODY: >-
+                CI failed on ${{ github.sha }}: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        steps:
+            - name: open or comment on the red-main issue
+              run: |
+                  number=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
+                      --jq "map(select(.title == \"$TITLE\"))[0].number // empty")
+                  if [ -n "$number" ]; then
+                      gh issue comment "$number" --body "$BODY"
+                  else
+                      gh issue create --title "$TITLE" --body "$BODY"
+                  fi

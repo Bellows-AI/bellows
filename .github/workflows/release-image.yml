@@ -22,6 +22,12 @@ jobs:
     # The same gates a pull request runs, by reference rather than by copy.
     validate:
         uses: ./.github/workflows/ci.yml
+        # A called workflow cannot hold more than its caller grants, and ci.yml's notify-red-main job
+        # asks for issues: write; that job never runs on a tag (its if names refs/heads/main).
+        permissions:
+            contents: read
+            packages: read
+            issues: write
 
     # One place computes the names every later job uses, so the fold and the lowercasing cannot
     # drift between the per-arch builds and the manifest that merges them.
