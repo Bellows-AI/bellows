@@ -58,3 +58,96 @@ export const setMemberRole = async (userId: string, role: Role): Promise<string 
     });
     return result.ok ? null : result.error;
 };
+
+/** One admin removal, as `GET /api/org/members/removed` serves it; `removedBy` is null once that account is gone. */
+export interface RemovedMember {
+    userId: string;
+    githubLogin: string;
+    removedAt: string;
+    removedBy: string | null;
+}
+
+/** One GitHub account the org's member list names. */
+export interface GitHubPerson {
+    githubUserId: number;
+    login: string;
+}
+
+/**
+ * `GET /api/org/members/invitations`: the org's sign-in link (null where there is no GitHub sign-in), and GitHub's
+ * members who have neither signed in nor been removed — or why that list could not be read.
+ */
+export interface Invitations {
+    signInUrl: string | null;
+    github: { state: 'listed'; people: GitHubPerson[] } | { state: 'unavailable'; reason: string };
+}
+
+const isRemovedMember = (row: unknown): row is RemovedMember =>
+    typeof row === 'object' &&
+    row !== null &&
+    typeof (row as RemovedMember).userId === 'string' &&
+    typeof (row as RemovedMember).githubLogin === 'string' &&
+    typeof (row as RemovedMember).removedAt === 'string' &&
+    isDate((row as RemovedMember).removedBy);
+
+const isPerson = (row: unknown): row is GitHubPerson =>
+    typeof row === 'object' &&
+    row !== null &&
+    typeof (row as GitHubPerson).githubUserId === 'number' &&
+    typeof (row as GitHubPerson).login === 'string';
+
+const isInvitations = (body: unknown): body is Invitations => {
+    if (typeof body !== 'object' || body === null) return false;
+    const { signInUrl, github } = body as {
+        signInUrl?: unknown;
+        github?: { state?: unknown } & Record<string, unknown>;
+    };
+    if (!(signInUrl === null || typeof signInUrl === 'string') || typeof github !== 'object' || github === null) {
+        return false;
+    }
+    if (github.state === 'listed') return Array.isArray(github.people) && github.people.every(isPerson);
+    return github.state === 'unavailable' && typeof github.reason === 'string';
+};
+
+/** The org's removals, read beside the roster. */
+export const listRemovedMembers = async (): Promise<
+    { ok: true; removed: RemovedMember[] } | { ok: false; error: string }
+> => {
+    const result = await request<{ removed: RemovedMember[] }>('/api/org/members/removed', {
+        verb: 'Could not load the removed members',
+        guard: (body): body is { removed: RemovedMember[] } => {
+            const rows = (body as { removed?: unknown } | null)?.removed;
+            return Array.isArray(rows) && rows.every(isRemovedMember);
+        },
+        malformed: 'Could not load the removed members: unexpected response shape.',
+    });
+    return result.ok ? { ok: true, removed: result.value.removed } : { ok: false, error: result.error };
+};
+
+/** The invitation read: the sign-in link and who on GitHub has not used it yet. */
+export const readInvitations = async (): Promise<{ ok: true; value: Invitations } | { ok: false; error: string }> =>
+    request<Invitations>('/api/org/members/invitations', {
+        verb: 'Could not load the invitations',
+        guard: isInvitations,
+        malformed: 'Could not load the invitations: unexpected response shape.',
+    });
+
+/** The removal. Returns the refusal's message, or null when the member is out. */
+export const removeMember = async (userId: string): Promise<string | null> => {
+    const result = await request(`/api/org/members/${userId}`, {
+        method: 'DELETE',
+        verb: 'Could not remove the member',
+        empty: true,
+    });
+    return result.ok ? null : result.error;
+};
+
+/** Lifts a removal. Returns the refusal's message, or null when the account may sign in again. */
+export const restoreMember = async (userId: string): Promise<string | null> => {
+    const result = await request(`/api/org/members/removed/${userId}`, {
+        method: 'DELETE',
+        verb: 'Could not restore the member',
+        empty: true,
+    });
+    return result.ok ? null : result.error;
+};

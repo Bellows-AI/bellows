@@ -18,6 +18,7 @@ import {
     userIdOf,
     viewToken,
 } from './helpers-auth-store.js';
+import { removalMethods } from './helpers-auth-store-removals.js';
 
 /**
  * The rest of memoryAuthStore's methods — access tokens, pending sign-ins, tracked repos and
@@ -322,6 +323,7 @@ export function memoryAuthStore(): MemoryAuthStore {
     const state = createAuthState();
     return {
         ...membershipMethods(state),
+        ...removalMethods(state),
         ...sessionMethods(state),
         ...accessTokenMethods(state),
         ...pendingSignInMethods(state),

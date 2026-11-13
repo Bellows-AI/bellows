@@ -29,15 +29,33 @@ export type MembershipVerdict =
     | { kind: 'not-member' }
     | { kind: 'unknown'; reason: string };
 
+/** One GitHub account, by its numeric id (the identity) and current login (a label). */
+export interface GitHubAccount {
+    githubUserId: number;
+    login: string;
+}
+
+/** GitHub's member list of an installation's organization: listed only on a 200 for every page asked. */
+export type RosterAnswer = { kind: 'listed'; members: GitHubAccount[] } | { kind: 'unknown'; reason: string };
+
 export interface MembershipReader {
     read(target: MembershipTarget, signal?: AbortSignal): Promise<MembershipVerdict>;
+    /**
+     * The organization's active members (`GET /orgs/:org/members`), up to `ROSTER_PAGE_CAP` pages: what an admin may
+     * invite. Bounded by the same budget as `read`; it decides nothing about anyone's access.
+     */
+    roster(org: MembershipTarget['org'], signal?: AbortSignal): Promise<RosterAnswer>;
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000;
+const ROSTER_PAGE_SIZE = 100;
+/** 1,000 members: past that the list is cut, never refused — it only offers invitations. */
+const ROSTER_PAGE_CAP = 10;
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
 
-const unknown = (reason: string): MembershipVerdict => ({ kind: 'unknown', reason });
+/** An unanswered read, for either answer kind: it licenses nothing. */
+const unknown = (reason: string): { kind: 'unknown'; reason: string } => ({ kind: 'unknown', reason });
 
 /** A request that answered, with its status and parsed body (null when the body is not JSON). */
 interface Answer {
@@ -64,6 +82,17 @@ function verdictOf(body: unknown, target: MembershipTarget): MembershipVerdict |
     if (body.state === 'active') return { kind: 'active', owner: body.role === ADMIN_ROLE };
     if (body.state === 'pending') return { kind: 'not-member' };
     return unknown('unrecognized membership state');
+}
+
+/** One page of `GET /orgs/:org/members`: an array of `{ id, login }`, or null when any row is not one. */
+function accountsOf(body: unknown): GitHubAccount[] | null {
+    if (!Array.isArray(body)) return null;
+    const accounts: GitHubAccount[] = [];
+    for (const row of body) {
+        if (!isRecord(row) || typeof row.id !== 'number' || typeof row.login !== 'string') return null;
+        accounts.push({ githubUserId: row.id, login: row.login });
+    }
+    return accounts;
 }
 
 export function createMembershipReader({
@@ -138,6 +167,42 @@ export function createMembershipReader({
         return outcome === 'mismatch' ? unknown('membership answer names another identity') : outcome;
     };
 
+    /** Every page of the org's members, until a short page or the cap; any other answer is `unknown`. */
+    const list = async (org: MembershipTarget['org'], signal: AbortSignal): Promise<RosterAnswer> => {
+        const token = await tokenFor(org.id);
+        signal.throwIfAborted();
+        const members: GitHubAccount[] = [];
+        for (let page = 1; page <= ROSTER_PAGE_CAP; page += 1) {
+            const path = `/orgs/${encodeURIComponent(org.login)}/members?per_page=${ROSTER_PAGE_SIZE}&page=${page}`;
+            const answer = await get(path, token, signal);
+            if (answer.status !== HTTP_OK) return unknown(`member list answered ${answer.status}`);
+            const accounts = accountsOf(answer.body);
+            if (!accounts) return unknown('malformed member list');
+            members.push(...accounts);
+            if (accounts.length < ROSTER_PAGE_SIZE) break;
+        }
+        return { kind: 'listed', members };
+    };
+
+    /**
+     * Runs `fn` under the budget (and the caller's signal). Raced, so a token mint that ignores the signal cannot
+     * hold the request past the budget; a timeout or a throw is `unknown`, never an answer.
+     */
+    const withinBudget = async <T>(what: string, fn: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal) => {
+        const budget = AbortSignal.timeout(timeoutMs);
+        const bounded = signal ? AbortSignal.any([signal, budget]) : budget;
+        try {
+            return await Promise.race([
+                fn(bounded),
+                new Promise<{ kind: 'unknown'; reason: string }>((resolve) => {
+                    bounded.addEventListener('abort', () => resolve(unknown(`${what} timed out`)), { once: true });
+                }),
+            ]);
+        } catch (e) {
+            return unknown(`${what} failed: ${(e as Error).message}`);
+        }
+    };
+
     return {
         async read(target, signal) {
             const { org, user } = target;
@@ -150,21 +215,18 @@ export function createMembershipReader({
             if (org.accountType !== 'Organization' || org.accountId === null) {
                 return unknown('installation account not recorded');
             }
-            const budget = AbortSignal.timeout(timeoutMs);
-            const bounded = signal ? AbortSignal.any([signal, budget]) : budget;
-            try {
-                // Raced, so a token mint that ignores the signal cannot hold the request past the budget.
-                return await Promise.race([
-                    ask(target, bounded),
-                    new Promise<MembershipVerdict>((resolve) => {
-                        bounded.addEventListener('abort', () => resolve(unknown('membership read timed out')), {
-                            once: true,
-                        });
-                    }),
-                ]);
-            } catch (e) {
-                return unknown(`membership read failed: ${(e as Error).message}`);
+            return withinBudget('membership read', (bounded) => ask(target, bounded), signal);
+        },
+
+        async roster(org, signal) {
+            // A user account's installation has one member: the account, whose login the installation carries.
+            if (org.accountType === 'User' && org.accountId !== null) {
+                return { kind: 'listed', members: [{ githubUserId: org.accountId, login: org.login }] };
             }
+            if (org.accountType !== 'Organization' || org.accountId === null) {
+                return unknown('installation account not recorded');
+            }
+            return withinBudget('member list read', (bounded) => list(org, bounded), signal);
         },
     };
 }

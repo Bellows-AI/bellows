@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
 import type { OAuthStore } from './auth/oauth-store.js';
+import type { MembershipReader } from './auth/membership.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
 import { mcpRoutes } from './mcp/routes.js';
@@ -90,6 +91,11 @@ export interface AppDeps {
      * hook still runs and still resolves a caller, so there is one code path rather than two.
      */
     auth?: AuthStore | undefined;
+    /**
+     * GitHub's member list of an organization, for the members page's invitations (routes/org-members.ts). Present
+     * under a GitHub App; absent, the invitation read serves the sign-in link and says the list is unavailable.
+     */
+    githubRoster?: Pick<MembershipReader, 'roster'> | undefined;
     /**
      * The branch route's lease-pair verifier, threaded through to the auth hook. main.ts builds it
      * from the job store's SQL; the tests that exercise the runner credential stub it.
@@ -303,6 +309,7 @@ export async function buildApp({
     orgs,
     store,
     auth,
+    githubRoster,
     orgOfLease,
     orgOfJob,
     orgOfReclaim,
@@ -446,7 +453,7 @@ export async function buildApp({
     );
     // The member roster and its role writes (issue 410), the same person-shaped surface: the
     // caller's role decides, the store has no role of its own to check.
-    if (auth) await app.register(orgMemberRoutes({ store: auth }));
+    if (auth) await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
 
     if (config.webRoot) {
         const { default: fastifyStatic } = await import('@fastify/static');

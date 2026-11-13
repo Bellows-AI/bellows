@@ -375,3 +375,39 @@ describe.runIf(enabled)('every membership deletion ends the credentials with it'
         expect(await revoked(creds)).toBe(true);
     });
 });
+
+describe.runIf(enabled)('an admin’s removals, through the auth store', () => {
+    it('lists the org’s removals with who removed them, restores one, and names who GitHub may still invite', async () => {
+        const board = rig();
+        const owner = person('owner');
+        const alice = person('alice');
+        const bob = person('bob');
+        board.set(owner, 'admin');
+        board.set(alice, 'member');
+        board.set(bob, 'member');
+        const admin = await board.signIn(owner);
+        const caller = await board.signIn(alice);
+        await board.signIn(bob);
+
+        expect(await board.base.blockMember(board.install.id, caller.user.id, admin.user.id)).toBe('removed');
+        expect(await board.base.blockMember(board.install.id, admin.user.id, admin.user.id)).toBe('last-admin');
+        expect(await board.base.listRemovedMembers(board.install.id)).toEqual([
+            { userId: caller.user.id, githubLogin: 'alice', removedAt: expect.any(String), removedBy: 'owner' },
+        ]);
+        expect(await board.base.listRemovedMembers(testOrg())).toEqual([]);
+        await expect(board.signIn(alice)).rejects.toThrow();
+
+        // Everyone signed in or removed is accounted for; the org is described for GitHub's member list.
+        const basis = await board.base.invitationBasis(board.install.id);
+        expect(basis?.org).toEqual(board.install);
+        expect([...(basis?.githubUserIds ?? [])].sort()).toEqual(
+            [owner.githubUserId, alice.githubUserId, bob.githubUserId].sort()
+        );
+        expect(await board.base.invitationBasis(testOrg())).toBeNull();
+
+        expect(await board.base.restoreMember(board.install.id, caller.user.id)).toBe('restored');
+        expect(await board.base.restoreMember(board.install.id, caller.user.id)).toBe('missing');
+        expect(await board.base.listRemovedMembers(board.install.id)).toEqual([]);
+        expect((await board.signIn(alice)).org.id).toBe(board.install.id);
+    });
+});

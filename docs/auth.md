@@ -16,7 +16,7 @@ Who a caller is, and which credential each route accepts.
 | MCP OAuth purge of expired codes, tokens and grant families | `server/src/auth/oauth-sweep.ts` | `server/test-db/auth-store.oauth-purge.test.ts` |
 | Route classes (read / write per method + pattern), `Caller.scopes`, the bridged-caller binding, the `WWW-Authenticate` challenge | `server/src/auth/route-class.ts`, `server/src/auth/bridge-binding.ts`, `server/src/auth/oauth-challenge.ts`, `server/src/auth/plugin.ts` (`scopeAllows`) | `server/test/auth.enforcement.test.ts` ("has a row for every route"), `server/test/auth.route-class.test.ts` |
 | Upload capability: `PUT /api/attachments/uploads/:capability` is an OPEN route (`OPEN_ROUTES`): its single-use, 15-minute `fcu_` segment IS the credential, bound to the minting credential and rechecked before the write. The URL is the secret: proxy path logs hold it until spent or expired | `server/src/auth/plugin.ts`, `server/src/attachments/upload-capability-store.ts`, `server/src/routes/attachment-uploads.ts`, `server/migrations/124_attachment_upload.sql` | `server/test/mcp.attachment-upload.test.ts`, `server/test-db/mcp.attachment-handoff.test.ts`, `server/test/auth.enforcement.test.ts` |
-| Roster reads and role writes | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
+| Roster reads, role writes, an admin's remove and restore, invitations (the org's sign-in link beside GitHub's members not signed in yet) | `server/src/routes/org-members.ts`, `server/src/auth/member-removal.ts` | `server/test/routes.org-members.test.ts`, `server/test/routes.org-member-access.test.ts`, `server/test/auth.membership-roster.test.ts` |
 | Commerce plan push: `commerce` requirement, bearer `COMMERCE_TOKEN`, enforced in both `AUTH_MODE`s (`enforceCommerce`; [commerce.md](commerce.md)) | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/routes.commerce.test.ts` |
 | GitHub-side removal, signed webhook | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
 | Membership re-check (App `Members: read`): at sign-in, on a session or `fat_` past `MEMBERSHIP_TTL_MS` (10 min), in a 5-minute pass; owner to admin; an admin's removal block and its restore | `server/src/auth/membership.ts`, `server/src/auth/membership-guard.ts`, `server/src/auth/membership-store.ts`, `server/migrations/137_membership_recheck.sql` | `server/test/auth.membership-reader.test.ts`, `server/test-db/auth-membership.test.ts` |
@@ -44,8 +44,8 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   sessions in that org and personal tokens there, in one transaction, so a later membership revives no old
   credential. Onboarding writes an allowlist only for an org the sign-in admitted. `server/test-db/auth-membership.test.ts`.
 - **An admin's removal is a block row** (`org_membership_removal`): sign-in materializes no membership for a blocked
-  `(org, user)`, so the bootstrap cannot promote it, until a restore deletes the row. Removing the last admin is
-  refused. `server/test-db/auth-membership.test.ts`.
+  `(org, user)` until a restore deletes the row; the last admin is refused. An invitation is only the sign-in link, so
+  GitHub still decides who gets in. `server/test-db/auth-membership.test.ts`, `e2e/members.spec.ts`.
 - **The role a route needs is its `ROUTE_CLASSES` row's 4th column**, checked once in the auth hook for every user
   caller (cookie, `fat_`, bridged): an `admin` row is `403` to a member before the handler runs. `admin` is the
   org-wide administration (org tokens, org and repository env, the roster, org executors, skills and notification

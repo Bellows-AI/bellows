@@ -120,19 +120,21 @@ export function startMembershipRecheck(
 }
 
 /**
- * The production wiring: under GitHub sign-in over a GitHub App, the guarded store and a starter for its pass,
- * reading each installation's members with a token minted for that installation. In any other mode there is no
- * GitHub membership to ask: the store as given, and a pass that never starts.
+ * The production wiring: under GitHub sign-in over a GitHub App, the guarded store, a starter for its pass and the
+ * member-list reader, reading each installation's members with a token minted for that installation. In any other
+ * mode there is no GitHub membership to ask: the store as given, no member list, and a pass that never starts.
  */
 export function membershipGuardFor(
     config: AppConfig,
     { sql, ready, store }: { sql: Sql; ready: Promise<unknown>; store: AuthStore }
 ): {
     store: AuthStore;
+    /** GitHub's member list for the invitation read; undefined where there is no App to ask with. */
+    roster: Pick<MembershipReader, 'roster'> | undefined;
     start: (timedPass: <T>(loop: string, fn: () => Promise<T>) => Promise<T>) => () => Promise<void>;
 } {
     if (config.auth.mode !== 'github' || config.github.mode !== 'app') {
-        return { store, start: () => async () => undefined };
+        return { store, roster: undefined, start: () => async () => undefined };
     }
     const github = config.github;
     const providers = new Map<string, InstallationTokenProvider>();
@@ -144,10 +146,7 @@ export function membershipGuardFor(
         }
         return provider.get();
     };
-    const guard = createMembershipGuard({
-        store,
-        membership: createMembershipStore({ sql, ready }),
-        reader: createMembershipReader({ apiUrl: github.apiUrl, tokenFor }),
-    });
-    return { store: guard.store, start: (timedPass) => startMembershipRecheck(guard, timedPass) };
+    const reader = createMembershipReader({ apiUrl: github.apiUrl, tokenFor });
+    const guard = createMembershipGuard({ store, membership: createMembershipStore({ sql, ready }), reader });
+    return { store: guard.store, roster: reader, start: (timedPass) => startMembershipRecheck(guard, timedPass) };
 }

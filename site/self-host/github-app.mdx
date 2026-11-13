@@ -129,7 +129,7 @@ Helm install details are in [Kubernetes and Helm](/self-host/kubernetes).
 Later:
 
 - **More repositories.** Update the installation on GitHub, then open **Settings → Repositories**.
-- **More people.** Anyone who can see the installation can sign in. There are no invites. See [Connections](/guides/connections) for what members connect.
+- **More people.** Anyone who can see the installation can sign in. To invite someone, an admin copies the sign-in link from **Settings → Organization**, section **Invite members**. The link opens the organization choice with that organization marked as requested, so someone who already uses Bellows elsewhere can add it. With the Members permission accepted, that section also lists the GitHub organization's members who have not signed in yet. See [Connections](/guides/connections) for what members connect.
 - **Changed permissions.** GitHub asks an installation owner to accept the update. Runs fail with the 422 above until they do.
 - **Members (read) added to an existing App.** Every installation must accept the update. Until it does, that organization keeps the older rules: the first person to sign in becomes admin, and a person removed on GitHub loses access only through the webhook or at their next sign-in. Nobody is demoted or removed while the permission is missing.
 

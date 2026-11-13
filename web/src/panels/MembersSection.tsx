@@ -1,13 +1,25 @@
 import { ADMIN_ROLE, type Role } from '@factory-ai/core';
 import { useCallback, useEffect, useState } from 'react';
-import { listMembers, setMemberRole, type MemberView } from '../api/orgMembers.js';
+import {
+    type Invitations,
+    listMembers,
+    listRemovedMembers,
+    type MemberView,
+    readInvitations,
+    type RemovedMember,
+    removeMember,
+    restoreMember,
+    setMemberRole,
+} from '../api/orgMembers.js';
 import { reportUnauthenticated } from '../api/unauthenticated.js';
 import type { Session } from '../api/useSession.js';
+import { InvitationsPanel, MemberRemoveDialog, RemovedMembersPanel } from './MemberAccessPanels.js';
 import { MembersPanel } from './MembersPanel.js';
 import { StateNote } from '../components/StateNote.js';
 
 /**
- * The members section's interactive half (issue 410): the roster read, the role write, and the
+ * The members section's interactive half (issue 410): the roster read, the role write, an admin's
+ * removal, restore and invitations (`MemberAccessPanels`), and the
  * audience split — the table is an administrator's surface because the roster read is
  * admin-gated server-side, so a member's browser renders the muted sentence and issues no fetch
  * at all. Split out of `SettingsOrganizationPage` so the page stays a composition; the section
@@ -20,16 +32,21 @@ import { StateNote } from '../components/StateNote.js';
 export function MembersSection({ session }: { session: Session | null }) {
     const isAdmin = session?.mode === 'github' && session.role === ADMIN_ROLE;
     const [members, setMembers] = useState<MemberView[] | null>(null);
+    const [removed, setRemoved] = useState<RemovedMember[]>([]);
+    const [invitations, setInvitations] = useState<Invitations | null>(null);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [removing, setRemoving] = useState<MemberView | null>(null);
+    const [removeError, setRemoveError] = useState<string | null>(null);
 
+    /** The roster, the removals and the invitations, read together; the first refusal is the section's error. */
     const refresh = useCallback(async () => {
-        const result = await listMembers();
-        if (!result.ok) {
-            setError(result.error);
-            return;
-        }
-        setMembers(result.members);
+        const [roster, blocked, invited] = await Promise.all([listMembers(), listRemovedMembers(), readInvitations()]);
+        const refused = [roster, blocked, invited].find((result) => !result.ok);
+        if (refused && !refused.ok) setError(refused.error);
+        if (roster.ok) setMembers(roster.members);
+        if (blocked.ok) setRemoved(blocked.removed);
+        if (invited.ok) setInvitations(invited.value);
     }, []);
 
     useEffect(() => {
@@ -65,6 +82,40 @@ export function MembersSection({ session }: { session: Session | null }) {
         await refresh();
     };
 
+    /**
+     * The confirmed removal: a refusal stays in the open dialog. Removing yourself ends your own access, so the
+     * session is re-checked instead of refetching a roster this browser may no longer read.
+     */
+    const confirmRemove = async () => {
+        if (removing === null) return;
+        setSaving(true);
+        const message = await removeMember(removing.userId);
+        setSaving(false);
+        if (message) {
+            setRemoveError(message);
+            return;
+        }
+        const self = session?.user.id === removing.userId;
+        setRemoving(null);
+        if (self) {
+            reportUnauthenticated();
+            return;
+        }
+        await refresh();
+    };
+
+    const restore = async (row: RemovedMember) => {
+        setError(null);
+        setSaving(true);
+        const message = await restoreMember(row.userId);
+        setSaving(false);
+        if (message) {
+            setError(message);
+            return;
+        }
+        await refresh();
+    };
+
     if (session === null || session.mode !== 'github') return null;
 
     return (
@@ -77,11 +128,28 @@ export function MembersSection({ session }: { session: Session | null }) {
                         <StateNote state="loading">Loading members…</StateNote>
                     </section>
                 ) : (
-                    <MembersPanel
-                        members={members}
-                        saving={saving}
-                        onChange={(member, role) => void changeRole(member, role)}
-                    />
+                    <>
+                        <MembersPanel
+                            members={members}
+                            saving={saving}
+                            onChange={(member, role) => void changeRole(member, role)}
+                            onRemove={(member) => {
+                                setRemoveError(null);
+                                setRemoving(member);
+                            }}
+                        />
+                        <RemovedMembersPanel removed={removed} saving={saving} onRestore={(row) => void restore(row)} />
+                        {invitations ? <InvitationsPanel invitations={invitations} /> : null}
+                        <MemberRemoveDialog
+                            member={removing}
+                            busy={saving}
+                            error={removeError}
+                            onClose={() => {
+                                if (!saving) setRemoving(null);
+                            }}
+                            onConfirm={() => void confirmRemove()}
+                        />
+                    </>
                 )
             ) : (
                 <p className="muted">Member roles are managed by your organization&rsquo;s admins.</p>

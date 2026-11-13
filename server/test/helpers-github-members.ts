@@ -1,6 +1,7 @@
 /**
  * A fake GitHub REST boundary for the membership re-check: `GET /orgs/:org/memberships/:user`, and the two
- * identity reads that confirm a 404 (`GET /orgs/:org`, `GET /user/:id`). Everything else is a 404.
+ * identity reads that confirm a 404 (`GET /orgs/:org`, `GET /user/:id`), and the org's member list
+ * (`GET /orgs/:org/members`, the people answered `admin` or `member`). Everything else is a 404.
  */
 
 export const FAKE_GITHUB_API = 'https://api.github.test';
@@ -28,7 +29,11 @@ export interface FakeGitHubMembers {
     orgs: Map<string, number>;
     /** The users GitHub knows, by numeric id, with their current login. */
     users: Map<number, string>;
+    /** A fault `GET /orgs/:org/members` answers instead of its list; null lists the active members. */
+    rosterFault: { status: number; body: string } | 'throw' | 'hang' | null;
 }
+
+const PAGE_DEFAULT = 30;
 
 const json = (status: number, body: unknown): Response =>
     new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -60,11 +65,29 @@ export function fakeGitHubMembers(): FakeGitHubMembers {
         );
     };
 
+    /** The org's active members by numeric id, paged as GitHub pages them (`per_page`, `page` from 1). */
+    const roster = (org: string, url: URL, signal: AbortSignal | null | undefined): Promise<Response> => {
+        const fault = fake.rosterFault;
+        if (fault === 'throw') return Promise.reject(new TypeError('fetch failed'));
+        if (fault === 'hang') return hang(signal);
+        if (fault) return Promise.resolve(new Response(fault.body, { status: fault.status }));
+        const active = [...users]
+            .filter(([, login]) => ['admin', 'member'].includes(String(answers.get(`${org}/${login}`))))
+            .sort(([a], [b]) => a - b)
+            .map(([id, login]) => ({ id, login }));
+        const perPage = Number(url.searchParams.get('per_page') ?? PAGE_DEFAULT);
+        const page = Number(url.searchParams.get('page') ?? 1);
+        return Promise.resolve(json(200, active.slice((page - 1) * perPage, page * perPage)));
+    };
+
     const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
         const path = url.pathname;
         calls.push(path);
         const parts = path.split('/').filter(Boolean);
+        if (parts[0] === 'orgs' && parts[2] === 'members' && parts.length === 3) {
+            return roster(decodeURIComponent(parts[1]!), url, init?.signal);
+        }
         if (parts[0] === 'orgs' && parts[2] === 'memberships' && parts.length === 4) {
             return membership(decodeURIComponent(parts[1]!), decodeURIComponent(parts[3]!), init?.signal);
         }
@@ -81,11 +104,13 @@ export function fakeGitHubMembers(): FakeGitHubMembers {
         return json(404, { message: 'Not Found' });
     }) as typeof fetch;
 
-    return {
+    const fake: FakeGitHubMembers = {
         fetchFn,
         calls,
         answer: (org, user, value) => answers.set(`${org}/${user}`, value),
         orgs,
         users,
+        rosterFault: null,
     };
+    return fake;
 }
