@@ -341,6 +341,8 @@ export type HeartbeatVerdict =
           answeredQuestions?: AnsweredQuestion[];
           /** An open runtime connection requirement this job's attempt raised: hand the attempt back. */
           requirementWait?: boolean;
+          /** The task's organization is suspended: hand the attempt back as a resumable interruption. */
+          release?: 'org-suspended';
       }
     | 'lost'
     | 'removed';

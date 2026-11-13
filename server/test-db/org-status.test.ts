@@ -199,7 +199,7 @@ describe.skipIf(!enabled)('the operator', () => {
         );
     });
 
-    it('leaves a suspended org’s running row to its takeover: suspension refuses new work only', async () => {
+    it('holds a suspended org’s expired running row from its takeover until it is reactivated', async () => {
         const org = await signedInOrg();
         const store = storeFor(org);
         await queued(org);
@@ -207,6 +207,8 @@ describe.skipIf(!enabled)('the operator', () => {
         expect(claimed).not.toBeNull();
         await auth.setOrgStatus(org, 'suspend', OPERATOR.id);
         await expireLease(sql, claimed!.id);
+        expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
+        await auth.setOrgStatus(org, 'activate', OPERATOR.id);
         expect((await store.claim('w2', LEASE_SECONDS))?.id).toBe(claimed!.id);
     });
 

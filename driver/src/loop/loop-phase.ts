@@ -6,7 +6,10 @@
 
 export type AttemptPhase = 'setup' | 'launched' | 'concluding' | 'ended';
 
-export type EndingKind = 'stop' | 'lost' | 'removed' | 'handover' | 'requirement';
+export type EndingKind = 'stop' | 'lost' | 'removed' | 'handover' | 'requirement' | 'org-suspended';
+
+/** Why an attempt of a suspended organization is handed back (the `org-suspended` ending). */
+export const ORG_SUSPENDED_REASON = 'the organization is suspended';
 
 /** What ended the attempt where it stands, and when; the first one recorded is the one that counts. */
 export interface Ending {

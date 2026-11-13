@@ -7,6 +7,7 @@
 import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import { lockRootRowsInTx, requirementWaitOf } from '../connection-bindings.js';
+import { orgRelease } from '../org-status.js';
 import { planLimits, type StopCause } from '../plan-limits.js';
 import type { EvidencePolicy } from '../evidence-policy.js';
 import type { RequireConnectionResult } from './job-store-connections.js';
@@ -59,6 +60,11 @@ export interface JobWorkerStore {
          * time. Null for a member's stop and on every beat that asks none.
          */
         stopCause: StopCause | null;
+        /**
+         * The board asks the attempt handed back as a resumable interruption: `org-suspended` while its org (cloud) is
+         * suspended or refused (`org-status.ts`). Null on every other beat.
+         */
+        release: 'org-suspended' | null;
     }>;
 
     /**
@@ -233,6 +239,7 @@ export async function heartbeatJob(
             // of THIS lease, re-listed each beat — the driver applies them idempotently.
             answeredQuestions: await answeredQuestionsOf(ctx, id, leaseToken),
             requirementWait: await requirementWaitOf(sql, orgId, id),
+            release: await orgRelease(sql, orgId, ctx.deploymentMode),
         };
     }
     return {
@@ -242,6 +249,7 @@ export async function heartbeatJob(
         answeredQuestions: [],
         requirementWait: false,
         stopCause: null,
+        release: null,
     };
 }
 

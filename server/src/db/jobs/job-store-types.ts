@@ -164,6 +164,8 @@ export interface JobInterruption {
     requirement?: true;
     /** The platform took the attempt away: outside the interruption budget, bounded by `NODE_LOSS_BUDGET`. */
     nodeLoss?: true;
+    /** A hand-back while the organization was suspended: never a failure or a node loss, outside every budget. */
+    orgSuspended?: true;
 }
 
 export interface Job {

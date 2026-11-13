@@ -207,16 +207,17 @@ export async function markRequirementAmbiguousRow(
 }
 
 /**
- * Whether a queued candidate is held back at its acquisition: its org no longer active (cloud, `org-status.ts`), or
- * an unbound requirement (`recordUnboundRequirements`). A running row's takeover is never asked.
+ * Whether a candidate is held back at its acquisition: its org no longer active (cloud, `org-status.ts`) — a
+ * takeover too — or a queued row's unbound requirement (`recordUnboundRequirements`), which a takeover is never asked.
  */
-export async function queuedRowHeld(
+export async function rowHeld(
     tx: TransactionSql,
     ctx: { orgId: string; deploymentMode: DeploymentMode },
+    status: string,
     rootJobId: string
 ): Promise<boolean> {
     if (!(await orgActiveForClaim(tx, ctx.orgId, ctx.deploymentMode))) return true;
-    return recordUnboundRequirements(tx, ctx.orgId, rootJobId);
+    return status === 'queued' && (await recordUnboundRequirements(tx, ctx.orgId, rootJobId));
 }
 
 /**
