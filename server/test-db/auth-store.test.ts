@@ -439,7 +439,8 @@ describe.skipIf(!enabled)('the stored selection (issue 125)', () => {
             { id: SECOND_ORG, name: SECOND_ORG },
         ]);
 
-        expect(await store.storedSelection(caller.user.githubUserId)).toEqual([ORG, SECOND_ORG]);
+        // A set: no caller reads its order (the callback re-orders by the installation report).
+        expect((await store.storedSelection(caller.user.githubUserId)).sort()).toEqual([ORG, SECOND_ORG].sort());
 
         // A GitHub-side removal plus a narrowing sign-in prunes the answer with it.
         await store.signIn(identity(ACCOUNT_SEQ, 'chooser'), SECOND_ORG, [{ id: SECOND_ORG, name: SECOND_ORG }]);

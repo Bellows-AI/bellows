@@ -1,5 +1,5 @@
 import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
 import type { MembershipVerdict } from './membership.js';
 import type { Scope } from './route-class.js';
@@ -295,6 +295,26 @@ export const toCaller = (row: CallerRow): Caller => ({
 
 type Gate = () => Promise<void>;
 
+/**
+ * THE way a membership ends, whoever ends it (the sign-in sweep, the webhook, a confirmed non-member at the
+ * re-check, an admin's removal): the memberships of `orgIds`, the account's sessions in those orgs and its
+ * personal tokens there, inside the caller's transaction — so a membership granted again later never revives
+ * an old credential. Returns how many memberships were deleted.
+ */
+export async function endMemberships(tx: TransactionSql, userId: string, orgIds: readonly string[]): Promise<number> {
+    if (orgIds.length === 0) return 0;
+    const ids = [...orgIds];
+    const deleted = await tx`
+        delete from org_membership where user_id = ${userId}::uuid and org_id = any(${ids}::text[]) returning org_id
+    `;
+    await tx`delete from session where user_id = ${userId}::uuid and org_id = any(${ids}::text[])`;
+    await tx`
+        update access_token set revoked_at = now()
+        where user_id = ${userId}::uuid and org_id = any(${ids}::text[]) and kind = 'personal' and revoked_at is null
+    `;
+    return deleted.length;
+}
+
 /** Upserts one organization per installation: the name re-derived, the account kind and id kept when unreported. */
 async function upsertOrganizations(sql: Sql, installations: readonly InstallationRef[]): Promise<void> {
     await sql`
@@ -431,11 +451,18 @@ function buildIdentityMethods(
             // this account's sessions' and tokens' reach into that org. Any org, not only known
             // installations: a legacy (pre-#99) org is reported by nothing, ever, so leaving it
             // out of the sweep would list the same account under both ids forever.
-            await sql`
-                delete from org_membership
-                where user_id = ${userId}
-                  and org_id <> all(${orgIds})
-            `;
+            await sql.begin(async (tx) => {
+                const gone = await tx<{ org_id: string }[]>`
+                    select org_id from org_membership
+                    where user_id = ${userId} and org_id <> all(${orgIds})
+                    for update
+                `;
+                await endMemberships(
+                    tx,
+                    userId,
+                    gone.map((row) => row.org_id)
+                );
+            });
 
             // The org asked for, or — when that reported installation is refused (an admin's block, a confirmed
             // non-member) — the first admitted installation that holds. An org outside the report stays an error.
@@ -628,13 +655,13 @@ function buildOrgMethods(
 
         async removeMember(orgId, githubUserId) {
             await gate();
-            const rows = await sql<{ user_id: string }[]>`
-                delete from org_membership
-                where org_id = ${orgId}
-                  and user_id in (select id from app_user where github_user_id = ${githubUserId})
-                returning user_id
-            `;
-            return rows.length > 0;
+            return sql.begin(async (tx) => {
+                const users = await tx<{ id: string }[]>`
+                    select id::text as id from app_user where github_user_id = ${githubUserId}
+                `;
+                const user = users[0];
+                return user ? (await endMemberships(tx, user.id, [orgId])) > 0 : false;
+            });
         },
 
         async localCaller(orgId) {

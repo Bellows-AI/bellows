@@ -56,6 +56,32 @@ describe('the GitHub membership read', () => {
         expect(await reader.read(target())).toEqual({ kind: 'active', owner: false });
     });
 
+    it('never applies an answer about another account holding the old login: it re-asks under the current one', async () => {
+        const { github, reader } = rig();
+        // The account was renamed; a stranger now holds `octocat` and owns the org.
+        github.users.set(USER_ID, 'octo-renamed');
+        github.answer('acme', 'octocat', 'admin');
+        expect(await reader.read(target())).toEqual({ kind: 'not-member' });
+        github.answer('acme', 'octo-renamed', 'member');
+        expect(await reader.read(target())).toEqual({ kind: 'active', owner: false });
+    });
+
+    it('never applies an answer about another organization holding the org login', async () => {
+        const { github, reader } = rig();
+        github.orgs.set('acme', ORG_ID + 1);
+        github.answer('acme', 'octocat', 'admin');
+        expect((await reader.read(target())).kind).toBe('unknown');
+    });
+
+    it.each<[string, string]>([
+        ['no user id', '{"state":"active","role":"admin","organization":{"id":4242}}'],
+        ['no organization id', '{"state":"active","role":"admin","user":{"id":7001}}'],
+    ])('reads a 200 with %s as unknown', async (_, body) => {
+        const { github, reader } = rig();
+        github.answer('acme', 'octocat', { status: 200, body });
+        expect((await reader.read(target())).kind).toBe('unknown');
+    });
+
     it.each<[string, (github: ReturnType<typeof rig>['github']) => void]>([
         ['the org login now names another organization', (github) => github.orgs.set('acme', ORG_ID + 1)],
         ['the org login is gone (a rename)', (github) => github.orgs.delete('acme')],

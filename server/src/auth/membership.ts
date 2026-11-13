@@ -47,9 +47,19 @@ interface Answer {
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
-/** `GET /orgs/:org/memberships/:user`'s 200 body: active → a member (an `admin` role is an owner), pending → not one. */
-function verdictOf(body: unknown): MembershipVerdict {
+/** The numeric id a 200 body's `organization` or `user` object carries, or undefined. */
+const idOf = (value: unknown): unknown => (isRecord(value) ? value.id : undefined);
+
+/**
+ * `GET /orgs/:org/memberships/:user`'s 200 body: active → a member (an `admin` role is an owner), pending → not one.
+ * Only about the account and organization asked: a body whose numeric `user.id` or `organization.id` is not theirs
+ * (a login now held by somebody else) is a `mismatch`, never applied.
+ */
+function verdictOf(body: unknown, target: MembershipTarget): MembershipVerdict | 'mismatch' {
     if (!isRecord(body) || typeof body.role !== 'string') return unknown('malformed membership body');
+    if (idOf(body.user) !== target.user.githubUserId || idOf(body.organization) !== target.org.accountId) {
+        return 'mismatch';
+    }
     // GitHub spells its owner role `admin`, as the board does.
     if (body.state === 'active') return { kind: 'active', owner: body.role === ADMIN_ROLE };
     if (body.state === 'pending') return { kind: 'not-member' };
@@ -91,9 +101,9 @@ export function createMembershipReader({
     const membership = (org: string, user: string, token: string, signal: AbortSignal) =>
         get(`/orgs/${encodeURIComponent(org)}/memberships/${encodeURIComponent(user)}`, token, signal);
 
-    /** A 200 is read; a 404 is the caller's to confirm; anything else is unknown. */
-    const classify = (answer: Answer): MembershipVerdict | 'absent' => {
-        if (answer.status === HTTP_OK) return verdictOf(answer.body);
+    /** A 200 about the right ids is read; a 404 or an answer about somebody else is the caller's to resolve. */
+    const classify = (answer: Answer, target: MembershipTarget): MembershipVerdict | 'absent' | 'mismatch' => {
+        if (answer.status === HTTP_OK) return verdictOf(answer.body, target);
         if (answer.status === HTTP_NOT_FOUND) return 'absent';
         return unknown(`membership read answered ${answer.status}`);
     };
@@ -111,17 +121,21 @@ export function createMembershipReader({
         const { org, user } = target;
         const token = await tokenFor(org.id);
         signal.throwIfAborted();
-        const first = classify(await membership(org.login, user.login, token, signal));
-        if (first !== 'absent') return first;
+        const first = classify(await membership(org.login, user.login, token, signal), target);
+        if (first !== 'absent' && first !== 'mismatch') return first;
 
-        // A 404 says "no such membership" only about the logins asked: confirm both still name who we mean.
+        // A 404 or an answer about somebody else says nothing about the logins' current holders: confirm the org
+        // login still names the installation's organization, and resolve the account's current login by its id.
         const orgAnswer = await get(`/orgs/${encodeURIComponent(org.login)}`, token, signal);
         if (confirmedLogin(orgAnswer, org.accountId!) === null) return unknown('organization login not confirmed');
         const current = confirmedLogin(await get(`/user/${user.githubUserId}`, token, signal), user.githubUserId);
         if (current === null) return unknown('user not confirmed');
-        if (current.toLowerCase() === user.login.toLowerCase()) return { kind: 'not-member' };
-        const renamed = classify(await membership(org.login, current, token, signal));
-        return renamed === 'absent' ? { kind: 'not-member' } : renamed;
+        const outcome =
+            current.toLowerCase() === user.login.toLowerCase()
+                ? first
+                : classify(await membership(org.login, current, token, signal), target);
+        if (outcome === 'absent') return { kind: 'not-member' };
+        return outcome === 'mismatch' ? unknown('membership answer names another identity') : outcome;
     };
 
     return {

@@ -322,3 +322,56 @@ describe.runIf(enabled)('membership re-check against GitHub', () => {
         expect(board.github.calls.filter((path) => path.startsWith('/orgs/'))).toEqual([]);
     });
 });
+
+describe.runIf(enabled)('every membership deletion ends the credentials with it', () => {
+    /** Alice in the board's org and a second one, with a session and a personal token in the board's org. */
+    const twoOrgs = async () => {
+        const board = rig();
+        const alice = person('alice');
+        const other: InstallationRef = {
+            id: testOrg(),
+            name: `other-${randomUUID().slice(0, 8)}`,
+            accountType: 'Organization',
+            accountId: 1,
+        };
+        board.github.orgs.set(other.name, 1);
+        board.github.answer(other.name, alice.login, 'member');
+        board.set(alice, 'member');
+        const caller = await board.signIn(alice, [board.install, other]);
+        const creds = await board.credentials(caller);
+        return { board, alice, other, caller, creds };
+    };
+
+    const revoked = async (creds: { session: Buffer; token: Buffer }) => {
+        const sessions = await sql`select 1 from session where token_hash = ${creds.session}`;
+        const [token] = await sql<{ revoked_at: Date | null }[]>`
+            select revoked_at from access_token where token_hash = ${creds.token}
+        `;
+        return sessions.length === 0 && token?.revoked_at !== null;
+    };
+
+    it('a confirmed non-member at sign-in', async () => {
+        const { board, alice, other, creds } = await twoOrgs();
+        board.set(alice, 'absent');
+        const again = await board.signIn(alice, [board.install, other]);
+        expect(again.org.id).toBe(other.id);
+        expect(await revoked(creds)).toBe(true);
+        // Rejoining on GitHub mints a membership, never revives the old credentials.
+        board.set(alice, 'member');
+        await board.signIn(alice, [board.install, other]);
+        expect(await board.base.findSession(creds.session)).toBeNull();
+        expect(await board.base.findPersonalToken(creds.token)).toBeNull();
+    });
+
+    it('an installation GitHub no longer reports at sign-in', async () => {
+        const { board, alice, other, creds } = await twoOrgs();
+        await board.signIn(alice, [other]);
+        expect(await revoked(creds)).toBe(true);
+    });
+
+    it('the webhook’s GitHub-side removal', async () => {
+        const { board, alice, creds } = await twoOrgs();
+        expect(await board.base.removeMember(board.install.id, alice.githubUserId)).toBe(true);
+        expect(await revoked(creds)).toBe(true);
+    });
+});

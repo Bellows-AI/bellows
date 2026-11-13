@@ -1,5 +1,6 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
-import type { Sql, TransactionSql } from 'postgres';
+import type { Sql } from 'postgres';
+import { endMemberships } from './store.js';
 import type { MembershipTarget, MembershipVerdict } from './membership.js';
 
 /** One membership to re-check, keyed for the store and described for the GitHub read. */
@@ -57,16 +58,6 @@ const toCheck = (row: CheckRow): MembershipCheck => ({
     user: { githubUserId: Number(row.github_user_id), login: row.github_login },
 });
 
-/** Deletes the membership and ends the account's sessions and personal tokens in that org. */
-async function revoke(tx: TransactionSql, orgId: string, userId: string): Promise<void> {
-    await tx`delete from org_membership where org_id = ${orgId} and user_id = ${userId}::uuid`;
-    await tx`delete from session where org_id = ${orgId} and user_id = ${userId}::uuid`;
-    await tx`
-        update access_token set revoked_at = now()
-        where org_id = ${orgId} and user_id = ${userId}::uuid and kind = 'personal' and revoked_at is null
-    `;
-}
-
 export function createMembershipStore({ sql, ready }: { sql: Sql; ready?: Promise<unknown> }): MembershipStore {
     const gate = async () => {
         if (ready) await ready;
@@ -101,7 +92,7 @@ export function createMembershipStore({ sql, ready }: { sql: Sql; ready?: Promis
         async record(orgId, userId, verdict, at) {
             await gate();
             if (verdict.kind === 'not-member') {
-                await sql.begin((tx) => revoke(tx, orgId, userId));
+                await sql.begin((tx) => endMemberships(tx, userId, [orgId]));
                 return;
             }
             const owner = verdict.kind === 'active' && verdict.owner;
@@ -132,7 +123,7 @@ export function createMembershipStore({ sql, ready }: { sql: Sql; ready?: Promis
                     on conflict (org_id, user_id) do update
                         set removed_by = excluded.removed_by, removed_at = now()
                 `;
-                await revoke(tx, orgId, userId);
+                await endMemberships(tx, userId, [orgId]);
                 return 'removed' as const;
             });
         },

@@ -5,6 +5,9 @@
 
 export const FAKE_GITHUB_API = 'https://api.github.test';
 
+/** The id a membership answer carries for a login no known user or org holds: somebody else. */
+export const STRANGER_ID = 999_999_999;
+
 /** What the memberships endpoint answers for one person: a role, a pending invite, absent, or a raw fault. */
 export type MembershipAnswer =
     | 'admin'
@@ -49,7 +52,12 @@ export function fakeGitHubMembers(): FakeGitHubMembers {
         if (typeof value === 'object') return Promise.resolve(new Response(value.body, { status: value.status }));
         const state = value === 'pending' ? 'pending' : 'active';
         const role = value === 'pending' ? 'member' : value;
-        return Promise.resolve(json(200, { state, role, organization: { login: org }, user: { login: user } }));
+        // The ids GitHub sends: whoever holds the login NOW. A login no known user holds belongs to a stranger.
+        const userId = [...users].find(([, login]) => login === user)?.[0] ?? STRANGER_ID;
+        const orgId = orgs.get(org) ?? STRANGER_ID;
+        return Promise.resolve(
+            json(200, { state, role, organization: { id: orgId, login: org }, user: { id: userId, login: user } })
+        );
     };
 
     const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {

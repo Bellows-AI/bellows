@@ -37,10 +37,12 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   GitHub gave no membership answer (permission not accepted yet, or unconfirmed) an org's first membership lands
   `admin`. Demoting the last admin is `409 LAST_ADMIN`. `server/test/routes.org-members.test.ts`,
   `server/test-db/auth-membership.test.ts`.
-- **Only a confirmed non-membership revokes.** A 404 counts once the org login and the user id are confirmed to
-  name who was asked; a 403, other status, timeout or malformed body is `unknown`, stamps `checked_at` and revokes
-  nothing. A confirmed one deletes the membership, the account's sessions in that org and revokes its personal
-  tokens in one transaction. A stale check alone never refuses. `server/test/auth.membership-reader.test.ts`.
+- **Only a confirmed non-membership revokes.** A 200 counts only with the asked `user.id` and `organization.id`, a 404
+  once org login and user id are confirmed (a renamed login re-asked once); anything else is `unknown`, stamps
+  `checked_at`, revokes nothing. A stale check alone never refuses. `server/test/auth.membership-reader.test.ts`.
+- **Every membership deletion is `endMemberships`** (sign-in sweep, webhook, re-check, admin removal): membership,
+  sessions in that org and personal tokens there, in one transaction, so a later membership revives no old
+  credential. Onboarding writes an allowlist only for an org the sign-in admitted. `server/test-db/auth-membership.test.ts`.
 - **An admin's removal is a block row** (`org_membership_removal`): sign-in materializes no membership for a blocked
   `(org, user)`, so the bootstrap cannot promote it, until a restore deletes the row. Removing the last admin is
   refused. `server/test-db/auth-membership.test.ts`.
