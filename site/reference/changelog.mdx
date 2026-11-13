@@ -5,6 +5,26 @@ description: "What changed in each Bellows release, in plain words."
 
 User-facing changes only. Self-hosting upgrade notes live in the release notes on [GitHub](https://github.com/Bellows-AI/bellows/releases).
 
+<Update label="v0.0.16" description="2026-11-13">
+  **New**
+  - **Skills settings.** Manage workspace, organization and built-in skills from Settings, edit them inline, download them as a zip and see who changed each version. A switched-off skill, or one whose requirements are unmet, is hidden. See [Skills](/guides/skills).
+  - **Skill precedence.** Your personal skills take precedence, and a pinned workspace skill wins over a repo skill with the same name.
+  - **User docs.** These docs are linked from the user menu.
+
+  **Improved**
+  - A stopping driver hands its running jobs over at once, so a spot node's two-minute notice is enough.
+  - Node loss no longer counts against a task's retry budget, and an interruption says whether its attempt was refunded.
+  - Gate runs in a taken-over task survive a driver drain.
+  - A quieter task inbox and a calmer usage dashboard; per-user usage is gone.
+  - Chat turns without gate noise, and an inline editor for variables.
+  - Improved accessibility, and a render error now lands on an error page.
+
+  **Fixed**
+  - The task page keeps updating after one failed refresh.
+  - A publish check that cannot run is reported as a failed publish, never as "nothing to publish".
+  - A database outage now answers as a temporary outage, and errors no longer show raw database text.
+</Update>
+
 <Update label="v0.0.15" description="2026-11-06">
   **New**
   - **MCP server.** Drive Bellows from Claude Code, Claude.ai or any MCP client. It is on for Bellows Cloud and switched on by the admin on self-hosted installs. See [Connect an MCP client](/mcp/connect).
