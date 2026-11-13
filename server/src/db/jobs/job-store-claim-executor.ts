@@ -9,6 +9,7 @@ import {
     CLAUDE_CODE,
     CLOUD,
     CLOUD_CREDENTIAL_MESSAGE,
+    credentialRedirectMessage,
     type DeploymentMode,
     EXECUTOR_TYPES,
     forbiddenCredentialIn,
@@ -18,6 +19,7 @@ import {
     type ExecutorScope,
     type ExecutorType,
     OPENCODE,
+    redirectsPlatformCredential,
     RUNNER_MANAGED_KEYS,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
@@ -118,7 +120,7 @@ export async function resolveClaimExecutor(
     let profileConfig: unknown;
     if (executorConfig && row.executor !== null && row.run_as !== null) {
         const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
-        const configured = await executorConfig.configFor(row.run_as, row.executor, scope, tx);
+        const configured = await executorConfig.claimConfigFor(row.run_as, row.executor, scope, tx);
         if (configured?.suspended) {
             // A suspended profile (issue 440) launches nothing and its config never reaches the
             // claim: the driver fails the task with this sentence before any runner starts, for a
@@ -132,11 +134,18 @@ export async function resolveClaimExecutor(
             profileConfig = configured?.config;
         }
     }
-    // Cloud checks the EFFECTIVE env — member env and profile merged — so a token saved before cloud
-    // mode, in any scope or profile, never travels. The driver fails the task with the sentence
-    // before anything spawns; a throw here would roll the claim back and re-claim it forever.
-    if (deploymentMode === CLOUD && forbiddenCredentialIn(claimEnv, profileConfig) !== null) {
-        return { claimEnv: undefined, executorType, executorRefusal: CLOUD_CREDENTIAL_MESSAGE };
-    }
+    // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
+    // token, or a redirect of the deployment's model credential with no member key, saved before
+    // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
+    // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
+    const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
+    if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal };
     return { claimEnv, executorType, executorRefusal };
+}
+
+/** The sentence cloud mode refuses an effective env with, or null. Names keys only, never a value. */
+function cloudRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {
+    if (forbiddenCredentialIn(env, config) !== null) return CLOUD_CREDENTIAL_MESSAGE;
+    const redirect = redirectsPlatformCredential(env, config, type ?? undefined);
+    return redirect === null ? null : credentialRedirectMessage(redirect);
 }

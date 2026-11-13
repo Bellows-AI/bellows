@@ -189,7 +189,7 @@ function buildOrgStores({
     const envVars = createEnvVarStore({ sql, orgId, ready, secrets, secretLog });
     const connections = createConnectionStore({ sql, orgId, ready });
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
-    const userExecutors = createUserExecutorStore({ sql, orgId, ready });
+    const userExecutors = createUserExecutorStore({ sql, orgId, ready, secrets, secretLog });
     const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready, secrets, secretLog });
     const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready, secrets });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict

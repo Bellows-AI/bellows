@@ -1,6 +1,6 @@
 # Secret storage
 
-The one contract that environment secrets, managed connection grants and notification credentials store their payload
+The one contract that environment secrets, executor credentials, managed connection grants and notification credentials store their payload
 bytes through, with four backends (AES-256-GCM database, AWS Secrets Manager, Vault KV v2, Google Cloud Secret Manager); `SECRETS_BACKEND` picks one.
 
 | Concern | Code | Test |
@@ -9,6 +9,7 @@ bytes through, with four backends (AES-256-GCM database, AWS Secrets Manager, Va
 | Shared validators: payload size, identity, references, retention | `server/src/secrets/secret-input.ts` | `server/test/secrets.input.test.ts` |
 | Injection point (`AppDeps.secrets` built on `main.ts`'s own second pool) and the collector loop | `server/src/main.ts`, `server/src/app.ts`, `server/src/secrets/secret-collector.ts` | `server/test/secrets.boot.test.ts`, `server/test/secrets.collector.test.ts`, `server/test-db/env-secrets.claim.test.ts` |
 | Consumer identities: env, grant, notification | `server/src/db/env-secrets.ts` (`envSecretIdentity`), `server/src/db/connection-grants.ts` (`grantSecretIdentity`), `server/src/notifications/subscription-credential.ts` (`subscriptionSecretIdentity`) | `server/test-db/env-var-store.test.ts`, `server/test-db/integration-lineage.test.ts`, `server/test-db/notification-subscriptions.test.ts` |
+| Consumer identity: executor credential (organization-owned, bound to its config path) | `server/src/db/executor-credentials.ts` (`executorCredentialIdentity`) | `server/test-db/executor-credentials.test.ts` |
 | Reference store and the conformance suite (`describeSecretStoreConformance`), with proof each case can fail | `server/test/secrets-reference-store.ts`, `server/test/secrets-conformance.ts` | `server/test/secrets.reference.test.ts`, `server/test/secrets.conformance-meta.test.ts` |
 | PostgreSQL backend: store, repo seam, storage columns | `server/src/secrets/postgres-secret-store.ts`, `server/src/secrets/postgres-secret-repo.ts`, `server/migrations/091_secret_store.sql`, `server/migrations/092_secret_external.sql` | `server/test-db/secrets-postgres.conformance.test.ts`, `server/test-db/secrets-postgres.faults.test.ts`, `server/test-db/migration.092-secret-external.test.ts` |
 | Payload seam (`PayloadStore`, `ProviderFault`, two-phase removal) | `server/src/secrets/secret-payloads.ts`, `server/src/secrets/database-payloads.ts`, `server/src/secrets/secret-call.ts` | `server/test/secrets.call.test.ts` |

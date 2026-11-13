@@ -5,10 +5,14 @@ import {
     ENV_NAME,
     ENV_NAME_LIMIT,
     ENV_VALUE_LIMIT,
+    credentialRedirectMessage,
     ERROR_CODES,
     forbiddenCredentialIn,
+    isCredentialRedirectMessage,
     isReservedEnvName,
     MAX_ENV_VARS_PER_SCOPE,
+    redirectsPlatformCredential,
+    STORED_CREDENTIAL_PREFIX,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -111,6 +115,15 @@ function parseVars(raw: unknown, deploymentMode: DeploymentMode): EnvVarEntry[] 
     ) {
         return CLOUD_CREDENTIAL_MESSAGE;
     }
+    // A redirect of the deployment's model credential needs the member's own key in the same list; a
+    // kept secret (`value: null`) is set, so it counts.
+    const redirect =
+        deploymentMode === CLOUD
+            ? redirectsPlatformCredential(
+                  Object.fromEntries(parsed.map((v) => [v.name, v.value ?? STORED_CREDENTIAL_PREFIX]))
+              )
+            : null;
+    if (redirect !== null) return credentialRedirectMessage(redirect);
     const names = new Set(parsed.map((entry) => entry.name));
     if (names.size !== parsed.length) return 'variable names must be unique within one scope';
     return parsed;
@@ -289,6 +302,7 @@ function varsCode(reason: string): string {
     if (reason.endsWith('is not a legal environment variable name')) return ERROR_CODES.BAD_ENV_NAME;
     if (reason.endsWith('is reserved by the runner')) return ERROR_CODES.RESERVED_ENV_NAME;
     if (reason === CLOUD_CREDENTIAL_MESSAGE) return ERROR_CODES.CLOUD_CREDENTIAL_REFUSED;
+    if (isCredentialRedirectMessage(reason)) return ERROR_CODES.CREDENTIAL_REDIRECT_REFUSED;
     if (reason.includes('only a secret may be left blank')) return ERROR_CODES.BAD_VALUE;
     if (reason.startsWith('variable names must be unique')) return ERROR_CODES.ENV_NAME_CONFLICT;
     return ERROR_CODES.BAD_BODY;
