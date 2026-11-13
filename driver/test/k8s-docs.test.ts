@@ -330,10 +330,15 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(kubernetesDocs)).toContain('a `k8s-*.ts` importing from `docker*.ts` belongs in a neutral file');
     });
 
-    it('documents the driver scrape port the chart ships, behind the board token', () => {
+    it('documents the driver scrape port the chart ships, behind its own token', () => {
         expect(chartValues).toMatch(/metricsPort: '9464'/);
         expect(kubernetesDocs).toContain('`driver.metricsPort` (`DRIVER_METRICS_PORT`, default `9464`)');
-        expect(kubernetesDocs).toContain('Authorization: Bearer $JOB_BOARD_TOKEN');
+        expect(kubernetesDocs).toContain('Authorization: Bearer $DRIVER_METRICS_TOKEN');
+    });
+
+    it('documents the driver credential as a file the driver re-reads, so a rotation needs no restart', () => {
+        expect(chartValues).toMatch(/credential:\n {8}#/);
+        expect(kubernetesDocs).toContain('re-read for every call (`DRIVER_CREDENTIAL_FILE`)');
     });
 
     // Issue #831: the benchmark phase's numbers are a laptop sample on kind, and what it cannot measure is stated.

@@ -29,14 +29,18 @@ function conflictOf(body: Record<string, unknown>): ChunkAnswer {
 
 export function artifactCalls({
     url,
-    token,
+    credential,
     fetch,
 }: {
     url: string;
-    token: string | undefined;
+    /** Read per call, like every board call's (`board-credential.ts`). */
+    credential: () => string;
     fetch: Fetch;
 }): Pick<Board, 'putArtifactChunk' | 'finalizeArtifact'> {
-    const authorization = token ? { authorization: `Bearer ${token}` } : {};
+    const authorization = () => {
+        const token = credential();
+        return token ? { authorization: `Bearer ${token}` } : {};
+    };
     const target = (job: BoardJob, kind: 'chunk' | 'manifest', query = '') =>
         `${url}/api/jobs/${job.id}/artifact/${kind}${query}`;
 
@@ -63,7 +67,7 @@ export function artifactCalls({
             const { status, body } = await answered(
                 await fetch(target(job, 'chunk', query), {
                     method: 'PUT',
-                    headers: { [CONTENT_TYPE_HEADER]: OCTET_STREAM_CONTENT_TYPE, ...authorization },
+                    headers: { [CONTENT_TYPE_HEADER]: OCTET_STREAM_CONTENT_TYPE, ...authorization() },
                     body: bytes,
                 })
             );
@@ -80,7 +84,7 @@ export function artifactCalls({
             const { status, body } = await answered(
                 await fetch(target(job, 'manifest'), {
                     method: 'PUT',
-                    headers: { [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE, ...authorization },
+                    headers: { [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE, ...authorization() },
                     body: JSON.stringify({ claimSeq: job.claimSeq, ...ref, ...manifest }),
                 })
             );

@@ -18,10 +18,11 @@ import { stepLost } from './step-control.js';
  * and runs again — the helper itself reads the remote before it writes (its own markers), which is
  * the only thing that keeps an uncertain write from landing twice. No exactly-once write is claimed.
  *
- * The receipt sits where the agent can write, so a recorded result carries a MAC under the driver's
- * board token, which no runner container holds: a receipt that does not verify reads as never
- * recorded, which re-runs the helper rather than replaying a result nobody can vouch for. A driver
- * with no board token keeps no receipts at all (`runHelperStep`): every claim runs the helper.
+ * The receipt sits where the agent can write, so a recorded result carries a MAC under the claim's
+ * organization key (`orgKeyOf`), which no runner container holds and every driver of the org is
+ * issued: a receipt that does not verify reads as never recorded, which re-runs the helper rather than
+ * replaying a result nobody can vouch for. A claim with no key keeps no receipts at all
+ * (`runHelperStep`): every claim runs the helper.
  */
 
 const HELPER_LEDGER: Ledger = {

@@ -108,15 +108,6 @@ export type AuthConfig =
            * choose the `redirect_uri`, which is redirect poisoning.
            */
           readonly publicUrl: string;
-          /**
-           * The shared secret the driver presents on the worker routes (JOB_BOARD_TOKEN on both
-           * sides — the same variable name on the board and the driver is what makes "the same
-           * value" verifiable at a glance). The deployment's one driver credential: whoever holds
-           * it can claim work and report results, so it is required in this mode — a board that
-           * cannot authenticate its own driver is the silent 401 loop this variable exists to
-           * prevent, and fatal-at-boot is what names it.
-           */
-          readonly jobBoardToken: string;
           /** Overridable so the browser check can drive a stub. Environment only — see loadAuth. */
           readonly authorizeUrl: string;
           readonly tokenUrl: string;
@@ -202,6 +193,25 @@ export interface AppConfig {
      * every organization (`routes/operator.ts`). Empty is nobody; cloud mode only, since only cloud reads a status.
      */
     readonly operatorGithubIds: readonly number[];
+    /**
+     * DRIVER_CREDENTIAL_SHA256: the SHA-256 of a pool driver credential the board records at boot, so a deployment
+     * with no operator (self-hosted) can start its first driver. Only the hash is ever configured; a credential
+     * already recorded under it — revoked or rotated included — is left as it is. Null records none.
+     */
+    readonly driverCredentialBootstrap: Buffer | null;
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+function loadDriverCredentialBootstrap(raw: string | undefined): Buffer | null {
+    const value = raw?.trim().toLowerCase() ?? '';
+    if (value === '') return null;
+    if (!SHA256_HEX.test(value)) {
+        throw new Error(
+            'DRIVER_CREDENTIAL_SHA256 must be the 64-hex SHA-256 of the driver credential (printf %s "$DRIVER_CREDENTIAL" | sha256sum)'
+        );
+    }
+    return Buffer.from(value, 'hex');
 }
 
 const GITHUB_ID = /^[1-9]\d*$/;
@@ -479,28 +489,6 @@ function requireGithubAuthFields(env: NodeJS.ProcessEnv): {
 }
 
 /**
- * Required in this mode, not optional: a github-mode board authenticates its driver with this one
- * secret, and a board that boots without it fails every claim with 401s the driver logs forever
- * and nobody reads — the exact silent-forever failure fatal-at-boot replaces. The length floor is
- * the webhook secret's: a short shared secret is an enumerable credential however constant-time
- * the comparison is.
- */
-function requireJobBoardToken(env: NodeJS.ProcessEnv): string {
-    const jobBoardToken = env.JOB_BOARD_TOKEN?.trim();
-    if (!jobBoardToken) {
-        throw new Error(
-            'AUTH_MODE is "github" but JOB_BOARD_TOKEN is not set. It is the secret the driver presents on the worker routes — the same value in the driver\'s environment and this one. Generate one with: openssl rand -hex 32.'
-        );
-    }
-    if (jobBoardToken.length < MIN_SESSION_SECRET_LENGTH) {
-        throw new Error(
-            `JOB_BOARD_TOKEN must be at least ${MIN_SESSION_SECRET_LENGTH} characters, got ${jobBoardToken.length}. Generate one with: openssl rand -hex 32.`
-        );
-    }
-    return jobBoardToken;
-}
-
-/**
  * Defaulted only for a loopback bind, where the origin is unambiguous. A deployment reachable from
  * elsewhere has to say what its origin is, because `http://0.0.0.0:8080` is not a URL any browser
  * will ever be redirected back to and a wrong one fails at GitHub with an opaque error.
@@ -549,7 +537,6 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
     }
 
     const { clientId, clientSecret, sessionSecret } = requireGithubAuthFields(env);
-    const jobBoardToken = requireJobBoardToken(env);
     const origin = resolvePublicOrigin(env, host, port);
     const sessionTtlHours = int(env.SESSION_TTL_HOURS, DEFAULT_SESSION_TTL_HOURS, 'SESSION_TTL_HOURS');
 
@@ -562,7 +549,6 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         // Follows the public origin's scheme: an https deployment must not ship a cookie that rides plain http.
         cookieSecure: bool(env.COOKIE_SECURE, origin.protocol === 'https:', 'COOKIE_SECURE'),
         publicUrl: origin.origin,
-        jobBoardToken,
         // Environment only. A configurable authorize URL in a file that ships with a deployment is
         // a phishing vector; as an environment variable it stays a test seam that main.ts logs
         // loudly when it is used.
@@ -769,6 +755,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
         deploymentMode,
         operatorGithubIds: loadOperatorGithubIds(env.OPERATOR_GITHUB_IDS, deploymentMode),
+        driverCredentialBootstrap: loadDriverCredentialBootstrap(env.DRIVER_CREDENTIAL_SHA256),
         mcp: loadMcpConfig(
             env,
             bool(env.MCP_ENABLED, false, 'MCP_ENABLED'),

@@ -6,7 +6,8 @@ import { createUploadCapabilityStore, type UploadCapabilityStore } from './attac
 import { createOAuthStore, type OAuthStore } from './auth/oauth-store.js';
 import { startOAuthSweep } from './auth/oauth-sweep.js';
 import { membershipGuardFor } from './auth/membership-guard.js';
-import { createDriverCredentialStore } from './auth/driver-credentials.js';
+import { bootstrappedDriverCredentials } from './auth/driver-credentials.js';
+import { orgKeyDeriver } from './auth/org-key.js';
 import { createAuthStore } from './auth/store.js';
 import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
@@ -306,6 +307,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         secretLog,
         artifacts,
         claimMetrics: metrics.claim,
+        orgKeyOf: orgKeyDeriver(secretBackend.keys.fingerprintKey),
     });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
@@ -317,7 +319,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
 
     if (config.auth.mode === 'github') {
         console.log(`[auth] GitHub sign-in, callback ${config.auth.publicUrl}${callbackPath}`);
-        console.log('[auth] worker routes take Bearer $JOB_BOARD_TOKEN — the same value the driver holds');
+        console.log('[auth] worker routes take a driver credential (drv_…) the board issued; it keeps only the hash');
         console.log(
             '[auth] the App setup URL must point at the /api/auth/github/setup route for the install round trip'
         );
@@ -351,6 +353,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     });
 
     const mcp = mcpStores({ sql, ready });
+    const driverCredentials = bootstrappedDriverCredentials({ sql, ready }, config, (m) => console.log(m));
     const app = await buildApp({
         config,
         orgs,
@@ -365,14 +368,14 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
         // org-less job query, because the pair's answer IS the org. The worker-route resolvers
-        // beside it are the same direction: the shared board secret authenticates the driver, and
+        // beside it are the same direction: a driver credential authenticates the driver, and
         // the org a call operates on comes from the row its URL names.
         orgOfLease: createOrgOfLease({ sql, ready }),
         // The OTLP routes' runner credential: the job id + the ingest token its telemetry config carries.
         orgOfIngest: createOrgOfIngest({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
-        driverCredentials: createDriverCredentialStore({ sql, ready }),
+        driverCredentials,
         ...runnerCredentialDeps({ sql, ready }, options, config.integrations.jira),
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,

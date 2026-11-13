@@ -35,7 +35,8 @@ The render refuses to start without them, and names the missing value.
 | `auth.oauthClientId` | Client id of the GitHub OAuth App. Not secret. |
 | `secret.oauthClientSecret` | Client secret of that OAuth App. |
 | `secret.sessionSecret` | At least 32 characters. Signs the session cookie. `openssl rand -hex 32`. |
-| `secret.jobBoardToken` | At least 32 characters. One shared secret: the dashboard checks it, the driver presents it. `openssl rand -hex 32`. |
+| `driver.credential.value` | The driver's own credential, `echo "drv_$(openssl rand -hex 32)"`. Only the driver pod mounts it. The dashboard records its SHA-256 and never sees it. |
+| `driver.metricsToken` | At least 32 characters. Bearer for the driver's scrape port. Not needed with `driver.metricsPort: ''`. |
 | `github.appId` | Id of the GitHub App. |
 | `github.appPrivateKey` | The App's private key, as the PEM or its base64. |
 | `database.url` | PostgreSQL connection URL. It carries the password, so the chart stores it in the Secret. |
@@ -93,7 +94,7 @@ By default the chart creates its Secrets from your values. For production, creat
 
 <Steps>
   <Step title="Create the dashboard Secret">
-    Set `secret.existingSecret` to its name. Every key but `database-url` is optional in the pod spec, and the server names any missing one at boot. The driver needs `job-board-token`.
+    Set `secret.existingSecret` to its name. Every key but `database-url` is optional in the pod spec, and the server names any missing one at boot. The driver's credential is not in it.
 
     | Key | Value |
     | --- | --- |
@@ -101,10 +102,12 @@ By default the chart creates its Secrets from your values. For production, creat
     | `github-app-private-key` | `github.appPrivateKey` |
     | `github-oauth-client-secret` | `secret.oauthClientSecret` |
     | `session-secret` | `secret.sessionSecret` |
-    | `job-board-token` | `secret.jobBoardToken` |
     | `github-webhook-secret` | `secret.githubWebhookSecret` |
     | `atlassian-client-secret` | `secret.atlassianClientSecret` |
     | `commerce-token` | Optional |
+  </Step>
+  <Step title="Create the driver Secret">
+    Set `driver.credential.existingSecret` to its name, and `driver.credential.sha256` to the credential's SHA-256 so the dashboard records it. Leave `sha256` empty for a credential the operator issued. Keys: `credential`, and `metrics-token` when `driver.metricsPort` is set. Only the driver pod mounts it.
   </Step>
   <Step title="Create the secret-store Secret">
     Set `secretStore.existingSecret` to its name. It holds `operation-key`, `fingerprint-key`, and with the `database` backend also `data-keys`. `secretStore.activeKeyId` is not secret and always comes from values.
@@ -118,10 +121,20 @@ By default the chart creates its Secrets from your values. For production, creat
 kubectl -n bellows create secret generic bellows-dashboard \
   --from-literal=database-url='postgres://bellows:CHANGE_ME@db.example.com:5432/bellows' \
   --from-literal=session-secret="$(openssl rand -hex 32)" \
-  --from-literal=job-board-token="$(openssl rand -hex 32)" \
   --from-literal=github-oauth-client-secret='...' \
   --from-file=github-app-private-key=./app-private-key.pem
 ```
+
+### Rotate or revoke the driver credential
+
+The driver reads its credential from the mounted Secret for every call, so a rotation needs no restart. A self-hosted board has no operator account. It runs the same commands against its database from the dashboard container:
+
+```bash
+kubectl -n bellows exec deploy/bellows-factory -c dashboard -- node server/dist/auth/driver-credential-cli.js list
+kubectl -n bellows exec deploy/bellows-factory -c dashboard -- node server/dist/auth/driver-credential-cli.js rotate <id> --overlap 3600
+```
+
+The rotation prints the new credential once. Write it to the driver Secret's `credential` key before the overlap ends. The kubelet refreshes the mounted file, and the driver presents the new credential from its next call. A cloud board's operator runs `bellows operator rotate-credential` instead. `revoke <id>` ends a credential at once: that driver stops claiming, and its running tasks pass to another driver when their leases lapse.
 
 ## Ingress and TLS
 
@@ -186,7 +199,7 @@ You need a checkout of the Bellows repository, `docker`, `kind`, `helm`, `kubect
 
 <Steps>
   <Step title="Fill in .env">
-    In the repository root, copy `.env.example` to `.env` and set `GITHUB_APP_ID`, the private key (`GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE`), `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SESSION_SECRET` and `JOB_BOARD_TOKEN`. Set a model credential too (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Register the OAuth App with the callback `http://127.0.0.1:8081/api/auth/github/callback`.
+    In the repository root, copy `.env.example` to `.env` and set `GITHUB_APP_ID`, the private key (`GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE`), `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SESSION_SECRET` and `DRIVER_CREDENTIAL` (`drv_` + 64 hex). Set a model credential too (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Register the OAuth App with the callback `http://127.0.0.1:8081/api/auth/github/callback`.
   </Step>
   <Step title="Create the secret-store keys">
     ```bash

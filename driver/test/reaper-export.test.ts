@@ -139,7 +139,7 @@ async function scene(options: { deadlineMs?: number } = {}) {
     const server: GateServer = createGateServer({ host: '127.0.0.1', manager: {} as never });
     cleanup.push(() => server.close());
     const opener = createVolumeExportOpener({
-        board: createBoard({ url: board.url, leaseSeconds: 300, token: undefined }),
+        board: createBoard({ url: board.url, leaseSeconds: 300 }),
         gates: { manager: {} as never, server, advertiseUrl: (port) => `http://127.0.0.1:${port}` },
         log: () => undefined,
     });

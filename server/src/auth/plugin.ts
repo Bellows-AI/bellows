@@ -61,9 +61,9 @@ const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/reclaims\/(claim|holds)$/,
     /^\/api\/reclaims\/[^/]+\/(ack|renew)$/,
     // `stop`, `follow-up`, `retry`, `done`, `reopen` and `remove` are person actions: the driver
-    // is told to stop through the heartbeat it already holds, and the board secret moving or
+    // is told to stop through the heartbeat it already holds, and a driver credential moving or
     // deleting the audit rows of jobs it never held would be the thread-read hole again.
-    // to stop through the heartbeat it already holds, and the board secret moving or deleting
+    // to stop through the heartbeat it already holds, and a driver credential moving or deleting
     // the audit rows of jobs it never held would be the thread-read hole again.
     /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|interrupt|complete|conclusion|phase-checkpoints?|gate-runs?|pr-operation|output|gates|question|requirements|review|review-read)$/,
     // Artifact uploads: the shared secret authenticates the driver, the claim sequence in the
@@ -268,7 +268,7 @@ export interface AuthPluginDeps {
      */
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
-    /** The per-driver credentials (`drv_`) the worker routes accept beside JOB_BOARD_TOKEN. Absent: none resolves. */
+    /** The per-driver credentials (`drv_`) the worker routes accept. Absent: none resolves. */
     driverCredentials?: Pick<DriverCredentialStore, 'resolve'> | undefined;
     /** Resolves a `mat_` for the MCP endpoint; only consulted in github mode, and required there when MCP is enabled. */
     oauth?: Pick<OAuthStore, 'findAccessToken'> | undefined;
@@ -737,7 +737,7 @@ export async function registerAuth(
     });
 }
 
-/** The signed-in user behind a request, or null when the board secret got it here. */
+/** The signed-in user behind a request, or null when a driver credential got it here. */
 export const callerOf = (request: FastifyRequest): Caller | null =>
     request.auth?.kind === 'user' ? request.auth.caller : null;
 

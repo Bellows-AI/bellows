@@ -13,7 +13,7 @@ async function serve(token: string, render = async () => 'x_total 1\n') {
 }
 
 describe('the driver metrics listener', () => {
-    it('serves the exposition to the board token', async () => {
+    it('serves the exposition to the metrics token', async () => {
         const base = await serve('secret');
         const response = await fetch(`${base}/metrics`, { headers: { authorization: 'Bearer secret' } });
         expect(response.status).toBe(200);

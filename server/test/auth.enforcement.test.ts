@@ -28,7 +28,7 @@ import {
     staticRegistry,
     stubTelemetryClient,
     testConfig,
-    TEST_JOB_BOARD_TOKEN,
+    TEST_DRIVER_CREDENTIAL,
     telemetryStoreStub,
 } from './helpers.js';
 import {
@@ -47,7 +47,7 @@ const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
 const INGEST = '33333333-3333-4333-8333-333333333333';
-const WORKER_TOKEN = TEST_JOB_BOARD_TOKEN;
+const WORKER_TOKEN = TEST_DRIVER_CREDENTIAL;
 
 const track = trackApps();
 
@@ -234,7 +234,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/wait/cancel', 'user'],
     ['/api/jobs/:id/wait/poke', 'user'],
     ['/api/jobs/claim', 'worker'],
-    // The Prometheus scrape: the shared board secret, never a session.
+    // The Prometheus scrape: a pool driver credential, never a session.
     ['/api/metrics', 'worker'],
     // The orphan reaper's batched lease lookup: org-less like the claim, and
     // read-only — a worker token answers facts, it never moves rows.
@@ -624,7 +624,7 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
-    it('accepts the shared board secret on the claim route', async () => {
+    it('accepts a pool driver credential on the claim route', async () => {
         const store = memoryAuthStore();
         const server = await build(githubAuth(), store);
 
@@ -655,7 +655,7 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
 
     // The worker token reaches the question report route the driver owns; the answer is a
     // person's, so the same credential is refused on it.
-    it('accepts the shared board secret on the question report only', async () => {
+    it('accepts a pool driver credential on the question report only', async () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const worker = { authorization: `Bearer ${WORKER_TOKEN}` };
 

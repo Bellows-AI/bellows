@@ -90,12 +90,10 @@ services:
             RATE_LIMIT_PER_ORG: ${RATE_LIMIT_PER_ORG:-}
             MCP_STREAMS_PER_ORG: ${MCP_STREAMS_PER_ORG:-}
             DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-}
-            # The shared board secret: the SAME value the driver below presents on the worker
-            # routes. Both services read the one .env entry, so "the same" is true by
-            # construction — no minting, no database row, nothing to paste twice. Required in
-            # this stack (the board refuses to boot in github mode without it); ignored against
-            # an open board, where the worker routes are open anyway.
-            JOB_BOARD_TOKEN: ${JOB_BOARD_TOKEN:?set JOB_BOARD_TOKEN in .env (openssl rand -hex 32)}
+            # The SHA-256 of the driver's own credential (DRIVER_CREDENTIAL below): the board records
+            # it as a pool credential at boot and never holds the credential itself. Required in this
+            # stack, whose driver has no operator to issue it one (docs/auth.md).
+            DRIVER_CREDENTIAL_SHA256: ${DRIVER_CREDENTIAL_SHA256:?set DRIVER_CREDENTIAL_SHA256 in .env (see .env.example)}
             # Task artifacts go to the `s3` service below (RustFS). The dashboard creates the bucket
             # on boot; the keys are that service's own dev credentials, literal for the same reason
             # the database URL is: nothing in .env can name this stack's store.
@@ -192,11 +190,11 @@ services:
         command: sh -c 'npm install && npm run dev -w driver'
         environment:
             JOB_BOARD_URL: http://dashboard:8080
-            # The shared board secret — the same ${JOB_BOARD_TOKEN} the dashboard validates
-            # against, so there is exactly one place to set it. Against an open board
-            # (AUTH_MODE=none) it stays empty and the header is omitted entirely rather than
-            # sent blank.
-            JOB_BOARD_TOKEN: ${JOB_BOARD_TOKEN:-}
+            # This driver's own credential (drv_…), whose SHA-256 the dashboard above records; the
+            # dashboard never sees it. A rotation is a new .env value and `docker compose up -d driver`
+            # inside the old credential's overlap window: the drain hands running tasks over and the
+            # new driver adopts them. Never forwarded to a runner (RUNNER_ENV refuses its name).
+            DRIVER_CREDENTIAL: ${DRIVER_CREDENTIAL:-}
             # No ORG_ID and no workspace volume: each thread's checkout is cloned onto its own
             # task volume (`factory-task-<root>-<n>`), which the driver creates through the daemon.
             # Image locations are deployment details; the task's executor selection chooses which

@@ -111,7 +111,7 @@ export interface AppDeps {
     orgOfIngest?: ((jobId: string, ingestToken: string) => Promise<string | null>) | undefined;
     /**
      * The worker routes' org resolvers, threaded through to the auth hook beside `orgOfLease`:
-     * where the shared board secret authenticates a call, the org comes from the row its URL
+     * where a pool driver credential authenticates a call, the org comes from the row its URL
      * names. main.ts builds both from the job store's SQL.
      */
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;

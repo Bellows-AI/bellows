@@ -3,14 +3,19 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { Sql } from 'postgres';
 import { buildApp } from '../src/app.js';
-import { createDriverCredentialStore, type DriverCredentialStore } from '../src/auth/driver-credentials.js';
+import {
+    bootstrapDriverCredential,
+    createDriverCredentialStore,
+    type DriverCredentialStore,
+} from '../src/auth/driver-credentials.js';
+import { orgKeyDeriver } from '../src/auth/org-key.js';
 import { hashToken } from '../src/auth/session.js';
 import { type AuthStore, createAuthStore } from '../src/auth/store.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/jobs/job-store-org-resolvers.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { createServerMetrics } from '../src/metrics.js';
 import { createOrgRegistry } from '../src/orgs.js';
-import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
+import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
 import { expireLease, randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
@@ -20,7 +25,8 @@ import { useTestDb } from './harness.js';
  * stored as a hash and shown once. A credential for org A claims only org A's queue, is refused 403 on org B's job
  * routes (never the 404 a driver reads as "removed"), and is refused on a lease lookup naming org B's ids rather than
  * answered as if they were gone. A revoked credential is a 401 on its next call; a rotated one keeps working until
- * its overlap window ends. The board's JOB_BOARD_TOKEN still answers as a pool credential.
+ * its overlap window ends. Every claim carries its organization's key, the same whichever credential claimed it. A
+ * deployment with no operator records its first pool credential from DRIVER_CREDENTIAL_SHA256 at boot.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
 const db = useTestDb({ max: 12 });
@@ -50,6 +56,12 @@ let orgB: string;
 let operator: Person;
 let memberA: Person;
 let memberB: Person;
+/** A pool credential every case starts with, issued through the store. */
+let pool: string;
+let poolId: string;
+/** The operator's listing without the pool credential every case starts with. */
+const listedBesidesPool = (body: { credentials: { id: string }[] }) => body.credentials.filter((c) => c.id !== poolId);
+const ORG_KEY_SECRET = Buffer.alloc(32, 7);
 
 const repoOf = (orgId: string) => `owner-${orgId}/web`;
 
@@ -102,6 +114,7 @@ async function boot(store: DriverCredentialStore): Promise<void> {
             withStores: true,
             secrets: testSecretStore(sql),
             secretLog: () => {},
+            orgKeyOf: orgKeyDeriver(ORG_KEY_SECRET),
         }),
         auth,
         driverCredentials: store,
@@ -150,6 +163,9 @@ beforeEach(async () => {
     memberA = await boardFor(orgA);
     memberB = await boardFor(orgB);
     operator = await personIn(testOrg());
+    const issued = await credentials.issue({ label: 'pool', orgs: null, createdBy: operator.userId });
+    pool = issued.outcome === 'issued' ? issued.token : '';
+    poolId = issued.outcome === 'issued' ? issued.credential.id : '';
     await boot(credentials);
 });
 
@@ -167,7 +183,7 @@ describe.skipIf(!enabled)('per-driver credentials', () => {
         const listed = await call('GET', '/api/operator/driver-credentials', operator.token);
         expect(listed.statusCode).toBe(OK);
         expect(listed.body).not.toContain(token);
-        expect(listed.json<{ credentials: unknown[] }>().credentials).toEqual([
+        expect(listedBesidesPool(listed.json())).toEqual([
             expect.objectContaining({ id, label: 'east', pool: false, orgs: [orgA], revokedAt: null, expiresAt: null }),
         ]);
     });
@@ -187,7 +203,7 @@ describe.skipIf(!enabled)('per-driver credentials', () => {
         expect((await call('POST', path, operator.token, { label: 'x', orgs: [] })).statusCode).toBe(400);
         const unknown = await call('POST', path, operator.token, { label: 'x', orgs: [orgA, testOrg()] });
         expect(unknown.statusCode).toBe(NOT_FOUND);
-        expect((await sql`select 1 from driver_credential`).length).toBe(0);
+        expect((await sql`select 1 from driver_credential where label = 'x'`).length).toBe(0);
     });
 
     it('claims only its own organizations’ queue', async () => {
@@ -205,7 +221,7 @@ describe.skipIf(!enabled)('per-driver credentials', () => {
     it('is refused 403, not 404, on another organization’s job routes', async () => {
         const { token } = await issue({ label: 'org-a', orgs: [orgA] });
         const jobB = await queue(memberB, orgB);
-        const held = await claim(TEST_JOB_BOARD_TOKEN);
+        const held = await claim(pool);
         expect(held.json<{ id: string }>().id).toBe(jobB);
         const { leaseToken } = held.json<{ leaseToken: string }>();
 
@@ -216,7 +232,7 @@ describe.skipIf(!enabled)('per-driver credentials', () => {
         expect(done.statusCode).toBe(FORBIDDEN);
 
         // The refusal moved nothing: the pool credential's lease still holds.
-        const still = await call('POST', `/api/jobs/${jobB}/heartbeat`, TEST_JOB_BOARD_TOKEN, {
+        const still = await call('POST', `/api/jobs/${jobB}/heartbeat`, pool, {
             leaseToken,
             leaseSeconds: LEASE_S,
         });
@@ -243,7 +259,7 @@ describe.skipIf(!enabled)('per-driver credentials', () => {
         expect((await call('GET', '/api/metrics', pool.token)).statusCode).toBe(OK);
     });
 
-    it('a pool credential claims every organization’s queue, like the board token', async () => {
+    it('a pool credential claims every organization’s queue', async () => {
         const { token } = await issue({ label: 'pool', pool: true });
         const jobB = await queue(memberB, orgB);
         const claimed = await claim(token);
@@ -268,14 +284,14 @@ describe.skipIf(!enabled)('per-driver credentials', () => {
         // The revocation ended nothing: the row is still running, and the pool sees it.
         const [row] = await sql<{ status: string }[]>`select status from job where id = ${jobA}`;
         expect(row!.status).toBe('running');
-        const leases = await call('POST', '/api/jobs/leases', TEST_JOB_BOARD_TOKEN, { ids: [jobA] });
+        const leases = await call('POST', '/api/jobs/leases', pool, { ids: [jobA] });
         expect(leases.json<{ jobs: { id: string; leaseToken: string }[] }>().jobs).toEqual([
             expect.objectContaining({ id: jobA, leaseToken }),
         ]);
 
         // Its lease lapses unrenewed, and another driver adopts the run under a new claim sequence.
         await expireLease(sql, jobA);
-        const adopted = await claim(TEST_JOB_BOARD_TOKEN);
+        const adopted = await claim(pool);
         expect(adopted.statusCode).toBe(OK);
         const taken = adopted.json<{ id: string; leaseToken: string; claimSeq: number }>();
         expect(taken.id).toBe(jobA);
@@ -330,17 +346,80 @@ describe.skipIf(!enabled)('per-driver credentials', () => {
             },
         });
         expect((await claim(token)).statusCode).toBe(UNAVAILABLE);
-        // The board token needs no lookup.
-        expect((await claim(TEST_JOB_BOARD_TOKEN)).statusCode).toBe(NO_CONTENT);
+        // Every credential is a lookup: there is no shared board secret to fall back on.
+        expect((await claim(pool)).statusCode).toBe(UNAVAILABLE);
     });
 
     it('deleting an organization drops it from its credentials, and the credential reaches nothing', async () => {
         const { id, token } = await issue({ label: 'org-b', orgs: [orgB] });
         await sql`delete from organization where id = ${orgB}`;
         const listed = await call('GET', '/api/operator/driver-credentials', operator.token);
-        expect(listed.json<{ credentials: { id: string; orgs: string[] }[] }>().credentials).toEqual([
-            expect.objectContaining({ id, orgs: [] }),
-        ]);
+        expect(listedBesidesPool(listed.json())).toEqual([expect.objectContaining({ id, orgs: [] })]);
         expect((await claim(token)).statusCode).toBe(UNAVAILABLE);
+    });
+
+    it('every claim carries its organization’s key: the same for every credential and the adopting claim', async () => {
+        const scoped = await issue({ label: 'org-a', orgs: [orgA] });
+        const jobA = await queue(memberA, orgA);
+        const first = (await claim(scoped.token)).json<{ id: string; orgKey: string }>();
+        expect(first.id).toBe(jobA);
+        expect(first.orgKey).toBe(orgKeyDeriver(ORG_KEY_SECRET)(orgA));
+
+        await expireLease(sql, jobA);
+        const adopted = (await claim(pool)).json<{ id: string; orgKey: string }>();
+        expect(adopted.id).toBe(jobA);
+        expect(adopted.orgKey).toBe(first.orgKey);
+
+        await queue(memberB, orgB);
+        const other = (await claim(pool)).json<{ orgKey: string }>();
+        expect(other.orgKey).not.toBe(first.orgKey);
+        expect(other.orgKey).not.toContain(orgB);
+    });
+});
+
+describe.skipIf(!enabled)('the bootstrap pool credential (DRIVER_CREDENTIAL_SHA256)', () => {
+    const token = `drv_${'5c'.repeat(32)}`;
+    const quiet = () => {};
+
+    it('is recorded as a pool credential from its hash alone, and claims every organization’s queue', async () => {
+        await bootstrapDriverCredential(credentials, hashToken(token), quiet);
+        const [row] = await sql<{ label: string; pool: boolean; created_by: string | null }[]>`
+            select label, pool, created_by from driver_credential where token_hash = ${hashToken(token)}
+        `;
+        expect(row).toEqual({ label: 'bootstrap', pool: true, created_by: null });
+        const jobB = await queue(memberB, orgB);
+        expect((await claim(token)).json<{ id: string }>().id).toBe(jobB);
+    });
+
+    it('a later boot leaves it as it is: a revoked bootstrap credential stays revoked', async () => {
+        await bootstrapDriverCredential(credentials, hashToken(token), quiet);
+        const [row] = await sql<
+            { id: string }[]
+        >`select id from driver_credential where token_hash = ${hashToken(token)}`;
+        const revoked = await call('POST', `/api/operator/driver-credentials/${row!.id}/revoke`, operator.token);
+        expect(revoked.statusCode).toBe(OK);
+
+        const lines: string[] = [];
+        await bootstrapDriverCredential(credentials, hashToken(token), (line) => lines.push(line));
+        expect(lines).toEqual(['[auth] the DRIVER_CREDENTIAL_SHA256 credential is already recorded; left as it is']);
+        expect((await claim(token)).statusCode).toBe(UNAUTHORIZED);
+        expect((await sql`select 1 from driver_credential where token_hash = ${hashToken(token)}`).length).toBe(1);
+    });
+
+    it('a store that cannot record it is logged, never thrown, and names no secret', async () => {
+        const lines: string[] = [];
+        await bootstrapDriverCredential(
+            {
+                bootstrap: async () => {
+                    throw new Error('connect ECONNREFUSED');
+                },
+            },
+            hashToken(token),
+            (line) => lines.push(line)
+        );
+        expect(lines).toEqual([
+            '[auth] could not record the DRIVER_CREDENTIAL_SHA256 credential: connect ECONNREFUSED',
+        ]);
+        expect(lines.join('')).not.toContain(hashToken(token).toString('hex'));
     });
 });

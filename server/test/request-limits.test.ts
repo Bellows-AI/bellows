@@ -14,7 +14,8 @@ import {
     stubTelemetryClient,
     telemetryStoreStub,
     testConfig,
-    TEST_JOB_BOARD_TOKEN,
+    TEST_DRIVER_CREDENTIAL,
+    testDriverCredentials,
 } from './helpers.js';
 import type { MemoryAuthStore } from './helpers.js';
 import { HTTP_FORBIDDEN, HTTP_OK, HTTP_TOO_MANY_REQUESTS, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
@@ -59,6 +60,7 @@ async function build(
         }),
         store: telemetryStoreStub(),
         auth: store,
+        driverCredentials: testDriverCredentials,
         orgOfJob: async (jobId) => (jobId === JOB_ID ? ORG : null),
         now: () => clock.at,
     });
@@ -108,7 +110,7 @@ describe('the request rate per credential and per organization', () => {
         const app = await build(store, {
             requestLimits: { perCredential: 1, perOrg: 1, windowMs: WINDOW_SECONDS * 1000, streamsPerOrg: 1 },
         });
-        const worker = { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` };
+        const worker = { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` };
         for (let i = 0; i < 5; i += 1) {
             const claim = await app.inject({ method: 'POST', url: '/api/jobs/claim', payload: {}, headers: worker });
             const beat = await app.inject({

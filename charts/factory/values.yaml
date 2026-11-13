@@ -266,7 +266,7 @@ secret:
     # Creates the dashboard Secret from the values below. With existingSecret set, the chart
     # creates nothing and references that one — for a Secret managed by external-secrets or
     # sealed-secrets. In the dashboard's pod spec every key but `database-url` is optional, so the
-    # server names any a managed Secret misses; the driver requires `job-board-token`.
+    # server names any a managed Secret misses. The driver's credential is not here: see driver.credential.
     create: true
     existingSecret: ''
     # REQUIRED.
@@ -276,10 +276,6 @@ secret:
     # The App's installation webhook HMAC secret (GITHUB_WEBHOOK_SECRET). Empty, the webhook route
     # does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     githubWebhookSecret: ''
-    # The shared board secret: the dashboard validates `Bearer $JOB_BOARD_TOKEN` on the worker
-    # routes against it and the driver presents it. One value, both sides — generate with
-    # `openssl rand -hex 32`. REQUIRED, at least 32 characters.
-    jobBoardToken: ''
     # The bearer secret shared with the commerce service (COMMERCE_TOKEN); read only when
     # `dashboard.commerce.enabled`. At least 32 characters then.
     commerceToken: ''
@@ -361,10 +357,28 @@ driver:
     # pod IP as the gate endpoint, and the re-claim fence's checkout claim keeps two drivers off
     # one checkout (docs/kubernetes.md).
     replicas: 1
-    # The port of the driver's Prometheus scrape (GET /metrics, Authorization: Bearer <board token>),
+    # REQUIRED: the driver's own credential on the worker routes (docs/auth.md), in the `<release>-driver`
+    # Secret only the driver pod mounts — the dashboard holds just its SHA-256. The driver re-reads the mounted
+    # file for every call, so a rotation needs no restart: rotate it (`bellows operator rotate-credential`, or
+    # `driver-credential-cli.js rotate` in the dashboard container), write the new token into the Secret, and the
+    # old one keeps working for the rotation's overlap window while the kubelet refreshes the file.
+    credential:
+        # `echo "drv_$(openssl rand -hex 32)"`. The chart creates the Secret and the dashboard records its SHA-256
+        # as a pool credential at boot. Changing it adds a credential; revoke the old one with the CLI.
+        value: ''
+        # A Secret you manage, holding `credential` (and `metrics-token` with metricsPort): an operator-issued
+        # credential, or one rotated in place. With it the chart creates no driver Secret.
+        existingSecret: ''
+        # With existingSecret only: the credential's SHA-256, for the dashboard to record as a pool credential
+        # (`printf %s "$credential" | sha256sum`). Empty records none (the operator issued it).
+        sha256: ''
+    # The port of the driver's Prometheus scrape (GET /metrics, Authorization: Bearer <metricsToken>),
     # on the pod IP. '' serves none. No Service and no scrape annotations: point a PodMonitor or a
     # scrape config at the `metrics` container port (docs/telemetry.md).
     metricsPort: '9464'
+    # The scrape's own bearer (DRIVER_METRICS_TOKEN), at least 32 characters, never the driver credential:
+    # REQUIRED with metricsPort unless driver.credential.existingSecret holds `metrics-token`.
+    metricsToken: ''
     # One driver serves both task-selected executor types. These values choose image locations —
     # bare repository paths the global.imageRegistry prefix composes with (a tag may be included:
     # `claude-executor:v1.2.3`; tagless reads :latest); the task's executor profile chooses which

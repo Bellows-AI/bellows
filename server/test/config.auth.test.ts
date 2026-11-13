@@ -18,7 +18,6 @@ const github = (env: NodeJS.ProcessEnv = {}) =>
         GITHUB_OAUTH_CLIENT_ID: 'client-id',
         GITHUB_OAUTH_CLIENT_SECRET: 'client-secret',
         SESSION_SECRET: SECRET,
-        JOB_BOARD_TOKEN: SECRET,
         ...env,
     });
 
@@ -45,7 +44,7 @@ describe('AUTH_MODE', () => {
 });
 
 describe('github mode is all-or-nothing', () => {
-    it.each(['GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET', 'SESSION_SECRET', 'JOB_BOARD_TOKEN'])(
+    it.each(['GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET', 'SESSION_SECRET'])(
         'is fatal when %s is missing, and names it',
         (key) => {
             // Named individually: the operator has one key to fix and should not have to diff the
@@ -63,14 +62,27 @@ describe('github mode is all-or-nothing', () => {
         expect(() => github({ SESSION_SECRET: 'short' })).toThrow(/at least 32 characters/);
     });
 
-    it('refuses a board secret short enough to be guessed', () => {
-        // The same floor the webhook secret sits behind: a short shared secret is enumerable
-        // however constant-time the comparison is.
-        expect(() => github({ JOB_BOARD_TOKEN: 'short' })).toThrow(/JOB_BOARD_TOKEN must be at least 32 characters/);
+    it('holds no shared board secret: each driver presents its own credential', () => {
+        expect(github({ JOB_BOARD_TOKEN: SECRET }).auth).not.toHaveProperty('jobBoardToken');
+    });
+});
+
+describe('DRIVER_CREDENTIAL_SHA256, the bootstrap pool credential', () => {
+    const HASH = 'ab'.repeat(32);
+
+    it('is none unless set', () => {
+        expect(github().driverCredentialBootstrap).toBeNull();
     });
 
-    it('carries the board secret the driver presents', () => {
-        expect((github({ JOB_BOARD_TOKEN: SECRET }).auth as { jobBoardToken: string }).jobBoardToken).toBe(SECRET);
+    it('is the SHA-256 the board records, never a credential', () => {
+        expect(github({ DRIVER_CREDENTIAL_SHA256: HASH.toUpperCase() }).driverCredentialBootstrap).toEqual(
+            Buffer.from(HASH, 'hex')
+        );
+    });
+
+    it.each([`drv_${HASH}`, 'ab'.repeat(31), `${HASH}00`, 'zz'.repeat(32)])('refuses %s, without echoing it', (raw) => {
+        expect(() => github({ DRIVER_CREDENTIAL_SHA256: raw })).toThrow(/DRIVER_CREDENTIAL_SHA256 must be/);
+        expect(() => github({ DRIVER_CREDENTIAL_SHA256: raw })).not.toThrow(raw);
     });
 });
 

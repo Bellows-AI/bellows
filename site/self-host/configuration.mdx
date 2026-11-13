@@ -39,7 +39,7 @@ Bellows is configured with environment variables only. Locally they come from `.
 | `SESSION_SECRET` | github mode | none | Signs the session cookie. At least 32 characters. Changing it signs everyone out. |
 | `SESSION_TTL_HOURS` | | `336` (14 days) | Session lifetime in hours. Positive integer. |
 | `COOKIE_SECURE` | | off | Sets `Secure` on the session cookie. Turn on behind TLS. |
-| `JOB_BOARD_TOKEN` | github mode | none | Shared secret the driver presents on the worker routes. At least 32 characters. Set the same value on the server and the driver. |
+| `DRIVER_CREDENTIAL_SHA256` | | none | SHA-256 (64 hex) of a driver credential. The server records it as a pool credential at boot. It never holds the credential itself, and a revoked or rotated one stays so. |
 | `GITHUB_WEBHOOK_SECRET` | | unset | HMAC secret for the App's installation webhook at `<PUBLIC_URL>/api/github/webhook`. At least 32 characters. Unset removes the route. |
 
 ### GitHub App
@@ -162,7 +162,8 @@ The driver reads only the environment. It has no database access and talks to th
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
 | `JOB_BOARD_URL` | | `http://127.0.0.1:8080` | Where the board is. http(s) only. |
-| `JOB_BOARD_TOKEN` | github mode | empty | Same value as the server. Empty sends no header, for an open board. |
+| `DRIVER_CREDENTIAL` | github mode | empty | This driver's own credential (`drv_` + 64 hex), issued by the board or recorded from its SHA-256. Empty sends no header, for an open board. |
+| `DRIVER_CREDENTIAL_FILE` | | unset | A file holding the credential instead, read again for every call: a rotated credential takes effect without a restart. Not with `DRIVER_CREDENTIAL`. |
 | `DRIVER_WORKER` | | `driver-<pid>` | Name of this driver on every claim. |
 | `EXECUTOR` | | `docker` | `docker` or `kubernetes`. Any other value is fatal. |
 | `REPO_CLONE_BASE` | | `https://github.com` | Where checkouts are cloned from: `<base>/<owner>/<name>.git`. |
@@ -213,7 +214,8 @@ The driver reads only the environment. It has no database access and talks to th
 | --- | --- | --- | --- |
 | `GATE_LISTEN_HOST` | | `127.0.0.1` | Bind address of the gate server, which runs shell commands. Compose sets `0.0.0.0`. |
 | `GATE_ADVERTISE_URL` | | `http://host.docker.internal:<port>` | URL runners use to reach the gate server. The bound port is appended if the URL has none. |
-| `DRIVER_METRICS_PORT` | | unset (off) | Port for a Prometheus scrape at `GET /metrics`, protected by the board token. Needs `JOB_BOARD_TOKEN` when `GATE_LISTEN_HOST` is not loopback. |
+| `DRIVER_METRICS_PORT` | | unset (off) | Port for a Prometheus scrape at `GET /metrics`. Needs `DRIVER_METRICS_TOKEN` when `GATE_LISTEN_HOST` is not loopback. |
+| `DRIVER_METRICS_TOKEN` | | empty | The scrape's bearer. Its own secret, never the driver credential. |
 
 ### Resources
 

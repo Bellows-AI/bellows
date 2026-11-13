@@ -185,9 +185,26 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if lt (len .Values.secret.sessionSecret) 32 }}
 {{- fail "secret.sessionSecret of at least 32 characters is required (openssl rand -hex 32)" }}
 {{- end }}
-{{- if lt (len .Values.secret.jobBoardToken) 32 }}
-{{- fail "secret.jobBoardToken of at least 32 characters is required (openssl rand -hex 32): the driver's credential on the worker routes" }}
 {{- end }}
+{{- with .Values.driver.credential }}
+{{- if and .value .existingSecret }}
+{{- fail "driver.credential: set value or existingSecret, not both" }}
+{{- end }}
+{{- if not (or .value .existingSecret) }}
+{{- fail "driver.credential.value (echo \"drv_$(openssl rand -hex 32)\") or driver.credential.existingSecret is required: the driver's own credential on the worker routes" }}
+{{- end }}
+{{- if and .value (not (regexMatch "^drv_[0-9a-f]{64}$" .value)) }}
+{{- fail "driver.credential.value must be drv_ followed by 64 hex characters (echo \"drv_$(openssl rand -hex 32)\")" }}
+{{- end }}
+{{- if and .sha256 (not (regexMatch "^[0-9a-fA-F]{64}$" .sha256)) }}
+{{- fail "driver.credential.sha256 must be the 64-hex SHA-256 of the credential" }}
+{{- end }}
+{{- if and .value .sha256 }}
+{{- fail "driver.credential.sha256 is for an existingSecret; with value the chart computes it" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.driver.metricsPort (not .Values.driver.credential.existingSecret) (lt (len .Values.driver.metricsToken) 32) }}
+{{- fail "driver.metricsToken of at least 32 characters is required with driver.metricsPort (openssl rand -hex 32): the scrape's own bearer, never the driver credential" }}
 {{- end }}
 {{- if not .Values.dashboard.offline }}
 {{- if not .Values.github.appId }}

@@ -13,7 +13,7 @@ import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/
 import { createOrgRegistry } from '../src/orgs.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
-import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
+import { githubAuth, testConfig, TEST_DRIVER_CREDENTIAL, testDriverCredentials } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 
@@ -88,11 +88,12 @@ beforeEach(async () => {
         orgOfLease: createOrgOfLease({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
+        driverCredentials: testDriverCredentials,
         ready,
         version: '0.0.0',
     });
     boardUrl = await app.listen({ port: 0, host: '127.0.0.1' });
-    board = createBoard({ url: boardUrl, leaseSeconds: LEASE_S, token: TEST_JOB_BOARD_TOKEN });
+    board = createBoard({ url: boardUrl, leaseSeconds: LEASE_S, credential: () => TEST_DRIVER_CREDENTIAL });
 });
 
 afterEach(async () => {

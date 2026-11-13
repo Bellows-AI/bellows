@@ -256,7 +256,7 @@ describe('the board’s artifact calls', () => {
         createBoard({
             url: 'http://board.test',
             leaseSeconds: 60,
-            token: 'worker-secret',
+            credential: () => 'worker-secret',
             fetch: (async (url: string, init: RequestInit) => {
                 calls.push({ url, init });
                 return new Response(JSON.stringify(body), { status });

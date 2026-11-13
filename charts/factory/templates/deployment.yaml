@@ -264,15 +264,12 @@ spec:
                                 name: {{ include "factory.secretName" . }}
                                 key: github-webhook-secret
                                 optional: true
-                      # The shared board secret — the same value the driver presents. Required in
-                      # github mode: the server refuses to boot without it, which is what names
-                      # the missing key.
-                      - name: JOB_BOARD_TOKEN
-                        valueFrom:
-                            secretKeyRef:
-                                name: {{ include "factory.secretName" . }}
-                                key: job-board-token
-                                optional: true
+                      {{- with include "factory.driverCredentialSha256" . }}
+                      # The driver's credential, by its SHA-256 only: recorded as a pool credential at
+                      # boot, never revived once revoked or rotated (docs/auth.md).
+                      - name: DRIVER_CREDENTIAL_SHA256
+                        value: {{ . | quote }}
+                      {{- end }}
                       # The secret store (docs/secrets.md): this container only, none optional — a
                       # dashboard that cannot decrypt must not come up. The backend, the active key id
                       # and the provider settings are not secret. Required on `dashboard.offline` too.

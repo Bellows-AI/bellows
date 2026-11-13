@@ -368,7 +368,9 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
     );
     const reviewRun = { profile: spec.name, ref: row!.review_ref, timeoutMinutes: spec.timeoutMinutes };
     // The review binds nothing: its files are the reviewed row's, and a read that throws fails the claim.
-    return withClaimAttachments(tx, orgId, { ...claim, reviewRun });
+    // The organization's key rides every claim, a review's too (`auth/org-key.ts`).
+    const keyed = ctx.orgKey ? { ...claim, orgKey: ctx.orgKey } : claim;
+    return withClaimAttachments(tx, orgId, { ...keyed, reviewRun });
 }
 
 export async function readReviewFor(
