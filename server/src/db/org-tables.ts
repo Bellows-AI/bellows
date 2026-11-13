@@ -24,6 +24,7 @@ export const ORG_TABLES = [
     'builtin_skill_off',
     'commerce_usage_report',
     'connector_connection',
+    'driver_credential_org',
     'env_var',
     'executor_profile',
     'input_attachment',

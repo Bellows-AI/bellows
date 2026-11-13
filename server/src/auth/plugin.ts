@@ -1,5 +1,4 @@
 import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
-import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AppConfig, AuthConfig } from '../config.js';
@@ -7,6 +6,7 @@ import { LOCAL_ORG_ID, UUID } from '../identifiers.js';
 import { guard } from '../routes/helpers.js';
 import { MCP_ACCESS_PREFIX, ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { boundCallerOf } from './bridge-binding.js';
+import type { DriverCredentialStore } from './driver-credentials.js';
 import { setAuthInfo } from '../mcp/auth-info.js';
 import { withCaller } from '../mcp/server.js';
 import { originPermitted } from '../mcp/origin.js';
@@ -15,6 +15,7 @@ import type { OAuthStore } from './oauth-store.js';
 import { OPERATOR_ROLE, SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes, roleOf } from './route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
+import { enforceWorker, secretsMatch } from './worker-auth.js';
 
 /**
  * Who is making a request.
@@ -38,7 +39,8 @@ import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
  */
 export type Principal =
     | { kind: 'user'; caller: Caller }
-    | { kind: 'worker'; orgId: string | null }
+    /** `orgs` is the driver credential's reach: null for the pool, else the only organizations it serves. */
+    | { kind: 'worker'; orgId: string | null; orgs: readonly string[] | null }
     | { kind: 'org'; token: OrgTokenIdentity }
     | { kind: 'job'; orgId: string; jobId: string };
 
@@ -228,17 +230,6 @@ export const requirementOf = (request: FastifyRequest): Requirement => {
     return pattern === undefined ? fallbackFor(request.url) : requirementFor(pattern);
 };
 
-/** Constant-time equality for two secrets that arrived as strings. */
-function secretsMatch(provided: string, expected: string): boolean {
-    const a = Buffer.from(provided);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-}
-
-/** A worker pattern that names its row: the job or reclaim id is the router's `:id` param. */
-const ROW_PATTERN = /^\/api\/(jobs|reclaims)\/:id\//;
-
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
@@ -277,6 +268,8 @@ export interface AuthPluginDeps {
      */
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
+    /** The per-driver credentials (`drv_`) the worker routes accept beside JOB_BOARD_TOKEN. Absent: none resolves. */
+    driverCredentials?: Pick<DriverCredentialStore, 'resolve'> | undefined;
     /** Resolves a `mat_` for the MCP endpoint; only consulted in github mode, and required there when MCP is enabled. */
     oauth?: Pick<OAuthStore, 'findAccessToken'> | undefined;
 }
@@ -472,54 +465,6 @@ async function enforceCommerce(
             .code(HTTP_UNAUTHORIZED)
             .send({ error: 'Invalid commerce token', code: ERROR_CODES.UNAUTHENTICATED });
     }
-}
-
-interface WorkerAuthDeps {
-    auth: AuthConfig;
-    jobOrgOf: (jobId: string) => Promise<string | null>;
-    reclaimOrgOf: (reclaimId: string) => Promise<string | null>;
-}
-
-async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const { auth, jobOrgOf, reclaimOrgOf } = deps;
-    // Open in `none` mode, like every other route in it. Requiring a secret here would buy
-    // nothing — anyone who can reach this port can already queue a command that an agent runs —
-    // while breaking `npm run driver` against a local board, which is the ordinary way this is
-    // developed. The two credentials are disjoint when there ARE credentials; `none` means there
-    // are none.
-    if (auth.mode === 'none') return;
-
-    // One shared secret, the same value in the board's and the driver's environment
-    // (JOB_BOARD_TOKEN on both sides). Constant-time, and checked before any database round trip —
-    // a wrong guess costs a compare, not a query. There is no token row and no org binding: the
-    // secret is the deployment's driver credential, so the org a call operates on comes from the
-    // row it names.
-    const token = bearer(request);
-    if (!token || !secretsMatch(token, auth.jobBoardToken)) {
-        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid worker token', code: ERROR_CODES.UNAUTHENTICATED });
-        return;
-    }
-
-    // The claim routes and the reaper's lease lookup name no row — they ASK about the board as a
-    // whole — so their principal carries null and the route answers across every org's board.
-    // Every other worker route carries the job (or reclaim) id in its URL, and the org comes from
-    // that row; an id that resolves to nothing is the route's
-    // own 404, answered here to keep the store lookup from inventing a runtime for a row that does
-    // not exist. The segment is captured before any shape check, so a MALFORMED id is refused on
-    // the same terms instead of slipping through with a null org — which the route's storeOf()
-    // would turn into a 503 before its own id validation ran — and so a resolver is never handed a
-    // string postgres would refuse to cast.
-    const pattern = patternOf(request) ?? '';
-    const rowId = ROW_PATTERN.test(pattern) ? (request.params as { id?: string }).id : undefined;
-    let orgId: string | null = null;
-    if (rowId && UUID.test(rowId)) {
-        orgId = pattern.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
-    }
-    if (rowId && !orgId) {
-        await reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: ERROR_CODES.NOT_FOUND });
-        return;
-    }
-    request.auth = { kind: 'worker', orgId };
 }
 
 interface McpAuthDeps {
@@ -734,7 +679,7 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
  */
 export async function registerAuth(
     app: FastifyInstance,
-    { config, store, orgOfLease, orgOfIngest, orgOfJob, orgOfReclaim, oauth }: AuthPluginDeps
+    { config, store, orgOfLease, orgOfIngest, orgOfJob, orgOfReclaim, driverCredentials, oauth }: AuthPluginDeps
 ): Promise<void> {
     const { auth } = config;
     await app.register(fastifyCookie);
@@ -744,6 +689,9 @@ export async function registerAuth(
     const ingestOrgOf = orgOfIngest ?? (async () => null);
     const jobOrgOf = orgOfJob ?? (async () => null);
     const reclaimOrgOf = orgOfReclaim ?? (async () => null);
+    const driverCredentialOf = driverCredentials
+        ? (token: string) => driverCredentials.resolve(token)
+        : async () => null;
 
     app.decorateRequest('auth', null);
 
@@ -754,7 +702,13 @@ export async function registerAuth(
         commerce: (request, reply) => enforceCommerce(config.commerce, request, reply),
         mcp: (request, reply) => enforceMcp({ config, oauth, resolveUser }, request, reply),
         branch: (request, reply) => enforceBranch({ auth, store, leaseOrgOf }, request, reply),
-        worker: (request, reply) => enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply),
+        worker: (request, reply) =>
+            enforceWorker(
+                { auth, jobOrgOf, reclaimOrgOf, driverCredentialOf },
+                { pattern: patternOf(request) ?? '', token: bearer(request) },
+                request,
+                reply
+            ),
         user: (request, reply) =>
             enforceUser({ auth, store, resolveUser, operators: config.operatorGithubIds }, request, reply),
     };

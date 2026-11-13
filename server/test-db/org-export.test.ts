@@ -323,6 +323,8 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
         const KEPT = new Set([
             'attachment_upload.access_token_id',
             'connector_connection.credential',
+            // The id of a driver credential serving the org; the token's hash lives in driver_credential, never exported.
+            'driver_credential_org.credential_id',
             'env_var.is_secret',
             'env_var.secret_ref',
             'env_var.secret_version',
