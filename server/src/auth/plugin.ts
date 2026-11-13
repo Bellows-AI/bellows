@@ -12,7 +12,7 @@ import { withCaller } from '../mcp/server.js';
 import { originPermitted } from '../mcp/origin.js';
 import { challengeFor, resourceMetadataUrl } from './oauth-challenge.js';
 import type { OAuthStore } from './oauth-store.js';
-import { SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes, roleOf } from './route-class.js';
+import { OPERATOR_ROLE, SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes, roleOf } from './route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
 
@@ -616,15 +616,27 @@ async function scopeAllows(
 
 /**
  * The route-role check every user caller passes, whatever its credential: an `admin` row refuses a caller whose
- * membership is not admin, before the handler runs. A route with no row needs no role here — every human route has
- * one (`auth.enforcement.test.ts`), and an unmatched path must still reach the not-found handler. Answers true when
- * the request may continue.
+ * membership is not admin, and an `operator` row one whose GitHub account `operators` (OPERATOR_GITHUB_IDS) does not
+ * name, before the handler runs. A route with no row needs no role here — every human route has one
+ * (`auth.enforcement.test.ts`), and an unmatched path must still reach the not-found handler. Answers true when the
+ * request may continue.
  */
-async function roleAllows(caller: Caller, request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+async function roleAllows(
+    caller: Caller,
+    operators: readonly number[],
+    request: FastifyRequest,
+    reply: FastifyReply
+): Promise<boolean> {
     const pattern = patternOf(request);
-    if (pattern === undefined || roleOf(request.method, pattern) !== ADMIN_ROLE || caller.role === ADMIN_ROLE) {
-        return true;
+    const role = pattern === undefined ? undefined : roleOf(request.method, pattern);
+    if (role === OPERATOR_ROLE) {
+        if (operators.includes(caller.user.githubUserId)) return true;
+        await reply
+            .code(HTTP_FORBIDDEN)
+            .send({ error: 'Only the board operator can do this', code: ERROR_CODES.FORBIDDEN });
+        return false;
     }
+    if (role !== ADMIN_ROLE || caller.role === ADMIN_ROLE) return true;
     await reply
         .code(HTTP_FORBIDDEN)
         .send({ error: 'Only an organization admin can do this', code: ERROR_CODES.FORBIDDEN });
@@ -633,18 +645,19 @@ async function roleAllows(caller: Caller, request: FastifyRequest, reply: Fastif
 
 interface UserAuthDeps {
     auth: AuthConfig;
+    operators: readonly number[];
     store: AuthStore;
     resolveUser: (request: FastifyRequest) => Promise<Caller | null>;
 }
 
 async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const { auth, store, resolveUser } = deps;
+    const { auth, store, resolveUser, operators } = deps;
     // A request the MCP bridge injected carries its caller on the request class (bridge-binding.ts); a network
     // request cannot. It is THE credential: no cookie or bearer beside it is consulted.
     const bound = boundCallerOf(request.raw);
     if (bound) {
         if (!(await scopeAllows(auth, bound, request, reply))) return;
-        if (!(await roleAllows(bound, request, reply))) return;
+        if (!(await roleAllows(bound, operators, request, reply))) return;
         request.auth = { kind: 'user', caller: bound };
         return;
     }
@@ -657,7 +670,7 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
             // A personal token acts as its member, so it passes the same role check; an `oat_` reaches only its
             // read allowlist, and a refused bearer has already been answered.
             const tokenCaller = callerOf(request);
-            if (tokenCaller && !reply.sent) await roleAllows(tokenCaller, request, reply);
+            if (tokenCaller && !reply.sent) await roleAllows(tokenCaller, operators, request, reply);
             return;
         }
     }
@@ -671,7 +684,7 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
         await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
         return;
     }
-    if (!(await roleAllows(caller, request, reply))) return;
+    if (!(await roleAllows(caller, operators, request, reply))) return;
     request.auth = { kind: 'user', caller };
 }
 
@@ -705,7 +718,8 @@ export async function registerAuth(
         mcp: (request, reply) => enforceMcp({ config, oauth, resolveUser }, request, reply),
         branch: (request, reply) => enforceBranch({ auth, store, leaseOrgOf }, request, reply),
         worker: (request, reply) => enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply),
-        user: (request, reply) => enforceUser({ auth, store, resolveUser }, request, reply),
+        user: (request, reply) =>
+            enforceUser({ auth, store, resolveUser, operators: config.operatorGithubIds }, request, reply),
     };
     const enforce = (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
         const requirement = requirementOf(request);

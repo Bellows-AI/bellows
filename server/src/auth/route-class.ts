@@ -12,6 +12,13 @@
  */
 import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
 
+/**
+ * The board operator's role (`OPERATOR_GITHUB_IDS`): not a membership role but a deployment one, held by the named
+ * GitHub accounts whatever their org role — the routes that list, suspend, refuse and reactivate every organization.
+ */
+export const OPERATOR_ROLE = 'operator';
+export type RouteRole = Role | typeof OPERATOR_ROLE;
+
 export const SCOPES = ['factory:read', 'factory:write'] as const;
 export type Scope = (typeof SCOPES)[number];
 /**
@@ -31,7 +38,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     method: string,
     pattern: string,
     routeClass: RouteClass,
-    role: Role,
+    role: RouteRole,
 ])[] = [
     // A GET is a read; the two dry-run POSTs (a batch validation and a task preflight) change nothing and are reads.
     // Everything that touches a credential, secret, connection, provider authorization, membership or outbound
@@ -58,6 +65,11 @@ export const ROUTE_CLASSES: readonly (readonly [
     // The audit log names every member's actions: an admin read, never reachable by a scoped grant.
     ['GET', '/api/audit', 'none', ADMIN_ROLE],
     ['GET', '/api/batches', 'read', MEMBER_ROLE],
+    // The operator's surface spans every organization: never reachable by a scoped grant or by an org role.
+    ['GET', '/api/operator/orgs', 'none', OPERATOR_ROLE],
+    ['POST', '/api/operator/orgs/:id/suspend', 'none', OPERATOR_ROLE],
+    ['POST', '/api/operator/orgs/:id/refuse', 'none', OPERATOR_ROLE],
+    ['POST', '/api/operator/orgs/:id/activate', 'none', OPERATOR_ROLE],
     ['GET', '/api/batches/:id', 'read', MEMBER_ROLE],
     ['GET', '/api/batches/:id/report', 'read', MEMBER_ROLE],
     ['GET', '/api/commerce', 'read', MEMBER_ROLE],
@@ -181,7 +193,7 @@ const rowOf = (method: string, pattern: string) => TABLE.get(`${method === 'HEAD
 export const classOf = (method: string, pattern: string): RouteClass | undefined => rowOf(method, pattern)?.[0];
 
 /** The role a method on a registered pattern needs, the same lookup as `classOf`. */
-export const roleOf = (method: string, pattern: string): Role | undefined => rowOf(method, pattern)?.[1];
+export const roleOf = (method: string, pattern: string): RouteRole | undefined => rowOf(method, pattern)?.[1];
 
 /** The known scopes among stored ones; a scope this board does not know grants nothing. */
 export const grantedScopes = (stored: readonly string[]): Scope[] => SCOPES.filter((scope) => stored.includes(scope));

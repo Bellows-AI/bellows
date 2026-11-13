@@ -12,6 +12,8 @@ row.
 | Resolving the caller's org per request, `POST /api/auth/org` | `server/src/auth/plugin.ts`, `server/src/routes/auth.ts` | `server/test/auth.session.test.ts` |
 | Org selector in the app bar | `web/src/components/OrgSelector.tsx` | `web/test/org-selector.test.tsx` |
 | Refusal of retired org variables | `server/src/config.ts` | `server/test/config.org.test.ts` |
+| Org status (`active`, `suspended`, `refused`): create refusal (403 `ORG_INACTIVE`) and the claim's org filter, cloud only | `server/src/db/org-status.ts`, `server/migrations/140_organization_status.sql`, `server/src/db/jobs/job-store-claim.ts` | `server/test-db/org-status.test.ts` |
+| The operator (`OPERATOR_GITHUB_IDS`): `GET /api/operator/orgs`, `POST /api/operator/orgs/:id/(suspend\|refuse\|activate)`, `bellows operator …` | `server/src/routes/operator.ts`, `server/src/auth/route-class.ts`, `server/src/auth/plugin.ts`, `cli/src/operator.ts` | `server/test-db/operator-routes.test.ts`, `server/test/config.operator.test.ts`, `cli/test/operator.test.ts` |
 
 ## Invariants
 
@@ -40,3 +42,12 @@ row.
   organization per call** — the first decides whether a caller belongs to an org, the second
   whether the org a push names exists, so neither can start from `orgs.for()` (null on a database
   failure too). Every other store binds `orgId` at construction in `orgs.ts`.
+- **A cloud org is active from its first sign-in, on the Free plan**: no pending state, and never unlimited
+  (`plan-limits.ts`, `PLAN_DEFAULT_MAX_*`). Only the operator moves its status; a sign-in never does, and a refusal
+  is lifted only by an activate. `server/test-db/org-status.test.ts`.
+- **Status refuses new work only**: a create and the claim of a queued row; a missing org row is not active. A
+  running row's takeover is still offered, so a suspension never strands a live attempt. A self-hosted board reads no
+  status and refuses to boot with `OPERATOR_GITHUB_IDS`. `server/test-db/org-status.test.ts`.
+- **The operator is a deployment role, not an org role**: an `operator` row in `ROUTE_CLASSES` admits only a
+  GitHub id `OPERATOR_GITHUB_IDS` names, an org admin included in the refusal, and each change writes one
+  `actor_kind = 'operator'` audit row in the target org. `server/test-db/operator-routes.test.ts`.

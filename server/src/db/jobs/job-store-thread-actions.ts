@@ -4,7 +4,7 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
-import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
+import { type DeploymentMode, OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../connection-bindings.js';
 import { cancelWaitsWithEvent, insertAdminActionEvent } from './job-store-admin-event.js';
 import { addFollowUpBindings, bindOnCreate } from './job-store-connections.js';
@@ -26,6 +26,7 @@ import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import { authorOwnsFragment, terminalFragment, doneFragment, threadIdleFragment } from './job-store-sql-fragments.js';
 import type { CreatedRef, CreateTarget } from './job-store-action-types.js';
 import { PlanLimitError } from '../plan-limits.js';
+import { refuseInactiveOrg } from '../org-status.js';
 
 /** A workflow column's value: the JSON when a workflow was named, SQL null otherwise. */
 const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(value as never) : null);
@@ -46,7 +47,8 @@ async function refuseAtQueuedCap(tx: TransactionSql, orgId: string, cap: number 
 /**
  * The create's body (`createTitledJob`'s), for a caller that already holds a transaction: the batch scheduler creates
  * a task's root in the same transaction that records the decision to. `queuedCap` is the org plan's queued limit
- * the member's create is refused at; the batch scheduler passes none.
+ * the member's create is refused at, and `deploymentMode` refuses it for a cloud org that is not active
+ * (`org-status.ts`); the batch scheduler passes neither.
  */
 export async function insertJobInTx(
     tx: TransactionSql,
@@ -56,13 +58,21 @@ export async function insertJobInTx(
         createdBy,
         target,
         queuedCap,
-    }: { command: string; createdBy: string | null; target: CreateTarget; queuedCap?: number | undefined }
+        deploymentMode,
+    }: {
+        command: string;
+        createdBy: string | null;
+        target: CreateTarget;
+        queuedCap?: number | undefined;
+        deploymentMode?: DeploymentMode | undefined;
+    }
 ): Promise<CreatedRef> {
     const { sql, orgId } = ctx;
     const idem = target.idempotency;
     // A repeat of a recorded request answers the row it made, before anything else is decided.
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return { id: replayed, replayed: true };
+    if (deploymentMode) await refuseInactiveOrg(tx, orgId, deploymentMode);
     await refuseAtQueuedCap(tx, orgId, queuedCap);
     // id and root_job_id are the SAME uuid, computed once in the select so the column can
     // be not null from insert — the root's root is itself (022). The workflow triple rides

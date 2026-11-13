@@ -1,6 +1,8 @@
 import type { GateActivity, PrActivity } from './activity-types.js';
 import { batchRoutes } from './batch.js';
 import type { BatchRoutes } from './batch.js';
+import { operatorRoutes } from './operator-routes.js';
+import type { OperatorRoutes } from './operator-routes.js';
 import { attachRoutes } from './attach.js';
 import { preflightRoutes } from './diagnostics.js';
 import type { Preflight, PreflightSelection } from './diagnostics.js';
@@ -304,7 +306,7 @@ export interface BoardTaskPage {
     nextCursor: string | null;
 }
 
-export interface BoardClient extends BatchRoutes {
+export interface BoardClient extends BatchRoutes, OperatorRoutes {
     createJob(input: {
         command: string;
         repo?: string | undefined;
@@ -641,6 +643,7 @@ export function createBoardClient({
         ...readRoutes((path) => request(at(path), { headers: authHeaders() })),
 
         ...batchRoutes((path, init, onResponse) => request(at(path), init, onResponse), authHeaders),
+        ...operatorRoutes((path, init) => request(at(path), init), authHeaders),
 
         ...attachRoutes(request, authHeaders),
 

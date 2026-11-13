@@ -775,6 +775,9 @@ cloud="$(gh_render "${CLOUD_SETS[@]}")"
 expect_contains 'cloud mode renders DEPLOYMENT_MODE' "$(grep -A1 'name: DEPLOYMENT_MODE$' <<<"$cloud")" 'value: "cloud"'
 expect_contains 'cloud mode renders the Free plan limits' "$(grep -A1 'name: PLAN_DEFAULT_MAX_QUEUED$' <<<"$cloud")" \
     'value: "10"'
+operator="$(gh_render "${CLOUD_SETS[@]}" --set-string 'dashboard.operatorGithubIds=101\,202')"
+expect_contains 'the operator GitHub ids render as a comma list' \
+    "$(grep -A1 'name: OPERATOR_GITHUB_IDS$' <<<"$operator")" 'value: "101,202"'
 # The artifact store: the dashboard runs as its own ServiceAccount, which carries the IRSA
 # annotation, and the s3 backend refuses to render without a bucket.
 expect_contains 'the dashboard has its own ServiceAccount' "$gh" "serviceAccountName: $RELEASE-factory-dashboard"

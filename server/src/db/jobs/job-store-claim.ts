@@ -43,6 +43,7 @@ import type {
 import { type ClaimCandidateRow, rootRowFree, withClaimAttachments } from './job-store-claim-row.js';
 import { claimCommand } from '../follow-up-recap.js';
 import { claimPromptInput, resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
+import { activeOrgOf } from '../org-status.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from '../workflows/workflow-blocks/runtime.js';
 import {
     type WorkflowDefinition,
@@ -241,7 +242,7 @@ async function reserveCandidate(
     refusal: ClaimRefusal,
     takeoverOnly: boolean
 ): Promise<ReservedCandidate | null> {
-    const { sql, orgId, admission, batches } = ctx;
+    const { sql, orgId, admission, batches, deploymentMode } = ctx;
     const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
     const full = await fullScope(sql, admission, orgId);
     if (full === 'global') refusal.global = true;
@@ -272,7 +273,10 @@ async function reserveCandidate(
                   select 1 from job_integration_requirement q
                   where q.org_id = j.org_id and q.root_job_id = j.root_job_id and q.satisfied_at is null
               ))
-              and (j.status = 'running' or (${room}::boolean and ${repoRoom(sql, admission)}))
+              -- New work only from an active org (cloud; a missing org row is not active). A running row's
+              -- takeover is still offered: a suspension refuses new work and never strands a live attempt.
+              and (j.status = 'running' or (${room}::boolean and ${repoRoom(sql, admission)}
+                                            and ${activeOrgOf(sql, deploymentMode, 'j')}))
             order by ${awaitingTakeover(sql, 'j')} desc, coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
             limit 1
             -- Below the limit in the plan, so a row another claimer is reserving is skipped

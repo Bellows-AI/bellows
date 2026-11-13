@@ -7,6 +7,7 @@ import { canonical, IdempotencyKeyReusedError } from '../../db/jobs/job-store-id
 import type { IdempotentOperation } from '../../db/jobs/job-store-idempotency.js';
 import { bad, guard } from '../helpers.js';
 import { PlanLimitError } from '../../db/plan-limits.js';
+import { OrgInactiveError } from '../../db/org-status.js';
 import {
     HTTP_CONFLICT,
     HTTP_CREATED,
@@ -103,7 +104,8 @@ export async function guardKeyed<T>(
             if (
                 error instanceof ConnectionRefusedError ||
                 error instanceof AttachmentRefusedError ||
-                error instanceof PlanLimitError
+                error instanceof PlanLimitError ||
+                error instanceof OrgInactiveError
             ) {
                 return error;
             }
@@ -126,6 +128,15 @@ export async function guardKeyed<T>(
             code: ERROR_CODES.PLAN_LIMIT,
             limit,
             max,
+        });
+        return { ok: false };
+    }
+    if (result.value instanceof OrgInactiveError) {
+        const { status } = result.value;
+        await reply.code(HTTP_FORBIDDEN).send({
+            error: `The organization is ${status ?? 'not registered'}; it takes no new tasks`,
+            code: ERROR_CODES.ORG_INACTIVE,
+            status,
         });
         return { ok: false };
     }
