@@ -1,7 +1,6 @@
 # Organizations
 
-An organization is one GitHub App installation: it owns the repo list and partitions every stored
-row.
+An organization is one GitHub App installation: it owns the repo list and partitions every stored row.
 
 | Concern | Code | Test |
 | --- | --- | --- |
@@ -16,16 +15,15 @@ row.
 | The operator (`OPERATOR_GITHUB_IDS`): `GET /api/operator/orgs`, `POST /api/operator/orgs/:id/(suspend\|refuse\|activate\|delete)`, `bellows operator …` | `server/src/routes/operator.ts`, `server/src/auth/route-class.ts`, `server/src/auth/plugin.ts`, `cli/src/operator.ts` | `server/test-db/operator-routes.test.ts`, `server/test/config.operator.test.ts`, `cli/test/operator.test.ts` |
 | Suspension hands running attempts back (heartbeat `release`, interrupt `orgSuspended`); `installation` deleted/suspend/unsuspend | `server/src/db/org-status.ts`, `server/src/db/jobs/job-store-worker.ts`, `server/src/routes/webhook.ts`, `server/migrations/142_organization_delete_after.sql`, `driver/src/loop/loop-attempt.ts` | `server/test-db/org-suspend-interrupt.test.ts`, `server/test/webhook.test.ts`, `driver/test/loop/org-suspended.test.ts` |
 | Delete with purge (`org_purge`): secrets by owner; objects once fenced writes drained; the org row's cascade | `server/src/db/org-purge.ts`, `server/src/db/object-write-fence.ts`, `server/migrations/143_org_purge.sql`, `server/src/artifacts/object-store.ts` (`list`) | `server/test-db/org-purge{,.fence}.test.ts`, `server/test/artifacts.list-answers.test.ts` |
+| Export (`GET /api/org/export`, admin, audited `org.export`): a tar of NDJSON pages per registered table, then the org's object bodies | `server/src/db/org-export.ts`, `server/src/routes/org-export.ts`, `server/src/tar.ts`, `server/src/artifacts/object-store.ts` (`list` `after`) | `server/test-db/org-export.test.ts`, `server/test/artifacts.object-store.test.ts` |
 
 ## Invariants
 
-- **The org id IS the installation id** (a decimal string) and the name is the installation
-  account's login, rewritten on every sign-in — nothing keys on the label. The id passes 010's
-  `organization_id_ck` (`^[a-z0-9][a-z0-9_-]{0,38}$`).
-- **The org is a property of the caller, not of the process.** A session row and a personal token
-  each carry one, re-checked through the `org_membership` join on every request, so a GitHub-side
-  removal ends a credential's reach ([auth.md](auth.md)). The driver holds no org-bound credential:
-  the shared board secret names a process, and the org comes from the job row.
+- **The org id IS the installation id** (a decimal string) and the name is the installation account's login,
+  rewritten on every sign-in — nothing keys on the label. The id passes 010's `organization_id_ck` (`^[a-z0-9][a-z0-9_-]{0,38}$`).
+- **The org is a property of the caller, not of the process.** A session row and a personal token each carry one,
+  re-checked through the `org_membership` join on every request, so a GitHub-side removal ends a credential's reach
+  ([auth.md](auth.md)). The driver holds no org-bound credential: the shared board secret names a process, and the org comes from the job row.
 - **`org_id` leads every org-owned primary key** — a query always knows its organization, so the
   key is a prefix scan rather than a filter. Org-owned-but-user-less rows (an org executor profile,
   an org workflow) are a NULL `user_id` in the same table as the personal ones.
@@ -58,3 +56,5 @@ row.
 - **A purge is never reported done and never touches an active org**: only a `suspended`/`refused` org is queued (an
   operator delete; `delete_after` passing, cloud only) and re-checked under lock; an unconfirmed list, delete or collect
   retries from its step (`last_error`). The org row and `org_purge` go together; one `org.purged` log line remains.
+- **An export holds one org, no secret and no held connection**: every `ORG_TABLES` table read by `org_id` in short
+  primary-key pages; credential columns dropped (`EXPORT_OMITTED_COLUMNS`), secrets as refs; a failed read ends it unclosed.

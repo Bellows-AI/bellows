@@ -128,4 +128,21 @@ describe.each(BACKENDS)('object store contract: $name', ({ make, prefix, skip })
         expect(await store.list(`${prefix}${org}/`)).toEqual([]);
         expect(await store.list(`${prefix}${org}0/`)).toEqual([neighbour]);
     });
+
+    it.skipIf(skip)('pages a namespace in key order: each page resumes after the last key it saw', async () => {
+        const { store } = await fresh();
+        const org = `org-${randomUUID().slice(0, 8)}`;
+        const keys = [0, 1, 2, 3, 4].map((offset) => chunkKey(prefix, org, REF, offset));
+        for (const key of keys) await store.put(key, bytes('x'));
+
+        const seen: string[] = [];
+        let page = await store.list(`${prefix}${org}/`, { limit: 2 });
+        while (page.length) {
+            seen.push(...page);
+            page = await store.list(`${prefix}${org}/`, { limit: 2, after: page.at(-1) });
+        }
+        expect(seen).toEqual(keys);
+
+        for (const key of keys) await store.delete(key);
+    });
 });

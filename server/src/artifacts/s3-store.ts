@@ -183,6 +183,7 @@ export function createS3Store(options: S3Options): S3Store {
             url.searchParams.set('list-type', '2');
             url.searchParams.set('prefix', prefix);
             url.searchParams.set('max-keys', String(call?.limit ?? LIST_LIMIT));
+            if (call?.after !== undefined) url.searchParams.set('start-after', call.after);
             const response = await send('GET', url, { signal: call?.signal });
             if (response.status !== HTTP_OK) return fail('LIST', response);
             const keys = keysOfListing(await response.text());

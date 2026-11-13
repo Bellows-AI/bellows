@@ -394,6 +394,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
         '/api/org/members/removed',
         '/api/org/members/removed/:userId',
         '/api/org/members/invitations',
+        '/api/org/export',
         '/api/audit',
         '/api/operator/orgs',
         '/api/operator/orgs/:id/suspend',

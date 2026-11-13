@@ -40,6 +40,28 @@ describe('S3 list answers', () => {
         expect(await s3(listing('<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated>')).list('p/')).toEqual([]);
     });
 
+    it('resumes a page after a key with start-after', async () => {
+        const calls: string[] = [];
+        const store = createS3Store({
+            bucket: 'bkt',
+            region: 'us-east-1',
+            endpoint: 'http://s3.test',
+            forcePathStyle: true,
+            kmsKeyId: '',
+            credentials: async () => ({ accessKeyId: 'a', secretAccessKey: 'b' }),
+            fetch: (async (url: string | URL) => {
+                calls.push(String(url));
+                return new Response(listing('<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated>'), {
+                    status: 200,
+                });
+            }) as typeof fetch,
+        });
+        await store.list('p/', { after: 'p/a' });
+        await store.list('p/');
+        expect(new URL(calls[0]!).searchParams.get('start-after')).toBe('p/a');
+        expect(new URL(calls[1]!).searchParams.has('start-after')).toBe(false);
+    });
+
     it.each([
         ['a cut-off body', '<ListBucketResult><Contents>'],
         [
@@ -105,6 +127,21 @@ describe('GCS list answers', () => {
         });
         expect(await store.list('p/')).toEqual(['p/a']);
         expect(new URL(calls[0]!).searchParams.get('fields')).toBe('kind,nextPageToken,items(name)');
+    });
+
+    it('resumes a page after a key: startOffset names it, and the key itself is not answered again', async () => {
+        const calls: string[] = [];
+        const store = createGcsStore({
+            bucket: 'bkt',
+            kmsKey: '',
+            token: async () => 'tok',
+            fetch: (async (url: string) => {
+                calls.push(String(url));
+                return Response.json({ kind: 'storage#objects', items: [{ name: 'p/a' }, { name: 'p/b' }] });
+            }) as typeof fetch,
+        });
+        expect(await store.list('p/', { after: 'p/a' })).toEqual(['p/b']);
+        expect(new URL(calls[0]!).searchParams.get('startOffset')).toBe('p/a');
     });
 
     it('reads a listing with no items as empty', async () => {

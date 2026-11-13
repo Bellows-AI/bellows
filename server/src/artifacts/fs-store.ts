@@ -162,9 +162,11 @@ export function createFilesystemStore(root: string): ObjectStore {
                 throw error;
             }
             options?.signal?.throwIfAborted();
+            const after = options?.after;
             return entries
                 .filter((entry) => entry.isFile())
                 .map((entry) => relative(base, join(entry.parentPath, entry.name)).split(sep).join('/'))
+                .filter((key) => after === undefined || key > after)
                 .sort()
                 .slice(0, options?.limit ?? LIST_LIMIT);
         },

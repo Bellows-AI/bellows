@@ -19,7 +19,8 @@ export interface ObjectStore {
     delete(key: string): Promise<void>;
     /**
      * Up to `limit` (default `LIST_LIMIT`) keys that start with `prefix`, a `/`-terminated namespace such as one
-     * org's (`org-purge.ts`). An empty answer is a confirmed empty namespace; a failed call rejects, never answers [].
+     * org's (`org-purge.ts`), in key order. An empty answer is a confirmed empty namespace (past `after`, when given);
+     * a failed call rejects, never answers [].
      */
     list(prefix: string, options?: ListOptions): Promise<string[]>;
 }
@@ -28,6 +29,8 @@ export const LIST_LIMIT = 1000;
 
 export interface ListOptions extends ObjectCallOptions {
     limit?: number | undefined;
+    /** Only keys after this one: the last key of the previous page, so a caller walks a namespace page by page. */
+    after?: string | undefined;
 }
 
 /** A call that must end by a deadline passes a signal; an aborted call rejects and writes nothing further. */

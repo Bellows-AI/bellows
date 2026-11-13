@@ -144,11 +144,14 @@ export function createGcsStore(options: GcsOptions): ObjectStore {
                 maxResults: String(call?.limit ?? LIST_LIMIT),
                 fields: 'kind,nextPageToken,items(name)',
             });
+            // GCS's `startOffset` is inclusive: the key itself comes back and is dropped here.
+            const after = call?.after;
+            if (after !== undefined) query.set('startOffset', after);
             const response = await send('GET', `${objectsUrl}?${query}`, { signal: call?.signal });
             if (response.status !== HTTP_OK) return fail('LIST', response);
             const names = namesOfListing(await response.json().catch(() => undefined));
             if (!names) throw new GcsError('LIST', response.status, 'not a complete listing');
-            return names;
+            return after === undefined ? names : names.filter((name) => name !== after);
         },
     };
 }

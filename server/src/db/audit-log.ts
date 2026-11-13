@@ -26,7 +26,8 @@ export type AuditAction =
     | 'org.suspend'
     | 'org.refuse'
     | 'org.activate'
-    | 'org.delete';
+    | 'org.delete'
+    | 'org.export';
 
 /** Names and flags only: a value here is never a token, secret or credential. */
 export type AuditDetail = Readonly<Record<string, string | number | boolean | null | readonly string[]>>;

@@ -46,6 +46,7 @@ describe('the route classes (what a scoped caller may do)', () => {
                 'DELETE /api/org/members/:userId',
                 'DELETE /api/org/members/removed/:userId',
                 'GET /api/audit',
+                'GET /api/org/export',
                 'GET /api/org/members',
                 'GET /api/org/members/invitations',
                 'GET /api/org/members/removed',
