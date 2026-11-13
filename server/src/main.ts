@@ -5,6 +5,7 @@ import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createUploadCapabilityStore, type UploadCapabilityStore } from './attachments/upload-capability-store.js';
 import { createOAuthStore, type OAuthStore } from './auth/oauth-store.js';
 import { startOAuthSweep } from './auth/oauth-sweep.js';
+import { membershipGuardFor } from './auth/membership-guard.js';
 import { createAuthStore } from './auth/store.js';
 import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
@@ -286,6 +287,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
     // always somewhere for accounts to live. buildApp's optional `auth` is for the route tests.
     const authStore = createAuthStore({ sql, ready });
+    // GitHub's membership answer in front of the store: sign-in verdicts, the token-path re-check and its pass.
+    const membership = membershipGuardFor(config, { sql, ready, store: authStore });
     const identity = config.auth.mode === 'github' ? createGitHubIdentityClient(config.auth) : undefined;
 
     if (config.auth.mode === 'github') {
@@ -332,7 +335,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         store,
         secrets,
         integrations: { ...integrations, configured: jira.configured },
-        auth: authStore,
+        auth: membership.store,
         ...mcp,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
@@ -358,6 +361,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     startRecovery({ config, orgs, metrics, ready, integrations, track: stops.add });
 
     startDeliveries({ config, orgs, metrics, ready, track: stops.add });
+    void ready.then(() => stops.add(() => membership.start(metrics.timedPass)));
 
     await app.listen({ port: config.port, host: config.host });
 

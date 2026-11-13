@@ -121,9 +121,11 @@ A secret a task can read is a secret the agent can use, and a prompt could ask i
 
 The chart has no open mode. An unauthenticated `POST /api/jobs` would be remote code execution, so the Ingress is off by default and you enable it on purpose.
 
-Sign-in uses the OAuth App with the `read:org` scope and reads no repository data. Access follows installation membership, re-checked on every request. A removed membership ends sessions and tokens on the next request. With the webhook configured (see [Create the GitHub App](/self-host/github-app)), a GitHub-side removal takes effect as soon as GitHub reports it. Without it, it waits for that person's next sign-in.
+Sign-in uses the OAuth App with the `read:org` scope and reads no repository data. Access follows installation membership, re-checked on every request. A removed membership ends sessions and tokens on the next request. With the webhook configured (see [Create the GitHub App](/self-host/github-app)), a GitHub-side removal takes effect as soon as GitHub reports it. Without it, Bellows asks GitHub again (the App's Members read permission) when a session or personal token is used more than 10 minutes after the last answer, and every 5 minutes for idle ones, so a removed person is refused within 10 minutes of their next request. Bellows removes access only when GitHub confirms the person is not a member. A failed, slow or unexpected answer removes nothing.
 
-The first member of an organization is its admin. Demoting the last admin is refused.
+A GitHub organization owner is an admin, and so is the account a user installation belongs to. An installation that has not yet accepted the Members permission keeps the older rule: the first member to sign in is the admin. Bellows never demotes an admin on GitHub's word, and demoting the last admin is refused.
+
+When an admin removes a member, the removal sticks: signing in again does not bring the membership back until an admin restores it.
 
 Only an admin can mint, list or revoke organization access tokens, save organization or repository variables and secrets, change member roles, or manage organization executors, skills and notifications. A member's session or personal access token gets `403` there. Every member manages their own personal tokens, workspace variables, executors, skills and notifications.
 

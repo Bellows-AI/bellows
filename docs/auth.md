@@ -19,6 +19,7 @@ Who a caller is, and which credential each route accepts.
 | Roster reads and role writes | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
 | Commerce plan push: `commerce` requirement, bearer `COMMERCE_TOKEN`, enforced in both `AUTH_MODE`s (`enforceCommerce`; [commerce.md](commerce.md)) | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/routes.commerce.test.ts` |
 | GitHub-side removal, signed webhook | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
+| Membership re-check (App `Members: read`): at sign-in, on a session or `fat_` past `MEMBERSHIP_TTL_MS` (10 min), in a 5-minute pass; owner to admin; an admin's removal block and its restore | `server/src/auth/membership.ts`, `server/src/auth/membership-guard.ts`, `server/src/auth/membership-store.ts`, `server/migrations/137_membership_recheck.sql` | `server/test/auth.membership-reader.test.ts`, `server/test-db/auth-membership.test.ts` |
 | Sign-in in a real browser | `e2e/auth.spec.ts`, `e2e/stub-idp.mjs`, `e2e/signin.ts` | the `auth` Playwright project (`playwright.config.ts`) |
 
 See also [organizations.md](organizations.md), [configuration.md](configuration.md), [security.md](security.md), [api.md](api.md).
@@ -31,8 +32,18 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
 - **Every credential's reach is a live `org_membership` join** (`findSession`, `findPersonalToken`,
   `findOrgToken`), so a removed membership ends sessions and both token kinds on the next request.
   `server/test-db/auth-store.access-tokens.test.ts`.
-- **An org's first membership lands `admin`**; demoting the last admin is `409 LAST_ADMIN`.
-  `server/test/routes.org-members.test.ts`.
+- **Admin is the GitHub owner where the installation grants `Members: read`**: an active `admin` org role, or a
+  user installation's own account, lands `admin` at sign-in and at the re-check; nothing GitHub says demotes. Where
+  GitHub gave no membership answer (permission not accepted yet, or unconfirmed) an org's first membership lands
+  `admin`. Demoting the last admin is `409 LAST_ADMIN`. `server/test/routes.org-members.test.ts`,
+  `server/test-db/auth-membership.test.ts`.
+- **Only a confirmed non-membership revokes.** A 404 counts once the org login and the user id are confirmed to
+  name who was asked; a 403, other status, timeout or malformed body is `unknown`, stamps `checked_at` and revokes
+  nothing. A confirmed one deletes the membership, the account's sessions in that org and revokes its personal
+  tokens in one transaction. A stale check alone never refuses. `server/test/auth.membership-reader.test.ts`.
+- **An admin's removal is a block row** (`org_membership_removal`): sign-in materializes no membership for a blocked
+  `(org, user)`, so the bootstrap cannot promote it, until a restore deletes the row. Removing the last admin is
+  refused. `server/test-db/auth-membership.test.ts`.
 - **The role a route needs is its `ROUTE_CLASSES` row's 4th column**, checked once in the auth hook for every user
   caller (cookie, `fat_`, bridged): an `admin` row is `403` to a member before the handler runs. `admin` is the
   org-wide administration (org tokens, org and repository env, the roster, org executors, skills and notification
@@ -103,3 +114,5 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   agent runs ([security.md](security.md)).
 - Org `member_removed` events fire for organization installations only; a user-account removal is caught one
   sign-in late by the selection sweep.
+- An MCP `mat_` is not re-checked against GitHub itself; it ends through the membership join once a re-check of
+  that member's session or token, the pass, or a sign-in deletes the membership.

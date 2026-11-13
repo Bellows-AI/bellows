@@ -168,7 +168,7 @@ async function resolveCallbackCaller(
         await redirectToInstallPage(ctx, request, reply, returnTo);
         return { kind: 'handled' };
     }
-    const reported = installations.map((install) => ({ id: install.id, name: install.account ?? install.id }));
+    const reported = installations.map(({ id, account, ...kind }) => ({ id, name: account ?? id, ...kind }));
     // The account's stored choice, intersected with what GitHub still reports — the membership
     // rows ARE the stored selection, and the sweep has already kept it honest. Anything
     // GitHub stopped reporting drops out here.
