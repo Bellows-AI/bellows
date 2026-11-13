@@ -1,13 +1,13 @@
 # Why a collector at all, when the server could receive OTLP directly:
 #   - it speaks both grpc (4317) and http (4318), so the agent's protocol choice stops
 #     mattering, and http/json is the least-exercised OTLP encoding;
-#   - it batches and retries across a dashboard restart, so a `docker compose up --build`
+#   - it queues and retries across a dashboard restart, so a `docker compose up --build`
 #     does not lose a session's metrics;
 #   - it is a second place to drop anything sensitive, independent of the server's allowlist.
 
-# Each export's attempt credential (x-factory-job-id + x-factory-ingest-token, rendered into the
-# runner's telemetry config) is kept as client metadata by the receivers (include_metadata), keys
-# the batch, and is written back onto the dashboard request here: the board resolves every export's
+# Each export's attempt credential (x-factory-job-id + x-factory-ingest-token, the headers every
+# runner export carries) is kept as client metadata by the receivers (include_metadata) and
+# is written back onto the dashboard request here: the board resolves every export's
 # organization from it and refuses one without it.
 extensions:
     headers_setter:
@@ -30,13 +30,6 @@ receivers:
                 include_metadata: true
 
 processors:
-    # One batch per attempt: the credential headers are the batch key, so an export never carries
-    # one attempt's points under another's credential.
-    batch:
-        timeout: 5s
-        send_batch_size: 512
-        metadata_keys: [x-factory-job-id, x-factory-ingest-token]
-
     # Defence in depth. The server's ATTR_ALLOWLIST is the real guarantee, but dropping
     # identity here means it never crosses the container boundary either.
     attributes/strip-identity:
@@ -83,6 +76,13 @@ exporters:
             max_elapsed_time: 300s
         auth:
             authenticator: headers_setter
+        # No batch processor anywhere: one keyed on the credential headers keeps a partition per
+        # attempt for the collector's whole life and refuses data past its cardinality limit, and
+        # one keyed on nothing drops the request context the headers ride. Each export instead
+        # goes out as it came in; this queue buffers and retries it with its own context (0.161.0:
+        # a 503 is retried under the same attempt's headers). Stated, never left to a default.
+        sending_queue:
+            enabled: true
 
 service:
     extensions: [headers_setter]
@@ -92,9 +92,9 @@ service:
     pipelines:
         metrics:
             receivers: [otlp]
-            processors: [filter/drop-cost, attributes/strip-identity, batch]
+            processors: [filter/drop-cost, attributes/strip-identity]
             exporters: [otlp_http/dashboard]
         logs:
             receivers: [otlp]
-            processors: [attributes/strip-identity, batch]
+            processors: [attributes/strip-identity]
             exporters: [otlp_http/dashboard]

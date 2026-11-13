@@ -16,12 +16,7 @@ import { type BoardJob, UUID_SHAPE } from '../board/board.js';
 import type { DriverConfig } from '../config.js';
 import { containerName, dockerArgs, parseDockerServicePs, parseDockerStats } from './docker.js';
 import { CONTAINER_GONE } from '../exec-codes.js';
-import {
-    telemetryConfig,
-    telemetryConfigTar,
-    telemetryCopyTarget,
-    telemetryCredentialOf,
-} from '../telemetry-config.js';
+import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from '../telemetry-config.js';
 import {
     composeRuntimeSample,
     type GroupTakenAway,
@@ -561,7 +556,7 @@ export async function createRunnerContainer(
     const { config, execDocker, teardown } = deps;
     try {
         await execDocker(dockerArgs(config, job, session, options));
-        const telemetry = telemetryConfig(job.executorType, config.otelEndpoint, telemetryCredentialOf(job));
+        const telemetry = telemetryConfig(job.executorType, config.otelEndpoint);
         await execDocker(['cp', '-', `${containerName(job)}:${telemetryCopyTarget(telemetry)}`], {
             input: telemetryConfigTar(telemetry),
         });

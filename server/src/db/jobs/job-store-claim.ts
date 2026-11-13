@@ -436,6 +436,9 @@ async function acquireCandidate(
                 -- still holding it is told to retry with the current pair, never refused for good. A claim of a
                 -- queued row supersedes no running attempt.
                 prior_lease_token = case when status = 'running' then lease_token else null end,
+                -- The telemetry export credential (144): never rotated, so an adopted runner keeps exporting
+                -- under it; minted here only for a row from before the column that holds none.
+                ingest_token     = coalesce(ingest_token, gen_random_uuid()),
                 -- A lost attempt is recorded, not spent: the interruption names the claim it
                 -- supersedes, so an adoption of that claim's runner is the same disruption.
                 attempts         = attempts + case when ${recovering} then 0 else 1 end,

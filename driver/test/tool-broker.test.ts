@@ -235,6 +235,22 @@ describe('the tool broker', () => {
         });
     });
 
+    // The CLI's OTLP exporter reads the attempt's telemetry credential from its environment; a
+    // command the agent runs must never see it, under any of the OTLP spec's header variables.
+    it('never passes the telemetry export credential to a tool', () => {
+        const env = broker.toolEnv({
+            PATH: '/usr/bin',
+            OTEL_EXPORTER_OTLP_HEADERS: 'x-factory-job-id=j,x-factory-ingest-token=t',
+            OTEL_EXPORTER_OTLP_METRICS_HEADERS: 'x-factory-ingest-token=t',
+            OTEL_EXPORTER_OTLP_LOGS_HEADERS: 'x-factory-ingest-token=t',
+            OTEL_EXPORTER_OTLP_TRACES_HEADERS: 'x-factory-ingest-token=t',
+            OTEL_EXPORTER_OTLP_ENDPOINT: 'http://collector:4318',
+        });
+        expect(Object.keys(env).filter((name) => name.includes('HEADERS'))).toEqual([]);
+        expect(JSON.stringify(env)).not.toContain('x-factory-ingest-token');
+        expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('http://collector:4318');
+    });
+
     it('streams stdout, stderr and the exit code back byte for byte', async () => {
         const { socket } = await startBroker();
         const ran = await settled(client(socket, ['-c', 'printf "a\\000b\\n"; printf oops >&2; exit 3']));

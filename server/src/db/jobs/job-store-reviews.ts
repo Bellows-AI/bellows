@@ -254,6 +254,8 @@ async function leaseRunning(
     await tx`
         update job set
             lease_token = gen_random_uuid(),
+            -- Never rotated (144); minted only for a review row from before the column.
+            ingest_token = coalesce(ingest_token, gen_random_uuid()),
             claim_seq = claim_seq + 1,
             claimed_by = ${caller.claimed_by},
             lease_expires_at = ${caller.lease_expires_at},

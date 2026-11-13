@@ -192,10 +192,12 @@ else
 fi
 
 ENDPOINT=http://collector.example:4318
-# The driver's own rendering (driver/src/telemetry-config.ts), with a stand-in attempt credential.
+# The driver's own rendering (driver/src/telemetry-config.ts), which names no credential: the
+# attempt's rides the CLI's environment, here a stand-in pair.
 PROBE_JOB_ID=11111111-1111-4111-8111-111111111111
 PROBE_INGEST_TOKEN=33333333-3333-4333-8333-333333333333
-OTEL_RENDER="import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('opencode', process.env.ENDPOINT, { jobId: '$PROBE_JOB_ID', ingestToken: '$PROBE_INGEST_TOKEN' })));"
+PROBE_HEADERS="x-factory-job-id=$PROBE_JOB_ID,x-factory-ingest-token=$PROBE_INGEST_TOKEN"
+OTEL_RENDER="import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('opencode', process.env.ENDPOINT)));"
 if id="$(docker create --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$IMAGE" -c \
     'f="$OPENCODE_OTEL_CONFIG_PATH"; node -p "require(\"$f\").endpoint" | tr "\n" " "; printf "%s " "$(stat -c %u:%g "$f")"; if (: >> "$f") 2>/dev/null; then echo rw; else echo ro; fi')" &&
     (cd "$REPO" && ENDPOINT="$ENDPOINT" npx --no-install tsx -e \
@@ -212,10 +214,12 @@ else
     bad 'the driver-rendered otel.json carries its endpoint, root-owned and read-only' "$rendered"
 fi
 
-# The plugin's own export must carry the attempt credential the rendered otel.json names: the
-# collector forwards those two headers and the board resolves the export's organization from them.
-# A real run against the scripted model, exporting to a sink inside the container that logs the
-# headers of every request it receives.
+# The plugin's own export must carry the attempt credential: the collector forwards those two
+# headers and the board resolves the export's organization from them. The plugin reads headers from
+# its otel.json alone, so the entrypoint copies the root-owned one with OTEL_EXPORTER_OTLP_HEADERS
+# merged in under the CLI's HOME, 0600 in a 0700 directory, and points the plugin at the copy.
+# A real run through the agent's entrypoint against the scripted model, exporting to a sink inside
+# the container that logs the headers of every request it receives.
 fake_out="$(mktemp)"
 node "$REPO/scripts/fake-model-endpoint.mjs" >"$fake_out" &
 fake_pid=$!
@@ -223,9 +227,11 @@ for _ in $(seq 1 40); do [ -s "$fake_out" ] && break; sleep 0.25; done
 fake_port="$(cat "$fake_out")"
 fake_config="$(printf '{"model":"anthropic/fake-model","provider":{"anthropic":{"options":{"baseURL":"http://host.docker.internal:%s/v1","apiKey":"fake-key"},"models":{"fake-model":{"name":"fake-model","tool_call":true,"limit":{"context":200000,"output":8192}}}}}}' "$fake_port")"
 SINK='require("http").createServer((q, r) => { console.log("SINK:" + q.url + ":" + q.headers["x-factory-job-id"] + ":" + q.headers["x-factory-ingest-token"]); q.resume(); q.on("end", () => r.end("{}")); }).listen(4999)'
-if id="$(docker create --cap-drop ALL --security-opt no-new-privileges --add-host host.docker.internal:host-gateway \
+if id="$(docker create --user 0:0 --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges \
+    --add-host host.docker.internal:host-gateway -e WORKDIR=/tmp -e "OTEL_EXPORTER_OTLP_HEADERS=$PROBE_HEADERS" \
     -e "OPENCODE_CONFIG_CONTENT=$fake_config" -w /tmp --entrypoint sh "$IMAGE" -c \
-    "node -e '$SINK' & sleep 1; timeout 90 opencode run probe >/dev/null 2>&1; sleep 3")" &&
+    "node -e '$SINK' & sleep 1; timeout 90 /usr/local/bin/factory-launch /usr/local/bin/opencode-executor run probe >/dev/null 2>&1; sleep 3
+     echo PRIVATE:\$(/usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups stat -c %a:%U /home/node/.factory-otel /home/node/.factory-otel/otel.json | tr '\n' ' ')")" &&
     (cd "$REPO" && ENDPOINT=http://127.0.0.1:4999 npx --no-install tsx -e "$OTEL_RENDER") | docker cp - "$id:/etc"; then
     sinks="$(docker start -a "$id" 2>&1)"
 else
@@ -238,6 +244,12 @@ if [[ "$sinks" == *"SINK:/v1/metrics:$PROBE_JOB_ID:$PROBE_INGEST_TOKEN"* ]]; the
     ok "the plugin's metric export carries the attempt's job id and ingest token headers"
 else
     bad "the plugin's metric export carries the attempt's job id and ingest token headers" "${sinks:0:400}"
+fi
+private="$(printf '%s\n' "$sinks" | grep '^PRIVATE:')"
+if [ "$private" = "PRIVATE:700:node 600:node" ]; then
+    ok "the credentialed otel.json copy is the CLI uid's alone"
+else
+    bad "the credentialed otel.json copy is the CLI uid's alone" "$private"
 fi
 
 # The per-run allows, read from the config opencode actually runs with (`debug config`, through

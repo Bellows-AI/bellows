@@ -13,10 +13,14 @@
  * Deliberate copies (driver/ imports nothing from the rest of the repo);
  * `driver/test/telemetry-shipping.test.ts` pins each to its image's file.
  *
- * The rendered file also carries the attempt's export credential — its job id and the claim's
- * ingest token — as OTLP request headers, which the collector forwards per request to the board.
- * The baked files carry none: a hand-run container has no attempt to name. The file is written
- * once, at container creation, which is why the board never rotates the ingest token.
+ * Neither file names a credential: both are world-readable, and a tool runs as a uid of the CLI's
+ * group. The attempt's export credential — its job id and the claim's ingest token — rides the
+ * CLI's environment as OTEL_EXPORTER_OTLP_HEADERS (`otlpHeaders`; the per-attempt env file or
+ * Secret, or a review's own env): claude reads it there, managed settings leaving it unset; the
+ * opencode entrypoint copies the root-owned otel.json with the headers merged in under the CLI's
+ * HOME, 0600, because the plugin reads headers from its file alone. The tool broker withholds the
+ * variable from every command. The env is fixed at container creation, which is why the board never
+ * rotates the ingest token.
  */
 import { CLAUDE_CODE, OPENCODE, type ExecutorType } from './executors.js';
 
@@ -26,23 +30,23 @@ export interface TelemetryCredential {
     ingestToken: string;
 }
 
-/** A claimed job's credential: its id and the ingest token its claim carries. */
-export const telemetryCredentialOf = (job: { id: string; ingestToken: string }): TelemetryCredential => ({
-    jobId: job.id,
-    ingestToken: job.ingestToken,
-});
-
-/** The two request headers, in the order both renderings write them. */
-const credentialHeaders = ({ jobId, ingestToken }: TelemetryCredential): [string, string][] => [
-    ['x-factory-job-id', jobId],
-    ['x-factory-ingest-token', ingestToken],
+/** The CLI's env name the credential rides, reserved from every claim value (claim.ts). */
+export const OTLP_HEADERS_ENV = 'OTEL_EXPORTER_OTLP_HEADERS';
+/** Every OTLP header variable: a claim value under any of them would replace or add to the credential. */
+export const OTLP_HEADER_ENV_NAMES: readonly string[] = [
+    OTLP_HEADERS_ENV,
+    'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
+    'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
+    'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
 ];
 
 /** `OTEL_EXPORTER_OTLP_HEADERS`: the OTLP spec's `key=value,key=value` list; both values are uuids, so nothing needs escaping. */
-export const otlpHeaders = (credential: TelemetryCredential): string =>
-    credentialHeaders(credential)
-        .map(([key, value]) => `${key}=${value}`)
-        .join(',');
+export const otlpHeaders = ({ jobId, ingestToken }: TelemetryCredential): string =>
+    `x-factory-job-id=${jobId},x-factory-ingest-token=${ingestToken}`;
+
+/** A claimed job's headers list: its id and the ingest token its claim carries. */
+export const otlpHeadersOf = (job: { id: string; ingestToken: string }): string =>
+    otlpHeaders({ jobId: job.id, ingestToken: job.ingestToken });
 
 const READ_ONLY = 0o444;
 const DIRECTORY = 0o755;
@@ -50,7 +54,7 @@ const DIRECTORY = 0o755;
 /** The agent CLI's shell in both executor images (docker/executor-common/tool-bash.sh). */
 const TOOL_SHELL = '/usr/local/libexec/factory-tool/bash';
 
-export function claudeManagedSettings(endpoint: string, credential: TelemetryCredential): string {
+export function claudeManagedSettings(endpoint: string): string {
     const settings = {
         $schema: 'https://json.schemastore.org/claude-code-settings.json',
         env: {
@@ -59,7 +63,6 @@ export function claudeManagedSettings(endpoint: string, credential: TelemetryCre
             OTEL_LOGS_EXPORTER: 'otlp',
             OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
             OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
-            OTEL_EXPORTER_OTLP_HEADERS: otlpHeaders(credential),
             OTEL_METRIC_EXPORT_INTERVAL: '10000',
             OTEL_METRICS_INCLUDE_ACCOUNT_UUID: 'false',
             OTEL_LOG_USER_PROMPTS: '0',
@@ -111,11 +114,8 @@ export function claudeManagedSettings(endpoint: string, credential: TelemetryCre
     return `${JSON.stringify(settings, null, 4)}\n`;
 }
 
-export function opencodeOtelConfig(endpoint: string, credential: TelemetryCredential): string {
-    // The plugin reads `headers` from this file alone (never OTEL_EXPORTER_OTLP_HEADERS) and hands
-    // them to both its metric and its log exporter.
-    const headers = Object.fromEntries(credentialHeaders(credential));
-    return `${JSON.stringify({ endpoint, protocol: 'http/json', metricsTemporality: 'delta', headers }, null, 4)}\n`;
+export function opencodeOtelConfig(endpoint: string): string {
+    return `${JSON.stringify({ endpoint, protocol: 'http/json', metricsTemporality: 'delta' }, null, 4)}\n`;
 }
 
 /** Where an executor's CLI reads its telemetry config, and the rendered body. */
@@ -125,17 +125,12 @@ export interface TelemetryConfig {
     body: string;
 }
 
-export function telemetryConfig(
-    executorType: ExecutorType | null,
-    endpoint: string,
-    credential: TelemetryCredential
-): TelemetryConfig {
+export function telemetryConfig(executorType: ExecutorType | null, endpoint: string): TelemetryConfig {
     if (executorType === CLAUDE_CODE) {
-        const body = claudeManagedSettings(endpoint, credential);
-        return { dir: '/etc/claude-code', file: 'managed-settings.json', body };
+        return { dir: '/etc/claude-code', file: 'managed-settings.json', body: claudeManagedSettings(endpoint) };
     }
     if (executorType === OPENCODE) {
-        return { dir: '/etc/opencode-otel', file: 'otel.json', body: opencodeOtelConfig(endpoint, credential) };
+        return { dir: '/etc/opencode-otel', file: 'otel.json', body: opencodeOtelConfig(endpoint) };
     }
     throw new Error('the claimed task has no configured executor type');
 }
@@ -196,6 +191,9 @@ export function telemetryConfigTar({ dir, file, body }: TelemetryConfig): Buffer
     ]);
 }
 
+/** The pod-spec volume the telemetry config rides in — the attempt's Secret — mounted by the agent and the reviewer. */
+export const TELEMETRY_CONFIG_VOLUME = 'telemetry-config';
+
 /** The pod-spec volume the telemetry config rides in — the attempt's Secret. */
 export interface TelemetryConfigVolume {
     name: string;
@@ -211,7 +209,7 @@ export function telemetryConfigK8s(
     { dir, file }: TelemetryConfig,
     secretName: string
 ): { mount: { name: string; mountPath: string; subPath: string; readOnly: true }; volume: TelemetryConfigVolume } {
-    const name = 'telemetry-config';
+    const name = TELEMETRY_CONFIG_VOLUME;
     const items = [{ key: file, path: file }];
     return {
         // The one file, not the directory: a mount over /etc/claude-code would hide the image's managed

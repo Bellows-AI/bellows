@@ -1,7 +1,7 @@
 import type { BoardJob } from '../board/board.js';
 import { runnerClaimEnv } from '../claim.js';
 import type { DriverConfig } from '../config.js';
-import { telemetryConfig, telemetryCredentialOf, type TelemetryConfig } from '../telemetry-config.js';
+import { OTLP_HEADERS_ENV, otlpHeadersOf, telemetryConfig, type TelemetryConfig } from '../telemetry-config.js';
 import { isSeq, LEASE_LABEL } from '../labels.js';
 import { ensureTaskVolume } from './k8s-task-volume.js';
 import {
@@ -79,9 +79,11 @@ const runnerEnv = (config: DriverConfig, job: BoardJob): Record<string, string> 
     ...(job.supervisorEnv ?? {}),
     RUNNER_JOB_ID: job.id,
     RUNNER_LEASE_TOKEN: job.leaseToken,
+    // The telemetry export credential the CLI's OTLP exporter reads from its environment.
+    [OTLP_HEADERS_ENV]: otlpHeadersOf(job),
     // Issue #452: the runner's telemetry config, rendered here and mounted read-only by the pod
     // spec (k8s-podspec.ts, telemetryConfigK8s) — never written inside the pod.
-    ...telemetrySecretEntry(telemetryConfig(job.executorType, config.otelEndpoint, telemetryCredentialOf(job))),
+    ...telemetrySecretEntry(telemetryConfig(job.executorType, config.otelEndpoint)),
 });
 
 const telemetrySecretEntry = ({ file, body }: TelemetryConfig): Record<string, string> => ({ [file]: body });

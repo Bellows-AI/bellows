@@ -34,7 +34,7 @@ import {
 import { EXPORT_FLUSH_BYTES, EXPORT_FLUSH_MS, EXPORT_SPOOL_MAX_BYTES } from '../transcript-export.js';
 import { type StepResult, SUPERVISOR_ENV } from '../supervisor-contract.js';
 import { deliverTaskInputs } from '../task-inputs.js';
-import { otlpHeaders, telemetryCredentialOf } from '../telemetry-config.js';
+import { OTLP_HEADERS_ENV, otlpHeadersOf } from '../telemetry-config.js';
 
 /**
  * One named reviewer's run as supervised steps of its CALLER's task group: the
@@ -144,7 +144,7 @@ export function reviewStepEnv(
             HOME: REVIEWER_HOME,
             OTEL_EXPORTER_OTLP_ENDPOINT: host.config.otelEndpoint,
             // The review row's own export credential, beside its endpoint: never the caller's.
-            OTEL_EXPORTER_OTLP_HEADERS: otlpHeaders(telemetryCredentialOf(review)),
+            [OTLP_HEADERS_ENV]: otlpHeadersOf(review),
             GIT_CONFIG_COUNT: '2',
             GIT_CONFIG_KEY_0: 'safe.directory',
             GIT_CONFIG_VALUE_0: worktree,

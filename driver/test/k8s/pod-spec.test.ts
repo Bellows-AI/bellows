@@ -301,6 +301,15 @@ describe('the runner job spec', () => {
                 },
             },
             {
+                name: 'OTEL_EXPORTER_OTLP_HEADERS',
+                valueFrom: {
+                    secretKeyRef: {
+                        name: `factory-job-${job.id}-${job.leaseToken}-env`,
+                        key: 'OTEL_EXPORTER_OTLP_HEADERS',
+                    },
+                },
+            },
+            {
                 name: 'FACTORY_TRANSCRIPT_DIR',
                 value: `${TASK_MOUNT}/.factory/transcripts/${job.id}`,
             },
@@ -423,6 +432,11 @@ describe('the runner job spec', () => {
         expect(container.env).toContainEqual({
             name: 'RUNNER_LEASE_TOKEN',
             valueFrom: { secretKeyRef: { name: secretName(job), key: 'RUNNER_LEASE_TOKEN' } },
+        });
+        // The telemetry export credential, the same way: the CLI reads it from its environment.
+        expect(container.env).toContainEqual({
+            name: 'OTEL_EXPORTER_OTLP_HEADERS',
+            valueFrom: { secretKeyRef: { name: secretName(job), key: 'OTEL_EXPORTER_OTLP_HEADERS' } },
         });
         // No literal pair values in the spec: only valueFrom references.
         expect(

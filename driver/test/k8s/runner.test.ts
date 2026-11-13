@@ -151,6 +151,7 @@ describe('the kubernetes runner', () => {
                 CORE_TOKEN: 'shh',
                 RUNNER_JOB_ID: envJob.id,
                 RUNNER_LEASE_TOKEN: envJob.leaseToken,
+                OTEL_EXPORTER_OTLP_HEADERS: `x-factory-job-id=${envJob.id},x-factory-ingest-token=${envJob.ingestToken}`,
             },
         });
         // The Secret follows the Job, created suspended, and precedes its resume: no pod exists
@@ -200,7 +201,11 @@ describe('the kubernetes runner', () => {
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
         // The Secret is never empty now: the runner's own branch-ingest credential is always in it.
         expect(secretPost?.body).toMatchObject({
-            stringData: { RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken },
+            stringData: {
+                RUNNER_JOB_ID: job.id,
+                RUNNER_LEASE_TOKEN: job.leaseToken,
+                OTEL_EXPORTER_OTLP_HEADERS: `x-factory-job-id=${job.id},x-factory-ingest-token=${job.ingestToken}`,
+            },
         });
     });
 
@@ -215,10 +220,8 @@ describe('the kubernetes runner', () => {
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
         const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
-        expect(stringData['managed-settings.json']).toBe(
-            claudeManagedSettings(endpoint, { jobId: job.id, ingestToken: job.ingestToken })
-        );
-        expect(stringData['managed-settings.json']).toContain(`x-factory-ingest-token=${job.ingestToken}`);
+        expect(stringData['managed-settings.json']).toBe(claudeManagedSettings(endpoint));
+        expect(stringData['managed-settings.json']).not.toContain(job.ingestToken);
     });
 
     it('renders otel.json, and no managed settings, into an opencode runner Secret', async () => {
@@ -227,13 +230,8 @@ describe('the kubernetes runner', () => {
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
         const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
-        expect(stringData['otel.json']).toBe(
-            opencodeOtelConfig('http://otel.example:4318', {
-                jobId: opencodeJob.id,
-                ingestToken: opencodeJob.ingestToken,
-            })
-        );
-        expect(JSON.parse(stringData['otel.json']!).headers['x-factory-ingest-token']).toBe(opencodeJob.ingestToken);
+        expect(stringData['otel.json']).toBe(opencodeOtelConfig('http://otel.example:4318'));
+        expect(stringData['otel.json']).not.toContain(opencodeJob.ingestToken);
         expect(stringData).not.toHaveProperty('managed-settings.json');
     });
 

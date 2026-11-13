@@ -117,15 +117,10 @@ describe('the docker runner', () => {
         expect(calls.findIndex((call) => call.args.includes(supervisorName(job)))).toBeLessThan(calls.indexOf(create!));
         const cp = calls.find((call) => call.args[0] === 'cp');
         expect(cp?.args).toEqual(['cp', '-', `${containerName(job)}:/etc`]);
-        const rendered = telemetryConfig('claude-code', 'http://otel.example:4318', {
-            jobId: job.id,
-            ingestToken: job.ingestToken,
-        });
+        const rendered = telemetryConfig('claude-code', 'http://otel.example:4318');
         expect(cp?.input?.equals(telemetryConfigTar(rendered))).toBe(true);
-        // The attempt's export credential rides the managed settings, which outrank the container env.
-        expect(JSON.parse(rendered.body).env.OTEL_EXPORTER_OTLP_HEADERS).toBe(
-            `x-factory-job-id=${job.id},x-factory-ingest-token=${job.ingestToken}`
-        );
+        // The copied file is world-readable, so it names no credential: that rides the env file.
+        expect(rendered.body).not.toContain(job.ingestToken);
         expect(verbs.indexOf('create')).toBeLessThan(verbs.indexOf('cp'));
         expect(spawnFn.mock.calls).toEqual([['docker', ['start', '-a', containerName(job)], expect.anything()]]);
     });
@@ -142,15 +137,9 @@ describe('the docker runner', () => {
         await runner.run(opencodeJob, null);
         const cp = calls.find((call) => call.args[0] === 'cp');
         expect(cp?.args).toEqual(['cp', '-', `${containerName(opencodeJob)}:/etc`]);
-        const rendered = telemetryConfig('opencode', 'http://otel.example:4318', {
-            jobId: opencodeJob.id,
-            ingestToken: opencodeJob.ingestToken,
-        });
+        const rendered = telemetryConfig('opencode', 'http://otel.example:4318');
         expect(cp?.input?.equals(telemetryConfigTar(rendered))).toBe(true);
-        expect(JSON.parse(rendered.body).headers).toEqual({
-            'x-factory-job-id': opencodeJob.id,
-            'x-factory-ingest-token': opencodeJob.ingestToken,
-        });
+        expect(rendered.body).not.toContain(opencodeJob.ingestToken);
     });
 
     // The exited runner container is the evidence a replacement claim adopts a finished run from
@@ -1011,7 +1000,10 @@ describe('the docker runner', () => {
 
         expect(outcome).toMatchObject({ exitCode: 0 });
         expect(create).toContain('--env-file');
-        expect(fileBody).toBe(`RUNNER_JOB_ID=${job.id}\nRUNNER_LEASE_TOKEN=${job.leaseToken}\n`);
+        // The attempt's two credentials close the file: the branch pair, then the telemetry export headers.
+        expect(fileBody).toBe(
+            `RUNNER_JOB_ID=${job.id}\nRUNNER_LEASE_TOKEN=${job.leaseToken}\nOTEL_EXPORTER_OTLP_HEADERS=x-factory-job-id=${job.id},x-factory-ingest-token=${job.ingestToken}\n`
+        );
     });
 
     // The lease lost DURING the env-file write: the kill-check just above the write has already
