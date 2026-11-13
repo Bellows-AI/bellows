@@ -1,5 +1,5 @@
 import { CONTENT_TYPE_HEADER } from '@factory-ai/core';
-import type { ObjectStore, PutResult } from './object-store.js';
+import { LIST_LIMIT, type ObjectStore, type PutResult } from './object-store.js';
 import type { CredentialProvider } from './s3-credentials.js';
 import { sha256Hex, signRequest } from './sigv4.js';
 
@@ -39,9 +39,50 @@ export class S3Error extends Error {
     }
 }
 
+const XML_ENTITIES: Readonly<Record<string, string>> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const unescapeXml = (text: string): string =>
+    text.replace(/&(amp|lt|gt|quot|apos);/g, (_, name) => XML_ENTITIES[name] ?? '');
+
+const LISTING = /^\s*(?:<\?xml[^>]*\?>\s*)?<ListBucketResult(?:\s[^>]*)?>([\s\S]*)<\/ListBucketResult>\s*$/;
+
 /**
- * A minimal S3 client: exactly the four object calls the artifact index needs, plus the bucket
- * bootstrap. No SDK — the keys are ASCII ids and integers, and the request is signed by
+ * Occurrences of a raw tag token: `<Name` followed by anything that ends the name, so `<Contents/>`, `<Contents >` and
+ * `<Contents x="1">` all count, while `<KeyCount` is not a `<Key`.
+ */
+const occurrences = (text: string, token: string): number =>
+    (text.match(new RegExp(`${token}(?![\\w.:-])`, 'g')) ?? []).length;
+
+/**
+ * The keys of a complete ListObjectsV2 page, or null for anything else. Fail closed, not a parser: the whole document
+ * must be there; `KeyCount` and `IsTruncated` each appear once, strictly formed; and every raw `<Contents` opener,
+ * every `</Contents>` closer, every raw `<Key` and every strictly formed `<Contents><Key>k</Key>…</Contents>` entry
+ * with a non-empty key all number exactly `KeyCount`. A grouped prefix (never asked for) or a truncated page with no
+ * key is doubt too. Null is never an empty answer.
+ */
+function keysOfListing(body: string): string[] | null {
+    const inner = LISTING.exec(body)?.[1];
+    if (inner === undefined) return null;
+    const count = /^[\s\S]*?<KeyCount>(\d+)<\/KeyCount>/.exec(inner)?.[1];
+    const truncated = /<IsTruncated>(true|false)<\/IsTruncated>/.exec(inner)?.[1];
+    if (count === undefined || truncated === undefined) return null;
+    if (occurrences(inner, '<KeyCount') !== 1 || occurrences(inner, '<IsTruncated') !== 1) return null;
+    if (occurrences(inner, '<CommonPrefixes') !== 0) return null;
+    const expected = Number(count);
+    const entries = [...inner.matchAll(/<Contents><Key>([^<]+)<\/Key>(?:(?!<Contents|<Key)[\s\S])*?<\/Contents>/g)];
+    const tallies = [
+        occurrences(inner, '<Contents'),
+        occurrences(inner, '</Contents>'),
+        occurrences(inner, '<Key'),
+        entries.length,
+    ];
+    if (tallies.some((tally) => tally !== expected)) return null;
+    if (truncated === 'true' && expected === 0) return null;
+    return entries.map((match) => unescapeXml(match[1] ?? ''));
+}
+
+/**
+ * A minimal S3 client: the four object calls the artifact index needs, a prefix list for an org's purge, plus the
+ * bucket bootstrap. No SDK — the keys are ASCII ids and integers, and the request is signed by
  * `sigv4.ts` over a handful of headers.
  */
 export function createS3Store(options: S3Options): S3Store {
@@ -136,6 +177,17 @@ export function createS3Store(options: S3Options): S3Store {
                 return;
             }
             return fail('DELETE', response);
+        },
+        async list(prefix, call) {
+            const url = urlOf('');
+            url.searchParams.set('list-type', '2');
+            url.searchParams.set('prefix', prefix);
+            url.searchParams.set('max-keys', String(call?.limit ?? LIST_LIMIT));
+            const response = await send('GET', url, { signal: call?.signal });
+            if (response.status !== HTTP_OK) return fail('LIST', response);
+            const keys = keysOfListing(await response.text());
+            if (!keys) throw new S3Error('LIST', response.status, 'not a complete listing');
+            return keys;
         },
         async ensureBucket() {
             const head = await send('HEAD', urlOf(''));

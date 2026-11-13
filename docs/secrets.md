@@ -35,6 +35,7 @@ bytes through, with four backends (AES-256-GCM database, AWS Secrets Manager, Va
 - **Durable metadata holds no payload and no unkeyed digest**; errors use closed code and reason sets. `server/test-db/secrets-postgres.sanitization.test.ts`.
 - **A rotated key leaves the ring only after `verifyRetired` is 0**; the operation and fingerprint keys cannot be rotated. `server/test-db/secrets-postgres.rotation.test.ts`.
 - **Purging an owner's secrets is the consumers' job** (no foreign key to `organization` or `app_user`).
+- **A tombstone outlives its delete, except for a purged org**: `server/src/db/org-purge.ts` finds the org's secrets by the owner `identity_key` names, deletes and collects them, and only once `secret_version` holds none of them removes their `secret` and `secret_operation` rows. `server/test-db/org-purge.test.ts`.
 
 ## Stated limits
 

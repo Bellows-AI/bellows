@@ -70,6 +70,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['POST', '/api/operator/orgs/:id/suspend', 'none', OPERATOR_ROLE],
     ['POST', '/api/operator/orgs/:id/refuse', 'none', OPERATOR_ROLE],
     ['POST', '/api/operator/orgs/:id/activate', 'none', OPERATOR_ROLE],
+    ['POST', '/api/operator/orgs/:id/delete', 'none', OPERATOR_ROLE],
     ['GET', '/api/batches/:id', 'read', MEMBER_ROLE],
     ['GET', '/api/batches/:id/report', 'read', MEMBER_ROLE],
     ['GET', '/api/commerce', 'read', MEMBER_ROLE],

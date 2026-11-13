@@ -17,6 +17,17 @@ export interface ObjectStore {
     head(key: string, options?: ObjectCallOptions): Promise<{ size: number } | null>;
     /** Idempotent: deleting an absent key succeeds. */
     delete(key: string): Promise<void>;
+    /**
+     * Up to `limit` (default `LIST_LIMIT`) keys that start with `prefix`, a `/`-terminated namespace such as one
+     * org's (`org-purge.ts`). An empty answer is a confirmed empty namespace; a failed call rejects, never answers [].
+     */
+    list(prefix: string, options?: ListOptions): Promise<string[]>;
+}
+
+export const LIST_LIMIT = 1000;
+
+export interface ListOptions extends ObjectCallOptions {
+    limit?: number | undefined;
 }
 
 /** A call that must end by a deadline passes a signal; an aborted call rejects and writes nothing further. */

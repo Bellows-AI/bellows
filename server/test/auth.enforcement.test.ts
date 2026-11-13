@@ -399,6 +399,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
         '/api/operator/orgs/:id/suspend',
         '/api/operator/orgs/:id/refuse',
         '/api/operator/orgs/:id/activate',
+        '/api/operator/orgs/:id/delete',
     ].map((path) => [path, 'user'] as [string, string]),
     ['/api/otlp/v1/metrics', 'ingest'],
     ...[...new Set(PERSON_ROUTES.map(([, path]) => path))].map((path) => [path, 'user'] as [string, string]),

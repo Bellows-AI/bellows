@@ -8,10 +8,12 @@ import { bad, guard } from './helpers.js';
 /**
  * The board operator's surface (docs/organizations.md): `GET /api/operator/orgs` lists every organization with its
  * status, and `POST /api/operator/orgs/:id/(suspend|refuse|activate)` moves one, with an `operator` audit row per
- * change. Every route is an `operator` row in ROUTE_CLASSES, so the auth hook refuses anyone `OPERATOR_GITHUB_IDS`
+ * change. `POST /api/operator/orgs/:id/delete` queues the purge of a suspended or refused org (202; 409 `ORG_ACTIVE`
+ * for an active one), which `db/org-purge.ts` carries out. Every route is an `operator` row in ROUTE_CLASSES, so the auth hook refuses anyone `OPERATOR_GITHUB_IDS`
  * does not name before these run.
  */
 
+const HTTP_ACCEPTED = 202;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
@@ -57,4 +59,28 @@ export const operatorRoutes =
                 return answer(reply, id, done.value);
             });
         }
+
+        app.post<{ Params: { id: string } }>('/api/operator/orgs/:id/delete', async (request, reply) => {
+            const caller = callerOf(request);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+            const { id } = request.params;
+            const done = await guard(
+                reply,
+                (e) => request.log.error(e),
+                () => store.requestOrgDelete(id, caller.user.id)
+            );
+            if (!done.ok) return;
+            const asked = done.value;
+            if (asked.outcome === 'missing') {
+                return bad(reply, ERROR_CODES.NOT_FOUND, `No organization '${id}'`, HTTP_NOT_FOUND);
+            }
+            if (asked.outcome === 'active') {
+                return reply.code(HTTP_CONFLICT).send({
+                    error: 'An active organization is suspended or refused before it is deleted',
+                    code: ERROR_CODES.ORG_ACTIVE,
+                    status: asked.org.status,
+                });
+            }
+            return reply.code(HTTP_ACCEPTED).send({ requested: asked.outcome === 'requested', org: asked.org });
+        });
     };

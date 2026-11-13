@@ -8,7 +8,8 @@ import { USAGE } from './usage.js';
 
 /**
  * `bellows operator …`: an HTTP client of the board operator's routes (docs/organizations.md) — list every
- * organization with its status, and suspend, refuse or reactivate one. The board decides who the operator is
+ * organization with its status, suspend, refuse or reactivate one, and queue a suspended or refused one's purge
+ * (`operator delete … --yes`). The board decides who the operator is
  * (`OPERATOR_GITHUB_IDS`); anyone else gets its 403.
  */
 
@@ -30,6 +31,20 @@ async function list(args: readonly string[], board: () => BoardClient): Promise<
     return ok({ orgs }, renderOrgs(orgs));
 }
 
+async function remove(args: readonly string[], board: () => BoardClient): Promise<CommandResult> {
+    const { positionals: ids, values } = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, yes: { type: 'boolean' } } })
+    );
+    if (ids.length !== 1) throw new UsageError(`operator delete needs exactly one organization id\n\n${USAGE}`);
+    // A purge removes every row, object and secret of the org and cannot be undone; there is no prompt to ask through.
+    if (!values.yes) {
+        throw new UsageError('operator delete purges the organization and cannot be undone — pass --yes to confirm');
+    }
+    const asked = await board().operatorDelete(ids[0]!);
+    const { org } = asked;
+    return ok(asked, `organization ${org.id} (${org.name}) is ${asked.requested ? '' : 'already '}queued for deletion`);
+}
+
 async function act(action: OperatorAction, args: readonly string[], board: () => BoardClient): Promise<CommandResult> {
     const ids = positionals(args);
     if (ids.length !== 1) throw new UsageError(`operator ${action} needs exactly one organization id\n\n${USAGE}`);
@@ -43,5 +58,6 @@ export function operatorCommands<Io>(boardFor: (io: Io) => BoardClient) {
         'operator list': (args, io) => list(args, () => boardFor(io)),
     };
     for (const action of ACTIONS) commands[`operator ${action}`] = (args, io) => act(action, args, () => boardFor(io));
+    commands['operator delete'] = (args, io) => remove(args, () => boardFor(io));
     return commands;
 }

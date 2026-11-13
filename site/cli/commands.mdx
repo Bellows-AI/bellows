@@ -151,12 +151,15 @@ bellows job create --repo acme/notes-api -- npm test --watch
 
 Bellows Cloud only. These commands work for the board operator, the GitHub accounts the deployment lists in `OPERATOR_GITHUB_IDS`. Anyone else, an organization admin included, gets `403 FORBIDDEN`. Each change is written to the organization's audit log with actor `operator`.
 
+An organization whose GitHub App was uninstalled is suspended and, 30 days later, deleted the same way on its own.
+
 | Command | What it does |
 | --- | --- |
 | `bellows operator list` | List every organization with its status: `active`, `suspended` or `refused`. |
 | `bellows operator suspend <org-id>` | Stop the organization from starting new work. New tasks and batches are refused with `403 ORG_INACTIVE`, and queued tasks wait. Runs already in progress are interrupted, never failed, and resume where they left off when the organization is reactivated. |
 | `bellows operator refuse <org-id>` | Refuse the organization the same way. A suspend cannot override a refusal; only `activate` lifts it. |
 | `bellows operator activate <org-id>` | Make the organization active again. Its queued tasks become claimable. |
+| `bellows operator delete <org-id> --yes` | Delete a suspended or refused organization for good: its tasks, logs, transcripts, settings, stored files and secrets are purged in the background, and none of it can be restored. An active organization is refused with `409 ORG_ACTIVE`; suspend or refuse it first. Without `--yes` the command sends nothing. |
 
 ## Auth and help
 

@@ -36,7 +36,7 @@ if (!s3Reachable && process.env.ARTIFACTS_TEST_REQUIRE_S3) {
 
 /**
  * A fake of the slice of the GCS JSON API the store uses, in this process: create-only upload
- * (`ifGenerationMatch=0` answers 412 for a taken name), media read, size metadata and delete. One
+ * (`ifGenerationMatch=0` answers 412 for a taken name), media read, size metadata, delete and a prefix list. One
  * server for the run; each `make()` gets its own bucket name, so stores stay isolated.
  */
 const gcsObjects = new Map<string, Uint8Array>();
@@ -46,6 +46,7 @@ const gcsServer = createServer((req, res) => {
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
         const upload = url.pathname.match(/^\/upload\/storage\/v1\/b\/([^/]+)\/o$/);
+        const listing = url.pathname.match(/^\/storage\/v1\/b\/([^/]+)\/o$/);
         const object = url.pathname.match(/^\/storage\/v1\/b\/([^/]+)\/o\/(.+)$/);
         const reply = (status: number, body: string | Uint8Array = '') => {
             res.writeHead(status);
@@ -57,6 +58,18 @@ const gcsServer = createServer((req, res) => {
             if (gcsObjects.has(id)) return reply(412);
             gcsObjects.set(id, new Uint8Array(Buffer.concat(chunks)));
             return reply(200, '{}');
+        }
+        if (req.method === 'GET' && listing) {
+            const bucket = `${listing[1]}/`;
+            const prefix = url.searchParams.get('prefix') ?? '';
+            const names = [...gcsObjects.keys()]
+                .filter((id) => id.startsWith(bucket))
+                .map((id) => id.slice(bucket.length))
+                .filter((name) => name.startsWith(prefix))
+                .sort()
+                .slice(0, Number(url.searchParams.get('maxResults') ?? '1000'));
+            const page = names.length ? { items: names.map((name) => ({ name })) } : {};
+            return reply(200, JSON.stringify({ kind: 'storage#objects', ...page }));
         }
         if (object) {
             const id = `${object[1]}/${decodeURIComponent(object[2]!)}`;

@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import type { Dirent } from 'node:fs';
 import { link, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
-import type { ObjectCallOptions, ObjectStore, PutResult } from './object-store.js';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import {
+    LIST_LIMIT,
+    type ListOptions,
+    type ObjectCallOptions,
+    type ObjectStore,
+    type PutResult,
+} from './object-store.js';
 import { startIntervalLoop } from '../interval-loop.js';
 
 const NOT_FOUND = 'ENOENT';
@@ -144,6 +151,22 @@ export function createFilesystemStore(root: string): ObjectStore {
         },
         async delete(key) {
             await rm(pathOf(key), { force: true });
+        },
+        async list(prefix, options?: ListOptions) {
+            const dir = pathOf(prefix);
+            let entries: Dirent[];
+            try {
+                entries = await readdir(dir, { recursive: true, withFileTypes: true });
+            } catch (error) {
+                if (errnoOf(error) === NOT_FOUND) return [];
+                throw error;
+            }
+            options?.signal?.throwIfAborted();
+            return entries
+                .filter((entry) => entry.isFile())
+                .map((entry) => relative(base, join(entry.parentPath, entry.name)).split(sep).join('/'))
+                .sort()
+                .slice(0, options?.limit ?? LIST_LIMIT);
         },
     };
 }

@@ -109,7 +109,16 @@ export interface OrgStatusStore {
     setOrgStatus(orgId: string, action: OperatorAction, operatorId: string): Promise<OrgStatusChange>;
     /** What a GitHub `installation` delivery does to its org (`routes/webhook.ts`), with one `system` audit row per change. */
     setInstallationStatus(orgId: string, action: InstallationAction): Promise<OrgStatusChange>;
+    /** The operator's delete: queues the org's purge (`org-purge.ts`) with one `operator` audit row; never an active org. */
+    requestOrgDelete(orgId: string, operatorId: string): Promise<OrgDeleteRequest>;
 }
+
+export type OrgDeleteRequest =
+    /** `unchanged`: a purge was already queued. */
+    | { outcome: 'requested' | 'unchanged'; org: OperatorOrgView }
+    /** An active org is never purged: the operator suspends or refuses it first. */
+    | { outcome: 'active'; org: OperatorOrgView }
+    | { outcome: 'missing' };
 
 /** The `installation` webhook actions that move an org: an uninstall, a GitHub suspension, and its lifting. */
 export const INSTALLATION_ACTIONS = ['deleted', 'suspend', 'unsuspend'] as const;
@@ -132,7 +141,38 @@ export function buildOrgStatusMethods(sql: Sql, gate: () => Promise<void>): OrgS
             await gate();
             return setInstallationStatus(sql, orgId, action);
         },
+        async requestOrgDelete(orgId, operatorId) {
+            await gate();
+            return requestOrgDelete(sql, orgId, operatorId);
+        },
     };
+}
+
+/**
+ * Queues the purge of a suspended or refused org under its row lock, with one `operator` audit row; a purge already
+ * queued is `unchanged` and records nothing. The purge itself re-checks the status on every pass (`org-purge.ts`).
+ */
+async function requestOrgDelete(sql: Sql, orgId: string, operatorId: string): Promise<OrgDeleteRequest> {
+    return sql.begin(async (tx) => {
+        const holds = await lockedHolds(tx, orgId);
+        if (!holds) return { outcome: 'missing' as const };
+        const { operator_status: _operator, delete_after: _deadline, ...org } = holds;
+        if (org.status === 'active') return { outcome: 'active' as const, org };
+        const queued = await tx`
+            insert into org_purge (org_id, source, requested_by) values (${orgId}, 'operator', ${operatorId})
+            on conflict (org_id) do nothing
+            returning org_id
+        `;
+        if (queued.length === 0) return { outcome: 'unchanged' as const, org };
+        await recordAudit(tx, {
+            orgId,
+            actor: { kind: 'operator', id: operatorId },
+            action: 'org.delete',
+            target: orgId,
+            detail: { status: org.status },
+        });
+        return { outcome: 'requested' as const, org };
+    });
 }
 
 async function listOrganizations(sql: Sql): Promise<OperatorOrgView[]> {
