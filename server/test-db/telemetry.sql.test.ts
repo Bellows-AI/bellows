@@ -15,7 +15,7 @@ let sql: Sql;
 const ORG = testOrg();
 const OTHER_ORG = testOrg();
 
-const db = useTestDb({ max: 2 });
+const db = useTestDb({ max: 2, orgs: [ORG, OTHER_ORG] });
 
 beforeAll(async () => {
     if (!enabled) return;

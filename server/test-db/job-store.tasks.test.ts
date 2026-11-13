@@ -28,7 +28,7 @@ const OTHER_AUTHOR = OTHER_AUTHOR_USER.id;
 const db = useTestDb({
     max: 8,
     // workflow_wait FKs to organization — the wait tests below need it planted.
-    orgs: [ORG],
+    orgs: [ORG, OTHER_ORG],
     users: [AUTHOR_USER, OTHER_AUTHOR_USER],
 });
 
