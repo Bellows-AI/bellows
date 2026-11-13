@@ -7,6 +7,7 @@
 import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import { lockRootRowsInTx, requirementWaitOf } from '../connection-bindings.js';
+import { planLimits, type StopCause } from '../plan-limits.js';
 import type { EvidencePolicy } from '../evidence-policy.js';
 import type { RequireConnectionResult } from './job-store-connections.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
@@ -53,6 +54,11 @@ export interface JobWorkerStore {
          * Keyed by job, not claim: a takeover of the asker carries it too.
          */
         requirementWait: boolean;
+        /**
+         * Why the board asks the stop, when it asked it on its own: `wall-time` once the run banked its plan's wall
+         * time. Null for a member's stop and on every beat that asks none.
+         */
+        stopCause: StopCause | null;
     }>;
 
     /**
@@ -190,18 +196,31 @@ export async function heartbeatJob(
     leaseToken: string,
     leaseSeconds: number
 ): Promise<HeartbeatResult> {
-    const { sql, orgId } = ctx;
+    const { sql, orgId, wallTick } = ctx;
     // The heartbeat already travels every few seconds, which makes it the stop channel: a
     // `cancel_requested_at` stamped by the user's /stop is read here and handed to the
     // worker as `cancelRequested` — no new route, no separate poll. The stamp is cleared
     // only by the parking or completion that IS the stop happening, so a beat answers
     // false the moment the request was honoured.
-    const rows = await sql<{ lease_expires_at: Date; cancel_requested_at: Date | null }[]>`
+    //
+    // The plan's wall time rides the same channel: a run (never a review) whose banked wall clock reached it is
+    // stamped here, its cause `wall-time`, and the driver parks it as any stop on either executor — a run outcome
+    // (`stopped`), never an interruption. A member's stop already stamped keeps no cause.
+    const { wallSeconds } = await planLimits(sql, orgId, ctx.planDefaults);
+    const over =
+        wallSeconds === undefined
+            ? sql`false`
+            : sql`(review_of is null and ${wallTick} >= ${wallSeconds}::bigint * 1000)`;
+    const rows = await sql<
+        { lease_expires_at: Date; cancel_requested_at: Date | null; stop_cause: StopCause | null }[]
+    >`
         update job
-        set lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
+        set lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int),
+            stop_cause = case when cancel_requested_at is null and ${over} then 'wall-time' else stop_cause end,
+            cancel_requested_at = case when ${over} then coalesce(cancel_requested_at, now()) else cancel_requested_at end
         where org_id = ${orgId} and id = ${id}
           and status = 'running' and lease_token = ${leaseToken}
-        returning lease_expires_at, cancel_requested_at
+        returning lease_expires_at, cancel_requested_at, stop_cause
     `;
     const row = rows[0];
     if (row) {
@@ -209,6 +228,7 @@ export async function heartbeatJob(
             result: 'ok',
             leaseExpiresAt: row.lease_expires_at.toISOString(),
             cancelRequested: row.cancel_requested_at !== null,
+            stopCause: row.cancel_requested_at === null ? null : row.stop_cause,
             // The answers ride the beat the driver already sends (050): every answered question
             // of THIS lease, re-listed each beat — the driver applies them idempotently.
             answeredQuestions: await answeredQuestionsOf(ctx, id, leaseToken),
@@ -221,6 +241,7 @@ export async function heartbeatJob(
         cancelRequested: false,
         answeredQuestions: [],
         requirementWait: false,
+        stopCause: null,
     };
 }
 

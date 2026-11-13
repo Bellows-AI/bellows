@@ -171,8 +171,10 @@ async function scanUnderBudget<Board, T>(
  * The job claim's scan: the boards in the order their rows give, so every board
  * replica and every driver sees the same priority instead of each replica's own rotation. An org
  * whose lost attempt waits for its takeover comes first — recovery needs no budget slot, and a
- * takeover window is bounded — then the org with the fewest running rows, then the one whose
- * oldest waiting row queued first. Only an exact tie falls back to the rotation. A board whose
+ * takeover window is bounded — then the org running the smallest share of its cap (running / cap, so two
+ * orgs with full queues get runners in proportion to their caps), then the one served least recently (never
+ * served first, so a single refilling slot alternates rather than going to the oldest queue every time), then
+ * the one whose oldest waiting row queued first. Only an exact tie falls back to the rotation. A board whose
  * demand read fails goes last, still scanned, so one unhealthy org never blocks the others.
  */
 export function fairBoardScan(): FairBoardScanner {
@@ -196,9 +198,10 @@ export function fairBoardScan(): FairBoardScanner {
         );
         const rank = (index: number) => {
             const demand = demands[index];
-            if (!demand) return [2, 0, Number.POSITIVE_INFINITY];
+            if (!demand) return [2, 0, 0, Number.POSITIVE_INFINITY];
+            const served = demand.lastServed?.getTime() ?? Number.NEGATIVE_INFINITY;
             const waited = demand.oldestWaiting?.getTime() ?? Number.POSITIVE_INFINITY;
-            return [demand.takeover ? 0 : 1, demand.running, waited];
+            return [demand.takeover ? 0 : 1, demand.running / (demand.cap ?? 1), served, waited];
         };
         const rotation = (index: number) => (index - start + boards.length) % boards.length;
         const order = boards

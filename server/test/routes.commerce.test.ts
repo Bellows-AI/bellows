@@ -34,6 +34,9 @@ const BODY = {
     usedMinutes: 10,
     periodStart: '2026-08-01T00:00:00.000Z',
     periodEnd: '2026-09-01T00:00:00.000Z',
+    maxRunning: 4,
+    maxQueued: 50,
+    maxWallSeconds: 7200,
     version: 3,
 };
 
@@ -158,6 +161,9 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
             usedMinutes: 10,
             periodStart: new Date('2026-08-01T00:00:00.000Z'),
             periodEnd: new Date('2026-09-01T00:00:00.000Z'),
+            maxRunning: 4,
+            maxQueued: 50,
+            maxWallSeconds: 7200,
             version: 3,
         });
     });
@@ -172,9 +178,19 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
             usedMinutes: null,
             periodStart: null,
             periodEnd: null,
+            maxRunning: null,
+            maxQueued: null,
+            maxWallSeconds: null,
         });
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(calls[0]?.push).toMatchObject({ includedMinutes: null, periodStart: null, periodEnd: null });
+        expect(calls[0]?.push).toMatchObject({
+            includedMinutes: null,
+            periodStart: null,
+            periodEnd: null,
+            maxRunning: null,
+            maxQueued: null,
+            maxWallSeconds: null,
+        });
     });
 
     it('a replay answers 200', async () => {
@@ -205,6 +221,10 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
         ['fractional used minutes', { ...BODY, usedMinutes: 1.5 }],
         ['string minutes', { ...BODY, usedMinutes: '10' }],
         ['a missing minutes field', { ...BODY, includedMinutes: undefined }],
+        ['a zero running limit', { ...BODY, maxRunning: 0 }],
+        ['a fractional queued limit', { ...BODY, maxQueued: 2.5 }],
+        ['a string wall time', { ...BODY, maxWallSeconds: '3600' }],
+        ['a missing limit field', { ...BODY, maxQueued: undefined }],
         ['an unparseable date', { ...BODY, periodStart: 'yesterday' }],
         ['a numeric date', { ...BODY, periodEnd: 1_788_000_000 }],
         ['a period that ends before it starts', { ...BODY, periodStart: BODY.periodEnd, periodEnd: BODY.periodStart }],

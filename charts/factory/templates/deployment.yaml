@@ -116,6 +116,13 @@ spec:
                         value: {{ .Values.dashboard.admission.maxRunningPerOrg | quote }}
                       - name: ADMISSION_MAX_RUNNING_PER_REPO
                         value: {{ .Values.dashboard.admission.maxRunningPerRepo | quote }}
+                      # The Free plan's limits (server/src/db/plan-limits.ts); empty is unlimited.
+                      - name: PLAN_DEFAULT_MAX_RUNNING
+                        value: {{ .Values.dashboard.planDefaults.maxRunning | quote }}
+                      - name: PLAN_DEFAULT_MAX_QUEUED
+                        value: {{ .Values.dashboard.planDefaults.maxQueued | quote }}
+                      - name: PLAN_DEFAULT_MAX_WALL_SECONDS
+                        value: {{ .Values.dashboard.planDefaults.maxWallSeconds | quote }}
                       # The optional commerce service (docs/configuration.md); off, the other two are ignored.
                       - name: COMMERCE_ENABLED
                         value: {{ .Values.dashboard.commerce.enabled | quote }}

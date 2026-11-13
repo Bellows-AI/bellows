@@ -25,24 +25,45 @@ import { markExecutionsRemoved } from './job-store-provenance.js';
 import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import { authorOwnsFragment, terminalFragment, doneFragment, threadIdleFragment } from './job-store-sql-fragments.js';
 import type { CreatedRef, CreateTarget } from './job-store-action-types.js';
+import { PlanLimitError } from '../plan-limits.js';
 
 /** A workflow column's value: the JSON when a workflow was named, SQL null otherwise. */
 const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(value as never) : null);
 
 /**
+ * Refuses a create once the org queues `cap` rows (its plan's queued limit), naming `queued`. The org's creates take
+ * turns on one transaction lock, so two at once never both take the last place.
+ */
+async function refuseAtQueuedCap(tx: TransactionSql, orgId: string, cap: number | undefined): Promise<void> {
+    if (cap === undefined) return;
+    await tx`select pg_advisory_xact_lock(hashtextextended(${`plan:queued:${orgId}`}, 0))`;
+    const [row] = await tx<{ n: number }[]>`
+        select count(*)::int as n from job where org_id = ${orgId} and status = 'queued' and review_of is null
+    `;
+    if (row!.n >= cap) throw new PlanLimitError('queued', cap);
+}
+
+/**
  * The create's body (`createTitledJob`'s), for a caller that already holds a transaction: the batch scheduler creates
- * a task's root in the same transaction that records the decision to.
+ * a task's root in the same transaction that records the decision to. `queuedCap` is the org plan's queued limit
+ * the member's create is refused at; the batch scheduler passes none.
  */
 export async function insertJobInTx(
     tx: TransactionSql,
     ctx: Pick<JobStoreContext, 'sql' | 'orgId'> & { githubApp?: boolean | undefined },
-    { command, createdBy, target }: { command: string; createdBy: string | null; target: CreateTarget }
+    {
+        command,
+        createdBy,
+        target,
+        queuedCap,
+    }: { command: string; createdBy: string | null; target: CreateTarget; queuedCap?: number | undefined }
 ): Promise<CreatedRef> {
     const { sql, orgId } = ctx;
     const idem = target.idempotency;
     // A repeat of a recorded request answers the row it made, before anything else is decided.
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return { id: replayed, replayed: true };
+    await refuseAtQueuedCap(tx, orgId, queuedCap);
     // id and root_job_id are the SAME uuid, computed once in the select so the column can
     // be not null from insert — the root's root is itself (022). The workflow triple rides
     // the same insert when a workflow was named: workflow_id names what the task walks,

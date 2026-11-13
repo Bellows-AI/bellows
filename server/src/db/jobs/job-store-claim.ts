@@ -19,6 +19,7 @@ import {
     type ClaimOptions,
     type ClaimRefusal,
     fullScope,
+    orgAdmission,
     repoRoom,
 } from './job-store-admission.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
@@ -536,11 +537,13 @@ async function claimNextCandidate(
     options: ClaimGate
 ): ReturnType<JobStore['claim']> {
     const refused: string[] = [];
+    // The org budget is the plan's running limit where that is lower, read once for the poll.
+    const budgeted = { ...ctx, admission: await orgAdmission(ctx.sql, ctx.admission, ctx.orgId, ctx.planDefaults) };
     for (;;) {
-        const reserved = await reserveCandidate(ctx, refused, options.refusal, options.takeoverOnly);
+        const reserved = await reserveCandidate(budgeted, refused, options.refusal, options.takeoverOnly);
         if (!reserved) return null;
-        const gates = await prepareCandidate(ctx, reserved);
-        const claim = await acquireCandidate(ctx, { worker, leaseSeconds, ...options }, reserved, gates);
+        const gates = await prepareCandidate(budgeted, reserved);
+        const claim = await acquireCandidate(budgeted, { worker, leaseSeconds, ...options }, reserved, gates);
         if (claim === REFUSED) refused.push(reserved.id);
         else if (claim !== NEXT_CANDIDATE) return claim;
     }

@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
-import { DEPLOYMENT_MODES, type DeploymentMode, SELF_HOSTED } from '@factory-ai/core';
+import { CLOUD, DEPLOYMENT_MODES, type DeploymentMode, SELF_HOSTED } from '@factory-ai/core';
 import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
 import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
 import { loadMcpConfig, type McpConfig } from './config-mcp.js';
 import type { TelemetrySource } from './telemetry/client.js';
+import type { PlanLimits } from './db/plan-limits.js';
 
 export interface Repo {
     readonly owner: string;
@@ -162,6 +163,12 @@ export interface AppConfig {
      */
     readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
     /**
+     * The plan limits an organization with no pushed plan gets, and each limit a push left null: the Free plan
+     * (PLAN_DEFAULT_MAX_RUNNING, PLAN_DEFAULT_MAX_QUEUED, PLAN_DEFAULT_MAX_WALL_SECONDS). Unset is unlimited, which
+     * only a self-hosted board allows: cloud refuses to boot without all three. See `db/plan-limits.ts`.
+     */
+    readonly planDefaults: PlanLimits;
+    /**
      * Outbound OAuth. `callbackOrigin` is the origin a provider redirects back to: `PUBLIC_URL`, else the
      * loopback bind's own, else null. Null never fails the boot; starting an authorization then answers
      * `not-configured`.
@@ -231,6 +238,26 @@ function loadAdmission(env: NodeJS.ProcessEnv): AppConfig['admission'] {
         repo: optionalInt(env.ADMISSION_MAX_RUNNING_PER_REPO, 'ADMISSION_MAX_RUNNING_PER_REPO'),
     };
     return Object.fromEntries(Object.entries(budgets).filter(([, value]) => value !== undefined));
+}
+
+const PLAN_DEFAULT_VARIABLES = {
+    running: 'PLAN_DEFAULT_MAX_RUNNING',
+    queued: 'PLAN_DEFAULT_MAX_QUEUED',
+    wallSeconds: 'PLAN_DEFAULT_MAX_WALL_SECONDS',
+} as const satisfies Record<keyof PlanLimits, string>;
+
+function loadPlanDefaults(env: NodeJS.ProcessEnv, deploymentMode: DeploymentMode): PlanLimits {
+    const limits: Record<string, number> = {};
+    for (const [limit, name] of Object.entries(PLAN_DEFAULT_VARIABLES)) {
+        const value = optionalInt(env[name], name);
+        if (value !== undefined) limits[limit] = value;
+        else if (deploymentMode === CLOUD) {
+            throw new Error(
+                `DEPLOYMENT_MODE=cloud requires ${name}: the Free plan's limit an organization with no pushed plan gets, so no cloud organization is unlimited`
+            );
+        }
+    }
+    return limits;
 }
 
 const DEFAULT_PORT = 8080;
@@ -690,6 +717,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     const port = int(env.PORT, DEFAULT_PORT, 'PORT');
     const host = env.HOST ?? '127.0.0.1';
     const dbPoolMax = int(env.DB_POOL_MAX, DEFAULT_DB_POOL_MAX, 'DB_POOL_MAX');
+    const deploymentMode = loadDeploymentMode(env.DEPLOYMENT_MODE);
 
     return Object.freeze({
         github,
@@ -704,10 +732,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         webhookSecret,
         artifacts: loadArtifactsConfig(env),
         admission: loadAdmission(env),
+        planDefaults: loadPlanDefaults(env, deploymentMode),
         integrations: { callbackOrigin: publicOriginOrNull(env, host, port)?.origin ?? null, jira: loadJiraOAuth(env) },
         commerce: loadCommerceConfig(env),
         batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
-        deploymentMode: loadDeploymentMode(env.DEPLOYMENT_MODE),
+        deploymentMode,
         mcp: loadMcpConfig(
             env,
             bool(env.MCP_ENABLED, false, 'MCP_ENABLED'),

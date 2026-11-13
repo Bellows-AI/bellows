@@ -16,6 +16,10 @@ export interface PlanPush {
     usedMinutes: number | null;
     periodStart: Date | null;
     periodEnd: Date | null;
+    /** The org's plan limits (`db/plan-limits.ts`); null takes the board's default for that limit. */
+    maxRunning: number | null;
+    maxQueued: number | null;
+    maxWallSeconds: number | null;
     version: number;
 }
 
@@ -35,6 +39,9 @@ interface StoredPlan {
     used_minutes: string | null;
     period_start: Date | null;
     period_end: Date | null;
+    max_running: number | null;
+    max_queued: number | null;
+    max_wall_seconds: number | null;
     version: string;
 }
 
@@ -47,7 +54,10 @@ const identical = (row: StoredPlan, push: PlanPush): boolean =>
     numberOrNull(row.included_minutes) === push.includedMinutes &&
     numberOrNull(row.used_minutes) === push.usedMinutes &&
     timeOrNull(row.period_start) === timeOrNull(push.periodStart) &&
-    timeOrNull(row.period_end) === timeOrNull(push.periodEnd);
+    timeOrNull(row.period_end) === timeOrNull(push.periodEnd) &&
+    row.max_running === push.maxRunning &&
+    row.max_queued === push.maxQueued &&
+    row.max_wall_seconds === push.maxWallSeconds;
 
 export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Promise<unknown> }): CommercePlanWriter {
     return {
@@ -55,9 +65,11 @@ export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Prom
             await ready;
             return sql.begin(async (tx): Promise<PlanVerdict> => {
                 const written = await tx`
-                    insert into org_plan (org_id, plan, included_minutes, used_minutes, period_start, period_end, version)
+                    insert into org_plan (org_id, plan, included_minutes, used_minutes, period_start, period_end,
+                                          max_running, max_queued, max_wall_seconds, version)
                     select ${orgId}, ${push.plan}, ${push.includedMinutes}, ${push.usedMinutes},
-                           ${push.periodStart}, ${push.periodEnd}, ${push.version}
+                           ${push.periodStart}, ${push.periodEnd},
+                           ${push.maxRunning}, ${push.maxQueued}, ${push.maxWallSeconds}, ${push.version}
                     where exists (select 1 from organization where id = ${orgId})
                     on conflict (org_id) do update set
                         plan = excluded.plan,
@@ -65,6 +77,9 @@ export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Prom
                         used_minutes = excluded.used_minutes,
                         period_start = excluded.period_start,
                         period_end = excluded.period_end,
+                        max_running = excluded.max_running,
+                        max_queued = excluded.max_queued,
+                        max_wall_seconds = excluded.max_wall_seconds,
                         version = excluded.version,
                         updated_at = now()
                     where org_plan.version < excluded.version
@@ -72,7 +87,8 @@ export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Prom
                 `;
                 if (written.length > 0) return { verdict: 'stored' };
                 const [row] = await tx<StoredPlan[]>`
-                    select plan, included_minutes, used_minutes, period_start, period_end, version
+                    select plan, included_minutes, used_minutes, period_start, period_end,
+                           max_running, max_queued, max_wall_seconds, version
                     from org_plan where org_id = ${orgId}
                 `;
                 if (!row) return { verdict: 'unknown_org' };

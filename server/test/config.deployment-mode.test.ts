@@ -16,7 +16,13 @@ describe('DEPLOYMENT_MODE', () => {
 
     it('accepts self-hosted and cloud', () => {
         expect(load({ DEPLOYMENT_MODE: 'self-hosted' }).deploymentMode).toBe('self-hosted');
-        expect(load({ DEPLOYMENT_MODE: 'cloud' }).deploymentMode).toBe('cloud');
+        // A cloud board boots only with the Free plan's limits (config.plan-defaults.test.ts).
+        const free = {
+            PLAN_DEFAULT_MAX_RUNNING: '1',
+            PLAN_DEFAULT_MAX_QUEUED: '10',
+            PLAN_DEFAULT_MAX_WALL_SECONDS: '3600',
+        };
+        expect(load({ DEPLOYMENT_MODE: 'cloud', ...free }).deploymentMode).toBe('cloud');
     });
 
     it('refuses any other value, naming the variable', () => {
