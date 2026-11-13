@@ -1,6 +1,6 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
 import type { Sql } from 'postgres';
-import { endMemberships } from './store.js';
+import { blockMembership, endMemberships, restoreMembership } from './member-removal.js';
 import type { MembershipTarget, MembershipVerdict } from './membership.js';
 
 /** One membership to re-check, keyed for the store and described for the GitHub read. */
@@ -105,36 +105,12 @@ export function createMembershipStore({ sql, ready }: { sql: Sql; ready?: Promis
 
         async block(orgId, userId, removedBy) {
             await gate();
-            return sql.begin(async (tx) => {
-                // Every admin row and the target locked first, as setMemberRole does, so two admins removing
-                // each other serialize and the second counts the org the first left behind.
-                const locked = await tx<{ user_id: string; role: string }[]>`
-                    select user_id::text as user_id, role from org_membership
-                    where org_id = ${orgId} and (role = ${ADMIN_ROLE} or user_id = ${userId}::uuid)
-                    for update
-                `;
-                const target = locked.find((row) => row.user_id === userId);
-                if (!target) return 'missing' as const;
-                const admins = locked.filter((row) => row.role === ADMIN_ROLE).length;
-                if (target.role === ADMIN_ROLE && admins <= 1) return 'last-admin' as const;
-                await tx`
-                    insert into org_membership_removal (org_id, user_id, removed_by)
-                    values (${orgId}, ${userId}::uuid, ${removedBy}::uuid)
-                    on conflict (org_id, user_id) do update
-                        set removed_by = excluded.removed_by, removed_at = now()
-                `;
-                await endMemberships(tx, userId, [orgId]);
-                return 'removed' as const;
-            });
+            return blockMembership(sql, orgId, userId, removedBy);
         },
 
         async restore(orgId, userId) {
             await gate();
-            const rows = await sql`
-                delete from org_membership_removal where org_id = ${orgId} and user_id = ${userId}::uuid
-                returning user_id
-            `;
-            return rows.length > 0 ? 'restored' : 'missing';
+            return restoreMembership(sql, orgId, userId);
         },
     };
 }

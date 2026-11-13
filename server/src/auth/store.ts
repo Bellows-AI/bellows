@@ -1,8 +1,9 @@
 import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
-import type { Sql, TransactionSql } from 'postgres';
+import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
 import type { MembershipVerdict } from './membership.js';
 import type { Scope } from './route-class.js';
+import { buildRemovalMethods, endMemberships } from './member-removal.js';
 import { hashToken, mintToken } from './session.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
 
@@ -33,6 +34,14 @@ export interface MemberView {
     invitedAt: string | null;
     claimedAt: string | null;
     lastLoginAt: string | null;
+}
+
+/** One admin removal of an organization: who, when, and by whom (null once that account is gone). */
+export interface RemovedMemberView {
+    userId: string;
+    githubLogin: string;
+    removedAt: string;
+    removedBy: string | null;
 }
 
 /** One installation-reported organization, as the store sees it: the id and its login label. */
@@ -213,6 +222,21 @@ export interface AuthStore {
      * `missing` (no such member of this org).
      */
     setMemberRole(orgId: string, userId: string, role: Role): Promise<'updated' | 'last-admin' | 'missing'>;
+    /**
+     * An admin's removal of a member (member-removal.ts): the block row, then the membership's end with its
+     * sessions and personal tokens, in one transaction. The block keeps the account out at every later sign-in
+     * until `restoreMember`. `last-admin` refuses the org's only admin; `missing` is no such member.
+     */
+    blockMember(orgId: string, userId: string, removedBy: string): Promise<'removed' | 'last-admin' | 'missing'>;
+    /** Lifts an admin's removal; `missing` when there was none. The next sign-in admits the account again. */
+    restoreMember(orgId: string, userId: string): Promise<'restored' | 'missing'>;
+    /** The org's removals, login-ordered — what `GET /api/org/members/removed` serves. */
+    listRemovedMembers(orgId: string): Promise<RemovedMemberView[]>;
+    /**
+     * What the invitation read needs: the organization, described for GitHub's member list, and the GitHub ids
+     * of everyone who signed in or was removed. Null when the org has no row.
+     */
+    invitationBasis(orgId: string): Promise<{ org: InstallationRef; githubUserIds: number[] } | null>;
     /** The stand-in account AUTH_MODE=none attributes every request to. */
     localCaller(orgId: string): Promise<Caller | null>;
 
@@ -294,26 +318,6 @@ export const toCaller = (row: CallerRow): Caller => ({
 });
 
 type Gate = () => Promise<void>;
-
-/**
- * THE way a membership ends, whoever ends it (the sign-in sweep, the webhook, a confirmed non-member at the
- * re-check, an admin's removal): the memberships of `orgIds`, the account's sessions in those orgs and its
- * personal tokens there, inside the caller's transaction — so a membership granted again later never revives
- * an old credential. Returns how many memberships were deleted.
- */
-export async function endMemberships(tx: TransactionSql, userId: string, orgIds: readonly string[]): Promise<number> {
-    if (orgIds.length === 0) return 0;
-    const ids = [...orgIds];
-    const deleted = await tx`
-        delete from org_membership where user_id = ${userId}::uuid and org_id = any(${ids}::text[]) returning org_id
-    `;
-    await tx`delete from session where user_id = ${userId}::uuid and org_id = any(${ids}::text[])`;
-    await tx`
-        update access_token set revoked_at = now()
-        where user_id = ${userId}::uuid and org_id = any(${ids}::text[]) and kind = 'personal' and revoked_at is null
-    `;
-    return deleted.length;
-}
 
 /** Upserts one organization per installation: the name re-derived, the account kind and id kept when unreported. */
 async function upsertOrganizations(sql: Sql, installations: readonly InstallationRef[]): Promise<void> {
@@ -911,6 +915,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         ...buildSessionMethods(sql, gate),
         ...buildOrgMethods(sql, gate),
         ...buildMemberMethods(sql, gate),
+        ...buildRemovalMethods(sql, gate),
         ...buildTokenMethods(sql, gate),
     };
 }
