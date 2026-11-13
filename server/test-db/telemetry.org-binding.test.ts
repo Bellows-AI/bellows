@@ -390,4 +390,55 @@ describe.skipIf(!enabled)('points stored before they carried an organization', (
         await point({ org: null, session, value: 1, time: '2026-08-01T10:00:00Z' });
         expect(await orgOfPoint(session)).toBe(B);
     });
+
+    /**
+     * Runs `first` in a transaction held open after its statements, then `second` on another connection, and commits
+     * the first only once the second has finished or is waiting on a lock: the two sides of a point and its binding,
+     * neither seeing the other's uncommitted row.
+     */
+    async function interleave(first: (tx: TransactionSql) => Promise<void>, second: () => Promise<void>) {
+        let commit = () => {};
+        const held = new Promise<void>((resolve) => {
+            commit = resolve;
+        });
+        let opened = () => {};
+        const open = new Promise<void>((resolve) => {
+            opened = resolve;
+        });
+        const one = db.sql.begin(async (tx) => {
+            await first(tx);
+            opened();
+            await held;
+        });
+        await open;
+        let settled = false;
+        const two = second().finally(() => {
+            settled = true;
+        });
+        for (let i = 0; i < 100 && !settled; i += 1) {
+            const waiting = await db.sql`select 1 from pg_locks where locktype = 'advisory' and not granted`;
+            if (waiting.length) break;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        commit();
+        await Promise.all([one, two]);
+    }
+
+    it('a point an older board has not committed yet gets the org of a binding committed meanwhile', async () => {
+        const session = `race-point-first-${randomUUID()}`;
+        await interleave(
+            (tx) => point({ org: null, session, value: 1, time: '2026-08-01T10:00:00Z' }, tx),
+            () => bind(A, randomUUID(), session)
+        );
+        expect(await orgOfPoint(session)).toBe(A);
+    });
+
+    it('a point an older board writes while a binding is uncommitted gets that binding’s org', async () => {
+        const session = `race-binding-first-${randomUUID()}`;
+        await interleave(
+            (tx) => bind(A, randomUUID(), session, tx),
+            () => point({ org: null, session, value: 1, time: '2026-08-01T10:00:00Z' })
+        );
+        expect(await orgOfPoint(session)).toBe(A);
+    });
 });
