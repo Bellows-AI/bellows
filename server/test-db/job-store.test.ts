@@ -400,12 +400,27 @@ describe.skipIf(!enabled)('job store', () => {
         it('mints a token at the claim of a row that holds none, then keeps it through an adoption', async () => {
             const { id } = await queue('echo hi');
             await sql`update job set ingest_token = null where id = ${id}`;
+            // A null token never matches: not a null-for-null comparison, not any token.
+            expect(await orgOfIngest(id, ABSENT)).toBeNull();
             const first = await store.claim('w1', LEASE_SECONDS);
             expect(first!.ingestToken).toMatch(/^[0-9a-f-]{36}$/);
             await expireLease(sql, id);
             const second = await store.claim('w2', LEASE_SECONDS);
             expect(second!.ingestToken).toBe(first!.ingestToken);
             expect(await orgOfIngest(id, first!.ingestToken)).toBe(ORG);
+        });
+
+        // A row a pre-column claim runs holds no token: the adoption that takes it over mints one,
+        // and the adopted runner exports under it from then on.
+        it('mints a token at the adoption of a running row that holds none', async () => {
+            const { id } = await queue('echo hi');
+            await store.claim('w1', LEASE_SECONDS);
+            await sql`update job set ingest_token = null where id = ${id}`;
+            expect(await orgOfIngest(id, ABSENT)).toBeNull();
+            await expireLease(sql, id);
+            const adopted = await store.claim('w2', LEASE_SECONDS);
+            expect(adopted!.ingestToken).toMatch(/^[0-9a-f-]{36}$/);
+            expect(await orgOfIngest(id, adopted!.ingestToken)).toBe(ORG);
         });
 
         it('keeps resolving within the tail grace after the verdict, then stops', async () => {

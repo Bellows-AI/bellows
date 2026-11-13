@@ -5,26 +5,12 @@
 -- server/src/db/jobs/job-store-org-resolvers.ts, never exported. This file must contain NO `create extension`, per
 -- 005's header.
 --
--- The column is added with no default, so the add is a catalog change and no table rewrite (a volatile default in the
--- `add` would rewrite every row under the boot lock). New rows take their token from the default set apart. Of the
--- existing rows only an unfinished one can still be claimed, and those are backfilled here in bounded batches; a claim
--- also fills any row still without one (job-store-claim.ts), so a finished row stays null and never resolves. The
--- column becomes `not null` a release later, once no running code can leave it unset (docs/persistence.md).
+-- Metadata only, no row touched: the boot applies every pending file in one transaction, so a backfill here would hold
+-- the add's exclusive lock for its whole length. The add has no default, so it is a catalog change (no rewrite); the
+-- default set apart applies to rows inserted from now on (no rewrite either). An existing row stays null until its
+-- next claim — a takeover included — fills it (job-store-claim.ts, job-store-reviews.ts); a null never matches a
+-- presented token, so such a row's exports are refused until then. Rows never claimed again (finished ones) stay null,
+-- so the column does not become `not null` until a later data migration fills them (docs/persistence.md).
 
 alter table job add column if not exists ingest_token uuid;
 alter table job alter column ingest_token set default gen_random_uuid();
-
-do $$
-declare
-    filled integer;
-begin
-    loop
-        update job set ingest_token = gen_random_uuid()
-        where id in (
-            select id from job where ingest_token is null and finished_at is null limit 1000
-        );
-        get diagnostics filled = row_count;
-        exit when filled = 0;
-    end loop;
-end
-$$;

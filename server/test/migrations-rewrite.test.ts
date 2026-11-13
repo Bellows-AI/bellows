@@ -34,12 +34,14 @@ describe('144: the per-row ingest token', () => {
         expect(sql).toMatch(/alter table job alter column ingest_token set default gen_random_uuid\(\);/);
     });
 
-    // Only a row a claim may still run needs a token now (a claim fills any other one): the backfill
+    // The boot runs every pending file in one transaction, so a backfill here would hold the add's
+    // exclusive lock for its whole length. Existing rows take their token lazily: a claim fills a
+    // missing one (job-store-claim.ts, job-store-reviews.ts) and verification never matches a null.
     // walks the unfinished rows in bounded batches.
-    it('backfills the unfinished rows in bounded batches', () => {
-        expect(sql).toMatch(/finished_at is null/);
-        expect(sql).toMatch(/limit \d+/);
-        expect(sql).toMatch(/loop/);
+    it('is metadata only: no backfill, no row touched', () => {
+        expect(sql).not.toMatch(/\bupdate\b/i);
+        expect(sql).not.toMatch(/\bdo\s+\$\$/i);
+        expect(sql.trim().split(/;\s*/).filter(Boolean)).toHaveLength(2);
     });
 
     // A `set not null` is a contract: it waits a release past the last code that may write a null
