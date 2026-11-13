@@ -4,7 +4,7 @@ import { loadConfig } from '../src/config.js';
 import { type AuthStore, createAuthStore } from '../src/auth/store.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
-import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { CreateJobStoreDeps, JobStore } from '../src/db/jobs/job-store-types.js';
 import { OrgInactiveError } from '../src/db/org-status.js';
 import { PlanLimitError, type PlanLimits, planLimits } from '../src/db/plan-limits.js';
 import type { DeploymentMode } from '@factory-ai/core';
@@ -236,4 +236,60 @@ describe.skipIf(!enabled)('a self-hosted board', () => {
         await queued(rowless);
         expect(await storeFor(rowless, 'self-hosted', {}).claim('w', LEASE_SECONDS)).not.toBeNull();
     });
+});
+
+describe.skipIf(!enabled)('a status change during a claim', () => {
+    type PlanReader = NonNullable<CreateJobStoreDeps['plan']>;
+
+    /** A plan reader whose first read waits for `release()`: the claim has reserved its row and holds no lock. */
+    function pausedReader() {
+        let open!: () => void;
+        let enter!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            open = resolve;
+        });
+        const entered = new Promise<void>((resolve) => {
+            enter = resolve;
+        });
+        let first = true;
+        const readFor: PlanReader['readFor'] = async () => {
+            if (first) {
+                first = false;
+                enter();
+                await gate;
+            }
+            return { config: null, services: [], revision: null, error: null };
+        };
+        return { readFor, entered, release: () => open() };
+    }
+
+    it.each(['suspend', 'refuse'] as const)(
+        'an org the operator %ss while its claim reads the plan starts nothing',
+        async (action) => {
+            const org = await signedInOrg();
+            const id = await craftJob({ sql, org, author: '' }, { author: null });
+            const reader = pausedReader();
+            const store = createJobStore({
+                sql,
+                orgId: org,
+                planDefaults: FREE,
+                deploymentMode: 'cloud',
+                plan: reader,
+            });
+            const pending = store.claim('w', LEASE_SECONDS);
+            try {
+                await reader.entered;
+                expect(await auth.setOrgStatus(org, action, OPERATOR.id)).toMatchObject({ outcome: 'changed' });
+            } finally {
+                reader.release();
+            }
+            expect(await pending).toBeNull();
+            const [row] = await sql<{ status: string }[]>`select status from job where id = ${id}`;
+            expect(row?.status).toBe('queued');
+
+            // Reactivated, the same row is claimed.
+            await auth.setOrgStatus(org, 'activate', OPERATOR.id);
+            expect((await store.claim('w', LEASE_SECONDS))?.id).toBe(id);
+        }
+    );
 });

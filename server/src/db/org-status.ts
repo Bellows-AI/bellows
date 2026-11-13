@@ -29,16 +29,40 @@ export class OrgInactiveError extends Error {
     }
 }
 
-/** In cloud mode, throws `OrgInactiveError` unless the org's row is `active`. Self-hosted: never. */
+/**
+ * The org's status read under `for share`, to the end of the caller's transaction: a status change takes the row
+ * `for no key update`, so it waits for the create or claim that read `active` to commit, and that create or claim
+ * waits for a status change already in flight. Lock order: whatever job row or thread lock the caller holds, then
+ * the organization row; a status change locks no job row. Null when the org has no row.
+ */
+async function lockedStatus(tx: TransactionSql, orgId: string): Promise<OrgStatus | null> {
+    const [row] = await tx<{ status: OrgStatus }[]>`select status from organization where id = ${orgId} for share`;
+    return row?.status ?? null;
+}
+
+/** In cloud mode, throws `OrgInactiveError` unless the org's row is `active` (held, `lockedStatus`). Self-hosted: never. */
 export async function refuseInactiveOrg(
-    sql: Sql | TransactionSql,
+    tx: TransactionSql,
     orgId: string,
     deploymentMode: DeploymentMode
 ): Promise<void> {
     if (deploymentMode !== CLOUD) return;
-    const [row] = await sql<{ status: OrgStatus }[]>`select status from organization where id = ${orgId}`;
-    if (row?.status === 'active') return;
-    throw new OrgInactiveError(row ? (row.status as Exclude<OrgStatus, 'active'>) : null);
+    const status = await lockedStatus(tx, orgId);
+    if (status === 'active') return;
+    throw new OrgInactiveError(status);
+}
+
+/**
+ * The claim's acquisition re-check (`job-store-connections.ts:queuedRowHeld`), under the job row and thread locks:
+ * in cloud mode, whether the org is still `active` (held, `lockedStatus`). An operator's suspend that landed while
+ * the claim read the plan wins, and one in flight waits for the acquisition.
+ */
+export async function orgActiveForClaim(
+    tx: TransactionSql,
+    orgId: string,
+    deploymentMode: DeploymentMode
+): Promise<boolean> {
+    return deploymentMode !== CLOUD || (await lockedStatus(tx, orgId)) === 'active';
 }
 
 /** The claim's org filter for new work: in cloud mode the row's org must exist and be `active`. */
@@ -97,7 +121,7 @@ async function setOrgStatus(
 ): Promise<OrgStatusChange> {
     return sql.begin(async (tx) => {
         const [org] = await tx<OperatorOrgView[]>`
-            select id, name, status from organization where id = ${orgId} for update
+            select id, name, status from organization where id = ${orgId} for no key update
         `;
         if (!org) return { outcome: 'missing' as const };
         const to = STATUS_OF[action];

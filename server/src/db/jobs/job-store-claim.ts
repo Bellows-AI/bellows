@@ -5,7 +5,7 @@
  */
 
 import { OBJECTIVE_MODE, type JobMode } from '@factory-ai/core';
-import { type ClaimConnections, claimConnectionsInTx, recordUnboundRequirements } from './job-store-connections.js';
+import { type ClaimConnections, claimConnectionsInTx, queuedRowHeld } from './job-store-connections.js';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
@@ -410,9 +410,10 @@ async function acquireCandidate(
         if (!locked) return NEXT_CANDIDATE;
         if (!(await tryThreadLock(tx, orgId, reserved))) return REFUSED;
         probe.locked();
-        // A required integration with no live binding is a requirement, not a claim: checked under the
-        // locks and before any admission slot is taken, restoring the reservation's deferral.
-        if (locked.status === 'queued' && (await recordUnboundRequirements(tx, orgId, rootJobId))) {
+        // A queued row held back — its org suspended or refused meanwhile, or a required integration with no live
+        // binding — is not a claim: checked under the locks and before any admission slot is taken, restoring the
+        // reservation's deferral.
+        if (locked.status === 'queued' && (await queuedRowHeld(tx, ctx, rootJobId))) {
             await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
                      where org_id = ${orgId} and id = ${reserved.id}`;
             return NEXT_CANDIDATE;
