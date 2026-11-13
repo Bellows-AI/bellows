@@ -41,7 +41,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         telemetryTtlMs: DEFAULT_TELEMETRY_TTL_MS,
         // Matches loadConfig's default. Note that this is only what the *config* says: the app is
         // built with no auth store at all unless a test passes one, so by default no hook runs.
-        auth: { mode: 'none', ingestToken: null },
+        auth: { mode: 'none' },
         // No webhook secret, so no installation webhook route — the tests that want one set it.
         webhookSecret: null,
         artifacts: {
@@ -84,7 +84,6 @@ export function githubAuth(overrides: Partial<Extract<AuthConfig, { mode: 'githu
         sessionTtlMs: FORTNIGHT_MS,
         cookieSecure: false,
         publicUrl: 'http://127.0.0.1:8080',
-        ingestToken: null,
         jobBoardToken: TEST_JOB_BOARD_TOKEN,
         authorizeUrl: 'https://github.test/login/oauth/authorize',
         tokenUrl: 'https://github.test/login/oauth/access_token',

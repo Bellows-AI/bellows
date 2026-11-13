@@ -31,6 +31,7 @@ import { recordDockerKill } from '../src/docker/docker-teardown.js';
 import { serviceRunArgs } from '../src/services.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
+import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import { TASK_MOUNT, TASK_ROOT_LABEL, boardIdentity, taskRootOf, taskVolumeName } from '../src/task-volume.js';
 import { bindingWriteArgv, gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
 import {
@@ -62,6 +63,7 @@ const job: BoardJob = {
     lastAttempt: false,
     claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
+    ingestToken: '33333333-3333-4333-8333-333333333333',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
     executorRefusal: null,
@@ -434,6 +436,37 @@ describe('creating and starting the group', () => {
         await createGroup(plain.deps, job, SESSION);
         expect(plain.calls.some((argv) => argv.includes(reviewerName(job)))).toBe(false);
         expect(plain.calls.find((argv) => argv.includes(supervisorName(job)))).not.toContain('SUPERVISOR_REVIEWER=1');
+    });
+
+    // The image's baked telemetry config names the compose collector, and managed settings outrank
+    // the review's env: the reviewer gets the driver-rendered config, as the agent does, right after
+    // its create. It names no credential — each review's rides that review's own env.
+    it('copies the rendered telemetry config into the reviewer container after its create', async () => {
+        const inputs: { argv: string[]; input?: Buffer }[] = [];
+        const { deps } = recorder();
+        const inner = deps.execDocker;
+        await createGroup(
+            {
+                ...deps,
+                execDocker: async (argv: string[], options?: { input?: Buffer }) => {
+                    inputs.push({ argv, ...(options?.input ? { input: options.input } : {}) });
+                    return inner(argv);
+                },
+            },
+            reviewing,
+            SESSION
+        );
+        const create = inputs.findIndex(
+            (call) => call.argv[0] === 'create' && call.argv.includes(reviewerName(reviewing))
+        );
+        const cp = inputs.findIndex(
+            (call) => call.argv[0] === 'cp' && call.argv.includes(`${reviewerName(reviewing)}:/etc`)
+        );
+        expect(create).toBeGreaterThanOrEqual(0);
+        expect(cp).toBeGreaterThan(create);
+        const rendered = telemetryConfig(reviewing.executorType, config.otelEndpoint);
+        expect(inputs[cp]!.input?.equals(telemetryConfigTar(rendered))).toBe(true);
+        expect(rendered.body).not.toContain(reviewing.ingestToken);
     });
 
     it('removes the whole group, the reviewer container included, when the daemon refuses the reviewer', async () => {

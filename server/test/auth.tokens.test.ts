@@ -573,7 +573,7 @@ describe('AUTH_MODE=none', () => {
     it('ignores access-token bearers, like every credential in that mode', async () => {
         const store = memoryAuthStore();
         store.seedLocalUser('default');
-        const server = await build({ mode: 'none', ingestToken: null }, store);
+        const server = await build({ mode: 'none' }, store);
 
         const response = await server.inject({
             method: 'POST',
@@ -588,7 +588,7 @@ describe('AUTH_MODE=none', () => {
     it('ignores a bearer on /me and answers the stand-in caller', async () => {
         const store = memoryAuthStore();
         store.seedLocalUser('default');
-        const server = await build({ mode: 'none', ingestToken: null }, store);
+        const server = await build({ mode: 'none' }, store);
 
         const response = await server.inject({
             method: 'GET',

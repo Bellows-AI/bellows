@@ -8,6 +8,8 @@ const WIRE = {
     attempts: 1,
     claimSeq: 1,
     leaseToken: 'token-1',
+    // The telemetry export credential the runner's config is rendered with: no claim runs without it.
+    ingestToken: 'ingest-1',
     leaseExpiresAt: '2026-08-21T12:05:00.000Z',
 };
 

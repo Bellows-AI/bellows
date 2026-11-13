@@ -40,7 +40,7 @@ export type Principal =
     | { kind: 'user'; caller: Caller }
     | { kind: 'worker'; orgId: string | null }
     | { kind: 'org'; token: OrgTokenIdentity }
-    | { kind: 'job'; orgId: string };
+    | { kind: 'job'; orgId: string; jobId: string };
 
 declare module 'fastify' {
     interface FastifyRequest {
@@ -102,6 +102,8 @@ const CONNECTOR_ROUTES: readonly RegExp[] = [
 
 export const JOB_ID_HEADER = 'x-factory-job-id';
 export const LEASE_TOKEN_HEADER = 'x-factory-job-lease-token';
+/** With `x-factory-job-id`, a runner's telemetry export credential (`job.ingest_token`). */
+export const INGEST_TOKEN_HEADER = 'x-factory-ingest-token';
 
 /**
  * What an organization token may reach, and nothing else — an allowlist, because a refusal list
@@ -262,6 +264,11 @@ export interface AuthPluginDeps {
      */
     orgOfLease?: ((jobId: string, leaseToken: string) => Promise<string | null>) | undefined;
     /**
+     * The org-less resolver for the OTLP routes' runner credential: a job id and that job's ingest
+     * token (`createOrgOfIngest`). Absent in tests that predate it, where no runner export resolves.
+     */
+    orgOfIngest?: ((jobId: string, ingestToken: string) => Promise<string | null>) | undefined;
+    /**
      * The org resolvers for the worker routes, built in main.ts from the same org-less SQL as
      * `orgOfLease`. The shared secret authenticates the DRIVER, not an org — so the org a
      * job-scoped worker call operates on comes from the row it names (`createOrgOfJob`,
@@ -352,16 +359,45 @@ export async function resolveBearer(request: FastifyRequest, reply: FastifyReply
     return true;
 }
 
-async function enforceIngest(auth: AuthConfig, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    // Optional, because the two callers are a collector on the compose network and a plugin
-    // installed on developer laptops — requiring it would break both with no migration path.
-    // Unset means these routes behave exactly as they did before accounts existed.
-    //
-    // A header, never a query parameter: a query parameter lands in every access log.
-    if (!auth.ingestToken) return;
-    const provided = request.headers['x-factory-ingest-token'];
-    if (typeof provided === 'string' && secretsMatch(provided, auth.ingestToken)) return;
-    await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid ingest token', code: ERROR_CODES.UNAUTHENTICATED });
+interface IngestAuthDeps {
+    auth: AuthConfig;
+    store: AuthStore;
+    ingestOrgOf: (jobId: string, ingestToken: string) => Promise<string | null>;
+}
+
+/**
+ * The OTLP export routes. A runner's export names the attempt it came from — the job id and that
+ * job's ingest token, rendered into its telemetry config and carried per request through the
+ * collector — and the attempt's answer IS the org; a laptop exporter presents its member's personal
+ * token. There is no deployment-wide secret: it could say an export is genuine, never whose it is.
+ *
+ * A present credential that does not resolve is a 401 with no fall-through, the branch pair's
+ * rule. A lookup that throws is not a refusal: the hook answers 503, which the collector retries.
+ */
+async function enforceIngest(deps: IngestAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const { auth, store, ingestOrgOf } = deps;
+    if (auth.mode === 'none') return;
+
+    const jobId = request.headers[JOB_ID_HEADER];
+    const ingestToken = request.headers[INGEST_TOKEN_HEADER];
+    if (typeof jobId === 'string' && jobId && typeof ingestToken === 'string' && ingestToken) {
+        // Both are uuids, and postgres refuses to cast anything else: a malformed header is the
+        // same refusal as a credential that does not resolve, answered without a round trip.
+        const orgId = UUID.test(jobId) && UUID.test(ingestToken) ? await ingestOrgOf(jobId, ingestToken) : null;
+        if (!orgId) {
+            await reply
+                .code(HTTP_UNAUTHORIZED)
+                .send({ error: 'Unknown job or ingest token', code: ERROR_CODES.UNAUTHENTICATED });
+            return;
+        }
+        request.auth = { kind: 'job', orgId, jobId };
+        return;
+    }
+
+    if (await resolveBearer(request, reply, store)) return;
+    await reply
+        .code(HTTP_UNAUTHORIZED)
+        .send({ error: 'Telemetry ingest needs a credential', code: ERROR_CODES.UNAUTHENTICATED });
 }
 
 interface BranchAuthDeps {
@@ -393,7 +429,7 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
                 .send({ error: 'Unknown job or lease', code: ERROR_CODES.UNAUTHENTICATED });
             return;
         }
-        request.auth = { kind: 'job', orgId };
+        request.auth = { kind: 'job', orgId, jobId };
         return;
     }
 
@@ -698,13 +734,14 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
  */
 export async function registerAuth(
     app: FastifyInstance,
-    { config, store, orgOfLease, orgOfJob, orgOfReclaim, oauth }: AuthPluginDeps
+    { config, store, orgOfLease, orgOfIngest, orgOfJob, orgOfReclaim, oauth }: AuthPluginDeps
 ): Promise<void> {
     const { auth } = config;
     await app.register(fastifyCookie);
 
     const resolveUser = createUserResolver({ config, store });
     const leaseOrgOf = orgOfLease ?? (async () => null);
+    const ingestOrgOf = orgOfIngest ?? (async () => null);
     const jobOrgOf = orgOfJob ?? (async () => null);
     const reclaimOrgOf = orgOfReclaim ?? (async () => null);
 
@@ -712,7 +749,7 @@ export async function registerAuth(
 
     type Enforcer = (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     const enforcers: Record<Exclude<Requirement, 'open'>, Enforcer> = {
-        ingest: (request, reply) => enforceIngest(auth, request, reply),
+        ingest: (request, reply) => enforceIngest({ auth, store, ingestOrgOf }, request, reply),
         connector: enforceConnector,
         commerce: (request, reply) => enforceCommerce(config.commerce, request, reply),
         mcp: (request, reply) => enforceMcp({ config, oauth, resolveUser }, request, reply),

@@ -56,16 +56,6 @@ spec:
                         containerPort: 4318
                       - name: health
                         containerPort: 13133
-                  env:
-                      # For the exporter's X-Factory-Ingest-Token header (see files/collector.yaml).
-                      # Read from the same Secret key the dashboard reads; optional, because a
-                      # bring-your-own Secret for an open board may not carry the key at all.
-                      - name: INGEST_TOKEN
-                        valueFrom:
-                            secretKeyRef:
-                                name: {{ include "factory.secretName" . }}
-                                key: ingest-token
-                                optional: true
                   {{- with .Values.collector.resources }}
                   resources:
                       {{- toYaml . | nindent 22 }}

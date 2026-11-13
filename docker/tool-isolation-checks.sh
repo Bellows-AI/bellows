@@ -42,6 +42,13 @@ iso_check 'a tool signalling everything it may leaves the CLI side running' 'too
 iso_check 'a tool reaches neither the broker, the mailboxes nor the CLI'"'"'s environment' 'closed closed closed closed' \
     agent -e T='for p in /run/factory-tool /factory/in /factory/out; do ls "$p" >/dev/null 2>&1 || echo closed; done
         cat /proc/1/environ >/dev/null 2>&1 || echo closed' -- sh -c "$TOOL_SHELL"' -c "$T"'
+# The attempt's telemetry credential is in the CLI's environment for its OTLP exporter (and, for
+# opencode, in a copy under the CLI's HOME only its uid can open): a tool sees neither.
+iso_check 'a tool never sees the telemetry export credential' 'unset unset closed' \
+    agent -e OTEL_EXPORTER_OTLP_HEADERS=x-factory-ingest-token=probe -e OTEL_EXPORTER_OTLP_LOGS_HEADERS=x=y \
+    -e T='echo "${OTEL_EXPORTER_OTLP_HEADERS-unset}" "${OTEL_EXPORTER_OTLP_LOGS_HEADERS-unset}"
+        ls /home/node/.factory-otel >/dev/null 2>&1 || echo closed' -- \
+    sh -c 'mkdir -m 700 -p /home/node/.factory-otel && '"$TOOL_SHELL"' -c "$T"'
 iso_check 'a root-owned shared out mailbox turns sticky, and a tool cannot move the agent'"'"'s own' '1777 kept' \
     agent --tmpfs /factory/out:mode=0777 -e T='mv /factory/out/agent /factory/out/x 2>/dev/null && echo moved
         rm -rf /factory/out/agent 2>/dev/null; [ -d /factory/out/agent ] && echo kept' -- \

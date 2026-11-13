@@ -8,6 +8,7 @@ import {
     VOLUME_EXPORT_RUN_LABEL,
 } from '../labels.js';
 import { CLAUDE_CODE } from '../executors.js';
+import { OTLP_HEADERS_ENV, TELEMETRY_CONFIG_VOLUME } from '../telemetry-config.js';
 import { createHash } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
 import { executorImage, type DriverConfig } from '../config.js';
@@ -236,7 +237,9 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
         {
             name: 'RUNNER_LEASE_TOKEN',
             valueFrom: { secretKeyRef: { name: secretName(job), key: 'RUNNER_LEASE_TOKEN' } },
-        }
+        },
+        // The telemetry export credential, the same way: the CLI's OTLP exporter reads it here.
+        { name: OTLP_HEADERS_ENV, valueFrom: { secretKeyRef: { name: secretName(job), key: OTLP_HEADERS_ENV } } }
     );
     return env;
 }
@@ -381,13 +384,19 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
  * supervisor for the whole group, running the review loop over the review mailbox only the two of
  * them mount (`scripts/review-loop.sh`). It runs as REVIEWER_UID — not the CLI's, the tool's or the
  * gate's — so none of them can signal a review, and it holds nothing a publication needs: no
- * publish token, no credential helper, no claim env and no Secret reference but the model credentials Secret the agent also reads. Each request carries the
+ * publish token, no credential helper, no claim env and no Secret reference but the model credentials Secret the agent also reads — of the attempt Secret it mounts the telemetry-config key alone, which names no credential. Each request carries the
  * review's own environment and is gone before the review starts. Its tree is the task volume,
  * read-only (the shared clone and the review's worktree are in it), but for its HOME, a fixed
  * directory of that tree it mounts read-write (`REVIEWER_TREE_DIR`). Sized idle (`reviewerResourcesField`) and resized in place for a review.
  */
 function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContainer {
     const hardened = containerHardeningField().securityContext;
+    // The agent's own telemetry-config mount (one key of the pod's telemetry volume): the image's
+    // baked file names the compose collector and outranks a review's env. It names no credential;
+    // each review's own rides that review's env (review-step.ts).
+    const telemetry = runnerVolumesField(config, job, secretName(job)).mounts.find(
+        (mount) => mount.name === TELEMETRY_CONFIG_VOLUME
+    );
     return {
         name: REVIEWER_CONTAINER,
         image: executorImage(config, job.executorType),
@@ -404,6 +413,7 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
             // The one place it writes: its HOME, a fixed directory of the member tree (the session
             // state a lost pod's replacement resumes from), mounted over the read-only tree above.
             taskMount({ subPath: REVIEWER_TREE_DIR, mountPath: REVIEWER_HOME }),
+            ...(telemetry ? [telemetry] : []),
         ],
     };
 }

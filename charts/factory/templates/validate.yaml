@@ -109,9 +109,6 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if not (has .Values.deploymentMode (list "self-hosted" "cloud")) }}
 {{- fail (printf "deploymentMode must be self-hosted or cloud, got %q" .Values.deploymentMode) }}
 {{- end }}
-{{- if and (eq .Values.deploymentMode "cloud") .Values.secret.create (not .Values.telemetry.ingestToken) }}
-{{- fail "deploymentMode cloud requires telemetry.ingestToken: a cloud board never accepts unauthenticated telemetry" }}
-{{- end }}
 {{- if eq .Values.deploymentMode "cloud" }}
 {{- range $name := list "maxRunning" "maxRunningPerOrg" }}
 {{- if not (toString (index $.Values.dashboard.admission $name)) }}

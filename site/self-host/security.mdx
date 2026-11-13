@@ -159,7 +159,7 @@ MCP is off unless you set `mcp.enabled`. It requires an `https` public URL, sinc
 - IPv6 egress is not covered. Every rule is IPv4.
 - A NetworkPolicy does not restrict HTTP routes. A runner can call any public URL.
 - The driver's metrics port (`driver.metricsPort`, default `9464`) answers only with `Authorization: Bearer <JOB_BOARD_TOKEN>`. It has no Service. The driver refuses a metrics port with no token off loopback.
-- The OTLP collector accepts unauthenticated telemetry unless you set `telemetry.ingestToken`.
+- With `AUTH_MODE=github` the dashboard accepts a runner's telemetry only under that task attempt's own credential, which the driver writes into the runner and the collector forwards. A laptop exporter sends a personal access token instead (`OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>`).
 - On EKS, also set the node's metadata hop limit to 1 so a pod cannot reach node credentials. See [Kubernetes and Helm](/self-host/kubernetes).
 
 ## Uploads

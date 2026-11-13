@@ -104,7 +104,7 @@ By default the chart creates its Secrets from your values. For production, creat
     | `job-board-token` | `secret.jobBoardToken` |
     | `github-webhook-secret` | `secret.githubWebhookSecret` |
     | `atlassian-client-secret` | `secret.atlassianClientSecret` |
-    | `ingest-token`, `commerce-token` | Optional |
+    | `commerce-token` | Optional |
   </Step>
   <Step title="Create the secret-store Secret">
     Set `secretStore.existingSecret` to its name. It holds `operation-key`, `fingerprint-key`, and with the `database` backend also `data-keys`. `secretStore.activeKeyId` is not secret and always comes from values.

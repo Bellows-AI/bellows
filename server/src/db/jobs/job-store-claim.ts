@@ -436,6 +436,9 @@ async function acquireCandidate(
                 -- still holding it is told to retry with the current pair, never refused for good. A claim of a
                 -- queued row supersedes no running attempt.
                 prior_lease_token = case when status = 'running' then lease_token else null end,
+                -- The telemetry export credential (144): never rotated, so an adopted runner keeps exporting
+                -- under it; minted here only for a row from before the column that holds none.
+                ingest_token     = coalesce(ingest_token, gen_random_uuid()),
                 -- A lost attempt is recorded, not spent: the interruption names the claim it
                 -- supersedes, so an adoption of that claim's runner is the same disruption.
                 attempts         = attempts + case when ${recovering} then 0 else 1 end,
@@ -483,7 +486,7 @@ async function acquireCandidate(
             -- least once with its command in the transcript". A fresh or crashed follow-up has
             -- never been parked, so its command still has to go out; a suspended one settles
             -- stopped, and is never claimed again.
-            returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at,
+            returning id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
                       (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
                       session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
@@ -954,6 +957,7 @@ export function buildClaimResult(
         lastAttempt: row.last_attempt,
         claimSeq: Number(row.claim_seq),
         leaseToken: row.lease_token,
+        ingestToken: row.ingest_token,
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,
         executorRefusal,

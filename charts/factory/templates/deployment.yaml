@@ -238,12 +238,6 @@ spec:
                         value: {{ .Values.deploymentMode | quote }}
                       - name: COOKIE_SECURE
                         value: {{ .Values.auth.cookieSecure | quote }}
-                      - name: INGEST_TOKEN
-                        valueFrom:
-                            secretKeyRef:
-                                name: {{ include "factory.secretName" . }}
-                                key: ingest-token
-                                optional: true
                       # The App's installation webhook: present, the route verifies GitHub's HMAC
                       # against it; empty, the route does not exist at all.
                       - name: GITHUB_WEBHOOK_SECRET

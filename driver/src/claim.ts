@@ -12,6 +12,7 @@ import { opencodeConfigContent } from './master-prompt.js';
 import { WORKSPACE_PATH, checkoutDir } from './publish/publish.js';
 import { TASK_MOUNT, UUID, taskRootOf } from './task-volume.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
+import { OTLP_HEADER_ENV_NAMES, OTLP_HEADERS_ENV, otlpHeadersOf } from './telemetry-config.js';
 
 export { UUID };
 export { attachmentsDir } from './task-volume.js';
@@ -222,6 +223,8 @@ export const RESERVED_ENV_NAMES = [
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',
     'RUNNER_LEASE_TOKEN',
+    // The attempt's telemetry export credential (telemetry-config.ts), under every OTLP header name.
+    ...OTLP_HEADER_ENV_NAMES,
     'BELLOWS_SESSION_ID',
     // The driver's grant alone: a member value would let a follow-up start its parent's lost
     // conversation empty instead of failing.
@@ -446,6 +449,8 @@ export function envFileBody(job: BoardJob, config?: DriverConfig): string {
     if (config) {
         lines.push(envLine(job, 'RUNNER_JOB_ID', job.id));
         lines.push(envLine(job, 'RUNNER_LEASE_TOKEN', job.leaseToken));
+        // The telemetry export credential the CLI's OTLP exporter reads from its environment.
+        lines.push(envLine(job, OTLP_HEADERS_ENV, otlpHeadersOf(job)));
     }
     return lines.length ? `${lines.join('\n')}\n` : '';
 }

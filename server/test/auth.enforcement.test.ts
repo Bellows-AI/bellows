@@ -17,6 +17,7 @@ import type { OrgRegistry } from '../src/orgs.js';
 import { batchRoutes } from '../src/routes/batches/batches.js';
 import { readVersion } from '../src/version.js';
 import type { MemoryAuthStore } from './helpers.js';
+import { storeOutage } from './helpers-outage.js';
 import { memoryUploadCapabilities } from './helpers-upload-capability.js';
 import {
     buildWithAuth,
@@ -45,6 +46,7 @@ import {
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
+const INGEST = '33333333-3333-4333-8333-333333333333';
 const WORKER_TOKEN = TEST_JOB_BOARD_TOKEN;
 
 const track = trackApps();
@@ -91,9 +93,15 @@ async function build(
     auth: AuthConfig,
     store: MemoryAuthStore,
     orgOfLease?: AppDeps['orgOfLease'],
-    // When set, the registry answers null for every org id outside it — the production shape,
-    // where an org that does not exist resolves to nothing.
-    orgsFor?: readonly string[]
+    {
+        orgsFor,
+        orgOfIngest,
+    }: {
+        // When set, the registry answers null for every org id outside it — the production shape,
+        // where an org that does not exist resolves to nothing.
+        orgsFor?: readonly string[];
+        orgOfIngest?: AppDeps['orgOfIngest'];
+    } = {}
 ) {
     const app = await buildWithAuth(
         auth,
@@ -104,6 +112,10 @@ async function build(
             // attempt the constants below describe; a test passes its own to model a lost lease.
             orgOfLease:
                 orgOfLease ?? (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? ORG : null)),
+            // The export credential the rendered telemetry config carries: the same attempt, its ingest token.
+            orgOfIngest:
+                orgOfIngest ??
+                (async (jobId, ingestToken) => (jobId === JOB_ID && ingestToken === INGEST ? ORG : null)),
             // The worker routes' org resolvers: the one job the constants describe, nothing else.
             orgOfJob: async (jobId) => (jobId === JOB_ID ? ORG : null),
             orgOfReclaim: async (reclaimId) => (reclaimId === JOB_ID ? ORG : null),
@@ -768,7 +780,7 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
 
     it('404s a job-scoped worker call whose id is not a uuid', async () => {
         const store = memoryAuthStore();
-        const server = await build(githubAuth(), store, undefined, [ORG]);
+        const server = await build(githubAuth(), store, undefined, { orgsFor: [ORG] });
 
         const response = await server.inject({
             method: 'POST',
@@ -785,7 +797,7 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
 
     it('404s a reclaim ack whose id is not a uuid', async () => {
         const store = memoryAuthStore();
-        const server = await build(githubAuth(), store, undefined, [ORG]);
+        const server = await build(githubAuth(), store, undefined, { orgsFor: [ORG] });
 
         const response = await server.inject({
             method: 'POST',
@@ -971,47 +983,113 @@ describe('the person routes need a session', () => {
     });
 });
 
-describe('telemetry ingest', () => {
-    it('stays open when no ingest token is configured', async () => {
-        // Unset must keep behaving exactly as it did before accounts existed, or every collector
-        // and every developer laptop breaks on upgrade with no migration path.
+describe('telemetry ingest needs the attempt’s ingest credential in github mode', () => {
+    const credential = { 'x-factory-job-id': JOB_ID, 'x-factory-ingest-token': INGEST };
+    const exportTo = (url: string, headers: Record<string, string> = {}) => ({
+        method: 'POST' as const,
+        url,
+        payload: url.endsWith('/metrics') ? { resourceMetrics: [] } : { resourceLogs: [] },
+        headers,
+    });
+
+    // No shared deployment secret any more: every export names the attempt it came from, so the
+    // org a point lands in is the attempt's, never whatever a caller on the collector's port claims.
+    it.each(['/api/otlp/v1/metrics', '/api/otlp/v1/logs'])('refuses %s with no credential', async (url) => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject(exportTo(url));
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(response.json().code).toBe('UNAUTHENTICATED');
+    });
+
+    it.each(['/api/otlp/v1/metrics', '/api/otlp/v1/logs'])(
+        'accepts %s under the attempt’s job id + ingest token',
+        async (url) => {
+            const server = await build(githubAuth(), memoryAuthStore());
+            const response = await server.inject(exportTo(url, credential));
+            expect(response.statusCode).toBe(HTTP_OK);
+        }
+    );
+
+    // A present credential that does not resolve is final: it never falls through to a bearer
+    // standing behind it, the rule the branch pair and a failed bearer already follow.
+    it('refuses a wrong ingest token, even with a valid personal token behind it', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const caller = store.seedMember(ORG, 'octocat');
+        const token = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        const response = await server.inject(
+            exportTo('/api/otlp/v1/metrics', {
+                'x-factory-job-id': JOB_ID,
+                'x-factory-ingest-token': LEASE,
+                authorization: `Bearer ${token}`,
+            })
+        );
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('refuses a malformed credential without a lookup', async () => {
+        const looked: string[] = [];
+        const server = await build(githubAuth(), memoryAuthStore(), undefined, {
+            orgOfIngest: async (jobId) => {
+                looked.push(jobId);
+                return ORG;
+            },
+        });
+        const response = await server.inject(
+            exportTo('/api/otlp/v1/metrics', { 'x-factory-job-id': 'not-a-uuid', 'x-factory-ingest-token': INGEST })
+        );
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(looked).toEqual([]);
+    });
+
+    // An unconfirmed read is never a verdict: a lookup that failed answers 503, which the
+    // collector retries, never a 401 (dropped for good) and never a 200 (accepted, then lost).
+    it('answers 503 when the credential lookup fails', async () => {
+        const server = await build(githubAuth(), memoryAuthStore(), undefined, {
+            orgOfIngest: async () => {
+                throw storeOutage();
+            },
+        });
+        const response = await server.inject(exportTo('/api/otlp/v1/metrics', credential));
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+    });
+
+    it('accepts a member’s personal access token — the laptop exporter’s credential', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const caller = store.seedMember(ORG, 'octocat');
+        const token = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        const response = await server.inject(exportTo('/api/otlp/v1/metrics', { authorization: `Bearer ${token}` }));
+        expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    it('403s an organization token — ingest is a write', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const token = store.seedAccessToken(ORG, 'org');
+        const response = await server.inject(exportTo('/api/otlp/v1/metrics', { authorization: `Bearer ${token}` }));
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+    });
+
+    // The ingest token is the export's credential only: the branch write keeps the attempt's
+    // job id + lease token pair, which the reporter re-reads from the supervisor on every call.
+    it('does not authorize a branch write', async () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const response = await server.inject({
             method: 'POST',
-            url: '/api/otlp/v1/logs',
-            payload: { resourceLogs: [] },
+            url: '/api/sessions/branch',
+            payload: { agent: 'claude', sessionId: 'abc', repo: 'a/b', branch: 'dev', at: '2026-08-21T10:40:00Z' },
+            headers: credential,
         });
-        expect(response.statusCode).not.toBe(HTTP_UNAUTHORIZED);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
-    it('requires the header once a token is configured', async () => {
-        const server = await build(githubAuth({ ingestToken: 'ingest-secret' }), memoryAuthStore());
-
-        const without = await server.inject({
-            method: 'POST',
-            url: '/api/otlp/v1/logs',
-            payload: { resourceLogs: [] },
-        });
-        expect(without.statusCode).toBe(HTTP_UNAUTHORIZED);
-
-        const with_ = await server.inject({
-            method: 'POST',
-            url: '/api/otlp/v1/logs',
-            payload: { resourceLogs: [] },
-            headers: { 'x-factory-ingest-token': 'ingest-secret' },
-        });
-        expect(with_.statusCode).not.toBe(HTTP_UNAUTHORIZED);
-
-        // The OTLP routes are the ONLY thing the ingest token still reaches. It is a deployment
-        // -wide authenticity check for machine exports, never an org binding — which is exactly
-        // why it must not authorize a branch write (see the branch describe below).
-        const branch = await server.inject({
-            method: 'POST',
-            url: '/api/sessions/branch',
-            payload: { agent: 'claude', sessionId: 'abc', repo: 'a/b', branch: 'dev' },
-            headers: { 'x-factory-ingest-token': 'ingest-secret' },
-        });
-        expect(branch.statusCode).toBe(HTTP_UNAUTHORIZED);
+    it('stays open under AUTH_MODE none, like every other route in it', async () => {
+        const store = memoryAuthStore();
+        store.seedLocalUser('default');
+        const server = await build({ mode: 'none' }, store);
+        const response = await server.inject(exportTo('/api/otlp/v1/metrics'));
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 });
 
@@ -1116,7 +1194,7 @@ describe('the branch route needs an org-bound credential in github mode', () => 
     it('stays open in none mode, like every other route in it', async () => {
         const store = memoryAuthStore();
         store.seedLocalUser('default');
-        const server = await build({ mode: 'none', ingestToken: null }, store, async () => {
+        const server = await build({ mode: 'none' }, store, async () => {
             throw new Error('none mode must not consult the lease');
         });
         const response = await server.inject({ method: 'POST', url: '/api/sessions/branch', payload: report });
@@ -1133,7 +1211,7 @@ describe('AUTH_MODE=none', () => {
          */
         const store = memoryAuthStore();
         store.seedLocalUser('default');
-        const server = await build({ mode: 'none', ingestToken: null }, store);
+        const server = await build({ mode: 'none' }, store);
 
         const response = await server.inject({
             method: 'POST',
@@ -1153,7 +1231,7 @@ describe('AUTH_MODE=none', () => {
          */
         const store = memoryAuthStore();
         store.seedLocalUser('default');
-        const server = await build({ mode: 'none', ingestToken: null }, store);
+        const server = await build({ mode: 'none' }, store);
 
         const response = await server.inject({
             method: 'POST',
@@ -1173,7 +1251,7 @@ describe('AUTH_MODE=none', () => {
          */
         const store = memoryAuthStore();
         store.seedLocalUser('default');
-        const server = await build({ mode: 'none', ingestToken: null }, store);
+        const server = await build({ mode: 'none' }, store);
 
         const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
 
@@ -1346,7 +1424,7 @@ describe('a bridged caller carries scopes the route class is checked against', (
         const store = memoryAuthStore();
         const a = { ...store.seedMember('org-a', 'alice', 'admin'), scopes: ['factory:read' as const] };
         const b = { ...store.seedMember('org-b', 'bob', 'admin'), scopes: ['factory:read' as const] };
-        const server = await build(githubAuth(), store, undefined, ['org-a', 'org-b']);
+        const server = await build(githubAuth(), store, undefined, { orgsFor: ['org-a', 'org-b'] });
         const calls = Array.from({ length: 10 }, () => [
             inject(server, 'GET', '/api/org/members', { Request: bridgedRequestClass(a) }),
             inject(server, 'GET', '/api/org/members', { Request: bridgedRequestClass(b) }),

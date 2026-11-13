@@ -254,6 +254,8 @@ async function leaseRunning(
     await tx`
         update job set
             lease_token = gen_random_uuid(),
+            -- Never rotated (144); minted only for a review row from before the column.
+            ingest_token = coalesce(ingest_token, gen_random_uuid()),
             claim_seq = claim_seq + 1,
             claimed_by = ${caller.claimed_by},
             lease_expires_at = ${caller.lease_expires_at},
@@ -289,6 +291,7 @@ interface ReviewClaimRow {
     max_attempts: number;
     claim_seq: string;
     lease_token: string;
+    ingest_token: string;
     lease_expires_at: Date;
     run_as: string | null;
     session_id: string | null;
@@ -317,7 +320,8 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
     const { orgId, env, executorConfig, deploymentMode } = ctx;
     await recordExecution(tx, orgId, reviewId);
     const [row] = await tx<ReviewClaimRow[]>`
-        select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, execution_user_id as run_as,
+        select id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
+               execution_user_id as run_as,
                session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                review_spec, review_ref, skill_hidden,
                (session_id is not null

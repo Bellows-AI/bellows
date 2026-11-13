@@ -54,6 +54,7 @@ const REQUIRED: Record<string, Check> = {
     attempts: isNumber,
     claimSeq: isNumber,
     leaseToken: isString,
+    ingestToken: isString,
     leaseExpiresAt: isString,
 };
 

@@ -36,6 +36,7 @@ const claimed = (extra: Record<string, unknown> = {}) =>
             attempts: 1,
             claimSeq: 1,
             leaseToken: 'token-1',
+            ingestToken: 'ingest-1',
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
             ...extra,
         }),

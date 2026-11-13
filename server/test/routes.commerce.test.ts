@@ -266,7 +266,7 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
     });
 
     it.each([['github'], ['none']])('without a bearer, or with a wrong one, is 401 in %s mode', async (mode) => {
-        const auth: AuthConfig = mode === 'github' ? githubAuth() : { mode: 'none', ingestToken: null };
+        const auth: AuthConfig = mode === 'github' ? githubAuth() : { mode: 'none' };
         const { writer, calls } = fakeWriter();
         const { app } = await boot({ auth, writer });
         const none = await app.inject({ method: 'PUT', url: `/api/commerce/orgs/${ORG}/plan`, payload: BODY });

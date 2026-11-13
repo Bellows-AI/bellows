@@ -140,8 +140,8 @@ batches:
     enabled: false
 
 # Where this board runs (docs/configuration.md): self-hosted or cloud. Cloud refuses a Claude subscription OAuth token
-# in executor settings, member env and at claim, and refuses to render without telemetry.ingestToken, the
-# dashboard.admission maxRunning and maxRunningPerOrg caps, or any dashboard.planDefaults limit.
+# in executor settings, member env and at claim, and refuses to render without the dashboard.admission maxRunning and
+# maxRunningPerOrg caps, or any dashboard.planDefaults limit.
 deploymentMode: self-hosted
 
 github:
@@ -160,7 +160,6 @@ integrations:
 telemetry:
     source: postgres
     ttlSeconds: '30'
-    ingestToken: ''
 
 database:
     # The chart deploys no database: point this at any managed PostgreSQL 17 — RDS and Aurora

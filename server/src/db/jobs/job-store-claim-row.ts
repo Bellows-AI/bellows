@@ -12,6 +12,7 @@ export interface ClaimCandidateRow {
     max_attempts: number;
     claim_seq: string;
     lease_token: string;
+    ingest_token: string;
     lease_expires_at: Date;
     /** The thread root's `execution_user_id`: who the row runs as, whoever queued it. */
     run_as: string | null;

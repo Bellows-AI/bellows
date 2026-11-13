@@ -59,6 +59,11 @@ check 'onboarding done'   'true'  run --entrypoint node "$IMAGE" -e \
 check 'managed settings are not writable by the runtime user' 'ok' run --entrypoint sh "$IMAGE" -c \
     'f=/etc/claude-code/managed-settings.json; [ ! -w "$f" ] && [ ! -w "${f%/*}" ] && [ "$(stat -c %u:%g "$f")" = 0:0 ] && echo ok'
 
+# The attempt credential the driver puts in the CLI's environment (never in the world-readable
+# managed settings); any uuid pair stands in for a claim's.
+PROBE_JOB_ID=11111111-1111-4111-8111-111111111111
+PROBE_INGEST_TOKEN=33333333-3333-4333-8333-333333333333
+PROBE_HEADERS="x-factory-job-id=$PROBE_JOB_ID,x-factory-ingest-token=$PROBE_INGEST_TOKEN"
 managed_tar() { # managed_tar <endpoint>: the driver's own archive, rendered by its own code
     (cd "$REPO" && ENDPOINT="$1" npx --no-install tsx -e \
         "import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('claude-code', process.env.ENDPOINT)));")
@@ -84,14 +89,16 @@ check 'the driver-rendered managed settings carry its endpoint, root-owned and r
 # user-scope value, so every export went to the container's loopback and was lost without a word.
 # Proved against the real CLI: two sinks inside the container, the checkout pointing at one, the
 # driver's endpoint at the other. The CLI exports its startup metrics even unauthenticated, so no
-# credential is needed; only the forwarded endpoint may receive anything.
+# credential is needed; only the forwarded endpoint may receive anything. Each sink logs the two
+# credential headers it received: the CLI's own export must carry the attempt's pair, which the
+# collector forwards and the board resolves the export's organization from.
 CHECKOUT="$(mktemp -d)"
 mkdir -p "$CHECKOUT/.claude"
 printf '{"env":{"OTEL_EXPORTER_OTLP_ENDPOINT":"http://127.0.0.1:4318"}}\n' > "$CHECKOUT/.claude/settings.json"
 chmod -R a+rwX "$CHECKOUT"
-SINK='for (const p of [4318, 4999]) require("http").createServer((q, r) => { console.log("SINK:" + p); q.resume(); q.on("end", () => r.end("{}")); }).listen(p)'
+SINK='for (const p of [4318, 4999]) require("http").createServer((q, r) => { console.log("SINK:" + p + ":" + q.headers["x-factory-job-id"] + ":" + q.headers["x-factory-ingest-token"]); q.resume(); q.on("end", () => r.end("{}")); }).listen(p)'
 sinks="$(run_rendered http://127.0.0.1:4999 \
-    -v "$CHECKOUT:/workspace" \
+    -v "$CHECKOUT:/workspace" -e "OTEL_EXPORTER_OTLP_HEADERS=$PROBE_HEADERS" \
     --entrypoint sh "$IMAGE" -c "node -e '$SINK' & sleep 1; timeout 30 claude-executor -p hello >/dev/null 2>&1; sleep 12" 2>&1)"
 rm -rf "$CHECKOUT"
 if [[ "$sinks" == *"SINK:4999"* && "$sinks" != *"SINK:4318"* ]]; then
@@ -99,6 +106,13 @@ if [[ "$sinks" == *"SINK:4999"* && "$sinks" != *"SINK:4318"* ]]; then
     pass=$((pass + 1))
 else
     printf 'FAIL %s\n     sinks: %s\n' "the checkout's .claude/settings.json cannot redirect telemetry" "${sinks:0:400}"
+    fail=$((fail + 1))
+fi
+if [[ "$sinks" == *"SINK:4999:$PROBE_JOB_ID:$PROBE_INGEST_TOKEN"* ]]; then
+    printf 'ok   %s\n' "the CLI's export carries the attempt's job id and ingest token headers"
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     sinks: %s\n' "the CLI's export carries the attempt's job id and ingest token headers" "${sinks:0:400}"
     fail=$((fail + 1))
 fi
 
