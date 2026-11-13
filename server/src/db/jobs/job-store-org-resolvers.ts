@@ -52,6 +52,39 @@ export function createOrgOfLease({
 }
 
 /**
+ * The telemetry export credential's verifier, org-less for the same reason as the lease pair's: the
+ * job id and its `ingest_token` (144) ARE the answer to which org an export speaks for. The token
+ * is rendered once into the runner's telemetry config, so no claim rotates it and an adopted runner
+ * keeps exporting under it — which is why a running row resolves even while its lease is lapsed
+ * (the gap before a takeover), bounded by the tail grace so an abandoned row stops resolving. A
+ * finished row resolves within the same grace after its verdict, for the exporter's last flush. A
+ * row no claim runs — queued, suspended — never resolves. A throw is the caller's to answer as
+ * unavailable, never as a refusal.
+ */
+export function createOrgOfIngest({
+    sql,
+    ready,
+}: {
+    sql: Sql;
+    ready?: Promise<unknown>;
+}): (jobId: string, ingestToken: string) => Promise<string | null> {
+    return async (jobId, ingestToken) => {
+        if (ready) await ready;
+        const rows = await sql<{ org_id: string }[]>`
+            select org_id from job
+            where id = ${jobId} and ingest_token = ${ingestToken}
+              and (
+                  (finished_at is not null and finished_at > now() - ${LEASE_TAIL_GRACE}::interval)
+                  or
+                  (finished_at is null and status = 'running'
+                   and lease_expires_at > now() - ${LEASE_TAIL_GRACE}::interval)
+              )
+        `;
+        return rows[0]?.org_id ?? null;
+    };
+}
+
+/**
  * Two more org-less resolvers beside `createOrgOfLease`, for the worker routes under the shared
  * board secret: the secret authenticates the DRIVER, so the org a call operates on is read from
  * the row its URL names — the job for the `/api/jobs/:id/…` routes, the queued worktree removal

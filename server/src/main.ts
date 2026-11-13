@@ -13,7 +13,12 @@ import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.j
 import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
 import { createAgentTitle } from './db/agent-title.js';
 import { createOperationReceipts } from './db/operation-receipts.js';
-import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
+import {
+    createOrgOfIngest,
+    createOrgOfJob,
+    createOrgOfLease,
+    createOrgOfReclaim,
+} from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchLoops } from './batch-loops.js';
 import { type ArtifactBackend, createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
@@ -358,6 +363,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         // beside it are the same direction: the shared board secret authenticates the driver, and
         // the org a call operates on comes from the row its URL names.
         orgOfLease: createOrgOfLease({ sql, ready }),
+        // The OTLP routes' runner credential: the job id + the ingest token its telemetry config carries.
+        orgOfIngest: createOrgOfIngest({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
         ...runnerCredentialDeps({ sql, ready }, options, config.integrations.jira),

@@ -82,7 +82,6 @@ services:
             ATLASSIAN_CLIENT_ID: ${ATLASSIAN_CLIENT_ID:-}
             ATLASSIAN_CLIENT_SECRET: ${ATLASSIAN_CLIENT_SECRET:-}
             COOKIE_SECURE: ${COOKIE_SECURE:-}
-            INGEST_TOKEN: ${INGEST_TOKEN:-}
             GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
             # The shared board secret: the SAME value the driver below presents on the worker
             # routes. Both services read the one .env entry, so "the same" is true by

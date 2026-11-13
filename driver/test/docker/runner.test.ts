@@ -117,8 +117,14 @@ describe('the docker runner', () => {
         expect(calls.findIndex((call) => call.args.includes(supervisorName(job)))).toBeLessThan(calls.indexOf(create!));
         const cp = calls.find((call) => call.args[0] === 'cp');
         expect(cp?.args).toEqual(['cp', '-', `${containerName(job)}:/etc`]);
-        expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('claude-code', 'http://otel.example:4318')))).toBe(
-            true
+        const rendered = telemetryConfig('claude-code', 'http://otel.example:4318', {
+            jobId: job.id,
+            ingestToken: job.ingestToken,
+        });
+        expect(cp?.input?.equals(telemetryConfigTar(rendered))).toBe(true);
+        // The attempt's export credential rides the managed settings, which outrank the container env.
+        expect(JSON.parse(rendered.body).env.OTEL_EXPORTER_OTLP_HEADERS).toBe(
+            `x-factory-job-id=${job.id},x-factory-ingest-token=${job.ingestToken}`
         );
         expect(verbs.indexOf('create')).toBeLessThan(verbs.indexOf('cp'));
         expect(spawnFn.mock.calls).toEqual([['docker', ['start', '-a', containerName(job)], expect.anything()]]);
@@ -136,9 +142,15 @@ describe('the docker runner', () => {
         await runner.run(opencodeJob, null);
         const cp = calls.find((call) => call.args[0] === 'cp');
         expect(cp?.args).toEqual(['cp', '-', `${containerName(opencodeJob)}:/etc`]);
-        expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('opencode', 'http://otel.example:4318')))).toBe(
-            true
-        );
+        const rendered = telemetryConfig('opencode', 'http://otel.example:4318', {
+            jobId: opencodeJob.id,
+            ingestToken: opencodeJob.ingestToken,
+        });
+        expect(cp?.input?.equals(telemetryConfigTar(rendered))).toBe(true);
+        expect(JSON.parse(rendered.body).headers).toEqual({
+            'x-factory-job-id': opencodeJob.id,
+            'x-factory-ingest-token': opencodeJob.ingestToken,
+        });
     });
 
     // The exited runner container is the evidence a replacement claim adopts a finished run from

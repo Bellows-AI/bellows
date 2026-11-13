@@ -3,23 +3,37 @@
 # `collector` service in docker-compose.yml.
 #
 # This file is not shared with docker/otel-collector.yaml: the two differ exactly where they must —
-# the exporter's target (a compose service name there, a templated service URL here), the ingest
-# token header that keeps an authenticated board reachable, and the pod's operational pair (the
-# health_check extension its probes read, the memory_limiter its memory limit needs). The decisions that must NOT
-# differ — identity stripped, cost refused, compression off, http/json, the session id kept — are
-# deliberate copies; docs/telemetry.md is the reading list for which ones are guarded by a test.
+# the exporter's target (a compose service name there, a templated service URL here) and the pod's
+# operational pair (the health_check extension its probes read, the memory_limiter its memory limit
+# needs). The decisions that must NOT differ — identity stripped, cost refused, compression off,
+# http/json, the session id kept, each export's attempt credential forwarded — are deliberate
+# copies; docs/telemetry.md is the reading list for which ones are guarded by a test.
 extensions:
     # The pod's liveness and readiness probes read this.
     health_check:
         endpoint: 0.0.0.0:13133
+    # Each export's attempt credential (x-factory-job-id + x-factory-ingest-token, rendered into the
+    # runner's telemetry config) is kept as client metadata by the receivers (include_metadata),
+    # keys the batch, and is written back onto the dashboard request here: the board resolves every
+    # export's organization from it and refuses one without it.
+    headers_setter:
+        headers:
+            - action: upsert
+              key: x-factory-job-id
+              from_context: x-factory-job-id
+            - action: upsert
+              key: x-factory-ingest-token
+              from_context: x-factory-ingest-token
 
 receivers:
     otlp:
         protocols:
             grpc:
                 endpoint: 0.0.0.0:4317
+                include_metadata: true
             http:
                 endpoint: 0.0.0.0:4318
+                include_metadata: true
 
 processors:
     # First in every pipeline: under a burst the collector refuses data instead of growing until
@@ -29,9 +43,12 @@ processors:
         limit_percentage: 80
         spike_limit_percentage: 20
 
+    # One batch per attempt: the credential headers are the batch key, so an export never carries
+    # one attempt's points under another's credential.
     batch:
         timeout: 5s
         send_batch_size: 512
+        metadata_keys: [x-factory-job-id, x-factory-ingest-token]
 
     # Defence in depth. The server's ATTR_ALLOWLIST is the real guarantee, but dropping identity
     # here means it never crosses the pod boundary either.
@@ -78,16 +95,11 @@ exporters:
             enabled: true
             initial_interval: 5s
             max_elapsed_time: 300s
-        # The token travels by reference: the Deployment mounts the Secret's ingest-token key as
-        # INGEST_TOKEN, and the collector expands ${env:INGEST_TOKEN} at boot, so the value never
-        # lands in this ConfigMap. Sent unconditionally: whether a token is configured is known to
-        # the Secret, not to these values — `secret.existingSecret` carries it with
-        # `telemetry.ingestToken` empty — and an open board ignores the header, empty or not.
-        headers:
-            X-Factory-Ingest-Token: ${env:INGEST_TOKEN}
+        auth:
+            authenticator: headers_setter
 
 service:
-    extensions: [health_check]
+    extensions: [health_check, headers_setter]
     telemetry:
         logs:
             level: warn

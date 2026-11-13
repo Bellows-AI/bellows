@@ -82,7 +82,6 @@ export type AuthConfig =
            * impossible. Same argument docs/configuration.md already makes for GITHUB_TOKEN.
            */
           readonly mode: 'none';
-          readonly ingestToken: string | null;
       }
     | {
           readonly mode: 'github';
@@ -108,7 +107,6 @@ export type AuthConfig =
            * choose the `redirect_uri`, which is redirect poisoning.
            */
           readonly publicUrl: string;
-          readonly ingestToken: string | null;
           /**
            * The shared secret the driver presents on the worker routes (JOB_BOARD_TOKEN on both
            * sides — the same variable name on the board and the driver is what makes "the same
@@ -529,7 +527,6 @@ function resolvePublicOrigin(env: NodeJS.ProcessEnv, host: string, port: number)
  * rather than reached.
  */
 function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfig {
-    const ingestToken = env.INGEST_TOKEN?.trim() || null;
     const mode = env.AUTH_MODE?.trim() || 'none';
     if (mode !== 'none' && mode !== 'github') {
         throw new Error(`AUTH_MODE must be "github" or "none", got "${env.AUTH_MODE}"`);
@@ -537,7 +534,7 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
 
     if (mode === 'none') {
         assertNoneModeBindable(env, host);
-        return Object.freeze({ mode, ingestToken });
+        return Object.freeze({ mode });
     }
 
     const { clientId, clientSecret, sessionSecret } = requireGithubAuthFields(env);
@@ -554,7 +551,6 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         // Follows the public origin's scheme: an https deployment must not ship a cookie that rides plain http.
         cookieSecure: bool(env.COOKIE_SECURE, origin.protocol === 'https:', 'COOKIE_SECURE'),
         publicUrl: origin.origin,
-        ingestToken,
         jobBoardToken,
         // Environment only. A configurable authorize URL in a file that ships with a deployment is
         // a phishing vector; as an environment variable it stays a test seam that main.ts logs
@@ -700,7 +696,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         );
     }
 
-    // Parsed like INGEST_TOKEN: trim, empty meaning unset. Unset, the installation webhook route
+    // Trimmed, empty meaning unset. Unset, the installation webhook route
     // does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     const webhookSecret = env.GITHUB_WEBHOOK_SECRET?.trim() || null;
     // The secret IS the webhook's credential — its HMAC decides whose memberships get deleted —

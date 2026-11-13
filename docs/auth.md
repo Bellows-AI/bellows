@@ -106,9 +106,9 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
 - **The restore reads (`checkpoint`, `transcripts`) and an attachment's content are worker routes whose credential is the job's live lease** in the body: a lost, foreign or unknown lease reads nothing, and the file must be in that job's effective set, read fresh each call (a review's lease reads only its own row's set). `server/src/routes/jobs/job-handlers-restore.ts`, `server/src/routes/jobs/job-handlers-attachment-content.ts`, `server/test/auth.enforcement.test.ts`, `server/test/routes.restore.test.ts`, `server/test/routes.attachment-content.test.ts`.
 - **The worker credential is one deployment-wide secret**, `JOB_BOARD_TOKEN` (fatal in github mode when missing or
   under 32 characters). `server/src/config.ts`.
-- **`POST /api/sessions/branch` demands an org-bound credential in github mode** (the runner's lease pair or a
-  `fat_` token); the ingest token does not open it. `server/src/routes/ingest.ts`,
-  `server/test/routes.ingest.test.ts`.
+- **The branch and OTLP routes demand an org-bound credential in github mode**: the branch route the runner's lease
+  pair, the OTLP routes its job id + ingest token ([telemetry.md](telemetry.md)), either one or a `fat_` token; no
+  deployment-wide ingest secret. `server/src/auth/plugin.ts`, `server/test/auth.enforcement.test.ts`.
 
 ## Stated limits
 

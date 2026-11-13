@@ -215,7 +215,10 @@ describe('the kubernetes runner', () => {
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
         const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
-        expect(stringData['managed-settings.json']).toBe(claudeManagedSettings(endpoint));
+        expect(stringData['managed-settings.json']).toBe(
+            claudeManagedSettings(endpoint, { jobId: job.id, ingestToken: job.ingestToken })
+        );
+        expect(stringData['managed-settings.json']).toContain(`x-factory-ingest-token=${job.ingestToken}`);
     });
 
     it('renders otel.json, and no managed settings, into an opencode runner Secret', async () => {
@@ -224,7 +227,13 @@ describe('the kubernetes runner', () => {
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
         const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
-        expect(stringData['otel.json']).toBe(opencodeOtelConfig('http://otel.example:4318'));
+        expect(stringData['otel.json']).toBe(
+            opencodeOtelConfig('http://otel.example:4318', {
+                jobId: opencodeJob.id,
+                ingestToken: opencodeJob.ingestToken,
+            })
+        );
+        expect(JSON.parse(stringData['otel.json']!).headers['x-factory-ingest-token']).toBe(opencodeJob.ingestToken);
         expect(stringData).not.toHaveProperty('managed-settings.json');
     });
 

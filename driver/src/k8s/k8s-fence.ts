@@ -1,7 +1,7 @@
 import type { BoardJob } from '../board/board.js';
 import { runnerClaimEnv } from '../claim.js';
 import type { DriverConfig } from '../config.js';
-import { telemetryConfig, type TelemetryConfig } from '../telemetry-config.js';
+import { telemetryConfig, telemetryCredentialOf, type TelemetryConfig } from '../telemetry-config.js';
 import { isSeq, LEASE_LABEL } from '../labels.js';
 import { ensureTaskVolume } from './k8s-task-volume.js';
 import {
@@ -81,7 +81,7 @@ const runnerEnv = (config: DriverConfig, job: BoardJob): Record<string, string> 
     RUNNER_LEASE_TOKEN: job.leaseToken,
     // Issue #452: the runner's telemetry config, rendered here and mounted read-only by the pod
     // spec (k8s-podspec.ts, telemetryConfigK8s) — never written inside the pod.
-    ...telemetrySecretEntry(telemetryConfig(job.executorType, config.otelEndpoint)),
+    ...telemetrySecretEntry(telemetryConfig(job.executorType, config.otelEndpoint, telemetryCredentialOf(job))),
 });
 
 const telemetrySecretEntry = ({ file, body }: TelemetryConfig): Record<string, string> => ({ [file]: body });

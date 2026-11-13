@@ -35,7 +35,6 @@ Bellows is configured with environment variables only. Locally they come from `.
 | `SESSION_TTL_HOURS` | | `336` (14 days) | Session lifetime in hours. Positive integer. |
 | `COOKIE_SECURE` | | off | Sets `Secure` on the session cookie. Turn on behind TLS. |
 | `JOB_BOARD_TOKEN` | github mode | none | Shared secret the driver presents on the worker routes. At least 32 characters. Set the same value on the server and the driver. |
-| `INGEST_TOKEN` | | unset | Optional shared secret for the telemetry ingest routes, sent as `X-Factory-Ingest-Token`. Unset leaves them open. |
 | `GITHUB_WEBHOOK_SECRET` | | unset | HMAC secret for the App's installation webhook at `<PUBLIC_URL>/api/github/webhook`. At least 32 characters. Unset removes the route. |
 
 ### GitHub App
@@ -93,7 +92,6 @@ Plan limits apply per organization. A plan pushed by the commerce service sets t
 | --- | --- | --- | --- |
 | `TELEMETRY_SOURCE` | | `postgres` | `postgres`, `fixture` or `off`. `fixture` is for development. |
 | `TELEMETRY_TTL_SECONDS` | | `30` | How long the dashboard caches a telemetry read. Minimum `5`. |
-| `INGEST_TOKEN` | | unset | See Authentication. |
 
 ### Artifacts and attachments
 

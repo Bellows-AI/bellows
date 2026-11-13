@@ -12,8 +12,37 @@
  *
  * Deliberate copies (driver/ imports nothing from the rest of the repo);
  * `driver/test/telemetry-shipping.test.ts` pins each to its image's file.
+ *
+ * The rendered file also carries the attempt's export credential — its job id and the claim's
+ * ingest token — as OTLP request headers, which the collector forwards per request to the board.
+ * The baked files carry none: a hand-run container has no attempt to name. The file is written
+ * once, at container creation, which is why the board never rotates the ingest token.
  */
 import { CLAUDE_CODE, OPENCODE, type ExecutorType } from './executors.js';
+
+/** The attempt a runner's telemetry exports under: `server/src/auth/plugin.ts` resolves the pair to its org. */
+export interface TelemetryCredential {
+    jobId: string;
+    ingestToken: string;
+}
+
+/** A claimed job's credential: its id and the ingest token its claim carries. */
+export const telemetryCredentialOf = (job: { id: string; ingestToken: string }): TelemetryCredential => ({
+    jobId: job.id,
+    ingestToken: job.ingestToken,
+});
+
+/** The two request headers, in the order both renderings write them. */
+const credentialHeaders = ({ jobId, ingestToken }: TelemetryCredential): [string, string][] => [
+    ['x-factory-job-id', jobId],
+    ['x-factory-ingest-token', ingestToken],
+];
+
+/** `OTEL_EXPORTER_OTLP_HEADERS`: the OTLP spec's `key=value,key=value` list; both values are uuids, so nothing needs escaping. */
+export const otlpHeaders = (credential: TelemetryCredential): string =>
+    credentialHeaders(credential)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(',');
 
 const READ_ONLY = 0o444;
 const DIRECTORY = 0o755;
@@ -21,7 +50,7 @@ const DIRECTORY = 0o755;
 /** The agent CLI's shell in both executor images (docker/executor-common/tool-bash.sh). */
 const TOOL_SHELL = '/usr/local/libexec/factory-tool/bash';
 
-export function claudeManagedSettings(endpoint: string): string {
+export function claudeManagedSettings(endpoint: string, credential: TelemetryCredential): string {
     const settings = {
         $schema: 'https://json.schemastore.org/claude-code-settings.json',
         env: {
@@ -30,6 +59,7 @@ export function claudeManagedSettings(endpoint: string): string {
             OTEL_LOGS_EXPORTER: 'otlp',
             OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
             OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+            OTEL_EXPORTER_OTLP_HEADERS: otlpHeaders(credential),
             OTEL_METRIC_EXPORT_INTERVAL: '10000',
             OTEL_METRICS_INCLUDE_ACCOUNT_UUID: 'false',
             OTEL_LOG_USER_PROMPTS: '0',
@@ -81,8 +111,11 @@ export function claudeManagedSettings(endpoint: string): string {
     return `${JSON.stringify(settings, null, 4)}\n`;
 }
 
-export function opencodeOtelConfig(endpoint: string): string {
-    return `${JSON.stringify({ endpoint, protocol: 'http/json', metricsTemporality: 'delta' }, null, 4)}\n`;
+export function opencodeOtelConfig(endpoint: string, credential: TelemetryCredential): string {
+    // The plugin reads `headers` from this file alone (never OTEL_EXPORTER_OTLP_HEADERS) and hands
+    // them to both its metric and its log exporter.
+    const headers = Object.fromEntries(credentialHeaders(credential));
+    return `${JSON.stringify({ endpoint, protocol: 'http/json', metricsTemporality: 'delta', headers }, null, 4)}\n`;
 }
 
 /** Where an executor's CLI reads its telemetry config, and the rendered body. */
@@ -92,12 +125,17 @@ export interface TelemetryConfig {
     body: string;
 }
 
-export function telemetryConfig(executorType: ExecutorType | null, endpoint: string): TelemetryConfig {
+export function telemetryConfig(
+    executorType: ExecutorType | null,
+    endpoint: string,
+    credential: TelemetryCredential
+): TelemetryConfig {
     if (executorType === CLAUDE_CODE) {
-        return { dir: '/etc/claude-code', file: 'managed-settings.json', body: claudeManagedSettings(endpoint) };
+        const body = claudeManagedSettings(endpoint, credential);
+        return { dir: '/etc/claude-code', file: 'managed-settings.json', body };
     }
     if (executorType === OPENCODE) {
-        return { dir: '/etc/opencode-otel', file: 'otel.json', body: opencodeOtelConfig(endpoint) };
+        return { dir: '/etc/opencode-otel', file: 'otel.json', body: opencodeOtelConfig(endpoint, credential) };
     }
     throw new Error('the claimed task has no configured executor type');
 }

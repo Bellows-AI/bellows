@@ -289,6 +289,7 @@ interface ReviewClaimRow {
     max_attempts: number;
     claim_seq: string;
     lease_token: string;
+    ingest_token: string;
     lease_expires_at: Date;
     run_as: string | null;
     session_id: string | null;
@@ -317,7 +318,8 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
     const { orgId, env, executorConfig, deploymentMode } = ctx;
     await recordExecution(tx, orgId, reviewId);
     const [row] = await tx<ReviewClaimRow[]>`
-        select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, execution_user_id as run_as,
+        select id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
+               execution_user_id as run_as,
                session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                review_spec, review_ref, skill_hidden,
                (session_id is not null

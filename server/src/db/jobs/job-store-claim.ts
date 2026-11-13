@@ -483,7 +483,7 @@ async function acquireCandidate(
             -- least once with its command in the transcript". A fresh or crashed follow-up has
             -- never been parked, so its command still has to go out; a suspended one settles
             -- stopped, and is never claimed again.
-            returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at,
+            returning id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
                       (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
                       session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
@@ -954,6 +954,7 @@ export function buildClaimResult(
         lastAttempt: row.last_attempt,
         claimSeq: Number(row.claim_seq),
         leaseToken: row.lease_token,
+        ingestToken: row.ingest_token,
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,
         executorRefusal,

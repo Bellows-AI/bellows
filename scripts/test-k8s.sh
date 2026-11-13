@@ -305,7 +305,7 @@ expect_not_contains 'the collector config stays inside its block scalar' "$(cat 
 # rule — the executor reading its credentials from RUNNER_CREDENTIALS_SECRET — is pinned in
 # driver/test/k8s/, where the runner spec lives.)
 credentials_clean=1
-for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET INGEST_TOKEN DATABASE_URL \
+for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET DATABASE_URL \
     SECRETS_DATA_KEYS SECRETS_OPERATION_KEY SECRETS_FINGERPRINT_KEY; do
     next="$(grep -A1 -- "- name: $cred\$" "$work/rendered.yaml" | sed -n '2p' | tr -d ' ')"
     if [ "$next" = 'valueFrom:' ]; then
@@ -715,15 +715,15 @@ selectors="$(grep -A4 'matchLabels:' <<<"$gh_dashboard$gh_driver")"
 expect_not_contains 'selectors carry no version label'  "$selectors" 'app.kubernetes.io/version'
 expect_not_contains 'selectors carry no managed-by'     "$selectors" 'managed-by'
 
-# The collector always sends the ingest header by reference: with secret.existingSecret the token
-# is in the Secret while telemetry.ingestToken is empty, and a header gated on the value would
-# leave an authenticated board answering every export 401.
+# The collector forwards each export's attempt credential whatever the Secret holds: there is no
+# deployment-wide ingest secret, so a managed Secret changes nothing about an export's auth.
 byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set secret.existingSecret=mine \
     --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 \
     --set artifacts.s3.bucket=factory-artifacts --set artifacts.s3.region=us-east-1 \
     --set secretStore.backend=database --set secretStore.existingSecret=managed-keys --set secretStore.activeKeyId=k1 2>&1)"
-expect_contains 'the collector sends the ingest header with a managed Secret' "$byo" \
-    'X-Factory-Ingest-Token: ${env:INGEST_TOKEN}'
+expect_contains 'the collector forwards the attempt credential with a managed Secret' "$byo" \
+    'authenticator: headers_setter'
+expect_not_contains 'no deployment-wide ingest secret is wired' "$byo" 'INGEST_TOKEN'
 expect_contains 'a managed Secret is read for the Atlassian client secret' "$byo" 'key: atlassian-client-secret'
 expect_not_contains 'a managed Secret is not generated alongside' "$byo" 'atlassian-client-secret: '
 # Every dashboard key but database-url is optional, so a missing one reads as the server's own boot
@@ -754,15 +754,13 @@ mcp_on="$(gh_render --set-string auth.publicUrl=https://board.example --set mcp.
 expect_contains 'MCP renders on under an https publicUrl' "$(grep -A1 'name: MCP_ENABLED$' <<<"$mcp_on")" 'value: "true"'
 expect_contains 'the trusted origins render as a comma list' "$(grep -A1 'name: MCP_TRUSTED_ORIGINS$' <<<"$mcp_on")" \
     'value: "https://a.example,https://b.example"'
-# The deployment mode: self-hosted by default; cloud refuses to render without the telemetry ingest token.
+# The deployment mode: self-hosted by default.
 expect_contains 'the deployment mode defaults to self-hosted' "$(grep -A1 'name: DEPLOYMENT_MODE$' <<<"$mcp_off")" \
     'value: "self-hosted"'
 refuses 'an unknown deployment mode is refused' 'deploymentMode must be self-hosted or cloud' \
     "${GH_SETS[@]}" --set deploymentMode=saas
-refuses 'cloud mode without an ingest token is refused' 'deploymentMode cloud requires telemetry.ingestToken' \
-    "${GH_SETS[@]}" --set deploymentMode=cloud --set-string telemetry.ingestToken=
 # Cloud also refuses to render with an empty admission cap or Free plan limit: no cloud org is unlimited.
-CLOUD_SETS=(--set deploymentMode=cloud --set-string telemetry.ingestToken=ingest-token-for-the-render-test
+CLOUD_SETS=(--set deploymentMode=cloud
     --set-string dashboard.admission.maxRunning=20 --set-string dashboard.admission.maxRunningPerOrg=4
     --set-string dashboard.planDefaults.maxRunning=1 --set-string dashboard.planDefaults.maxQueued=10
     --set-string dashboard.planDefaults.maxWallSeconds=3600)

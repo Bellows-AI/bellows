@@ -74,6 +74,11 @@ export interface BoardJob extends ClaimSkills {
      */
     claimSeq: number;
     leaseToken: string;
+    /**
+     * The attempt's telemetry export credential, rendered with its id into the runner's telemetry
+     * config (telemetry-config.ts). No claim rotates it, so an adopted runner's file stays valid.
+     */
+    ingestToken: string;
     leaseExpiresAt: string;
     /**
      * The CLI/image family selected by this task's executor profile. Null means the stamped

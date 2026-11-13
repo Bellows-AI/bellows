@@ -55,7 +55,7 @@ async function boot(mode: 'github' | 'none', metrics?: ServerMetrics) {
     const oauth: Pick<OAuthStore, 'findAccessToken'> = {
         findAccessToken: async (hash) => tokens.get(hash.toString('hex')) ?? null,
     };
-    const auth: AuthConfig = mode === 'github' ? githubAuth({ publicUrl }) : { mode: 'none', ingestToken: null };
+    const auth: AuthConfig = mode === 'github' ? githubAuth({ publicUrl }) : { mode: 'none' };
     const config = testConfig({ auth, port, mcp: { enabled: true, resource, trustedOrigins: [] } });
     const app = track(
         await buildApp({

@@ -3,7 +3,12 @@ import { cpuQuantityToCores, type DriverConfig, memoryQuantityToBytes } from '..
 import type { BoardJob } from '../board/board.js';
 import { type Mailbox, mailboxesOf, SUPERVISOR_BINDING } from '../supervisor-contract.js';
 import { TASK_MOUNT, TASK_VOLUME, taskPodVolume } from '../task-volume.js';
-import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from '../telemetry-config.js';
+import {
+    telemetryConfig,
+    telemetryConfigK8s,
+    telemetryCredentialOf,
+    type TelemetryConfigVolume,
+} from '../telemetry-config.js';
 
 /**
  * The pod-spec field builders the driver renders from its own configuration — the resource
@@ -295,7 +300,10 @@ export function runnerVolumesField(
     job: BoardJob,
     secretName: string
 ): { mounts: RunnerMount[]; volumes: RunnerVolume[] } {
-    const telemetry = telemetryConfigK8s(telemetryConfig(job.executorType, config.otelEndpoint), secretName);
+    const telemetry = telemetryConfigK8s(
+        telemetryConfig(job.executorType, config.otelEndpoint, telemetryCredentialOf(job)),
+        secretName
+    );
     return {
         mounts: [{ name: TASK_VOLUME, mountPath: TASK_MOUNT }, telemetry.mount],
         volumes: [taskPodVolume(job), telemetry.volume],

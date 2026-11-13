@@ -104,6 +104,8 @@ export interface AppDeps {
      * from the job store's SQL; the tests that exercise the runner credential stub it.
      */
     orgOfLease?: ((jobId: string, leaseToken: string) => Promise<string | null>) | undefined;
+    /** The OTLP routes' runner-credential verifier (job id + ingest token), threaded through to the auth hook. */
+    orgOfIngest?: ((jobId: string, ingestToken: string) => Promise<string | null>) | undefined;
     /**
      * The worker routes' org resolvers, threaded through to the auth hook beside `orgOfLease`:
      * where the shared board secret authenticates a call, the org comes from the row its URL
@@ -314,6 +316,7 @@ export async function buildApp({
     auth,
     githubRoster,
     orgOfLease,
+    orgOfIngest,
     orgOfJob,
     orgOfReclaim,
     attemptOfLease,
@@ -374,7 +377,7 @@ export async function buildApp({
     // Before every route, so nothing can be registered ahead of the wall by accident. Without a
     // store the property is still decorated, so `request.auth` reads the same everywhere rather than
     // being absent in one configuration and null in another.
-    if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfJob, orgOfReclaim, oauth });
+    if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfIngest, orgOfJob, orgOfReclaim, oauth });
     else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes(ready));

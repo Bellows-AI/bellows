@@ -158,9 +158,10 @@ describe('the rest of [auth]', () => {
         expect('autoJoinGithubOrg' in (github().auth as object)).toBe(false);
     });
 
-    it('carries the ingest token in both modes', () => {
-        expect(load({ INGEST_TOKEN: 'secret' }).auth.ingestToken).toBe('secret');
-        expect(github({ INGEST_TOKEN: 'secret' }).auth.ingestToken).toBe('secret');
+    // The shared ingest secret is gone: an export authenticates as its attempt or its member.
+    it('carries no deployment-wide ingest token in either mode', () => {
+        expect('ingestToken' in (load({ INGEST_TOKEN: 'secret' }).auth as object)).toBe(false);
+        expect('ingestToken' in (github({ INGEST_TOKEN: 'secret' }).auth as object)).toBe(false);
     });
 
     it('points at github.com unless the environment overrides it', () => {

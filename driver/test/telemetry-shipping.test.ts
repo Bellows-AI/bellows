@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import {
     claudeManagedSettings,
     opencodeOtelConfig,
@@ -9,28 +10,47 @@ import {
 } from '../src/telemetry-config.js';
 import { readRepoFile as read } from './fixtures/repo-files.js';
 
+/** The attempt's export credential: its job id and the ingest token its claim carries. */
+const CREDENTIAL = { jobId: 'job-1', ingestToken: 'ingest-1' };
+
 describe('runner telemetry shipping', () => {
     // The driver's copy of the baked managed settings (it may not import from docker/): the file
     // it delivers root-owned to every claude-code runner must be the baked one with only the
-    // endpoint swapped, or a rendered run would ship a different telemetry policy than the image.
-    it('renders the baked claude managed settings with only the endpoint replaced', () => {
+    // endpoint swapped and the attempt's credential added, or a rendered run would ship a
+    // different telemetry policy than the image.
+    it('renders the baked claude managed settings with only the endpoint and the credential headers changed', () => {
         const baked = JSON.parse(read('docker/claude-executor/managed-settings.json')) as {
             env: Record<string, string>;
         };
-        expect(JSON.parse(claudeManagedSettings('http://otel.example:4318'))).toEqual({
+        expect(JSON.parse(claudeManagedSettings('http://otel.example:4318', CREDENTIAL))).toEqual({
             ...baked,
-            env: { ...baked.env, OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel.example:4318' },
+            env: {
+                ...baked.env,
+                OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel.example:4318',
+                OTEL_EXPORTER_OTLP_HEADERS: 'x-factory-job-id=job-1,x-factory-ingest-token=ingest-1',
+            },
         });
         // Auto mode is pinned: a session left in default mode denies every unlisted command.
-        expect(JSON.parse(claudeManagedSettings('http://otel.example:4318')).permissions.defaultMode).toBe('auto');
+        expect(JSON.parse(claudeManagedSettings('http://otel.example:4318', CREDENTIAL)).permissions.defaultMode).toBe(
+            'auto'
+        );
     });
 
-    it('renders the baked opencode otel.json with only the endpoint replaced', () => {
+    // The plugin reads only otel.json (never OTEL_EXPORTER_OTLP_HEADERS) and hands its `headers`
+    // to both the metric and the log exporter.
+    it('renders the baked opencode otel.json with only the endpoint and the credential headers changed', () => {
         const baked = JSON.parse(read('docker/opencode-executor/otel.json')) as Record<string, string>;
-        expect(JSON.parse(opencodeOtelConfig('http://otel.example:4318'))).toEqual({
+        expect(JSON.parse(opencodeOtelConfig('http://otel.example:4318', CREDENTIAL))).toEqual({
             ...baked,
             endpoint: 'http://otel.example:4318',
+            headers: { 'x-factory-job-id': 'job-1', 'x-factory-ingest-token': 'ingest-1' },
         });
+    });
+
+    // The baked files stay credential-free: a hand-run container has no attempt to name.
+    it('bakes no credential into either image’s telemetry config', () => {
+        expect(read('docker/claude-executor/managed-settings.json')).not.toContain('OTEL_EXPORTER_OTLP_HEADERS');
+        expect(read('docker/opencode-executor/otel.json')).not.toContain('headers');
     });
 
     // Each executor's file lands where its CLI reads it: claude's managed-settings directory, and
@@ -39,12 +59,12 @@ describe('runner telemetry shipping', () => {
         ['claude-code', '/etc/claude-code', 'managed-settings.json'],
         ['opencode', '/etc/opencode-otel', 'otel.json'],
     ] as const)('places the %s telemetry config at %s/%s', (executor, dir, file) => {
-        expect(telemetryConfig(executor, 'http://x:4318')).toMatchObject({ dir, file });
+        expect(telemetryConfig(executor, 'http://x:4318', CREDENTIAL)).toMatchObject({ dir, file });
     });
 
     // No executor, no file: the same refusal executorImage makes, never a silent pick.
     it('refuses to place a telemetry config for a task with no executor type', () => {
-        expect(() => telemetryConfig(null, 'http://x:4318')).toThrow(/no configured executor type/);
+        expect(() => telemetryConfig(null, 'http://x:4318', CREDENTIAL)).toThrow(/no configured executor type/);
     });
 
     it('names the opencode config path the driver renders into', () => {
@@ -60,7 +80,7 @@ describe('runner telemetry shipping', () => {
     // The directory rides the archive too, extracted into its parent: an image without it — a
     // custom runner image, the stubs scripts/test-jobs.sh runs — still gets a root-owned 0755 one.
     it('archives the telemetry config and its directory root-owned for docker cp into the parent', () => {
-        const telemetry = telemetryConfig('claude-code', 'http://otel.example:4318');
+        const telemetry = telemetryConfig('claude-code', 'http://otel.example:4318', CREDENTIAL);
         expect(telemetryCopyTarget(telemetry)).toBe('/etc');
         const tar = telemetryConfigTar(telemetry);
         const field = (block: number, offset: number, width: number) =>
@@ -85,7 +105,7 @@ describe('runner telemetry shipping', () => {
         });
         expect(
             execFileSync('tar', ['-xOf', '-', 'claude-code/managed-settings.json'], { input: tar }).toString('utf8')
-        ).toBe(claudeManagedSettings('http://otel.example:4318'));
+        ).toBe(claudeManagedSettings('http://otel.example:4318', CREDENTIAL));
     });
 
     it('configures both agents for OTLP/HTTP JSON while keeping prompt and tool bodies private', () => {
@@ -132,12 +152,41 @@ describe('runner telemetry shipping', () => {
         }
     );
 
-    it('renders the Helm collector config and authenticates its dashboard hop', () => {
-        const config = read('charts/factory/files/collector.yaml');
+    // The board authenticates each export by the attempt that sent it, so the collector must carry
+    // every request's credential headers to its dashboard hop: the receiver keeps them as client
+    // metadata, the batch never mixes two attempts' points under one request, and headers_setter
+    // writes them back onto the export. A shared deployment secret is gone.
+    it.each(['docker/otel-collector.yaml', 'charts/factory/files/collector.yaml'])(
+        '%s forwards each export’s attempt credential to the board',
+        (relative) => {
+            const config = parse(read(relative)) as CollectorConfig;
+            const keys = ['x-factory-job-id', 'x-factory-ingest-token'];
+
+            expect(config.receivers.otlp.protocols.http.include_metadata).toBe(true);
+            expect(config.receivers.otlp.protocols.grpc.include_metadata).toBe(true);
+            expect(config.processors.batch.metadata_keys).toEqual(keys);
+            expect(config.extensions.headers_setter.headers).toEqual(
+                keys.map((key) => ({ action: 'upsert', key, from_context: key }))
+            );
+            expect(config.exporters['otlp_http/dashboard']?.auth).toEqual({ authenticator: 'headers_setter' });
+            expect(config.exporters['otlp_http/dashboard']?.headers).toBeUndefined();
+            expect(config.service.extensions).toContain('headers_setter');
+            expect(read(relative)).not.toContain('INGEST_TOKEN');
+        }
+    );
+
+    it('renders the Helm collector config from the chart file, with no ingest secret in its env', () => {
         const template = read('charts/factory/templates/collector.yaml');
 
-        expect(config).toContain('X-Factory-Ingest-Token: $' + '{env:INGEST_TOKEN}');
         expect(template).toContain('{{ tpl (.Files.Get "files/collector.yaml") . | indent 8 }}');
-        expect(template).toContain('- name: INGEST_TOKEN');
+        expect(template).not.toContain('INGEST_TOKEN');
     });
 });
+
+interface CollectorConfig {
+    receivers: { otlp: { protocols: Record<'grpc' | 'http', { include_metadata?: boolean }> } };
+    processors: { batch: { metadata_keys?: string[] } };
+    extensions: { headers_setter: { headers: unknown[] } };
+    exporters: Record<string, { auth?: unknown; headers?: unknown }>;
+    service: { extensions?: string[] };
+}

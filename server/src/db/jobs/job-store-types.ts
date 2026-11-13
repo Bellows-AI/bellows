@@ -557,6 +557,11 @@ export interface Claim {
     /** The row's claim sequence (057): bumped by every claim, never refunded like `attempts`. */
     claimSeq: number;
     leaseToken: string;
+    /**
+     * The attempt's telemetry export credential (with its id), rendered into the runner's telemetry
+     * config. Unlike `leaseToken` no claim rotates it, so an adopted runner keeps exporting under it.
+     */
+    ingestToken: string;
     leaseExpiresAt: string;
     /**
      * The executor profile type selected by the task's stamped executor label. Null when the

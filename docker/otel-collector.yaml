@@ -5,18 +5,37 @@
 #     does not lose a session's metrics;
 #   - it is a second place to drop anything sensitive, independent of the server's allowlist.
 
+# Each export's attempt credential (x-factory-job-id + x-factory-ingest-token, rendered into the
+# runner's telemetry config) is kept as client metadata by the receivers (include_metadata), keys
+# the batch, and is written back onto the dashboard request here: the board resolves every export's
+# organization from it and refuses one without it.
+extensions:
+    headers_setter:
+        headers:
+            - action: upsert
+              key: x-factory-job-id
+              from_context: x-factory-job-id
+            - action: upsert
+              key: x-factory-ingest-token
+              from_context: x-factory-ingest-token
+
 receivers:
     otlp:
         protocols:
             grpc:
                 endpoint: 0.0.0.0:4317
+                include_metadata: true
             http:
                 endpoint: 0.0.0.0:4318
+                include_metadata: true
 
 processors:
+    # One batch per attempt: the credential headers are the batch key, so an export never carries
+    # one attempt's points under another's credential.
     batch:
         timeout: 5s
         send_batch_size: 512
+        metadata_keys: [x-factory-job-id, x-factory-ingest-token]
 
     # Defence in depth. The server's ATTR_ALLOWLIST is the real guarantee, but dropping
     # identity here means it never crosses the container boundary either.
@@ -62,8 +81,11 @@ exporters:
             enabled: true
             initial_interval: 5s
             max_elapsed_time: 300s
+        auth:
+            authenticator: headers_setter
 
 service:
+    extensions: [headers_setter]
     telemetry:
         logs:
             level: warn
