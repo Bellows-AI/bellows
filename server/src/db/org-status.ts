@@ -143,6 +143,32 @@ async function listOrganizations(sql: Sql): Promise<OperatorOrgView[]> {
  * Moves the org to the action's status under a row lock, with one `operator` audit row per change; a status that
  * already holds changes and records nothing.
  */
+/** One org's two holds, read under the row lock: the operator's decision and GitHub's (a deletion deadline). */
+interface OrgHolds extends OperatorOrgView {
+    operator_status: OrgStatus;
+    delete_after: Date | null;
+}
+
+const lockedHolds = async (tx: TransactionSql, orgId: string): Promise<OrgHolds | undefined> =>
+    (
+        await tx<OrgHolds[]>`
+            select id, name, status, operator_status, delete_after from organization where id = ${orgId}
+            for no key update
+        `
+    )[0];
+
+/**
+ * The effective status of two holds: active only when neither holds the org — the operator's refusal outranks any
+ * suspension, and GitHub's hold suspends. Neither source ever lifts the other's.
+ */
+const effectiveStatus = (operator: OrgStatus, githubHold: boolean): OrgStatus =>
+    operator === 'active' && githubHold ? 'suspended' : operator;
+
+/**
+ * Moves the operator's own hold under a row lock, with one `operator` audit row per change; a hold that already
+ * stands changes and records nothing. The effective status follows (`effectiveStatus`): the operator's activate lifts
+ * the operator's hold only, so an org GitHub still holds (uninstalled or suspended) stays suspended.
+ */
 async function setOrgStatus(
     sql: Sql,
     orgId: string,
@@ -150,19 +176,14 @@ async function setOrgStatus(
     operatorId: string
 ): Promise<OrgStatusChange> {
     return sql.begin(async (tx) => {
-        const [org] = await tx<OperatorOrgView[]>`
-            select id, name, status from organization where id = ${orgId} for no key update
-        `;
-        if (!org) return { outcome: 'missing' as const };
-        const to = STATUS_OF[action];
-        if (org.status === to) return { outcome: 'unchanged' as const, org };
-        if (org.status === 'refused' && action === 'suspend') return { outcome: 'refused' as const, org };
-        // The operator's activate is the decision to keep the org: it lifts an uninstall's deletion deadline too.
-        await tx`
-            update organization set status = ${to},
-                delete_after = case when ${to} = 'active' then null else delete_after end
-            where id = ${orgId}
-        `;
+        const holds = await lockedHolds(tx, orgId);
+        if (!holds) return { outcome: 'missing' as const };
+        const { operator_status: operator, delete_after: deadline, ...org } = holds;
+        const mine = STATUS_OF[action];
+        if (operator === mine) return { outcome: 'unchanged' as const, org };
+        if (operator === 'refused' && action === 'suspend') return { outcome: 'refused' as const, org };
+        const to = effectiveStatus(mine, deadline !== null);
+        await tx`update organization set operator_status = ${mine}, status = ${to} where id = ${orgId}`;
         await recordAudit(tx, {
             orgId,
             actor: { kind: 'operator', id: operatorId },
@@ -175,31 +196,18 @@ async function setOrgStatus(
 }
 
 /**
- * An uninstall (`deleted`) or a GitHub suspension (`suspend`) suspends an active org and sets its deletion deadline
- * once — a refused org stays refused — and keeps every row. An `unsuspend` lifts only what an installation set: an
- * org with a deadline is cleared of it and a suspended one reactivated; the operator's suspension or refusal (no
- * deadline) is left alone. A replay changes nothing and records nothing.
+ * GitHub's hold: an uninstall (`deleted`) or a GitHub suspension (`suspend`) sets the deletion deadline once and
+ * suspends the org unless the operator refused it; every row is kept. An `unsuspend` clears GitHub's hold only — the
+ * org is active again only if the operator holds it neither. A replay changes nothing and records nothing.
  */
-/**
- * Where an installation action moves an org whose row reads `status` and whether it has a deadline; null when it
- * changes nothing. A lifting moves only a suspended org; a suspension only an active one, a refusal staying put.
- */
-function installationMove(status: OrgStatus, hasDeadline: boolean, action: InstallationAction): OrgStatus | null {
-    if (action === 'unsuspend') return hasDeadline ? (status === 'suspended' ? 'active' : status) : null;
-    if (hasDeadline) return null;
-    return status === 'active' ? 'suspended' : status;
-}
-
 async function setInstallationStatus(sql: Sql, orgId: string, action: InstallationAction): Promise<OrgStatusChange> {
     return sql.begin(async (tx) => {
-        const [org] = await tx<(OperatorOrgView & { delete_after: Date | null })[]>`
-            select id, name, status, delete_after from organization where id = ${orgId} for no key update
-        `;
-        if (!org) return { outcome: 'missing' as const };
-        const { delete_after: deadline, ...view } = org;
-        const to = installationMove(view.status, deadline !== null, action);
-        if (to === null) return { outcome: 'unchanged' as const, org: view };
+        const holds = await lockedHolds(tx, orgId);
+        if (!holds) return { outcome: 'missing' as const };
+        const { operator_status: operator, delete_after: deadline, ...org } = holds;
         const lifting = action === 'unsuspend';
+        if (lifting === (deadline === null)) return { outcome: 'unchanged' as const, org };
+        const to = effectiveStatus(operator, !lifting);
         const deleteAfter = lifting ? null : tx`now() + make_interval(days => ${UNINSTALL_DELETE_WINDOW_DAYS}::int)`;
         const [updated] = await tx<{ delete_after: Date | null }[]>`
             update organization set status = ${to}, delete_after = ${deleteAfter}
@@ -212,12 +220,12 @@ async function setInstallationStatus(sql: Sql, orgId: string, action: Installati
             action: lifting ? 'org.activate' : 'org.suspend',
             target: orgId,
             detail: {
-                from: view.status,
+                from: org.status,
                 to,
                 source: `installation.${action}`,
                 deleteAfter: updated?.delete_after?.toISOString() ?? null,
             },
         });
-        return { outcome: 'changed' as const, org: { ...view, status: to } };
+        return { outcome: 'changed' as const, org: { ...org, status: to } };
     });
 }

@@ -51,9 +51,10 @@ row.
   it back as an interruption flagged `orgSuspended` — no budget, not a node loss — keeping its session and checkout,
   so a reactivation resumes it under a new claim sequence. A missing org row is not active but asks no release; a
   self-hosted board reads no status, refusing to boot with `OPERATOR_GITHUB_IDS`. `org-suspend-interrupt.test.ts`.
-- **An uninstall deletes nothing**: `installation.deleted`/`suspend` suspends the org (a refused one stays refused) and
-  sets `delete_after` once, `UNINSTALL_DELETE_WINDOW_DAYS` out; `unsuspend` and the operator's activate clear it, and
-  `unsuspend` never lifts the operator's own suspension. Each change is one `system` audit row; a replay writes none.
+- **An uninstall deletes nothing, and no source lifts another's hold**: `operator_status` is the operator's, a set
+  `delete_after` is GitHub's (`installation.deleted`/`suspend`, `UNINSTALL_DELETE_WINDOW_DAYS` out); `status` is active
+  only when neither holds. `unsuspend` clears GitHub's alone, the operator's activate the operator's alone. Each change
+  is one audit row; a replay writes none.
 - **The operator is a deployment role, not an org role**: an `operator` row in `ROUTE_CLASSES` admits only a
   GitHub id `OPERATOR_GITHUB_IDS` names, an org admin included in the refusal, and each change writes one
   `actor_kind = 'operator'` audit row in the target org. `server/test-db/operator-routes.test.ts`.

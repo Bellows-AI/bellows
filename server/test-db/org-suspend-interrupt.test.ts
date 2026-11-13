@@ -210,12 +210,51 @@ describe.skipIf(!enabled)('an App uninstall or a GitHub suspension', () => {
         expect((await orgRow(refused)).status).toBe('refused');
     });
 
-    it('keeps every row: an uninstall only suspends, and the operator’s activate clears the deadline', async () => {
+    it('never lifts the operator’s suspension in either order around a GitHub suspension', async () => {
+        // GitHub first, then the operator: the unsuspend leaves the operator's hold.
+        const githubFirst = await signedInOrg();
+        await auth.setInstallationStatus(githubFirst, 'suspend');
+        await auth.setOrgStatus(githubFirst, 'suspend', OPERATOR.id);
+        await auth.setInstallationStatus(githubFirst, 'unsuspend');
+        expect(await orgRow(githubFirst)).toEqual({ status: 'suspended', delete_after: null });
+        await auth.setOrgStatus(githubFirst, 'activate', OPERATOR.id);
+        expect((await orgRow(githubFirst)).status).toBe('active');
+
+        // The operator first, then GitHub: the same.
+        const operatorFirst = await signedInOrg();
+        await auth.setOrgStatus(operatorFirst, 'suspend', OPERATOR.id);
+        await auth.setInstallationStatus(operatorFirst, 'suspend');
+        await auth.setInstallationStatus(operatorFirst, 'unsuspend');
+        expect(await orgRow(operatorFirst)).toEqual({ status: 'suspended', delete_after: null });
+        await auth.setOrgStatus(operatorFirst, 'activate', OPERATOR.id);
+        expect((await orgRow(operatorFirst)).status).toBe('active');
+    });
+
+    it('never lifts the operator’s refusal in either order around an uninstall', async () => {
+        const githubFirst = await signedInOrg();
+        await auth.setInstallationStatus(githubFirst, 'deleted');
+        await auth.setOrgStatus(githubFirst, 'refuse', OPERATOR.id);
+        await auth.setInstallationStatus(githubFirst, 'unsuspend');
+        expect(await orgRow(githubFirst)).toEqual({ status: 'refused', delete_after: null });
+
+        const operatorFirst = await signedInOrg();
+        await auth.setOrgStatus(operatorFirst, 'refuse', OPERATOR.id);
+        await auth.setInstallationStatus(operatorFirst, 'deleted');
+        await auth.setInstallationStatus(operatorFirst, 'unsuspend');
+        expect(await orgRow(operatorFirst)).toEqual({ status: 'refused', delete_after: null });
+    });
+
+    it('keeps every row: an uninstall only suspends, and the operator’s activate leaves GitHub’s hold', async () => {
         const { org, store, id } = await runningAttempt();
         await auth.setInstallationStatus(org, 'deleted');
         expect(await store.get(id)).toMatchObject({ id, status: 'running' });
+        const deadline = (await orgRow(org)).delete_after;
+        // The operator's activate lifts the operator's hold only: the App is still uninstalled.
         await auth.setOrgStatus(org, 'activate', OPERATOR.id);
-        expect(await orgRow(org)).toEqual({ status: 'active', delete_after: null });
+        expect(await orgRow(org)).toEqual({ status: 'suspended', delete_after: deadline });
+        await auth.setOrgStatus(org, 'refuse', OPERATOR.id);
+        await auth.setOrgStatus(org, 'activate', OPERATOR.id);
+        expect(await orgRow(org)).toEqual({ status: 'suspended', delete_after: deadline });
     });
 
     it('answers missing for an unknown installation', async () => {
