@@ -278,6 +278,28 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
         });
     });
 
+    it('holds no provider key of a profile saved before keys moved to the secret store, unconverted yet', async () => {
+        // The executor store converts such a row on its first read; an export taken before that read must not
+        // carry the plaintext, nor any credential-shaped value nested in any row.
+        const providerKey = `sk-ant-legacy-${randomUUID()}`;
+        const nested = `nested-secret-${randomUUID()}`;
+        const config = {
+            model: 'sonnet',
+            env: { ANTHROPIC_API_KEY: providerKey, REGION: 'eu' },
+            mcp: [{ headers: { auth_token: nested } }],
+        };
+        await sql`
+            insert into executor_profile (org_id, user_id, name, type, config, position)
+            values (${org}, ${admin.userId}, 'legacy', 'claude-code', ${sql.json(config)}, 0)
+        `;
+
+        const archive = (await exportAs(admin)).rawPayload;
+        expect(archive.includes(providerKey)).toBe(false);
+        expect(archive.includes(nested)).toBe(false);
+        const [profile] = await rowsIn(await extract(archive), 'executor_profile');
+        expect(profile).toMatchObject({ name: 'legacy', config: { model: 'sonnet', env: { REGION: 'eu' } } });
+    });
+
     it('omits every credential-shaped column of the registered tables, or names it a reference', async () => {
         // A column whose name looks like a credential is either left out of the export or is one of these:
         // references into the secret store, flags, ids and enums that hold no credential themselves.
@@ -400,5 +422,57 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
             await app.close();
             await one.end();
         }
+    });
+
+    /** Holds the store's `held` call open until its signal fires, drops the client meanwhile: did the signal fire? */
+    async function disconnectWhilePending(held: 'list' | 'get'): Promise<AbortSignal | undefined> {
+        await app.close();
+        let signalOf: AbortSignal | undefined;
+        let reached = () => {};
+        const pendingReached = new Promise<void>((resolve) => {
+            reached = resolve;
+        });
+        const pending = (signal: AbortSignal | undefined) =>
+            new Promise<never>((_, reject) => {
+                signalOf = signal;
+                reached();
+                signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+            });
+        const store: ObjectStore = {
+            ...objects,
+            list: async (prefix, options) => {
+                if (held === 'list') return pending(options?.signal);
+                return prefix === `${PREFIX}${org}/` && options?.after === undefined ? [`${prefix}held`] : [];
+            },
+            get: async (_key, options) => pending(options?.signal),
+        };
+        await boot(sql, store);
+        await app.listen({ port: 0, host: '127.0.0.1' });
+        const { port } = app.server.address() as AddressInfo;
+        const request = get({
+            host: '127.0.0.1',
+            port,
+            path: '/api/org/export',
+            headers: { authorization: `Bearer ${admin.token}` },
+        });
+        request.on('error', () => {});
+        await pendingReached;
+        request.destroy();
+        await expect.poll(() => signalOf?.aborted, { timeout: 5_000 }).toBe(true);
+        // The route settled: closing the app waits on no open response.
+        const closed = await Promise.race([
+            app.close().then(() => 'closed'),
+            new Promise((resolve) => setTimeout(() => resolve('held'), 5_000)),
+        ]);
+        expect(closed).toBe('closed');
+        return signalOf;
+    }
+
+    it('aborts a listing that is pending when the client goes away', async () => {
+        expect((await disconnectWhilePending('list'))?.aborted).toBe(true);
+    });
+
+    it('aborts an object read that is pending when the client goes away', async () => {
+        expect((await disconnectWhilePending('get'))?.aborted).toBe(true);
     });
 });

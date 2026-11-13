@@ -39,11 +39,11 @@ const nameOf = (item: unknown): string | null => {
 };
 
 /**
- * The names of a complete `objects.list` page, or null for anything else. Fail closed: an object of kind
- * `storage#objects` holding only the fields asked for, `items` (when present) a list of named objects, a page token
- * (when present) a string, and never a next page with no item. Null is never an empty answer.
+ * The names and next page token of a complete `objects.list` page, or null for anything else. Fail closed: an object
+ * of kind `storage#objects` holding only the fields asked for, `items` (when present) a list of named objects, a page
+ * token (when present) a string, and never a next page with no item. Null is never an empty answer.
  */
-function namesOfListing(body: unknown): string[] | null {
+function namesOfListing(body: unknown): { names: string[]; next: string | undefined } | null {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
     if (Object.keys(body).some((field) => !LISTING_FIELDS.has(field))) return null;
     const { kind, items, nextPageToken } = body as { kind?: unknown; items?: unknown; nextPageToken?: unknown };
@@ -52,7 +52,7 @@ function namesOfListing(body: unknown): string[] | null {
     const names = ((items ?? []) as unknown[]).map(nameOf);
     if (names.some((name) => name === null)) return null;
     if (nextPageToken !== undefined && names.length === 0) return null;
-    return names as string[];
+    return { names: names as string[], next: nextPageToken as string | undefined };
 }
 
 /**
@@ -112,8 +112,8 @@ export function createGcsStore(options: GcsOptions): ObjectStore {
             await response.arrayBuffer();
             return 'created';
         },
-        async get(key) {
-            const response = await send('GET', `${objectUrl(key)}?alt=media`);
+        async get(key, call) {
+            const response = await send('GET', `${objectUrl(key)}?alt=media`, { signal: call?.signal });
             if (response.status === HTTP_NOT_FOUND) {
                 await response.arrayBuffer();
                 return null;
@@ -144,14 +144,19 @@ export function createGcsStore(options: GcsOptions): ObjectStore {
                 maxResults: String(call?.limit ?? LIST_LIMIT),
                 fields: 'kind,nextPageToken,items(name)',
             });
-            // GCS's `startOffset` is inclusive: the key itself comes back and is dropped here.
+            // GCS's `startOffset` is inclusive: the key itself comes back and is dropped here. A page that held only
+            // that key is not the end while it names a next page: the listing follows the token until a key or the end.
             const after = call?.after;
             if (after !== undefined) query.set('startOffset', after);
-            const response = await send('GET', `${objectsUrl}?${query}`, { signal: call?.signal });
-            if (response.status !== HTTP_OK) return fail('LIST', response);
-            const names = namesOfListing(await response.json().catch(() => undefined));
-            if (!names) throw new GcsError('LIST', response.status, 'not a complete listing');
-            return after === undefined ? names : names.filter((name) => name !== after);
+            for (;;) {
+                const response = await send('GET', `${objectsUrl}?${query}`, { signal: call?.signal });
+                if (response.status !== HTTP_OK) return fail('LIST', response);
+                const listing = namesOfListing(await response.json().catch(() => undefined));
+                if (!listing) throw new GcsError('LIST', response.status, 'not a complete listing');
+                const names = listing.names.filter((name) => name !== after);
+                if (names.length || listing.next === undefined) return names;
+                query.set('pageToken', listing.next);
+            }
         },
     };
 }

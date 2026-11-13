@@ -11,7 +11,8 @@ import { bad } from './helpers.js';
  *
  * The audit row is written before the first byte. Fastify destroys the stream when the client goes away and ends the
  * response when a read fails, before the archive's end blocks, so a cut-off download is never a complete archive;
- * either way the generator's `return` stops further reads and the abort reaches an in-flight listing.
+ * either way the generator's `return` stops further reads, and the response's close aborts an in-flight listing or
+ * object read.
  */
 
 const HTTP_OK = 200;
@@ -36,6 +37,9 @@ export const orgExportRoutes =
             await exporter.record(caller.user.id);
             const aborted = new AbortController();
             const stream = Readable.from(exporter.archive(aborted.signal), { objectMode: false });
+            // The response's own close, not the stream's: Readable.from closes only once its pending read settles,
+            // so a listing or object read in flight when the client goes away is aborted from here.
+            reply.raw.once('close', () => aborted.abort());
             stream.once('close', () => aborted.abort());
             const day = new Date().toISOString().slice(0, 10);
             return reply

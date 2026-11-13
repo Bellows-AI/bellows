@@ -12,7 +12,7 @@ export interface ObjectStore {
     /** Create-only write: `created`, or `exists` when the key is taken (the stored body is untouched). */
     put(key: string, body: Uint8Array, options?: ObjectCallOptions): Promise<PutResult>;
     /** The whole body, or null when the key does not exist. */
-    get(key: string): Promise<Uint8Array | null>;
+    get(key: string, options?: ObjectCallOptions): Promise<Uint8Array | null>;
     /** The body's size in bytes, or null when the key does not exist. */
     head(key: string, options?: ObjectCallOptions): Promise<{ size: number } | null>;
     /** Idempotent: deleting an absent key succeeds. */

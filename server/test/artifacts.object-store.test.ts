@@ -39,6 +39,14 @@ describe.each(BACKENDS)('object store contract: $name', ({ make, prefix, skip })
         expect(await store.head(key)).toEqual({ size: 5 });
     });
 
+    it.skipIf(skip)('rejects a read or a listing whose signal is aborted', async () => {
+        const { store, key } = await fresh();
+        await store.put(key, bytes('hello'));
+        const signal = AbortSignal.abort();
+        await expect(store.get(key, { signal })).rejects.toThrow();
+        await expect(store.list(prefix, { signal })).rejects.toThrow();
+    });
+
     it.skipIf(skip)('answers exists to an identical retry and leaves the stored body alone', async () => {
         const { store, key } = await fresh();
         await store.put(key, bytes('first'));

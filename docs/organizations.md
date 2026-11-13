@@ -56,5 +56,5 @@ An organization is one GitHub App installation: it owns the repo list and partit
 - **A purge is never reported done and never touches an active org**: only a `suspended`/`refused` org is queued (an
   operator delete; `delete_after` passing, cloud only) and re-checked under lock; an unconfirmed list, delete or collect
   retries from its step (`last_error`). The org row and `org_purge` go together; one `org.purged` log line remains.
-- **An export holds one org, no secret and no held connection**: every `ORG_TABLES` table read by `org_id` in short
-  primary-key pages; credential columns dropped (`EXPORT_OMITTED_COLUMNS`), secrets as refs; a failed read ends it unclosed.
+- **An export holds one org, no secret and no held connection**: every `ORG_TABLES` table in short `org_id` key pages; credential
+  columns (`EXPORT_OMITTED_COLUMNS`) and nested credential values dropped, converted or not; secrets as refs; a failed read ends it unclosed; the response's close aborts a pending list or get.

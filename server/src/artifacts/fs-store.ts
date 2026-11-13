@@ -133,9 +133,10 @@ export function createFilesystemStore(root: string): ObjectStore {
                 await rm(temp, { force: true });
             }
         },
-        async get(key) {
+        async get(key, options) {
+            options?.signal?.throwIfAborted();
             try {
-                return new Uint8Array(await readFile(pathOf(key)));
+                return new Uint8Array(await readFile(pathOf(key), options?.signal ? { signal: options.signal } : {}));
             } catch (error) {
                 if (errnoOf(error) === NOT_FOUND) return null;
                 throw error;
@@ -153,6 +154,7 @@ export function createFilesystemStore(root: string): ObjectStore {
             await rm(pathOf(key), { force: true });
         },
         async list(prefix, options?: ListOptions) {
+            options?.signal?.throwIfAborted();
             const dir = pathOf(prefix);
             let entries: Dirent[];
             try {

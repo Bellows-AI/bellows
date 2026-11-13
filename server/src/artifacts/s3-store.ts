@@ -154,8 +154,8 @@ export function createS3Store(options: S3Options): S3Store {
             await response.arrayBuffer();
             return 'created';
         },
-        async get(key) {
-            const response = await send('GET', urlOf(key));
+        async get(key, call) {
+            const response = await send('GET', urlOf(key), { signal: call?.signal });
             if (response.status === HTTP_NOT_FOUND) {
                 await response.arrayBuffer();
                 return null;
