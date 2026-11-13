@@ -35,7 +35,12 @@ export interface EnvVarsSectionProps {
     draftId: string;
     /** The scope's label in the guard dialog's body sentence. */
     draftLabel: string;
+    /** The caller may not write this scope: the rows read with no write control, beside `ENV_ADMIN_NOTE`. */
+    readOnly?: boolean;
 }
+
+/** What a member reads beside an organization-wide scope: the server refuses their write. */
+export const ENV_ADMIN_NOTE = "These values are managed by your organization's admins.";
 
 /** Variables | Secrets as the shared `.tabs` strip: count, an unsaved marker, arrow keys move. */
 function EnvTabs({
@@ -143,7 +148,7 @@ function visibleRows(rows: readonly EnvRowState[], isSecret: boolean, filter: st
 
 /** The editor's controller: the draft, the open row, the tab and filter, and every action the
  * head, body and save bar call. Split out of `EnvVarsSection` so the markup stays flat. */
-function useEnvEditor({ vars, onSave, draftId, draftLabel }: EnvVarsSectionProps) {
+function useEnvEditor({ vars, onSave, draftId, draftLabel, readOnly = false }: EnvVarsSectionProps) {
     const saveState = useEnvSaveState();
     const rowsState = useEnvRows(vars, saveState.clearConfirmation);
     const textMode = useEnvTextMode({
@@ -225,7 +230,8 @@ function useEnvEditor({ vars, onSave, draftId, draftLabel }: EnvVarsSectionProps
         rawMode,
         textBroken,
         dirty,
-        locked: saveState.saving,
+        locked: saveState.saving || readOnly,
+        readOnly,
         canSave:
             !saveState.saving && dirty && !textBroken && scopeMsg === null && (errors.size === 0 || editing !== null),
         discard,
@@ -260,7 +266,7 @@ function EnvBoxHead({ editor }: { editor: EnvEditor }) {
                     />
                 </label>
             )}
-            {tab === 'secrets' ? null : (
+            {tab === 'secrets' || editor.readOnly ? null : (
                 <button
                     type="button"
                     className="env-quiet"
@@ -273,7 +279,7 @@ function EnvBoxHead({ editor }: { editor: EnvEditor }) {
                     {rawMode ? 'List view' : 'Raw editor'}
                 </button>
             )}
-            {rawMode ? null : (
+            {rawMode || editor.readOnly ? null : (
                 <button
                     type="button"
                     className="primary env-new"
@@ -327,6 +333,7 @@ function EnvBoxBody({ uid, editor }: { uid: string; editor: EnvEditor }) {
             editingErrors={editing?.touched ? (errors.get(editing.id) ?? null) : null}
             changeOf={(row) => rowChange(row, baseline)}
             locked={locked}
+            readOnly={editor.readOnly}
             refs={rowsState.refs}
             onUpdate={rowsState.updateRow}
             onEdit={editor.editRow}
@@ -386,6 +393,7 @@ export function EnvVarsSection(props: EnvVarsSectionProps) {
             <h2 id={`${uid}-title`} className={props.monoTitle ? 'env-editor-title mono' : 'env-editor-title'}>
                 {props.title}
             </h2>
+            {editor.readOnly ? <p className="muted">{ENV_ADMIN_NOTE}</p> : null}
             <EnvTabs
                 uid={uid}
                 tab={editor.tab}

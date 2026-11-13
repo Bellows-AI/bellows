@@ -20,6 +20,7 @@ function EnvViewRow({
     kind,
     change,
     locked,
+    readOnly,
     onEdit,
     onRemove,
     editRef,
@@ -28,6 +29,7 @@ function EnvViewRow({
     kind: EnvRowKind;
     change: EnvRowChange | null;
     locked: boolean;
+    readOnly: boolean;
     onEdit: () => void;
     onRemove: () => void;
     editRef: (el: HTMLButtonElement | null) => void;
@@ -60,25 +62,29 @@ function EnvViewRow({
                 {row.updatedAt ? `Updated ${relativeTime(row.updatedAt)}` : 'Not saved yet'}
             </span>
             <span className="env-row-actions">
-                <button
-                    type="button"
-                    className="env-icon-button"
-                    onClick={onEdit}
-                    disabled={locked}
-                    aria-label={`Edit ${name}`}
-                    ref={editRef}
-                >
-                    <Icon name="pencil" />
-                </button>
-                <button
-                    type="button"
-                    className="env-icon-button env-remove"
-                    onClick={onRemove}
-                    disabled={locked}
-                    aria-label={`Remove ${name}`}
-                >
-                    <Icon name="trash" />
-                </button>
+                {readOnly ? null : (
+                    <>
+                        <button
+                            type="button"
+                            className="env-icon-button"
+                            onClick={onEdit}
+                            disabled={locked}
+                            aria-label={`Edit ${name}`}
+                            ref={editRef}
+                        >
+                            <Icon name="pencil" />
+                        </button>
+                        <button
+                            type="button"
+                            className="env-icon-button env-remove"
+                            onClick={onRemove}
+                            disabled={locked}
+                            aria-label={`Remove ${name}`}
+                        >
+                            <Icon name="trash" />
+                        </button>
+                    </>
+                )}
             </span>
         </li>
     );
@@ -242,6 +248,8 @@ export interface EnvRowListProps {
     editingErrors: RowFieldErrors | null;
     changeOf: (row: EnvRowState) => EnvRowChange | null;
     locked: boolean;
+    /** No Edit or Remove on a row: the caller may not write this scope. */
+    readOnly?: boolean;
     refs: EnvFocusRefs;
     onUpdate: (id: string, patch: Partial<EnvRowState>) => void;
     onEdit: (row: EnvRowState) => void;
@@ -293,6 +301,7 @@ export function EnvRowList(props: EnvRowListProps) {
                         kind={kind}
                         change={props.changeOf(row)}
                         locked={locked}
+                        readOnly={props.readOnly ?? false}
                         onEdit={() => props.onEdit(row)}
                         onRemove={() => props.onRemove(row)}
                         editRef={(el) => {

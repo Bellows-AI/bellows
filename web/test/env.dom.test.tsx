@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import type { EnvVarInput, EnvVarView } from '../src/api/useEnv.js';
-import { renderApp, stubFetch } from './dom.js';
+import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 import { boardHandler, installationRepo, settingsBoard } from './settings-board.js';
 
 /**
@@ -29,6 +29,8 @@ interface EnvBoard {
 function envBoard(org: EnvVarView[] = []) {
     const board: EnvBoard = { org, refuse: null, holdGets: false, failGets: false, parked: [] };
     const calls = stubFetch(({ method, url, body }) => {
+        // The open board's caller is its org's admin, the one role that writes the org scope.
+        if (url === '/api/auth/me') return OPEN_BOARD_SESSION;
         if (method === 'GET' && url === '/api/env') {
             if (board.failGets) return { status: 500, body: { error: 'refresh failed' } };
             const snapshot = { org: board.org, workspace: [], repos: [] };
