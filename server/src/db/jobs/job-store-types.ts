@@ -1097,7 +1097,8 @@ export interface CreateJobStoreDeps {
      * guards the env resolver leaves the job queued with its attempt unburned.
      */
     executorConfig?: {
-        configFor(
+        /** Every stored credential resolved from the secret store; an unconfirmed read throws. */
+        claimConfigFor(
             userId: string,
             name: string,
             scope: ExecutorScope,

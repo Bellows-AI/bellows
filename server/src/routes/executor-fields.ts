@@ -5,7 +5,10 @@ import {
     ERROR_CODES,
     EXECUTOR_TYPES,
     forbiddenCredentialIn,
+    isCredentialRedirectMessage,
     MAX_GATE_FIX_ROUNDS,
+    credentialRedirectMessage,
+    redirectsPlatformCredential,
 } from '@factory-ai/core';
 import type { DeploymentMode, ErrorCode } from '@factory-ai/core';
 
@@ -37,6 +40,7 @@ export function executorFieldRefusal(message: string): ErrorCode {
     if (message.startsWith('unknown executor type')) return ERROR_CODES.BAD_EXECUTOR_TYPE;
     if (message.startsWith('gateFixRounds')) return ERROR_CODES.BAD_EXECUTOR_ROUNDS;
     if (message === CLOUD_CREDENTIAL_MESSAGE) return ERROR_CODES.CLOUD_CREDENTIAL_REFUSED;
+    if (isCredentialRedirectMessage(message)) return ERROR_CODES.CREDENTIAL_REDIRECT_REFUSED;
     return ERROR_CODES.BAD_BODY;
 }
 
@@ -56,7 +60,8 @@ function parseGateFixRounds(item: { name?: unknown; gateFixRounds?: unknown }): 
 
 /**
  * The fields every executor payload entry carries: the name/type/config shape, the known type and
- * the round limit — and, in cloud mode, no Claude subscription OAuth token anywhere in `config`.
+ * the round limit — and, in cloud mode, no Claude subscription OAuth token anywhere in `config` and
+ * no redirect of the deployment's model credential without the member's own key beside it.
  * A string return is the refusal message; the caller stops at the first.
  */
 export function parseExecutorFields(entry: unknown, deploymentMode: DeploymentMode): ExecutorFields | string {
@@ -78,6 +83,8 @@ export function parseExecutorFields(entry: unknown, deploymentMode: DeploymentMo
     if (deploymentMode === CLOUD && forbiddenCredentialIn(undefined, item.config) !== null) {
         return CLOUD_CREDENTIAL_MESSAGE;
     }
+    const redirect = deploymentMode === CLOUD ? redirectsPlatformCredential(undefined, item.config, item.type) : null;
+    if (redirect !== null) return credentialRedirectMessage(redirect);
     const gateFixRounds = parseGateFixRounds(item);
     if (typeof gateFixRounds === 'string') return gateFixRounds;
     return {

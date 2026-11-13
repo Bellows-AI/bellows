@@ -6,7 +6,7 @@ import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { EnvSecretError } from '../src/db/env-secrets.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { seedEncryptedRow, testSecretStore } from './env-secrets-harness.js';
+import { seedEncryptedRow, testSecretDeps, testSecretStore } from './env-secrets-harness.js';
 import { account, lapseDeferral, mustCreate, randomGithubId, startRow, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -181,7 +181,7 @@ describe.runIf(enabled)('attribution', () => {
             name: 'the executor reader',
             failing: (fail) => ({
                 executorConfig: {
-                    configFor: async () => {
+                    claimConfigFor: async () => {
                         if (fail()) throw new Error('executor store down');
                         return null;
                     },
@@ -249,7 +249,7 @@ describe.runIf(enabled)('attribution', () => {
         let executors: ReturnType<typeof createUserExecutorStore>;
         const configured = () => createJobStore({ sql, orgId: ORG, executorConfig: executors });
         beforeAll(() => {
-            if (enabled) executors = createUserExecutorStore({ sql, orgId: ORG });
+            if (enabled) executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         });
 
         it('hands an opencode row’s config over, with the permission fence stripped', async () => {

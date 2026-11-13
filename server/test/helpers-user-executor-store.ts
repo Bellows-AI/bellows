@@ -161,6 +161,11 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
             };
         },
 
+        // The fake stores configs as sent, so there is no stored credential to resolve.
+        async claimConfigFor(userId, name, scope) {
+            return this.configFor(userId, name, scope);
+        },
+
         async listOrg() {
             return byScope(null).map(toProfile);
         },

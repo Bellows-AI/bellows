@@ -6,6 +6,7 @@ import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
+import { testSecretDeps } from './env-secrets-harness.js';
 
 /**
  * Issue 391's board half: a task selection names a scope and a profile, and the claim resolves
@@ -40,14 +41,14 @@ beforeAll(async () => {
     store = createJobStore({
         sql,
         orgId: ORG,
-        executorConfig: createUserExecutorStore({ sql, orgId: ORG }),
+        executorConfig: createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) }),
     });
 });
 
 describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)', () => {
     /** Alice's personal "main" and the organization's own "main": same name, two rows. */
     const seedSameName = async () => {
-        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: { model: 'personal-model' } }]);
         await executors.createOrg({
             name: 'main',
@@ -100,7 +101,7 @@ describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)',
     });
 
     it('a row removed after queueing resolves null, and the task fails clearly rather than guessing', async () => {
-        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         await executors.createOrg({ name: 'gone', type: 'claude-code', config: {}, createdBy: ALICE });
         const { id } = await mustCreate(
             store.create('echo hi', ALICE, { repo: null, executor: 'gone', executorScope: 'org' })
@@ -117,7 +118,7 @@ describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)',
 
 describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 440)', () => {
     const suspend = async (scope: 'user' | 'org', name: string, suspended: boolean) => {
-        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         if (scope === 'org') {
             const row = (await executors.listOrg()).find((r) => r.name === name)!;
             await executors.setOrgSuspended(row.id, suspended);
@@ -128,7 +129,7 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
     };
 
     it('hands out no runner and no config for a suspended profile, and says why', async () => {
-        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { model: 'secret' } }]);
         const { id } = await mustCreate(
             store.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' })
@@ -145,7 +146,7 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
     });
 
     it('is scoped: a suspended personal profile does not refuse the same-named org selection', async () => {
-        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
         await executors.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE });
         await suspend('user', 'main', true);
@@ -158,7 +159,7 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
     });
 
     it('applies to a follow-up and a retry the same way, and launches again once resumed', async () => {
-        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         await executors.createOrg({ name: 'team', type: 'claude-code', config: {}, createdBy: ALICE });
         const parent = await mustCreate(
             store.create('drive me', ALICE, { repo: null, executor: 'team', executorScope: 'org' })

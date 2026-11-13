@@ -1,5 +1,15 @@
 import type { Sql, TransactionSql } from 'postgres';
 import { DEFAULT_GATE_FIX_ROUNDS, ORG_SCOPE, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
+import {
+    convertedGate,
+    type ExecutorCredentialDeps,
+    resolveCredentials,
+    retireCredentials,
+    type StoredCredential,
+    storedOf,
+    writeSealed,
+} from './executor-credentials.js';
 
 /**
  * One executor profile: a member's personal row (`userId` set) or an organization-wide row the
@@ -102,6 +112,16 @@ export interface UserExecutorStore {
         scope?: ExecutorScope,
         exec?: Sql | TransactionSql
     ): Promise<UserExecutorConfig | null>;
+    /**
+     * `configFor` for the claim: the same row with every stored credential resolved from the secret
+     * store. A read that is not a confirmed value throws, so the claim rolls back and stays queued.
+     */
+    claimConfigFor(
+        userId: string,
+        name: string,
+        scope: ExecutorScope,
+        exec: Sql | TransactionSql
+    ): Promise<UserExecutorConfig | null>;
 
     /** The organization's profiles, in management order. Never carries configs — poll-shaped. */
     listOrg(): Promise<ExecutorProfile[]>;
@@ -185,23 +205,28 @@ const toExecutorProfile = (row: Row): ExecutorProfile => ({
     suspended: row.suspended,
 });
 
-/** `replace()`'s transaction body: the member's personal list, delete-then-insert. */
+/**
+ * `replace()`'s transaction body: the member's personal list, delete-then-insert. `sealedOf` turns the
+ * stored credentials of the rows being replaced into the sealed configs (executor-credentials.ts).
+ */
 async function replacePersonalRows(
     tx: TransactionSql,
-    orgId: string,
-    userId: string,
-    executors: Parameters<UserExecutorStore['replace']>[1]
+    { orgId, userId }: { orgId: string; userId: string },
+    executors: Parameters<UserExecutorStore['replace']>[1],
+    sealedOf: (
+        previous: readonly StoredCredential[]
+    ) => { config: Record<string, unknown>; secretRefs: StoredCredential[] }[]
 ): Promise<void> {
     // Read before the delete: an entry that does not say otherwise keeps the suspension its
-    // same-named predecessor carried (issue 440).
-    const suspendedNames = new Set(
-        (
-            await tx<{ name: string }[]>`
-                select name from executor_profile
-                where org_id = ${orgId} and user_id = ${userId} and suspended
-            `
-        ).map((row) => row.name)
-    );
+    // same-named predecessor carried (issue 440), and a stored credential sent back as its marker
+    // stays stored.
+    const previous = await tx<{ name: string; suspended: boolean; secret_refs: StoredCredential[] }[]>`
+        select name, suspended, secret_refs from executor_profile
+        where org_id = ${orgId} and user_id = ${userId}
+        for update
+    `;
+    const suspendedNames = new Set(previous.filter((row) => row.suspended).map((row) => row.name));
+    const sealed = sealedOf(storedOf(previous));
     await tx`
         delete from executor_profile
         where org_id = ${orgId} and user_id = ${userId}
@@ -215,14 +240,15 @@ async function replacePersonalRows(
         user_id: userId,
         name: executor.name,
         type: executor.type,
-        config: executor.config as never,
+        config: tx.json(sealed[index]!.config as never),
+        secret_refs: tx.json(sealed[index]!.secretRefs as never),
         gate_fix_rounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
         position: index,
         suspended: executor.suspended ?? suspendedNames.has(executor.name),
     }));
     await tx`
         insert into executor_profile
-            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'gate_fix_rounds', 'position', 'suspended')}
+            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'secret_refs', 'gate_fix_rounds', 'position', 'suspended')}
     `;
 }
 
@@ -232,14 +258,15 @@ async function replacePersonalRows(
  * another organization all match nothing.
  */
 async function deleteOwnedRow(
-    sql: Sql,
-    { orgId, id, owner }: { orgId: string; id: string; owner: string }
+    deps: ExecutorCredentialDeps,
+    { id, owner }: { id: string; owner: string | null }
 ): Promise<boolean> {
-    const rows = await sql<{ id: string }[]>`
+    const rows = await deps.sql<{ secret_refs: StoredCredential[] }[]>`
         delete from executor_profile
-        where org_id = ${orgId} and id = ${id} and user_id = ${owner}
-        returning id
+        where org_id = ${deps.orgId} and id = ${id} and user_id is not distinct from ${owner}
+        returning secret_refs
     `;
+    await retireCredentials(deps, storedOf(rows));
     return rows.length > 0;
 }
 
@@ -255,39 +282,135 @@ async function setSuspendedRow(
     return rows[0] ? toExecutorProfile(rows[0]) : null;
 }
 
+/** The next `position` at the end of the given scope's list — org rows and each member's rows. */
+async function nextPosition(exec: Sql | TransactionSql, orgId: string, userId: string | null): Promise<number> {
+    const rows = await exec<{ next: number }[]>`
+        select coalesce(max(position) + 1, 0) as next
+        from executor_profile
+        where org_id = ${orgId} and user_id is not distinct from ${userId}
+    `;
+    return rows[0]?.next ?? 0;
+}
+
+type ConfiguredRow = Row & { config: Record<string, unknown> };
+
+/** `claimConfigFor`'s read: the selected row with its stored credentials resolved. */
+async function claimConfigRow(
+    deps: ExecutorCredentialDeps,
+    { owner, name }: { owner: string | null; name: string },
+    exec: Sql | TransactionSql
+): Promise<UserExecutorConfig | null> {
+    const rows = await (exec as Sql)<
+        (Pick<ConfiguredRow, 'type' | 'config' | 'gate_fix_rounds' | 'suspended'> & {
+            secret_refs: StoredCredential[];
+        })[]
+    >`
+        select type, config, secret_refs, gate_fix_rounds, suspended
+        from executor_profile
+        where org_id = ${deps.orgId} and user_id is not distinct from ${owner} and name = ${name}
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    // A suspended profile's config never travels, so its credentials are not read.
+    const config = row.suspended
+        ? row.config
+        : await resolveCredentials(deps.secrets, deps.orgId, row.config, row.secret_refs);
+    return { type: row.type, config, gateFixRounds: row.gate_fix_rounds, suspended: row.suspended };
+}
+
+/** `createOrg`'s write: a new org row, its config sealed (executor-credentials.ts). */
+async function insertOrgRow(
+    deps: ExecutorCredentialDeps,
+    input: Parameters<UserExecutorStore['createOrg']>[0]
+): Promise<ConfiguredRow> {
+    const rows = await writeSealed(deps, [input.config], async (tx, sealedOf) => {
+        const [sealed] = sealedOf([]);
+        const position = await nextPosition(tx, deps.orgId, null);
+        return tx<ConfiguredRow[]>`
+            insert into executor_profile
+                (org_id, user_id, name, type, config, secret_refs, gate_fix_rounds, position, created_by)
+            values (
+                ${deps.orgId}, null, ${input.name}, ${input.type}, ${tx.json(sealed!.config as never)},
+                ${tx.json(sealed!.secretRefs as never)}, ${input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS},
+                ${position}, ${input.createdBy}
+            )
+            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, config
+        `;
+    });
+    const row = rows[0];
+    if (!row) throw new Error('createOrg returned no row');
+    return row;
+}
+
+/** `updateOrg`'s write: the org row edited in place, a new config sealed against the row's own credentials. */
+async function updateOrgRow(
+    deps: ExecutorCredentialDeps,
+    id: string,
+    patch: Parameters<UserExecutorStore['updateOrg']>[1]
+): Promise<ConfiguredRow | null> {
+    const { orgId } = deps;
+    const { config } = patch;
+    const rows = await writeSealed(deps, config ? [config] : [], async (tx, sealedOf) => {
+        const previous = await tx<{ secret_refs: StoredCredential[] }[]>`
+            select secret_refs from executor_profile
+            where org_id = ${orgId} and id = ${id} and user_id is null
+            for update
+        `;
+        if (!previous[0]) return [];
+        const [sealed] = config ? sealedOf(storedOf(previous)) : [];
+        return tx<ConfiguredRow[]>`
+            update executor_profile set
+                name = coalesce(${patch.name ?? null}, name),
+                type = coalesce(${patch.type ?? null}, type),
+                config = coalesce(${sealed ? tx.json(sealed.config as never) : null}, config),
+                secret_refs = coalesce(${sealed ? tx.json(sealed.secretRefs as never) : null}, secret_refs),
+                gate_fix_rounds = coalesce(${patch.gateFixRounds ?? null}, gate_fix_rounds),
+                updated_at = now()
+            where org_id = ${orgId} and id = ${id} and user_id is null
+            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, config
+        `;
+    });
+    return rows[0] ?? null;
+}
+
 /** The organization is bound at construction: one store serves one organization. */
 export function createUserExecutorStore({
     sql,
     orgId,
     ready,
+    secrets,
+    secretLog,
+    writeDeadlineMs = 30_000,
+    cleanupDeadlineMs = 10_000,
 }: {
     sql: Sql;
     orgId: string;
     ready?: Promise<unknown>;
+    /** Holds every credential-shaped value of a profile's config (docs/workspace.md). */
+    secrets: SecretStore;
+    /** The secret store's diagnostic sink: a compensation that could not finish is reported here. */
+    secretLog: (diagnostic: SecretDiagnostic) => void;
+    /** Bounds a save's creates; compensation runs under its own `cleanupDeadlineMs`. */
+    writeDeadlineMs?: number;
+    cleanupDeadlineMs?: number;
 }): UserExecutorStore {
-    const gate = async () => {
-        if (ready) await ready;
-    };
-
-    /** The next `position` at the end of the given scope's list — org rows and each member's rows. */
-    const nextPosition = async (exec: Sql | TransactionSql, userId: string | null): Promise<number> => {
-        const rows = await exec<{ next: number }[]>`
-            select coalesce(max(position) + 1, 0) as next
-            from executor_profile
-            where org_id = ${orgId} and user_id is not distinct from ${userId}
-        `;
-        return rows[0]?.next ?? 0;
-    };
+    const deps: ExecutorCredentialDeps = { sql, orgId, secrets, secretLog, writeDeadlineMs, cleanupDeadlineMs };
+    // Rows saved before credentials moved to the store are converted before the first read.
+    const gate = convertedGate(deps, ready);
 
     return {
         async replace(userId, executors) {
             await gate();
-            await sql.begin((tx) => replacePersonalRows(tx, orgId, userId, executors));
+            await writeSealed(
+                deps,
+                executors.map((executor) => executor.config),
+                (tx, sealedOf) => replacePersonalRows(tx, { orgId, userId }, executors, sealedOf)
+            );
         },
 
         async removePersonal(userId, id) {
             await gate();
-            return deleteOwnedRow(sql, { orgId, id, owner: userId });
+            return deleteOwnedRow(deps, { id, owner: userId });
         },
 
         async setPersonalSuspended(userId, id, suspended) {
@@ -344,6 +467,11 @@ export function createUserExecutorStore({
                 : null;
         },
 
+        async claimConfigFor(userId, name, scope, exec) {
+            await gate();
+            return claimConfigRow(deps, { owner: scope === USER_SCOPE ? userId : null, name }, exec);
+        },
+
         async listOrg() {
             await gate();
             const rows = await sql<Row[]>`
@@ -368,44 +496,19 @@ export function createUserExecutorStore({
 
         async createOrg(input) {
             await gate();
-            const position = await nextPosition(sql, null);
-            const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds, position, created_by)
-                values (
-                    ${orgId}, null, ${input.name}, ${input.type}, ${input.config as never},
-                    ${input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS}, ${position}, ${input.createdBy}
-                )
-                returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, config
-            `;
-            const row = rows[0];
-            if (!row) throw new Error('createOrg returned no row');
+            const row = await insertOrgRow(deps, input);
             return { ...toExecutorProfile(row), config: row.config };
         },
 
         async updateOrg(id, patch) {
             await gate();
-            const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                update executor_profile set
-                    name = coalesce(${patch.name ?? null}, name),
-                    type = coalesce(${patch.type ?? null}, type),
-                    config = coalesce(${patch.config ? (patch.config as never) : null}, config),
-                    gate_fix_rounds = coalesce(${patch.gateFixRounds ?? null}, gate_fix_rounds),
-                    updated_at = now()
-                where org_id = ${orgId} and id = ${id} and user_id is null
-                returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, config
-            `;
-            const row = rows[0];
+            const row = await updateOrgRow(deps, id, patch);
             return row ? { ...toExecutorProfile(row), config: row.config } : null;
         },
 
         async deleteOrg(id) {
             await gate();
-            const rows = await sql<{ id: string }[]>`
-                delete from executor_profile
-                where org_id = ${orgId} and id = ${id} and user_id is null
-                returning id
-            `;
-            return rows.length > 0;
+            return deleteOwnedRow(deps, { id, owner: null });
         },
 
         async changeScope(id, to, userId) {
@@ -413,7 +516,7 @@ export function createUserExecutorStore({
             if (to === USER_SCOPE) {
                 // Org row down into the calling admin's personal list, at the end of it.
                 const rows = await sql.begin(async (tx) => {
-                    const position = await nextPosition(tx, userId);
+                    const position = await nextPosition(tx, orgId, userId);
                     return tx<Row[]>`
                         update executor_profile set
                             user_id = ${userId}, position = ${position}, created_by = null, updated_at = now()
@@ -428,7 +531,7 @@ export function createUserExecutorStore({
             // the ownership enforcement at the row: another member's row does not match, and the
             // route's caller check rests on this.
             const rows = await sql.begin(async (tx) => {
-                const position = await nextPosition(tx, null);
+                const position = await nextPosition(tx, orgId, null);
                 return tx<Row[]>`
                     update executor_profile set
                         user_id = null, position = ${position}, created_by = ${userId}, updated_at = now()

@@ -1,4 +1,4 @@
-import { CLOUD_CREDENTIAL_MESSAGE, type DeploymentMode } from '@factory-ai/core';
+import { CLOUD_CREDENTIAL_MESSAGE, type DeploymentMode, STORED_CREDENTIAL_PREFIX } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
@@ -6,7 +6,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
 import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
-import { testSecretStore } from './env-secrets-harness.js';
+import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
@@ -27,7 +27,7 @@ const REVIEWER: ReviewerSpec = { name: 'sec', instructions: 'Look.', timeoutMinu
 let sql: Sql;
 
 function stores(orgId: string, deploymentMode: DeploymentMode) {
-    const executors = createUserExecutorStore({ sql, orgId });
+    const executors = createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) });
     const env = createEnvVarStore({ sql, orgId, secrets: testSecretStore(sql), secretLog: () => {} });
     const jobs = createJobStore({
         sql,
@@ -67,7 +67,14 @@ describe.skipIf(!enabled)('cloud mode: a stored OAuth token never reaches a clai
         expectRefused(await jobs.claim('w1', LEASE_SECONDS));
         // Leased to the driver that fails it, never handed out again; the saved profile is untouched.
         expect(await jobs.claim('w2', LEASE_SECONDS)).toBeNull();
-        expect((await executors.configFor(ALICE, 'main', 'user', sql))?.config).toEqual({ env: { [TOKEN]: VALUE } });
+        // Kept in the secret store: the profile holds its marker, the store the value.
+        const stored = (await executors.configFor(ALICE, 'main', 'user', sql))?.config as {
+            env: Record<string, string>;
+        };
+        expect(stored.env[TOKEN]).toMatch(new RegExp(`^${STORED_CREDENTIAL_PREFIX}`));
+        expect((await executors.claimConfigFor(ALICE, 'main', 'user', sql))?.config).toEqual({
+            env: { [TOKEN]: VALUE },
+        });
     });
 
     it('(b) in a repo-scope env row: refused, the row kept', async () => {
