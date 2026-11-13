@@ -5,7 +5,7 @@
  */
 
 import { OBJECTIVE_MODE, type JobMode } from '@factory-ai/core';
-import { type ClaimConnections, claimConnectionsInTx, recordUnboundRequirements } from './job-store-connections.js';
+import { type ClaimConnections, claimConnectionsInTx, queuedRowHeld } from './job-store-connections.js';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
@@ -43,6 +43,7 @@ import type {
 import { type ClaimCandidateRow, rootRowFree, withClaimAttachments } from './job-store-claim-row.js';
 import { claimCommand } from '../follow-up-recap.js';
 import { claimPromptInput, resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
+import { activeOrgOf } from '../org-status.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from '../workflows/workflow-blocks/runtime.js';
 import {
     type WorkflowDefinition,
@@ -241,7 +242,7 @@ async function reserveCandidate(
     refusal: ClaimRefusal,
     takeoverOnly: boolean
 ): Promise<ReservedCandidate | null> {
-    const { sql, orgId, admission, batches } = ctx;
+    const { sql, orgId, admission, batches, deploymentMode } = ctx;
     const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
     const full = await fullScope(sql, admission, orgId);
     if (full === 'global') refusal.global = true;
@@ -272,7 +273,10 @@ async function reserveCandidate(
                   select 1 from job_integration_requirement q
                   where q.org_id = j.org_id and q.root_job_id = j.root_job_id and q.satisfied_at is null
               ))
-              and (j.status = 'running' or (${room}::boolean and ${repoRoom(sql, admission)}))
+              -- New work only from an active org (cloud; a missing org row is not active). A running row's
+              -- takeover is still offered: a suspension refuses new work and never strands a live attempt.
+              and (j.status = 'running' or (${room}::boolean and ${repoRoom(sql, admission)}
+                                            and ${activeOrgOf(sql, deploymentMode, 'j')}))
             order by ${awaitingTakeover(sql, 'j')} desc, coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
             limit 1
             -- Below the limit in the plan, so a row another claimer is reserving is skipped
@@ -406,9 +410,10 @@ async function acquireCandidate(
         if (!locked) return NEXT_CANDIDATE;
         if (!(await tryThreadLock(tx, orgId, reserved))) return REFUSED;
         probe.locked();
-        // A required integration with no live binding is a requirement, not a claim: checked under the
-        // locks and before any admission slot is taken, restoring the reservation's deferral.
-        if (locked.status === 'queued' && (await recordUnboundRequirements(tx, orgId, rootJobId))) {
+        // A queued row held back — its org suspended or refused meanwhile, or a required integration with no live
+        // binding — is not a claim: checked under the locks and before any admission slot is taken, restoring the
+        // reservation's deferral.
+        if (locked.status === 'queued' && (await queuedRowHeld(tx, ctx, rootJobId))) {
             await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
                      where org_id = ${orgId} and id = ${reserved.id}`;
             return NEXT_CANDIDATE;

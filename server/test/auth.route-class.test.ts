@@ -26,7 +26,7 @@ describe('the route classes (what a scoped caller may do)', () => {
     });
 
     it('every row names the role it needs, and a GET or dry run never needs more than its writes', () => {
-        for (const row of ROUTE_CLASSES) expect(['member', 'admin']).toContain(row[3]);
+        for (const row of ROUTE_CLASSES) expect(['member', 'admin', 'operator']).toContain(row[3]);
         expect(roleOf('GET', '/api/jobs')).toBe('member');
         expect(roleOf('HEAD', '/api/tokens/org')).toBe('admin');
         expect(roleOf('GET', '/api/no-such-route')).toBeUndefined();
@@ -68,6 +68,20 @@ describe('the route classes (what a scoped caller may do)', () => {
                 'PUT /api/org/skills/builtin/:name/enabled',
             ].sort()
         );
+    });
+
+    // The operator spans every organization: its rows are pinned the same way, and none is reachable by a scoped grant.
+    it('operator is exactly the organization status surface, and never a scoped route', () => {
+        const operator = ROUTE_CLASSES.filter((row) => row[3] === 'operator');
+        expect(operator.map(([method, pattern]) => `${method} ${pattern}`).sort()).toEqual(
+            [
+                'GET /api/operator/orgs',
+                'POST /api/operator/orgs/:id/activate',
+                'POST /api/operator/orgs/:id/refuse',
+                'POST /api/operator/orgs/:id/suspend',
+            ].sort()
+        );
+        expect(operator.every(([, , cls]) => cls === 'none')).toBe(true);
     });
 
     it('grantedScopes keeps only scopes the board knows', () => {

@@ -190,6 +190,27 @@ export interface AppConfig {
      * settings, member env and at claim (`forbiddenCredentialIn`).
      */
     readonly deploymentMode: DeploymentMode;
+    /**
+     * The board operator (OPERATOR_GITHUB_IDS): the GitHub user ids that may list, suspend, refuse and reactivate
+     * every organization (`routes/operator.ts`). Empty is nobody; cloud mode only, since only cloud reads a status.
+     */
+    readonly operatorGithubIds: readonly number[];
+}
+
+const GITHUB_ID = /^[1-9]\d*$/;
+
+function loadOperatorGithubIds(raw: string | undefined, deploymentMode: DeploymentMode): readonly number[] {
+    if (raw === undefined || raw.trim() === '') return [];
+    const ids = raw.split(',').map((part) => part.trim());
+    if (!ids.every((id) => GITHUB_ID.test(id))) {
+        throw new Error(`OPERATOR_GITHUB_IDS must be a comma-separated list of GitHub user ids, got "${raw}"`);
+    }
+    if (deploymentMode !== CLOUD) {
+        throw new Error(
+            'OPERATOR_GITHUB_IDS needs DEPLOYMENT_MODE=cloud: a self-hosted board reads no organization status'
+        );
+    }
+    return ids.map(Number);
 }
 
 function loadDeploymentMode(raw: string | undefined): DeploymentMode {
@@ -737,6 +758,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         commerce: loadCommerceConfig(env),
         batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
         deploymentMode,
+        operatorGithubIds: loadOperatorGithubIds(env.OPERATOR_GITHUB_IDS, deploymentMode),
         mcp: loadMcpConfig(
             env,
             bool(env.MCP_ENABLED, false, 'MCP_ENABLED'),

@@ -22,7 +22,10 @@ export type AuditAction =
     | 'connection.connect'
     | 'connection.disconnect'
     | 'connection.access'
-    | 'task.admin_action';
+    | 'task.admin_action'
+    | 'org.suspend'
+    | 'org.refuse'
+    | 'org.activate';
 
 /** Names and flags only: a value here is never a token, secret or credential. */
 export type AuditDetail = Readonly<Record<string, string | number | boolean | null | readonly string[]>>;

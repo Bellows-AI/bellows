@@ -7,6 +7,7 @@ import { promoteAdmins } from './admin-promotion.js';
 import { buildRemovalMethods, endMemberships, SYSTEM_ACTOR } from './member-removal.js';
 import { hashToken, mintToken } from './session.js';
 import { type AuditEventView, type AuditRange, readAuditEvents, recordAudit, userActor } from '../db/audit-log.js';
+import { buildOrgStatusMethods, type OrgStatusStore } from '../db/org-status.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
 
 export interface AuthUser {
@@ -124,7 +125,7 @@ export interface OrgTokenIdentity {
     label: string;
 }
 
-export interface AuthStore {
+export interface AuthStore extends OrgStatusStore {
     /**
      * Binds a GitHub identity to an account and materializes the SELECTION: every
      * installation the caller passes becomes an organization row (id = the installation id, name
@@ -956,6 +957,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         ...buildMemberMethods(sql, gate),
         ...buildRemovalMethods(sql, gate),
         ...buildTokenMethods(sql, gate),
+        ...buildOrgStatusMethods(sql, gate),
         async *auditEvents(orgId, range) {
             await gate();
             yield* readAuditEvents(sql, orgId, range);

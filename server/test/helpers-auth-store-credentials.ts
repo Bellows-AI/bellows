@@ -333,5 +333,12 @@ export function memoryAuthStore(): MemoryAuthStore {
         async *auditEvents() {
             yield* [];
         },
+        // Nor any organization status: the operator surface is the database's (server/test-db/operator-routes.test.ts).
+        async listOrganizations() {
+            return [];
+        },
+        async setOrgStatus() {
+            return { outcome: 'missing' as const };
+        },
     };
 }

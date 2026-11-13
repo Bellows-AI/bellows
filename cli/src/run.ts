@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { ATTACH_OPTION, attachedIds } from './attach.js';
 import { batchCommands } from './batch-commands.js';
+import { operatorCommands } from './operator.js';
 import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
 import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
 import type { BoardClient, JobWait, QuestionRecord } from './board.js';
@@ -11,7 +12,7 @@ import type { CommandResult, ErrorDetail } from './outcome.js';
 import { authStatusCommand, preflightCommand } from './diagnose.js';
 import { configSummary } from './diagnostics.js';
 import { executorDiscovery, repoDiscovery } from './discovery.js';
-import { INPUT_OPTIONS, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
+import { INPUT_OPTIONS, noArguments, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
 import type { InputIo } from './input.js';
 import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
@@ -441,12 +442,6 @@ async function runRemove(args: readonly string[], io: RunIo): Promise<CommandRes
     return ok(removed, renderRemoved(removed));
 }
 
-/** A discovery command takes no arguments beyond `--json`, and only reads. */
-function noArguments(args: readonly string[], verb: string): void {
-    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options: JSON_OPTION }));
-    if (parsed.positionals.length > 0) throw new UsageError(`${verb} takes no arguments\n\n${USAGE}`);
-}
-
 async function runRepoList(args: readonly string[], io: RunIo): Promise<CommandResult> {
     noArguments(args, 'repo list');
     const client = boardFor(io);
@@ -503,6 +498,7 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'connection list': runConnectionList,
     'auth status': runAuthStatus,
     ...batchCommands(boardFor),
+    ...operatorCommands(boardFor),
     help: async () => ok({ usage: USAGE }, USAGE),
     version: async () => {
         const version = readCliVersion();

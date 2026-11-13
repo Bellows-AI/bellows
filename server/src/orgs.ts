@@ -229,6 +229,7 @@ function buildOrgStores({
         close: (id, by) => jobs.markDone(id, by),
         telemetrySource: config.telemetrySource,
         githubApp: tokens !== undefined,
+        deploymentMode: config.deploymentMode,
         ...(client ? { revisionOf: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
     });
     // The PR observer (063): reads the org's installation, records merges through the job store and

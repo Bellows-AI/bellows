@@ -34,6 +34,7 @@ import { createConnectorRegistry, type ConnectorRegistry } from './notifications
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
 import { auditRoutes } from './routes/audit.js';
+import { operatorRoutes } from './routes/operator.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -454,10 +455,12 @@ export async function buildApp({
     );
     // The member roster and its role writes (issue 410), the same person-shaped surface: the
     // caller's role decides, the store has no role of its own to check.
-    // The organization's audit log export is an admin read beside the roster.
+    // The organization's audit log export is an admin read beside the roster; the operator's org status surface
+    // is the same store's (OPERATOR_GITHUB_IDS decides in the auth hook).
     if (auth) {
         await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
         await app.register(auditRoutes({ store: auth }));
+        await app.register(operatorRoutes({ store: auth }));
     }
 
     if (config.webRoot) {

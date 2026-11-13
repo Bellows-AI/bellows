@@ -49,7 +49,13 @@ export async function createTitledJob(
 ): Promise<CreatedRef> {
     return ctx.sql.begin(async (tx) => {
         const { queued } = await planLimits(tx, ctx.orgId, ctx.planDefaults);
-        const created = await insertJobInTx(tx, ctx, { command, createdBy, target, queuedCap: queued });
+        const created = await insertJobInTx(tx, ctx, {
+            command,
+            createdBy,
+            target,
+            queuedCap: queued,
+            deploymentMode: ctx.deploymentMode,
+        });
         const { title } = target;
         if (!title || created.replayed) return created;
         await tx`

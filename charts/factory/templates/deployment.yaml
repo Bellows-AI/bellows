@@ -123,6 +123,9 @@ spec:
                         value: {{ .Values.dashboard.planDefaults.maxQueued | quote }}
                       - name: PLAN_DEFAULT_MAX_WALL_SECONDS
                         value: {{ .Values.dashboard.planDefaults.maxWallSeconds | quote }}
+                      # The board operator's GitHub user ids (cloud only); empty is nobody.
+                      - name: OPERATOR_GITHUB_IDS
+                        value: {{ .Values.dashboard.operatorGithubIds | quote }}
                       # The optional commerce service (docs/configuration.md); off, the other two are ignored.
                       - name: COMMERCE_ENABLED
                         value: {{ .Values.dashboard.commerce.enabled | quote }}
