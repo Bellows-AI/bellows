@@ -54,9 +54,9 @@ async function boot(options: { envVars?: MemoryEnvVarStore } = {}) {
 describe('GET /api/env', () => {
     it('answers the three scopes, with every secret value nulled', async () => {
         const { app, admin, adminCookie, envVars } = await boot();
-        await envVars.replaceOrg([{ name: 'CORE_SECRET', value: 's3cr3t', isSecret: true }]);
+        await envVars.replaceOrg('env-admin', [{ name: 'CORE_SECRET', value: 's3cr3t', isSecret: true }]);
         await envVars.replaceWorkspace(admin.user.id, [{ name: 'MINE', value: 'visible', isSecret: false }]);
-        await envVars.replaceRepo('acme', 'web', [{ name: 'REPO_SECRET', value: 'r', isSecret: true }]);
+        await envVars.replaceRepo('env-admin', 'acme', 'web', [{ name: 'REPO_SECRET', value: 'r', isSecret: true }]);
 
         const response = await app.inject({ method: 'GET', url: '/api/env', headers: { cookie: adminCookie } });
         expect(response.statusCode).toBe(HTTP_OK);

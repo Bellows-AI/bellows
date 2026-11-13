@@ -74,7 +74,7 @@ export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
 const AUTH_SPECS =
-    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members)\.spec\.ts$/;
+    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members|audit-log)\.spec\.ts$/;
 /**
  * Heavy captures that gate nothing — the baseline gallery, the fixed-seed gremlins — carry this tag
  * and run only under playwright.nightly.config.ts (`npm run verify:ui:nightly`), with the specimen.

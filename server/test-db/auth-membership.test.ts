@@ -266,8 +266,8 @@ describe.runIf(enabled)('membership re-check against GitHub', () => {
         await expect(board.signIn(alice)).rejects.toThrow();
         expect(await board.roleOf(caller.user.id)).toBeNull();
 
-        expect(await board.membership.restore(board.install.id, caller.user.id)).toBe('restored');
-        expect(await board.membership.restore(board.install.id, caller.user.id)).toBe('missing');
+        expect(await board.membership.restore(board.install.id, caller.user.id, admin.user.id)).toBe('restored');
+        expect(await board.membership.restore(board.install.id, caller.user.id, admin.user.id)).toBe('missing');
         const restored = await board.signIn(alice);
         expect(restored.org.id).toBe(board.install.id);
         expect(restored.role).toBe(MEMBER_ROLE);
@@ -405,8 +405,8 @@ describe.runIf(enabled)('an admin’s removals, through the auth store', () => {
         );
         expect(await board.base.invitationBasis(testOrg())).toBeNull();
 
-        expect(await board.base.restoreMember(board.install.id, caller.user.id)).toBe('restored');
-        expect(await board.base.restoreMember(board.install.id, caller.user.id)).toBe('missing');
+        expect(await board.base.restoreMember(board.install.id, caller.user.id, admin.user.id)).toBe('restored');
+        expect(await board.base.restoreMember(board.install.id, caller.user.id, admin.user.id)).toBe('missing');
         expect(await board.base.listRemovedMembers(board.install.id)).toEqual([]);
         expect((await board.signIn(alice)).org.id).toBe(board.install.id);
     });

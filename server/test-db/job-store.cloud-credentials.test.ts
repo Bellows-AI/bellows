@@ -80,7 +80,7 @@ describe.skipIf(!enabled)('cloud mode: a stored OAuth token never reaches a clai
     it('(b) in a repo-scope env row: refused, the row kept', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-        await env.replaceRepo('acme', 'web', [{ name: TOKEN, value: VALUE, isSecret: false }]);
+        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: TOKEN, value: VALUE, isSecret: false }]);
         await mustCreate(jobs.create('echo hi', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
 
         expectRefused(await jobs.claim('w1', LEASE_SECONDS));
@@ -94,7 +94,7 @@ describe.skipIf(!enabled)('cloud mode: a stored OAuth token never reaches a clai
         const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
         expect(caller.executorRefusal).toBeNull();
         // Stored after the author's claim, as a token saved before cloud mode would sit there.
-        await env.replaceOrg([{ name: TOKEN, value: VALUE, isSecret: false }]);
+        await env.replaceOrg('env-admin', [{ name: TOKEN, value: VALUE, isSecret: false }]);
 
         const review = await jobs.requestReview(caller.id, caller.leaseToken, {
             key: 'sec-1',

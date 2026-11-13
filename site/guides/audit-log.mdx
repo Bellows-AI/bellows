@@ -1,0 +1,38 @@
+---
+title: "Audit log"
+description: "What Bellows records about who changed what in your organization, and how an admin exports it."
+---
+
+Bellows keeps an audit log for each organization. Every row says when something happened, who did it, what they did and what it changed. Rows are never edited or deleted while the organization exists.
+
+## What is recorded
+
+| Event | Recorded as | Target |
+| --- | --- | --- |
+| A member signs in | `auth.sign_in` | The member |
+| A personal access token is created or revoked | `token.personal.mint`, `token.personal.revoke` | The token's id |
+| An organization access token is created or revoked | `token.org.mint`, `token.org.revoke` | The token's id |
+| An admin changes a member's role | `member.role` | The member. The row names the old and the new role |
+| An admin removes or restores a member | `member.remove`, `member.restore` | The member |
+| Variables or secrets are saved for the organization, a workspace or a repository | `env.write` | `org`, `workspace/<member>` or `repo/<owner>/<name>`. The row lists the variable names |
+| A connection is connected, disconnected or changes access | `connection.connect`, `connection.disconnect`, `connection.access` | The connection |
+| An admin follows up, retries or controls the wait of another member's task | `task.admin_action` | The task. The row names the action and the task's owner |
+
+A row never holds a secret value, a token or any other credential. It holds names, ids and roles only.
+
+## Read and export it
+
+Only admins can see the log. Open **Settings → Organization** and scroll to **Audit log**. Pick the first and last day (UTC). The newest 200 rows of those days show on the page. **Export** saves every row of those days as an `.ndjson` file, one JSON object per line.
+
+You can also read it through the API with an admin's personal access token:
+
+```bash
+curl -H "Authorization: Bearer $BELLOWS_TOKEN" \
+  "https://bellows.example.com/api/audit?from=2026-11-01&to=2026-12-01"
+```
+
+`from` and `to` are dates or timestamps. `from` is included and `to` is not. A member gets `403`.
+
+## Retention
+
+Rows live as long as the organization. Deleting the organization deletes its audit log with it.

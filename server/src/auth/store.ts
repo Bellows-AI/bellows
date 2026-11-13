@@ -3,8 +3,10 @@ import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
 import type { MembershipVerdict } from './membership.js';
 import type { Scope } from './route-class.js';
-import { buildRemovalMethods, endMemberships } from './member-removal.js';
+import { promoteAdmins } from './admin-promotion.js';
+import { buildRemovalMethods, endMemberships, SYSTEM_ACTOR } from './member-removal.js';
 import { hashToken, mintToken } from './session.js';
+import { type AuditEventView, type AuditRange, readAuditEvents, recordAudit, userActor } from '../db/audit-log.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
 
 export interface AuthUser {
@@ -180,6 +182,7 @@ export interface AuthStore {
      * for orgs whose checkbox set was actually narrowed.
      */
     replaceTrackedRepos(orgId: string, repos: readonly string[]): Promise<void>;
+    /** A sign-in's session row, and its `auth.sign_in` audit row in the same transaction. */
     createSession(tokenHash: Buffer, userId: string, expiresAt: Date, orgId: string): Promise<void>;
     /**
      * The caller behind a live session token, or null when unknown, expired, unmembered — or
@@ -219,17 +222,22 @@ export interface AuthStore {
      * second one counts the org the first left behind. An org with no admin is the exact
      * hole this issue closes, so the refusal races no one. Outcomes: `updated` (the row now
      * holds `role` — a no-op rewrite included), `last-admin` (refused, row untouched),
-     * `missing` (no such member of this org).
+     * `missing` (no such member of this org). A change of role is audited as `actorId`'s, in the same transaction.
      */
-    setMemberRole(orgId: string, userId: string, role: Role): Promise<'updated' | 'last-admin' | 'missing'>;
+    setMemberRole(
+        orgId: string,
+        userId: string,
+        role: Role,
+        actorId: string
+    ): Promise<'updated' | 'last-admin' | 'missing'>;
     /**
      * An admin's removal of a member (member-removal.ts): the block row, then the membership's end with its
      * sessions and personal tokens, in one transaction. The block keeps the account out at every later sign-in
      * until `restoreMember`. `last-admin` refuses the org's only admin; `missing` is no such member.
      */
     blockMember(orgId: string, userId: string, removedBy: string): Promise<'removed' | 'last-admin' | 'missing'>;
-    /** Lifts an admin's removal; `missing` when there was none. The next sign-in admits the account again. */
-    restoreMember(orgId: string, userId: string): Promise<'restored' | 'missing'>;
+    /** Lifts an admin's removal (`actorId`'s, audited); `missing` when there was none. The next sign-in admits the account again. */
+    restoreMember(orgId: string, userId: string, actorId: string): Promise<'restored' | 'missing'>;
     /** The org's removals, login-ordered — what `GET /api/org/members/removed` serves. */
     listRemovedMembers(orgId: string): Promise<RemovedMemberView[]>;
     /**
@@ -260,8 +268,11 @@ export interface AuthStore {
     findOrgToken(tokenHash: Buffer): Promise<OrgTokenIdentity | null>;
     listPersonalTokens(orgId: string, userId: string): Promise<AccessTokenView[]>;
     listOrgTokens(orgId: string): Promise<AccessTokenView[]>;
+    /** Mint and revoke are audited in their own transaction: a personal token's actor is its owner. */
     revokePersonalToken(orgId: string, userId: string, id: string): Promise<'revoked' | 'missing'>;
-    revokeOrgToken(orgId: string, id: string): Promise<'revoked' | 'missing'>;
+    revokeOrgToken(orgId: string, id: string, actorId: string): Promise<'revoked' | 'missing'>;
+    /** The org's audit rows in `[from, to)`, oldest first, streamed (docs/persistence.md). */
+    auditEvents(orgId: string, range: AuditRange): AsyncIterable<AuditEventView>;
 }
 
 export interface CallerRow {
@@ -431,18 +442,7 @@ function buildIdentityMethods(
             // Only where GitHub gave no membership answer (no `members:read` yet, or the read was
             // unconfirmed): where it did, admin is the GitHub owner (an `admin` org role, or the
             // account of a user installation), promoted here and never demoted.
-            await sql`
-                update org_membership m set role = ${ADMIN_ROLE}
-                from unnest(${plan.bootstrap}::text[]) as t(id)
-                where m.org_id = t.id and m.user_id = ${userId}::uuid and m.role = ${MEMBER_ROLE}
-                  and not exists (
-                      select 1 from org_membership a where a.org_id = t.id and a.role = ${ADMIN_ROLE}
-                  )
-            `;
-            await sql`
-                update org_membership set role = ${ADMIN_ROLE}
-                where user_id = ${userId}::uuid and org_id = any(${plan.owners}::text[])
-            `;
+            await promoteAdmins(sql, userId, plan);
             if (check) {
                 await sql`
                     update org_membership set checked_at = ${check.at}
@@ -464,7 +464,8 @@ function buildIdentityMethods(
                 await endMemberships(
                     tx,
                     userId,
-                    gone.map((row) => row.org_id)
+                    gone.map((row) => row.org_id),
+                    { actor: SYSTEM_ACTOR, reason: 'sign-in-sweep' }
                 );
             });
 
@@ -585,10 +586,13 @@ function buildSessionMethods(
     return {
         async createSession(tokenHash, userId, expiresAt, orgId) {
             await gate();
-            await sql`
-                insert into session (token_hash, user_id, expires_at, org_id)
-                values (${tokenHash}, ${userId}, ${expiresAt}, ${orgId})
-            `;
+            await sql.begin(async (tx) => {
+                await tx`
+                    insert into session (token_hash, user_id, expires_at, org_id)
+                    values (${tokenHash}, ${userId}, ${expiresAt}, ${orgId})
+                `;
+                await recordAudit(tx, { orgId, actor: userActor(userId), action: 'auth.sign_in', target: userId });
+            });
         },
 
         async findSession(tokenHash) {
@@ -664,7 +668,10 @@ function buildOrgMethods(
                     select id::text as id from app_user where github_user_id = ${githubUserId}
                 `;
                 const user = users[0];
-                return user ? (await endMemberships(tx, user.id, [orgId])) > 0 : false;
+                if (!user) return false;
+                return (
+                    (await endMemberships(tx, user.id, [orgId], { actor: SYSTEM_ACTOR, reason: 'github-webhook' })) > 0
+                );
             });
         },
 
@@ -721,7 +728,7 @@ function buildMemberMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'listMembers'
             }));
         },
 
-        async setMemberRole(orgId, userId, role) {
+        async setMemberRole(orgId, userId, role, actorId) {
             await gate();
             // One statement, race-safe: the `locked` CTE takes row locks on every admin of the
             // org plus the target, so two admins demoting each other concurrently serialize —
@@ -730,7 +737,8 @@ function buildMemberMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'listMembers'
             // then aborts one statement whole and `guard` answers a 503 — no partial state, and
             // the retry is the caller's next click. The demotion runs only when it would not:
             // promoting, demoting a member, or demoting an admin while another one is locked.
-            const rows = await sql<{ target: boolean; changed: boolean }[]>`
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ target: boolean; changed: boolean; previous: Role | null }[]>`
                 with locked as (
                     select user_id, role from org_membership
                     where org_id = ${orgId} and (role = ${ADMIN_ROLE} or user_id = ${userId}::uuid)
@@ -745,12 +753,25 @@ function buildMemberMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'listMembers'
                     returning m.user_id
                 )
                 select exists (select 1 from locked where user_id = ${userId}::uuid) as target,
-                       exists (select 1 from demoted) as changed
+                       exists (select 1 from demoted) as changed,
+                       (select role from locked where user_id = ${userId}::uuid) as previous
             `;
-            const row = rows[0];
-            if (!row) return 'missing';
-            if (row.changed) return 'updated';
-            return row.target ? 'last-admin' : 'missing';
+                const row = rows[0];
+                if (!row) return 'missing' as const;
+                if (!row.changed) return row.target ? ('last-admin' as const) : ('missing' as const);
+                // A rewrite of the role the member already holds changes nothing, so it records nothing.
+                if (row.previous !== role) {
+                    const detail = { from: row.previous, to: role };
+                    await recordAudit(tx, {
+                        orgId,
+                        actor: userActor(actorId),
+                        action: 'member.role',
+                        target: userId,
+                        detail,
+                    });
+                }
+                return 'updated' as const;
+            });
         },
     };
 }
@@ -776,13 +797,23 @@ function buildTokenMethods(
     return {
         async createAccessToken(input) {
             await gate();
-            const rows = await sql<{ id: string }[]>`
-                insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
-                values (${input.orgId}, ${input.kind}, ${input.userId}, ${input.createdBy},
-                        ${input.label}, ${input.tokenHash})
-                returning id
-            `;
-            return { id: rows[0]!.id };
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ id: string }[]>`
+                    insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+                    values (${input.orgId}, ${input.kind}, ${input.userId}, ${input.createdBy},
+                            ${input.label}, ${input.tokenHash})
+                    returning id
+                `;
+                const id = rows[0]!.id;
+                await recordAudit(tx, {
+                    orgId: input.orgId,
+                    actor: userActor(input.createdBy),
+                    action: input.kind === 'personal' ? 'token.personal.mint' : 'token.org.mint',
+                    target: id,
+                    detail: { label: input.label },
+                });
+                return { id };
+            });
         },
 
         async findPersonalToken(tokenHash) {
@@ -870,24 +901,32 @@ function buildTokenMethods(
 
         async revokePersonalToken(orgId, userId, id) {
             await gate();
-            const rows = await sql<{ id: string }[]>`
-                update access_token set revoked_at = now()
-                where org_id = ${orgId} and user_id = ${userId} and id = ${id}
-                  and kind = 'personal' and revoked_at is null
-                returning id
-            `;
-            return rows[0] ? 'revoked' : 'missing';
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ id: string }[]>`
+                    update access_token set revoked_at = now()
+                    where org_id = ${orgId} and user_id = ${userId} and id = ${id}
+                      and kind = 'personal' and revoked_at is null
+                    returning id
+                `;
+                if (!rows[0]) return 'missing' as const;
+                await recordAudit(tx, { orgId, actor: userActor(userId), action: 'token.personal.revoke', target: id });
+                return 'revoked' as const;
+            });
         },
 
-        async revokeOrgToken(orgId, id) {
+        async revokeOrgToken(orgId, id, actorId) {
             await gate();
-            const rows = await sql<{ id: string }[]>`
-                update access_token set revoked_at = now()
-                where org_id = ${orgId} and id = ${id}
-                  and kind = 'org' and revoked_at is null
-                returning id
-            `;
-            return rows[0] ? 'revoked' : 'missing';
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ id: string }[]>`
+                    update access_token set revoked_at = now()
+                    where org_id = ${orgId} and id = ${id}
+                      and kind = 'org' and revoked_at is null
+                    returning id
+                `;
+                if (!rows[0]) return 'missing' as const;
+                await recordAudit(tx, { orgId, actor: userActor(actorId), action: 'token.org.revoke', target: id });
+                return 'revoked' as const;
+            });
         },
     };
 }
@@ -917,5 +956,9 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         ...buildMemberMethods(sql, gate),
         ...buildRemovalMethods(sql, gate),
         ...buildTokenMethods(sql, gate),
+        async *auditEvents(orgId, range) {
+            await gate();
+            yield* readAuditEvents(sql, orgId, range);
+        },
     };
 }

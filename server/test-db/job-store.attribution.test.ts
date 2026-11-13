@@ -92,9 +92,9 @@ describe.runIf(enabled)('attribution', () => {
         const ENV_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, ENV_CAT_GITHUB_ID, 'env-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql), secretLog: () => {} });
-        await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
+        await envStore.replaceOrg('env-admin', [{ name: 'CORE', value: 'org-value', isSecret: true }]);
         await envStore.replaceWorkspace(userId, [{ name: 'CORE', value: 'workspace-value', isSecret: false }]);
-        await envStore.replaceRepo('Bellows-AI', 'bellows.ai', [
+        await envStore.replaceRepo('env-admin', 'Bellows-AI', 'bellows.ai', [
             { name: 'CORE', value: 'repo-value', isSecret: false },
             { name: 'REPO_ONLY', value: 'repo-only-value', isSecret: true },
         ]);
@@ -218,7 +218,7 @@ describe.runIf(enabled)('attribution', () => {
         // holds it — the PUT refuses both, and this is the claim's own guarantee.
         const userId = await account(sql, randomGithubId(), 'no-pat-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql), secretLog: () => {} });
-        await envStore.replaceOrg([
+        await envStore.replaceOrg('env-admin', [
             { name: 'CORE', value: 'org-value', isSecret: true },
             { name: 'GITHUB_TOKEN', value: 'ghp_member', isSecret: true },
         ]);

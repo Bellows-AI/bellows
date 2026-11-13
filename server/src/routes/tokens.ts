@@ -136,12 +136,12 @@ export const tokenRoutes =
         app.post('/api/tokens/org/:id/revoke', async (request, reply) => {
             const route = resolveCallerRoute(request, reply);
             if (!route) return reply;
-            const { id } = route;
+            const { caller, id } = route;
 
             const revoked = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
-                () => store.revokeOrgToken(orgIdOf(request), id)
+                () => store.revokeOrgToken(orgIdOf(request), id, caller.user.id)
             );
             if (!revoked.ok) return reply;
             if (revoked.value === 'missing') return bad(reply, ERROR_CODES.NOT_FOUND, 'No such token', HTTP_NOT_FOUND);

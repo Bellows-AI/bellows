@@ -1,5 +1,6 @@
 import type { Sql, TransactionSql } from 'postgres';
 import type { SecretIdentity } from '../secrets/secret-store.js';
+import { recordAudit, userActor } from './audit-log.js';
 
 /**
  * Integration grants (094, 096): the credential lineage of one external account. A connection is a principal's
@@ -280,6 +281,13 @@ export async function attachInTx(
                 ${input.provider}, 'oauth_grant', ${userId}, ${input.externalAccountId}, ${grant.id})
         returning id
     `;
+    await recordAudit(tx, {
+        orgId,
+        actor: userActor(userId),
+        action: 'connection.connect',
+        target: connection!.id,
+        detail: { provider: input.provider, site: input.resource.label, access: input.access },
+    });
     return { ok: true, grant, connectionId: connection!.id };
 }
 

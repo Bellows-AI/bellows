@@ -103,7 +103,7 @@ async function handleSetMemberRole(store: AuthStore, request: FastifyRequest, re
     const written = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => store.setMemberRole(caller.org.id, userId, role)
+        () => store.setMemberRole(caller.org.id, userId, role, caller.user.id)
     );
     if (!written.ok) return reply;
     if (written.value === 'missing') {
@@ -168,7 +168,7 @@ async function handleRestoreMember(store: AuthStore, request: FastifyRequest, re
     const written = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => store.restoreMember(named.caller.org.id, named.userId)
+        () => store.restoreMember(named.caller.org.id, named.userId, named.caller.user.id)
     );
     if (!written.ok) return reply;
     if (written.value === 'missing') {
