@@ -34,10 +34,10 @@ In GitHub, go to **Settings**, **Developer settings**, **GitHub Apps**, **New Gi
   <Step title="Webhook">
     Optional but recommended. Set **Webhook URL** to `https://bellows.example.com/api/github/webhook` and **Secret** to a random string of at least 32 characters (`openssl rand -hex 32`). Bellows refuses to boot with a shorter secret. Keep the webhook active. See [Webhook events](#webhook-events).
 
-    Without a webhook secret the route does not exist. Everything still works, but a person removed from the GitHub organization keeps access until their next sign-in.
+    Without a webhook secret the route does not exist. Everything still works, but a person removed from the GitHub organization keeps access until the next membership check, at most 10 minutes later (see the Members permission below).
   </Step>
   <Step title="Permissions">
-    Grant the repository permissions in the next table.
+    Grant the repository permissions and the Members organization permission in the next table.
   </Step>
   <Step title="Install target">
     Choose where the App can be installed, then create it. Note the **App ID**.
@@ -58,6 +58,7 @@ In GitHub, go to **Settings**, **Developer settings**, **GitHub Apps**, **New Gi
 | Checks | Read | Read check results for a pull request. |
 | Actions | Read | `gh pr checks` needs it to read a workflow run. |
 | Commit statuses | Read | Optional. Only for batch pull request observation. |
+| Members (organization permission) | Read | Who belongs to the organization and who owns it. GitHub organization owners sign in as admins, and a person removed from the organization loses access within 10 minutes. |
 
 For each run, Bellows asks GitHub for a short-lived token limited to the one repository and to Contents (write), Pull requests (write), Issues (write), Checks (read) and Actions (read). If the installation holds less than that, GitHub refuses with a 422 and the error names the missing permission. Add the permission in the App settings, then accept the update on the installation.
 
@@ -121,7 +122,7 @@ Helm install details are in [Kubernetes and Helm](/self-host/kubernetes).
     After installing, GitHub sends you to the Setup URL and Bellows signs you in. On a first sign-in you see **Choose organizations and repositories**. Pick what Bellows tracks.
   </Step>
   <Step title="Check">
-    The organization appears in Bellows, and you are its first member, which makes you an admin. Open **Settings → Repositories** to see the tracked list.
+    The organization appears in Bellows. If you own the organization on GitHub, or the App is installed on your own account, you are an admin. Open **Settings → Repositories** to see the tracked list.
   </Step>
 </Steps>
 
@@ -130,6 +131,7 @@ Later:
 - **More repositories.** Update the installation on GitHub, then open **Settings → Repositories**.
 - **More people.** Anyone who can see the installation can sign in. There are no invites. See [Connections](/guides/connections) for what members connect.
 - **Changed permissions.** GitHub asks an installation owner to accept the update. Runs fail with the 422 above until they do.
+- **Members (read) added to an existing App.** Every installation must accept the update. Until it does, that organization keeps the older rules: the first person to sign in becomes admin, and a person removed on GitHub loses access only through the webhook or at their next sign-in. Nobody is demoted or removed while the permission is missing.
 
 <Note>
 Every member sees every repository the organization tracks. GitHub repository permissions are not projected into Bellows. Treat membership as write access to those repositories.

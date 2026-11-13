@@ -29,7 +29,7 @@ What each credential grants, what each boundary actually holds, and where the co
 
 - **`POST /api/jobs` queues a shell command an agent runs**; under `AUTH_MODE=none` the `127.0.0.1` bind is the only control. The driver mounts `/var/run/docker.sock` (root on the host); the dashboard never does.
 - **The App private key mints installation tokens indefinitely**; `chmod 600` it and every secret.
-- **Required App permissions: `Metadata: read`, `Contents: read`, `Actions: read`**; committing runners and `automerge` add `Contents: write`, `Pull requests: write`; batch PR observation adds `Checks: read`, `Commit statuses: read`. `RUNNER_TOKEN_PERMISSIONS` beyond the grant is a 422 (`server/src/github/app-token.ts`).
+- **Required App permissions: `Metadata: read`, `Contents: read`, `Actions: read`**; committing runners and `automerge` add `Contents: write`, `Pull requests: write`; batch PR observation adds `Checks: read`, `Commit statuses: read`. Organization `Members: read` lets the board re-check membership and map GitHub owners to admin; an installation that has not accepted it keeps the first-sign-in admin and is never demoted or swept ([auth.md](auth.md)). `RUNNER_TOKEN_PERMISSIONS` beyond the grant is a 422 (`server/src/github/app-token.ts`).
 - **Keep `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_DETAILS` at `0`**; the collector binds 4317/4318 to `127.0.0.1`, open unless `auth.ingest_token`.
 
 ## Container hardening

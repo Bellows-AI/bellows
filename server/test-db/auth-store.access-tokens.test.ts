@@ -226,10 +226,9 @@ describe.skipIf(!enabled)('access tokens: lifecycle', () => {
         expect(second?.last_used_at?.getTime()).toBe(first?.last_used_at?.getTime());
     });
 
-    it('leaves a memberless personal token unrevoked but dead — the join is the enforcement', async () => {
-        // The old removeMember marked tokens; the sign-in propagation that replaced it does not.
-        // It does not need to: findPersonalToken joins the membership, so the row survives as
-        // history with no reach at all.
+    it('revokes a swept member’s personal token, so a later membership revives nothing', async () => {
+        // The sign-in sweep ends a membership the way every removal does (endMemberships): the join
+        // alone would leave the row live for the day the account is a member again.
         const ACCOUNT_SEQ = 6;
         const caller = await member(ACCOUNT_SEQ, 'removed');
         await createPersonal(caller, 'fat_f', 'laptop');
@@ -240,7 +239,9 @@ describe.skipIf(!enabled)('access tokens: lifecycle', () => {
         const [row] = await sql<{ revoked_at: Date | null }[]>`
             select revoked_at from access_token where org_id = ${ORG} and label = 'laptop'
         `;
-        expect(row?.revoked_at).toBeNull();
+        expect(row?.revoked_at).not.toBeNull();
+        expect(await store.findPersonalToken(hashToken('fat_f'))).toBeNull();
+        await store.signIn(identity(ACCOUNT_SEQ, 'removed'), ORG, [{ id: ORG, name: ORG }]);
         expect(await store.findPersonalToken(hashToken('fat_f'))).toBeNull();
     });
 
