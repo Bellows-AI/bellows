@@ -136,7 +136,7 @@ describe('the request rate per credential and per organization', () => {
 describe('rateKeysOf', () => {
     const caller = memoryAuthStore().seedMember(ORG, 'octocat');
     const principals: Principal[] = [
-        { kind: 'worker', orgId: ORG },
+        { kind: 'worker', orgId: ORG, orgs: null },
         { kind: 'job', orgId: ORG, jobId: JOB_ID },
         { kind: 'org', token: { orgId: ORG, id: 'tok', label: 'ci' } },
         { kind: 'user', caller },

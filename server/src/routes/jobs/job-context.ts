@@ -43,22 +43,35 @@ export async function telemetryFor(orgs: OrgRegistry, request: FastifyRequest) {
 }
 
 /**
- * The boards a WORKER call may reach. The shared secret authenticates the driver, not an
- * org, so a claim names no row and no org: it is offered EVERY org's queue, first claim
- * wins and the empty orgs cost one idle poll each. Every other worker route arrives with
- * the org the auth hook read from the row its URL names, and is a one-element list.
+ * Every listed org's board with its org id, whatever the credential may reach, and how many orgs were listed:
+ * fewer boards than `listed` means a runtime failed to build. Resolved in parallel — the lookups are independent,
+ * and this runs on every driver poll. Warm runtimes are cached promises and cost nothing; a cold start would
+ * otherwise serialise every org's build behind the first. The registry's order is preserved, which is what
+ * `boardScan`'s rotation counts positions against.
+ */
+export async function everyBoard<K extends keyof JobStore = keyof JobStore>(
+    orgs: OrgRegistry,
+    reach: readonly string[] | null = null
+): Promise<{ boards: { orgId: string; board: Pick<JobStore, K> }[]; listed: number }> {
+    const listed = (await orgs.list()).filter((org) => reach === null || reach.includes(org.id));
+    const runtimes = await Promise.all(listed.map(async (org) => ({ orgId: org.id, rt: await orgs.for(org.id) })));
+    const boards = runtimes.flatMap(({ orgId, rt }) => (rt?.jobs ? [{ orgId, board: rt.jobs }] : []));
+    return { boards, listed: listed.length };
+}
+
+/**
+ * The boards a WORKER call may reach. A driver credential authenticates the driver, not an
+ * org, so a claim names no row and no org: it is offered the queue of every org the credential
+ * serves (the pool: every org), first claim wins and the empty orgs cost one idle poll each.
+ * Every other worker route arrives with the org the auth hook read from the row its URL names,
+ * and is a one-element list.
  */
 export async function boardsFor<K extends keyof JobStore = keyof JobStore>(
     orgs: OrgRegistry,
     request: FastifyRequest
 ): Promise<Pick<JobStore, K>[]> {
     if (request.auth?.kind === 'worker' && request.auth.orgId === null) {
-        // Resolved in parallel — the lookups are independent, and this runs on every driver poll.
-        // Warm runtimes are cached promises and cost nothing; a cold start would otherwise
-        // serialise every org's build behind the first. The registry's order is preserved, which
-        // is what `boardScan`'s rotation counts positions against.
-        const runtimes = await Promise.all((await orgs.list()).map((org) => orgs.for(org.id)));
-        return runtimes.flatMap((rt) => (rt?.jobs ? [rt.jobs] : []));
+        return (await everyBoard<K>(orgs, request.auth.orgs)).boards.map(({ board }) => board);
     }
     const store = await storeFor(orgs, request);
     return store ? [store] : [];

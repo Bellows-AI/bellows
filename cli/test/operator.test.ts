@@ -106,3 +106,134 @@ it('escapes the organization id into the path', async () => {
     await run(['operator', 'refuse', 'a/b'], io);
     expect(sent[0]!.path).toBe('/api/operator/orgs/a%2Fb/refuse');
 });
+
+const credential = {
+    id: 'c1',
+    label: 'east',
+    pool: false,
+    orgs: ['101', '202'],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    createdBy: 'u1',
+    revokedAt: null,
+    expiresAt: null,
+    rotatedFrom: null,
+};
+const TOKEN = 'drv_0123456789abcdef';
+
+describe('bellows operator credentials', () => {
+    it('lists every driver credential with its reach and state, never a token', async () => {
+        const pool = { ...credential, id: 'c2', label: 'shared', pool: true, orgs: [] };
+        const revoked = { ...credential, id: 'c3', revokedAt: '2026-01-02T00:00:00.000Z' };
+        const rotated = { ...credential, id: 'c4', expiresAt: '2026-01-03T00:00:00.000Z' };
+        const { out, sent, io } = recordingBoard(
+            routed({
+                '/api/operator/driver-credentials': () => json({ credentials: [credential, pool, revoked, rotated] }),
+            })
+        );
+        expect(await run(['operator', 'credentials'], io)).toBe(0);
+        expect(sent.map((s) => [s.method, s.path])).toEqual([['GET', '/api/operator/driver-credentials']]);
+        expect(out.join('')).toBe(
+            [
+                'c1  east  orgs 101,202  active',
+                'c2  shared  pool  active',
+                'c3  east  orgs 101,202  revoked',
+                'c4  east  orgs 101,202  expires 2026-01-03T00:00:00.000Z',
+            ].join('\n') + '\n'
+        );
+    });
+});
+
+describe('bellows operator issue-credential', () => {
+    it('POSTs the organizations and prints the token once', async () => {
+        const { out, sent, io } = recordingBoard(() => json({ credential, token: TOKEN }, 201));
+        expect(await run(['operator', 'issue-credential', '--label', 'east', '--org', '101', '--org', '202'], io)).toBe(
+            0
+        );
+        expect(sent.map((s) => [s.method, s.path, s.body])).toEqual([
+            ['POST', '/api/operator/driver-credentials', { label: 'east', orgs: ['101', '202'] }],
+        ]);
+        expect(out.join('')).toBe(
+            `driver credential c1 (east) issued for orgs 101,202; the token is shown only this once:\n${TOKEN}\n`
+        );
+    });
+
+    it('issues a pool credential', async () => {
+        const { sent, io } = recordingBoard(() =>
+            json({ credential: { ...credential, pool: true, orgs: [] }, token: TOKEN }, 201)
+        );
+        expect(await run(['operator', 'issue-credential', '--label', 'shared', '--pool'], io)).toBe(0);
+        expect(sent[0]!.body).toEqual({ label: 'shared', pool: true });
+    });
+
+    it('needs a label and exactly one of --org or --pool', async () => {
+        const { err, sent, io } = recordingBoard(() => json({}));
+        expect(await run(['operator', 'issue-credential', '--org', '101'], io)).not.toBe(0);
+        expect(await run(['operator', 'issue-credential', '--label', 'x'], io)).not.toBe(0);
+        expect(await run(['operator', 'issue-credential', '--label', 'x', '--pool', '--org', '101'], io)).not.toBe(0);
+        expect(sent).toEqual([]);
+        expect(err.join('')).toContain('operator issue-credential needs --label and either --org <id> or --pool');
+    });
+});
+
+describe('bellows operator revoke-credential', () => {
+    it('POSTs the revoke and says what changed', async () => {
+        const { out, sent, io } = recordingBoard(() =>
+            json({ revoked: true, credential: { ...credential, revokedAt: '2026-01-02T00:00:00.000Z' } })
+        );
+        expect(await run(['operator', 'revoke-credential', 'c1'], io)).toBe(0);
+        expect(sent.map((s) => [s.method, s.path])).toEqual([['POST', '/api/operator/driver-credentials/c1/revoke']]);
+        expect(out.join('')).toBe('driver credential c1 (east) is now revoked\n');
+    });
+
+    it('needs exactly one credential id', async () => {
+        const { err, sent, io } = recordingBoard(() => json({}));
+        expect(await run(['operator', 'revoke-credential'], io)).not.toBe(0);
+        expect(sent).toEqual([]);
+        expect(err.join('')).toContain('operator revoke-credential needs exactly one credential id');
+    });
+});
+
+describe('bellows operator rotate-credential', () => {
+    const rotated = {
+        credential: { ...credential, id: 'c9', rotatedFrom: 'c1' },
+        previous: { ...credential, expiresAt: '2026-01-01T01:00:00.000Z' },
+        token: TOKEN,
+    };
+
+    it('POSTs the rotation with its overlap and prints the new token once', async () => {
+        const { out, sent, io } = recordingBoard(() => json(rotated, 201));
+        expect(await run(['operator', 'rotate-credential', 'c1', '--overlap', '600'], io)).toBe(0);
+        expect(sent.map((s) => [s.method, s.path, s.body])).toEqual([
+            ['POST', '/api/operator/driver-credentials/c1/rotate', { overlapSeconds: 600 }],
+        ]);
+        expect(out.join('')).toBe(
+            'driver credential c9 (east) replaces c1, which works until 2026-01-01T01:00:00.000Z; ' +
+                `the token is shown only this once:\n${TOKEN}\n`
+        );
+    });
+
+    it('leaves the overlap to the board when not given', async () => {
+        const { sent, io } = recordingBoard(() => json(rotated, 201));
+        expect(await run(['operator', 'rotate-credential', 'c1'], io)).toBe(0);
+        expect(sent[0]!.body).toEqual({});
+    });
+
+    it('refuses an overlap that is not a whole number of seconds', async () => {
+        const { err, sent, io } = recordingBoard(() => json({}));
+        expect(await run(['operator', 'rotate-credential', 'c1', '--overlap', 'soon'], io)).not.toBe(0);
+        expect(sent).toEqual([]);
+        expect(err.join('')).toContain('--overlap must be a whole number of seconds');
+    });
+
+    it('reports the board’s 409 for a revoked or already rotated credential', async () => {
+        const { err, io } = recordingBoard(() =>
+            refusal(
+                409,
+                'DRIVER_CREDENTIAL_INACTIVE',
+                'A revoked or already rotated driver credential cannot be rotated'
+            )
+        );
+        expect(await run(['operator', 'rotate-credential', 'c1'], io)).not.toBe(0);
+        expect(err.join('')).toContain('[DRIVER_CREDENTIAL_INACTIVE]');
+    });
+});

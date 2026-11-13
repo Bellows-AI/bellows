@@ -161,6 +161,17 @@ An organization whose GitHub App was uninstalled is suspended and, 30 days later
 | `bellows operator activate <org-id>` | Make the organization active again. Its queued tasks become claimable. |
 | `bellows operator delete <org-id> --yes` | Delete a suspended or refused organization for good: its tasks, logs, transcripts, settings, stored files and secrets are purged in the background, and none of it can be restored. An active organization is refused with `409 ORG_ACTIVE`; suspend or refuse it first. Without `--yes` the command sends nothing. |
 
+## Driver credentials (operator)
+
+Bellows Cloud only, for the board operator. Each driver gets its own credential, for named organizations or for the pool, which reaches every organization. A driver with an organization's credential claims only that organization's tasks, and is refused with `403 FORBIDDEN` on any other organization's task. The board keeps only a hash of each token.
+
+| Command | What it does |
+| --- | --- |
+| `bellows operator credentials` | List every driver credential: its label, its organizations or `pool`, and whether it is `active`, `revoked`, or working until the time a rotation set. Tokens are never shown. |
+| `bellows operator issue-credential --label <name> --org <org-id>` | Issue a credential for one or more organizations (repeat `--org`), or pass `--pool` instead for every organization. The token is printed this once and cannot be shown again. |
+| `bellows operator revoke-credential <id>` | Revoke a credential. The driver using it is refused with `401` from its next call. Tasks it was running are not failed: another driver picks them up. |
+| `bellows operator rotate-credential <id>` | Issue a new token for the same organizations. The old token keeps working for the overlap, one hour by default (`--overlap <seconds>`, up to 7 days), so the driver can switch without downtime. A credential can be rotated once; rotate the new one next time. |
+
 ## Auth and help
 
 | Command | What it does |

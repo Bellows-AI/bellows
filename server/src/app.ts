@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
+import type { DriverCredentialStore } from './auth/driver-credentials.js';
 import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
 import { registerRequestRateLimit, trustProxyOf } from './auth/request-limits.js';
@@ -36,6 +37,7 @@ import { notificationSubscriptionRoutes } from './routes/notification-subscripti
 import { orgMemberRoutes } from './routes/org-members.js';
 import { auditRoutes } from './routes/audit.js';
 import { operatorRoutes } from './routes/operator.js';
+import { operatorDriverCredentialRoutes } from './routes/operator-driver-credentials.js';
 import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
@@ -114,6 +116,8 @@ export interface AppDeps {
      */
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
+    /** Per-driver credentials: the worker routes resolve `drv_` tokens through it; the operator issues them. */
+    driverCredentials?: DriverCredentialStore | undefined;
     /**
      * The runner credential routes' per-call check (`createAttemptOfLease`); the GitHub route exists
      * exactly when it does, and the managed-connection broker when `integrations` is present too.
@@ -321,6 +325,7 @@ export async function buildApp({
     orgOfIngest,
     orgOfJob,
     orgOfReclaim,
+    driverCredentials,
     attemptOfLease,
     integrations,
     githubMint,
@@ -380,7 +385,16 @@ export async function buildApp({
     // store the property is still decorated, so `request.auth` reads the same everywhere rather than
     // being absent in one configuration and null in another.
     if (auth) {
-        await registerAuth(app, { config, store: auth, orgOfLease, orgOfIngest, orgOfJob, orgOfReclaim, oauth });
+        await registerAuth(app, {
+            config,
+            store: auth,
+            orgOfLease,
+            orgOfIngest,
+            orgOfJob,
+            orgOfReclaim,
+            driverCredentials,
+            oauth,
+        });
         // After the auth hook, whose principal it counts.
         registerRequestRateLimit(app, { config, now });
     } else app.decorateRequest('auth', null);
@@ -472,6 +486,7 @@ export async function buildApp({
         await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
         await app.register(auditRoutes({ store: auth }));
         await app.register(operatorRoutes({ store: auth }));
+        await app.register(operatorDriverCredentialRoutes({ credentials: driverCredentials }));
     }
 
     if (config.webRoot) {

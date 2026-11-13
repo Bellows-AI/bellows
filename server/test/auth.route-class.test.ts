@@ -72,10 +72,14 @@ describe('the route classes (what a scoped caller may do)', () => {
     });
 
     // The operator spans every organization: its rows are pinned the same way, and none is reachable by a scoped grant.
-    it('operator is exactly the organization status and delete surface, and never a scoped route', () => {
+    it('operator is exactly the organization status, delete and driver credential surface, and never a scoped route', () => {
         const operator = ROUTE_CLASSES.filter((row) => row[3] === 'operator');
         expect(operator.map(([method, pattern]) => `${method} ${pattern}`).sort()).toEqual(
             [
+                'GET /api/operator/driver-credentials',
+                'POST /api/operator/driver-credentials',
+                'POST /api/operator/driver-credentials/:id/revoke',
+                'POST /api/operator/driver-credentials/:id/rotate',
                 'GET /api/operator/orgs',
                 'POST /api/operator/orgs/:id/activate',
                 'POST /api/operator/orgs/:id/delete',

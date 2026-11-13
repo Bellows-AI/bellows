@@ -6,6 +6,7 @@ import { createUploadCapabilityStore, type UploadCapabilityStore } from './attac
 import { createOAuthStore, type OAuthStore } from './auth/oauth-store.js';
 import { startOAuthSweep } from './auth/oauth-sweep.js';
 import { membershipGuardFor } from './auth/membership-guard.js';
+import { createDriverCredentialStore } from './auth/driver-credentials.js';
 import { createAuthStore } from './auth/store.js';
 import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
@@ -371,6 +372,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         orgOfIngest: createOrgOfIngest({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
+        driverCredentials: createDriverCredentialStore({ sql, ready }),
         ...runnerCredentialDeps({ sql, ready }, options, config.integrations.jira),
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
