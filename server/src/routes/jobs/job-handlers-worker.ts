@@ -366,6 +366,8 @@ export async function handleHeartbeat(orgs: OrgRegistry, request: FastifyRequest
         cancelRequested: beat.value.cancelRequested,
         answeredQuestions: beat.value.answeredQuestions,
         requirementWait: beat.value.requirementWait,
+        // Why the board asks the stop on its own (`wall-time`); null for a member's stop.
+        stopCause: beat.value.stopCause,
     });
 }
 

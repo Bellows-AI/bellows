@@ -213,6 +213,7 @@ function buildOrgStores({
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
         admission: config.admission,
+        planDefaults: config.planDefaults,
         batches: config.batches.enabled,
         deploymentMode: config.deploymentMode,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),

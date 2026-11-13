@@ -8,6 +8,7 @@
 import type { TaskTitleOrigin } from '@factory-ai/core';
 import type { CreatedRef, CreateTarget } from './job-store-action-types.js';
 import { insertJobInTx } from './job-store-thread-actions.js';
+import { planLimits } from '../plan-limits.js';
 
 import type { JobStoreContext } from './job-store-types.js';
 
@@ -37,7 +38,8 @@ export interface JobTitleStore {
 
 /**
  * The create: one transaction for the root row and, when the request names a title, the title stamped on it
- * (origin `user`, revision 1) with its first audit row. A replayed create changes nothing.
+ * (origin `user`, revision 1) with its first audit row. A replayed create changes nothing; a new one past the org
+ * plan's queued limit throws `PlanLimitError`.
  */
 export async function createTitledJob(
     ctx: JobStoreContext,
@@ -46,7 +48,8 @@ export async function createTitledJob(
     target: CreateTarget
 ): Promise<CreatedRef> {
     return ctx.sql.begin(async (tx) => {
-        const created = await insertJobInTx(tx, ctx, { command, createdBy, target });
+        const { queued } = await planLimits(tx, ctx.orgId, ctx.planDefaults);
+        const created = await insertJobInTx(tx, ctx, { command, createdBy, target, queuedCap: queued });
         const { title } = target;
         if (!title || created.replayed) return created;
         await tx`

@@ -7,6 +7,7 @@
  */
 
 import type { Fragment, Sql, TransactionSql } from 'postgres';
+import { type PlanLimits, planLimits } from '../plan-limits.js';
 
 /** The org's queue demand the shared admission budgets read. */
 export interface JobAdmissionStore {
@@ -22,6 +23,22 @@ export interface AdmissionBudgets {
 }
 
 export type AdmissionScope = 'global' | 'org' | 'repo';
+
+/**
+ * The budgets that bind a claim of `orgId`: the deployment's, the org budget lowered to the org's plan running
+ * limit (`planLimits`). A plan read that fails throws, so this org's claim fails this poll and the scan moves on to
+ * the next org (`scanUnderBudget`); it never admits unlimited.
+ */
+export async function orgAdmission(
+    sql: Sql,
+    admission: AdmissionBudgets,
+    orgId: string,
+    planDefaults: PlanLimits
+): Promise<AdmissionBudgets> {
+    const { running } = await planLimits(sql, orgId, planDefaults);
+    if (running === undefined) return admission;
+    return { ...admission, org: Math.min(admission.org ?? running, running) };
+}
 
 /** The slot a queued row is admitted into, per scope; null where the scope is unbudgeted. */
 export type AdmissionSlots = Readonly<Record<AdmissionScope, number | null>>;
@@ -167,11 +184,13 @@ async function admitInBudget(tx: TransactionSql, budget: Budget): Promise<number
 /**
  * What one org's board asks of the cluster right now, read from its rows so every board replica
  * orders the cross-org claim scan the same way (`fairBoardScan`): whether a lost
- * attempt waits for its takeover, how many rows run, and when its oldest waiting row queued.
+ * attempt waits for its takeover, how many rows run against what cap, and when its oldest waiting row queued.
  */
 export interface OrgDemand {
     readonly takeover: boolean;
     readonly running: number;
+    /** The org's running cap (`orgAdmission`'s org budget); absent is unlimited, weighted as a cap of 1. */
+    readonly cap?: number;
     readonly oldestWaiting: Date | null;
 }
 
@@ -190,7 +209,7 @@ export function awaitingTakeover(sql: Sql | TransactionSql, table: string | null
                  and coalesce((${col('interruptions')} -> -1 ->> 'claimSeq')::bigint = ${col('claim_seq')}, false))))`;
 }
 
-export async function orgDemand(sql: Sql, orgId: string): Promise<OrgDemand> {
+export async function orgDemand(sql: Sql, orgId: string, cap: number | undefined): Promise<OrgDemand> {
     const [row] = await sql<{ takeover: boolean | null; running: number; oldest_waiting: Date | null }[]>`
         select bool_or(${awaitingTakeover(sql)}) as takeover,
                (count(*) filter (where ${occupying(sql)}))::int as running,
@@ -199,7 +218,12 @@ export async function orgDemand(sql: Sql, orgId: string): Promise<OrgDemand> {
         from job
         where org_id = ${orgId} and status in ('queued', 'running')
     `;
-    return { takeover: row?.takeover ?? false, running: row?.running ?? 0, oldestWaiting: row?.oldest_waiting ?? null };
+    return {
+        takeover: row?.takeover ?? false,
+        running: row?.running ?? 0,
+        ...(cap === undefined ? {} : { cap }),
+        oldestWaiting: row?.oldest_waiting ?? null,
+    };
 }
 
 /** How much runs now, cluster-wide: the global count and the busiest org and repo (never which). */

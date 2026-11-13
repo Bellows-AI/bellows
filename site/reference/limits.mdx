@@ -23,6 +23,16 @@ Values come from the Bellows code. Where a value is set by whoever runs Bellows,
 
 See [Writing good tasks](/guides/writing-good-tasks) and [Task lifecycle](/guides/task-lifecycle).
 
+## Organization plan
+
+Each organization's plan sets these. With no plan, the operator's default plan applies; on Bellows Cloud that is the Free plan.
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Running tasks | Set by the plan | New tasks stay **Queued** until one of yours ends. When runners are scarce, organizations get them in proportion to their running limits |
+| Queued tasks | Set by the plan | Refused with `429` and code `PLAN_LIMIT` (`limit: queued`). Retrying a request with the same idempotency key still returns its task |
+| Run wall time | Set by the plan. Time spent waiting for your answer does not count | The run is stopped and shows **Stopped · Needs review**. **Follow up** continues it |
+
 ## Infrastructure interruptions
 
 | Limit | Value | When exceeded |

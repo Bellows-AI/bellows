@@ -224,6 +224,7 @@ function stubStore(
         ackReclaim?: 'ok' | 'lost' | 'missing';
         renewReclaim?: ReclaimRenewal;
         heartbeatCancelRequested?: boolean;
+        heartbeatStopCause?: 'wall-time' | null;
         answeredQuestions?: { questionId: string; answers: Record<string, string> }[];
         /** What the question store answers a report and an answer with (050). */
         ask?: AskQuestionResult;
@@ -366,6 +367,7 @@ function stubStore(
                 cancelRequested: result === 'ok' ? (options.heartbeatCancelRequested ?? false) : false,
                 answeredQuestions: result === 'ok' ? (options.answeredQuestions ?? []) : [],
                 requirementWait: false,
+                stopCause: result === 'ok' ? (options.heartbeatStopCause ?? null) : null,
             };
         },
         async askQuestion(id, _token, ask) {
@@ -1492,6 +1494,15 @@ describe('POST /api/jobs/:id/heartbeat', () => {
         const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
         expect(response.statusCode).toBe(200);
         expect(response.json().cancelRequested).toBe(true);
+        expect(response.json().stopCause).toBeNull();
+    });
+
+    it("names the plan's wall time as the stop's cause", async () => {
+        const instance = await harnessWith(
+            stubStore({ verdict: 'ok', heartbeatCancelRequested: true, heartbeatStopCause: 'wall-time' })
+        );
+        const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
+        expect(response.json()).toMatchObject({ cancelRequested: true, stopCause: 'wall-time' });
     });
 });
 

@@ -57,10 +57,17 @@ dashboard:
     # The shared admission budgets every claim enforces, across every driver and replica (issue
     # #831): the most tasks running at once in total, per org and per repo. Empty is unlimited.
     # A driver's `concurrency` stays a per-process cap; these are the cluster-wide ones.
+    # deploymentMode cloud refuses to render with maxRunning or maxRunningPerOrg empty.
     admission:
         maxRunning: ''
         maxRunningPerOrg: ''
         maxRunningPerRepo: ''
+    # The plan limits an org with no pushed plan gets, and each limit a push left null: the Free plan
+    # (docs/commerce.md). Empty is unlimited; deploymentMode cloud refuses to render with any empty.
+    planDefaults:
+        maxRunning: ''
+        maxQueued: ''
+        maxWallSeconds: ''
     # The optional commerce service (docs/configuration.md). Off, the board opens no connection and
     # registers no route. On, `url` and `secret.commerceToken` (at least 32 characters) are required.
     commerce:
@@ -130,7 +137,8 @@ batches:
     enabled: false
 
 # Where this board runs (docs/configuration.md): self-hosted or cloud. Cloud refuses a Claude subscription OAuth token
-# in executor settings, member env and at claim, and refuses to render without telemetry.ingestToken.
+# in executor settings, member env and at claim, and refuses to render without telemetry.ingestToken, the
+# dashboard.admission maxRunning and maxRunningPerOrg caps, or any dashboard.planDefaults limit.
 deploymentMode: self-hosted
 
 github:

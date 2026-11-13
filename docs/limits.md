@@ -17,6 +17,7 @@ reporting a number as measured, or "fixing" anything listed here.
 ## Capabilities that are absent
 
 - `POST /api/otlp/v1/logs` accepts and discards (`server/src/routes/ingest.ts`).
+- Plan limits cover running, queued and wall time (`server/src/db/plan-limits.ts`); no spend or storage allowance is enforced.
 - Telemetry needs the executor image to reach a collector — off the compose network, opencode runs
   go unrecorded ([telemetry.md](telemetry.md)).
 

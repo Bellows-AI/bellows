@@ -24,6 +24,7 @@ import type { JobWorkerStore } from './job-store-worker.js';
 import type { JobConclusionStore } from './job-store-conclusions.js';
 import type { DeploymentMode, UserRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
 import type { AdmissionBudgets, ClaimObserver, JobAdmissionStore } from './job-store-admission.js';
+import type { PlanLimits } from '../plan-limits.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from '../pr-lifecycle-store.js';
 import type { BellowsConfig } from '../../workspace/bellows.js';
@@ -1117,6 +1118,8 @@ export interface CreateJobStoreDeps {
     prs?: JobStorePrs;
     /** The shared admission budgets every claim enforces; absent is unlimited. */
     admission?: AdmissionBudgets;
+    /** The board's plan default (the Free plan) for an org whose pushed plan sets no limit; absent is none. */
+    planDefaults?: PlanLimits;
     /** What the claim reports about itself; absent in the tests that predate it. */
     metrics?: ClaimObserver;
 }
@@ -1189,8 +1192,8 @@ export interface JobStorePrs {
  * precompiled SQL fragments, and the optional collaborators. `createJobStore` builds one and each
  * method is a thin delegation to its function in the sibling `job-store-*.ts` files.
  */
-/** `admission` is the deps' budgets, defaulted to none (unlimited). */
-export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admission'>> {
+/** `admission` and `planDefaults` are the deps', each defaulted to none (unlimited). */
+export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admission' | 'planDefaults'>> {
     sql: Sql;
     orgId: string;
     /** The deployment's batch flag (`CreateJobStoreDeps.batches`). */

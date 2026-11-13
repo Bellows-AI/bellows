@@ -761,8 +761,20 @@ refuses 'an unknown deployment mode is refused' 'deploymentMode must be self-hos
     "${GH_SETS[@]}" --set deploymentMode=saas
 refuses 'cloud mode without an ingest token is refused' 'deploymentMode cloud requires telemetry.ingestToken' \
     "${GH_SETS[@]}" --set deploymentMode=cloud --set-string telemetry.ingestToken=
-cloud="$(gh_render --set deploymentMode=cloud --set-string telemetry.ingestToken=ingest-token-for-the-render-test)"
+# Cloud also refuses to render with an empty admission cap or Free plan limit: no cloud org is unlimited.
+CLOUD_SETS=(--set deploymentMode=cloud --set-string telemetry.ingestToken=ingest-token-for-the-render-test
+    --set-string dashboard.admission.maxRunning=20 --set-string dashboard.admission.maxRunningPerOrg=4
+    --set-string dashboard.planDefaults.maxRunning=1 --set-string dashboard.planDefaults.maxQueued=10
+    --set-string dashboard.planDefaults.maxWallSeconds=3600)
+for cap in admission.maxRunning admission.maxRunningPerOrg planDefaults.maxRunning planDefaults.maxQueued \
+    planDefaults.maxWallSeconds; do
+    refuses "cloud mode with an empty dashboard.$cap is refused" "deploymentMode cloud requires dashboard.$cap" \
+        "${GH_SETS[@]}" "${CLOUD_SETS[@]}" --set-string "dashboard.$cap="
+done
+cloud="$(gh_render "${CLOUD_SETS[@]}")"
 expect_contains 'cloud mode renders DEPLOYMENT_MODE' "$(grep -A1 'name: DEPLOYMENT_MODE$' <<<"$cloud")" 'value: "cloud"'
+expect_contains 'cloud mode renders the Free plan limits' "$(grep -A1 'name: PLAN_DEFAULT_MAX_QUEUED$' <<<"$cloud")" \
+    'value: "10"'
 # The artifact store: the dashboard runs as its own ServiceAccount, which carries the IRSA
 # annotation, and the s3 backend refuses to render without a bucket.
 expect_contains 'the dashboard has its own ServiceAccount' "$gh" "serviceAccountName: $RELEASE-factory-dashboard"
