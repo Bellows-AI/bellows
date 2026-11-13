@@ -24,12 +24,13 @@ rep_pods() { # rep_pods -> one row per dashboard pod: name, node, Ready, restart
 }
 
 rep_await_ready() { # rep_await_ready <seconds> -> the rows of exactly two live Ready pods, each placed; non-zero on timeout
-    local until=$(($(date +%s) + $1)) rows live
+    local until=$(($(date +%s) + $1)) rows live total ready
     while [ "$(date +%s)" -lt "$until" ]; do
         rows="$(rep_pods)" && {
             live="$(printf '%s\n' "$rows" | awk -F'\t' '$5 == "" && $2 != "" && $3 == "True"')"
-            [ "$(printf '%s\n' "$rows" | grep -c .)" -eq 2 ] && [ "$(printf '%s\n' "$live" | grep -c .)" -eq 2 ] &&
-                { printf '%s\n' "$live"; return 0; }
+            total="$(printf '%s\n' "$rows" | awk 'NF' | wc -l)"
+            ready="$(printf '%s\n' "$live" | awk 'NF' | wc -l)"
+            [ "$((total))" = 2 ] && [ "$((ready))" = 2 ] && { printf '%s\n' "$live"; return 0; }
         }
         sleep 2
     done
@@ -72,7 +73,7 @@ if [ -z "$shipped" ]; then
 elif [ "$recorded" = "$shipped" ]; then
     ok 'a: the migration ledger holds exactly the shipped versions, once each'
 else
-    bad 'a: the migration ledger holds exactly the shipped versions' "ledger: $(printf '%s' "$recorded" | head -c 300) | shipped: $(printf '%s' "$shipped" | wc -l) files"
+    bad 'a: the migration ledger holds exactly the shipped versions' "ledger: $(printf '%.300s' "$recorded") | shipped: $(printf '%s\n' "$shipped" | wc -l) files"
 fi
 dupes="$(lane_psql 'select count(*) from (select version from schema_migrations group by version having count(*) > 1) d')" || dupes="unread: $dupes"
 [ "$dupes" = 0 ] && ok 'a: no migration is recorded twice' || bad 'a: no migration is recorded twice' "duplicates: $dupes"

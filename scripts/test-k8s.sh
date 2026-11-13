@@ -1987,7 +1987,7 @@ S3
         --set "artifacts.s3.endpoint=http://$RELEASE-s3:9000" --set artifacts.s3.forcePathStyle=true
         --set "artifacts.credentialsExistingSecret=$RELEASE-s3")
 fi
-helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" "${REPLICA_SETS[@]}" \
+helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${REPLICA_SETS[@]+"${REPLICA_SETS[@]}"} \
     --set "dashboard.image.repository=$DASH_REPO" --set-string "dashboard.image.tag=$RELEASE" \
     --set "driver.image.repository=$DRIVER_REPO" --set-string "driver.image.tag=$RELEASE" \
     --set "driver.executorImages.claudeCode=$STUB_REF" \
