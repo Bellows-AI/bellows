@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ROUTE_CLASSES, classOf, grantedScopes } from '../src/auth/route-class.js';
+import { ROUTE_CLASSES, classOf, grantedScopes, roleOf } from '../src/auth/route-class.js';
 
 // "Every registered human route is classified" lives in auth.enforcement.test.ts, which already records the full app's
 // routes; a second file mocking fastify beside it would share a module cache and see none of them.
@@ -23,6 +23,46 @@ describe('the route classes (what a scoped caller may do)', () => {
         expect(classOf('DELETE', '/api/connections/:id')).toBe('none');
         expect(classOf('GET', '/api/no-such-route')).toBeUndefined();
         expect(classOf('PATCH', '/api/jobs')).toBeUndefined();
+    });
+
+    it('every row names the role it needs, and a GET or dry run never needs more than its writes', () => {
+        for (const row of ROUTE_CLASSES) expect(['member', 'admin']).toContain(row[3]);
+        expect(roleOf('GET', '/api/jobs')).toBe('member');
+        expect(roleOf('HEAD', '/api/tokens/org')).toBe('admin');
+        expect(roleOf('GET', '/api/no-such-route')).toBeUndefined();
+    });
+
+    // The whole admin surface, pinned: a state-changing org route reachable by a plain member is the class this
+    // guards against, so a new org-wide write must be added here on purpose, never by default.
+    it('admin is exactly the org-wide administration: tokens, org env, members, executors, skills, subscriptions', () => {
+        const admin = ROUTE_CLASSES.filter((row) => row[3] === 'admin').map(
+            ([method, pattern]) => `${method} ${pattern}`
+        );
+        expect(admin.sort()).toEqual(
+            [
+                'DELETE /api/org/executors/:id',
+                'DELETE /api/org/notification-subscriptions/:id',
+                'DELETE /api/org/skills/:id',
+                'GET /api/org/members',
+                'GET /api/tokens/org',
+                'POST /api/org/executors',
+                'POST /api/org/executors/:id/scope',
+                'POST /api/org/executors/:id/suspension',
+                'POST /api/org/notification-subscriptions',
+                'POST /api/org/notification-subscriptions/:id/test',
+                'POST /api/org/skills',
+                'POST /api/org/skills/:id/versions',
+                'POST /api/tokens/org',
+                'POST /api/tokens/org/:id/revoke',
+                'PUT /api/env/org',
+                'PUT /api/env/repo',
+                'PUT /api/org/executors/:id',
+                'PUT /api/org/members/:userId/role',
+                'PUT /api/org/notification-subscriptions/:id',
+                'PUT /api/org/skills/:id/enabled',
+                'PUT /api/org/skills/builtin/:name/enabled',
+            ].sort()
+        );
     });
 
     it('grantedScopes keeps only scopes the board knows', () => {

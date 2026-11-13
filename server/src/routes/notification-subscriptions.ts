@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES } from '@factory-ai/core';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { ConnectorRegistry } from '../notifications/connector.js';
 import { sendTestNotification, TEST_SEND_TIMEOUT_MS } from '../notifications/test-send.js';
@@ -17,7 +17,6 @@ const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_CREATED = 201;
 const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_UNAVAILABLE = 503;
 
@@ -41,14 +40,14 @@ interface Mount {
 }
 
 /**
- * Store (503) then caller (401), then, for an org write, admin (403). Answers the refusal itself and returns
- * null. The owner is the org for the org mount and the caller for the personal one, so a route never names it.
+ * Store (503) then caller (401); an org write is an `admin` row the auth hook already gated. Answers the refusal
+ * itself and returns null. The owner is the org for the org mount and the caller for the personal one, so a route never names it.
  */
 async function gate(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply,
-    { personal, write }: { personal: boolean; write: boolean }
+    { personal }: { personal: boolean }
 ): Promise<Gate> {
     const store = (await orgs.for(orgOf(request)))?.notificationSubscriptions;
     if (!store) {
@@ -61,15 +60,6 @@ async function gate(
         return null;
     }
     if (personal) return { store, owner: { kind: 'user', userId: caller.user.id } };
-    if (write && caller.role !== ADMIN_ROLE) {
-        bad(
-            reply,
-            ERROR_CODES.FORBIDDEN,
-            'Only an organization admin can manage notification subscriptions',
-            HTTP_FORBIDDEN
-        );
-        return null;
-    }
     return { store, owner: ORG_OWNER };
 }
 
@@ -98,7 +88,7 @@ export const notificationSubscriptionRoutes =
     async (app) => {
         const register = ({ path, personal, settingsPath }: Mount) => {
             app.get(path, { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
-                const ctx = await gate(orgs, request, reply, { personal, write: false });
+                const ctx = await gate(orgs, request, reply, { personal });
                 if (!ctx) return reply;
                 const loaded = await guard(reply, log(request), () => ctx.store.list(ctx.owner));
                 if (!loaded.ok) return reply;
@@ -108,7 +98,7 @@ export const notificationSubscriptionRoutes =
             });
 
             app.post(path, { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-                const ctx = await gate(orgs, request, reply, { personal, write: true });
+                const ctx = await gate(orgs, request, reply, { personal });
                 if (!ctx) return reply;
                 const parsed = parseSubscriptionFields(request.body, connectors, { credentialRequired: true });
                 if (!parsed.ok) return refusal(reply, parsed);
@@ -121,19 +111,19 @@ export const notificationSubscriptionRoutes =
             });
 
             app.put(`${path}/:id`, { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-                const ctx = await gate(orgs, request, reply, { personal, write: true });
+                const ctx = await gate(orgs, request, reply, { personal });
                 if (!ctx) return reply;
                 return replace(ctx, connectors, request, reply);
             });
 
             app.delete(`${path}/:id`, { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
-                const ctx = await gate(orgs, request, reply, { personal, write: true });
+                const ctx = await gate(orgs, request, reply, { personal });
                 if (!ctx) return reply;
                 return remove(ctx, request, reply);
             });
 
             app.post(`${path}/:id/test`, { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
-                const ctx = await gate(orgs, request, reply, { personal, write: true });
+                const ctx = await gate(orgs, request, reply, { personal });
                 if (!ctx) return reply;
                 return testSend(ctx, { connectors, publicUrl, settingsPath }, request, reply);
             });

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { ADMIN_ROLE, type Role } from '@factory-ai/core';
+import { ENV_ADMIN_NOTE } from '../web/src/panels/EnvVarsSection.js';
 import { MEMBER_NOTE, NO_SUBSCRIPTIONS_NOTE } from '../web/src/panels/NotificationSubscriptionsPanel.js';
 import { FORBIDDEN, useTheme, watchConsole } from './page-health.js';
 import { controlsOutsideViewport, noHorizontalOverflow } from './viewport.js';
@@ -179,6 +180,11 @@ for (const width of WIDTHS) {
                 await expect(notifications.getByText(NO_SUBSCRIPTIONS_NOTE)).toBeVisible();
                 await expect(notifications.getByRole('button', { name: 'Add notification' })).toHaveCount(0);
                 await expect(page.getByRole('heading', { name: 'Organization variables' })).toBeVisible();
+                // The org env scope is an admin's to write: a member reads it with no New or Raw editor control.
+                const orgEnv = page.getByRole('region', { name: 'Organization variables' });
+                await expect(orgEnv.getByText(ENV_ADMIN_NOTE)).toBeVisible();
+                await expect(orgEnv.getByRole('button', { name: 'New variable' })).toHaveCount(0);
+                await expect(orgEnv.getByRole('button', { name: /Raw editor/ })).toHaveCount(0);
 
                 await assertFits(page, width);
                 expect(rosterReads, 'a member never reads the roster').toBe(0);

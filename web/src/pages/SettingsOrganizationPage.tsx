@@ -1,3 +1,4 @@
+import { ADMIN_ROLE } from '@factory-ai/core';
 import { roleLabel } from '../api/useSession.js';
 import { Icon } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
@@ -11,11 +12,9 @@ import { useSettingsPage } from './SettingsLayout.js';
  * The Organization section of the settings tree (issue 180): who is signed in, what the org
  * environment scope is, and the one org-level editor. The old "not built yet" stub is gone.
  *
- * The editor is enabled for every role, because that is the server's contract — `PUT /api/env/org`
- * accepts any member of the installation (membership is the one trust level, #99, pinned by
- * server/test/routes.env.test.ts). The disabled control this page used to show a member was not
- * authorization; it was a false claim about the API. If product policy ever changes, the server
- * grows a tested 403 first, and THEN a page renders a readable read-only view.
+ * The editor follows the server's contract: `PUT /api/env/org` is an admin route (a member gets a
+ * tested 403, server/test/routes.env.test.ts), so a member reads the rows with no write control
+ * beside the sentence naming who manages them. Until the session lands the view is read-only too.
  */
 export function SettingsOrganizationPage() {
     const { env, session } = useSettingsPage();
@@ -63,6 +62,7 @@ export function SettingsOrganizationPage() {
                     onSave={env.saveOrg}
                     draftId="org"
                     draftLabel="Organization variables"
+                    readOnly={session?.role !== ADMIN_ROLE}
                 />
             ) : null}
         </>

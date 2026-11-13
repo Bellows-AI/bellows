@@ -74,7 +74,7 @@ interface Context {
 
 /**
  * The store and owner of a request, or null once the refusal is sent. The workspace door needs a signed-in member; the
- * org door's reads are open to any caller and its writes to an org admin (like `org-executors.ts`).
+ * org door's reads are open to any caller and its writes are `admin` rows the auth hook gates (like `org-executors.ts`).
  */
 async function contextOf(
     orgs: OrgRegistry,
@@ -93,10 +93,6 @@ async function contextOf(
             bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             return null;
         }
-    }
-    if (door === 'org' && write && caller?.role !== ADMIN_ROLE) {
-        bad(reply, ERROR_CODES.FORBIDDEN, 'Only an organization admin can manage organization skills', HTTP_FORBIDDEN);
-        return null;
     }
     return { store: rt.skills, caller, owner: door === 'org' ? null : (caller?.user.id ?? null) };
 }

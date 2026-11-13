@@ -23,7 +23,6 @@ import {
 const HTTP_OK = 200;
 const HTTP_CREATED = 201;
 const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
@@ -45,7 +44,7 @@ async function storeOf(orgs: OrgRegistry, request: FastifyRequest): Promise<User
     return rt?.userExecutors ?? null;
 }
 
-/** Organization profiles are an administrator's surface; a member's mutations refuse here. */
+/** Whether the caller administers the org: an admin reads the profiles' config, a member only selects them. */
 function requireAdmin(caller: Caller): boolean {
     return caller.role === ADMIN_ROLE;
 }
@@ -56,7 +55,10 @@ function isNameTaken(error: unknown): boolean {
     throw error;
 }
 
-/** The store and admin caller every mutating route needs — or null once the refusal is sent. */
+/**
+ * The store and caller every mutating route needs — or null once the refusal is sent. Every mutating route is an
+ * `admin` row in `ROUTE_CLASSES`, so the auth hook has already refused a member.
+ */
 async function adminContext(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeOf(orgs, request);
     if (!store) {
@@ -66,15 +68,6 @@ async function adminContext(orgs: OrgRegistry, request: FastifyRequest, reply: F
     const caller = callerOf(request);
     if (!caller) {
         bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-        return null;
-    }
-    if (!requireAdmin(caller)) {
-        bad(
-            reply,
-            ERROR_CODES.FORBIDDEN,
-            'Only an organization admin can manage organization executors',
-            HTTP_FORBIDDEN
-        );
         return null;
     }
     return { store, caller };

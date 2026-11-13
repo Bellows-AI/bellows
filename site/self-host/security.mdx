@@ -125,6 +125,8 @@ Sign-in uses the OAuth App with the `read:org` scope and reads no repository dat
 
 The first member of an organization is its admin. Demoting the last admin is refused.
 
+Only an admin can mint, list or revoke organization access tokens, save organization or repository variables and secrets, change member roles, or manage organization executors, skills and notifications. A member's session or personal access token gets `403` there. Every member manages their own personal tokens, workspace variables, executors, skills and notifications.
+
 ## Tokens
 
 | Credential | Prefix | Reach |

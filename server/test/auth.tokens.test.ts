@@ -395,37 +395,55 @@ describe('organization access tokens: lifecycle and validation', () => {
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
-    it('is minted by any member — the roles that gated it retired with the roster (#99)', async () => {
-        // Installation access IS membership, and every member is the same trust level: an org
-        // token mints, lists and revokes without an admin anywhere in the deployment.
+    it('is minted, listed and revoked by an admin; a member is refused all three', async () => {
+        // An org token reads the whole organization's board, so it is the org's to hand out: only an admin.
         const store = memoryAuthStore();
         const member = store.seedMember(ORG, 'member');
+        const admin = store.seedMember(ORG, 'admin-cat', 'admin');
         const memberCookie = await signedIn(store, member);
+        const adminCookie = await signedIn(store, admin);
         const server = await build(githubAuth(), store);
 
-        const mint = await server.inject({
+        const refused = await server.inject({
             method: 'POST',
             url: '/api/tokens/org',
             payload: { label: 'ci' },
             headers: { cookie: memberCookie },
         });
+        expect(refused.statusCode).toBe(HTTP_FORBIDDEN);
+        const mint = await server.inject({
+            method: 'POST',
+            url: '/api/tokens/org',
+            payload: { label: 'ci' },
+            headers: { cookie: adminCookie },
+        });
         expect(mint.statusCode).toBe(HTTP_CREATED);
         expect((mint.json() as { token: string }).token.startsWith(OAT)).toBe(true);
 
+        expect(
+            (await server.inject({ method: 'GET', url: '/api/tokens/org', headers: { cookie: memberCookie } }))
+                .statusCode
+        ).toBe(HTTP_FORBIDDEN);
         const list = await server.inject({
             method: 'GET',
             url: '/api/tokens/org',
-            headers: { cookie: memberCookie },
+            headers: { cookie: adminCookie },
         });
         expect(list.statusCode).toBe(HTTP_OK);
         expect(list.json()).toMatchObject({ tokens: [{ label: 'ci' }] });
 
-        // Still a real revoke: a member-revoked org token dies like any other.
+        // Still a real revoke: an admin-revoked org token dies like any other; a member's attempt changes nothing.
         const mintedId = (list.json() as { tokens: { id: string }[] }).tokens[0]!.id;
-        const revoke = await server.inject({
+        const memberRevoke = await server.inject({
             method: 'POST',
             url: `/api/tokens/org/${mintedId}/revoke`,
             headers: { cookie: memberCookie },
+        });
+        expect(memberRevoke.statusCode).toBe(HTTP_FORBIDDEN);
+        const revoke = await server.inject({
+            method: 'POST',
+            url: `/api/tokens/org/${mintedId}/revoke`,
+            headers: { cookie: adminCookie },
         });
         expect(revoke.statusCode).toBe(HTTP_OK);
         expect(revoke.json()).toMatchObject({ revoked: true });

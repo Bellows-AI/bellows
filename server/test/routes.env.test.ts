@@ -12,7 +12,7 @@ import {
     testConfig,
     type MemoryEnvVarStore,
 } from './helpers.js';
-import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
+import { HTTP_BAD_REQUEST, HTTP_FORBIDDEN, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
 
 /**
  * Offline: the routes against the in-memory double, the way routes.workspace.test.ts runs. The SQL
@@ -29,7 +29,7 @@ const track = trackApps();
 
 async function boot(options: { envVars?: MemoryEnvVarStore } = {}) {
     const auth = memoryAuthStore();
-    // Roles are one trust level: any member may write the org and repository scopes, and the
+    // The org and repository scopes reach every member's runs, so only an admin writes them; the
     // workspace scope rows are the caller's own — the tests below pin that per route.
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
@@ -132,29 +132,22 @@ describe('PUT /api/env/workspace', () => {
 });
 
 describe('PUT /api/env/org and /api/env/repo', () => {
-    it('accepts a member for the org scope — installation access is membership (#99)', async () => {
-        // The roles died with the roster they gated: every member of the installation is the same
-        // trust level, so the org-wide env scope is writable by anyone who can see it.
-        const { app, memberCookie } = await boot();
-        const memberPut = await app.inject({
-            method: 'PUT',
-            url: '/api/env/org',
-            headers: { cookie: memberCookie },
-            payload: { vars: [{ name: 'CORE', value: '1', isSecret: false }] },
-        });
-        expect(memberPut.statusCode).toBe(HTTP_OK);
-    });
-
-    it('accepts a member for a repository scope too', async () => {
-        const { app, memberCookie } = await boot();
-        const memberPut = await app.inject({
-            method: 'PUT',
-            url: '/api/env/repo',
-            headers: { cookie: memberCookie },
-            payload: { repo: { owner: 'acme', name: 'web' }, vars: [{ name: 'R', value: '1', isSecret: false }] },
-        });
-        expect(memberPut.statusCode).toBe(HTTP_OK);
-    });
+    it.each([
+        ['org', '/api/env/org', {}],
+        ['repository', '/api/env/repo', { repo: { owner: 'acme', name: 'web' } }],
+    ] as const)(
+        'refuses a member for the %s scope and accepts an admin: it reaches every member’s runs',
+        async (_s, url, extra) => {
+            const { app, memberCookie, adminCookie, envVars } = await boot();
+            const payload = { ...extra, vars: [{ name: 'CORE', value: '1', isSecret: false }] };
+            const memberPut = await app.inject({ method: 'PUT', url, headers: { cookie: memberCookie }, payload });
+            expect(memberPut.statusCode).toBe(HTTP_FORBIDDEN);
+            expect(memberPut.json().code).toBe('FORBIDDEN');
+            expect([...(await envVars.listOrg()), ...(await envVars.listRepos())]).toEqual([]);
+            const adminPut = await app.inject({ method: 'PUT', url, headers: { cookie: adminCookie }, payload });
+            expect(adminPut.statusCode).toBe(HTTP_OK);
+        }
+    );
 
     it('refuses a repository outside the installation', async () => {
         const { app, adminCookie } = await boot();
@@ -338,12 +331,12 @@ describe('env var validation', () => {
     ] as const)(
         'refuses GITHUB_TOKEN and GH_TOKEN in the %s scope: GitHub is the App’s alone',
         async (_scope, url, extra) => {
-            const { app, memberCookie } = await boot();
+            const { app, adminCookie } = await boot();
             for (const name of ['GITHUB_TOKEN', 'GH_TOKEN']) {
                 const response = await app.inject({
                     method: 'PUT',
                     url,
-                    headers: { cookie: memberCookie },
+                    headers: { cookie: adminCookie },
                     payload: { ...extra, vars: [{ name, value: 'ghp_member_token', isSecret: true }] },
                 });
                 expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
@@ -359,11 +352,11 @@ describe('env var validation', () => {
     ] as const)(
         'accepts ATLASSIAN_API_TOKEN in the %s scope: Jira is a managed connection, the name is not reserved',
         async (_scope, url, extra) => {
-            const { app, memberCookie } = await boot();
+            const { app, adminCookie } = await boot();
             const response = await app.inject({
                 method: 'PUT',
                 url,
-                headers: { cookie: memberCookie },
+                headers: { cookie: adminCookie },
                 payload: { ...extra, vars: [{ name: 'ATLASSIAN_API_TOKEN', value: 'member-value', isSecret: true }] },
             });
             expect(response.statusCode).toBe(HTTP_OK);

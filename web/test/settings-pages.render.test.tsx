@@ -7,6 +7,7 @@ import type { UseEnv } from '../src/api/useEnv.js';
 import type { UseRepos } from '../src/api/useRepos.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import type { Session } from '../src/api/useSession.js';
+import { ENV_ADMIN_NOTE } from '../src/panels/EnvVarsSection.js';
 import { SettingsExecutorsPage } from '../src/pages/SettingsExecutorsPage.js';
 import { SettingsOrganizationPage } from '../src/pages/SettingsOrganizationPage.js';
 import { SettingsRepositoriesPage } from '../src/pages/SettingsRepositoriesPage.js';
@@ -135,9 +136,9 @@ describe('Settings organization page', () => {
         expect(html).not.toMatch(/<h[3-6][ >]/);
     });
 
-    it('leaves the editor enabled for a member — the server route is the authorization', () => {
-        // `PUT /api/env/org` accepts any member of the installation (routes.env.test.ts), so a
-        // disabled browser control was never authorization — it was a false claim about the API.
+    it('shows a member the org scope read-only — the server answers their write 403', () => {
+        // `PUT /api/env/org` is an admin route (routes.env.test.ts), so a member reads the rows with no write
+        // control beside the sentence naming who manages them.
         const html = render('/settings/organization', {
             session: { ...session, role: 'member' },
             env: {
@@ -149,20 +150,17 @@ describe('Settings organization page', () => {
                 },
             },
         });
-        // No INPUT is disabled for a member — the row's name and value stay editable. (The Save
-        // button itself may render disabled while the draft is clean, which is issue 182's
-        // save-state rule, not a role gate.)
-        expect(html.match(/<input [^>]*disabled/g) ?? []).toHaveLength(0);
-        expect(html).not.toContain('shown here read-only');
-        // The tabs and the New button are live for a member too.
-        expect(html).toContain('New variable');
-        expect(html).not.toMatch(/<button[^>]*disabled[^>]*>(<[^>]+>)*New variable/);
+        expect(html).toContain('SHARED');
+        expect(html).toContain(ENV_ADMIN_NOTE.replace("'", '&#x27;'));
+        expect(html).not.toContain('New variable');
+        expect(html).not.toContain('Raw editor');
+        expect(html).not.toContain('aria-label="Edit SHARED"');
+        expect(html).not.toContain('aria-label="Remove SHARED"');
     });
 
-    it('carries no client-only admin gate in its source', () => {
+    it('gates the org and repository editors on the session role, the same rule as the server', () => {
         for (const page of ['SettingsOrganizationPage.tsx', 'SettingsRepositoriesPage.tsx']) {
-            const source = sourceOf(page);
-            expect(source, page).not.toContain('isAdmin');
+            expect(sourceOf(page), page).toContain('readOnly={session?.role !== ADMIN_ROLE}');
         }
     });
 

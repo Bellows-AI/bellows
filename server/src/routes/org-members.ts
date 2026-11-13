@@ -1,23 +1,17 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { ADMIN_ROLE, ERROR_CODES, ROLES, type Role } from '@factory-ai/core';
+import { ERROR_CODES, ROLES, type Role } from '@factory-ai/core';
 import { callerOf } from '../auth/plugin.js';
-import type { AuthStore, Caller } from '../auth/store.js';
+import type { AuthStore } from '../auth/store.js';
 import { UUID } from '../identifiers.js';
 import { bad, body as jsonBody, guard } from './helpers.js';
 
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 
 /** No payload past a role word needs more than a control route's headroom. */
 const CONTROL_BODY_LIMIT = 4096;
-
-/** The roster and its role writes are an administrator's surface; a member's calls refuse here. */
-function requireAdmin(caller: Caller): boolean {
-    return caller.role === ADMIN_ROLE;
-}
 
 /** A body's role word is a `Role` only when the check constraint in 010_auth.sql would take it. */
 const isRole = (value: unknown): value is Role => ROLES.some((candidate) => candidate === value);
@@ -29,8 +23,10 @@ const isRole = (value: unknown): value is Role => ROLES.some((candidate) => cand
  * mirrors — the board secret never gets past the auth wall here, because who holds `admin` is a
  * human decision, and an `oat_` names no person.
  *
- * - `GET /api/org/members` — admin-gated; the caller's org's roster, login-ordered.
- * - `PUT /api/org/members/:userId/role` — admin-gated; body `{ role }`. A demotion that would
+ * Both routes are `admin` rows in `ROUTE_CLASSES`; the auth hook refuses a member before they run.
+ *
+ * - `GET /api/org/members` — the caller's org's roster, login-ordered.
+ * - `PUT /api/org/members/:userId/role` — body `{ role }`. A demotion that would
  *   leave the org with no admin is refused (`409 LAST_ADMIN`) — an org with no admin is the
  *   bootstrap hole this closes, not a state to reach through the API.
  */
@@ -48,10 +44,6 @@ export const orgMemberRoutes =
 async function handleListMembers(store: AuthStore, request: FastifyRequest, reply: FastifyReply) {
     const caller = callerOf(request);
     if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    if (!requireAdmin(caller)) {
-        return bad(reply, ERROR_CODES.FORBIDDEN, 'Only an organization admin can manage member roles', HTTP_FORBIDDEN);
-    }
-
     const loaded = await guard(
         reply,
         (e) => request.log.error({ err: e }),
@@ -64,9 +56,6 @@ async function handleListMembers(store: AuthStore, request: FastifyRequest, repl
 async function handleSetMemberRole(store: AuthStore, request: FastifyRequest, reply: FastifyReply) {
     const caller = callerOf(request);
     if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    if (!requireAdmin(caller)) {
-        return bad(reply, ERROR_CODES.FORBIDDEN, 'Only an organization admin can manage member roles', HTTP_FORBIDDEN);
-    }
     const { userId } = request.params as { userId?: string };
     if (typeof userId !== 'string' || !UUID.test(userId)) {
         return bad(reply, ERROR_CODES.BAD_ID, 'userId must be a uuid');

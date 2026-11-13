@@ -33,6 +33,11 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   `server/test-db/auth-store.access-tokens.test.ts`.
 - **An org's first membership lands `admin`**; demoting the last admin is `409 LAST_ADMIN`.
   `server/test/routes.org-members.test.ts`.
+- **The role a route needs is its `ROUTE_CLASSES` row's 4th column**, checked once in the auth hook for every user
+  caller (cookie, `fat_`, bridged): an `admin` row is `403` to a member before the handler runs. `admin` is the
+  org-wide administration (org tokens, org and repository env, the roster, org executors, skills and notification
+  subscriptions); a row-dependent rule (author or admin, an org-scope body) stays in its handler.
+  `server/src/auth/route-class.ts`, `server/test/auth.route-class.test.ts`, `server/test/auth.route-role.test.ts`.
 - **Only the sha-256 is stored** (sessions, both token kinds, the pending sign-in row), and the cookie is
   `SameSite=Lax`: the callback is a cross-site top-level GET. `server/src/auth/session.ts`,
   `server/test/auth.session.test.ts`.

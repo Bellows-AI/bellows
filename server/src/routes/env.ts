@@ -250,8 +250,8 @@ export const envRoutes =
             });
         });
 
-        // The "Core secrets" scope: one list for the whole organization. Written by any member —
-        // installation access is membership, and there are no roles above member to gate it with.
+        // The "Core secrets" scope: one list for the whole organization, so an `admin` row in
+        // ROUTE_CLASSES: the auth hook refuses a member before this runs.
         app.put('/api/env/org', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             return putScope(request, reply, async (store, vars) => {
                 await store.replaceOrg(vars);
@@ -268,7 +268,7 @@ export const envRoutes =
         });
 
         // Org-wide per-repository scope: one configuration per repository, applied to every
-        // member's runs in it — the GitHub Actions precedent.
+        // member's runs in it — the GitHub Actions precedent. An `admin` row, like the org scope.
         app.put('/api/env/repo', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);

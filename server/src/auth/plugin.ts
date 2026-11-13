@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -12,7 +12,7 @@ import { withCaller } from '../mcp/server.js';
 import { originPermitted } from '../mcp/origin.js';
 import { challengeFor, resourceMetadataUrl } from './oauth-challenge.js';
 import type { OAuthStore } from './oauth-store.js';
-import { SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes } from './route-class.js';
+import { SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes, roleOf } from './route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
 
@@ -614,6 +614,23 @@ async function scopeAllows(
     return false;
 }
 
+/**
+ * The route-role check every user caller passes, whatever its credential: an `admin` row refuses a caller whose
+ * membership is not admin, before the handler runs. A route with no row needs no role here — every human route has
+ * one (`auth.enforcement.test.ts`), and an unmatched path must still reach the not-found handler. Answers true when
+ * the request may continue.
+ */
+async function roleAllows(caller: Caller, request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+    const pattern = patternOf(request);
+    if (pattern === undefined || roleOf(request.method, pattern) !== ADMIN_ROLE || caller.role === ADMIN_ROLE) {
+        return true;
+    }
+    await reply
+        .code(HTTP_FORBIDDEN)
+        .send({ error: 'Only an organization admin can do this', code: ERROR_CODES.FORBIDDEN });
+    return false;
+}
+
 interface UserAuthDeps {
     auth: AuthConfig;
     store: AuthStore;
@@ -627,6 +644,7 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
     const bound = boundCallerOf(request.raw);
     if (bound) {
         if (!(await scopeAllows(auth, bound, request, reply))) return;
+        if (!(await roleAllows(bound, request, reply))) return;
         request.auth = { kind: 'user', caller: bound };
         return;
     }
@@ -635,7 +653,13 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
     // behind a failed or foreign bearer must not be consulted — that would let a rewritten header
     // ride somebody's session in.
     if (auth.mode !== 'none') {
-        if (await resolveBearer(request, reply, store)) return;
+        if (await resolveBearer(request, reply, store)) {
+            // A personal token acts as its member, so it passes the same role check; an `oat_` reaches only its
+            // read allowlist, and a refused bearer has already been answered.
+            const tokenCaller = callerOf(request);
+            if (tokenCaller && !reply.sent) await roleAllows(tokenCaller, request, reply);
+            return;
+        }
     }
 
     const caller = await resolveUser(request);
@@ -647,6 +671,7 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
         await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
         return;
     }
+    if (!(await roleAllows(caller, request, reply))) return;
     request.auth = { kind: 'user', caller };
 }
 
