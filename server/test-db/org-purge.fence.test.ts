@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Sql } from 'postgres';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createArtifactStore } from '../src/artifacts/artifact-store.js';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
@@ -86,7 +87,89 @@ const purgeRow = async () =>
     `
     )[0];
 
+/**
+ * The pool with its fence read held back: the writer gets as far as the fence, waits there while the test purges the
+ * whole org, and only then reads it — the schedule of a writer paused between its earlier steps and its put.
+ */
+function pausedAtFence(): { sql: Sql; arrived: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    let arrive!: () => void;
+    const arrived = new Promise<void>((resolve) => {
+        arrive = resolve;
+    });
+    const sql = new Proxy(db.sql, {
+        apply(target, self, args: unknown[]) {
+            const strings = args[0] as readonly string[] | undefined;
+            if (Array.isArray(strings) && strings.join('').includes('open_for_writes')) {
+                arrive();
+                return held.then(() => Reflect.apply(target, self, args));
+            }
+            return Reflect.apply(target, self, args);
+        },
+    });
+    return { sql, arrived, release };
+}
+
+/** Purges the org to the end: requested, drained, every step run, the org row gone. */
+async function purgeCompletely(): Promise<void> {
+    await requestPurge();
+    await age(DRAIN_MS);
+    await runOrgPurgePass(deps());
+    expect(await db.sql`select 1 from organization where id = ${org}`).toHaveLength(0);
+}
+
 describe.skipIf(!enabled)('object writes against an org purge', () => {
+    it('refuses an artifact upload that resumes after the purge completed, and writes no object', async () => {
+        const paused = pausedAtFence();
+        const artifacts = createArtifactStore({
+            sql: paused.sql,
+            orgId: org,
+            ready: Promise.resolve(),
+            objects,
+            prefix: PREFIX,
+        });
+        const write = artifacts.putChunk(streamRef(), 0, bytes('late'));
+        const settled = write.catch((e: unknown) => e);
+        await paused.arrived;
+
+        await purgeCompletely();
+        paused.release();
+
+        expect(await settled).toBeInstanceOf(OrgPurgingError);
+        expect(await keysLeft()).toEqual([]);
+    });
+
+    it('refuses a skill bundle that resumes after the purge completed, and writes no object', async () => {
+        const paused = pausedAtFence();
+        const skills = createSkillStore({ sql: paused.sql, objects, orgId: org, prefix: PREFIX });
+        const bundle = bundleFromSkillMd('deploy', '---\nname: deploy\ndescription: deploy helps\n---\nDo it.\n');
+        const write = skills.create(null, { name: 'deploy', bundle, createdBy: user.id });
+        const settled = write.then(
+            () => null,
+            (e: unknown) => e
+        );
+        await paused.arrived;
+
+        await purgeCompletely();
+        paused.release();
+
+        expect(await settled).toBeInstanceOf(Error);
+        expect(await keysLeft()).toEqual([]);
+    });
+
+    it('refuses an attachment attempt and a fenced put for an org that no longer exists', async () => {
+        await purgeCompletely();
+        await expect(
+            fencedPut({ sql: db.sql, orgId: org, objects }, `${PREFIX}${org}/x`, bytes('x'))
+        ).rejects.toBeInstanceOf(OrgPurgingError);
+        const rows = createAttachmentRows({ sql: db.sql, orgId: org, ready: Promise.resolve() });
+        expect(await rows.beginAttempt(randomUUID())).toBeNull();
+        expect(await keysLeft()).toEqual([]);
+    });
+
     it('refuses every writer once the purge is requested', async () => {
         await requestPurge();
 

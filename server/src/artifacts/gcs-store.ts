@@ -29,18 +29,28 @@ export class GcsError extends Error {
     }
 }
 
+const LISTING_FIELDS = new Set(['kind', 'items', 'nextPageToken']);
+
+/** One listed object carries its name and nothing else (`fields=items(name)`); anything more or less is doubt. */
+const nameOf = (item: unknown): string | null => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
+    const { name, ...rest } = item as { name?: unknown };
+    return typeof name === 'string' && name !== '' && Object.keys(rest).length === 0 ? name : null;
+};
+
 /**
- * The names of a complete `objects.list` page, or null for anything else: an object of kind `storage#objects` whose
- * `items`, when present, are all named. A next page with no item cannot show the prefix empty. Null is never empty.
+ * The names of a complete `objects.list` page, or null for anything else. Fail closed: an object of kind
+ * `storage#objects` holding only the fields asked for, `items` (when present) a list of named objects, a page token
+ * (when present) a string, and never a next page with no item. Null is never an empty answer.
  */
 function namesOfListing(body: unknown): string[] | null {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+    if (Object.keys(body).some((field) => !LISTING_FIELDS.has(field))) return null;
     const { kind, items, nextPageToken } = body as { kind?: unknown; items?: unknown; nextPageToken?: unknown };
     if (kind !== 'storage#objects' || (items !== undefined && !Array.isArray(items))) return null;
-    const names = ((items ?? []) as unknown[]).map((item) =>
-        typeof item === 'object' && item !== null ? (item as { name?: unknown }).name : undefined
-    );
-    if (names.some((name) => typeof name !== 'string')) return null;
+    if (nextPageToken !== undefined && typeof nextPageToken !== 'string') return null;
+    const names = ((items ?? []) as unknown[]).map(nameOf);
+    if (names.some((name) => name === null)) return null;
     if (nextPageToken !== undefined && names.length === 0) return null;
     return names as string[];
 }

@@ -46,22 +46,38 @@ const unescapeXml = (text: string): string =>
 const LISTING = /^\s*(?:<\?xml[^>]*\?>\s*)?<ListBucketResult(?:\s[^>]*)?>([\s\S]*)<\/ListBucketResult>\s*$/;
 
 /**
- * The keys of a complete ListObjectsV2 page, or null for anything else: the whole document must be there, with its
- * `KeyCount` and `IsTruncated`, every entry closed and keyed, and as many keys as `KeyCount` says. A truncated page
- * with no key cannot show the prefix empty. Null is never an empty answer.
+ * Occurrences of a raw tag token: `<Name` followed by anything that ends the name, so `<Contents/>`, `<Contents >` and
+ * `<Contents x="1">` all count, while `<KeyCount` is not a `<Key`.
+ */
+const occurrences = (text: string, token: string): number =>
+    (text.match(new RegExp(`${token}(?![\\w.:-])`, 'g')) ?? []).length;
+
+/**
+ * The keys of a complete ListObjectsV2 page, or null for anything else. Fail closed, not a parser: the whole document
+ * must be there; `KeyCount` and `IsTruncated` each appear once, strictly formed; and every raw `<Contents` opener,
+ * every `</Contents>` closer, every raw `<Key` and every strictly formed `<Contents><Key>k</Key>…</Contents>` entry
+ * with a non-empty key all number exactly `KeyCount`. A grouped prefix (never asked for) or a truncated page with no
+ * key is doubt too. Null is never an empty answer.
  */
 function keysOfListing(body: string): string[] | null {
     const inner = LISTING.exec(body)?.[1];
     if (inner === undefined) return null;
-    const count = /<KeyCount>(\d+)<\/KeyCount>/.exec(inner)?.[1];
+    const count = /^[\s\S]*?<KeyCount>(\d+)<\/KeyCount>/.exec(inner)?.[1];
     const truncated = /<IsTruncated>(true|false)<\/IsTruncated>/.exec(inner)?.[1];
     if (count === undefined || truncated === undefined) return null;
-    const entries = [...inner.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)].map((match) => match[1] ?? '');
-    if ((inner.match(/<Contents>/g) ?? []).length !== entries.length) return null;
-    const keys = entries.map((entry) => /<Key>([^<]*)<\/Key>/.exec(entry)?.[1]);
-    if (keys.some((key) => key === undefined) || keys.length !== Number(count)) return null;
-    if (truncated === 'true' && keys.length === 0) return null;
-    return keys.map((key) => unescapeXml(key ?? ''));
+    if (occurrences(inner, '<KeyCount') !== 1 || occurrences(inner, '<IsTruncated') !== 1) return null;
+    if (occurrences(inner, '<CommonPrefixes') !== 0) return null;
+    const expected = Number(count);
+    const entries = [...inner.matchAll(/<Contents><Key>([^<]+)<\/Key>(?:(?!<Contents|<Key)[\s\S])*?<\/Contents>/g)];
+    const tallies = [
+        occurrences(inner, '<Contents'),
+        occurrences(inner, '</Contents>'),
+        occurrences(inner, '<Key'),
+        entries.length,
+    ];
+    if (tallies.some((tally) => tally !== expected)) return null;
+    if (truncated === 'true' && expected === 0) return null;
+    return entries.map((match) => unescapeXml(match[1] ?? ''));
 }
 
 /**

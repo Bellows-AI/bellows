@@ -61,6 +61,31 @@ describe('S3 list answers', () => {
         ['an error document', '<Error><Code>InternalError</Code></Error>'],
         ['not XML at all', '{}'],
         ['an empty body', ''],
+        ['a self-closed entry', listing('<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated><Contents/>')],
+        [
+            'an entry tag with a space',
+            listing('<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated><Contents ><Key>p/a</Key></Contents>'),
+        ],
+        ['an unclosed spaced entry', listing('<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated><Contents >')],
+        [
+            'an entry with attributes',
+            listing('<KeyCount>1</KeyCount><IsTruncated>false</IsTruncated><Contents x="1"><Key>p/a</Key></Contents>'),
+        ],
+        [
+            'an empty key',
+            listing('<KeyCount>1</KeyCount><IsTruncated>false</IsTruncated><Contents><Key></Key></Contents>'),
+        ],
+        [
+            'a self-closed key',
+            listing('<KeyCount>1</KeyCount><IsTruncated>false</IsTruncated><Contents><Key/></Contents>'),
+        ],
+        ['two KeyCounts', listing('<KeyCount>0</KeyCount><KeyCount>0</KeyCount><IsTruncated>false</IsTruncated>')],
+        [
+            'grouped prefixes it never asked for',
+            listing(
+                '<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated><CommonPrefixes><Prefix>p/a/</Prefix></CommonPrefixes>'
+            ),
+        ],
     ])('rejects %s', async (_name, body) => {
         await expect(s3(body).list('p/')).rejects.toThrow();
     });
@@ -95,6 +120,16 @@ describe('GCS list answers', () => {
         ['an item with no name', JSON.stringify({ kind: 'storage#objects', items: [{}] })],
         ['a next page with no items', JSON.stringify({ kind: 'storage#objects', nextPageToken: 't' })],
         ['not JSON', '<html>'],
+        ['a field it never asked for', JSON.stringify({ kind: 'storage#objects', prefixes: ['p/a/'] })],
+        [
+            'an item with more than a name',
+            JSON.stringify({ kind: 'storage#objects', items: [{ name: 'p/a', size: '1' }] }),
+        ],
+        ['an empty name', JSON.stringify({ kind: 'storage#objects', items: [{ name: '' }] })],
+        [
+            'a page token that is not a string',
+            JSON.stringify({ kind: 'storage#objects', items: [{ name: 'p/a' }], nextPageToken: 1 }),
+        ],
     ])('rejects %s', async (_name, body) => {
         await expect(gcs(body).list('p/')).rejects.toThrow();
     });
