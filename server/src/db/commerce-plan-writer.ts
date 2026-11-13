@@ -20,6 +20,9 @@ export interface PlanPush {
     maxRunning: number | null;
     maxQueued: number | null;
     maxWallSeconds: number | null;
+    /** The org's allowances (`db/plan-allowances.ts`): tokens per period and stored bytes. */
+    maxTokens: number | null;
+    maxStorageBytes: number | null;
     version: number;
 }
 
@@ -42,6 +45,8 @@ interface StoredPlan {
     max_running: number | null;
     max_queued: number | null;
     max_wall_seconds: number | null;
+    max_tokens: string | null;
+    max_storage_bytes: string | null;
     version: string;
 }
 
@@ -57,7 +62,9 @@ const identical = (row: StoredPlan, push: PlanPush): boolean =>
     timeOrNull(row.period_end) === timeOrNull(push.periodEnd) &&
     row.max_running === push.maxRunning &&
     row.max_queued === push.maxQueued &&
-    row.max_wall_seconds === push.maxWallSeconds;
+    row.max_wall_seconds === push.maxWallSeconds &&
+    numberOrNull(row.max_tokens) === push.maxTokens &&
+    numberOrNull(row.max_storage_bytes) === push.maxStorageBytes;
 
 export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Promise<unknown> }): CommercePlanWriter {
     return {
@@ -66,10 +73,12 @@ export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Prom
             return sql.begin(async (tx): Promise<PlanVerdict> => {
                 const written = await tx`
                     insert into org_plan (org_id, plan, included_minutes, used_minutes, period_start, period_end,
-                                          max_running, max_queued, max_wall_seconds, version)
+                                          max_running, max_queued, max_wall_seconds, max_tokens, max_storage_bytes,
+                                          version)
                     select ${orgId}, ${push.plan}, ${push.includedMinutes}, ${push.usedMinutes},
                            ${push.periodStart}, ${push.periodEnd},
-                           ${push.maxRunning}, ${push.maxQueued}, ${push.maxWallSeconds}, ${push.version}
+                           ${push.maxRunning}, ${push.maxQueued}, ${push.maxWallSeconds},
+                           ${push.maxTokens}, ${push.maxStorageBytes}, ${push.version}
                     where exists (select 1 from organization where id = ${orgId})
                     on conflict (org_id) do update set
                         plan = excluded.plan,
@@ -80,6 +89,8 @@ export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Prom
                         max_running = excluded.max_running,
                         max_queued = excluded.max_queued,
                         max_wall_seconds = excluded.max_wall_seconds,
+                        max_tokens = excluded.max_tokens,
+                        max_storage_bytes = excluded.max_storage_bytes,
                         version = excluded.version,
                         updated_at = now()
                     where org_plan.version < excluded.version
@@ -88,7 +99,7 @@ export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Prom
                 if (written.length > 0) return { verdict: 'stored' };
                 const [row] = await tx<StoredPlan[]>`
                     select plan, included_minutes, used_minutes, period_start, period_end,
-                           max_running, max_queued, max_wall_seconds, version
+                           max_running, max_queued, max_wall_seconds, max_tokens, max_storage_bytes, version
                     from org_plan where org_id = ${orgId}
                 `;
                 if (!row) return { verdict: 'unknown_org' };

@@ -35,9 +35,13 @@ const BODY_FIELDS = [
     'maxRunning',
     'maxQueued',
     'maxWallSeconds',
+    'maxTokens',
+    'maxStorageBytes',
     'version',
 ];
 const LIMIT_FIELDS = ['maxRunning', 'maxQueued', 'maxWallSeconds'] as const;
+/** The allowances are `bigint` columns: any positive safe integer, or null for the board's default. */
+const ALLOWANCE_FIELDS = ['maxTokens', 'maxStorageBytes'] as const;
 
 const isMinutes = (value: unknown): value is number | null =>
     value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
@@ -46,6 +50,8 @@ const isMinutes = (value: unknown): value is number | null =>
 const MAX_LIMIT = 2_147_483_647;
 const isLimit = (value: unknown): value is number | null =>
     value === null || (typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= MAX_LIMIT);
+const isAllowance = (value: unknown): value is number | null =>
+    value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
 
 function dateOrNull(value: unknown): Date | null | undefined {
     if (value === null) return null;
@@ -73,7 +79,10 @@ function parsePush(raw: unknown): PlanPush | string {
     }
     const bad = LIMIT_FIELDS.find((name) => !isLimit(fields[name]));
     if (bad) return `${bad} must be a positive integer or null`;
-    const limit = (name: (typeof LIMIT_FIELDS)[number]) => fields[name] as number | null;
+    const badAllowance = ALLOWANCE_FIELDS.find((name) => !isAllowance(fields[name]));
+    if (badAllowance) return `${badAllowance} must be a positive integer or null`;
+    const limit = (name: (typeof LIMIT_FIELDS)[number] | (typeof ALLOWANCE_FIELDS)[number]) =>
+        fields[name] as number | null;
     return {
         plan: plan as PlanName,
         includedMinutes,
@@ -83,6 +92,8 @@ function parsePush(raw: unknown): PlanPush | string {
         maxRunning: limit('maxRunning'),
         maxQueued: limit('maxQueued'),
         maxWallSeconds: limit('maxWallSeconds'),
+        maxTokens: limit('maxTokens'),
+        maxStorageBytes: limit('maxStorageBytes'),
         version,
     };
 }

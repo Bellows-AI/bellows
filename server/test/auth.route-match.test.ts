@@ -66,6 +66,8 @@ const PLAN_BODY = {
     maxRunning: null,
     maxQueued: null,
     maxWallSeconds: null,
+    maxTokens: null,
+    maxStorageBytes: null,
     version: 3,
 };
 

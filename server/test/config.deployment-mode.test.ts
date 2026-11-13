@@ -21,6 +21,8 @@ describe('DEPLOYMENT_MODE', () => {
             PLAN_DEFAULT_MAX_RUNNING: '1',
             PLAN_DEFAULT_MAX_QUEUED: '10',
             PLAN_DEFAULT_MAX_WALL_SECONDS: '3600',
+            PLAN_DEFAULT_MAX_TOKENS: '1000000',
+            PLAN_DEFAULT_MAX_STORAGE_BYTES: '1048576',
         };
         expect(load({ DEPLOYMENT_MODE: 'cloud', ...free }).deploymentMode).toBe('cloud');
     });

@@ -7,6 +7,8 @@ const FREE = {
     PLAN_DEFAULT_MAX_RUNNING: '1',
     PLAN_DEFAULT_MAX_QUEUED: '10',
     PLAN_DEFAULT_MAX_WALL_SECONDS: '3600',
+    PLAN_DEFAULT_MAX_TOKENS: '20000000',
+    PLAN_DEFAULT_MAX_STORAGE_BYTES: '1073741824',
 };
 
 describe('plan default limits (the Free plan)', () => {
@@ -19,6 +21,8 @@ describe('plan default limits (the Free plan)', () => {
             running: 1,
             queued: 10,
             wallSeconds: 3600,
+            tokens: 20_000_000,
+            storageBytes: 1_073_741_824,
         });
     });
 

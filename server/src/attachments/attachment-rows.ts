@@ -2,6 +2,8 @@ import type { AttachmentState } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { IdempotencyKeyReusedError } from '../db/jobs/job-store-idempotency.js';
 import { openForWrites } from '../db/object-write-fence.js';
+import { refuseOverStorage } from '../db/plan-allowances.js';
+import { type PlanLimits, planLimits } from '../db/plan-limits.js';
 
 /**
  * The `input_attachment` rows (115) behind the attachment store. Every org-scoped query carries
@@ -32,7 +34,10 @@ export interface PendingAttachment {
 }
 
 export interface AttachmentRows {
-    /** Inserts the `pending` row, or answers the live row recorded under the same key (`replayed`). */
+    /**
+     * Inserts the `pending` row, or answers the live row recorded under the same key (`replayed`). A new row that
+     * would take the org past its plan's storage allowance throws `PlanLimitError` naming `storage`.
+     */
     insertPending(input: PendingAttachment): Promise<{ row: AttachmentRow; replayed: boolean }>;
     /** `pending` to `ready`; null when the row is no longer pending. */
     markReady(id: string): Promise<AttachmentRow | null>;
@@ -107,10 +112,13 @@ export function createAttachmentRows({
     sql,
     orgId,
     ready,
+    planDefaults = {},
 }: {
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
+    /** `config.planDefaults`: an upload past the org's storage allowance is refused (`db/plan-allowances.ts`). */
+    planDefaults?: PlanLimits;
 }): AttachmentRows {
     return {
         async insertPending(input) {
@@ -118,6 +126,8 @@ export function createAttachmentRows({
             return sql.begin(async (tx) => {
                 const held = input.idempotency ? await replayOf(tx, orgId, input.uploaderId, input.idempotency) : null;
                 if (held) return { row: held, replayed: true };
+                const { storageBytes } = await planLimits(tx, orgId, planDefaults);
+                await refuseOverStorage(tx, orgId, storageBytes, input.sizeBytes);
                 const [inserted] = await tx<DbRow[]>`
                     insert into input_attachment
                         (org_id, id, uploader_id, name, media_type, size_bytes, sha256, object_key, state,

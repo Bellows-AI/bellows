@@ -233,6 +233,7 @@ function buildOrgStores({
         telemetrySource: config.telemetrySource,
         githubApp: tokens !== undefined,
         deploymentMode: config.deploymentMode,
+        planDefaults: config.planDefaults,
         ...(client ? { revisionOf: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
     });
     // The PR observer (063): reads the org's installation, records merges through the job store and
@@ -332,6 +333,7 @@ function artifactStoreOf({
         objects: backend.objects,
         prefix: backend.prefix,
         orgQuotaBytes: config.artifacts.orgQuotaBytes,
+        planDefaults: config.planDefaults,
     });
 }
 
@@ -340,16 +342,18 @@ function attachmentStoreOf({
     sql,
     orgId,
     ready,
+    config,
     backend,
 }: {
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
+    config: AppConfig;
     backend: ArtifactBackend | undefined;
 }): AttachmentStore | undefined {
     if (!backend) return undefined;
     return createAttachmentStore({
-        rows: createAttachmentRows({ sql, orgId, ready }),
+        rows: createAttachmentRows({ sql, orgId, ready, planDefaults: config.planDefaults }),
         objects: backend.objects,
         orgId,
         prefix: backend.prefix,
@@ -444,7 +448,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
             });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
-            runtime.attachments = attachmentStoreOf({ sql, orgId, ready, backend: artifacts });
+            runtime.attachments = attachmentStoreOf({ sql, orgId, ready, config, backend: artifacts });
             runtime.skills = skillStoreOf({ sql, orgId, backend: artifacts });
             runtime.orgExport = orgExportOf(sql, orgId, artifacts);
         }

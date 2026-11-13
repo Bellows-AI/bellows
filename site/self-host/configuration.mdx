@@ -78,13 +78,15 @@ Admission budgets apply to every claim across all drivers and replicas. Unset me
 
 `DRIVER_CONCURRENCY` (below) limits one driver.
 
-Plan limits apply per organization. A plan pushed by the commerce service sets them; these defaults apply to an organization with no pushed plan and to any limit a plan leaves empty. Unset means unlimited. `DEPLOYMENT_MODE=cloud` refuses to boot unless all three are set, and the Helm chart refuses to render cloud mode without them (`dashboard.planDefaults`) or without `dashboard.admission.maxRunning` and `maxRunningPerOrg`.
+Plan limits apply per organization. A plan pushed by the commerce service sets them; these defaults apply to an organization with no pushed plan and to any limit a plan leaves empty. Unset means unlimited. `DEPLOYMENT_MODE=cloud` refuses to boot unless all five are set, and the Helm chart refuses to render cloud mode without them (`dashboard.planDefaults`) or without `dashboard.admission.maxRunning` and `maxRunningPerOrg`.
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
 | `PLAN_DEFAULT_MAX_RUNNING` | cloud | unlimited | Most running tasks per organization. The lower of this and `ADMISSION_MAX_RUNNING_PER_ORG` applies. |
 | `PLAN_DEFAULT_MAX_QUEUED` | cloud | unlimited | Most queued tasks per organization. A new task past it is refused with `429 PLAN_LIMIT`. |
 | `PLAN_DEFAULT_MAX_WALL_SECONDS` | cloud | unlimited | Most wall time one run may use, in seconds. The run is then stopped. |
+| `PLAN_DEFAULT_MAX_TOKENS` | cloud | unlimited | Most tokens an organization's runs may report per period (the plan's billing period, else the UTC calendar month). New tasks past it are refused with `429 PLAN_LIMIT`; running tasks finish. |
+| `PLAN_DEFAULT_MAX_STORAGE_BYTES` | cloud | unlimited | Most bytes of attachments and run logs per organization. An upload past it is refused with `429 PLAN_LIMIT`; a run log past it is truncated. |
 
 ### Telemetry
 

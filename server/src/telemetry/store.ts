@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { type InsertedPoint, recordTokenUsage } from '../db/plan-allowances.js';
 import type { MetricRow } from './otlp.js';
 import { UNCLAIMED_ORG } from './usage-facts.js';
 
@@ -64,12 +65,17 @@ export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
 
             // DO NOTHING, never DO UPDATE. OTLP delivery is at-least-once, so an identical
             // retry must be a no-op; an update would move received_at and destroy the only
-            // way to tell a retry from a genuine second export.
-            const inserted = await sql`
-                insert into metric_point ${sql(payload)}
-                on conflict do nothing
-            `;
-            return inserted.count;
+            // way to tell a retry from a genuine second export. The token allowance's rollup
+            // adds only the rows this insert returned, in its transaction, so a retry adds nothing.
+            return sql.begin(async (tx) => {
+                const inserted = await tx<InsertedPoint[]>`
+                    insert into metric_point ${tx(payload)}
+                    on conflict do nothing
+                    returning org_id, field, temporality, value
+                `;
+                await recordTokenUsage(tx, inserted);
+                return inserted.length;
+            });
         },
 
         async claimSessions({ orgId, jobId }, sessionIds) {

@@ -68,6 +68,9 @@ dashboard:
         maxRunning: ''
         maxQueued: ''
         maxWallSeconds: ''
+        # Tokens an org's runs may report per period, and attachment and run-log bytes it may hold.
+        maxTokens: ''
+        maxStorageBytes: ''
     # The board operator (docs/organizations.md): comma-separated numeric GitHub user ids that may suspend,
     # refuse and reactivate organizations. Empty is nobody; the board refuses it outside deploymentMode cloud.
     operatorGithubIds: ''
