@@ -16,6 +16,8 @@ import { type AddressInfo, createServer as createTcpServer, type Socket } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { artifactCalls } from '../src/artifact-calls.js';
+import type { BoardJob } from '../src/board/board.js';
 import { createControlChannel } from '../src/control-channel.js';
 import type { ExportManifestRequest, ExportReport } from '../src/export-control.js';
 import { pathOf } from './fixtures/scripts-support.js';
@@ -58,7 +60,7 @@ interface Harness {
     chunks: Chunk[];
     manifests: ExportManifestRequest[];
     reports: ExportReport[];
-    board: { down: boolean; delayMs: number; replyDelayMs: number };
+    board: { down: boolean; delayMs: number; replyDelayMs: number; refusals: number[]; manifestRefusals: number[] };
     /** Chunks the board already holds by offset: an exporter killed mid-PUT left them stored and unacknowledged. */
     preStored: Map<number, Buffer>;
     drain: (state: 'complete' | 'partial', cause: string | null) => void;
@@ -120,6 +122,19 @@ const hasSavedAck = (h: Harness, uploaded: string): boolean => {
     return saved?.acked === Buffer.byteLength(uploaded) && saved.stopCause === null;
 };
 
+/**
+ * The board's real artifact client answering every call with `status`: a driver credential refused (401) or
+ * forbidden (403) mid-export, the shape a revocation or a lapsed rotation leaves the relay with.
+ */
+const refusingBoard = (status: number) =>
+    artifactCalls({
+        url: 'http://board.invalid',
+        credential: () => 'drv_revoked',
+        fetch: async () => new Response(JSON.stringify({ error: 'Invalid worker token' }), { status }),
+    });
+const REVOKED_JOB = { id: '77777777-7777-4777-8777-777777777777', claimSeq: 1 } as BoardJob;
+const refOf = (session: string) => ({ executor: 'claude-code', session, stream: 'transcript' });
+
 async function harness(): Promise<Harness> {
     const dir = mkdtempSync(join(tmpdir(), 'claude-export-'));
     const projects = join(dir, 'projects', '-work-tree');
@@ -129,13 +144,23 @@ async function harness(): Promise<Harness> {
     const chunks: Chunk[] = [];
     const manifests: ExportManifestRequest[] = [];
     const reports: ExportReport[] = [];
-    const board = { down: false, delayMs: 0, replyDelayMs: 0 };
+    const board = {
+        down: false,
+        delayMs: 0,
+        replyDelayMs: 0,
+        refusals: [] as number[],
+        manifestRefusals: [] as number[],
+    };
     const preStored = new Map<number, Buffer>();
     channel.open(SUPERVISOR);
     channel.grantExporter(SUPERVISOR, TOKEN);
     channel.attachExporter(SUPERVISOR, {
         putChunk: async (session, offset, bytes) => {
             if (board.down) throw new Error('the board is down');
+            const refused = board.refusals.shift();
+            if (refused !== undefined) {
+                return refusingBoard(refused).putArtifactChunk(REVOKED_JOB, refOf(session), offset, bytes);
+            }
             await new Promise((resolve) => setTimeout(resolve, board.delayMs));
             const held = preStored.get(offset);
             if (held && !held.equals(bytes)) {
@@ -148,6 +173,15 @@ async function harness(): Promise<Harness> {
             return { result: 'stored' };
         },
         finalize: async (manifest) => {
+            const refused = board.manifestRefusals.shift();
+            if (refused !== undefined) {
+                const { session, ...rest } = manifest;
+                return refusingBoard(refused).finalizeArtifact(REVOKED_JOB, refOf(session), {
+                    producer: 'exporter',
+                    schemaVersion: 1,
+                    ...rest,
+                });
+            }
             manifests.push(manifest);
             return 'stored';
         },
@@ -348,6 +382,27 @@ describe('the continuous claude-code exporter', () => {
         expect(await h.exited()).toBe(0);
         expect(h.stored(SESSION).toString()).toBe(all);
         expect(h.manifests[0]).toMatchObject({ state: 'partial', terminalCause: 'artifact_spool_full' });
+    });
+
+    it('a refused driver credential (401, then 403) mid-export stops nothing: the stream uploads once it is accepted', async () => {
+        const h = await harness();
+        h.board.refusals.push(401, 403);
+        h.board.manifestRefusals.push(401, 403);
+        const all = records(6);
+        writeFileSync(fileOf(h), all);
+        h.start({ EXPORT_FLUSH_MS: '50' });
+        await until(
+            'the stream stored once the credential is accepted',
+            () => h.stored(SESSION).length === Buffer.byteLength(all)
+        );
+        expect(h.board.refusals).toEqual([]);
+        await until('the acknowledged offset saved', () => hasSavedAck(h, all));
+        expect(savedAck(h)?.stopCause).toBeNull();
+        h.drain('complete', null);
+        expect(await h.exited()).toBe(0);
+        expect(h.board.manifestRefusals).toEqual([]);
+        expect(h.manifests[0]).toMatchObject({ session: SESSION, state: 'complete', terminalCause: null });
+        expect(JSON.stringify(h.manifests)).not.toContain('upload_rejected');
     });
 
     it('reports the oldest unacknowledged age and bytes while the board is down', async () => {
