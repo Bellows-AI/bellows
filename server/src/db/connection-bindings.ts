@@ -1,3 +1,4 @@
+import { waitAdvisoryXactLock } from './pool.js';
 import type { Sql, TransactionSql } from 'postgres';
 import { INTEGRATION_PROVIDERS, selectedBy } from '@factory-ai/core';
 import { bindingStanding, type StandingRow } from '../integrations/credential-resolver.js';
@@ -231,7 +232,7 @@ export async function lockThreadRootInTx(db: Db, orgId: string, rootJobId: strin
  * holds the root row, or the ack fallback for a thread whose root is gone.
  */
 export async function lockThreadInTx(db: Db, rootJobId: string): Promise<void> {
-    await db`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+    await waitAdvisoryXactLock(db, rootJobId);
 }
 
 /**

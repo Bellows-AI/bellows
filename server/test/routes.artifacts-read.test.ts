@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { ArtifactStore } from '../src/artifacts/artifact-store.js';
-import { STREAM_STATE } from '../src/artifacts/artifact-read.js';
+import { MAX_PAGE_BYTES, STREAM_STATE } from '../src/artifacts/artifact-read.js';
 import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
@@ -203,6 +203,14 @@ describe('GET /api/jobs/:id/artifacts/read', () => {
         expect(minted.nextCursor).toBeNull();
         const elsewhere = Buffer.from(JSON.stringify({ s: 'nope', o: 0 })).toString('base64url');
         expect(await codeOf(`?cursor=${elsewhere}`)).toEqual([400, 'BAD_CURSOR']);
+    });
+
+    it('refuses a read past the page cap, and serves one at it', async () => {
+        const { store } = fakeArtifacts([stream({}, ['a'])]);
+        const { get } = await harness({ [CALLER_ORG]: { artifacts: store } });
+        expect((await get(CALLER_ORG, readUrl(`?limit=${MAX_PAGE_BYTES}`))).statusCode).toBe(200);
+        const over = await get(CALLER_ORG, readUrl(`?limit=${MAX_PAGE_BYTES + 1}`));
+        expect([over.statusCode, over.json().code]).toEqual([400, 'BAD_LIMIT']);
     });
 });
 

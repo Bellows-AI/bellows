@@ -1,5 +1,5 @@
 import { jiraApiBase } from '@factory-ai/core';
-import postgres, { type Sql } from 'postgres';
+import type { Sql } from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createUploadCapabilityStore, type UploadCapabilityStore } from './attachments/upload-capability-store.js';
@@ -12,6 +12,7 @@ import { LOCAL_ORG_ID } from './identifiers.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
 import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
 import { createAgentTitle } from './db/agent-title.js';
+import { boardPool } from './db/pool.js';
 import { createOperationReceipts } from './db/operation-receipts.js';
 import {
     createOrgOfIngest,
@@ -247,7 +248,9 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
 
     // One pool, and one `migrate()`, for every feature sharing the schema. Two runners would
     // race each other.
-    const sql = postgres(config.databaseUrl, { max: config.dbPoolMax });
+    // Every statement on both pools is bounded by DB_STATEMENT_TIMEOUT_MS; db/pool.ts names what lifts it.
+    const poolOptions = { max: config.dbPoolMax, statementTimeoutMs: config.dbStatementTimeoutMs };
+    const sql = boardPool(config.databaseUrl, poolOptions);
     // NOT awaited. Migrations retry with backoff for the better part of a minute while the database
     // container starts, and blocking here would hold the whole dashboard hostage to it. Every consumer
     // gates its own queries on `ready` and reports unavailable until then.
@@ -264,7 +267,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     // pooled connection of its own: on a shared pool, `dbPoolMax` concurrent claims would each hold the
     // connection another's store call is waiting for. A pool of its own (connections open lazily, so an
     // idle one costs nothing) means a store call never borrows a claim's pool (docs/secrets.md).
-    const secretSql = postgres(config.databaseUrl, { max: config.dbPoolMax });
+    const secretSql = boardPool(config.databaseUrl, poolOptions);
     const secretLog = (d: SecretDiagnostic) => console.log(`[secrets] ${JSON.stringify(d)}`);
     const secrets = createSecretStore({
         sql: secretSql,

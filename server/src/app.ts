@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
+import { registerRequestRateLimit, trustProxyOf } from './auth/request-limits.js';
 import type { OAuthStore } from './auth/oauth-store.js';
 import type { MembershipReader } from './auth/membership.js';
 import type { AuthStore } from './auth/store.js';
@@ -226,6 +227,7 @@ async function registerMcp(
         batches: config.batches.enabled,
         origin: new URL(config.mcp.resource).origin,
         metrics,
+        streamsPerOrg: config.requestLimits.streamsPerOrg,
     });
 }
 
@@ -342,7 +344,7 @@ export async function buildApp({
     metrics,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
-    const app = Fastify({ logger });
+    const app = Fastify({ logger, trustProxy: trustProxyOf(config.trustedProxies) });
     app.setErrorHandler(errorHandler);
 
     // Aborted the moment `app.close()` begins, before it waits for the open requests: the long-polls (settle, batch
@@ -377,8 +379,11 @@ export async function buildApp({
     // Before every route, so nothing can be registered ahead of the wall by accident. Without a
     // store the property is still decorated, so `request.auth` reads the same everywhere rather than
     // being absent in one configuration and null in another.
-    if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfIngest, orgOfJob, orgOfReclaim, oauth });
-    else app.decorateRequest('auth', null);
+    if (auth) {
+        await registerAuth(app, { config, store: auth, orgOfLease, orgOfIngest, orgOfJob, orgOfReclaim, oauth });
+        // After the auth hook, whose principal it counts.
+        registerRequestRateLimit(app, { config, now });
+    } else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes(ready));
     await app.register(versionRoutes(version));

@@ -130,6 +130,20 @@ spec:
                       # The board operator's GitHub user ids (cloud only); empty is nobody.
                       - name: OPERATOR_GITHUB_IDS
                         value: {{ .Values.dashboard.operatorGithubIds | quote }}
+                      # The request limits (server/src/config-limits.ts), each per replica; empty is the default.
+                      - name: TRUSTED_PROXIES
+                        value: {{ .Values.dashboard.limits.trustedProxies | quote }}
+                      - name: RATE_LIMIT_PER_CREDENTIAL
+                        value: {{ .Values.dashboard.limits.requestsPerCredential | quote }}
+                      - name: RATE_LIMIT_PER_ORG
+                        value: {{ .Values.dashboard.limits.requestsPerOrg | quote }}
+                      - name: MCP_STREAMS_PER_ORG
+                        value: {{ .Values.dashboard.limits.mcpStreamsPerOrg | quote }}
+                      - name: DB_STATEMENT_TIMEOUT_MS
+                        value: {{ .Values.dashboard.limits.statementTimeoutMs | quote }}
+                      # Each replica's two pools share dashboard.dbConnections (templates/validate.yaml).
+                      - name: DB_POOL_MAX
+                        value: {{ div (int64 .Values.dashboard.dbConnections) (mul 2 (int64 .Values.dashboard.replicas)) | quote }}
                       # The optional commerce service (docs/configuration.md); off, the other two are ignored.
                       - name: COMMERCE_ENABLED
                         value: {{ .Values.dashboard.commerce.enabled | quote }}

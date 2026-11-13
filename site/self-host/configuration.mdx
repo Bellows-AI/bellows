@@ -17,9 +17,14 @@ Bellows is configured with environment variables only. Locally they come from `.
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
 | `DATABASE_URL` | Yes | none | Postgres connection string. A fetching process refuses a database whose name ends in `_test`, `_seed`, `_synthetic`, `_demo` or `_e2e`. |
-| `DB_POOL_MAX` | | `50` | Maximum Postgres connections, shared by all routes and background loops. |
+| `DB_POOL_MAX` | | `50` | Maximum Postgres connections in each of the server's two pools, per replica. Keep replicas × 2 × this under the database's connection limit. Helm computes it from `dashboard.dbConnections` (default `100`) divided by 2 × `dashboard.replicas`. |
+| `DB_STATEMENT_TIMEOUT_MS` | | `60000` | Longest a single database statement may run before Postgres cancels it. Migrations, advisory-lock waits, the organization purge and the telemetry org backfill are exempt. Helm: `dashboard.limits.statementTimeoutMs`. |
 | `PORT` | | `8080` | Port the server listens on. |
 | `HOST` | | `127.0.0.1` | Bind address. The container image sets `0.0.0.0`. |
+| `TRUSTED_PROXIES` | | none | Addresses or CIDRs of the load balancer or ingress in front, comma-separated. Only a request from one of them has its `X-Forwarded-For` read as the client address. Empty trusts none. Helm: `dashboard.limits.trustedProxies`. |
+| `RATE_LIMIT_PER_CREDENTIAL` | | `600` | Requests per minute one sign-in session or token may make, per replica. Over it the server answers `429` with `Retry-After`. Helm: `dashboard.limits.requestsPerCredential`. |
+| `RATE_LIMIT_PER_ORG` | | `3000` | Requests per minute all of one organization's credentials may make together, per replica. Helm: `dashboard.limits.requestsPerOrg`. |
+| `MCP_STREAMS_PER_ORG` | | `16` | MCP requests one organization may have open at once, per replica. Helm: `dashboard.limits.mcpStreamsPerOrg`. |
 | `WEB_ROOT` | | unset | Directory of the built web app. Unset serves no web app. |
 | `PUBLIC_URL` | github mode, non-loopback bind | `http://<HOST>:<PORT>` on a loopback bind | Absolute origin of the board. Used for the OAuth redirect and as the MCP resource. |
 

@@ -41,11 +41,11 @@ describe('the secret-store test helpers cannot become a production backend', () 
         ]);
     });
 
-    it('main.ts calls loadSecretBackend before postgres( and passes secrets to buildApp', () => {
+    it('main.ts calls loadSecretBackend before it opens a pool and passes secrets to buildApp', () => {
         const main = readFileSync(join(SRC, 'main.ts'), 'utf8');
         const keys = main.indexOf('loadSecretBackend(process.env)');
         expect(keys).toBeGreaterThan(main.indexOf('resolveConfig('));
-        expect(keys).toBeLessThan(main.indexOf('postgres('));
+        expect(keys).toBeLessThan(main.indexOf('boardPool('));
         expect(main).toMatch(/createSecretStore\(\{[^}]*\bsql\b[^}]*\bbackend\b/s);
         expect(main).toMatch(/buildApp\(\{[\s\S]*\bsecrets\b[\s\S]*\}\)/);
         expect(main).toContain("timedPass('secret_collect'");

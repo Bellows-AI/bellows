@@ -4,6 +4,7 @@
  * publication and walks the workflow to its next node (docs/workflows.md).
  */
 
+import { waitAdvisoryXactLock } from '../pool.js';
 import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import { lockRootRowsInTx, requirementWaitOf } from '../connection-bindings.js';
@@ -664,7 +665,7 @@ async function maybeRecordPublicationAndClose(
 ): Promise<void> {
     const { rootJobId, jobRepo, publication } = verdict;
     if (!(publication && ctx.prs && publication.repo === jobRepo)) return;
-    await tx`select pg_advisory_xact_lock(hashtextextended(${prLockKey(ctx.orgId, publication.repo, publication.prNumber)}::text, 0))`;
+    await waitAdvisoryXactLock(tx, prLockKey(ctx.orgId, publication.repo, publication.prNumber));
     await maybeRecordPublication(tx, ctx.prs, verdict);
     await applyMergeClosureIfMerged(tx, ctx, publication, rootJobId);
 }
@@ -750,7 +751,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
     // The same per-root advisory lock the claim takes: a transition insert must not interleave
     // with a claim's select-lock-claim of this thread, or two rows of one thread could end up
     // claimed against the one-worktree guarantee.
-    await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+    await waitAdvisoryXactLock(tx, rootJobId);
 
     // A merge-closed thread walks no further: no successor insert, no re-park into a
     // durable wait — the PR it would wait on can never reopen. Decided on a marker read UNDER the

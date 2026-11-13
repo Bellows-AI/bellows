@@ -1,11 +1,12 @@
-import { createMcpHandler, type McpServer } from '@modelcontextprotocol/server';
+import { createMcpHandler, type AuthInfo, type McpServer } from '@modelcontextprotocol/server';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from '@factory-ai/core';
+import { CONTENT_TYPE_HEADER, ERROR_CODES, JSON_CONTENT_TYPE } from '@factory-ai/core';
 import { createBridge } from './bridge.js';
 import type { McpToolMetrics } from './registry.js';
 import { callerOfAuthInfo, createBoardMcpServer, type BoardMcpContext } from './server.js';
 import { authInfoOf } from './auth-info.js';
 import { pipeResponse } from './pipe.js';
+import { DEFAULT_REQUEST_LIMITS } from '../config-limits.js';
 import { MCP_PATH } from '../config-mcp.js';
 
 /** A tool call's arguments are small; 1 MiB bounds what an unauthenticated-looking body can cost before parsing. */
@@ -19,6 +20,7 @@ const REFUSED_PROTOCOL_VERSION = '2024-11-05';
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_METHOD_NOT_ALLOWED = 405;
+const HTTP_TOO_MANY = 429;
 const HTTP_SERVER_ERROR = 500;
 const JSONRPC_INVALID_PARAMS = -32602;
 const JSONRPC_INTERNAL = -32603;
@@ -91,6 +93,29 @@ export interface McpRouteDeps {
     /** One tool call's wall-clock budget; it stays under Claude Code's 60 s hard stop. Tests compress it. */
     readonly toolDeadlineMs?: number;
     readonly buildServer?: (version: string, context: BoardMcpContext) => McpServer;
+    /** MCP requests one organization may hold open at once on this replica (MCP_STREAMS_PER_ORG). */
+    readonly streamsPerOrg?: number;
+}
+
+/** A refused stream retries after a few seconds: a held one ends within the tool deadline. */
+const STREAM_RETRY_AFTER_SECONDS = 5;
+
+/** Open streams per organization, in this process only; a slot is taken before the work and given back after. */
+function createStreamCounter(cap: number) {
+    const open = new Map<string, number>();
+    return {
+        take(org: string): boolean {
+            const held = open.get(org) ?? 0;
+            if (held >= cap) return false;
+            open.set(org, held + 1);
+            return true;
+        },
+        give(org: string): void {
+            const held = (open.get(org) ?? 1) - 1;
+            if (held > 0) open.set(org, held);
+            else open.delete(org);
+        },
+    };
 }
 
 /**
@@ -106,8 +131,10 @@ export async function mcpRoutes(
         metrics,
         toolDeadlineMs = TOOL_DEADLINE_MS,
         buildServer = createBoardMcpServer,
+        streamsPerOrg = DEFAULT_REQUEST_LIMITS.streamsPerOrg,
     }: McpRouteDeps
 ): Promise<void> {
+    const streams = createStreamCounter(streamsPerOrg);
     const tools = {
         bridge: createBridge(app),
         deadlineMs: toolDeadlineMs,
@@ -139,7 +166,24 @@ export async function mcpRoutes(
                 message: `Unsupported protocol version ${REFUSED_PROTOCOL_VERSION}`,
             });
         }
+        // Counted under the org the auth gate resolved, never one the request names.
+        const org = callerOfAuthInfo(authInfo)?.org.id ?? '';
+        if (!streams.take(org)) {
+            reply.header('retry-after', String(STREAM_RETRY_AFTER_SECONDS));
+            return jsonRpcError(reply, HTTP_TOO_MANY, {
+                id: idOf(request.body),
+                code: JSONRPC_INTERNAL,
+                message: `${ERROR_CODES.TOO_MANY_STREAMS}: this organization has ${streamsPerOrg} MCP requests open`,
+            });
+        }
+        try {
+            await serve(request, reply, authInfo);
+        } finally {
+            streams.give(org);
+        }
+    });
 
+    async function serve(request: FastifyRequest, reply: FastifyReply, authInfo: AuthInfo): Promise<void> {
         // A client that disconnects before the response finished must stop the work behind it.
         const aborted = new AbortController();
         reply.raw.on('close', () => {
@@ -170,7 +214,7 @@ export async function mcpRoutes(
                 reply.raw.destroy();
             }
         }
-    });
+    }
 
     // Stateless: there is no stream to open and no session to end.
     app.route({

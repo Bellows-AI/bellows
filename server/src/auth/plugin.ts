@@ -178,7 +178,7 @@ const COMMERCE_ROUTES: readonly RegExp[] = [/^\/api\/commerce\/orgs\/[^/]+\/plan
  */
 const MCP_ROUTES: readonly RegExp[] = [/^\/api\/mcp$/];
 
-type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector' | 'commerce' | 'mcp';
+export type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector' | 'commerce' | 'mcp';
 
 /** Exported so the enforcement test can drive the table rather than re-deriving it. */
 /** `path` is a registered route pattern (`/api/jobs/:id/heartbeat`), not a request URL. */
@@ -223,7 +223,7 @@ const patternOf = (request: FastifyRequest): string | undefined => {
     return pattern?.startsWith('/api/') ? pattern : undefined;
 };
 
-const requirementOf = (request: FastifyRequest): Requirement => {
+export const requirementOf = (request: FastifyRequest): Requirement => {
     const pattern = patternOf(request);
     return pattern === undefined ? fallbackFor(request.url) : requirementFor(pattern);
 };

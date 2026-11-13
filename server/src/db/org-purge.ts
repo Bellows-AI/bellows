@@ -6,6 +6,7 @@ import { identityKey } from '../secrets/secret-input.js';
 import type { OperationId, SecretIdentity, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
 import { recordAudit } from './audit-log.js';
 import { OBJECT_WRITE_DRAIN_MS } from './object-write-fence.js';
+import { liftStatementTimeout } from './pool.js';
 
 const MS_PER_SECOND = 1000;
 
@@ -241,6 +242,8 @@ async function purgeRows(pass: Pass): Promise<StepResult | 'reappeared'> {
     if ((await discover(tx, orgId)).length > 0) return 'reappeared';
     const [org] = await tx<{ status: string }[]>`select status from organization where id = ${orgId} for update`;
     if (org?.status !== 'suspended' && org?.status !== 'refused') return 'org-active';
+    // The cascade removes every row the org holds, telemetry included: as long as its data, never cut short.
+    await liftStatementTimeout(tx);
     await tx`delete from organization where id = ${orgId}`;
     return null;
 }
