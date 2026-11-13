@@ -35,6 +35,7 @@ import { notificationSubscriptionRoutes } from './routes/notification-subscripti
 import { orgMemberRoutes } from './routes/org-members.js';
 import { auditRoutes } from './routes/audit.js';
 import { operatorRoutes } from './routes/operator.js';
+import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -445,6 +446,8 @@ export async function buildApp({
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs, deploymentMode: config.deploymentMode }));
+    // The organization's export archive: an admin read over every org table and object.
+    await app.register(orgExportRoutes({ orgs }));
     // Notification subscriptions: the org's settings for who hears about a task verdict.
     await app.register(
         notificationSubscriptionRoutes({

@@ -62,10 +62,12 @@ const gcsServer = createServer((req, res) => {
         if (req.method === 'GET' && listing) {
             const bucket = `${listing[1]}/`;
             const prefix = url.searchParams.get('prefix') ?? '';
+            // Inclusive, as GCS answers it.
+            const startOffset = url.searchParams.get('startOffset') ?? '';
             const names = [...gcsObjects.keys()]
                 .filter((id) => id.startsWith(bucket))
                 .map((id) => id.slice(bucket.length))
-                .filter((name) => name.startsWith(prefix))
+                .filter((name) => name.startsWith(prefix) && name >= startOffset)
                 .sort()
                 .slice(0, Number(url.searchParams.get('maxResults') ?? '1000'));
             const page = names.length ? { items: names.map((name) => ({ name })) } : {};

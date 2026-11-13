@@ -87,6 +87,8 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['GET', '/api/jobs/:id/thread', 'read', MEMBER_ROLE],
     ['GET', '/api/oauth/consent/:id', 'none', MEMBER_ROLE],
     ['GET', '/api/oauth/grants', 'none', MEMBER_ROLE],
+    // The whole organization's data, every member's included: an admin read, never reachable by a scoped grant.
+    ['GET', '/api/org/export', 'none', ADMIN_ROLE],
     ['GET', '/api/org/executors', 'read', MEMBER_ROLE],
     ['GET', '/api/org/skills', 'read', MEMBER_ROLE],
     ['GET', '/api/org/skills/:id', 'read', MEMBER_ROLE],

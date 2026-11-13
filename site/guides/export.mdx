@@ -1,0 +1,36 @@
+---
+title: "Export your organization"
+description: "Download one archive of your organization's tasks, logs, transcripts and settings."
+---
+
+An admin can download everything Bellows stores for the organization as one `.tar` file: tasks, task logs, agent transcripts, attachments, skills and settings. Secret values are never in it.
+
+## Download it
+
+Use an admin's personal access token. A member gets `403`.
+
+```bash
+curl -H "Authorization: Bearer $BELLOWS_TOKEN" \
+  -o bellows-export.tar \
+  "https://bellows.example.com/api/org/export"
+tar -xf bellows-export.tar
+```
+
+The archive is streamed while it is read, so a large organization takes a while. If the download stops early, the file is incomplete and `tar` reports it: start the download again. Each download is written to the [audit log](/guides/audit-log) as `org.export`.
+
+## What is inside
+
+| Path | Holds |
+| --- | --- |
+| `tables/<table>/000001.ndjson`, `000002.ndjson`, … | Every row of one table that belongs to your organization, one JSON object per line. A large table is split over several files of up to 500 rows each. Every table has at least one file, which may be empty. |
+| `objects/<organization>/…` | Task logs and agent transcripts, as the runner uploaded them |
+| `objects/_attachments/<organization>/…` | Files attached to tasks |
+| `objects/_skills/<organization>/…` | Skill bundles |
+
+Tasks are in `tables/job`. Settings are in tables such as `env_var` (variables), `executor_profile` (executors), `tracked_repo` (repositories), `notification_subscription` (notifications), `workflow` and `skill`.
+
+## What is left out
+
+- **Secret values.** A secret, a provider key in an executor or a notification webhook is exported as its reference only, never as its value.
+- **Credentials.** Token and session hashes, sign-in verifiers and the tokens a runner uses to report on a running task are removed from every row.
+- **Other organizations.** The archive holds only the organization you are signed in to.

@@ -82,7 +82,8 @@
                             "guides/skills",
                             "guides/env-and-secrets",
                             "guides/connections",
-                            "guides/audit-log"
+                            "guides/audit-log",
+                            "guides/export"
                         ]
                     },
                     {

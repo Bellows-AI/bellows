@@ -39,6 +39,14 @@ describe.each(BACKENDS)('object store contract: $name', ({ make, prefix, skip })
         expect(await store.head(key)).toEqual({ size: 5 });
     });
 
+    it.skipIf(skip)('rejects a read or a listing whose signal is aborted', async () => {
+        const { store, key } = await fresh();
+        await store.put(key, bytes('hello'));
+        const signal = AbortSignal.abort();
+        await expect(store.get(key, { signal })).rejects.toThrow();
+        await expect(store.list(prefix, { signal })).rejects.toThrow();
+    });
+
     it.skipIf(skip)('answers exists to an identical retry and leaves the stored body alone', async () => {
         const { store, key } = await fresh();
         await store.put(key, bytes('first'));
@@ -127,5 +135,22 @@ describe.each(BACKENDS)('object store contract: $name', ({ make, prefix, skip })
         for (const key of listed) await store.delete(key);
         expect(await store.list(`${prefix}${org}/`)).toEqual([]);
         expect(await store.list(`${prefix}${org}0/`)).toEqual([neighbour]);
+    });
+
+    it.skipIf(skip)('pages a namespace in key order: each page resumes after the last key it saw', async () => {
+        const { store } = await fresh();
+        const org = `org-${randomUUID().slice(0, 8)}`;
+        const keys = [0, 1, 2, 3, 4].map((offset) => chunkKey(prefix, org, REF, offset));
+        for (const key of keys) await store.put(key, bytes('x'));
+
+        const seen: string[] = [];
+        let page = await store.list(`${prefix}${org}/`, { limit: 2 });
+        while (page.length) {
+            seen.push(...page);
+            page = await store.list(`${prefix}${org}/`, { limit: 2, after: page.at(-1) });
+        }
+        expect(seen).toEqual(keys);
+
+        for (const key of keys) await store.delete(key);
     });
 });
