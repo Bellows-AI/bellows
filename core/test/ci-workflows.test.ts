@@ -121,7 +121,7 @@ describe('ci workflows', () => {
         expect(runs(kind).join('\n')).toContain('sha256sum -c -');
         expect(runs(kind)).toContain('sh scripts/kind-cluster.sh create ci');
         const create = kind.steps!.find((step) => step.run?.includes('kind-cluster.sh create'))!;
-        expect(create.env!.LAYOUT).toMatch(/matrix\.phase == 'drain' && 'drain'/);
+        expect(create.env!.LAYOUT).toMatch(/matrix\.phase == 'drain' \|\| matrix\.phase == 'replicas'\) && 'drain'/);
 
         const jobsPhases = /valid_phase\(\) \{\s+case "\$1" in\s+([a-z|-]+)\)/
             .exec(read('scripts/test-jobs.sh'))![1]!

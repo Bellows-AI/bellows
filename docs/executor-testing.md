@@ -13,6 +13,7 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 | `npm run test:jobs` | docker, port 8129 | Real board HTTP, a real driver, real containers, a disposable database; stubs honor the agent contract via `scripts/stub-agent.sh` (`scripts/test-jobs.sh`, `driver/test/lane-stubs.test.ts`). Required before changing docker runner behavior. |
 | its node-disruption phase | docker | Its node-disruption phase kills (`kill -9`) and drains (`DRIVER_HANDOVER_MS`) a driver mid-run: the next claim adopts the finished runner, one attempt and one interruption; a driver lost together with its runner is redone by a replacement runner in the lost session on the restored tree. |
 | its driver-kill phase | docker | Its driver-kill phase kills a real driver at setup, while the agent runs (and by a drain), during a gate and during the publish: the next driver finishes each task once, counted from barrier files, the origin's push log and the stub `gh` (`scripts/lane-gh.sh`). |
+| its replicas phase | kind | `--phase replicas` (explicit, a `LAYOUT=drain` cluster) installs two dashboard replicas on a lane-owned S3 store: both Ready on two nodes with one `schema_migrations` row per shipped migration, then one board deleted under load, every task succeeded, none dead. |
 | its capacity phase | docker | Its capacity phase runs two `AUTH_MODE=github` boards and two drivers under `ADMISSION_MAX_RUNNING=2`, kills the driver holding the first heavy task and samples the running rows every second (`scripts/lane-capacity-samples.mjs`): none passes the budget or shares a global slot. |
 | `npm run test:jobs -- --phase <name>[,<name>]`, `--changed <base>`, `--parallel [--slots N]`, `--watch-stalls` | docker | `--help` lists phases; each provisions its own fixtures. `--changed` runs the phases `scripts/test-jobs-changed.mjs` maps from the diff; `--parallel` runs `scripts/test-jobs-groups.mjs` groups as slots. `server/test/test-jobs.options.test.ts`, `test-jobs.changed.test.ts`. |
 | `npm run test:jobs -- --watch-stalls` | docker | Dumps containers alive past `LANE_STALL_S`; timings and logs land in `artifacts/jobs/<run>.tsv` (`TIMINGS_FILE` overrides). `scripts/test-jobs.sh`, `scripts/lane-slow-jobs.mjs`, `server/test/lane-slow-jobs.test.ts`, `server/test/test-jobs.groups.test.ts`. |
@@ -47,8 +48,6 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 
 ## What no lane covers
 
-- **Two dashboard replicas on a cluster.** The chart defaults to one (`charts/factory/values.yaml`),
-  so the kind capacity phase runs one board; `server/test-db/job-store.fairness.test.ts` runs the claim from two connections.
 - **`npm run test:jobs` on a Linux docker daemon.** Its compose-driver and question-round-trip phases need
   `host.docker.internal` (`assertNoneModeBindable`, `server/src/config.ts`); the lane is not in CI ([ci.md](ci.md)).
 - **The real collector**; **a cloud cluster** (`--cluster` refuses every non-kind context; [eks-runbook.md](eks-runbook.md));

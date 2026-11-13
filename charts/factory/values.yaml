@@ -42,9 +42,15 @@ dashboard:
         digest: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
-    # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp). Every
+    # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp), at
+    # least two schedulable nodes (the spread below), and the PDB keeps one pod through a drain. Every
     # replica is still replaced by Recreate, so two versions never share the schema mid-upgrade.
     replicas: 1
+    # Above one replica, empty renders the default: never two pods on a node (kubernetes.io/hostname,
+    # DoNotSchedule, minDomains 2) and zones preferred (topology.kubernetes.io/zone, ScheduleAnyway), each
+    # counting only this revision's pods (matchLabelKeys pod-template-hash; Kubernetes 1.27+). A non-empty
+    # list replaces the default, at any replica count. Entries are Kubernetes topologySpreadConstraints.
+    topologySpreadConstraints: []
     # Above one replica, a stopping pod sleeps this long before SIGTERM so the Service and the load
     # balancer stop routing to it first; the server then closes gracefully within 10 s. The pod's
     # termination grace period is this plus 15 s. Below 30; 0 turns it off. At one replica it is not rendered.

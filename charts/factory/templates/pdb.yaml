@@ -2,13 +2,19 @@
 PodDisruptionBudgets (issue #362) — the voluntary-disruption policy for the chart's own pods,
 complementing the driver-specced pods' RUNNER_DO_NOT_DISRUPT opt-in.
 
-The dashboard allows one unavailable (maxUnavailable: 1), deliberately NOT minAvailable: 1: this
-Deployment runs one replica by default with strategy Recreate — deployment.yaml says why — and its
-upgrades already accept seconds of downtime, so a drain evicts the pod, it reschedules, and the
-board is back; that is "survives the drain". minAvailable: 1 on replicas: 1 can never be
-satisfied during an eviction and would wedge every drain and managed-nodegroup update in this
-namespace forever, trading a gap nothing depends on (drivers retry; leases outlive a restart;
-runner Jobs run under their own kubelet deadlines) for a permanent operational blocker.
+At one replica (the default, strategy Recreate — deployment.yaml says why) the dashboard allows one
+unavailable (maxUnavailable: 1), deliberately NOT minAvailable: 1. Its upgrades already accept
+seconds of downtime, so a drain evicts the pod, it reschedules, and the board is back; that is
+"survives the drain". minAvailable: 1 on replicas: 1 can never be satisfied during an eviction and
+would wedge every drain and managed-nodegroup update in this namespace forever, trading a gap
+nothing depends on (drivers retry; leases outlive a restart; runner Jobs run under their own
+kubelet deadlines) for a permanent operational blocker.
+
+Above one replica the dashboard keeps one (minAvailable: 1): a drain or a consolidation waits for
+the evicted pod's replacement instead of taking the second one right behind it. That is
+satisfiable because the replicas spread over nodes (dashboard.topologySpreadConstraints, hostname
+DoNotSchedule); the cost is that two replicas need two schedulable nodes, else the second stays
+Pending and the budget blocks the first node's drain.
 
 The driver is protected only above one replica (minAvailable: 1 — one drains its jobs inside its
 termination grace while the other keeps claiming). At the default single replica the driver's
@@ -40,7 +46,11 @@ spec:
             {{- include "factory.selectorLabels" .context | nindent 12 }}
             app.kubernetes.io/component: {{ .component }}
 {{- end }}
+{{- if gt (int $.Values.dashboard.replicas) 1 }}
+{{- include "factory.pdb" (dict "context" $ "name" (include "factory.fullname" $) "component" "dashboard" "minAvailable" 1) }}
+{{- else }}
 {{- include "factory.pdb" (dict "context" $ "name" (include "factory.fullname" $) "component" "dashboard" "maxUnavailable" 1) }}
+{{- end }}
 {{- if gt (int $.Values.driver.replicas) 1 }}
 {{- include "factory.pdb" (dict "context" $ "name" (printf "%s-driver" (include "factory.fullname" $)) "component" "driver" "minAvailable" 1) }}
 {{- end }}
