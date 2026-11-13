@@ -135,6 +135,7 @@ try {
 
         const mid = new Date((Date.parse(s.firstSeen) + Date.parse(s.lastSeen)) / 2);
         const rows = Object.entries(s.fields).map(([field, value]) => ({
+            org_id: LOCAL_ORG_ID,
             agent: CLAUDE_CODE,
             metric: metricFor(field),
             field,
@@ -180,6 +181,7 @@ try {
                 { field: 'edits_accept', value: TIMED_OUT_EDITS_PER_BUCKET },
                 { field: 'edits_reject', value: bucketsIn % TIMED_OUT_REJECTS_EVERY },
             ].map((entry) => ({
+                org_id: LOCAL_ORG_ID,
                 agent: CLAUDE_CODE,
                 metric: metricFor(entry.field),
                 field: entry.field,

@@ -205,6 +205,23 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
         expect((await readdir(join(out, 'tables', 'tracked_repo'))).length).toBe(2);
     });
 
+    it('pages the org’s telemetry points, a partitioned table without a key, and no other org’s', async () => {
+        const count = EXPORT_PAGE_ROWS + 2;
+        const insertPoints = (orgId: string, n: number) => sql`
+            insert into metric_point (org_id, metric, session_id, value, temporality, time, attrs)
+            select ${orgId}, 'claude_code.token.usage', ${randomUUID()}, g, 'delta', now() - g * interval '1 second', '{}'
+            from generate_series(1, ${n}) g
+        `;
+        await insertPoints(org, count);
+        await insertPoints(otherOrg, 3);
+
+        const out = await extract((await exportAs(admin)).rawPayload);
+        const points = await rowsIn(out, 'metric_point');
+        expect(points).toHaveLength(count);
+        expect(new Set(points.map((row) => row.value)).size).toBe(count);
+        expect(points.every((row) => row.org_id === org)).toBe(true);
+    });
+
     it('holds only the caller’s organization', async () => {
         const marker = `other-org-${randomUUID()}`;
         const outsider = await personIn(otherOrg);

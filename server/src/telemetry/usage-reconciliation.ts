@@ -36,6 +36,7 @@ export interface GlobalReconciliation {
 }
 
 interface Stored {
+    org_id: string | null;
     agent: string;
     session_id: string | null;
     source: TokenObservation['source'];
@@ -60,7 +61,7 @@ const sumOf = (list: readonly Tokens[]): Tokens => list.reduce((acc, t) => addTo
 export async function readGlobalReconciliation(tx: TransactionSql, now = new Date()): Promise<GlobalReconciliation> {
     const [stored, executions, branches] = await Promise.all([
         tx<Stored[]>`
-            select agent, session_id, source, metric, field, temporality, start_time, time, value, attrs
+            select org_id, agent, session_id, source, metric, field, temporality, start_time, time, value, attrs
             from metric_point where field like 'tokens\\_%'
         `,
         tx<{ org_id: string; job_id: string; claim_seq: string; session_id: string; agent: string | null }[]>`
@@ -131,28 +132,53 @@ export async function readGlobalReconciliation(tx: TransactionSql, now = new Dat
         repo: b.repo,
     }));
 
-    const observations: TokenObservation[] = stored.map((r) => ({
-        agent: r.agent,
-        sessionId: r.session_id,
-        source: r.source,
-        metric: r.metric,
-        field: r.field.slice('tokens_'.length) as TokenObservation['field'],
-        temporality: r.temporality,
-        startTime: r.start_time === null ? null : iso(r.start_time),
-        time: iso(r.time),
-        value: Number(r.value),
-        attrs: r.attrs,
-    }));
-    const contributions = reduceTokenObservations(observations).filter(
-        (c) => c.kind === 'timed' || c.kind === 'unlocated'
+    // Each organization's points are reduced on their own, as its tenant read does: a series never folds across orgs.
+    const pointsOf = new Map<string | null, TokenObservation[]>();
+    for (const r of stored) {
+        const list = pointsOf.get(r.org_id) ?? [];
+        list.push({
+            agent: r.agent,
+            sessionId: r.session_id,
+            source: r.source,
+            metric: r.metric,
+            field: r.field.slice('tokens_'.length) as TokenObservation['field'],
+            temporality: r.temporality,
+            startTime: r.start_time === null ? null : iso(r.start_time),
+            time: iso(r.time),
+            value: Number(r.value),
+            attrs: r.attrs,
+        });
+        pointsOf.set(r.org_id, list);
+    }
+    const contributionsOf = new Map(
+        [...pointsOf].map(([orgId, observations]) => [
+            orgId,
+            reduceTokenObservations(observations).filter((c) => c.kind === 'timed' || c.kind === 'unlocated'),
+        ])
     );
-    return reconcile(board, branch, contributions, now);
+    return reconcile(board, branch, contributionsOf, now);
+}
+
+/**
+ * Where a contribution the writing org's read leaves out lands: `owned` when that org owns its session, `foreign` when
+ * two organizations' evidence names the session, else `unowned` (no evidence, no session, or no writing org).
+ */
+function leftover(
+    input: UsageInput | undefined,
+    orgsOf: ReadonlyMap<string, ReadonlySet<string>>,
+    c: TokenContribution
+): 'owned' | 'foreign' | 'unowned' {
+    const { agent, sessionId } = c.selection;
+    if (sessionId === null || input === undefined) return 'unowned';
+    const owner = resolveOwnership(input, [{ agent, sessionId }]).values().next().value;
+    if (owner !== undefined && owner.status !== 'excluded') return 'owned';
+    return (orgsOf.get(sessionId)?.size ?? 0) > 1 ? 'foreign' : 'unowned';
 }
 
 function reconcile(
     board: readonly ExecutionEvidence[],
     branch: readonly BranchEvidence[],
-    contributions: readonly TokenContribution[],
+    contributionsOf: ReadonlyMap<string | null, readonly TokenContribution[]>,
     now: Date
 ): GlobalReconciliation {
     const orgs = [...new Set([...board.map((e) => e.orgId), ...branch.map((b) => b.orgId)])].sort();
@@ -160,17 +186,17 @@ function reconcile(
     for (const row of [...board, ...branch]) {
         orgsOf.set(row.sessionId, (orgsOf.get(row.sessionId) ?? new Set()).add(row.orgId));
     }
-    const inputOf = (orgId: string): UsageInput => ({
+    const inputOf = (orgId: string, contributions: readonly TokenContribution[]): UsageInput => ({
         orgId,
         board: board.filter((e) => e.orgId === orgId),
         branch: branch.filter((b) => b.orgId === orgId),
         foreignSessionIds: new Set([...orgsOf].filter(([, o]) => [...o].some((x) => x !== orgId)).map(([id]) => id)),
-        contributions,
+        contributions: [...contributions],
         spans: [],
     });
 
     const perOrg = new Map<string, OrgReconciliation>();
-    const inputs = new Map(orgs.map((o) => [o, inputOf(o)]));
+    const inputs = new Map(orgs.map((o) => [o, inputOf(o, contributionsOf.get(o) ?? [])]));
     for (const [orgId, input] of inputs) {
         const { eligible, diagnostics } = reduceUsage(input, { range: null, now });
         perOrg.set(orgId, {
@@ -182,20 +208,16 @@ function reconcile(
         });
     }
 
+    // A point counts only for the organization that wrote it; a null-org point (never matched) is nobody's.
     const foreign: Tokens[] = [];
     const unowned: Tokens[] = [];
-    for (const c of contributions) {
-        const { agent, sessionId } = c.selection;
-        if (sessionId === null) {
-            unowned.push(c.tokens);
-            continue;
+    for (const [orgId, contributions] of contributionsOf) {
+        const input = orgId === null ? undefined : inputs.get(orgId);
+        for (const c of contributions) {
+            const left = leftover(input, orgsOf, c);
+            if (left === 'foreign') foreign.push(c.tokens);
+            if (left === 'unowned') unowned.push(c.tokens);
         }
-        const owned = [...inputs.values()].some((input) => {
-            const owner = resolveOwnership(input, [{ agent, sessionId }]).values().next().value;
-            return owner !== undefined && owner.status !== 'excluded';
-        });
-        if (owned) continue;
-        ((orgsOf.get(sessionId)?.size ?? 0) > 1 ? foreign : unowned).push(c.tokens);
     }
     const parts = [...perOrg.values()].flatMap((o) => [o.eligible, o.unlocated, o.unresolved]);
     return {

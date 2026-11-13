@@ -27,10 +27,10 @@ An organization is one GitHub App installation: it owns the repo list and partit
 - **`org_id` leads every org-owned primary key** — a query always knows its organization, so the
   key is a prefix scan rather than a filter. Org-owned-but-user-less rows (an org executor profile,
   an org workflow) are a NULL `user_id` in the same table as the personal ones.
-- **`metric_point` carries neither `org_id` nor `repo`**: both resolve by joining `session_branch`, so there is one
-  source of truth. `session_branch` is the only table a re-attribution rewrites ([persistence.md](persistence.md)).
+- **`metric_point.org_id` is the writing credential's org; its `repo` still resolves by joining `session_branch`**,
+  the only table a re-attribution rewrites ([telemetry.md](telemetry.md)). `server/test-db/telemetry.org-binding.test.ts`.
 - **Ingest attribution is the credential's, never the report's.** A branch report's `repo` field is caller-controlled
-  payload; the org is the runner's lease pair or the plugin's personal token. `server/test/routes.ingest.test.ts`.
+  payload; the org is the runner's attempt credential or the plugin's personal token. `server/test/routes.ingest.test.ts`.
 - **`session_branch_slice` partitions its `lead()` window by `org_id`** (`server/migrations/002_views.repeatable.sql`),
   or one org's slice is truncated by another's start. Guarded by `server/test-db/telemetry.sql.test.ts`.
 - **`ORG_ID`, `ORG_NAME`, `GITHUB_REPOS`, `ORG_REPOS` and the auto-join variables are fatal, not

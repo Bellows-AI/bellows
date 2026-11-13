@@ -38,6 +38,7 @@ import { startTempSweep } from './artifacts/fs-store.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSkillSweep } from './skills/skill-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
+import { startMetricPointOrgBackfill } from './telemetry/org-backfill.js';
 import type { CoordinatedSecretStore } from './secrets/postgres-secret-store.js';
 import { startOrgPurge } from './db/org-purge.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
@@ -384,6 +385,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
 
     startDeliveries({ config, orgs, metrics, ready, track: stops.add });
     void ready.then(() => stops.add(() => membership.start(metrics.timedPass)));
+    // Points stored before they carried an org get the one their session evidence names, a batch at a time.
+    void ready.then(() => stops.add(() => startMetricPointOrgBackfill({ sql })));
 
     await app.listen({ port: config.port, host: config.host });
 
