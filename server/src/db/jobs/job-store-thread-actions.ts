@@ -26,6 +26,7 @@ import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import { authorOwnsFragment, terminalFragment, doneFragment, threadIdleFragment } from './job-store-sql-fragments.js';
 import type { CreatedRef, CreateTarget } from './job-store-action-types.js';
 import { PlanLimitError } from '../plan-limits.js';
+import { refuseOverTokens } from '../plan-allowances.js';
 import { refuseInactiveOrg } from '../org-status.js';
 
 /** A workflow column's value: the JSON when a workflow was named, SQL null otherwise. */
@@ -47,8 +48,8 @@ async function refuseAtQueuedCap(tx: TransactionSql, orgId: string, cap: number 
 /**
  * The create's body (`createTitledJob`'s), for a caller that already holds a transaction: the batch scheduler creates
  * a task's root in the same transaction that records the decision to. `queuedCap` is the org plan's queued limit
- * the member's create is refused at, and `deploymentMode` refuses it for a cloud org that is not active
- * (`org-status.ts`); the batch scheduler passes neither.
+ * the member's create is refused at, `tokenAllowance` its tokens per period (`plan-allowances.ts`), and
+ * `deploymentMode` refuses it for a cloud org that is not active (`org-status.ts`); the batch scheduler passes none.
  */
 export async function insertJobInTx(
     tx: TransactionSql,
@@ -58,12 +59,14 @@ export async function insertJobInTx(
         createdBy,
         target,
         queuedCap,
+        tokenAllowance,
         deploymentMode,
     }: {
         command: string;
         createdBy: string | null;
         target: CreateTarget;
         queuedCap?: number | undefined;
+        tokenAllowance?: number | undefined;
         deploymentMode?: DeploymentMode | undefined;
     }
 ): Promise<CreatedRef> {
@@ -73,6 +76,7 @@ export async function insertJobInTx(
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return { id: replayed, replayed: true };
     if (deploymentMode) await refuseInactiveOrg(tx, orgId, deploymentMode);
+    await refuseOverTokens(tx, orgId, tokenAllowance);
     await refuseAtQueuedCap(tx, orgId, queuedCap);
     // id and root_job_id are the SAME uuid, computed once in the select so the column can
     // be not null from insert — the root's root is itself (022). The workflow triple rides

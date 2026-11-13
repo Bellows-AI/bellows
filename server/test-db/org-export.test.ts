@@ -343,6 +343,9 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
             'pr_follow.claim_token',
             'task_reclaim.claim_token',
             'task_reclaim_ack.claim_token',
+            // Counts of model tokens (the plan's allowance and the usage rollup), not credentials.
+            'org_plan.max_tokens',
+            'org_token_usage.tokens',
         ]);
         const columns = await sql<{ table_name: string; column_name: string }[]>`
             select table_name, column_name from information_schema.columns

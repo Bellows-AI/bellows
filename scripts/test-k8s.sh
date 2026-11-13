@@ -763,9 +763,10 @@ refuses 'an unknown deployment mode is refused' 'deploymentMode must be self-hos
 CLOUD_SETS=(--set deploymentMode=cloud
     --set-string dashboard.admission.maxRunning=20 --set-string dashboard.admission.maxRunningPerOrg=4
     --set-string dashboard.planDefaults.maxRunning=1 --set-string dashboard.planDefaults.maxQueued=10
-    --set-string dashboard.planDefaults.maxWallSeconds=3600)
+    --set-string dashboard.planDefaults.maxWallSeconds=3600 --set-string dashboard.planDefaults.maxTokens=20000000
+    --set-string dashboard.planDefaults.maxStorageBytes=1073741824)
 for cap in admission.maxRunning admission.maxRunningPerOrg planDefaults.maxRunning planDefaults.maxQueued \
-    planDefaults.maxWallSeconds; do
+    planDefaults.maxWallSeconds planDefaults.maxTokens planDefaults.maxStorageBytes; do
     refuses "cloud mode with an empty dashboard.$cap is refused" "deploymentMode cloud requires dashboard.$cap" \
         "${GH_SETS[@]}" "${CLOUD_SETS[@]}" --set-string "dashboard.$cap="
 done

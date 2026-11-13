@@ -162,8 +162,9 @@ export interface AppConfig {
     readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
     /**
      * The plan limits an organization with no pushed plan gets, and each limit a push left null: the Free plan
-     * (PLAN_DEFAULT_MAX_RUNNING, PLAN_DEFAULT_MAX_QUEUED, PLAN_DEFAULT_MAX_WALL_SECONDS). Unset is unlimited, which
-     * only a self-hosted board allows: cloud refuses to boot without all three. See `db/plan-limits.ts`.
+     * (PLAN_DEFAULT_MAX_RUNNING, PLAN_DEFAULT_MAX_QUEUED, PLAN_DEFAULT_MAX_WALL_SECONDS, PLAN_DEFAULT_MAX_TOKENS,
+     * PLAN_DEFAULT_MAX_STORAGE_BYTES). Unset is unlimited, which only a self-hosted board allows: cloud refuses to
+     * boot without all five. See `db/plan-limits.ts` and `db/plan-allowances.ts`.
      */
     readonly planDefaults: PlanLimits;
     /**
@@ -263,6 +264,8 @@ const PLAN_DEFAULT_VARIABLES = {
     running: 'PLAN_DEFAULT_MAX_RUNNING',
     queued: 'PLAN_DEFAULT_MAX_QUEUED',
     wallSeconds: 'PLAN_DEFAULT_MAX_WALL_SECONDS',
+    tokens: 'PLAN_DEFAULT_MAX_TOKENS',
+    storageBytes: 'PLAN_DEFAULT_MAX_STORAGE_BYTES',
 } as const satisfies Record<keyof PlanLimits, string>;
 
 function loadPlanDefaults(env: NodeJS.ProcessEnv, deploymentMode: DeploymentMode): PlanLimits {

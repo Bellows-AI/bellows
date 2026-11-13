@@ -8,13 +8,8 @@ import type { IdempotentOperation } from '../../db/jobs/job-store-idempotency.js
 import { bad, guard } from '../helpers.js';
 import { PlanLimitError } from '../../db/plan-limits.js';
 import { OrgInactiveError } from '../../db/org-status.js';
-import {
-    HTTP_CONFLICT,
-    HTTP_CREATED,
-    HTTP_FORBIDDEN,
-    HTTP_PAYLOAD_TOO_LARGE,
-    HTTP_TOO_MANY_REQUESTS,
-} from './job-limits.js';
+import { sendPlanLimit } from '../plan-limit.js';
+import { HTTP_CONFLICT, HTTP_CREATED, HTTP_FORBIDDEN, HTTP_PAYLOAD_TOO_LARGE } from './job-limits.js';
 
 /**
  * The request side of durable mutation idempotency (docs/jobs.md): the key header,
@@ -122,13 +117,7 @@ export async function guardKeyed<T>(
         return { ok: false };
     }
     if (result.value instanceof PlanLimitError) {
-        const { limit, max } = result.value;
-        await reply.code(HTTP_TOO_MANY_REQUESTS).send({
-            error: `The organization's plan allows ${max} ${limit} tasks at once`,
-            code: ERROR_CODES.PLAN_LIMIT,
-            limit,
-            max,
-        });
+        await sendPlanLimit(reply, result.value);
         return { ok: false };
     }
     if (result.value instanceof OrgInactiveError) {

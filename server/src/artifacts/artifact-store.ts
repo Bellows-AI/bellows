@@ -3,6 +3,8 @@ import { chunkKey, checkStreamRef, parseChunkKey, type StreamRef } from './keys.
 import type { ObjectStore } from './object-store.js';
 import { sha256Hex } from './sigv4.js';
 import { fencedPut } from '../db/object-write-fence.js';
+import { overStorageAllowance } from '../db/plan-allowances.js';
+import type { PlanLimits } from '../db/plan-limits.js';
 
 /**
  * The artifact index (070) over an object store, bound to one organization like every other store
@@ -119,6 +121,11 @@ export interface ArtifactStoreOptions {
     streamMaxBytes?: number;
     /** 0 or absent: no per-org quota. */
     orgQuotaBytes?: number;
+    /**
+     * `config.planDefaults`: a chunk past the org plan's storage allowance (attachments and run logs together,
+     * `db/plan-allowances.ts`) is refused as `org_quota`. Absent, or a plan with no allowance: no such refusal.
+     */
+    planDefaults?: PlanLimits;
 }
 
 interface ChunkRow {
@@ -326,6 +333,8 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
             `;
             if (Number(org!.bytes) + length > orgQuota) return ARTIFACT_CAUSE.orgQuota;
         }
+        // Unserialized: the chunks in flight at once may pass the plan's storage allowance (docs/commerce.md).
+        if (await overStorageAllowance(sql, orgId, options.planDefaults ?? {}, length)) return ARTIFACT_CAUSE.orgQuota;
         return null;
     }
 

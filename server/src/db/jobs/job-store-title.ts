@@ -39,7 +39,7 @@ export interface JobTitleStore {
 /**
  * The create: one transaction for the root row and, when the request names a title, the title stamped on it
  * (origin `user`, revision 1) with its first audit row. A replayed create changes nothing; a new one past the org
- * plan's queued limit throws `PlanLimitError`.
+ * plan's queued limit or token allowance throws `PlanLimitError`.
  */
 export async function createTitledJob(
     ctx: JobStoreContext,
@@ -48,12 +48,13 @@ export async function createTitledJob(
     target: CreateTarget
 ): Promise<CreatedRef> {
     return ctx.sql.begin(async (tx) => {
-        const { queued } = await planLimits(tx, ctx.orgId, ctx.planDefaults);
+        const { queued, tokens } = await planLimits(tx, ctx.orgId, ctx.planDefaults);
         const created = await insertJobInTx(tx, ctx, {
             command,
             createdBy,
             target,
             queuedCap: queued,
+            tokenAllowance: tokens,
             deploymentMode: ctx.deploymentMode,
         });
         const { title } = target;

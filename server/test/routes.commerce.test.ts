@@ -37,6 +37,8 @@ const BODY = {
     maxRunning: 4,
     maxQueued: 50,
     maxWallSeconds: 7200,
+    maxTokens: 50_000_000,
+    maxStorageBytes: 10_737_418_240,
     version: 3,
 };
 
@@ -164,6 +166,8 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
             maxRunning: 4,
             maxQueued: 50,
             maxWallSeconds: 7200,
+            maxTokens: 50_000_000,
+            maxStorageBytes: 10_737_418_240,
             version: 3,
         });
     });
@@ -181,6 +185,8 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
             maxRunning: null,
             maxQueued: null,
             maxWallSeconds: null,
+            maxTokens: null,
+            maxStorageBytes: null,
         });
         expect(response.statusCode).toBe(HTTP_OK);
         expect(calls[0]?.push).toMatchObject({
@@ -190,6 +196,8 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
             maxRunning: null,
             maxQueued: null,
             maxWallSeconds: null,
+            maxTokens: null,
+            maxStorageBytes: null,
         });
     });
 
@@ -225,6 +233,10 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
         ['a fractional queued limit', { ...BODY, maxQueued: 2.5 }],
         ['a string wall time', { ...BODY, maxWallSeconds: '3600' }],
         ['a missing limit field', { ...BODY, maxQueued: undefined }],
+        ['a zero token allowance', { ...BODY, maxTokens: 0 }],
+        ['a fractional storage allowance', { ...BODY, maxStorageBytes: 1.5 }],
+        ['an unsafe token allowance', { ...BODY, maxTokens: 2 ** 53 }],
+        ['a missing allowance field', { ...BODY, maxStorageBytes: undefined }],
         ['an unparseable date', { ...BODY, periodStart: 'yesterday' }],
         ['a numeric date', { ...BODY, periodEnd: 1_788_000_000 }],
         ['a period that ends before it starts', { ...BODY, periodStart: BODY.periodEnd, periodEnd: BODY.periodStart }],

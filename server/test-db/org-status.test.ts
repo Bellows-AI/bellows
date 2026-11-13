@@ -35,11 +35,13 @@ const cloud = () =>
             PLAN_DEFAULT_MAX_RUNNING: '1',
             PLAN_DEFAULT_MAX_QUEUED: '2',
             PLAN_DEFAULT_MAX_WALL_SECONDS: '3600',
+            PLAN_DEFAULT_MAX_TOKENS: '1000000',
+            PLAN_DEFAULT_MAX_STORAGE_BYTES: '1048576',
         },
         { mode: 'none' }
     );
 
-const FREE: PlanLimits = { running: 1, queued: 2, wallSeconds: 3600 };
+const FREE: PlanLimits = { running: 1, queued: 2, wallSeconds: 3600, tokens: 1_000_000, storageBytes: 1_048_576 };
 
 beforeAll(() => {
     if (!enabled) return;
@@ -107,7 +109,13 @@ describe.skipIf(!enabled)('a cloud organization (no pending state)', () => {
         expect(all.length).toBeGreaterThanOrEqual(orgs.length);
         for (const { id } of all) {
             const limits = await planLimits(sql, id, defaults);
-            expect(Object.keys(limits).sort(), id).toEqual(['queued', 'running', 'wallSeconds']);
+            expect(Object.keys(limits).sort(), id).toEqual([
+                'queued',
+                'running',
+                'storageBytes',
+                'tokens',
+                'wallSeconds',
+            ]);
         }
     });
 });

@@ -24,6 +24,8 @@ import {
 } from './batch-store-schedule.js';
 import { BATCH_DRAFT, BATCH_ROW_STARTED, type BatchStore } from './batch-store-types.js';
 import { refuseInactiveOrg } from '../org-status.js';
+import { refuseOverTokens } from '../plan-allowances.js';
+import { type PlanLimits, planLimits } from '../plan-limits.js';
 
 /**
  * Batches (059; docs/batches.md): a draft plan, edited whole, then frozen by `start`. The org is
@@ -43,6 +45,7 @@ export function createBatchStore({
     now,
     telemetrySource,
     deploymentMode = SELF_HOSTED,
+    planDefaults = {},
 }: {
     sql: Sql;
     orgId: string;
@@ -61,6 +64,8 @@ export function createBatchStore({
     telemetrySource?: TelemetrySource;
     /** `config.deploymentMode`: cloud refuses a create for an org that is not active (`db/org-status.ts`). */
     deploymentMode?: DeploymentMode;
+    /** `config.planDefaults`: a create past the org's token allowance is refused (`db/plan-allowances.ts`). */
+    planDefaults?: PlanLimits;
 }): BatchStore {
     const gate = async () => {
         if (ready) await ready;
@@ -80,6 +85,7 @@ export function createBatchStore({
                     return { id: replayed, version: row!.version, replayed: true };
                 }
                 await refuseInactiveOrg(tx, orgId, deploymentMode);
+                await refuseOverTokens(tx, orgId, (await planLimits(tx, orgId, planDefaults)).tokens);
                 const [batch] = await tx<{ id: string; version: number }[]>`
                     insert into batch (org_id, plan_version, title, default_target, executor, executor_scope, policy,
                                        concurrency, infra_retries, repairs, time_limit_minutes, created_by)
