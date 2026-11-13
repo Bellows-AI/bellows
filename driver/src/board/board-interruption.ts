@@ -17,4 +17,9 @@ export interface Interruption {
      * poison interruption budget, counted against the board's far looser node-loss bound.
      */
     nodeLoss?: boolean;
+    /**
+     * The task's organization is suspended (the heartbeat's `release`): released outside every budget, never a node
+     * loss, and held by the board's claim until the organization is reactivated.
+     */
+    orgSuspended?: boolean;
 }

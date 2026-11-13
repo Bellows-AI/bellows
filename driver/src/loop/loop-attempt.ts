@@ -4,7 +4,7 @@ import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from '../runner.js'
 import type { DeadService } from '../runner.js';
 import type { RuntimeSample } from '../runner.js';
 import { type LeaseClock, leasedBeat } from './loop-lease.js';
-import { lostOf, recordEnding } from './loop-phase.js';
+import { lostOf, ORG_SUSPENDED_REASON, recordEnding } from './loop-phase.js';
 import type { AttemptPhase, AttemptTransition, Ending } from './loop-phase.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { ExportRun } from './loop-export.js';
@@ -142,6 +142,11 @@ export interface JobState {
      * is null where only a heartbeat said so.
      */
     requirement: { provider: string | null } | null;
+    /**
+     * A heartbeat said the task's organization is suspended (`release: 'org-suspended'`): the agent is stopped on the
+     * control endpoint like a requirement wait and the attempt handed back as a resumable interruption.
+     */
+    orgSuspended: boolean;
     /** The grace deadline's timer while draining; cleared when the attempt settles. */
     graceTimer: ReturnType<typeof setTimeout> | null;
     /**
@@ -228,6 +233,7 @@ export function newJobState(): JobState {
         running: false,
         draining: false,
         requirement: null,
+        orgSuspended: false,
         graceTimer: null,
         reviews: new Map(),
         endedReviewLeases: new Set(),
@@ -363,21 +369,26 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
     });
 }
 
+/** A beat the board held: the verdict a hand-back reads. */
+type HeldVerdict = Exclude<HeartbeatVerdict, 'lost' | 'removed'>;
+
+/** Why the board holds the attempt for a hand-back: a requirement wait wins over a suspended organization. */
+const handBackWhy = (state: JobState): string =>
+    state.requirement !== null ? 'the task waits for a connection' : ORG_SUSPENDED_REASON;
+
 /**
- * A requirement wait on a running agent: like a Stop it is raised once on the control endpoint and the
- * agent finishes its current step — the helper's guidance lands in its session — then exits on its own. Unlike a
- * Stop the attempt does not settle as stopped: the run's end hands it back (`standDown`). An agent that never
- * reaches a boundary is killed when the grace passes, and the hand-back still follows.
+ * A hand-back of a running agent — a requirement wait, or its organization suspended: like a Stop it is raised once
+ * on the control endpoint and the agent finishes its current step — the helper's guidance lands in its session — then
+ * exits on its own. Unlike a Stop the attempt does not settle as stopped: the run's end hands it back (`standDown`).
+ * An agent that never reaches a boundary is killed when the grace passes, and the hand-back still follows.
  */
-function startRequirementDrain(rt: LoopRuntime, job: BoardJob, state: JobState, control: string): void {
+function startHandBackDrain(rt: LoopRuntime, job: BoardJob, state: JobState, control: string): void {
     if (state.draining || state.graceTimer !== null) return;
     rt.gates?.server.raiseStop(control);
     rt.gates?.server.cancelQuestions(control);
     clearPendingQuestions(state);
     const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
-    rt.log(
-        `job ${job.id}: the task waits for a connection, letting the agent finish its current step (${graceMs}ms grace)`
-    );
+    rt.log(`job ${job.id}: ${handBackWhy(state)}, letting the agent finish its current step (${graceMs}ms grace)`);
     state.graceTimer = setTimeout(() => {
         if (state.phase === 'ended' || state.phase === 'concluding' || down(state)) return;
         rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
@@ -387,23 +398,27 @@ function startRequirementDrain(rt: LoopRuntime, job: BoardJob, state: JobState, 
 }
 
 /**
- * A requirement wait lands on the attempt: a running agent is drained cooperatively (answers true); any
- * other phase, or an attempt with no endpoint to stop the agent on, stands down now (records the ending, false).
+ * A hand-back the beat asks — a requirement wait, or `release: 'org-suspended'` — lands on the attempt: a running
+ * agent is drained cooperatively (answers true); any other phase, or an attempt with no endpoint to stop the agent
+ * on, stands down now (records the ending, false). A beat that asks neither answers false and records nothing.
  */
-function holdForRequirement(rt: LoopRuntime, job: BoardJob, state: JobState): boolean {
-    state.requirement ??= { provider: null };
+function holdForHandBack(rt: LoopRuntime, job: BoardJob, state: JobState, verdict: HeldVerdict): boolean {
+    if (verdict.requirementWait) state.requirement ??= { provider: null };
+    else if (verdict.release === 'org-suspended') state.orgSuspended = true;
+    else return false;
     const control = drainableControl(rt, state);
     if (control !== null) {
-        startRequirementDrain(rt, job, state, control);
+        startHandBackDrain(rt, job, state, control);
         return true;
     }
-    recordEnding(state, 'requirement');
-    rt.log(`job ${job.id}: the task waits for a connection, standing the attempt down`);
+    recordEnding(state, state.requirement !== null ? 'requirement' : 'org-suspended');
+    rt.log(`job ${job.id}: ${handBackWhy(state)}, standing the attempt down`);
     return false;
 }
 
-/** Whether the agent is being stopped to end the run: a Stop, or a requirement wait. */
-export const settling = (state: JobState): boolean => state.draining || state.requirement !== null;
+/** Whether the agent is being stopped to end the run: a Stop, a requirement wait, or a suspended organization. */
+export const settling = (state: JobState): boolean =>
+    state.draining || state.requirement !== null || state.orgSuspended;
 
 /**
  * Whether a heartbeat verdict may no longer act on the attempt: a handed-over attempt's runner
@@ -476,7 +491,7 @@ export async function applyHeartbeatVerdict(
         if (control !== null) return startDraining(rt, job, state, control);
         recordEnding(state, 'stop');
         log(`job ${job.id}: stop requested, killing the runner`);
-    } else if (verdict.requirementWait && holdForRequirement(rt, job, state)) {
+    } else if (holdForHandBack(rt, job, state, verdict)) {
         return;
     }
     if (!down(state)) return;

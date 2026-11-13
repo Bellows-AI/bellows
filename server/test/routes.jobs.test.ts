@@ -225,6 +225,7 @@ function stubStore(
         renewReclaim?: ReclaimRenewal;
         heartbeatCancelRequested?: boolean;
         heartbeatStopCause?: 'wall-time' | null;
+        heartbeatRelease?: 'org-suspended' | null;
         answeredQuestions?: { questionId: string; answers: Record<string, string> }[];
         /** What the question store answers a report and an answer with (050). */
         ask?: AskQuestionResult;
@@ -368,6 +369,7 @@ function stubStore(
                 answeredQuestions: result === 'ok' ? (options.answeredQuestions ?? []) : [],
                 requirementWait: false,
                 stopCause: result === 'ok' ? (options.heartbeatStopCause ?? null) : null,
+                release: result === 'ok' ? (options.heartbeatRelease ?? null) : null,
             };
         },
         async askQuestion(id, _token, ask) {
@@ -1504,6 +1506,14 @@ describe('POST /api/jobs/:id/heartbeat', () => {
         const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
         expect(response.json()).toMatchObject({ cancelRequested: true, stopCause: 'wall-time' });
     });
+
+    it('asks the hand-back of a suspended organization’s attempt, and no release on an ordinary beat', async () => {
+        const suspended = await harnessWith(stubStore({ verdict: 'ok', heartbeatRelease: 'org-suspended' }));
+        const asked = await post(suspended, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
+        expect(asked.json()).toMatchObject({ cancelRequested: false, release: 'org-suspended' });
+        const plain = await harnessWith(stubStore({ verdict: 'ok' }));
+        expect((await post(plain, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN })).json().release).toBeNull();
+    });
 });
 
 describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue #301)', () => {
@@ -2269,6 +2279,26 @@ describe('POST /api/jobs/:id/interrupt', () => {
         ]);
     });
 
+    it('passes an org-suspended hand-back through on a release', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'the organization is suspended',
+            release: true,
+            orgSuspended: true,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.interrupted[0]!.interruption).toEqual({
+            reason: 'the organization is suspended',
+            release: true,
+            claimSeq: null,
+            orgSuspended: true,
+        });
+    });
+
     it('passes a blocked hand-back through on a release', async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
@@ -2317,6 +2347,8 @@ describe('POST /api/jobs/:id/interrupt', () => {
         ['a blocked adoption', { reason: 'adopted', release: false, claimSeq: 2, blocked: true }],
         ['a nodeLoss flag that is not a boolean', { reason: 'evicted', release: true, nodeLoss: 'yes' }],
         ['a nodeLoss adoption', { reason: 'adopted', release: false, claimSeq: 2, nodeLoss: true }],
+        ['an orgSuspended flag that is not a boolean', { reason: 'suspended', release: true, orgSuspended: 'yes' }],
+        ['an orgSuspended adoption', { reason: 'adopted', release: false, claimSeq: 2, orgSuspended: true }],
     ])('refuses %s with 400 BAD_BODY, touching nothing', async (_name, fields) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);

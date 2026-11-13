@@ -174,6 +174,14 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(jobsDocs)).toContain('the board refuses `unhardened`');
     });
 
+    // A suspension hands a running attempt back resumably, so its checkout stays: the volume's cost is a stated limit.
+    it('states that a suspended organization keeps its task volumes, and their cost', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a suspended organization's task volumes are kept for the whole suspension"
+        );
+        expect(prose(kubernetesDocs)).toContain('the suspension stops its runner pods, never its volumes');
+    });
+
     // Issue #773: what a service sidecar needs of its image, and docker's weaker service network.
     it('states the service image needs and the docker service reachability as limits', () => {
         expect(prose(kubernetesDocs)).toContain(

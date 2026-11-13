@@ -154,7 +154,7 @@ Bellows Cloud only. These commands work for the board operator, the GitHub accou
 | Command | What it does |
 | --- | --- |
 | `bellows operator list` | List every organization with its status: `active`, `suspended` or `refused`. |
-| `bellows operator suspend <org-id>` | Stop the organization from starting new work. New tasks and batches are refused with `403 ORG_INACTIVE`, and queued tasks wait. Runs already in progress continue. |
+| `bellows operator suspend <org-id>` | Stop the organization from starting new work. New tasks and batches are refused with `403 ORG_INACTIVE`, and queued tasks wait. Runs already in progress are interrupted, never failed, and resume where they left off when the organization is reactivated. |
 | `bellows operator refuse <org-id>` | Refuse the organization the same way. A suspend cannot override a refusal; only `activate` lifts it. |
 | `bellows operator activate <org-id>` | Make the organization active again. Its queued tasks become claimable. |
 

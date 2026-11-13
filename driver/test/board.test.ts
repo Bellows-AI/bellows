@@ -545,6 +545,20 @@ describe('the runtime connection requirement', () => {
         expect(await boardOn(plain.fetch).heartbeat(job)).not.toHaveProperty('requirementWait');
     });
 
+    it('carries release org-suspended on a held heartbeat, and reads no other value as one', async () => {
+        const suspended = recorder(() => Response.json({ cancelRequested: false, release: 'org-suspended' }));
+        expect(await boardOn(suspended.fetch).heartbeat(job)).toEqual({
+            result: 'held',
+            cancelRequested: false,
+            answeredQuestions: [],
+            release: 'org-suspended',
+        });
+        for (const release of [null, 'something-else', true]) {
+            const other = recorder(() => Response.json({ cancelRequested: false, release }));
+            expect(await boardOn(other.fetch).heartbeat(job)).not.toHaveProperty('release');
+        }
+    });
+
     it('carries the claim’s connection outcomes, keeping the well-formed entries only', async () => {
         const { fetch } = recorder(() =>
             claimed({

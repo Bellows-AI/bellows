@@ -6,7 +6,7 @@
  */
 
 import { down, type JobState, raceStep } from './loop-attempt.js';
-import { lostOf } from './loop-phase.js';
+import { lostOf, ORG_SUSPENDED_REASON } from './loop-phase.js';
 import type { BoardJob } from '../board/board.js';
 import { type GroupTakenAway, LeftoverTerminating, type RunOutcome } from '../runner.js';
 import { SYNC_FAILURE_KINDS, withConflictContext, type SyncResult } from '../publish/publish.js';
@@ -159,6 +159,16 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
     }
     // A requirement wait is handed back like a drain's handover, but held by the board until it closes.
     if (state.ending?.kind === 'requirement') return requirementDecision(state, beforePark);
+    // A suspended organization's attempt is handed back the same way, held by the board until the reactivation.
+    if (state.ending?.kind === 'org-suspended') {
+        return {
+            kind: 'interrupt',
+            reason: ORG_SUSPENDED_REASON,
+            exitCode: null,
+            orgSuspended: true,
+            ...(beforePark ? { beforeInterrupt: beforePark } : {}),
+        };
+    }
     if (lostOf(state)) {
         return {
             kind: 'none',

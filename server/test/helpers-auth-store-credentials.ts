@@ -340,5 +340,8 @@ export function memoryAuthStore(): MemoryAuthStore {
         async setOrgStatus() {
             return { outcome: 'missing' as const };
         },
+        async setInstallationStatus() {
+            return { outcome: 'missing' as const };
+        },
     };
 }

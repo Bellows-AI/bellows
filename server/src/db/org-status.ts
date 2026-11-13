@@ -5,8 +5,10 @@ import { recordAudit } from './audit-log.js';
 /**
  * An organization's status (`140_organization_status.sql`, docs/organizations.md). A cloud organization is `active`
  * from its first sign-in, on the Free plan's limits (`plan-limits.ts`); the operator (`OPERATOR_GITHUB_IDS`) suspends
- * or refuses it and reactivates it. A suspended or refused org's creates are refused and the claim offers none of its
- * queued rows; a missing row is not active. A self-hosted board has no status gate.
+ * or refuses it and reactivates it. A suspended or refused org's creates are refused, the claim offers none of its
+ * rows (a takeover included) and its running attempts are asked to hand themselves back resumably (`orgRelease`);
+ * a missing row is not active. A self-hosted board has no status gate. An App uninstall or a GitHub suspension
+ * suspends the org with a deletion deadline (`setInstallationStatus`) and deletes nothing.
  */
 
 export const ORG_STATUSES = ['active', 'suspended', 'refused'] as const;
@@ -53,7 +55,7 @@ export async function refuseInactiveOrg(
 }
 
 /**
- * The claim's acquisition re-check (`job-store-connections.ts:queuedRowHeld`), under the job row and thread locks:
+ * The claim's acquisition re-check (`job-store-connections.ts:rowHeld`), under the job row and thread locks:
  * in cloud mode, whether the org is still `active` (held, `lockedStatus`). An operator's suspend that landed while
  * the claim read the plan wins, and one in flight waits for the acquisition.
  */
@@ -65,7 +67,22 @@ export async function orgActiveForClaim(
     return deploymentMode !== CLOUD || (await lockedStatus(tx, orgId)) === 'active';
 }
 
-/** The claim's org filter for new work: in cloud mode the row's org must exist and be `active`. */
+/**
+ * The heartbeat's release verdict: in cloud mode a running attempt of a `suspended` or `refused` org is asked to hand
+ * itself back as a resumable interruption (`orgSuspended`). Only a status read as not active asks it: a missing row
+ * asks nothing, and a read that throws fails the beat, which the driver treats as no verdict.
+ */
+export async function orgRelease(
+    sql: Sql,
+    orgId: string,
+    deploymentMode: DeploymentMode
+): Promise<'org-suspended' | null> {
+    if (deploymentMode !== CLOUD) return null;
+    const [row] = await sql<{ status: OrgStatus }[]>`select status from organization where id = ${orgId}`;
+    return row !== undefined && row.status !== 'active' ? 'org-suspended' : null;
+}
+
+/** The claim's org filter, a takeover included: in cloud mode the row's org must exist and be `active`. */
 export const activeOrgOf = (sql: Sql, deploymentMode: DeploymentMode, alias: string): Fragment =>
     deploymentMode === CLOUD
         ? sql`exists (select 1 from organization o where o.id = ${sql(alias)}.org_id and o.status = 'active')`
@@ -90,7 +107,16 @@ export interface OrgStatusStore {
     listOrganizations(): Promise<OperatorOrgView[]>;
     /** The operator's suspend, refuse or activate, with one `operator` audit row per change. */
     setOrgStatus(orgId: string, action: OperatorAction, operatorId: string): Promise<OrgStatusChange>;
+    /** What a GitHub `installation` delivery does to its org (`routes/webhook.ts`), with one `system` audit row per change. */
+    setInstallationStatus(orgId: string, action: InstallationAction): Promise<OrgStatusChange>;
 }
+
+/** The `installation` webhook actions that move an org: an uninstall, a GitHub suspension, and its lifting. */
+export const INSTALLATION_ACTIONS = ['deleted', 'suspend', 'unsuspend'] as const;
+export type InstallationAction = (typeof INSTALLATION_ACTIONS)[number];
+
+/** How long an uninstalled or GitHub-suspended organization is kept, suspended, before it may be deleted. */
+export const UNINSTALL_DELETE_WINDOW_DAYS = 30;
 
 export function buildOrgStatusMethods(sql: Sql, gate: () => Promise<void>): OrgStatusStore {
     return {
@@ -101,6 +127,10 @@ export function buildOrgStatusMethods(sql: Sql, gate: () => Promise<void>): OrgS
         async setOrgStatus(orgId, action, operatorId) {
             await gate();
             return setOrgStatus(sql, orgId, action, operatorId);
+        },
+        async setInstallationStatus(orgId, action) {
+            await gate();
+            return setInstallationStatus(sql, orgId, action);
         },
     };
 }
@@ -127,7 +157,12 @@ async function setOrgStatus(
         const to = STATUS_OF[action];
         if (org.status === to) return { outcome: 'unchanged' as const, org };
         if (org.status === 'refused' && action === 'suspend') return { outcome: 'refused' as const, org };
-        await tx`update organization set status = ${to} where id = ${orgId}`;
+        // The operator's activate is the decision to keep the org: it lifts an uninstall's deletion deadline too.
+        await tx`
+            update organization set status = ${to},
+                delete_after = case when ${to} = 'active' then null else delete_after end
+            where id = ${orgId}
+        `;
         await recordAudit(tx, {
             orgId,
             actor: { kind: 'operator', id: operatorId },
@@ -136,5 +171,53 @@ async function setOrgStatus(
             detail: { from: org.status, to },
         });
         return { outcome: 'changed' as const, org: { ...org, status: to } };
+    });
+}
+
+/**
+ * An uninstall (`deleted`) or a GitHub suspension (`suspend`) suspends an active org and sets its deletion deadline
+ * once — a refused org stays refused — and keeps every row. An `unsuspend` lifts only what an installation set: an
+ * org with a deadline is cleared of it and a suspended one reactivated; the operator's suspension or refusal (no
+ * deadline) is left alone. A replay changes nothing and records nothing.
+ */
+/**
+ * Where an installation action moves an org whose row reads `status` and whether it has a deadline; null when it
+ * changes nothing. A lifting moves only a suspended org; a suspension only an active one, a refusal staying put.
+ */
+function installationMove(status: OrgStatus, hasDeadline: boolean, action: InstallationAction): OrgStatus | null {
+    if (action === 'unsuspend') return hasDeadline ? (status === 'suspended' ? 'active' : status) : null;
+    if (hasDeadline) return null;
+    return status === 'active' ? 'suspended' : status;
+}
+
+async function setInstallationStatus(sql: Sql, orgId: string, action: InstallationAction): Promise<OrgStatusChange> {
+    return sql.begin(async (tx) => {
+        const [org] = await tx<(OperatorOrgView & { delete_after: Date | null })[]>`
+            select id, name, status, delete_after from organization where id = ${orgId} for no key update
+        `;
+        if (!org) return { outcome: 'missing' as const };
+        const { delete_after: deadline, ...view } = org;
+        const to = installationMove(view.status, deadline !== null, action);
+        if (to === null) return { outcome: 'unchanged' as const, org: view };
+        const lifting = action === 'unsuspend';
+        const deleteAfter = lifting ? null : tx`now() + make_interval(days => ${UNINSTALL_DELETE_WINDOW_DAYS}::int)`;
+        const [updated] = await tx<{ delete_after: Date | null }[]>`
+            update organization set status = ${to}, delete_after = ${deleteAfter}
+            where id = ${orgId}
+            returning delete_after
+        `;
+        await recordAudit(tx, {
+            orgId,
+            actor: { kind: 'system', id: null },
+            action: lifting ? 'org.activate' : 'org.suspend',
+            target: orgId,
+            detail: {
+                from: view.status,
+                to,
+                source: `installation.${action}`,
+                deleteAfter: updated?.delete_after?.toISOString() ?? null,
+            },
+        });
+        return { outcome: 'changed' as const, org: { ...view, status: to } };
     });
 }
