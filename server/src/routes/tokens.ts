@@ -47,9 +47,8 @@ export const tokenRoutes =
     async (app) => {
         /**
          * Every route scopes to the CALLER's org: a personal token is minted into the org
-         * the caller is signed into, and an org token into the org of the admin... of the member
-         * who mints it — installation access is membership and there are no roles above member,
-         * so the org-token routes lost their admin gate with the roster that fed it.
+         * the caller is signed into, and an org token into the org of the admin who mints it. The
+         * org-token routes are `admin` rows in ROUTE_CLASSES, refused to a member by the auth hook.
          */
         const orgIdOf = (request: FastifyRequest): string => {
             const caller = callerOf(request);
