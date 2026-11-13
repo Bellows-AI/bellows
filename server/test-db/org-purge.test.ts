@@ -115,6 +115,8 @@ const deps = (over: Partial<OrgPurgeDeps> = {}): OrgPurgeDeps => ({
     prefix: PREFIX,
     deploymentMode: 'cloud',
     log: (line) => lines.push(line),
+    // No writer is in flight here; the drain itself is pinned by org-purge.fence.test.ts.
+    writeDrainMs: 0,
     ...over,
 });
 

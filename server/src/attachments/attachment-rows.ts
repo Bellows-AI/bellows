@@ -1,6 +1,7 @@
 import type { AttachmentState } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { IdempotencyKeyReusedError } from '../db/jobs/job-store-idempotency.js';
+import { notPurging } from '../db/object-write-fence.js';
 
 /**
  * The `input_attachment` rows (115) behind the attachment store. Every org-scoped query carries
@@ -184,7 +185,7 @@ export function createAttachmentRows({
             await ready;
             const [row] = await sql<DbRow[]>`
                 update input_attachment set last_attempt_at = now()
-                where org_id = ${orgId} and id = ${id} and state = 'pending'
+                where org_id = ${orgId} and id = ${id} and state = 'pending' and ${notPurging(sql, orgId)}
                 returning id, uploader_id, name, media_type, size_bytes::int as size_bytes, sha256, object_key, state
             `;
             return row ? rowOf(row) : null;

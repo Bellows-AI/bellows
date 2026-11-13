@@ -68,7 +68,8 @@ const gcsServer = createServer((req, res) => {
                 .filter((name) => name.startsWith(prefix))
                 .sort()
                 .slice(0, Number(url.searchParams.get('maxResults') ?? '1000'));
-            return reply(200, JSON.stringify(names.length ? { items: names.map((name) => ({ name })) } : {}));
+            const page = names.length ? { items: names.map((name) => ({ name })) } : {};
+            return reply(200, JSON.stringify({ kind: 'storage#objects', ...page }));
         }
         if (object) {
             const id = `${object[1]}/${decodeURIComponent(object[2]!)}`;

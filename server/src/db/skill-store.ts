@@ -3,6 +3,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { isReservedSkillName, type SkillRequirements, SKILL_NAME, SKILL_NAME_LIMIT } from '@factory-ai/core';
 import type { ObjectStore } from '../artifacts/object-store.js';
 import type { SkillBundle } from '../skills/skill-bundle.js';
+import { fencedPut } from './object-write-fence.js';
 
 /**
  * The org and workspace skill store (docs/skills.md). A skill row is owned by an organization (`owner` null) or by one
@@ -266,7 +267,7 @@ export function createSkillStore({
     /** Stores the bundle's object first, outside any transaction: content-addressed and create-only, so a race is harmless. */
     async function storeObject(bundle: SkillBundle): Promise<string> {
         const key = skillObjectKey(prefix, orgId, bundle.sha256);
-        const put = await confirmed('put', () => objects.put(key, bundle.tar));
+        const put = await confirmed('put', () => fencedPut({ sql, orgId, objects }, key, bundle.tar));
         if (put === 'exists') await verifyHeld(key, bundle.sha256);
         return key;
     }
@@ -278,7 +279,7 @@ export function createSkillStore({
     async function holdObject(tx: TransactionSql, key: string, bundle: SkillBundle): Promise<void> {
         await lockObjectKey(tx, key);
         const there = await confirmed('head', () => objects.head(key));
-        if (there === null) await confirmed('put', () => objects.put(key, bundle.tar));
+        if (there === null) await confirmed('put', () => fencedPut({ sql: tx, orgId, objects }, key, bundle.tar));
     }
 
     /** Inserts the version (or finds the row for the same content) and makes it current. `exists` when it was known. */

@@ -30,6 +30,22 @@ export class GcsError extends Error {
 }
 
 /**
+ * The names of a complete `objects.list` page, or null for anything else: an object of kind `storage#objects` whose
+ * `items`, when present, are all named. A next page with no item cannot show the prefix empty. Null is never empty.
+ */
+function namesOfListing(body: unknown): string[] | null {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+    const { kind, items, nextPageToken } = body as { kind?: unknown; items?: unknown; nextPageToken?: unknown };
+    if (kind !== 'storage#objects' || (items !== undefined && !Array.isArray(items))) return null;
+    const names = ((items ?? []) as unknown[]).map((item) =>
+        typeof item === 'object' && item !== null ? (item as { name?: unknown }).name : undefined
+    );
+    if (names.some((name) => typeof name !== 'string')) return null;
+    if (nextPageToken !== undefined && names.length === 0) return null;
+    return names as string[];
+}
+
+/**
  * A minimal Cloud Storage JSON API client: the four object calls the artifact index needs and a prefix
  * list for an org's purge, nothing else. It never creates or inspects the bucket (Terraform owns it; `roles/storage.objectUser` has
  * no bucket rights). Credentials are the caller's `GcsTokenProvider`; a 401 refetches the token
@@ -116,14 +132,13 @@ export function createGcsStore(options: GcsOptions): ObjectStore {
             const query = new URLSearchParams({
                 prefix,
                 maxResults: String(call?.limit ?? LIST_LIMIT),
-                fields: 'items(name)',
+                fields: 'kind,nextPageToken,items(name)',
             });
             const response = await send('GET', `${objectsUrl}?${query}`, { signal: call?.signal });
             if (response.status !== HTTP_OK) return fail('LIST', response);
-            const { items } = (await response.json()) as { items?: { name: string }[] };
-            if (items !== undefined && !Array.isArray(items))
-                throw new GcsError('LIST', response.status, 'not a listing');
-            return (items ?? []).map((item) => item.name);
+            const names = namesOfListing(await response.json().catch(() => undefined));
+            if (!names) throw new GcsError('LIST', response.status, 'not a complete listing');
+            return names;
         },
     };
 }

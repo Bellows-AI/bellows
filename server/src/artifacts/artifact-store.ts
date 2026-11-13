@@ -2,6 +2,7 @@ import type { Sql } from 'postgres';
 import { chunkKey, checkStreamRef, parseChunkKey, type StreamRef } from './keys.js';
 import type { ObjectStore } from './object-store.js';
 import { sha256Hex } from './sigv4.js';
+import { fencedPut } from '../db/object-write-fence.js';
 
 /**
  * The artifact index (070) over an object store, bound to one organization like every other store
@@ -394,7 +395,7 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
             // call. A 412 is success only when what the store holds is the recorded body: the
             // recorded sha256 is this body's, so a held object that differs is an orphan from
             // outside the index, and the retry must not report it stored.
-            const written = await objects.put(key, body);
+            const written = await fencedPut({ sql, orgId, objects }, key, body);
             if (written === 'exists') await readVerified(key, recorded);
             return { result: written === 'created' ? 'stored' : 'duplicate', key };
         },

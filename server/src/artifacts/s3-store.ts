@@ -43,6 +43,27 @@ const XML_ENTITIES: Readonly<Record<string, string>> = { amp: '&', lt: '<', gt: 
 const unescapeXml = (text: string): string =>
     text.replace(/&(amp|lt|gt|quot|apos);/g, (_, name) => XML_ENTITIES[name] ?? '');
 
+const LISTING = /^\s*(?:<\?xml[^>]*\?>\s*)?<ListBucketResult(?:\s[^>]*)?>([\s\S]*)<\/ListBucketResult>\s*$/;
+
+/**
+ * The keys of a complete ListObjectsV2 page, or null for anything else: the whole document must be there, with its
+ * `KeyCount` and `IsTruncated`, every entry closed and keyed, and as many keys as `KeyCount` says. A truncated page
+ * with no key cannot show the prefix empty. Null is never an empty answer.
+ */
+function keysOfListing(body: string): string[] | null {
+    const inner = LISTING.exec(body)?.[1];
+    if (inner === undefined) return null;
+    const count = /<KeyCount>(\d+)<\/KeyCount>/.exec(inner)?.[1];
+    const truncated = /<IsTruncated>(true|false)<\/IsTruncated>/.exec(inner)?.[1];
+    if (count === undefined || truncated === undefined) return null;
+    const entries = [...inner.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)].map((match) => match[1] ?? '');
+    if ((inner.match(/<Contents>/g) ?? []).length !== entries.length) return null;
+    const keys = entries.map((entry) => /<Key>([^<]*)<\/Key>/.exec(entry)?.[1]);
+    if (keys.some((key) => key === undefined) || keys.length !== Number(count)) return null;
+    if (truncated === 'true' && keys.length === 0) return null;
+    return keys.map((key) => unescapeXml(key ?? ''));
+}
+
 /**
  * A minimal S3 client: the four object calls the artifact index needs, a prefix list for an org's purge, plus the
  * bucket bootstrap. No SDK — the keys are ASCII ids and integers, and the request is signed by
@@ -148,9 +169,9 @@ export function createS3Store(options: S3Options): S3Store {
             url.searchParams.set('max-keys', String(call?.limit ?? LIST_LIMIT));
             const response = await send('GET', url, { signal: call?.signal });
             if (response.status !== HTTP_OK) return fail('LIST', response);
-            const body = await response.text();
-            if (!body.includes('<ListBucketResult')) throw new S3Error('LIST', response.status, 'not a listing');
-            return [...body.matchAll(/<Key>([^<]*)<\/Key>/g)].map((match) => unescapeXml(match[1] ?? ''));
+            const keys = keysOfListing(await response.text());
+            if (!keys) throw new S3Error('LIST', response.status, 'not a complete listing');
+            return keys;
         },
         async ensureBucket() {
             const head = await send('HEAD', urlOf(''));

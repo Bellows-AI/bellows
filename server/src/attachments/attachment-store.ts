@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { AttachmentMeta } from '@factory-ai/core';
 import type { ObjectStore } from '../artifacts/object-store.js';
+import { OBJECT_WRITE_BOUND_MS } from '../db/object-write-fence.js';
 import type { AttachmentRow, AttachmentRows } from './attachment-rows.js';
 
 /**
@@ -40,7 +41,7 @@ export class AttachmentGoneError extends Error {
  * transfer and the board has no request timeout of its own (the body is read before the stamp), so the bound is the
  * write's only deadline; the sweep waits this plus a margin after `deleting_at` before it deletes an object.
  */
-export const UPLOAD_WRITE_BOUND_MS = 600_000;
+export const UPLOAD_WRITE_BOUND_MS = OBJECT_WRITE_BOUND_MS;
 
 /** `<prefix>_attachments/<org>/<id>`: the leading `_` fails the artifact key segment rule, so no artifact key can collide. */
 export const attachmentKey = (prefix: string, orgId: string, id: string): string =>

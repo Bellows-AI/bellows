@@ -5,6 +5,9 @@ import { startIntervalLoop } from '../interval-loop.js';
 import { identityKey } from '../secrets/secret-input.js';
 import type { OperationId, SecretIdentity, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
 import { recordAudit } from './audit-log.js';
+import { OBJECT_WRITE_DRAIN_MS } from './object-write-fence.js';
+
+const MS_PER_SECOND = 1000;
 
 /**
  * Deleting an organization (docs/organizations.md, `143_org_purge.sql`): one `org_purge` row per org, walked in three
@@ -18,7 +21,8 @@ import { recordAudit } from './audit-log.js';
  *    reconciled, each live reference deleted, the collector run, and the step is confirmed only when `secret_version`
  *    holds no version of them — the collector drops a row only after the provider confirmed its payload gone. Then
  *    the tombstone and operation rows go too (the exception to the tombstone rule in docs/secrets.md).
- * 2. objects — every key under the org's artifact, attachment and skill prefixes, until a list answers empty.
+ * 2. objects — once every write that passed the fence has drained (`object-write-fence.ts`: a requested purge refuses
+ *    new writes), every key under the org's artifact, attachment and skill prefixes, until a list answers empty.
  * 3. rows — the organization row is deleted; every org table cascades with it (`org-tables.ts`), this row included.
  *
  * A step that cannot be confirmed — a failed or malformed list, a delete the store did not confirm, a collector
@@ -47,6 +51,7 @@ export type PurgeError =
     | 'object-list-failed'
     | 'object-delete-failed'
     | 'pass-timeout'
+    | 'writes-draining'
     | 'pass-failed';
 
 export interface OrgPurgeDeps {
@@ -58,6 +63,8 @@ export interface OrgPurgeDeps {
     deploymentMode: DeploymentMode;
     log?: ((line: string) => void) | undefined;
     passMs?: number | undefined;
+    /** Tests only: how long after the request the object step waits for fenced writes (`OBJECT_WRITE_DRAIN_MS`). */
+    writeDrainMs?: number | undefined;
 }
 
 interface Pass {
@@ -212,6 +219,13 @@ async function deletePage(pass: Pass, namespace: string): Promise<StepResult | '
 }
 
 async function purgeObjects(pass: Pass): Promise<StepResult> {
+    // A write that passed the fence before the request has landed or been abandoned only after the drain.
+    const drainMs = pass.deps.writeDrainMs ?? OBJECT_WRITE_DRAIN_MS;
+    const [drained] = await pass.tx<{ done: boolean }[]>`
+        select now() >= requested_at + make_interval(secs => ${drainMs / MS_PER_SECOND}) as done
+        from org_purge where org_id = ${pass.orgId}
+    `;
+    if (drained?.done !== true) return 'writes-draining';
     for (const namespace of orgObjectPrefixes(pass.deps.prefix, pass.orgId)) {
         for (let page: StepResult | 'empty' = null; page !== 'empty'; page = await deletePage(pass, namespace)) {
             if (page) return page;
