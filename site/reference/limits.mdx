@@ -150,6 +150,18 @@ See [Skills](/guides/skills).
 
 See [Environment variables and secrets](/guides/env-and-secrets).
 
+## Requests
+
+These count per server replica, so a board with two replicas admits up to twice the rate. Runners and drivers are never rate limited, so a busy organization cannot cost a running task its lease. A board with sign-in turned off (`AUTH_MODE=none`) has no request rate.
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Requests per sign-in session or token | 600 a minute. Set by the operator | `429` with code `RATE_LIMITED` and a `Retry-After` header in seconds |
+| Requests per organization, all its members together | 3,000 a minute. Set by the operator | `429` with code `RATE_LIMITED` and `Retry-After` |
+| MCP requests open at once per organization | 16. Set by the operator | `429` with `Retry-After: 5` |
+| Run log read page (`GET /api/jobs/:id/artifacts/read`) | 256 KiB by default, up to 4 MiB | Refused: `BAD_LIMIT` |
+| One database statement | 60 seconds. Set by the operator | The request fails. A statistics query over a long range is the usual cause; narrow the range |
+
 ## Tokens
 
 | Limit | Value | When exceeded |

@@ -4,6 +4,7 @@
  * after commit is recovered by repeating the request: the lookup finds the row and answers its id.
  */
 
+import { waitAdvisoryXactLock } from '../pool.js';
 import type { TransactionSql } from 'postgres';
 
 export type IdempotentOperation = 'create' | 'follow-up' | 'retry';
@@ -42,7 +43,7 @@ export async function replayOf(
     const caller = createdBy ?? '';
     // The unit separator cannot appear in a key (the route's alphabet) nor in an org or user id.
     const scope = [orgId, caller, idem.operation, idem.key].join('\u001f');
-    await tx`select pg_advisory_xact_lock(hashtextextended(${scope}::text, 0))`;
+    await waitAdvisoryXactLock(tx, scope);
     await tx`
         update job
         set idempotency_key = null, idempotency_operation = null,

@@ -1,3 +1,4 @@
+import { waitAdvisoryXactLock } from './pool.js';
 import type { Sql, TransactionSql } from 'postgres';
 import { PlanLimitError, type PlanLimits, planLimits } from './plan-limits.js';
 
@@ -99,6 +100,6 @@ export async function refuseOverStorage(
     size: number
 ): Promise<void> {
     if (max === undefined) return;
-    await tx`select pg_advisory_xact_lock(hashtextextended(${`plan:storage:${orgId}`}, 0))`;
+    await waitAdvisoryXactLock(tx, `plan:storage:${orgId}`);
     if ((await storageUsed(tx, orgId)) + size > max) throw new PlanLimitError('storage', max);
 }

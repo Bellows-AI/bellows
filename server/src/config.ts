@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { CLOUD, DEPLOYMENT_MODES, type DeploymentMode, SELF_HOSTED } from '@factory-ai/core';
 import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
 import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
+import { loadRequestLimits, loadStatementTimeoutMs, parseTrustedProxies, type RequestLimits } from './config-limits.js';
 import { loadMcpConfig, type McpConfig } from './config-mcp.js';
 import type { TelemetrySource } from './telemetry/client.js';
 import type { PlanLimits } from './db/plan-limits.js';
@@ -142,7 +143,14 @@ export interface AppConfig {
      * without one, and therefore no `null` to branch on at 30-odd call sites.
      */
     readonly databaseUrl: string;
+    /** Each of the board's two pools, per replica (DB_POOL_MAX); the chart divides its budget by the replicas. */
     readonly dbPoolMax: number;
+    /** One statement's budget on the board's pools (DB_STATEMENT_TIMEOUT_MS); see `db/pool.ts` for what lifts it. */
+    readonly dbStatementTimeoutMs: number;
+    /** The proxies whose `X-Forwarded-For` names the client (TRUSTED_PROXIES); empty trusts none. */
+    readonly trustedProxies: readonly string[];
+    /** The human request rate and the MCP stream cap (RATE_LIMIT_*, MCP_STREAMS_PER_ORG). See `config-limits.ts`. */
+    readonly requestLimits: RequestLimits;
     readonly telemetryTtlMs: number;
     readonly auth: AuthConfig;
     /**
@@ -747,6 +755,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         telemetrySource,
         databaseUrl,
         dbPoolMax,
+        dbStatementTimeoutMs: loadStatementTimeoutMs(env),
+        trustedProxies: parseTrustedProxies(env.TRUSTED_PROXIES),
+        requestLimits: loadRequestLimits(env),
         telemetryTtlMs: telemetryTtlSeconds * MS_PER_SECOND,
         auth: loadAuth(env, host, port),
         webhookSecret,

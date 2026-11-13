@@ -1,3 +1,4 @@
+import { waitAdvisoryXactLock } from '../db/pool.js';
 import type { AttachmentState } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { IdempotencyKeyReusedError } from '../db/jobs/job-store-idempotency.js';
@@ -90,7 +91,7 @@ async function replayOf(
 ): Promise<AttachmentRow | null> {
     // The unit separator cannot appear in a key (the route's alphabet) nor in an org or user id.
     const scope = [orgId, uploaderId, 'attachment-upload', idem.key].join('\u001f');
-    await tx`select pg_advisory_xact_lock(hashtextextended(${scope}::text, 0))`;
+    await waitAdvisoryXactLock(tx, scope);
     await tx`
         update input_attachment
         set idempotency_key = null, idempotency_fingerprint = null, idempotency_at = null

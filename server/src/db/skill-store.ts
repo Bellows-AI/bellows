@@ -1,3 +1,4 @@
+import { waitAdvisoryXactLock } from './pool.js';
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { isReservedSkillName, type SkillRequirements, SKILL_NAME, SKILL_NAME_LIMIT } from '@factory-ai/core';
@@ -53,8 +54,7 @@ export const skillObjectKey = (prefix: string, orgId: string, sha256: string): s
 export const skillKeyNamespace = (prefix: string): string => `${prefix}_skills/`;
 
 /** A string key for `pg_advisory_xact_lock`: writers and the sweep serialize on one object key. */
-export const lockObjectKey = (tx: Sql | TransactionSql, key: string) =>
-    tx`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+export const lockObjectKey = (tx: Sql | TransactionSql, key: string) => waitAdvisoryXactLock(tx, key);
 
 export interface SkillVersionInfo {
     id: string;

@@ -3,6 +3,7 @@
  * and reopen — and the reclaim a thread queues once its last member is done.
  */
 
+import { waitAdvisoryXactLock } from '../pool.js';
 import type { Sql, TransactionSql } from 'postgres';
 import { type DeploymentMode, OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../connection-bindings.js';
@@ -38,7 +39,7 @@ const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(va
  */
 async function refuseAtQueuedCap(tx: TransactionSql, orgId: string, cap: number | undefined): Promise<void> {
     if (cap === undefined) return;
-    await tx`select pg_advisory_xact_lock(hashtextextended(${`plan:queued:${orgId}`}, 0))`;
+    await waitAdvisoryXactLock(tx, `plan:queued:${orgId}`);
     const [row] = await tx<{ n: number }[]>`
         select count(*)::int as n from job where org_id = ${orgId} and status = 'queued' and review_of is null
     `;

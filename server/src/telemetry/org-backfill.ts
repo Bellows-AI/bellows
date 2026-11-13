@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { liftStatementTimeout } from '../db/pool.js';
 import { startIntervalLoop } from '../interval-loop.js';
 
 /** Blocks of the points partition one transaction visits: about 8 MB of heap, so no batch holds its rows for long. */
@@ -33,6 +34,8 @@ export async function backfillMetricPointOrgs(
     for (;;) {
         signal?.throwIfAborted();
         const step = await sql.begin(async (tx) => {
+            // A batch the statement timeout cancelled would be retried from the same block forever.
+            await liftStatementTimeout(tx);
             const [cursor] = await tx<{ next_block: string; done_at: Date | null }[]>`
                 select next_block, done_at from metric_point_org_backfill for update skip locked
             `;

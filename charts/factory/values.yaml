@@ -74,6 +74,21 @@ dashboard:
     # The board operator (docs/organizations.md): comma-separated numeric GitHub user ids that may suspend,
     # refuse and reactivate organizations. Empty is nobody; the board refuses it outside deploymentMode cloud.
     operatorGithubIds: ''
+    # The request limits (docs/limits.md), each counted per replica; empty takes the board's default
+    # (600 and 3000 requests a minute per credential and per org, 16 MCP requests open per org, 60000 ms
+    # per statement). trustedProxies: the addresses or CIDRs of the load balancer or ingress in front,
+    # comma-separated, whose X-Forwarded-For names the client; empty trusts none, so behind a proxy
+    # every caller shares the proxy's address in the OAuth registration limit.
+    limits:
+        trustedProxies: ''
+        requestsPerCredential: ''
+        requestsPerOrg: ''
+        mcpStreamsPerOrg: ''
+        statementTimeoutMs: ''
+    # The database connections the board may hold across every replica. Each replica runs two pools of
+    # dbConnections / (2 x replicas) apiece (DB_POOL_MAX); the render refuses fewer than 2 per pool.
+    # Keep it under the database's max_connections, less what else connects to it.
+    dbConnections: 100
     # The optional commerce service (docs/configuration.md). Off, the board opens no connection and
     # registers no route. On, `url` and `secret.commerceToken` (at least 32 characters) are required.
     commerce:

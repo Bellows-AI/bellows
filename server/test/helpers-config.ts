@@ -3,6 +3,7 @@ import { parseFixtureFetch } from '../src/telemetry/fixture-client.js';
 import type { TelemetryInput } from '@factory-ai/core';
 import type { TelemetryFetch } from '../src/telemetry/client.js';
 import type { AppConfig, AuthConfig } from '../src/config.js';
+import { DEFAULT_REQUEST_LIMITS, DEFAULT_STATEMENT_TIMEOUT_MS } from '../src/config-limits.js';
 
 const TELEMETRY_FIXTURE = new URL('../../core/test/fixtures/telemetry-usage.json', import.meta.url);
 
@@ -38,6 +39,10 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         // because AppConfig requires one, not because anything opens it.
         databaseUrl: 'postgres://factory:factory@127.0.0.1:5432/factory_test',
         dbPoolMax: DEFAULT_DB_POOL_MAX,
+        dbStatementTimeoutMs: DEFAULT_STATEMENT_TIMEOUT_MS,
+        // loadConfig's defaults: no proxy trusted, the production request limits.
+        trustedProxies: [],
+        requestLimits: DEFAULT_REQUEST_LIMITS,
         telemetryTtlMs: DEFAULT_TELEMETRY_TTL_MS,
         // Matches loadConfig's default. Note that this is only what the *config* says: the app is
         // built with no auth store at all unless a test passes one, so by default no hook runs.

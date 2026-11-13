@@ -5,6 +5,7 @@
  * is the delivery, not the click.
  */
 
+import { waitAdvisoryXactLock } from '../pool.js';
 import type { Sql, TransactionSql } from 'postgres';
 import { backsBatchTask } from './job-store-rows.js';
 import { queueReclaimIfThreadDone } from './job-store-reclaim-queue.js';
@@ -105,7 +106,7 @@ async function closeMergedPrOnce(
     const { sql, orgId, prs } = ctx;
     return sql.begin(async (tx) => {
         const locked = new Set(await lockRootRowsInTx(tx, orgId, await mergedRootsOf(tx, orgId, repo, prNumber)));
-        await tx`select pg_advisory_xact_lock(hashtextextended(${prLockKey(orgId, repo, prNumber)}::text, 0))`;
+        await waitAdvisoryXactLock(tx, prLockKey(orgId, repo, prNumber));
 
         const [recorded] = await tx<{ org_id: string }[]>`
             insert into pr_merge (org_id, repo, pr_number, delivery_id, merged_at)
