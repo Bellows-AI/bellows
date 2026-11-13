@@ -122,6 +122,11 @@ export interface UserExecutorStore {
         scope: ExecutorScope,
         exec: Sql | TransactionSql
     ): Promise<UserExecutorConfig | null>;
+    /**
+     * Settles once the organization's profiles are in stored form (the plaintext conversion done).
+     * A claim awaits it BEFORE opening its transaction: the conversion takes pool connections.
+     */
+    ready(): Promise<void>;
 
     /** The organization's profiles, in management order. Never carries configs — poll-shaped. */
     listOrg(): Promise<ExecutorProfile[]>;
@@ -467,8 +472,12 @@ export function createUserExecutorStore({
                 : null;
         },
 
+        ready: gate,
+
         async claimConfigFor(userId, name, scope, exec) {
-            await gate();
+            // Never the conversion gate: it needs a pool connection while the claim's transaction
+            // holds one. The claim awaits `ready()` before opening it.
+            if (ready) await ready;
             return claimConfigRow(deps, { owner: scope === USER_SCOPE ? userId : null, name }, exec);
         },
 

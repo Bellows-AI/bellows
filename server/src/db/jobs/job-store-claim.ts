@@ -604,6 +604,8 @@ export async function claimJob(
 ): ReturnType<JobStore['claim']> {
     const { sql, orgId, wallTick, prs } = ctx;
     const sweepStart = performance.now();
+    // Outside every transaction below: the conversion takes pool connections of its own.
+    await ctx.executorConfig?.ready?.();
 
     // An expired attempt that staged its conclusion is committed before anything else reads the
     // board: no stop settle, retirement, takeover or remote read may come first, and a

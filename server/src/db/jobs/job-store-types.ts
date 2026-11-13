@@ -1097,6 +1097,8 @@ export interface CreateJobStoreDeps {
      * guards the env resolver leaves the job queued with its attempt unburned.
      */
     executorConfig?: {
+        /** Awaited before a claim or review transaction opens: the profiles' plaintext conversion. */
+        ready?(): Promise<void>;
         /** Every stored credential resolved from the secret store; an unconfirmed read throws. */
         claimConfigFor(
             userId: string,

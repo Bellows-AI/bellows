@@ -143,6 +143,8 @@ export async function requestReviewFor(
     request: ReviewRequest
 ): Promise<RequestReviewResult> {
     const { sql, orgId } = ctx;
+    // Before the transaction: the profiles' conversion takes pool connections of its own.
+    await ctx.executorConfig?.ready?.();
     return sql.begin(async (tx): Promise<RequestReviewResult> => {
         const caller = await lockedCaller(tx, orgId, id, leaseToken);
         if (!caller) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
@@ -372,6 +374,7 @@ export async function readReviewFor(
     key: string
 ): Promise<ReadReviewResult> {
     const { sql, orgId } = ctx;
+    await ctx.executorConfig?.ready?.();
     return sql.begin(async (tx): Promise<ReadReviewResult> => {
         const caller = await lockedCaller(tx, orgId, id, leaseToken);
         if (!caller) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
