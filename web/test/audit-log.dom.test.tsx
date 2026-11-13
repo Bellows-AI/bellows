@@ -110,6 +110,42 @@ describe('the audit log section', () => {
         expect(auditCalls(calls).at(-1)!.url).toContain('from=2026-01-01');
     });
 
+    it('offers no export for a cleared or reversed range, and names the file after the range it loaded', async () => {
+        stubObjectUrls();
+        const clicked: string[] = [];
+        const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+            this: HTMLAnchorElement
+        ) {
+            clicked.push(this.download);
+        });
+        stubAudit(settingsBoard(), [event({})]);
+        const user = userEvent.setup();
+        renderApp('/settings/organization');
+
+        await screen.findByRole('region', { name: 'Audit events' });
+        const exportButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Export' });
+        const fromField = screen.getByLabelText<HTMLInputElement>('From');
+        const toField = screen.getByLabelText<HTMLInputElement>('To');
+        const loaded = { from: fromField.value, to: toField.value };
+        await waitFor(() => expect(exportButton().disabled).toBe(false));
+
+        // A cleared edge: the loaded rows are not this range's.
+        await user.clear(fromField);
+        expect(exportButton().disabled).toBe(true);
+
+        // A reversed range: still nothing of its own to save.
+        await user.type(fromField, '2099-01-01');
+        expect(exportButton().disabled).toBe(true);
+
+        // Back to a valid range: the file names the range its rows were read for.
+        await user.clear(fromField);
+        await user.type(fromField, loaded.from);
+        await waitFor(() => expect(exportButton().disabled).toBe(false));
+        await user.click(exportButton());
+        expect(clicked).toEqual([`audit-${loaded.from}-to-${loaded.to}.ndjson`]);
+        click.mockRestore();
+    });
+
     it('names a failed read, and offers no export', async () => {
         stubAudit(settingsBoard(), { status: 500 });
         renderApp('/settings/organization');

@@ -49,10 +49,13 @@ export function AuditLogSection({ session }: { session: Session | null }) {
     const ids = useId();
     const [to, setTo] = useState(() => dayOf(Date.now()));
     const [from, setFrom] = useState(() => dayOf(Date.now() - WEEK_DAYS * DAY_MS));
-    const [log, setLog] = useState<AuditLog | null>(null);
+    /** The answer and the days it was read for: an export saves exactly that, under those days' name. */
+    const [loaded, setLoaded] = useState<{ log: AuditLog; from: string; to: string } | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const backwards = from !== '' && to !== '' && from > to;
+    const incomplete = from === '' || to === '';
+    const log = loaded?.log ?? null;
 
     useEffect(() => {
         if (!isAdmin || from === '' || to === '' || from > to) return;
@@ -60,10 +63,10 @@ export function AuditLogSection({ session }: { session: Session | null }) {
         setLoading(true);
         void readAuditLog(from, to, controller.signal).then((result) => {
             if (result.ok) {
-                setLog(result.log);
+                setLoaded({ log: result.log, from, to });
                 setError(null);
             } else if (!result.aborted) {
-                setLog(null);
+                setLoaded(null);
                 setError(result.error);
             }
             if (!controller.signal.aborted) setLoading(false);
@@ -106,8 +109,9 @@ export function AuditLogSection({ session }: { session: Session | null }) {
                 <button
                     type="button"
                     className="tertiary"
-                    disabled={!log || loading}
-                    onClick={() => log && saveAuditLog(log.file, `audit-${from}-to-${to}`)}
+                    // A cleared or reversed range has no rows of its own: the loaded ones belong to other days.
+                    disabled={!loaded || loading || incomplete || backwards}
+                    onClick={() => loaded && saveAuditLog(loaded.log.file, `audit-${loaded.from}-to-${loaded.to}`)}
                 >
                     Export
                 </button>
