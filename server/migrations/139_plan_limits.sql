@@ -11,3 +11,7 @@ alter table org_plan add column if not exists max_wall_seconds integer check (ma
 -- Why the board stopped a run on its own, apart from a member's stop (stopped_by) and an infrastructure loss
 -- (interruptions): the only cause is the plan's wall time. Null on every other row.
 alter table job add column if not exists stop_cause text check (stop_cause in ('wall-time'));
+
+-- When the org was last served: the newest claim's `started_at` (every claim stamps it), read by the cross-org
+-- claim order to give an equal share to the org served least recently. One index probe per org per poll.
+create index if not exists job_org_last_claim on job (org_id, started_at desc) where review_of is null;

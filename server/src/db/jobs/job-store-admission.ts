@@ -184,13 +184,16 @@ async function admitInBudget(tx: TransactionSql, budget: Budget): Promise<number
 /**
  * What one org's board asks of the cluster right now, read from its rows so every board replica
  * orders the cross-org claim scan the same way (`fairBoardScan`): whether a lost
- * attempt waits for its takeover, how many rows run against what cap, and when its oldest waiting row queued.
+ * attempt waits for its takeover, how many rows run against what cap, when it was last served, and when its
+ * oldest waiting row queued.
  */
 export interface OrgDemand {
     readonly takeover: boolean;
     readonly running: number;
     /** The org's running cap (`orgAdmission`'s org budget); absent is unlimited, weighted as a cap of 1. */
     readonly cap?: number;
+    /** When the org's newest claim started (`started_at`); null, or absent, when it was never served. */
+    readonly lastServed?: Date | null;
     readonly oldestWaiting: Date | null;
 }
 
@@ -218,10 +221,15 @@ export async function orgDemand(sql: Sql, orgId: string, cap: number | undefined
         from job
         where org_id = ${orgId} and status in ('queued', 'running')
     `;
+    // Its own read, through `job_org_last_claim`: the newest claim may be on a row that has long finished.
+    const [served] = await sql<{ last_served: Date | null }[]>`
+        select max(started_at) as last_served from job where org_id = ${orgId} and review_of is null
+    `;
     return {
         takeover: row?.takeover ?? false,
         running: row?.running ?? 0,
         ...(cap === undefined ? {} : { cap }),
+        lastServed: served?.last_served ?? null,
         oldestWaiting: row?.oldest_waiting ?? null,
     };
 }

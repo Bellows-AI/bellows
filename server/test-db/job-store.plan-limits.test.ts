@@ -55,6 +55,33 @@ const create = (store: JobStore, key?: string) =>
         ...(key ? { idempotency: { operation: 'create' as const, key, fingerprint: 'fp' } } : {}),
     });
 
+type Served = { board: JobStore; claim: Claim; org: string };
+
+/** One board replica's fair scan over both orgs: each call claims one row, or answers null. */
+function scanner(admission: AdmissionBudgets): () => Promise<Served | null> {
+    const orgs = [ORG_A, ORG_B];
+    const boards = orgs.map((orgId) => storeFor(orgId, {}, admission));
+    const scan = fairBoardScan();
+    return async () => {
+        let board: JobStore | null = null;
+        const claim = await scan<JobStore, Claim>(
+            boards,
+            (e) => {
+                throw e;
+            },
+            async (candidate, options) => {
+                const claimed = await candidate.claim('w', LEASE_SECONDS, options);
+                if (claimed) board = candidate;
+                return claimed;
+            }
+        );
+        return claim ? { board: board!, claim, org: orgs[boards.indexOf(board!)]! } : null;
+    };
+}
+
+const finish = ({ board, claim }: Served) =>
+    board.complete(claim.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
+
 describe.skipIf(!enabled)('plan limits per organization', () => {
     it('resolves an org with no pushed plan to the Free limits a cloud board requires, never unlimited', async () => {
         const cloud = loadConfig(
@@ -158,33 +185,32 @@ describe.skipIf(!enabled)('plan limits per organization', () => {
         // Org A's queue is older, so the order of fewest running alone would serve it first and as often as B.
         for (let i = 0; i < 12; i++) await queued(ORG_A, 600 - i);
         for (let i = 0; i < 12; i++) await queued(ORG_B, 300 - i);
-        const boards = [ORG_A, ORG_B].map((orgId) => storeFor(orgId, {}, { global: 3 }));
-        const scan = fairBoardScan();
+        const next = scanner({ global: 3 });
         const served = { [ORG_A]: 0, [ORG_B]: 0 };
         for (let round = 0; round < 3; round++) {
-            const held: { board: JobStore; claim: Claim }[] = [];
-            for (;;) {
-                let board: JobStore | null = null;
-                const claim = await scan<JobStore, Claim>(
-                    boards,
-                    (e) => {
-                        throw e;
-                    },
-                    async (candidate, options) => {
-                        const claimed = await candidate.claim(`w${round}`, LEASE_SECONDS, options);
-                        if (claimed) board = candidate;
-                        return claimed;
-                    }
-                );
-                if (!claim) break;
-                held.push({ board: board!, claim });
-                const org = boards.indexOf(board!) === 0 ? ORG_A : ORG_B;
-                served[org] = (served[org] ?? 0) + 1;
+            const held: Served[] = [];
+            for (let one = await next(); one; one = await next()) {
+                held.push(one);
+                served[one.org] = (served[one.org] ?? 0) + 1;
             }
-            for (const { board, claim } of held) {
-                await board.complete(claim.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
-            }
+            for (const one of held) await finish(one);
         }
         expect(served).toEqual({ [ORG_A]: 3, [ORG_B]: 6 });
+    });
+
+    it('never starves an org when one slot refills at a time: equal shares go to the least recently served', async () => {
+        await pushPlan(ORG_A, { running: 1 });
+        await pushPlan(ORG_B, { running: 4 });
+        // Both orgs read 0 running at every refill; org A's queue is older, which alone would win every refill.
+        for (let i = 0; i < 10; i++) await queued(ORG_A, 600 - i);
+        for (let i = 0; i < 10; i++) await queued(ORG_B, 300 - i);
+        const next = scanner({ global: 1 });
+        const order: string[] = [];
+        for (let i = 0; i < 8; i++) {
+            const one = (await next())!;
+            order.push(one.org === ORG_A ? 'A' : 'B');
+            await finish(one);
+        }
+        expect(order.join('')).toBe('ABABABAB');
     });
 });
