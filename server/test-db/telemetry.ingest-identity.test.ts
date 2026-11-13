@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { ingestRoutes } from '../src/routes/ingest.js';
 import { createPostgresStore } from '../src/telemetry/store.js';
@@ -12,7 +13,8 @@ import { useTestDb } from './harness.js';
  * flattener, the digest and the unique index are exercised together.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
-const db = useTestDb();
+// No auth hook here: every export is the AUTH_MODE=none org's, which must exist for its rows' key.
+const db = useTestDb({ orgs: [LOCAL_ORG_ID] });
 
 const T = '1760000000000000000';
 const START = '1759999990000000000';

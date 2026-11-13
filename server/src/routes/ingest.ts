@@ -3,11 +3,11 @@ import { JOB_ID_HEADER, LEASE_TOKEN_HEADER, orgOf } from '../auth/plugin.js';
 import { UUID } from '../identifiers.js';
 import type { OrgRegistry } from '../orgs.js';
 import { flattenMetrics } from '../telemetry/otlp.js';
-import type { SessionBranchReport, TelemetryStore } from '../telemetry/store.js';
+import type { SessionBranchReport, SessionClaimant, TelemetryStore } from '../telemetry/store.js';
 import { sendFailure } from './error-handler.js';
 import { storeFor } from './jobs/job-context.js';
 import { SESSION_ID } from './jobs/job-limits.js';
-import { CLAUDE_CODE, CONTENT_TYPE_HEADER, OPENCODE } from '@factory-ai/core';
+import { CLAUDE_CODE, CONTENT_TYPE_HEADER, ERROR_CODES, OPENCODE } from '@factory-ai/core';
 
 /**
  * A misconfigured exporter can POST into the same process that serves the SPA, every few
@@ -20,6 +20,7 @@ const CONTROL_BODY_LIMIT = 4096;
 const HTTP_OK = 200;
 const HTTP_ACCEPTED = 202;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_FORBIDDEN = 403;
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
 
 const isJson = (type: string | undefined) => typeof type === 'string' && /^application\/json\b/.test(type);
@@ -64,6 +65,15 @@ async function recordLiveSession(orgs: OrgRegistry, request: FastifyRequest, rep
     });
 }
 
+/**
+ * The credential's claim on a session: its org, and its attempt when it is one. The one input to
+ * `TelemetryStore.foreignSessions`, the session-ownership check both write routes share.
+ */
+const claimantOf = (request: FastifyRequest): SessionClaimant => ({
+    orgId: orgOf(request),
+    jobId: request.auth?.kind === 'job' ? request.auth.jobId : null,
+});
+
 export const ingestRoutes =
     (store: TelemetryStore, orgs: OrgRegistry): FastifyPluginAsync =>
     async (app) => {
@@ -73,8 +83,15 @@ export const ingestRoutes =
             }
 
             const { rows, skipped } = flattenMetrics(request.body);
+            let kept = rows;
             try {
-                await store.insertMetrics(rows);
+                // A point on a session another attempt or organization holds is refused, never written under
+                // this credential's org. The lookup runs first: when it cannot answer nothing is written (5xx).
+                const claimant = claimantOf(request);
+                const sessionIds = rows.flatMap((row) => (row.sessionId === null ? [] : [row.sessionId]));
+                const foreign = await store.foreignSessions(claimant, sessionIds);
+                kept = rows.filter((row) => row.sessionId === null || !foreign.has(row.sessionId));
+                await store.insertMetrics(kept, claimant.orgId);
             } catch (e) {
                 // 5xx is the ONE signal that means "resend". Reserve it for a genuine
                 // write failure, which is exactly the case a retry can fix.
@@ -84,8 +101,18 @@ export const ingestRoutes =
 
             // 200 with an empty partialSuccess is the OTLP success shape. A body we could
             // not fully parse is reported here, never as 5xx: exporters retry 5xx forever,
-            // so a shape our parser rejects would become an infinite loop.
-            app.log.debug({ accepted: rows.length, skipped }, 'otlp metrics');
+            // so a shape our parser rejects would become an infinite loop. A refused point
+            // is a partial rejection, which an exporter does not resend.
+            const rejected = rows.length - kept.length;
+            app.log.debug({ accepted: kept.length, rejected, skipped }, 'otlp metrics');
+            if (rejected > 0) {
+                return reply.code(HTTP_OK).send({
+                    partialSuccess: {
+                        rejectedDataPoints: rejected,
+                        errorMessage: 'a session another attempt or organization holds',
+                    },
+                });
+            }
             return reply.code(HTTP_OK).send({ partialSuccess: {} });
         });
 
@@ -107,10 +134,19 @@ export const ingestRoutes =
             if (!report) return reply.code(HTTP_BAD_REQUEST).send({ error: 'Malformed session branch report' });
 
             try {
+                // A report naming a session another attempt or organization holds would make the usage
+                // reader drop that session from its owner's figures: refused before anything is written.
+                // A lookup that cannot answer is a 5xx below, never an acceptance.
+                const claimant = claimantOf(request);
+                if ((await store.foreignSessions(claimant, [report.sessionId])).size > 0) {
+                    return reply
+                        .code(HTTP_FORBIDDEN)
+                        .send({ error: 'The session belongs to another attempt', code: ERROR_CODES.FORBIDDEN });
+                }
                 // The org is the credential's, never the report's: `repo` is caller-controlled
                 // payload, and the owner match it used to drive would let a report name another
                 // organization's repository and poison its telemetry (CWE-862).
-                await store.recordBranch(report, orgOf(request));
+                await store.recordBranch(report, claimant.orgId);
                 await recordLiveSession(orgs, request, report);
             } catch (e) {
                 request.log.error({ err: e }, 'session branch upsert failed');

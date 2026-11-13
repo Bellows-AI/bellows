@@ -147,7 +147,8 @@ const observationOf = (r: ObservationRow): TokenObservation => ({
  * Every read is bound to the tenant before it reaches memory: a session id is read only when the
  * organization has board or branch evidence for it, and a session id any OTHER organization also
  * has evidence for is dropped whole (evidence, points, spans) - it appears in no tenant payload,
- * not even as a count. A session with no evidence anywhere is never read.
+ * not even as a count. A session with no evidence anywhere is never read. Points, spans and field totals are only
+ * the ones the organization itself wrote (`metric_point.org_id`).
  */
 export async function readUsageFacts(
     tx: TransactionSql,
@@ -212,8 +213,9 @@ export async function readUsageFacts(
         ).values(),
     ];
     const ownedSessions = [...new Set([...anyAgent, ...pairs.map((p) => p.sessionId)])];
-    // The leading session filter is index-friendly; the OR below then narrows those rows to owned keys.
-    const ownedKeys = tx`(session_id = any(${tx.array(ownedSessions)}::text[]) and (session_id = any(${tx.array(anyAgent)}::text[])
+    // The leading session filter is index-friendly; the OR below then narrows those rows to owned keys. Only the points
+    // this organization wrote: another org's points on an owned key (or a null-org point) are never its usage.
+    const ownedKeys = tx`(org_id = ${orgId} and session_id = any(${tx.array(ownedSessions)}::text[]) and (session_id = any(${tx.array(anyAgent)}::text[])
         or (agent, session_id) in (select * from unnest(${tx.array(pairs.map((p) => p.agent))}::text[], ${tx.array(pairs.map((p) => p.sessionId))}::text[]))))`;
     const [allObservationRows, allSpanRows, allFieldRows] = await Promise.all([
         tx<ObservationRow[]>`

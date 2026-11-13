@@ -47,8 +47,10 @@ async function point(row: {
     agent?: string;
     source?: string;
     attrs?: Record<string, string>;
+    org?: string;
 }) {
     await sql`insert into metric_point ${sql({
+        org_id: row.org ?? ORG,
         agent: row.agent ?? 'claude-code',
         source: row.source ?? 'otel',
         metric: row.metric ?? 'claude_code.token.usage',
@@ -429,6 +431,7 @@ describe.skipIf(!enabled)('the postgres client', () => {
     it('stores an unmapped metric rather than rejecting it', async () => {
         // A future tool's data must accumulate before support for it is written.
         await sql`insert into metric_point ${sql({
+            org_id: ORG,
             agent: 'unknown',
             metric: 'opencode.tokens.total',
             field: null,
@@ -452,6 +455,7 @@ describe.skipIf(!enabled)('the postgres client', () => {
         // The opencode-executor emits `opencode.*` metrics; they must price as their own agent,
         // not vanish into the null-field filter or mislabel as claude-code.
         await sql`insert into metric_point ${sql({
+            org_id: ORG,
             agent: 'opencode',
             metric: 'opencode.active_time.total',
             field: 'active_seconds',

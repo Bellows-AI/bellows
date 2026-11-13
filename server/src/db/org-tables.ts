@@ -44,6 +44,7 @@ export const ORG_TABLES = [
     'job_question',
     'job_settle_receipt',
     'job_title_event',
+    'metric_point',
     'notification_event',
     'notification_outbox',
     'notification_subscription',

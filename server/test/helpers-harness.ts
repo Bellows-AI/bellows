@@ -202,6 +202,9 @@ export const telemetryStoreStub = (): TelemetryStore => ({
         return 0;
     },
     async recordBranch() {},
+    async foreignSessions() {
+        return new Set<string>();
+    },
 });
 
 /**

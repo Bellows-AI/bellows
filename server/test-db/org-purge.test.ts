@@ -147,6 +147,8 @@ const keysOf = (orgId: string) => [
 async function seed(orgId: string): Promise<SecretRef[]> {
     await craftJob({ sql: db.sql, org: orgId, author: user.id });
     await db.sql`insert into org_plan (org_id, plan, version) values (${orgId}, 'pro', 1)`;
+    await db.sql`insert into metric_point (org_id, metric, session_id, value, temporality, time, attrs)
+                 values (${orgId}, 'claude_code.token.usage', ${randomUUID()}, 1, 'delta', now(), '{}')`;
     await objects.put(chunkKey(PREFIX, orgId, STREAM, 0), bytes('log'));
     await objects.put(attachmentKey(PREFIX, orgId, randomUUID()), bytes('attachment'));
     await objects.put(skillObjectKey(PREFIX, orgId, 'a'.repeat(64)), bytes('skill'));

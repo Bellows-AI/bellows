@@ -55,6 +55,8 @@ export interface ExecutionRow {
 }
 
 export interface PointRow {
+    /** The organization that wrote the point. */
+    org: string;
     session: string | null;
     field: string;
     value: number;
@@ -156,6 +158,7 @@ export function createWorld(sql: Sql): World {
         },
         async point(row) {
             await sql`insert into metric_point ${sql({
+                org_id: row.org,
                 agent: row.agent ?? 'claude-code',
                 source: row.source ?? 'otel',
                 metric: FIELD_METRIC,

@@ -35,7 +35,7 @@ database-free through the in-memory stores in `server/test/helpers*.ts`.
   `server/test-db/migrate.checksum.test.ts`.
 - **The ten duplicate-prefix pairs are frozen.** The ledger key is the filename, so a rename re-applies the file; a new file takes an unused number. `server/test/migrations-numbering.test.ts`.
 - **A data migration batches, or builds its index `CONCURRENTLY` outside the transaction**, so the boot lock is not
-  held for a table scan; a foreign key's `validate` is the stated exception (141, ~1 s per million rows). `server/src/db/migrate.ts`.
+  held for a table scan; a foreign key's `validate` is the stated exception (141, ~1 s per million rows). `server/src/db/migrate.ts`. `metric_point` (145) is backfilled by the board, a block range per transaction: `server/src/telemetry/org-backfill.ts`.
 - **Versioned migrations run before repeatable ones; `*.repeatable.sql` files are re-applied every boot** and skipped when `schema_migrations` holds a versioned
   file this build does not ship. Every repeatable change, a revert included, ships a new no-op marker, the newest
   named after the repeatables' hash (`090_views_<hash>.sql`). `core/test/migrations.sql.test.ts`.
