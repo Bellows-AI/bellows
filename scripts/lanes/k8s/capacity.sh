@@ -9,7 +9,7 @@ begin_phase capacity
 # `<timings>.capacity.tsv`), and the driver pod holding the first heavy task is deleted hard: its row
 # keeps its slot, so no queued task is admitted, until the surviving replica takes the running agent
 # over. Draining the barriers hands the freed slots on in turn, and every task succeeds. Two dashboard
-# replicas are not covered here: the chart defaults to one (docs/kubernetes.md); the docker lane runs two boards.
+# replicas have their own phase (replicas.sh); the docker lane runs two boards.
 
 echo
 echo '# capacity'
@@ -20,22 +20,12 @@ capacity_sampler_pid=''
 cap_heavy_token=''
 cap_light_token=''
 
-cap_psql() { # cap_psql <sql> -> the answer, unaligned; non-zero when the read failed
-    bounded 15 kubectl exec -n "$NAMESPACE" --request-timeout=10s "statefulset/$STATE_RELEASE-postgres" -- \
-        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 postgres://factory:factory@127.0.0.1:5432/factory_dev -c "$1" 2>&1
-}
-
 cap_running() { # cap_running -> how many non-review tasks run, as the database counts them
-    cap_psql "select count(*) from job where status = 'running' and review_of is null"
+    lane_psql "select count(*) from job where status = 'running' and review_of is null"
 }
 
 cap_heavy() { FACTORY_TOKEN="$cap_heavy_token" "$@"; } # cap_heavy <function> [arg...] -> the call, as the heavy member
 cap_light() { FACTORY_TOKEN="$cap_light_token" "$@"; } # cap_light <function> [arg...] -> the call, as the light member
-
-start_port_forward() { # start_port_forward -> the dashboard Service on $PORT again; the pid in pf_pid
-    kubectl port-forward "svc/$RELEASE-factory" "$PORT:8080" -n "$NAMESPACE" >>"$PF_LOG" 2>&1 &
-    pf_pid=$!
-}
 
 cap_board_ready() { # cap_board_ready <seconds> -> success once the board answers migrated through the forward
     local until=$(($(date +%s) + $1))
@@ -87,7 +77,7 @@ cap_executors() { # cap_executors <function wrapper> -> the member stores the ex
 }
 
 cap_rows() { # cap_rows -> the four tasks' scheduling rows, for a check that failed (diagnostics only)
-    cap_psql "select id, status, claimed_by, claim_seq, lease_expires_at, org_id from job where id in ('$h1', '$h2', '$h3', '$l1') order by created_at" | tr '\n' ';'
+    lane_psql "select id, status, claimed_by, claim_seq, lease_expires_at, org_id from job where id in ('$h1', '$h2', '$h3', '$l1') order by created_at" | tr '\n' ';'
 }
 
 cap_owner_of() { # cap_owner_of <job> -> the worker that held it when $owners was read; empty when it was not running
@@ -110,7 +100,7 @@ cap_field() { # cap_field <json> <key>
 cap_sample() { # cap_sample <file> -> one row every 2 s, until killed: <epoch>|<running>|<distinct global slots>|<running without one>, <epoch>|? when the read failed
     local row
     while sleep 2; do
-        row="$(cap_psql "select count(*) || '|' || count(distinct admission_slot_global) || '|' || count(*) filter (where admission_slot_global is null) from job where status = 'running' and review_of is null")" ||
+        row="$(lane_psql "select count(*) || '|' || count(distinct admission_slot_global) || '|' || count(*) filter (where admission_slot_global is null) from job where status = 'running' and review_of is null")" ||
             row='?'
         printf '%s|%s\n' "$(date +%s)" "$row" >>"$1"
     done
@@ -200,7 +190,7 @@ cap_settled() { # cap_settled <label> <wrapper> <job> <owner> <lost owner> -> th
 cap_run() {
     local state running owners owners_known h2_owner h3_owner n pending left l1_wave queued_jobs h1 h2 h3 l1 h1_pod l1_pod h2_pod h3_pod h1_owner l1_owner victim='' kill_at='' took_at='' until verdict
     local heavy light
-    running="$(cap_psql "select count(*) from job where status in ('running', 'queued') and review_of is null")" && [ "$running" = 0 ] || {
+    running="$(lane_psql "select count(*) from job where status in ('running', 'queued') and review_of is null")" && [ "$running" = 0 ] || {
         bad 'capacity: the board starts with no running or queued task' "rows: $running"
         return 1
     }
@@ -301,7 +291,7 @@ cap_run() {
 
     # The crash: the replica holding the first heavy task (its worker name is its pod name) is deleted
     # hard. Read, not assumed: an owner that is no driver pod kills nothing.
-    owners="$(cap_psql "select id, claimed_by from job where id in ('$h1', '$h2', '$h3', '$l1') and status = 'running' order by id")"
+    owners="$(lane_psql "select id, claimed_by from job where id in ('$h1', '$h2', '$h3', '$l1') and status = 'running' order by id")"
     owners_known=1
     [ "$(printf '%s\n' "$owners" | grep -c .)" = 2 ] || owners_known=''
     for n in $(printf '%s\n' "$owners" | cut -d'|' -f2); do
@@ -323,7 +313,7 @@ cap_run() {
         n="$(expire_claim_one "$h1")"
         if [ "$n" = 1 ]; then
             ok 'capacity: the lost driver lease is expired'
-        elif [ "$(cap_psql "select lease_expires_at <= now() or claim_seq > 1 from job where id = '$h1'")" = t ]; then
+        elif [ "$(lane_psql "select lease_expires_at <= now() or claim_seq > 1 from job where id = '$h1'")" = t ]; then
             ok 'capacity: the lost driver lease had already run out'
         else
             bad 'capacity: the lost driver lease is expired' "$n"

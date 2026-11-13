@@ -4,8 +4,9 @@ Dockerfile calls "what deploys". Its environment block mirrors docker-compose.ym
 service line for line — the chart sets the same environment the compose file sets, which is the
 repo's only configuration mechanism.
 
-dashboard.replicas, default one, always replaced by Recreate, never rolled. Migrations, S3
-artifacts and the tracked-repo list are replica-safe; the filesystem artifact backend (one pod's
+dashboard.replicas, default one, always replaced by Recreate, never rolled. Above one the pods
+spread (dashboard.topologySpreadConstraints) so one node or zone loss leaves one serving.
+Migrations, S3 artifacts and the tracked-repo list are replica-safe; the filesystem artifact backend (one pod's
 /tmp) is refused above one (validate.yaml). Recreate because an old and a new version sharing one
 schema mid-rollout is not covered by any test. The cost is a few seconds of downtime per upgrade.
 */}}
@@ -49,6 +50,30 @@ spec:
                 seccompProfile:
                     type: RuntimeDefault
             {{- include "factory.podScheduling" . | nindent 12 }}
+            {{- /* An explicit value replaces the default; one replica has nothing to spread. The hostname rule is
+            hard and minDomains makes it mean "never two on a node": without it a single eligible node would
+            take both pods (a skew over one domain is always zero). matchLabelKeys keeps a Recreate's old pods
+            out of the count. */}}
+            {{- if .Values.dashboard.topologySpreadConstraints }}
+            topologySpreadConstraints:
+                {{- toYaml .Values.dashboard.topologySpreadConstraints | nindent 16 }}
+            {{- else if gt (int64 .Values.dashboard.replicas) 1 }}
+            topologySpreadConstraints:
+                {{- range $spread := list (dict "topologyKey" "kubernetes.io/hostname" "whenUnsatisfiable" "DoNotSchedule" "minDomains" 2) (dict "topologyKey" "topology.kubernetes.io/zone" "whenUnsatisfiable" "ScheduleAnyway") }}
+                - maxSkew: 1
+                  topologyKey: {{ $spread.topologyKey }}
+                  whenUnsatisfiable: {{ $spread.whenUnsatisfiable }}
+                  {{- with $spread.minDomains }}
+                  minDomains: {{ . }}
+                  {{- end }}
+                  labelSelector:
+                      matchLabels:
+                          {{- include "factory.selectorLabels" $ | nindent 26 }}
+                          app.kubernetes.io/component: dashboard
+                  matchLabelKeys:
+                      - pod-template-hash
+                {{- end }}
+            {{- end }}
             # The server's migration retry gives up after ~55s and then keeps serving with no
             # tables — every DB-backed route a 500, and no client-side polling recovers it. A
             # database that is not accepting connections yet (a cold local node still pulling its

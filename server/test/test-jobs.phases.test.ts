@@ -59,6 +59,7 @@ const K8S_PHASES = [
     'capacity',
     'mcp',
     'drain',
+    'replicas',
     'bench',
 ];
 const GUARD = /^if (selected_phase |\[ "\$PHASE" = )/m;

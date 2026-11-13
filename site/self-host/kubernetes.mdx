@@ -50,7 +50,8 @@ The render refuses to start without them, and names the missing value.
 | --- | --- | --- |
 | `global.imageRegistry` | `''` | Prefixes every image the chart renders, both executor images included, for example `ghcr.io/<owner>`. Empty means bare names, which only work with side-loaded images. |
 | `dashboard.image.tag`, `driver.image.tag` | `''` | Empty uses the chart's `appVersion`, so a chart version names the exact build. |
-| `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs`. |
+| `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs` and at least two schedulable nodes. The pods spread over nodes (never two on one) and zones, and the PodDisruptionBudget keeps one pod through a drain. |
+| `dashboard.topologySpreadConstraints` | `[]` | Empty uses the default spread above one replica; a list replaces it, at any replica count. |
 | `artifacts.backend` | `s3` | `s3`, `gcs` or `filesystem`. `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |
 | `artifacts.retentionDays` | `90` | Artifacts of a removed task are deleted after this many days. |
 | `ingress.enabled` | `false` | See [Ingress and TLS](#ingress-and-tls). |

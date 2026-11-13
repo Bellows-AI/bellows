@@ -298,16 +298,18 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(limitsDocs)).toContain('.recovery.tsv');
     });
 
-    // Issue #831: competing drivers under one shared budget are proven in both executors' lanes, and the one
-    // thing they cannot run (two dashboard replicas on a cluster) is a stated limit.
-    it('records the capacity phases and the two-dashboard-replica limit', () => {
+    // Issue #831: competing drivers under one shared budget are proven in both executors' lanes; two dashboard
+    // replicas on a cluster have their own explicit phase.
+    it('records the capacity phases and the two-dashboard-replica phase', () => {
         expect(prose(testingDocs)).toContain(
             'Its capacity phase runs two `AUTH_MODE=github` boards and two drivers under `ADMISSION_MAX_RUNNING=2`, kills the driver holding the first heavy task and samples the running rows every second'
         );
         expect(prose(testingDocs)).toContain(
             'Its capacity phase runs two driver replicas under `ADMISSION_MAX_RUNNING=2`, deletes the pod holding the first heavy task and samples the running rows every two seconds into `.capacity.tsv`'
         );
-        expect(prose(testingDocs)).toContain('**Two dashboard replicas on a cluster.** The chart defaults to one');
+        expect(prose(testingDocs)).toContain(
+            '`--phase replicas` (explicit, a `LAYOUT=drain` cluster) installs two dashboard replicas on a lane-owned S3 store: both Ready on two nodes with one `schema_migrations` row per shipped migration, then one board deleted under load, every task succeeded, none dead.'
+        );
     });
 
     // Issue #869: a read nobody confirmed is inconclusive on both executors; the lint plugin and the
