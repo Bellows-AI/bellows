@@ -45,7 +45,7 @@ function stubStore(options: { fail?: boolean; foreign?: readonly string[]; owner
             stub.metricOrgs.push(...rows.map(() => orgId));
             return rows.length;
         },
-        async foreignSessions(claimant, sessionIds) {
+        async claimSessions(claimant, sessionIds) {
             if (options.ownershipFails) throw storeOutage('database is down');
             stub.claimants.push({ claimant, sessionIds: [...sessionIds] });
             return new Set(sessionIds.filter((id) => options.foreign?.includes(id)));

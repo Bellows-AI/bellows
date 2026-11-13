@@ -67,7 +67,7 @@ async function recordLiveSession(orgs: OrgRegistry, request: FastifyRequest, rep
 
 /**
  * The credential's claim on a session: its org, and its attempt when it is one. The one input to
- * `TelemetryStore.foreignSessions`, the session-ownership check both write routes share.
+ * `TelemetryStore.claimSessions`, the session-ownership check both write routes share.
  */
 const claimantOf = (request: FastifyRequest): SessionClaimant => ({
     orgId: orgOf(request),
@@ -89,7 +89,7 @@ export const ingestRoutes =
                 // this credential's org. The lookup runs first: when it cannot answer nothing is written (5xx).
                 const claimant = claimantOf(request);
                 const sessionIds = rows.flatMap((row) => (row.sessionId === null ? [] : [row.sessionId]));
-                const foreign = await store.foreignSessions(claimant, sessionIds);
+                const foreign = await store.claimSessions(claimant, sessionIds);
                 kept = rows.filter((row) => row.sessionId === null || !foreign.has(row.sessionId));
                 await store.insertMetrics(kept, claimant.orgId);
             } catch (e) {
@@ -138,7 +138,7 @@ export const ingestRoutes =
                 // reader drop that session from its owner's figures: refused before anything is written.
                 // A lookup that cannot answer is a 5xx below, never an acceptance.
                 const claimant = claimantOf(request);
-                if ((await store.foreignSessions(claimant, [report.sessionId])).size > 0) {
+                if ((await store.claimSessions(claimant, [report.sessionId])).size > 0) {
                     return reply
                         .code(HTTP_FORBIDDEN)
                         .send({ error: 'The session belongs to another attempt', code: ERROR_CODES.FORBIDDEN });

@@ -28,10 +28,12 @@ export interface TelemetryStore {
      * The ids among `sessionIds` the claimant may not write. An attempt may write a session bound to it
      * (`job_execution_session`) or one bound to nothing yet (the run's own session before its first report);
      * never one bound to another attempt, nor one another organization's branch report names. A personal
-     * credential may write any session no other organization holds. A failed lookup throws: unconfirmed is
-     * never "allowed", and never "refused" either.
+     * credential may write any session no other organization holds. A session the claimant may write is
+     * reserved to its org (`telemetry_session_owner`) if no org owns it yet, and refused if another org does:
+     * one owner per session, on both routes. A failed lookup throws: unconfirmed is never "allowed", and
+     * never "refused" either.
      */
-    foreignSessions(claimant: SessionClaimant, sessionIds: readonly string[]): Promise<Set<string>>;
+    claimSessions(claimant: SessionClaimant, sessionIds: readonly string[]): Promise<Set<string>>;
 }
 
 /**
@@ -40,7 +42,7 @@ export interface TelemetryStore {
  * owner against the installation orgs let any caller write telemetry into another organization by
  * naming its repository (CWE-862). The routes record with `orgOf(request)`: the attempt's org for
  * the runner's credential, the membership's org for the laptop plugin's personal bearer; each
- * `metric_point` row stores it, and `foreignSessions` keeps a credential off a session it does not hold.
+ * `metric_point` row stores it, and `claimSessions` keeps a credential off a session it does not hold.
  */
 export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
     return {
@@ -70,7 +72,7 @@ export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
             return inserted.count;
         },
 
-        async foreignSessions({ orgId, jobId }, sessionIds) {
+        async claimSessions({ orgId, jobId }, sessionIds) {
             const ids = [...new Set(sessionIds)];
             if (!ids.length) return new Set();
             // Bound to this attempt wins; otherwise any binding to another attempt (another org's included) or another
@@ -96,7 +98,25 @@ export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
                 ) f
                 where not f.mine and (f.bound_elsewhere or f.branched_elsewhere)
             `;
-            return new Set(rows.map((row) => row.session_id));
+            const refused = new Set(rows.map((row) => row.session_id));
+            // The rest are this org's to write only if it owns them: the first org to write a session reserves it,
+            // and the primary key makes that one org even when two write at once (the loser's insert waits on the
+            // winner's row, then does nothing, and the read below sees the winner). Sorted, so two claims lock in
+            // one order.
+            const candidates = ids.filter((id) => !refused.has(id)).sort();
+            if (!candidates.length) return refused;
+            await sql`
+                insert into telemetry_session_owner (session_id, org_id)
+                select session_id, ${orgId} from unnest(${sql.array(candidates)}::text[]) as c(session_id)
+                order by session_id
+                on conflict (session_id) do nothing
+            `;
+            const owned = await sql<{ session_id: string }[]>`
+                select session_id from telemetry_session_owner
+                where session_id = any(${sql.array(candidates)}::text[]) and org_id <> ${orgId}
+            `;
+            for (const row of owned) refused.add(row.session_id);
+            return refused;
         },
 
         async recordBranch(report, orgId) {

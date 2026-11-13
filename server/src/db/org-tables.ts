@@ -61,6 +61,7 @@ export const ORG_TABLES = [
     'skill',
     'task_reclaim',
     'task_reclaim_ack',
+    'telemetry_session_owner',
     'tracked_repo',
     'transcript_tool_event',
     'user_executor_default',
