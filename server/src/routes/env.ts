@@ -253,8 +253,8 @@ export const envRoutes =
         // The "Core secrets" scope: one list for the whole organization, so an `admin` row in
         // ROUTE_CLASSES: the auth hook refuses a member before this runs.
         app.put('/api/env/org', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-            return putScope(request, reply, async (store, vars) => {
-                await store.replaceOrg(vars);
+            return putScope(request, reply, async (store, vars, caller) => {
+                await store.replaceOrg(caller.user.id, vars);
                 return store.listOrg();
             });
         });
@@ -284,7 +284,7 @@ export const envRoutes =
                 reply,
                 (e) => request.log.error({ err: e }),
                 async () => {
-                    await store.replaceRepo(repo.owner, repo.name, vars);
+                    await store.replaceRepo(caller.user.id, repo.owner, repo.name, vars);
                     return store.listRepo(repo.owner, repo.name);
                 }
             );

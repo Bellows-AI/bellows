@@ -33,6 +33,7 @@ import { orgExecutorRoutes } from './routes/org-executors.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
+import { auditRoutes } from './routes/audit.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -453,7 +454,11 @@ export async function buildApp({
     );
     // The member roster and its role writes (issue 410), the same person-shaped surface: the
     // caller's role decides, the store has no role of its own to check.
-    if (auth) await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
+    // The organization's audit log export is an admin read beside the roster.
+    if (auth) {
+        await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
+        await app.register(auditRoutes({ store: auth }));
+    }
 
     if (config.webRoot) {
         const { default: fastifyStatic } = await import('@fastify/static');

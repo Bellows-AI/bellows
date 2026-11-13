@@ -81,7 +81,7 @@ describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reach
     it('(b) in a repo-scope env row: refused, the row kept', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-        await env.replaceRepo('acme', 'web', [{ name: BASE_URL, value: URL, isSecret: false }]);
+        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: BASE_URL, value: URL, isSecret: false }]);
         await task(jobs, 'acme/web');
         expectRefused(await jobs.claim('w1', LEASE_SECONDS), BASE_URL);
         expect(await env.listRepo('acme', 'web')).toEqual([expect.objectContaining({ name: BASE_URL })]);
@@ -101,7 +101,7 @@ describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reach
         await task(jobs, 'acme/api');
         const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
         expect(caller.executorRefusal).toBeNull();
-        await env.replaceOrg([{ name: BASE_URL, value: URL, isSecret: false }]);
+        await env.replaceOrg('env-admin', [{ name: BASE_URL, value: URL, isSecret: false }]);
 
         const review = await jobs.requestReview(caller.id, caller.leaseToken, {
             key: 'sec-1',
@@ -120,7 +120,7 @@ describe.skipIf(!enabled)('cloud mode: a member key anywhere in the merged env l
         await executors.replace(ALICE, [
             { name: 'main', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: KEY } } },
         ]);
-        await env.replaceRepo('acme', 'web', [{ name: BASE_URL, value: URL, isSecret: false }]);
+        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: BASE_URL, value: URL, isSecret: false }]);
         await task(jobs, 'acme/web');
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);

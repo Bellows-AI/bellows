@@ -1,12 +1,14 @@
 import type { Sql, TransactionSql } from 'postgres';
 import type { AdminAction } from '@factory-ai/core';
+import { recordAudit, userActor } from '../audit-log.js';
 import type { JobStorePrs } from './job-store-types.js';
 
 /**
  * Emits `task.admin_action` in the action's own transaction, after the write it records succeeded, so the
  * action never commits without its event. Nothing is written when the actor is the thread's owner (the root's
  * `execution_user_id`), so an owner's own action and a replay that reaches no insert emit nothing. `subject` is the
- * dedupe key: the created job id, or the root plus the transaction id for a wait cancel.
+ * dedupe key: the created job id, or the root plus the transaction id for a wait cancel. The same transaction writes
+ * the organization's audit row (`task.admin_action`) for exactly the events it emits.
  */
 export async function insertAdminActionEvent(
     tx: TransactionSql,
@@ -14,7 +16,7 @@ export async function insertAdminActionEvent(
 ): Promise<void> {
     const { orgId, jobId, action, actorId } = input;
     if (!actorId) return;
-    const rows = await tx<{ org_id: string; id: string }[]>`
+    const rows = await tx<{ org_id: string; id: string; author_user_id: string | null }[]>`
         insert into notification_event (org_id, id, kind, job_id, root_job_id, repo, workflow, command, reason, pr_url,
                                         action, actor_user_id, actor_login, author_user_id, author_login, occurred_at)
         select j.org_id,
@@ -38,9 +40,17 @@ export async function insertAdminActionEvent(
         where j.org_id = ${orgId} and j.id = ${jobId}
           and r.execution_user_id is distinct from ${actorId}::uuid
         on conflict (org_id, id) do nothing
-        returning org_id, id
+        returning org_id, id, author_user_id
     `;
-    if (rows[0]) await tx`select notification_event_fan_out(${rows[0].org_id}, ${rows[0].id})`;
+    if (!rows[0]) return;
+    await tx`select notification_event_fan_out(${rows[0].org_id}, ${rows[0].id})`;
+    await recordAudit(tx, {
+        orgId,
+        actor: userActor(actorId),
+        action: 'task.admin_action',
+        target: jobId,
+        detail: { action, owner: rows[0].author_user_id },
+    });
 }
 
 /**

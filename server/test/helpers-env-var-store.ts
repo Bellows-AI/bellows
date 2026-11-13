@@ -85,7 +85,7 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
             return grouped;
         },
 
-        async replaceOrg(vars) {
+        async replaceOrg(_actorId, vars) {
             replaceRows('org', vars);
         },
 
@@ -93,7 +93,7 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
             replaceRows({ userId }, vars);
         },
 
-        async replaceRepo(owner, name, vars) {
+        async replaceRepo(_actorId, owner, name, vars) {
             replaceRows({ owner, name }, vars);
         },
 

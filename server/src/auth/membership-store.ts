@@ -1,6 +1,7 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
 import type { Sql } from 'postgres';
-import { blockMembership, endMemberships, restoreMembership } from './member-removal.js';
+import { recordAudit } from '../db/audit-log.js';
+import { blockMembership, endMemberships, restoreMembership, SYSTEM_ACTOR } from './member-removal.js';
 import type { MembershipTarget, MembershipVerdict } from './membership.js';
 
 /** One membership to re-check, keyed for the store and described for the GitHub read. */
@@ -31,8 +32,8 @@ export interface MembershipStore {
      * `missing` is no such member.
      */
     block(orgId: string, userId: string, removedBy: string): Promise<'removed' | 'last-admin' | 'missing'>;
-    /** Lifts a block: the account's next sign-in materializes its membership again. */
-    restore(orgId: string, userId: string): Promise<'restored' | 'missing'>;
+    /** Lifts a block, audited as `actorId`'s: the account's next sign-in materializes its membership again. */
+    restore(orgId: string, userId: string, actorId: string): Promise<'restored' | 'missing'>;
 }
 
 interface CheckRow {
@@ -92,15 +93,34 @@ export function createMembershipStore({ sql, ready }: { sql: Sql; ready?: Promis
         async record(orgId, userId, verdict, at) {
             await gate();
             if (verdict.kind === 'not-member') {
-                await sql.begin((tx) => endMemberships(tx, userId, [orgId]));
+                const cause = { actor: SYSTEM_ACTOR, reason: 'github-not-member' } as const;
+                await sql.begin((tx) => endMemberships(tx, userId, [orgId], cause));
                 return;
             }
             const owner = verdict.kind === 'active' && verdict.owner;
-            await sql`
-                update org_membership
-                set checked_at = ${at}, role = case when ${owner} then ${ADMIN_ROLE} else role end
-                where org_id = ${orgId} and user_id = ${userId}::uuid
-            `;
+            await sql.begin(async (tx) => {
+                const rows = await tx<{ previous: string; role: string }[]>`
+                    with prior as (
+                        select role from org_membership
+                        where org_id = ${orgId} and user_id = ${userId}::uuid
+                        for update
+                    )
+                    update org_membership m
+                    set checked_at = ${at}, role = case when ${owner} then ${ADMIN_ROLE} else m.role end
+                    from prior
+                    where m.org_id = ${orgId} and m.user_id = ${userId}::uuid
+                    returning prior.role as previous, m.role
+                `;
+                const row = rows[0];
+                if (!row || row.previous === row.role) return;
+                await recordAudit(tx, {
+                    orgId,
+                    actor: SYSTEM_ACTOR,
+                    action: 'member.role',
+                    target: userId,
+                    detail: { from: row.previous, to: row.role, reason: 'github-owner' },
+                });
+            });
         },
 
         async block(orgId, userId, removedBy) {
@@ -108,9 +128,9 @@ export function createMembershipStore({ sql, ready }: { sql: Sql; ready?: Promis
             return blockMembership(sql, orgId, userId, removedBy);
         },
 
-        async restore(orgId, userId) {
+        async restore(orgId, userId, actorId) {
             await gate();
-            return restoreMembership(sql, orgId, userId);
+            return restoreMembership(sql, orgId, userId, actorId);
         },
     };
 }

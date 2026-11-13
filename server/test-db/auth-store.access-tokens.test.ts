@@ -134,12 +134,12 @@ describe.skipIf(!enabled)('access tokens: org-scoped', () => {
         const org = await createOrgToken(caller, 'oat_c', 'ci');
 
         expect(await store.revokePersonalToken(ORG, caller.user.id, personal.id)).toBe('revoked');
-        expect(await store.revokeOrgToken(ORG, org.id)).toBe('revoked');
+        expect(await store.revokeOrgToken(ORG, org.id, caller.user.id)).toBe('revoked');
         expect(await store.findPersonalToken(hashToken('fat_c'))).toBeNull();
         expect(await store.findOrgToken(hashToken('oat_c'))).toBeNull();
         // Revoking again changes nothing.
         expect(await store.revokePersonalToken(ORG, caller.user.id, personal.id)).toBe('missing');
-        expect(await store.revokeOrgToken(ORG, org.id)).toBe('missing');
+        expect(await store.revokeOrgToken(ORG, org.id, caller.user.id)).toBe('missing');
     });
 
     it('answers an org token with its identity AND its org', async () => {

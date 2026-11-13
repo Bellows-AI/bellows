@@ -388,7 +388,7 @@ describe('organization access tokens: lifecycle and validation', () => {
         const token = store.seedAccessToken(ORG, 'org');
         const server = await build(githubAuth(), store);
         const [row] = store.accessTokens();
-        await store.revokeOrgToken(ORG, row!.id);
+        await store.revokeOrgToken(ORG, row!.id, 'test-admin');
 
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
 

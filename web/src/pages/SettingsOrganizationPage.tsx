@@ -3,6 +3,7 @@ import { roleLabel } from '../api/useSession.js';
 import { Icon } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { StateNote } from '../components/StateNote.js';
+import { AuditLogSection } from '../panels/AuditLogSection.js';
 import { EnvVarsSection } from '../panels/EnvVarsSection.js';
 import { MembersSection } from '../panels/MembersSection.js';
 import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
@@ -44,6 +45,9 @@ export function SettingsOrganizationPage() {
             <MembersSection session={session} />
 
             <NotificationSubscriptionsSection session={session} scope="org" />
+
+            {/* Who did what in the organization, with its export: an admin read, like the roster. */}
+            <AuditLogSection session={session} />
 
             {env.error ? <StateNote state="error">{env.error}</StateNote> : null}
             {/*

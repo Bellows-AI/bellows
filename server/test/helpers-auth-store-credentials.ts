@@ -329,5 +329,9 @@ export function memoryAuthStore(): MemoryAuthStore {
         ...pendingSignInMethods(state),
         ...trackedRepoMethods(state),
         ...signInMethod(state),
+        // The offline store keeps no audit log: the export reads as empty (server/test-db/audit-log.test.ts has it).
+        async *auditEvents() {
+            yield* [];
+        },
     };
 }

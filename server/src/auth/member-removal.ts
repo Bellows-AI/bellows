@@ -1,5 +1,6 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { type AuditEntry, recordAudit, userActor } from '../db/audit-log.js';
 import type { AuthStore } from './store.js';
 
 /**
@@ -8,18 +9,34 @@ import type { AuthStore } from './store.js';
  * already accounted for. Both the auth store and the membership re-check's store run this SQL.
  */
 
+/** Why a membership ended: an admin, GitHub's answer at a re-check or a webhook, or a sign-in that no longer reaches the org. */
+export type MembershipEnd = 'admin-removal' | 'github-not-member' | 'github-webhook' | 'sign-in-sweep';
+
+/** The board itself: a membership GitHub ended, or a role GitHub conferred. */
+export const SYSTEM_ACTOR: AuditEntry['actor'] = { kind: 'system', id: null };
+
 /**
  * THE way a membership ends, whoever ends it (the sign-in sweep, the webhook, a confirmed non-member at the
  * re-check, an admin's removal): the memberships of `orgIds`, the account's sessions in those orgs and its
  * personal tokens there, inside the caller's transaction — so a membership granted again later never revives
- * an old credential. Returns how many memberships were deleted.
+ * an old credential. Each deleted membership writes its `member.remove` audit row there too, naming `cause`.
+ * Returns how many memberships were deleted.
  */
-export async function endMemberships(tx: TransactionSql, userId: string, orgIds: readonly string[]): Promise<number> {
+export async function endMemberships(
+    tx: TransactionSql,
+    userId: string,
+    orgIds: readonly string[],
+    cause: { actor: AuditEntry['actor']; reason: MembershipEnd }
+): Promise<number> {
     if (orgIds.length === 0) return 0;
     const ids = [...orgIds];
-    const deleted = await tx`
+    const deleted = await tx<{ org_id: string }[]>`
         delete from org_membership where user_id = ${userId}::uuid and org_id = any(${ids}::text[]) returning org_id
     `;
+    for (const { org_id: orgId } of deleted) {
+        const detail = { reason: cause.reason };
+        await recordAudit(tx, { orgId, actor: cause.actor, action: 'member.remove', target: userId, detail });
+    }
     await tx`delete from session where user_id = ${userId}::uuid and org_id = any(${ids}::text[])`;
     await tx`
         update access_token set revoked_at = now()
@@ -30,7 +47,7 @@ export async function endMemberships(tx: TransactionSql, userId: string, orgIds:
 
 /**
  * An admin's removal: a block row that outlives the membership, then the same deletion and revocation a
- * `not-member` verdict runs, in one transaction. `last-admin` refuses removing the org's only admin;
+ * `not-member` verdict runs, and its audit row, in one transaction. `last-admin` refuses removing the org's only admin;
  * `missing` is no such member.
  */
 export function blockMembership(
@@ -57,18 +74,27 @@ export function blockMembership(
             on conflict (org_id, user_id) do update
                 set removed_by = excluded.removed_by, removed_at = now()
         `;
-        await endMemberships(tx, userId, [orgId]);
+        await endMemberships(tx, userId, [orgId], { actor: userActor(removedBy), reason: 'admin-removal' });
         return 'removed' as const;
     });
 }
 
-/** Lifts a block: the account's next sign-in materializes its membership again. */
-export async function restoreMembership(sql: Sql, orgId: string, userId: string): Promise<'restored' | 'missing'> {
-    const rows = await sql`
-        delete from org_membership_removal where org_id = ${orgId} and user_id = ${userId}::uuid
-        returning user_id
-    `;
-    return rows.length > 0 ? 'restored' : 'missing';
+/** Lifts a block, audited as `actorId`'s: the account's next sign-in materializes its membership again. */
+export function restoreMembership(
+    sql: Sql,
+    orgId: string,
+    userId: string,
+    actorId: string
+): Promise<'restored' | 'missing'> {
+    return sql.begin(async (tx) => {
+        const rows = await tx`
+            delete from org_membership_removal where org_id = ${orgId} and user_id = ${userId}::uuid
+            returning user_id
+        `;
+        if (rows.length === 0) return 'missing' as const;
+        await recordAudit(tx, { orgId, actor: userActor(actorId), action: 'member.restore', target: userId });
+        return 'restored' as const;
+    });
 }
 
 /** The auth store's half: an admin's removal, its list and its restore, and the invitation read's basis. */
@@ -82,9 +108,9 @@ export function buildRemovalMethods(
             return blockMembership(sql, orgId, userId, removedBy);
         },
 
-        async restoreMember(orgId, userId) {
+        async restoreMember(orgId, userId, actorId) {
             await gate();
-            return restoreMembership(sql, orgId, userId);
+            return restoreMembership(sql, orgId, userId, actorId);
         },
 
         async listRemovedMembers(orgId) {

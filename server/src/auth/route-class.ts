@@ -55,6 +55,8 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['GET', '/api/attachments/limits', 'read', MEMBER_ROLE],
     // Reads back the caller's own upload request, which the `factory:write` tool that minted it must be able to do.
     ['GET', '/api/attachments/upload-requests/:id', 'write', MEMBER_ROLE],
+    // The audit log names every member's actions: an admin read, never reachable by a scoped grant.
+    ['GET', '/api/audit', 'none', ADMIN_ROLE],
     ['GET', '/api/batches', 'read', MEMBER_ROLE],
     ['GET', '/api/batches/:id', 'read', MEMBER_ROLE],
     ['GET', '/api/batches/:id/report', 'read', MEMBER_ROLE],
