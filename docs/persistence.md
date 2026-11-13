@@ -7,6 +7,7 @@ database-free through the in-memory stores in `server/test/helpers*.ts`.
 | --- | --- | --- |
 | Migration runner, boot seeding, session reaping, ledger checksum, frozen duplicate prefixes | `server/src/db/migrate.ts`, `server/migrations/` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts`, `server/test-db/migrate.checksum.test.ts`, `server/test/migrations-numbering.test.ts` |
 | Schema (ingest and views: [telemetry.md](telemetry.md)); `metric_point_dedup` identity (086) | `server/migrations/*.sql`, `server/migrations/086_metric_point_identity.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts`, `server/test-db/migration.086-metric-point-identity.test.ts` |
+| Org-owned tables: every `org_id` is registered and keyed to `organization` on delete cascade (141); that migration refuses an orphan row, naming table and org, and deletes none | `server/src/db/org-tables.ts`, `server/migrations/141_org_foreign_keys.sql` | `server/test-db/org-tables.test.ts` |
 | Inbound OAuth tables (122): refresh serialized on the family row; `audit_event` (138): `recordAudit` in each audited action's own transaction, no credential in `detail`, a trigger refusing update and delete but the org's cascade | `server/migrations/122_oauth.sql`, `server/src/auth/oauth-store.ts`, `server/migrations/138_audit_event.sql`, `server/src/db/audit-log.ts` | `server/test-db/auth-store.oauth-concurrency.test.ts`, `server/test-db/audit-log.test.ts` |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/jobs/*` | `server/test-db/job-store.*.test.ts` |
@@ -32,10 +33,9 @@ database-free through the in-memory stores in `server/test/helpers*.ts`.
   mismatch refuses boot (`MigrationChecksumError`, no retry, `ready` stays rejected so routes answer 503), and a
   null checksum is back-filled once with the shipped hash. Repeatables are exempt. A removed feature's schema is a new `drop` migration (`023_drop_pull_requests.sql`), children before parents.
   `server/test-db/migrate.checksum.test.ts`.
-- **The ten duplicate-prefix pairs are frozen.** The ledger key is the filename, so a rename re-applies the file;
-  a new file takes an unused number. `server/test/migrations-numbering.test.ts`.
+- **The ten duplicate-prefix pairs are frozen.** The ledger key is the filename, so a rename re-applies the file; a new file takes an unused number. `server/test/migrations-numbering.test.ts`.
 - **A data migration batches, or builds its index `CONCURRENTLY` outside the transaction**, so the boot lock is not
-  held for a table scan. `server/src/db/migrate.ts`.
+  held for a table scan; a foreign key's `validate` is the stated exception (141, ~1 s per million rows). `server/src/db/migrate.ts`.
 - **Versioned migrations run before repeatable ones; `*.repeatable.sql` files are re-applied every boot** and skipped when `schema_migrations` holds a versioned
   file this build does not ship. Every repeatable change, a revert included, ships a new no-op marker, the newest
   named after the repeatables' hash (`090_views_<hash>.sql`). `core/test/migrations.sql.test.ts`.

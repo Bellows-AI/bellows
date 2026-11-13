@@ -20,7 +20,7 @@ const OTHER_ORG = randomUUID();
 const AUTHOR_USER = testUser('completed-tasks-cat');
 const AUTHOR = AUTHOR_USER.id;
 
-const db = useTestDb({ max: 8, users: [AUTHOR_USER] });
+const db = useTestDb({ max: 8, orgs: [ORG, OTHER_ORG], users: [AUTHOR_USER] });
 
 beforeAll(async () => {
     if (!enabled) return;

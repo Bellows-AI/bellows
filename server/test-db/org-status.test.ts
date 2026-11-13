@@ -9,7 +9,7 @@ import { OrgInactiveError } from '../src/db/org-status.js';
 import { PlanLimitError, type PlanLimits, planLimits } from '../src/db/plan-limits.js';
 import type { DeploymentMode } from '@factory-ai/core';
 import { batchPlan, prTask } from './batch-fixtures.js';
-import { craftJob, expireLease, randomGithubId, testOrg, testUser } from './fixtures.js';
+import { craftJob, expireLease, randomGithubId, testOrg, testUser, withoutTransitionGuard } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -53,6 +53,10 @@ const storeFor = (orgId: string, deploymentMode: DeploymentMode = 'cloud', planD
 const create = (store: JobStore) => store.create('work', null, { repo: null, executor: null });
 
 const queued = (org: string) => craftJob({ sql, org, author: '' }, { author: null, repo: null });
+
+/** A queued row of an organization with no row: only a row from before the org foreign key (141) is one. */
+const queuedWithoutOrg = (org: string) =>
+    withoutTransitionGuard(sql, (tx) => craftJob({ sql: tx, org, author: '' }, { author: null, repo: null }));
 
 /** Signs a fresh account into a fresh installation: the org row is the sign-in's own. */
 async function signedInOrg(): Promise<string> {
@@ -208,7 +212,7 @@ describe.skipIf(!enabled)('the operator', () => {
 
     it('treats a missing organization row as not active in cloud mode', async () => {
         const org = testOrg();
-        await queued(org);
+        await queuedWithoutOrg(org);
         const store = storeFor(org);
         expect(await store.claim('w', LEASE_SECONDS)).toBeNull();
         const refused = await create(store).catch((e: unknown) => e);
@@ -218,7 +222,7 @@ describe.skipIf(!enabled)('the operator', () => {
 });
 
 describe.skipIf(!enabled)('a self-hosted board', () => {
-    it('has no status gate: a suspended org and an org with no row both create and claim', async () => {
+    it('has no status gate: a suspended org creates and claims, and only the org key refuses an org with no row', async () => {
         const org = await signedInOrg();
         await sql`update organization set status = 'suspended' where id = ${org}`;
         const store = storeFor(org, 'self-hosted', {});
@@ -232,9 +236,9 @@ describe.skipIf(!enabled)('a self-hosted board', () => {
             )
         ).resolves.toMatchObject({ id: expect.any(String) });
 
-        const rowless = testOrg();
-        await queued(rowless);
-        expect(await storeFor(rowless, 'self-hosted', {}).claim('w', LEASE_SECONDS)).not.toBeNull();
+        const refused = await create(storeFor(testOrg(), 'self-hosted', {})).catch((e: unknown) => e);
+        expect(refused).not.toBeInstanceOf(OrgInactiveError);
+        expect(String(refused)).toMatch(/job_org_id_fkey/);
     });
 });
 

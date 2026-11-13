@@ -57,8 +57,8 @@ let built: Built;
 
 /** Two organizations; the cases the spec names, one session each. */
 async function buildWorld(): Promise<Built> {
-    const A = w.org();
-    const B = w.org();
+    const A = await w.org();
+    const B = await w.org();
     const ids: Record<string, string> = {};
     const s = (label: string): string => (ids[label] = w.marker(label));
     const a1 = await w.user('author-a1');

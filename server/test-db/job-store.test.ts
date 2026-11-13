@@ -32,7 +32,7 @@ const LEASE_SECONDS = 300;
  * `max: 8` is higher than the app pool's 4: the claim exclusivity test needs real parallelism,
  * and a pool of two would serialise it into a test that passes for the wrong reason.
  */
-const db = useTestDb({ max: 8, orgs: [ORG] });
+const db = useTestDb({ max: 8, orgs: [ORG, OTHER_ORG] });
 
 beforeAll(async () => {
     if (!enabled) return;
