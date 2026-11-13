@@ -104,4 +104,28 @@ describe.each(BACKENDS)('object store contract: $name', ({ make, prefix, skip })
         expect(await store.get(attachment)).toBeNull();
         await store.delete(attachment);
     });
+
+    it.skipIf(skip)('lists the keys under a prefix up to a limit, and none of a neighbouring prefix', async () => {
+        const { store } = await fresh();
+        const org = `org-${randomUUID().slice(0, 8)}`;
+        const mine = [
+            chunkKey(prefix, org, { ...REF, job: 'job-a' }, 0),
+            chunkKey(prefix, org, { ...REF, job: 'job-b' }, 1),
+            attachmentKey(prefix, org, randomUUID()),
+        ];
+        const neighbour = chunkKey(prefix, `${org}0`, REF, 0);
+        for (const key of [...mine, neighbour]) await store.put(key, bytes('x'));
+
+        const listed = [
+            ...(await store.list(`${prefix}${org}/`)),
+            ...(await store.list(`${prefix}_attachments/${org}/`)),
+        ];
+        expect(listed.sort()).toEqual([...mine].sort());
+        expect(await store.list(`${prefix}${org}/`, { limit: 1 })).toHaveLength(1);
+        expect(await store.list(`${prefix}_skills/${org}/`)).toEqual([]);
+
+        for (const key of listed) await store.delete(key);
+        expect(await store.list(`${prefix}${org}/`)).toEqual([]);
+        expect(await store.list(`${prefix}${org}0/`)).toEqual([neighbour]);
+    });
 });

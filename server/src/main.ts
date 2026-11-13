@@ -33,6 +33,8 @@ import { startTempSweep } from './artifacts/fs-store.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSkillSweep } from './skills/skill-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
+import type { CoordinatedSecretStore } from './secrets/postgres-secret-store.js';
+import { startOrgPurge } from './db/org-purge.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
 import { startNotificationDelivery } from './notifications/delivery-loop.js';
 import { productionConnectors } from './notifications/registry.js';
@@ -80,7 +82,7 @@ const mcpStores = (db: { sql: Sql; ready: Promise<unknown> }) => ({
 
 /**
  * The garbage collectors run on every replica: unreferenced secret versions and finished operations; abandoned
- * uploads and the files of a removed task. Each delete re-checks its own guard.
+ * uploads and the files of a removed task; a deleted organization's purge. Each delete re-checks its own guard.
  */
 function startCollectors({
     sql,
@@ -95,7 +97,7 @@ function startCollectors({
 }: {
     sql: Sql;
     ready: Promise<unknown>;
-    secrets: { collect(): Promise<unknown> };
+    secrets: CoordinatedSecretStore;
     artifacts: ArtifactBackend;
     config: AppConfig;
     metrics: ServerMetrics;
@@ -115,6 +117,18 @@ function startCollectors({
     );
     void ready.then(() =>
         track(() => startSkillSweep({ sql, ready, artifacts, metrics, retentionDays: config.artifacts.retentionDays }))
+    );
+    // A deleted org's purge: an operator's delete anywhere, GitHub's deletion deadline in cloud mode only.
+    void ready.then(() =>
+        track(() =>
+            startOrgPurge({
+                sql,
+                secrets,
+                objects: artifacts.objects,
+                prefix: artifacts.prefix,
+                deploymentMode: config.deploymentMode,
+            })
+        )
     );
     // Expired codes, consent transactions and grant families; only a board that serves MCP ever writes them.
     if (config.mcp.enabled)

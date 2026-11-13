@@ -1,5 +1,5 @@
 /**
- * The board operator's routes (`GET /api/operator/orgs`, `POST /api/operator/orgs/:id/<action>`), over whatever
+ * The board operator's routes (`GET /api/operator/orgs`, `POST /api/operator/orgs/:id/<action|delete>`), over whatever
  * `send` does to fetch one authenticated path. The shapes are copied, since the CLI imports nothing of the board's.
  */
 
@@ -18,11 +18,19 @@ export interface OperatorChange {
     org: OperatorOrg;
 }
 
+/** `requested` is false when the org's purge was already queued. */
+export interface OperatorDelete {
+    requested: boolean;
+    org: OperatorOrg;
+}
+
 export interface OperatorRoutes {
     /** Every organization with its status; the board operator only. */
     operatorOrgs(): Promise<OperatorOrg[]>;
     /** The board operator's suspend, refuse or activate of one organization. */
     operatorAction(orgId: string, action: OperatorAction): Promise<OperatorChange>;
+    /** Queues the purge of a suspended or refused organization; the board refuses an active one. */
+    operatorDelete(orgId: string): Promise<OperatorDelete>;
 }
 
 export function operatorRoutes(
@@ -38,6 +46,12 @@ export function operatorRoutes(
                 method: 'POST',
                 headers: authHeaders(),
             })) as OperatorChange;
+        },
+        async operatorDelete(orgId) {
+            return (await send(`/api/operator/orgs/${encodeURIComponent(orgId)}/delete`, {
+                method: 'POST',
+                headers: authHeaders(),
+            })) as OperatorDelete;
         },
     };
 }

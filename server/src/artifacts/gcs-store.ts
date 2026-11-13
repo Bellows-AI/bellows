@@ -1,6 +1,6 @@
 import { CONTENT_TYPE_HEADER } from '@factory-ai/core';
 import type { GcsTokenProvider } from './gcs-credentials.js';
-import type { ObjectStore, PutResult } from './object-store.js';
+import { LIST_LIMIT, type ObjectStore, type PutResult } from './object-store.js';
 
 export interface GcsOptions {
     bucket: string;
@@ -30,8 +30,8 @@ export class GcsError extends Error {
 }
 
 /**
- * A minimal Cloud Storage JSON API client: the four object calls the artifact index needs, nothing
- * else. It never creates or inspects the bucket (Terraform owns it; `roles/storage.objectUser` has
+ * A minimal Cloud Storage JSON API client: the four object calls the artifact index needs and a prefix
+ * list for an org's purge, nothing else. It never creates or inspects the bucket (Terraform owns it; `roles/storage.objectUser` has
  * no bucket rights). Credentials are the caller's `GcsTokenProvider`; a 401 refetches the token
  * once and retries once, under the same abort signal.
  */
@@ -111,6 +111,19 @@ export function createGcsStore(options: GcsOptions): ObjectStore {
                 return;
             }
             return fail('DELETE', response);
+        },
+        async list(prefix, call) {
+            const query = new URLSearchParams({
+                prefix,
+                maxResults: String(call?.limit ?? LIST_LIMIT),
+                fields: 'items(name)',
+            });
+            const response = await send('GET', `${objectsUrl}?${query}`, { signal: call?.signal });
+            if (response.status !== HTTP_OK) return fail('LIST', response);
+            const { items } = (await response.json()) as { items?: { name: string }[] };
+            if (items !== undefined && !Array.isArray(items))
+                throw new GcsError('LIST', response.status, 'not a listing');
+            return (items ?? []).map((item) => item.name);
         },
     };
 }

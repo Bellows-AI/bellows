@@ -1,5 +1,5 @@
 import { CONTENT_TYPE_HEADER } from '@factory-ai/core';
-import type { ObjectStore, PutResult } from './object-store.js';
+import { LIST_LIMIT, type ObjectStore, type PutResult } from './object-store.js';
 import type { CredentialProvider } from './s3-credentials.js';
 import { sha256Hex, signRequest } from './sigv4.js';
 
@@ -39,9 +39,13 @@ export class S3Error extends Error {
     }
 }
 
+const XML_ENTITIES: Readonly<Record<string, string>> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const unescapeXml = (text: string): string =>
+    text.replace(/&(amp|lt|gt|quot|apos);/g, (_, name) => XML_ENTITIES[name] ?? '');
+
 /**
- * A minimal S3 client: exactly the four object calls the artifact index needs, plus the bucket
- * bootstrap. No SDK — the keys are ASCII ids and integers, and the request is signed by
+ * A minimal S3 client: the four object calls the artifact index needs, a prefix list for an org's purge, plus the
+ * bucket bootstrap. No SDK — the keys are ASCII ids and integers, and the request is signed by
  * `sigv4.ts` over a handful of headers.
  */
 export function createS3Store(options: S3Options): S3Store {
@@ -136,6 +140,17 @@ export function createS3Store(options: S3Options): S3Store {
                 return;
             }
             return fail('DELETE', response);
+        },
+        async list(prefix, call) {
+            const url = urlOf('');
+            url.searchParams.set('list-type', '2');
+            url.searchParams.set('prefix', prefix);
+            url.searchParams.set('max-keys', String(call?.limit ?? LIST_LIMIT));
+            const response = await send('GET', url, { signal: call?.signal });
+            if (response.status !== HTTP_OK) return fail('LIST', response);
+            const body = await response.text();
+            if (!body.includes('<ListBucketResult')) throw new S3Error('LIST', response.status, 'not a listing');
+            return [...body.matchAll(/<Key>([^<]*)<\/Key>/g)].map((match) => unescapeXml(match[1] ?? ''));
         },
         async ensureBucket() {
             const head = await send('HEAD', urlOf(''));

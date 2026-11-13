@@ -52,6 +52,7 @@ export const ORG_TABLES = [
     'org_membership',
     'org_membership_removal',
     'org_plan',
+    'org_purge',
     'pr_follow',
     'pr_merge',
     'session',

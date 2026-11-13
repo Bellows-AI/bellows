@@ -26,6 +26,7 @@ const FORBIDDEN = 403;
 const NOT_FOUND = 404;
 const CONFLICT = 409;
 const CREATED = 201;
+const ACCEPTED = 202;
 const REPO = 'operator-owner/web';
 const TASK = { repo: REPO, command: 'work' };
 
@@ -191,6 +192,7 @@ describe.skipIf(!enabled)('the operator routes', () => {
             ['POST', `/api/operator/orgs/${org}/suspend`],
             ['POST', `/api/operator/orgs/${org}/refuse`],
             ['POST', `/api/operator/orgs/${org}/activate`],
+            ['POST', `/api/operator/orgs/${org}/delete`],
         ] as const;
         for (const [method, url] of routes) {
             const res = await call(admin, method, url);
@@ -201,6 +203,31 @@ describe.skipIf(!enabled)('the operator routes', () => {
             'active'
         );
         expect(await operatorRows(org)).toEqual([]);
+        expect(await sql`select 1 from org_purge where org_id = ${org}`).toHaveLength(0);
+    });
+
+    it('deletes only an org that is no longer active, on its own request, with one operator audit row', async () => {
+        const active = await call(operator, 'POST', `/api/operator/orgs/${org}/delete`);
+        expect(active.statusCode).toBe(CONFLICT);
+        expect(active.json()).toMatchObject({ code: 'ORG_ACTIVE', status: 'active' });
+        expect(await sql`select 1 from org_purge where org_id = ${org}`).toHaveLength(0);
+
+        await call(operator, 'POST', `/api/operator/orgs/${org}/suspend`);
+        const asked = await call(operator, 'POST', `/api/operator/orgs/${org}/delete`);
+        expect(asked.statusCode).toBe(ACCEPTED);
+        expect(asked.json()).toEqual({ requested: true, org: { id: org, name: `acct-${org}`, status: 'suspended' } });
+        const again = await call(operator, 'POST', `/api/operator/orgs/${org}/delete`);
+        expect(again.statusCode).toBe(ACCEPTED);
+        expect(again.json()).toMatchObject({ requested: false });
+
+        expect(await sql`select source, requested_by from org_purge where org_id = ${org}`).toEqual([
+            { source: 'operator', requested_by: operator.userId },
+        ]);
+        expect((await operatorRows(org)).map((row) => [row.action, row.detail])).toEqual([
+            ['org.suspend', { from: 'active', to: 'suspended' }],
+            ['org.delete', { status: 'suspended' }],
+        ]);
+        expect((await call(operator, 'POST', `/api/operator/orgs/${testOrg()}/delete`)).statusCode).toBe(NOT_FOUND);
     });
 
     it('has no operator when none is configured', async () => {

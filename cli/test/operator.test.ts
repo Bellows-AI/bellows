@@ -58,6 +58,47 @@ describe.each([
     });
 });
 
+describe('bellows operator delete', () => {
+    it('sends nothing without --yes, since a purge cannot be undone', async () => {
+        const { err, sent, io } = recordingBoard(() => json({}));
+        expect(await run(['operator', 'delete', '202'], io)).not.toBe(0);
+        expect(sent).toEqual([]);
+        expect(err.join('')).toContain('pass --yes to confirm');
+    });
+
+    it('POSTs the delete and says the purge is queued', async () => {
+        const { out, sent, io } = recordingBoard(() =>
+            json({ requested: true, org: { id: '202', name: 'globex', status: 'suspended' } })
+        );
+        expect(await run(['operator', 'delete', '202', '--yes'], io)).toBe(0);
+        expect(sent.map((s) => [s.method, s.path])).toEqual([['POST', '/api/operator/orgs/202/delete']]);
+        expect(out.join('')).toBe('organization 202 (globex) is queued for deletion\n');
+    });
+
+    it('says when the purge was already queued', async () => {
+        const { out, io } = recordingBoard(() =>
+            json({ requested: false, org: { id: '202', name: 'globex', status: 'refused' } })
+        );
+        expect(await run(['operator', 'delete', '202', '--yes'], io)).toBe(0);
+        expect(out.join('')).toBe('organization 202 (globex) is already queued for deletion\n');
+    });
+
+    it('reports the board’s 409 for an org that is still active', async () => {
+        const { err, io } = recordingBoard(() =>
+            refusal(409, 'ORG_ACTIVE', 'Suspend or refuse the organization first')
+        );
+        expect(await run(['operator', 'delete', '101', '--yes'], io)).not.toBe(0);
+        expect(err.join('')).toBe('error: Suspend or refuse the organization first [ORG_ACTIVE]\n');
+    });
+
+    it('needs exactly one organization id', async () => {
+        const { err, sent, io } = recordingBoard(() => json({}));
+        expect(await run(['operator', 'delete', '--yes'], io)).not.toBe(0);
+        expect(sent).toEqual([]);
+        expect(err.join('')).toContain('operator delete needs exactly one organization id');
+    });
+});
+
 it('escapes the organization id into the path', async () => {
     const { sent, io } = recordingBoard(() =>
         json({ changed: true, org: { id: 'a/b', name: 'x', status: 'refused' } })
