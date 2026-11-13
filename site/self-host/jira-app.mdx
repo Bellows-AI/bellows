@@ -85,5 +85,5 @@ Each person connects their own Atlassian account. The connection belongs to that
 ## Limits
 
 - The token reaches every site the Atlassian account can reach. Naming a site narrows what Bellows records, not what the token can do.
-- One Atlassian account connects to one Bellows organization.
+- One Atlassian account can connect in several Bellows organizations. Inside one organization it belongs to one member; another member who connects it is refused with `grant-conflict`.
 - Atlassian has no token revocation endpoint. **Disconnect** destroys Bellows' copy of the token. To remove the authorization itself, revoke it in the Atlassian account settings.

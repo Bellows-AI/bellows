@@ -47,6 +47,8 @@ Connect Jira so that a task can read a ticket. Tasks can look issues up. If you 
 
 Each connection has its own page. There you can **Reconnect** or **Disconnect**. Reconnect with the same Atlassian account. If you turn on comments later, tasks already started with read-only access are refused until you start them again.
 
+One Atlassian account can be connected in several Bellows organizations, and each organization holds its own connection. Inside one organization the account belongs to the member who connected it: another member who connects it sees "Jira connection failed (grant-conflict)." and nothing is connected.
+
 ### Using Jira on a task
 
 Mention the ticket in the task, for example "Fix PROJ-123". When the task needs Jira and you have not connected it, the task page shows a block that says the task needs a Jira connection. Your options:
