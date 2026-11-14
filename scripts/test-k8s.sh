@@ -1266,6 +1266,17 @@ expect_not_contains 'no docker class hands the driver no daemon image' "$gh" 'na
 refuses 'a docker class with an unpinned daemon image is refused' \
     'runner.docker.image.digest must be a sha256:<64 hex> digest when a runner class sets docker: true' \
     "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set runner.docker.image.digest=
+# The daemons' registry mirrors: one global list, handed to the driver as JSON beside the image;
+# unset hands none (the daemon pulls directly), and a plain-http mirror is refused at render.
+expect_not_contains 'no registry mirror hands the driver no mirror list' "$two_driver" 'name: RUNNER_DOCKER_MIRRORS'
+mirror_driver="$(gh_render -f "$work/two-classes.yaml" \
+    --set 'runner.docker.registryMirrors={https://mirror.example,https://registry.example/hub}' |
+    awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/')"
+expect_contains 'the registry mirrors reach the driver as one JSON env' "$mirror_driver" '- name: RUNNER_DOCKER_MIRRORS
+                        value: "[\"https://mirror.example\",\"https://registry.example/hub\"]"'
+refuses 'a plain-http registry mirror is refused' \
+    'runner.docker.registryMirrors entries must be https:// URLs' \
+    "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set 'runner.docker.registryMirrors={http://mirror.example}'
 expect_contains 'the admission CEL lists the docker classes' "$two_admission" '- name: dockerClasses
           expression: "[\"sandbox\"]"'
 expect_contains 'the admission CEL lists no docker class by default' \

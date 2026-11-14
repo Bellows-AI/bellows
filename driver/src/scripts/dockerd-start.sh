@@ -31,6 +31,14 @@ if command -v iptables-legacy >/dev/null 2>&1; then ipt=iptables-legacy; fi
 
 chmod 1777 /run/factory-tmp
 
+# The registry mirrors (DOCKERD_MIRRORS, space-separated https:// URLs the driver validated), one
+# --registry-mirror each; unset pulls directly. No globbing: an entry is a URL, never a pattern.
+set -f
+set --
+for mirror in ${DOCKERD_MIRRORS:-}; do
+    set -- "$@" --registry-mirror "$mirror"
+done
+
 exec dockerd --iptables=false --ip6tables=false --mtu "$mtu" --data-root /var/lib/docker \
     -H unix:///run/factory-docker/docker.sock -H unix:///var/run/docker.sock --group 1000 \
-    --shutdown-timeout 5
+    --shutdown-timeout 5 "$@"

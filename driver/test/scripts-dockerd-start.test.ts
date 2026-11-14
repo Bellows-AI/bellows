@@ -59,6 +59,19 @@ describe('the dockerd start script', () => {
         expect(dockerdStartScript).not.toMatch(/:2375|:2376/);
     });
 
+    // The mirror list (DOCKERD_MIRRORS: space-separated https:// URLs the driver validated) is a
+    // parameter of the script, never spliced into it: each entry becomes its own argv pair, unglobbed,
+    // and an unset or empty list adds nothing — the daemon pulls directly.
+    it('turns DOCKERD_MIRRORS into one --registry-mirror per entry, and none when unset', () => {
+        expect(code).toMatch(/^set -f$/m);
+        expect(code).toMatch(
+            /^set --\nfor mirror in \$\{DOCKERD_MIRRORS:-\}; do\n\s+set -- "\$@" --registry-mirror "\$mirror"\ndone$/m
+        );
+        expect(code.indexOf('set -f')).toBeLessThan(code.indexOf('for mirror in'));
+        expect(code.indexOf('done')).toBeLessThan(code.indexOf('exec dockerd'));
+        expect(dockerdLine).toMatch(/ "\$@"$/);
+    });
+
     it('ships with no trailing whitespace and a final newline', () => {
         expect(dockerdStartScript).not.toMatch(/[ \t]+$/m);
         expect(dockerdStartScript.endsWith('\n')).toBe(true);

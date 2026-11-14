@@ -44,6 +44,8 @@ export interface RunnerClasses {
     defaultRunnerClass: string;
     /** The daemon image a docker class runs (RUNNER_DOCKER_IMAGE), digest-pinned; null when no class has one. */
     runnerDockerImage: string | null;
+    /** The daemons' registry mirrors (RUNNER_DOCKER_MIRRORS), one global list of `https://` URLs; empty pulls directly. */
+    runnerDockerMirrors: string[];
 }
 
 /** The name of the class a driver with no RUNNER_CLASSES runs every claim in: no fields at all. */
@@ -360,7 +362,49 @@ export function loadRunnerClasses(env: NodeJS.ProcessEnv, executor: 'docker' | '
         );
     }
     if (executor === 'docker') Object.values(runnerClasses).forEach(assertDockerClass);
-    return { runnerClasses, defaultRunnerClass, runnerDockerImage: dockerImage(env, runnerClasses) };
+    return {
+        runnerClasses,
+        defaultRunnerClass,
+        runnerDockerImage: dockerImage(env, runnerClasses),
+        runnerDockerMirrors: dockerMirrors(env),
+    };
+}
+
+/**
+ * The registry mirrors every docker class's daemon pulls Docker Hub images through
+ * (RUNNER_DOCKER_MIRRORS, a JSON array). Each is an `https://` URL with no credentials, query or
+ * whitespace: a plain-http mirror needs `--insecure-registry`, which the daemon is never given, and
+ * the list reaches the start script space-separated. Unset or blank is none; anything malformed
+ * refuses boot rather than being dropped.
+ */
+function dockerMirrors(env: NodeJS.ProcessEnv): string[] {
+    const raw = optionalText(env.RUNNER_DOCKER_MIRRORS);
+    if (raw === null) return [];
+    const refuse = (why: string): never => {
+        throw new Error(`RUNNER_DOCKER_MIRRORS must be a JSON array of https:// URLs: ${why}`);
+    };
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch {
+        return refuse(`not JSON, got "${raw.slice(0, ERROR_PREVIEW_CHARS)}"`);
+    }
+    if (!Array.isArray(parsed)) return refuse('not an array');
+    return parsed.map((entry: unknown) => {
+        if (typeof entry !== 'string') return refuse(`an entry is not a string, got ${preview(entry)}`);
+        const shown = `"${entry.slice(0, ERROR_PREVIEW_CHARS)}"`;
+        let url: URL;
+        try {
+            url = new URL(entry);
+        } catch {
+            return refuse(`not a URL, got ${shown}`);
+        }
+        if (url.protocol !== 'https:') return refuse(`a mirror must be https://, got ${shown}`);
+        if (/\s/.test(entry) || url.username || url.password || url.search || url.hash) {
+            return refuse(`a mirror carries no whitespace, credentials, query or fragment, got ${shown}`);
+        }
+        return entry;
+    });
 }
 
 /** A digest reference: the daemon a docker class runs never moves with a tag (`docker:27-dind@sha256:…`). */

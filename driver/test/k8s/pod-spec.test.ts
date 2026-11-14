@@ -800,6 +800,27 @@ describe('a docker class', () => {
     const envOf = (container: { env: { name: string; value?: string }[] }, name: string) =>
         container.env.filter((entry) => entry.name === name);
 
+    it('hands the daemon its registry mirrors as env, and none when unset', () => {
+        expect(envOf(named(podOf('sandbox'), DOCKERD_CONTAINER), 'DOCKERD_MIRRORS')).toEqual([]);
+        const mirrored = {
+            ...loadDriverConfig({
+                ...classesEnv,
+                RUNNER_DOCKER_MIRRORS: '["https://mirror.example","https://registry.example/hub"]',
+            }),
+            servicesEnabled: true,
+        };
+        const pod = runnerJobSpec(
+            mirrored,
+            { ...gatedOf(job), ...SUPERVISED, runnerClass: 'sandbox' },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+        expect(envOf(named(pod, DOCKERD_CONTAINER), 'DOCKERD_MIRRORS')).toEqual([
+            { name: 'DOCKERD_MIRRORS', value: 'https://mirror.example https://registry.example/hub' },
+        ]);
+        // The start script is unchanged: the mirrors are a parameter, never spliced into it.
+        expect(named(pod, DOCKERD_CONTAINER).command).toEqual(dockerdStartArgv());
+    });
+
     it('adds the dockerd sidecar: restartable, before the gate, privileged only by its three caps', () => {
         const pod = podOf('sandbox');
         const init = (pod.initContainers ?? []).map((c) => c.name);

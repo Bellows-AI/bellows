@@ -177,6 +177,7 @@ Tune the runners:
 | `runner.classes.<name>.dockerStorage` | unset | Size of the daemon's data root: images, layers and containers. It is held in memory and counts against the pod's memory. Unset, only the pod's memory limit bounds it. |
 | `runner.classes.<name>.dockerResources` | unset | Requests and limits of the `dockerd` sidecar, in the same shape as `resources`. |
 | `runner.docker.image` | `docker:27-dind`, pinned by digest | The daemon's image, used only when a class sets `docker: true`. A digest is required: the render fails without one. `global.imageRegistry` prefixes it like every other image; `ghcr.io/bellows-ai` holds the pinned digest as `docker:27-dind`. |
+| `runner.docker.registryMirrors` | `[]` | Registry mirrors for every Docker class's daemon, one global list of `https://` URLs. They cover Docker Hub pulls only; images from `ghcr.io` or `mirror.gcr.io` pull directly. An `http://` mirror fails the render. A mirror on a private or in-cluster address also needs its `/32` in `isolation.allowedCidrs`, which opens it to the whole runner pod, agent included. |
 | `isolation.blockedCidrs` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16` | Blocked for runners, including the cloud metadata address. |
 | `isolation.allowedCidrs` | `[]` | Add a private host a runner must reach, as a `/32`. |
 | `isolation.dnsCidrs` | `169.254.20.10/32` | Extra resolver addresses allowed on port 53. List your resolver if your DNS pods are labelled neither `k8s-app: kube-dns` nor `k8s-app: node-local-dns`. |
