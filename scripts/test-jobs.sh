@@ -145,14 +145,17 @@ COMPOSE_DRIVER="factory-jobs-$RUN_ID-compose-driver"
 # The compose phase pins its own project name, so the volumes and network its `run` creates can be
 # torn down by name without touching the stack services the script itself started (postgres).
 COMPOSE_PROJECT="factory-jobs-$RUN_ID-compose"
-# docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard service, and compose interpolates the
+# docker-compose.yml requires DRIVER_CREDENTIAL_SHA256 for the dashboard service, and compose interpolates the
 # whole file on every call (on a current compose even `exec` into postgres), so every call goes
-# through compose(). The compose phase's driver is started with the token cleared
-# (`-e JOB_BOARD_TOKEN=`), like every host-driven one: this value only satisfies the parse.
-COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
+# through compose(). The compose phase's driver is started with its credential cleared
+# (`-e DRIVER_CREDENTIAL=`), like every host-driven one: this value only satisfies the parse.
+COMPOSE_CREDENTIAL_SHA256="${DRIVER_CREDENTIAL_SHA256:-$(printf '%064d' 0)}"
 # The file's path is fixed here (compose() and cleanup() name it); the file itself is written after the preflight.
 SECRETS_ENV_FILE_PATH="${TMPDIR:-/tmp}/factory-jobs-$RUN_ID-secrets.env"
-compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
+compose() { DRIVER_CREDENTIAL_SHA256="$COMPOSE_CREDENTIAL_SHA256" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
+# A github-mode lane board holds only its driver credential's SHA-256 (DRIVER_CREDENTIAL_SHA256), the
+# lane's driver the credential itself (DRIVER_CREDENTIAL, `drv_…`): the same split a deployment has.
+credential_sha256() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$1"; }
 # The repository every task runs against: a ready selection on the board and, in the
 # driver volume, a clone whose origin is a bare repository beside it — no GitHub, no network.
 SMOKE_REPO="factory-smoke/demo"

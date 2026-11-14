@@ -11,6 +11,8 @@ import {
     stubTelemetryClient,
     telemetryStoreStub,
     testConfig,
+    TEST_DRIVER_CREDENTIAL,
+    testDriverCredentials,
 } from './helpers.js';
 import {
     HTTP_BAD_REQUEST,
@@ -97,6 +99,7 @@ async function boot(
             orgs,
             store: telemetryStoreStub(),
             auth: store,
+            driverCredentials: testDriverCredentials,
             commercePlanWriter: options.writer ?? fakeWriter().writer,
         })
     );
@@ -293,10 +296,8 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
     });
 
     it('the worker token is not the commerce token', async () => {
-        const auth = githubAuth();
-        const { app } = await boot({ auth });
-        const workerToken = auth.mode === 'github' ? auth.jobBoardToken : '';
-        const response = await put(app, BODY, { authorization: `Bearer ${workerToken}` });
+        const { app } = await boot({ auth: githubAuth() });
+        const response = await put(app, BODY, { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` });
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 

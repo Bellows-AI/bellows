@@ -26,7 +26,7 @@ function recorder(respond: () => Response) {
 
 /** The board client under test, on the shared URL and lease; `token` only where the test needs one. */
 const boardOn = (fetch: typeof globalThis.fetch, token?: string) =>
-    createBoard({ url: 'http://board', leaseSeconds: 300, token, fetch });
+    createBoard({ url: 'http://board', leaseSeconds: 300, ...(token ? { credential: () => token } : {}), fetch });
 
 const claimed = (extra: Record<string, unknown> = {}) =>
     new Response(
@@ -51,6 +51,18 @@ describe('the worker token', () => {
         await board.claim('driver-1');
 
         expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+    });
+
+    it('is read for every call: a rotated credential travels from the next call on, with no new client', async () => {
+        const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
+        let current = 'drv_old';
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, credential: () => current, fetch });
+
+        await board.heartbeat(boardJob());
+        current = 'drv_new';
+        await board.heartbeat(boardJob());
+
+        expect(calls.map((call) => call.headers.authorization)).toEqual(['Bearer drv_old', 'Bearer drv_new']);
     });
 
     it('is OMITTED entirely against an open board, not sent empty', async () => {
@@ -330,7 +342,7 @@ describe('the claim’s skill pin', () => {
 describe('asking for the attempt’s GitHub token (docs/connections.md)', () => {
     const job = boardJob();
 
-    it('asks the credential endpoint with the attempt pair, never the board secret', async () => {
+    it('asks the credential endpoint with the attempt pair, never the driver credential', async () => {
         const { calls, fetch } = recorder(() =>
             Response.json({ token: 'ghs_fresh', expiresAt: '2026-10-16T13:00:00.000Z' }, { status: 200 })
         );

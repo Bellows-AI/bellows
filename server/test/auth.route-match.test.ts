@@ -12,7 +12,8 @@ import {
     staticRegistry,
     stubTelemetryClient,
     telemetryStoreStub,
-    TEST_JOB_BOARD_TOKEN,
+    TEST_DRIVER_CREDENTIAL,
+    testDriverCredentials,
     testConfig,
 } from './helpers.js';
 import { HTTP_NOT_FOUND, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
@@ -113,6 +114,7 @@ async function boot(heartbeatOrgs: string[] = []) {
             orgs,
             store: telemetryStoreStub(),
             auth: store,
+            driverCredentials: testDriverCredentials,
             commercePlanWriter: writer,
             orgOfJob: async (jobId) => {
                 heartbeatOrgs.push(jobId);
@@ -192,7 +194,7 @@ describe('a raw # on the request line', () => {
 
     it.each([
         ['PUT', `${PLAN}#x`, PLAN_BODY, `Bearer ${COMMERCE_TOKEN}`],
-        ['POST', `${CLAIM}#x`, { worker: 'w', leaseSeconds: 60 }, `Bearer ${TEST_JOB_BOARD_TOKEN}`],
+        ['POST', `${CLAIM}#x`, { worker: 'w', leaseSeconds: 60 }, `Bearer ${TEST_DRIVER_CREDENTIAL}`],
     ])('reaches the handler on %s %s under its own credential', async (method, target, body, authorization) => {
         const { app, planCalls, claimCalls } = await boot();
         await rawRequest(app, { method, target, headers: { authorization }, body });
@@ -216,7 +218,7 @@ describe('the worker claim, spelled every way', () => {
             method: 'POST',
             url,
             payload: claim,
-            headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
+            headers: { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` },
         });
         expect(claimCalls).toEqual(['claim']);
     });
@@ -231,7 +233,7 @@ describe('a job-scoped worker route', () => {
             method: 'POST',
             url: `/api/jobs/${encoded}/heartbeat`,
             payload: { leaseToken: 'x' },
-            headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
+            headers: { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` },
         });
         expect(seen).toEqual([JOB_ID]);
     });

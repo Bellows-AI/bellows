@@ -85,8 +85,8 @@ export function createOrgOfIngest({
 }
 
 /**
- * Two more org-less resolvers beside `createOrgOfLease`, for the worker routes under the shared
- * board secret: the secret authenticates the DRIVER, so the org a call operates on is read from
+ * Two more org-less resolvers beside `createOrgOfLease`, for the worker routes under a driver
+ * credential: it authenticates the DRIVER, so the org a call operates on is read from
  * the row its URL names — the job for the `/api/jobs/:id/…` routes, the queued worktree removal
  * for the reclaim ack. Unbounded by lease or status, unlike the pair above: the secret already
  * answered the authorization question, and this is routing — a heartbeat on a finished job must

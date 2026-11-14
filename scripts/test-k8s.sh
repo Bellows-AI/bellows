@@ -80,17 +80,23 @@ secret_store_sets() { # secret_store_sets <dataKey> <operationKey> <fingerprintK
     )
 }
 secret_store_sets "$(printf '%032d' 1 | base64)" "$(printf '%032d' 2 | base64)" "$(printf '%032d' 3 | base64)"
-auth_sets() { # auth_sets <publicUrl> <sessionSecret> <jobBoardToken> — (re)fills AUTH_SETS (and carries SECRET_STORE_SETS)
+auth_sets() { # auth_sets <publicUrl> <sessionSecret> <driverCredential> — (re)fills AUTH_SETS (and carries SECRET_STORE_SETS)
     AUTH_SETS=(
         "${SECRET_STORE_SETS[@]}"
         --set "auth.publicUrl=$1"
         --set auth.oauthClientId=client
         --set secret.oauthClientSecret=secret
         --set "secret.sessionSecret=$2"
-        --set "secret.jobBoardToken=$3"
+        --set "driver.credential.value=$3"
+        --set "driver.metricsToken=$METRICS_TOKEN"
     )
 }
-auth_sets https://factory.example "$SECRET32" "$SECRET32"
+# The driver's own credential (`drv_` + 64 hex) and the SHA-256 the dashboard records it by.
+CREDENTIAL="drv_$(printf '%064d' 7)"
+# The driver scrape's own bearer, never the credential.
+METRICS_TOKEN="$(printf '%032d' 9)"
+CREDENTIAL_SHA256="$(printf %s "$CREDENTIAL" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)"
+auth_sets https://factory.example "$SECRET32" "$CREDENTIAL"
 # The local profile as the cluster phase installs it: no App, so the code-only no-fetch entry.
 LOCAL_SETS=(-f charts/factory/values-local.yaml "${STATE_SETS[@]}" --set dashboard.offline=true)
 NAMESPACE="${NAMESPACE:-default}"
@@ -427,10 +433,17 @@ expect_not_contains 'the service never selects the driver'       "$service_selec
 expect_contains 'the driver learns its pod IP'             "$(cat "$work/rendered.yaml")" 'fieldPath: status.podIP'
 expect_contains 'the runner is told the driver pod IP'     "$(cat "$work/rendered.yaml")" 'value: http://$(POD_IP)'
 expect_not_contains 'the chart ships no headless driver Service' "$(cat "$work/rendered.yaml")" 'clusterIP: None'
-# The Secret carries the one shared key: the dashboard validates it, the driver presents it.
-expect_contains 'the secret renders the shared board secret key' "$(cat "$work/rendered.yaml")" \
-    'job-board-token:'
-expect_contains 'the driver presents the shared secret' "$(cat "$work/rendered.yaml")" 'key: job-board-token'
+# The driver's credential is its own Secret: the dashboard records only its SHA-256 and never mounts it.
+dashboard_secret="$(awk '/^# Source: factory\/templates\/secret.yaml/,/^---/' "$work/rendered.yaml")"
+driver_secret="$(awk '/^# Source: factory\/templates\/driver-secret.yaml/,/^---/' "$work/rendered.yaml")"
+expect_not_contains 'the dashboard Secret holds no driver credential' "$dashboard_secret" "$CREDENTIAL"
+expect_not_contains 'no shared board secret is rendered' "$(cat "$work/rendered.yaml")" 'job-board-token'
+expect_contains 'the driver Secret holds the driver credential' "$driver_secret" "credential: \"$CREDENTIAL\""
+expect_contains 'the driver Secret holds the scrape token' "$driver_secret" 'metrics-token:'
+expect_contains 'the dashboard records the credential by its SHA-256' \
+    "$(grep -A1 'name: DRIVER_CREDENTIAL_SHA256' "$work/rendered.yaml")" "value: \"$CREDENTIAL_SHA256\""
+[ "$(grep -c "$CREDENTIAL" "$work/rendered.yaml")" -eq 1 ] && ok 'the credential appears once, in the driver Secret' ||
+    bad 'the credential appears once, in the driver Secret' "$(grep -c "$CREDENTIAL" "$work/rendered.yaml") occurrences"
 # The URL is useless against the default loopback bind: inside the pod, nothing else can reach
 # 127.0.0.1. Compose makes the same pairing.
 expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.yaml")" 'value: 0.0.0.0'
@@ -559,14 +572,26 @@ if reopened="$(render --set auth.mode=none --set auth.allowPublicBind=true 2>&1)
 else
     bad '--set auth.mode=none has no effect' "render failed: ${reopened:0:200}"
 fi
-# The driver's board token is required: a driver started without it would poll into 401s forever,
-# where a missing key fails the pod visibly.
-board_ref="$(grep -A1 -- 'key: job-board-token' <<<"$driver")"
-if [ -z "$board_ref" ]; then
-    bad "the driver's board token ref is not optional" 'no job-board-token ref in the driver deployment'
-else
-    expect_not_contains "the driver's board token ref is not optional" "$(sed -n '2p' <<<"$board_ref")" 'optional'
-fi
+# The driver reads its credential from a file the kubelet refreshes in place — a directory mount, never
+# subPath, never an env value — so a rotated Secret reaches it with no restart. The mount is not optional: a
+# driver started without it would poll into 401s forever, where a missing Secret fails the pod visibly.
+expect_contains 'the driver reads its credential from the mounted file' \
+    "$(grep -A1 'name: DRIVER_CREDENTIAL_FILE' <<<"$driver")" 'value: /var/run/bellows/driver/credential'
+[ "$(grep -c 'name: DRIVER_CREDENTIAL$' <<<"$driver")" -eq 0 ] && ok 'the driver credential is never an env value' ||
+    bad 'the driver credential is never an env value' 'a DRIVER_CREDENTIAL env entry is rendered'
+credential_volume="$(grep -A9 -- '- name: driver-credential$' <<<"$driver" | tail -n +2)"
+expect_contains 'the credential volume is the driver Secret' "$credential_volume" "secretName: $RELEASE-factory-driver"
+expect_not_contains 'the credential volume is not optional' "$credential_volume" 'optional'
+expect_contains 'the credential file is read-only' "$credential_volume" 'defaultMode: 292'
+expect_not_contains 'the driver pod sets no fsGroup' "$driver" 'fsGroup'
+expect_not_contains 'the credential is mounted whole, never by subPath' "$driver" 'subPath:'
+rotated_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' \
+    <<<"$(render --set "driver.credential.value=drv_$(printf '%064d' 8)")")"
+[ "$(grep 'checksum/secret' <<<"$driver")" = "$(grep 'checksum/secret' <<<"$rotated_driver")" ] &&
+    ok 'a new credential value restarts no driver pod: the mounted file is refreshed in place' ||
+    bad 'a new credential value restarts no driver pod: the mounted file is refreshed in place' 'the checksum moved'
+dashboard_pod="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' "$work/rendered.yaml")"
+expect_not_contains 'the dashboard never mounts the driver Secret' "$dashboard_pod" "$RELEASE-factory-driver"
 
 # The dashboard pod must not start its server until the database accepts connections: the server's
 # migration retry gives up after ~45s and then serves every DB-backed route as a 500 forever — a
@@ -702,11 +727,14 @@ expect_contains 'the driver keeps the production step long poll' "$(grep -A1 'na
 gh_driver_lane="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set-string driver.orphanMinMs=10000 --set-string driver.stepWaitMs=2000)")"
 expect_contains 'a lane lowers the orphan floor' "$(grep -A1 'name: DRIVER_ORPHAN_MIN_MS' <<<"$gh_driver_lane")" 'value: "10000"'
 expect_contains 'a lane lowers the step long poll' "$(grep -A1 'name: DRIVER_STEP_WAIT_MS' <<<"$gh_driver_lane")" 'value: "2000"'
-# The driver's scrape listener: on by default behind the board token, and '' turns it off.
+# The driver's scrape listener: on by default behind its own token, and '' turns it off.
 expect_contains 'the driver scrape port defaults to 9464' "$(grep -A1 'name: DRIVER_METRICS_PORT' <<<"$gh_driver")" 'value: "9464"'
+expect_contains 'the scrape token is the driver Secret’s metrics-token' \
+    "$(grep -A4 'name: DRIVER_METRICS_TOKEN' <<<"$gh_driver")" 'key: metrics-token'
 expect_contains 'the driver names its scrape container port' "$(grep -B1 -A1 'name: metrics' <<<"$gh_driver")" 'containerPort: 9464'
 gh_driver_off="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set driver.metricsPort='')")"
 expect_not_contains 'an empty scrape port renders no listener env' "$gh_driver_off" 'DRIVER_METRICS_PORT'
+expect_not_contains 'an empty scrape port renders no scrape token' "$gh_driver_off" 'DRIVER_METRICS_TOKEN'
 expect_not_contains 'an empty scrape port renders no container port' "$gh_driver_off" 'name: metrics'
 
 # Selectors hold only name/instance/component: they are immutable, so a chart-version label in
@@ -718,6 +746,7 @@ expect_not_contains 'selectors carry no managed-by'     "$selectors" 'managed-by
 # The collector forwards each export's attempt credential whatever the Secret holds: there is no
 # deployment-wide ingest secret, so a managed Secret changes nothing about an export's auth.
 byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set secret.existingSecret=mine \
+    --set driver.credential.existingSecret=driver-managed \
     --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 \
     --set artifacts.s3.bucket=factory-artifacts --set artifacts.s3.region=us-east-1 \
     --set secretStore.backend=database --set secretStore.existingSecret=managed-keys --set secretStore.activeKeyId=k1 2>&1)"
@@ -727,8 +756,8 @@ expect_not_contains 'no deployment-wide ingest secret is wired' "$byo" 'INGEST_T
 expect_contains 'a managed Secret is read for the Atlassian client secret' "$byo" 'key: atlassian-client-secret'
 expect_not_contains 'a managed Secret is not generated alongside' "$byo" 'atlassian-client-secret: '
 # Every dashboard key but database-url is optional, so a missing one reads as the server's own boot
-# message; the driver's job-board-token is the exception (pinned above), so 7 rather than 8.
-[ "$(grep -c 'optional: true' <<<"$byo")" -ge 7 ] && ok 'managed-Secret keys are optional' ||
+# message: 6 of them. The driver's credential is in its own Secret, never the dashboard's, and never optional.
+[ "$(grep -c 'optional: true' <<<"$byo")" -ge 6 ] && ok 'managed-Secret keys are optional' ||
     bad 'managed-Secret keys are optional' "$(grep -c 'optional: true' <<<"$byo") optional refs"
 
 # Render-time refusals: half-configured values fail here, not as a crash loop.
@@ -848,14 +877,22 @@ refuses 'a missing OAuth client secret is refused' 'secret.oauthClientSecret is 
     "${GH_SETS[@]}" --set secret.oauthClientSecret=
 refuses 'a short session secret is refused' 'secret.sessionSecret of at least 32 characters is required' \
     "${GH_SETS[@]}" --set secret.sessionSecret=short
-refuses 'a missing board token is refused' 'secret.jobBoardToken of at least 32 characters is required' \
-    "${GH_SETS[@]}" --set secret.jobBoardToken=
+refuses 'a missing driver credential is refused' 'driver.credential.value' \
+    "${GH_SETS[@]}" --set driver.credential.value=
+refuses 'a driver credential the board would not issue is refused' 'must be drv_ followed by 64 hex' \
+    "${GH_SETS[@]}" --set driver.credential.value=not-a-credential
+refuses 'a credential named twice is refused' 'set value or existingSecret, not both' \
+    "${GH_SETS[@]}" --set driver.credential.existingSecret=mine
+refuses 'a malformed bootstrap hash is refused' 'driver.credential.sha256 must be the 64-hex' \
+    "${GH_SETS[@]}" --set driver.credential.value= --set driver.credential.existingSecret=mine --set driver.credential.sha256=abc
+refuses 'a scrape port with no scrape token is refused' 'driver.metricsToken of at least 32 characters is required' \
+    "${GH_SETS[@]}" --set driver.metricsToken=
 refuses 'a missing App id is refused unless offline' 'github.appId is required' "${GH_SETS[@]}" --set github.appId=
 # Offline waives the App, never the wall: the no-fetch entry still needs every auth value.
 refuses 'offline still refuses a missing OAuth client id' 'auth.oauthClientId is required' \
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set auth.oauthClientId=
-refuses 'offline still refuses a missing board token' 'secret.jobBoardToken of at least 32 characters is required' \
-    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set secret.jobBoardToken=
+refuses 'offline still refuses a missing driver credential' 'driver.credential.value' \
+    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set driver.credential.value=
 refuses 'no Secret at all is refused' 'secret.existingSecret is empty' "${GH_SETS[@]}" --set secret.create=false
 # The secret store's keys are required on every render, the no-fetch entry included.
 refuses 'a missing backend is refused' 'secretStore.backend is required' "${GH_SETS[@]}" --set secretStore.backend=
@@ -1900,12 +1937,15 @@ LANE_REBIND_GRACE_S=$((2 * ${KUBELET_SYNC_S:-60} + 10))
 # (the supervisor ends before it polls the new endpoint, three runs in three), a 30 s grace delivers it.
 [ "$LANE_REBIND_GRACE_S" -ge 30 ] || LANE_REBIND_GRACE_S=30
 LANE_MARGIN_S=40
-# Fresh throwaway secrets per run; the board token is what the driver presents on every claim, so a
-# job that comes back succeeded proves it end to end. The origin is the port-forward's below.
+# Fresh throwaway secrets per run; the driver credential is what the driver presents on every claim, and the
+# dashboard holds only its SHA-256, so a job that comes back succeeded proves it end to end. The origin is
+# the port-forward's below.
 PORT=18080
 BASE="http://127.0.0.1:$PORT"
 secret_store_sets "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" "$(openssl rand -base64 32)"
-auth_sets "$BASE" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)"
+CREDENTIAL="drv_$(openssl rand -hex 32)"
+METRICS_TOKEN="$(openssl rand -hex 32)"
+auth_sets "$BASE" "$(openssl rand -hex 32)" "$CREDENTIAL"
 helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "dashboard.image.repository=$DASH_REPO" --set-string "dashboard.image.tag=$RELEASE" \
     --set "driver.image.repository=$DRIVER_REPO" --set-string "driver.image.tag=$RELEASE" \

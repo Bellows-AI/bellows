@@ -16,7 +16,6 @@ const github = (env: NodeJS.ProcessEnv = {}) =>
         GITHUB_OAUTH_CLIENT_ID: 'client-id',
         GITHUB_OAUTH_CLIENT_SECRET: 'client-secret',
         SESSION_SECRET: SECRET,
-        JOB_BOARD_TOKEN: SECRET,
         ...env,
     });
 

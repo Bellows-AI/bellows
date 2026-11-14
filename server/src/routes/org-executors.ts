@@ -345,7 +345,7 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
 /**
  * Organization-scoped executor profiles (issue 391): the administrators' CRUD over the profiles
  * every member of the organization may select. A person's surface, like the workflow routes it
- * mirrors — the board secret never gets past the auth wall here, because executor management is a
+ * mirrors — a driver credential never gets past the auth wall here, because executor management is a
  * human's decision.
  *
  * - `GET /api/org/executors` — every member reads selection metadata (id, name, type, createdAt);

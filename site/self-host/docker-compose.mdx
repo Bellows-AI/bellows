@@ -38,8 +38,10 @@ The repository ships a `docker-compose.yml` that starts the board, the driver, P
   <Step title="Create .env">
     ```bash
     cp .env.example .env
-    openssl rand -hex 32   # use for JOB_BOARD_TOKEN
     openssl rand -hex 32   # use for SESSION_SECRET
+    DRIVER_CREDENTIAL="drv_$(openssl rand -hex 32)"
+    printf '%s\n' "$DRIVER_CREDENTIAL"                 # use for DRIVER_CREDENTIAL
+    printf %s "$DRIVER_CREDENTIAL" | shasum -a 256      # use the hex for DRIVER_CREDENTIAL_SHA256
     ```
     Set at least these in `.env`:
 
@@ -49,7 +51,8 @@ The repository ships a `docker-compose.yml` that starts the board, the driver, P
     | `GITHUB_APP_PRIVATE_KEY` | The PEM, or its base64 on one line. Or set `GITHUB_APP_PRIVATE_KEY_FILE`. |
     | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | From the OAuth App. |
     | `SESSION_SECRET` | At least 32 characters. |
-    | `JOB_BOARD_TOKEN` | At least 32 characters. Compose refuses to start without it. |
+    | `DRIVER_CREDENTIAL` | The driver's own credential. Only the driver reads it. |
+    | `DRIVER_CREDENTIAL_SHA256` | Its SHA-256. The board records it as the first driver credential and never sees the credential. Compose refuses to start without it. |
     | `PUBLIC_URL` | `http://127.0.0.1:5173` for a local trial. |
     | `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | The model credential. The driver passes both names to runners by name. |
 
@@ -98,7 +101,7 @@ The repository ships a `docker-compose.yml` that starts the board, the driver, P
 
 | Mode | Behaviour | Where it applies |
 | --- | --- | --- |
-| `github` | Members sign in with GitHub. Requires the OAuth keys, `SESSION_SECRET`, `JOB_BOARD_TOKEN` and a `PUBLIC_URL`. | Pinned by `docker-compose.yml`. Editing `.env` cannot change it. |
+| `github` | Members sign in with GitHub. Requires the OAuth keys, `SESSION_SECRET`, the driver credential pair and a `PUBLIC_URL`. | Pinned by `docker-compose.yml`. Editing `.env` cannot change it. |
 | `none` | No sign-in. Every route is open, including `POST /api/jobs`, which runs shell commands. The server refuses a non-loopback `HOST` unless `AUTH_ALLOW_PUBLIC_BIND=1`. | The default of the server itself, for example `npm run dev` on the host. Not available through this Compose file. |
 
 If you want `none`, run the board on the host with `npm run dev` and keep it on `127.0.0.1`. A GitHub App is still required.
@@ -144,6 +147,18 @@ Task logs are on the task page in the web app.
 </Steps>
 
 Releases only add to the schema, so a rollback to the previous version runs against the newer schema.
+
+## Rotate or revoke the driver credential
+
+A self-hosted board has no operator account, so its driver credentials are managed against its database. Run these on the host, with `DATABASE_URL` set to the Compose database:
+
+```bash
+npm run build -w core && npm run build -w server
+npm run driver-credential -- list
+npm run driver-credential -- rotate <id> --overlap 3600   # prints the new credential once
+```
+
+Put the new credential in `.env` as `DRIVER_CREDENTIAL`, then run `docker compose up -d driver` before the overlap ends. The old driver hands its running tasks over, and the new one adopts them. `npm run driver-credential -- revoke <id>` ends a credential at once: that driver stops claiming, and its running tasks pass to another driver when their leases lapse.
 
 ## Other Make targets
 

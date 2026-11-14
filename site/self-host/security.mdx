@@ -17,7 +17,7 @@ This page is for a security reviewer. It states what each control does and what 
 | Component | Holds | Does not hold |
 | --- | --- | --- |
 | Dashboard | GitHub App private key, secret-store keys, artifact store credentials, session secret | Agent-written code (it runs in runner pods, never here) |
-| Driver | The shared board token, a namespaced Role that creates Jobs | No `get` or `list` on Secrets. It never reads a Secret back |
+| Driver | Its own driver credential (a mounted file), its metrics token, a namespaced Role that creates Jobs | No `get` or `list` on Secrets. It never reads a Secret back. No runner receives its credential |
 | Runner pod | Its per-attempt credentials, model credentials, a memory-only GitHub token cache | No ServiceAccount token, no App key |
 | Agent tool commands | Nothing | No GitHub token, no model credential, no control-channel token |
 
@@ -137,7 +137,7 @@ Only an admin can mint, list or revoke organization access tokens, save organiza
 | Personal access token | `fat_` | Everything its owner can do |
 | Organization access token | `oat_` | Read only, on its allowed routes |
 | MCP access and refresh tokens | `mat_`, `mrt_` | Only `/api/mcp`, within the granted scopes |
-| Worker credential | `JOB_BOARD_TOKEN` | The driver's routes. One deployment-wide secret of at least 32 characters |
+| Driver credential | `drv_` | The driver's routes, for the pool or named organizations. One per driver, revocable and rotatable with an overlap window |
 
 Only hashes of tokens are stored. Each credential kind works on its own routes and never falls through to another. A worker token is refused on human routes, and the reverse.
 
@@ -158,7 +158,7 @@ MCP is off unless you set `mcp.enabled`. It requires an `https` public URL, sinc
 - Runner egress is controlled by a NetworkPolicy. It works only if your CNI enforces it. Check from inside a runner pod that traffic to `169.254.169.254` and to private ranges fails.
 - IPv6 egress is not covered. Every rule is IPv4.
 - A NetworkPolicy does not restrict HTTP routes. A runner can call any public URL.
-- The driver's metrics port (`driver.metricsPort`, default `9464`) answers only with `Authorization: Bearer <JOB_BOARD_TOKEN>`. It has no Service. The driver refuses a metrics port with no token off loopback.
+- The driver's metrics port (`driver.metricsPort`, default `9464`) answers only with `Authorization: Bearer <driver.metricsToken>`, never the driver credential. It has no Service. The driver refuses a metrics port with no token off loopback.
 - With `AUTH_MODE=github` the dashboard accepts a runner's telemetry only under that task attempt's own credential, which the driver writes into the runner and the collector forwards. A laptop exporter sends a personal access token instead (`OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>`). Each point is stored under the organization of the credential that sent it, and usage figures count only an organization's own points. A point or branch report for a session that belongs to another task attempt or organization is refused.
 - On EKS, also set the node's metadata hop limit to 1 so a pod cannot reach node credentials. See [Kubernetes and Helm](/self-host/kubernetes).
 

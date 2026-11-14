@@ -57,7 +57,8 @@ import {
     staticRegistry,
     stubTelemetryClient,
     testConfig,
-    TEST_JOB_BOARD_TOKEN,
+    TEST_DRIVER_CREDENTIAL,
+    testDriverCredentials,
 } from './helpers.js';
 import { storeOutage } from './helpers-outage.js';
 
@@ -621,6 +622,7 @@ async function harnessOfBoards(boards: readonly (readonly [string, StoreStub])[]
     const instance = await buildApp({
         config,
         auth: memoryAuthStore(),
+        driverCredentials: testDriverCredentials,
         orgs: {
             for: async (orgId) => runtimes.get(orgId) ?? null,
             list: async () => boards.map(([orgId]) => ({ id: orgId, name: orgId, installationId: null })),
@@ -634,13 +636,13 @@ async function harnessOfBoards(boards: readonly (readonly [string, StoreStub])[]
     return instance;
 }
 
-/** The worker's credential: the shared board secret, so the poll names no org and reaches every board. */
+/** The worker's credential: a pool driver credential, so the poll names no org and reaches every board. */
 const postAsWorker = (instance: FastifyInstance, url: string, payload: unknown) =>
     instance.inject({
         method: 'POST',
         url,
         payload: payload as object,
-        headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
+        headers: { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` },
     });
 
 describe('POST /api/jobs', () => {
@@ -1633,6 +1635,7 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
         const instance = await buildApp({
             config,
             auth: memoryAuthStore(),
+            driverCredentials: testDriverCredentials,
             orgs: {
                 for: async (orgId) =>
                     orgId === 'org-alive'

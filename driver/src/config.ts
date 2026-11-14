@@ -6,6 +6,7 @@
  * socket — and the two have nothing in common at all: the board tells this process which
  * workspace a job belongs to, so it does not even need to know the organization.
  */
+import { isDriverCredential } from './board-credential.js';
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 import {
     orphanConfigFault,
@@ -19,15 +20,14 @@ export interface DriverConfig {
     /** Where the board is. The driver is a client of it, never of the database. */
     boardUrl: string;
     /**
-     * The shared board secret the board authenticates this process by, or '' against an open board.
-     *
-     * Environment only — there is no config file here, and a credential that decides whether a
-     * process may run shell commands does not belong on a command line. It is the same value the
-     * dashboard validates against (one .env entry / one chart Secret key), and it is the
-     * deployment's driver credential: a claim is offered every organization's board, and the org
-     * a call operates on comes from the row its URL names.
+     * This driver's own credential (DRIVER_CREDENTIAL, `drv_…`), or '' against an open board or when it is read
+     * from `boardCredentialFile`. Issued by the board, which stores only its hash, for the pool or for named
+     * organizations: a claim is offered only those organizations' boards (docs/auth.md). Never on a command line,
+     * and never forwarded to a runner (RUNNER_ENV refuses its name).
      */
-    boardToken: string;
+    boardCredential: string;
+    /** DRIVER_CREDENTIAL_FILE: the file the credential is read from for every call (`board-credential.ts`), or null. */
+    boardCredentialFile: string | null;
     /** Names this driver on every claim, so a stuck job can be traced back to a process. */
     worker: string;
     /*
@@ -156,11 +156,13 @@ export interface DriverConfig {
      */
     gateListenHost: string;
     /**
-     * The port of the driver's own scrape listener (`GET /metrics`, on `gateListenHost`, behind the
-     * board token); null serves none. Refused without a token on a non-loopback host — runners can
-     * reach the driver pod on any port and hold no board token.
+     * The port of the driver's own scrape listener (`GET /metrics`, on `gateListenHost`, behind
+     * `metricsToken`); null serves none. Refused without a token on a non-loopback host — runners can
+     * reach the driver pod on any port and hold no metrics token.
      */
     metricsPort: number | null;
+    /** DRIVER_METRICS_TOKEN: the scrape's bearer, its own secret — never the driver credential; '' asks for none. */
+    metricsToken: string;
     /**
      * The URL the runner is told to reach the gate server by, when loopback will not do — the
      * driver in a container, the runner on the host network, or any split like that. Null builds
@@ -313,12 +315,16 @@ const DAYS_PER_WEEK = 7;
 const DAYS_PER_YEAR = 365;
 /** Names the runner never takes from the driver's env: its GitHub token is the board's to mint and renew. */
 const RUNNER_ENV_REFUSED = ['GITHUB_TOKEN', 'GH_TOKEN'];
+/** The driver's own secrets: a runner never holds the credential the board authenticates the driver by. */
+const DRIVER_OWN_SECRETS = ['DRIVER_CREDENTIAL', 'DRIVER_CREDENTIAL_FILE', 'DRIVER_METRICS_TOKEN'];
 
 /** RUNNER_ENV's names, refusing the ones a forwarded value would shadow the runner's own credential with. */
 function runnerPassEnv(raw: string | undefined): string[] {
     const names = nameList(text(raw, 'RUNNER_ENV', DEFAULTS.passEnv));
     const refused = names.find((name) => RUNNER_ENV_REFUSED.includes(name));
     if (refused) throw new Error(`RUNNER_ENV must not name ${refused}: the runner's GitHub token comes from the board`);
+    const own = names.find((name) => DRIVER_OWN_SECRETS.includes(name));
+    if (own) throw new Error(`RUNNER_ENV must not name ${own}: it is the driver's own secret`);
     return names;
 }
 
@@ -399,17 +405,30 @@ function int(raw: string | undefined, label: string, fallback: number, bounds: {
 const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
 const MAX_PORT = 65_535;
 
-/** DRIVER_METRICS_PORT: unset serves no scrape; a port off loopback needs the board token to guard it. */
+/** DRIVER_METRICS_PORT: unset serves no scrape; a port off loopback needs DRIVER_METRICS_TOKEN to guard it. */
 function metricsPortOf(env: NodeJS.ProcessEnv, host: string, token: string): number | null {
     const raw = (env.DRIVER_METRICS_PORT ?? '').trim();
     if (raw === '') return null;
     const port = int(raw, 'DRIVER_METRICS_PORT', 0, { min: 1, max: MAX_PORT });
     if (token === '' && !LOOPBACK_HOSTS.includes(host)) {
         throw new Error(
-            `DRIVER_METRICS_PORT needs JOB_BOARD_TOKEN when GATE_LISTEN_HOST is "${host}": runners can reach the port and hold no token`
+            `DRIVER_METRICS_PORT needs DRIVER_METRICS_TOKEN when GATE_LISTEN_HOST is "${host}": runners can reach the port and hold no token`
         );
     }
     return port;
+}
+
+/** DRIVER_CREDENTIAL or DRIVER_CREDENTIAL_FILE, never both; a value the board could not accept is refused unechoed. */
+function driverCredentialOf(env: NodeJS.ProcessEnv): Pick<DriverConfig, 'boardCredential' | 'boardCredentialFile'> {
+    const value = (env.DRIVER_CREDENTIAL ?? '').trim();
+    const file = optionalText(env.DRIVER_CREDENTIAL_FILE);
+    if (value !== '' && file !== null) {
+        throw new Error('DRIVER_CREDENTIAL and DRIVER_CREDENTIAL_FILE are both set: name the credential once');
+    }
+    if (value !== '' && !isDriverCredential(value)) {
+        throw new Error('DRIVER_CREDENTIAL is not a driver credential the board issues (drv_…)');
+    }
+    return { boardCredential: value, boardCredentialFile: file };
 }
 
 function flag(raw: string | undefined, fallback = false): boolean {
@@ -750,14 +769,14 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     assertCacheWatchSupported(cacheWatch, executor);
 
     const network = (env.RUNNER_NETWORK ?? '').trim() || null;
-    const boardToken = (env.JOB_BOARD_TOKEN ?? '').trim();
+    const metricsToken = (env.DRIVER_METRICS_TOKEN ?? '').trim();
     const gateHost = text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1');
 
     const { orphanMinMs, stepWaitMs } = loadOrphanBound(env, leaseSeconds);
 
     return {
         boardUrl,
-        boardToken,
+        ...driverCredentialOf(env),
         worker: text(env.DRIVER_WORKER, 'DRIVER_WORKER', `driver-${process.pid}`),
         executorImages: {
             [CLAUDE_CODE]: text(env.CLAUDE_EXECUTOR_IMAGE, 'CLAUDE_EXECUTOR_IMAGE', DEFAULTS.claudeExecutorImage),
@@ -795,7 +814,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         imagePullSecrets: nameList(env.RUNNER_IMAGE_PULL_SECRETS),
         runnerDoNotDisrupt: flag(env.RUNNER_DO_NOT_DISRUPT),
         gateListenHost: gateHost,
-        metricsPort: metricsPortOf(env, gateHost, boardToken),
+        metricsPort: metricsPortOf(env, gateHost, metricsToken),
+        metricsToken,
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
         heartbeatFile: optionalText(env.DRIVER_HEARTBEAT_FILE),
         gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', DEFAULT_GATE_TIMEOUT_MS, {

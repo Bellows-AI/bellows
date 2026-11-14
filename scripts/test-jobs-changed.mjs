@@ -93,7 +93,7 @@ export const RULES = [
     [/^driver\/src\/(master-prompt|continuation|transcript-export|loop\/loop-export|export-control|evidence-policy|helper-receipts|verdict-budget|loop\/loop-verdict|loop\/loop-attempt|telemetry-config)\.ts$/, ['driver', 'cooperative-stop'], 'agent run and its readout'],
     [/^driver\/src\/scripts\/(claude-export|claude-turns|opencode-cache-probe|opencode-readout)\.cjs$/, ['cooperative-stop', 'tool-isolation'], 'agent transcript readout'],
     [/^driver\/src\/scripts\/helper-noop\.cjs$/, ['driver'], 'helper receipts'],
-    [/^driver\/src\/(board\/board|board\/board-[a-z-]+|poll|artifact-calls|artifact-upload|driver-metrics|metrics-server|prometheus)\.ts$/, ['board', 'driver'], 'board client'],
+    [/^driver\/src\/(board\/board|board\/board-[a-z-]+|board-credential|poll|artifact-calls|artifact-upload|driver-metrics|metrics-server|prometheus)\.ts$/, ['board', 'driver'], 'board client'],
     // The kubernetes executor: scripts/test-k8s.sh covers it, the docker lane never loads it.
     [/^driver\/src\/k8s\/k8s-[a-z-]+\.ts$/, NONE, 'kubernetes executor, covered by test:k8s'],
 

@@ -23,7 +23,7 @@ An organization is one GitHub App installation: it owns the repo list and partit
   rewritten on every sign-in — nothing keys on the label. The id passes 010's `organization_id_ck` (`^[a-z0-9][a-z0-9_-]{0,38}$`).
 - **The org is a property of the caller, not of the process.** A session row and a personal token each carry one,
   re-checked through the `org_membership` join on every request, so a GitHub-side removal ends a credential's reach
-  ([auth.md](auth.md)). The driver holds no org-bound credential: the shared board secret names a process, and the org comes from the job row.
+  ([auth.md](auth.md)). A driver credential names a process and the orgs (or the pool) it may claim for; the org a call operates on comes from the job row.
 - **`org_id` leads every org-owned primary key** — a query always knows its organization, so the
   key is a prefix scan rather than a filter. Org-owned-but-user-less rows (an org executor profile,
   an org workflow) are a NULL `user_id` in the same table as the personal ones.

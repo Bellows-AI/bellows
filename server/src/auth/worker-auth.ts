@@ -1,7 +1,7 @@
 /**
- * The worker routes' credential (docs/auth.md): a driver credential, a per-driver `drv_` or JOB_BOARD_TOKEN as the
- * pool, and the reach it grants. Split from `plugin.ts`, whose hook calls `enforceWorker` with the matched route
- * pattern and the bearer already read.
+ * The worker routes' credential (docs/auth.md): a per-driver `drv_` credential the board issued, and the reach it
+ * grants (the pool, or named organizations). Split from `plugin.ts`, whose hook calls `enforceWorker` with the
+ * matched route pattern and the bearer already read.
  */
 import { ERROR_CODES } from '@factory-ai/core';
 import { timingSafeEqual } from 'node:crypto';
@@ -39,18 +39,14 @@ export interface WorkerRequest {
 }
 
 /**
- * The driver credential a bearer is, or null for none. JOB_BOARD_TOKEN is the pool, checked constant-time before any
- * database round trip — a wrong guess costs a compare, not a query. A `drv_` token is looked up by its hash; a lookup
- * that cannot answer throws, and the hook's guard turns that into a 503, never a 401 a driver would give up on.
+ * The driver credential a bearer is, or null for none. Only a `drv_` token reaches the database, where it is looked
+ * up by its hash; a lookup that cannot answer throws, and the hook's guard turns that into a 503, never a 401.
  */
 async function driverGrantOf(
-    boardToken: string,
     credentialOf: WorkerAuthDeps['driverCredentialOf'],
     token: string | null
 ): Promise<DriverGrant | null> {
-    if (!token) return null;
-    if (secretsMatch(token, boardToken)) return { id: 'board', orgs: null };
-    if (!token.startsWith(DRIVER_CREDENTIAL_PREFIX)) return null;
+    if (!token?.startsWith(DRIVER_CREDENTIAL_PREFIX)) return null;
     return credentialOf(token);
 }
 
@@ -78,7 +74,7 @@ export async function enforceWorker(
 
     // A driver credential authenticates the DRIVER and bounds its reach (the pool, or named organizations); the org a
     // call operates on still comes from the row it names. Revoked or past its rotation window, it no longer resolves.
-    const grant = await driverGrantOf(auth.jobBoardToken, deps.driverCredentialOf, token);
+    const grant = await driverGrantOf(deps.driverCredentialOf, token);
     if (!grant) {
         await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid worker token', code: ERROR_CODES.UNAUTHENTICATED });
         return;

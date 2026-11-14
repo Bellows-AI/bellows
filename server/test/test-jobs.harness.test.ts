@@ -171,19 +171,19 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toContain('/demo/.bellows.yaml');
     });
 
-    // docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard, and compose interpolates the
+    // docker-compose.yml requires DRIVER_CREDENTIAL_SHA256 for the dashboard, and compose interpolates the
     // whole file on every call (on ubuntu-latest even `exec`): with no .env (a worktree, CI) the
     // postgres start and the driver build were refused.
     it('every compose call goes through the helper that can interpolate the compose file', () => {
         expect(SCRIPT).toContain(
-            'compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }'
+            'compose() { DRIVER_CREDENTIAL_SHA256="$COMPOSE_CREDENTIAL_SHA256" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }'
         );
         const code = SCRIPT.split('\n').filter((l) => !l.trimStart().startsWith('#'));
         expect(code.filter((l) => l.includes('docker compose'))).toEqual([
-            'compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }',
+            'compose() { DRIVER_CREDENTIAL_SHA256="$COMPOSE_CREDENTIAL_SHA256" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }',
         ]);
         expect(SCRIPT).toContain('compose -p "$COMPOSE_PROJECT" build driver');
-        expect(SCRIPT).toContain('    -e JOB_BOARD_TOKEN= \\\n');
+        expect(SCRIPT).toContain('    -e DRIVER_CREDENTIAL= \\\n');
     });
 
     // The auth phase takes the open board down; the question round trip after it queues on $BASE.

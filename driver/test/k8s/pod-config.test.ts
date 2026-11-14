@@ -76,9 +76,9 @@ describe('the block-helper transport (issue #207)', () => {
     // volume, and a lost supervisor is the attempt's loss, never a failed helper.
     it('brackets a receipted helper with its receipt in the task worktree, and throws a lost supervisor', async () => {
         const steps = fakeSteps(receiptedAnswer);
-        // The receipt's MAC key: a driver without a board token keeps no receipt.
-        await runner(fakeRequest().request, { JOB_BOARD_TOKEN: 'board-key' }, undefined, steps.sink).runHelper(
-            repoJob,
+        // The receipt's MAC key is the claim's organization key: a claim without one keeps no receipt.
+        await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper(
+            { ...repoJob, orgKey: 'org-key' },
             plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }),
             { token: 'fresh-install-token', effectId: 'effect-1' }
         );

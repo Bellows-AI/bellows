@@ -14,7 +14,7 @@ begin_phase pinned-skills
 echo
 echo '# pinned skills (board with auth + driver + real claude and opencode, scripted model)'
 
-PS_TOKEN="ps-$(openssl rand -hex 16)" # the board's and the driver's shared worker secret, 32+ characters
+PS_TOKEN="drv_$(openssl rand -hex 32)" # the drivers' credential; their board records only its SHA-256
 PS_ORG="ps-org-$(openssl rand -hex 4)"
 PS_DIR=/task/.factory/skills-root/.claude/skills
 PS_ORG_SENTINEL=LANE_PIN_ORG_SENTINEL_5d2c
@@ -211,7 +211,7 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     case "$(field "$edit" status)" in 200 | 201) ok "$cli: A publishes a new version of the workspace skill after the task was made" ;; *) bad "$cli: A publishes a new version of the workspace skill after the task was made" "$edit" ;; esac
     [ -n "$ps_ws_sha" ] && [ "$ps_ws_sha" != "$sha_before" ] && ok "$cli: the new version has other content" || bad "$cli: the new version has other content" "before $sha_before after $ps_ws_sha"
 
-    JOB_BOARD_TOKEN="$PS_TOKEN" RUNNER_SKIP_PERMISSIONS=1 start_driver "$image"
+    DRIVER_CREDENTIAL="$PS_TOKEN" RUNNER_SKIP_PERMISSIONS=1 start_driver "$image"
     expect_contains "$cli: A's task succeeds" "$(AUTH_HEADER="Bearer $ps_a" await_settled "$id" 240)" succeeded
     seen="$(ps_get "http://127.0.0.1:$ps_port/skills-seen")"
     results="$(ps_get "http://127.0.0.1:$ps_port/tool-results")"
@@ -322,7 +322,7 @@ pinned_skills_lane() {
         AUTH_MODE=github \
         GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
         SESSION_SECRET=a-job-harness-session-secret-32-chars \
-        JOB_BOARD_TOKEN="$PS_TOKEN" \
+        DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$PS_TOKEN")" \
         node server/dist/offline.js >>"$work/pinned-skills-board.log" 2>&1 &
     server_pid=$!
     local up=''

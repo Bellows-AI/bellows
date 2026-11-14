@@ -106,7 +106,9 @@ function workerMethods(
 > {
     return {
         async claim(worker, leaseSeconds, options) {
-            return claimJob(ctx, worker, leaseSeconds, options);
+            const claimed = await claimJob(ctx, worker, leaseSeconds, options);
+            // The organization's key, bound where the org is: the same on every claim of the org (`auth/org-key.ts`).
+            return claimed && ctx.orgKey ? { ...claimed, orgKey: ctx.orgKey } : claimed;
         },
 
         async demand() {
@@ -228,6 +230,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         batches = true,
         deploymentMode = SELF_HOSTED,
         metrics,
+        orgKey,
     } = deps;
     const gate = async () => {
         if (ready) await ready;
@@ -242,6 +245,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         executorConfig,
         prs,
         metrics,
+        orgKey,
         wallTick: wallTickFragment(sql),
         authorJoin: authorJoinFragment(sql),
         authorColumns: authorColumnsFragment(sql),

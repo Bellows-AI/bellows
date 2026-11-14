@@ -12,7 +12,7 @@ import {
     HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
-import { TEST_JOB_BOARD_TOKEN } from './helpers-config.js';
+import { TEST_DRIVER_CREDENTIAL } from './helpers-config.js';
 
 /**
  * Offline: the runner GitHub credential route's HTTP contract (docs/connections.md) against a stub
@@ -253,7 +253,7 @@ describe('the runner GitHub credential route', () => {
             const worker = await app.inject({
                 method: 'POST',
                 url: URL_PATH,
-                headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
+                headers: { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` },
             });
             expect(worker.statusCode).toBe(HTTP_UNAUTHORIZED);
             // A pair naming another job than the URL is no pair for this one.
@@ -351,7 +351,7 @@ describe('the runner GitHub revoke route', () => {
             const worker = await app.inject({
                 method: 'POST',
                 url: REVOKE_PATH,
-                headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
+                headers: { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` },
                 payload: { token: TOKEN },
             });
             expect(worker.statusCode).toBe(HTTP_UNAUTHORIZED);

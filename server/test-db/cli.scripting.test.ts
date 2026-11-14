@@ -15,7 +15,7 @@ import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/
 import { createOrgRegistry } from '../src/orgs.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
-import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
+import { githubAuth, testConfig, TEST_DRIVER_CREDENTIAL, testDriverCredentials } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 
@@ -103,6 +103,7 @@ beforeEach(async () => {
         orgOfLease: createOrgOfLease({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
+        driverCredentials: testDriverCredentials,
         ready,
         version: '0.0.0',
     });
@@ -113,11 +114,11 @@ afterEach(async () => {
     if (enabled) await app?.close();
 });
 
-/** The worker's side of the board, exactly as the driver calls it: the shared board secret. */
+/** The worker's side of the board, exactly as the driver calls it: its driver credential. */
 async function worker(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const response = await fetch(`${boardUrl}${path}`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}`, 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}`, 'content-type': 'application/json' },
         body: JSON.stringify(body),
     });
     expect(response.ok, `${path}: ${response.status} ${await response.clone().text()}`).toBe(true);

@@ -84,9 +84,10 @@ describe('the block-helper transport (issue #207)', () => {
 
     // Issue #826: the same receipt bracket and the same loss rule as the kubernetes runner.
     it('brackets a receipted helper with its receipt in the task worktree, and throws a lost supervisor', async () => {
-        // The receipt's MAC key: a driver without a board token keeps no receipt.
-        const { supervised, runner } = helperRunner(receiptedAnswer, { JOB_BOARD_TOKEN: 'board-key' });
-        await runner.runHelper(repoJob, plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }), {
+        // The receipt's MAC key is the claim's organization key: a claim without one keeps no receipt.
+        const { supervised, runner } = helperRunner(receiptedAnswer);
+        const keyed = { ...repoJob, orgKey: 'org-key' };
+        await runner.runHelper(keyed, plan({ helperId: REVIEW_REPLY_PROBE_ID, githubWriting: true }), {
             token: 'fresh-install-token',
             effectId: 'effect-1',
         });

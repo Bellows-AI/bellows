@@ -125,6 +125,8 @@ export type OrgRegistryDeps = {
     artifacts?: ArtifactBackend;
     /** What each org's job store reports about its claims. */
     claimMetrics?: ClaimObserver;
+    /** The per-organization key every claim carries (`auth/org-key.ts`); absent (route tests), claims carry none. */
+    orgKeyOf?: (orgId: string) => string;
 } & (
     | {
           withStores: true;
@@ -161,10 +163,12 @@ function buildOrgStores({
     tokens,
     client,
     claimMetrics,
+    orgKey,
     secrets,
     secretLog,
 }: {
     claimMetrics: ClaimObserver | undefined;
+    orgKey: string | undefined;
     secrets: SecretStore;
     secretLog: (diagnostic: SecretDiagnostic) => void;
     sql: Sql;
@@ -220,6 +224,7 @@ function buildOrgStores({
         batches: config.batches.enabled,
         deploymentMode: config.deploymentMode,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),
+        ...(orgKey ? { orgKey } : {}),
     });
     // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled
     // batch through the job store's own stop and closes an ended batch's threads through its Done.
@@ -443,6 +448,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                 tokens,
                 client,
                 claimMetrics,
+                orgKey: deps.orgKeyOf?.(orgId),
                 secrets: deps.secrets,
                 secretLog: deps.secretLog,
             });

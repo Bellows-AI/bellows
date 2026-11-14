@@ -24,6 +24,13 @@ describe('parseClaim', () => {
         expect('claim' in parsed && parsed.claim.id).toBe('job-1');
     });
 
+    it('keeps the organization key the board issued, and drops one that is not a string', () => {
+        const keyed = parseClaim({ ...WIRE, orgKey: 'org-key' });
+        expect('claim' in keyed && keyed.claim.orgKey).toBe('org-key');
+        const odd = parseClaim({ ...WIRE, orgKey: 7 });
+        expect('claim' in odd && 'orgKey' in odd.claim).toBe(false);
+    });
+
     it.each(Object.keys(WIRE))('refuses a claim missing %s', (field) => {
         const { [field]: _dropped, ...rest } = WIRE as Record<string, unknown>;
         expect(malformedOf(rest)).toEqual([field]);

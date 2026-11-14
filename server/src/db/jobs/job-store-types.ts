@@ -564,6 +564,11 @@ export interface Claim {
     ingestToken: string;
     leaseExpiresAt: string;
     /**
+     * The organization's key (`auth/org-key.ts`), the same on every claim of every row of the org whichever driver
+     * claims it: the drivers key gate identities and helper receipts with it, so both survive a takeover.
+     */
+    orgKey?: string;
+    /**
      * The executor profile type selected by the task's stamped executor label. Null when the
      * profile no longer exists; the driver reports that as a task failure instead of choosing a
      * deployment-wide CLI.
@@ -1129,6 +1134,8 @@ export interface CreateJobStoreDeps {
     planDefaults?: PlanLimits;
     /** What the claim reports about itself; absent in the tests that predate it. */
     metrics?: ClaimObserver;
+    /** This organization's key, sent on every claim (`Claim.orgKey`); absent, claims carry none. */
+    orgKey?: string;
 }
 
 /** The PR lifecycle store's claim-time surface — named once so a helper can take it explicitly. */
@@ -1213,6 +1220,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;
     metrics: ClaimObserver | undefined;
+    orgKey: string | undefined;
     wallTick: Fragment;
     authorJoin: Fragment;
     authorColumns: Fragment;

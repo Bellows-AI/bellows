@@ -22,7 +22,7 @@ const isRole = (value: unknown): value is Role => ROLES.some((candidate) => cand
  * Organization membership (issue 410): the administrator's view of the roster and the one write
  * it takes — set a member's role. The org is the caller's; another org's member is not
  * addressable through this surface at all. A person's surface, like the org-executor routes it
- * mirrors — the board secret never gets past the auth wall here, because who holds `admin` is a
+ * mirrors — a driver credential never gets past the auth wall here, because who holds `admin` is a
  * human decision, and an `oat_` names no person.
  *
  * Both routes are `admin` rows in `ROUTE_CLASSES`; the auth hook refuses a member before they run.
