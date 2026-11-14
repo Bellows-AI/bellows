@@ -310,7 +310,7 @@ export function renderRepos(discovery: RepoDiscovery): string {
     return lines.length === 0 ? 'no repositories tracked' : lines.join('\n');
 }
 
-/** Executor discovery: scope, name, type, and the flags a selection cares about. */
+/** Executor discovery: scope, name, type, runner class when one is set, and the flags a selection cares about. */
 export function renderExecutors(executors: readonly ExecutorRow[]): string {
     if (executors.length === 0) return 'no executors';
     return executors
@@ -319,6 +319,7 @@ export function renderExecutors(executors: readonly ExecutorRow[]): string {
                 row.scope,
                 row.name,
                 row.type,
+                ...(row.runnerClass === null ? [] : [`class ${row.runnerClass}`]),
                 row.suspended ? 'suspended' : 'active',
                 ...(row.default ? ['default'] : []),
             ].join('  ')

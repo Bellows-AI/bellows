@@ -408,7 +408,8 @@ export interface VisibleRepos {
 /** The slice of the workspace read discovery shows: executor selection metadata. */
 export interface WorkspaceView {
     executors: { name: string; type: string; suspended?: boolean }[];
-    orgExecutors: { name: string; type: string; suspended?: boolean }[];
+    /** `runnerClass`: the named runner class the org profile's tasks run on; null or absent means the default. */
+    orgExecutors: { name: string; type: string; runnerClass?: string | null; suspended?: boolean }[];
     defaultExecutor: { scope: string; name: string } | null;
 }
 

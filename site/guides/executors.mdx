@@ -65,6 +65,15 @@ The JSON is merged into the agent's own settings in the runner. Some keys are ma
 
 The same section has **gate repair rounds**: how many times a task on this executor may try to repair a failed gate on its own. The default is 3, the maximum is 10, and `0` turns repair off. The value is fixed when the task is created. See [Gates](/guides/gates).
 
+### Runner class
+
+An organization profile can choose a **Runner class**: the kind of runner its tasks run on, such as one with more memory or one with Docker. The list holds the classes your deployment declares, and says for each whether it comes with Docker. **Deployment default** runs tasks on the deployment's usual runner. The **Organization** list shows the class beside the agent.
+
+- Only organization profiles have a class. Personal profiles always run on the deployment default, and **Make personal** clears the class.
+- Saving an edit saves the class shown in the form, so leaving it on **Deployment default** clears it.
+- The class is read when a task starts, so a change applies to tasks that start afterwards.
+- A class your deployment doesn't declare is refused when you save.
+
 <Warning>
 Keep API keys out of the configuration JSON. Set them as environment variables under **Settings → Workspace** (your own) or **Settings → Organization** (shared). The form links to **Workspace settings**.
 </Warning>
@@ -85,4 +94,4 @@ Follow-ups and retries keep the executor of the original task.
 
 ## From the CLI
 
-`bellows executor list` shows the profiles you can use.
+`bellows executor list` shows the profiles you can use. A profile with a runner class shows it as `class <name>`, and `--json` gives it as `runnerClass`, which is `null` for the deployment default.

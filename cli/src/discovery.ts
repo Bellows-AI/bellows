@@ -36,6 +36,8 @@ export interface ExecutorRow {
     scope: 'user' | 'org';
     name: string;
     type: string;
+    /** The runner class its tasks run on; null means the driver's default. A personal profile never names one. */
+    runnerClass: string | null;
     suspended: boolean;
     /** The caller's resolved default: what a task naming no executor gets. */
     default: boolean;
@@ -43,10 +45,11 @@ export interface ExecutorRow {
 
 /** Personal profiles, then the org's, each with its selection scope; credentials never ride along. */
 export function executorDiscovery(workspace: WorkspaceView): { executors: ExecutorRow[] } {
-    const row = (scope: ExecutorRow['scope'], profile: WorkspaceView['executors'][number]): ExecutorRow => ({
+    const row = (scope: ExecutorRow['scope'], profile: WorkspaceView['orgExecutors'][number]): ExecutorRow => ({
         scope,
         name: profile.name,
         type: profile.type,
+        runnerClass: profile.runnerClass ?? null,
         suspended: profile.suspended === true,
         default: workspace.defaultExecutor?.scope === scope && workspace.defaultExecutor.name === profile.name,
     });

@@ -61,7 +61,7 @@ const EXPECTED: string[] = [
     'list_available_integrations | factory:read | TFTF | 7a317ebd6090 | 9c2e193f010d',
     'list_batches | factory:read | TFTF | 71fc596a20f2 | cc79b4c71821',
     'list_connections | factory:read | TFTF | 71fc596a20f2 | 8453cda99599',
-    'list_executors | factory:read | TFTF | 71fc596a20f2 | 1ece3afe12c1',
+    'list_executors | factory:read | TFTF | 71fc596a20f2 | 746a83f22cdf',
     'list_job_streams | factory:read | TFTF | 257f7ca675cd | 58c30158b2e8',
     'list_jobs | factory:read | TFTF | 267bfc48d597 | 999c08e43d58',
     'list_questions | factory:read | TFTF | 8d0cb9539b48 | b5999d16a780',
