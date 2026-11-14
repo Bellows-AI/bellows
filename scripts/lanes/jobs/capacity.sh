@@ -73,7 +73,10 @@ cap_running() { # cap_running -> how many non-review tasks run, as the database 
 }
 
 cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board; its pid in cap_board_pid
-    env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$1" HOST=127.0.0.1 \
+    # On LANE_HOST like the board it replaces on $PORT ($BASE); off loopback an authenticated board has no
+    # default origin, so PUBLIC_URL names it.
+    env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$1" "${LANE_BOARD_BIND[@]}" \
+        PUBLIC_URL="http://$LANE_HOST:$1" \
         REPO_CLONE_BASE="$PLAN_BASE" \
         AUTH_MODE=github \
         GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
@@ -86,7 +89,7 @@ cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board
 cap_up() { # cap_up <port> -> success once that board answers migrated, within 40 s
     local until=$(($(date +%s) + 40))
     while [ "$(date +%s)" -lt "$until" ]; do
-        [ "$(status "$(BASE="http://127.0.0.1:$1" api GET /api/ready)")" = '200' ] && return 0
+        [ "$(status "$(BASE="http://$LANE_HOST:$1" api GET /api/ready)")" = '200' ] && return 0
         sleep 1
     done
     return 1
@@ -254,7 +257,7 @@ cap_run() {
     h1="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h1_name")")"
     h2="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h2_name")")"
     h3="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h3_name")")"
-    l1="$(AUTH_HEADER="Bearer $cap_light_token" BASE="http://127.0.0.1:$CAP_LIGHT_PORT" create_job "$(cap_command "$l1_name")")"
+    l1="$(AUTH_HEADER="Bearer $cap_light_token" BASE="http://$LANE_HOST:$CAP_LIGHT_PORT" create_job "$(cap_command "$l1_name")")"
     cap_light_job="$l1"
     [ -n "$h1" ] && [ -n "$h2" ] && [ -n "$h3" ] && [ -n "$l1" ] || {
         bad 'capacity: the four tasks are queued' "h1 '$h1' h2 '$h2' h3 '$h3' l1 '$l1'"
@@ -272,10 +275,10 @@ cap_run() {
 
     # Both drivers start together and race for the first wave: polls reading the same demand at once may both
     # serve the heavy org (docs/jobs.md), so the light org either made the first wave or must get the first slot freed.
-    disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://127.0.0.1:$PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
+    disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://$LANE_HOST:$PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_a_pid=$driver_pid
-    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://127.0.0.1:$CAP_LIGHT_PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
+    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://$LANE_HOST:$CAP_LIGHT_PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_b_pid=$driver_pid
     driver_pid=""

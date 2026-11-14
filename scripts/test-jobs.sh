@@ -99,6 +99,29 @@ selected_phase() {
     case ",$PHASE," in *",$1,"*) return 0 ;; esac
     return 1
 }
+# Sets LANE_HOST: the address the boards and the host drivers' gate listeners bind, the one host.docker.internal
+# reaches from the lane's containers. Docker Desktop forwards that name to the host's loopback; a native Linux
+# daemon maps it (host-gateway) to the default bridge's gateway, which a loopback listener never answers. Never
+# 0.0.0.0: an AUTH_MODE=none board runs shell commands for anyone who reaches it. An empty, failed or malformed
+# read refuses the lane; it never guesses loopback.
+lane_host_bind() {
+    local os gateway
+    os="$(docker info --format '{{.OperatingSystem}}' 2>/dev/null)" || os=''
+    case "$os" in
+    '') gateway='' ;;
+    'Docker Desktop')
+        LANE_HOST=127.0.0.1
+        return 0
+        ;;
+    *) gateway="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null)" || gateway='' ;;
+    esac
+    [[ "$gateway" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || {
+        echo "test-jobs: cannot tell which address host.docker.internal reaches (daemon '$os', bridge gateway '$gateway')"
+        return 1
+    }
+    LANE_HOST="$gateway"
+}
+
 # The standalone CLI phases boot no board; any other selected phase does.
 needs_board() {
     [ "$PHASE" = all ] && return 0
@@ -118,7 +141,7 @@ MINT_PORT=$((PORT + 2))
 AUTH_PORT=$((PORT + 3))
 MCP_PORT=$((PORT + 4))
 MCP_IDP_PORT=$((PORT + 5))
-BASE="http://127.0.0.1:$PORT"
+# BASE, the main board's URL, is set once lane_host_bind has resolved LANE_HOST (below).
 # The identity the host drivers of this run stamp on what they create (driver/src/task-volume.ts
 # boardIdentity: a digest of JOB_BOARD_URL), so a check can look at its own board's objects only
 # when other groups share the daemon (--parallel).
@@ -194,6 +217,15 @@ if needs_board; then
     done
     compose version >/dev/null 2>&1 || { echo 'test-jobs: the compose plugin is required'; exit 1; }
     [[ "$DB" =~ ^[a-z_][a-z0-9_]*_test$ ]] || { echo 'test-jobs: JOBS_TEST_DB must be a SQL identifier ending _test'; exit 2; }
+    lane_host_bind || exit 1
+    export LANE_HOST
+    BASE="http://$LANE_HOST:$PORT"
+    # Off loopback an AUTH_MODE=none board refuses to boot without the hatch (server/src/config.ts
+    # assertNoneModeBindable). The bind stays host-local: the bridge gateway is an interface of this host,
+    # reachable from its containers, not from the LAN.
+    LANE_BOARD_BIND=(HOST="$LANE_HOST")
+    [ "$LANE_HOST" = 127.0.0.1 ] || LANE_BOARD_BIND+=(AUTH_ALLOW_PUBLIC_BIND=1)
+    echo "test-jobs: boards and host drivers bind $LANE_HOST"
 fi
 # Generated after the preflight: a refused run (missing tool, image or unsafe database) pays for no keys and leaves no file.
 # The secret store's keys (docs/secrets.md), generated per run. They ride ONLY on each board's launch command
@@ -533,6 +565,7 @@ start_driver() { # start_driver <image> [RUNNER_SERVICES] [DRIVER_CONCURRENCY]
         REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY="${3:-2}" DRIVER_LEASE_SECONDS=60 \
         DRIVER_HANDOVER_MS="${LANE_HANDOVER_MS:-5000}" DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" \
+        GATE_LISTEN_HOST="$LANE_HOST" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
 }
@@ -566,6 +599,7 @@ disruption_driver() { # disruption_driver [VAR=value ...] — a services-off dri
         RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS="$LANE_LEASE_S" \
         DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" "$@" \
+        GATE_LISTEN_HOST="$LANE_HOST" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
 }
@@ -979,7 +1013,7 @@ docker build -q -t "$IMAGE_BASE" -f "$work/stub-runner.Dockerfile" "$work" >/dev
 # (REPO_CLONE_BASE; server/src/github/local-origin-plan.ts).
 
 start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until it is migrated
-    env "${SECRET_STORE_ENV[@]}" AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
+    env "${SECRET_STORE_ENV[@]}" AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" "${LANE_BOARD_BIND[@]}" \
         REPO_CLONE_BASE="$PLAN_BASE" \
         node server/dist/offline.js >>"$work/server.log" 2>&1 &
     server_pid=$!

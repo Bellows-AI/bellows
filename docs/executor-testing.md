@@ -38,6 +38,8 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 
 ## Invariants
 
+- **`test:jobs` boards and host drivers bind what `host.docker.internal` reaches** (`LANE_HOST`): 127.0.0.1 on Docker Desktop, the bridge gateway on a native Linux daemon; an unread answer refuses the run.
+  Never 0.0.0.0: an `AUTH_MODE=none` board runs shell commands for anyone who reaches it (`server/test/test-jobs.options.test.ts`).
 - **A "denied" assertion run against a CNI that does not enforce NetworkPolicy passes vacuously.** That is why
   `--netpol` owns its own Calico cluster, and why it runs an **honest-probe control on every denial target**: each
   must answer `reachable` before the policy and `denied` after.
@@ -48,8 +50,7 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 
 ## What no lane covers
 
-- **`npm run test:jobs` on a Linux docker daemon.** Its compose-driver and question-round-trip phases need
-  `host.docker.internal` (`assertNoneModeBindable`, `server/src/config.ts`); the lane is not in CI ([ci.md](ci.md)).
+- **`npm run test:jobs` in CI.** It runs on Docker Desktop and on a native Linux daemon, but not in CI ([ci.md](ci.md)).
 - **The real collector**; **a cloud cluster** (`--cluster` refuses every non-kind context; [eks-runbook.md](eks-runbook.md));
   **kind fault injection** beyond the disruption, takeover and drain phases; **a real agent CLI honouring the master prompt's flags** and the live opencode session and resume fallbacks (stubs run no image: `driver/test/claude-bridge.test.ts`, `executor-images.test.ts`); **allowlisted block helpers under `--cluster`**.
 - **The cloud metadata endpoint (169.254.169.254) is not probed.** Nothing answers on it in kind, so a probe could only

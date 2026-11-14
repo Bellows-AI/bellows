@@ -32,7 +32,8 @@ describe('the test-jobs harness', () => {
     it('pins the open board mode instead of inheriting a developer or compose auth mode', () => {
         // The keys ride the board launch (docs/secrets.md); the expansion is split so no lint reads it as a template.
         const keys = ['"$', '{SECRET_STORE_ENV[@]}"'].join('');
-        expect(SCRIPT).toContain(`env ${keys} AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1`);
+        const bind = ['"$', '{LANE_BOARD_BIND[@]}"'].join('');
+        expect(SCRIPT).toContain(`env ${keys} AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" ${bind} \\\n`);
     });
 
     // /api/health answers while the migrations still run; the truncate needs the schema they create.

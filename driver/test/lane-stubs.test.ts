@@ -184,6 +184,60 @@ const whenFileExists = (path: string): Promise<void> =>
         poll();
     });
 
+/** Each launch of `entry` in `script`, as its whole backslash-continued command. */
+const launches = (script: string, entry: RegExp): string[] => {
+    const lines = script.split('\n');
+    return lines.flatMap((line, i) => {
+        if (!entry.test(line)) return [];
+        let start = i;
+        while (start > 0 && lines[start - 1]?.trimEnd().endsWith('\\')) start--;
+        return [lines.slice(start, i + 1).join('\n')];
+    });
+};
+
+// On a native Linux daemon host.docker.internal is the bridge gateway, which a loopback
+// listener never answers; scripts/test-jobs.sh resolves that address once into LANE_HOST.
+describe('test-jobs: every host listener a container dials binds LANE_HOST', () => {
+    const lane = readLaneScript('scripts/test-jobs.sh');
+    // The expansion is split so no lint reads it as a template.
+    const BOARD_BIND = ['"$', '{LANE_BOARD_BIND[@]}"'].join('');
+
+    // A board binds LANE_HOST, with the public-bind hatch, or plain loopback when only host-side clients reach it;
+    // server/test/test-jobs.options.test.ts boots each launch's env through the config loader under both hosts.
+    it('every lane board binds LANE_HOST or loopback, nothing else', () => {
+        const boards = launches(lane, /node server\/dist\/offline[\w-]*\.js/);
+        expect(boards.length).toBeGreaterThanOrEqual(6);
+        for (const board of boards) {
+            const hosts = board.match(/\bHOST=\S+/g) ?? [];
+            expect(hosts, board).toEqual(board.includes(BOARD_BIND) ? [] : ['HOST=127.0.0.1']);
+        }
+    });
+
+    it('the boards on $PORT and $MINT_PORT, which containers dial through host.docker.internal, bind LANE_HOST', () => {
+        const boards = launches(lane, /node server\/dist\/offline[\w-]*\.js/);
+        for (const port of ['PORT="$PORT"', 'PORT="$MINT_PORT"']) {
+            const on = boards.filter((b) => b.includes(port));
+            expect(on.length, port).toBeGreaterThan(0);
+            for (const board of on) expect(board).toContain(BOARD_BIND);
+        }
+    });
+
+    it('every host driver listens on LANE_HOST', () => {
+        const drivers = launches(lane, /node driver\/dist\/index\.js/);
+        expect(drivers.length).toBeGreaterThanOrEqual(5);
+        for (const driver of drivers) expect(driver).toContain('GATE_LISTEN_HOST="$LANE_HOST"');
+    });
+
+    it('the lane’s own clients reach the LANE_HOST boards there', () => {
+        expect(lane).not.toMatch(/(BASE|JOB_BOARD_URL)="http:\/\/127\.0\.0\.1:\$(PORT|MINT_PORT|CAP_LIGHT_PORT|1)\b/);
+        expect(lane).toContain('BASE="http://$LANE_HOST:$PORT"');
+    });
+
+    it('no host driver opens its metrics port, which off loopback needs a token', () => {
+        expect(lane).not.toContain('DRIVER_METRICS_PORT');
+    });
+});
+
 describe('scripts/stub-agent.sh, run locally under /bin/sh', () => {
     it(
         "passes the command's output through and writes and re-raises its exit status",
