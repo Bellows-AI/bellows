@@ -10,6 +10,7 @@ import { boundedBy, boundOf, HTTP_ERROR_STATUS, livePodOfItems, waitOf, withSign
 import type { K8sContainerStatus, K8sDeps, K8sPod } from './k8s-transport.js';
 import {
     type DeadService,
+    type DaemonState,
     Inconclusive,
     type Read,
     type RunOutcome,
@@ -110,17 +111,22 @@ export async function readSidecars(deps: K8sDeps, job: BoardJob): Promise<Sideca
 export const DOCKERD_READ_MS = 15_000;
 
 /**
- * `Runner.dockerdRestarts`: the `dockerd` sidecar's restart count as the task pod lists it now, in
- * one read bounded by `DOCKERD_READ_MS` and the attempt's signal. A class with no daemon reads
- * nothing (`absent`); a pod `taskPod` cannot confirm, or one that lists no dockerd count, is `inconclusive`.
+ * `Runner.dockerdRestarts`: the `dockerd` sidecar's restart count and whether it runs, as the task pod
+ * lists it now, in one read bounded by `DOCKERD_READ_MS` and the attempt's signal. A terminated or
+ * waiting daemon is not running whatever its count (OOM-killed, not restarted yet). A class with no
+ * daemon reads nothing (`absent`); a pod `taskPod` cannot confirm, or a dockerd with no count or no
+ * state, is `inconclusive`.
  */
-export async function dockerdRestarts(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<Read<number>> {
+export async function dockerdRestarts(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<Read<DaemonState>> {
     if (!classOf(deps.config, job)?.docker) return { kind: 'absent' };
     try {
         const pod = await taskPod(withSignal(boundedBy(deps, Date.now() + DOCKERD_READ_MS), signal), job);
-        const count = pod.status?.initContainerStatuses?.find((s) => s.name === DOCKERD_CONTAINER)?.restartCount;
-        if (typeof count !== 'number') return { kind: 'inconclusive', reason: 'the task pod lists no dockerd count' };
-        return { kind: 'value', value: count };
+        const status = pod.status?.initContainerStatuses?.find((s) => s.name === DOCKERD_CONTAINER);
+        const state = status?.state;
+        const stated = state?.running ?? state?.terminated ?? state?.waiting;
+        if (typeof status?.restartCount !== 'number' || !stated)
+            return { kind: 'inconclusive', reason: 'the task pod lists no dockerd count and state' };
+        return { kind: 'value', value: { restartCount: status.restartCount, running: Boolean(state?.running) } };
     } catch (e) {
         return { kind: 'inconclusive', reason: (e as Error).message };
     }

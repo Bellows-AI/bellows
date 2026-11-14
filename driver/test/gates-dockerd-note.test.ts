@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { DOCKERD_RESTART_NOTE } from '../src/dockerd-loss.js';
 import { createGateServer, type GateManager } from '../src/gates.js';
-import type { Read } from '../src/runner.js';
+import type { DaemonState, Read } from '../src/runner.js';
 
 /**
  * An ad-hoc `POST /run` while the docker daemon restarted: the answer carries a note beside its
@@ -19,7 +19,7 @@ const managerAnswering = (exitCode: number): GateManager => ({
     stop: async () => {},
 });
 
-async function adHoc(exitCode: number, reads: Read<number>[]) {
+async function adHoc(exitCode: number, reads: Read<DaemonState>[]) {
     const server = createGateServer({ host: '127.0.0.1', manager: managerAnswering(exitCode) });
     const losses: string[] = [];
     const queue = [...reads];
@@ -44,7 +44,10 @@ async function adHoc(exitCode: number, reads: Read<number>[]) {
     }
 }
 
-const value = (count: number): Read<number> => ({ kind: 'value', value: count });
+const value = (count: number, running = true): Read<DaemonState> => ({
+    kind: 'value',
+    value: { restartCount: count, running },
+});
 
 describe('an ad-hoc gate run during a dockerd restart', () => {
     it('answers the failed verdict with a dockerd note, and reports no loss', async () => {
@@ -55,7 +58,13 @@ describe('an ad-hoc gate run during a dockerd restart', () => {
         expect(losses).toEqual([]);
     });
 
-    it.each<[string, number, Read<number>[]]>([
+    it('notes a daemon terminated and not yet restarted, its count unchanged', async () => {
+        const { body } = await adHoc(1, [value(0), value(0, false)]);
+
+        expect(body).toMatchObject({ exitCode: 1, dockerd: DOCKERD_RESTART_NOTE });
+    });
+
+    it.each<[string, number, Read<DaemonState>[]]>([
         ['an unchanged count', 1, [value(1), value(1)]],
         ['an unread pod', 1, [value(0), { kind: 'inconclusive', reason: 'HTTP 503' }]],
         ['a passing gate', 0, [value(0), value(1)]],

@@ -67,7 +67,9 @@ describe('the docker class record', () => {
 
     it('states the dockerd restart interruption, its per-phase granularity and the ad-hoc note', () => {
         const doc = prose(kubernetesDocs);
-        expect(doc).toContain('a `dockerd` restart is checked per verdict gate phase, not per gate');
+        expect(doc).toContain(
+            'a `dockerd` loss — its restart count moved, or it is not running at either read — is checked per verdict gate phase, not per gate'
+        );
         expect(doc).toContain('refunded under the node-loss bound');
         expect(doc).toContain('the task pod is torn down, not kept');
         expect(doc).toContain('An ad-hoc gate run gets a note only.');

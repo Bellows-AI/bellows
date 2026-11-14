@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
-import type { Read } from '../../src/runner.js';
+import type { DaemonState, Read } from '../../src/runner.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from '../fixtures/loop-stubs.js';
 
 /**
@@ -9,10 +9,13 @@ import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from '../fi
  * refunded like a node loss, never a `failed` gate, never a rerun inside the attempt — and a pod
  * read that proves nothing is a blocked interruption that spends no budget.
  */
-const value = (count: number): Read<number> => ({ kind: 'value', value: count });
-const unread: Read<number> = { kind: 'inconclusive', reason: 'the task pod could not be listed (HTTP 503)' };
+const value = (count: number, running = true): Read<DaemonState> => ({
+    kind: 'value',
+    value: { restartCount: count, running },
+});
+const unread: Read<DaemonState> = { kind: 'inconclusive', reason: 'the task pod could not be listed (HTTP 503)' };
 
-async function gatesWithDaemon(reads: Read<number>[], outcomes: Record<string, number> = { test: 1 }) {
+async function gatesWithDaemon(reads: Read<DaemonState>[], outcomes: Record<string, number> = { test: 1 }) {
     const board = stubBoard([gatedJob(1)]);
     const { stack, gates } = stubGateStack(outcomes);
     const runner = stubRunner(async () => ok({ output: 'agent did the work' }));
@@ -44,6 +47,19 @@ describe('a dockerd loss during the verdict gates', () => {
         expect(stack.released).toHaveLength(1);
     });
 
+    // An OOM-killed daemon the kubelet has not restarted yet: the count has not moved, the state proves the loss.
+    it.each([
+        ['terminated, its restart count unchanged', [value(0), value(0, false)]],
+        ['not running when the gates began', [value(0, false), value(0, false)]],
+    ])('interrupts, refunded, a daemon %s', async (_name, reads) => {
+        const { board } = await gatesWithDaemon(reads);
+
+        expect(board.completed).toEqual([]);
+        expect(board.interrupted).toHaveLength(1);
+        expect(board.interrupted[0]).toMatchObject({ release: true, nodeLoss: true });
+        expect(board.interrupted[0]?.reason).toMatch(/infrastructure loss: .*dockerd.* not running/);
+    });
+
     it('lets the gate verdict stand on an unchanged restart count', async () => {
         const { board } = await gatesWithDaemon([value(2), value(2)]);
 
@@ -54,7 +70,7 @@ describe('a dockerd loss during the verdict gates', () => {
     it.each([
         ['after the gates', [value(0), unread]],
         ['before the gates', [unread, value(1)]],
-        ['as a pod that lists no dockerd after one did', [value(0), { kind: 'absent' } as Read<number>]],
+        ['as a pod that lists no dockerd after one did', [value(0), { kind: 'absent' } as Read<DaemonState>]],
     ])('holds a pod read that proves nothing %s as a blocked interruption, never a failure', async (_when, reads) => {
         const { board } = await gatesWithDaemon(reads);
 

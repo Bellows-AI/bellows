@@ -8,7 +8,7 @@ import { job, namespace, podName, routed, runner } from '../fixtures/k8s-suite.j
 
 /**
  * `Runner.dockerdRestarts` under kubernetes: one bounded read of the task pod, answering the
- * `dockerd` sidecar's restart count. A class with no daemon reads nothing; any answer that proves
+ * `dockerd` sidecar's restart count and whether it runs. A class with no daemon reads nothing; any answer that proves
  * nothing — a failed request, a non-2xx, a body that is no pod list, no live pod, no dockerd
  * status, a count that is not one — is `inconclusive`, never a count.
  */
@@ -24,11 +24,11 @@ const podWith = (init: unknown[]): K8sResponse => ({
         items: [{ metadata: { name: podName }, status: { phase: 'Running', initContainerStatuses: init } }],
     }),
 });
-const dockerd = (restartCount: unknown) => ({
+const dockerd = (restartCount: unknown, state: unknown = { running: {} }) => ({
     name: DOCKERD_CONTAINER,
     image: 'docker:27-dind',
     restartCount,
-    state: { running: {} },
+    state,
 });
 
 function readWith(answer: () => K8sResponse | Promise<K8sResponse>, env: Record<string, string> = DOCKER_CLASS) {
@@ -41,8 +41,18 @@ describe('the dockerd restart read (kubernetes)', () => {
     it('answers the dockerd sidecar restart count, in one pod read', async () => {
         const { read, podReads } = readWith(() => podWith([dockerd(2)]));
 
-        await expect(read).resolves.toEqual({ kind: 'value', value: 2 });
+        await expect(read).resolves.toEqual({ kind: 'value', value: { restartCount: 2, running: true } });
         expect(podReads()).toBe(1);
+    });
+
+    // OOM-killed and not restarted yet: the count has not moved, the state is what proves the loss.
+    it.each([
+        ['terminated', { terminated: { exitCode: 137, reason: 'OOMKilled' } }],
+        ['waiting in a crash-loop back-off', { waiting: { reason: 'CrashLoopBackOff' } }],
+    ])('answers a dockerd %s as not running, its count as listed', async (_name, state) => {
+        const { read } = readWith(() => podWith([dockerd(0, state)]));
+
+        await expect(read).resolves.toEqual({ kind: 'value', value: { restartCount: 0, running: false } });
     });
 
     it('reads nothing of a class with no daemon', async () => {
@@ -61,6 +71,7 @@ describe('the dockerd restart read (kubernetes)', () => {
         ['a pod listing no dockerd', () => podWith([])],
         ['a restart count below zero', () => podWith([dockerd(-1)])],
         ['a restart count that is no number', () => podWith([dockerd('2')])],
+        ['a dockerd with no state', () => podWith([dockerd(0, {})])],
     ])('answers %s as inconclusive, never a count', async (_name, answer) => {
         const { read } = readWith(answer);
 

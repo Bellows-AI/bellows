@@ -21,7 +21,7 @@ import type { InputDelivery } from './input-control.js';
 import { attachersOf, createControlChannel, gateRunAttacher } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { TASK_MOUNT } from './task-volume.js';
-import { type Read, reportTail } from './runner.js';
+import { type DaemonState, type Read, reportTail } from './runner.js';
 import { withDaemonNote } from './dockerd-loss.js';
 import { StepTokenUnanswered, stepLost, type StepBroker } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
@@ -374,7 +374,7 @@ export interface GateClaim {
      */
     onInfraLoss?: (reason: string) => void;
     /** The attempt's docker daemon restart read (`Runner.dockerdRestarts`): a failed run it moved under gets a note. */
-    dockerdRestarts?: (signal: AbortSignal) => Promise<Read<number>>;
+    dockerdRestarts?: (signal: AbortSignal) => Promise<Read<DaemonState>>;
     /** The claim's gate-run record; absent, an ad-hoc run is not recorded. */
     ledger?: GateLedger;
 }

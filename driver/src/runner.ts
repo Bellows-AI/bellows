@@ -295,6 +295,12 @@ export class Inconclusive extends Error {}
  */
 export type Read<T> = { kind: 'value'; value: T } | { kind: 'absent' } | { kind: 'inconclusive'; reason: string };
 
+/** A docker class's daemon as its pod lists it: a terminated or waiting one is not `running`, whatever its count. */
+export interface DaemonState {
+    restartCount: number;
+    running: boolean;
+}
+
 /** What `Runner.groupTakenAway` read: the group's loss confirmed, its survival confirmed, or neither. */
 export type GroupTakenAway = 'taken' | 'kept' | 'unknown';
 
@@ -479,11 +485,11 @@ export interface Runner {
      */
     groupTakenAway(job: BoardJob, signal: AbortSignal): Promise<GroupTakenAway>;
     /**
-     * The restart count of the attempt's docker daemon (`dockerd`) as its task pod reports it now:
-     * `absent` for a class that runs none, `inconclusive` for any read that proves nothing. Never
-     * throws. Optional: the docker executor refuses a docker class at boot, so no docker path exists.
+     * The attempt's docker daemon (`dockerd`) as its task pod reports it now — its restart count and
+     * whether it runs: `absent` for a class that runs none, `inconclusive` for any read that proves
+     * nothing. Never throws. Optional: the docker executor refuses a docker class at boot, so no docker path exists.
      */
-    dockerdRestarts?(job: BoardJob, signal: AbortSignal): Promise<Read<number>>;
+    dockerdRestarts?(job: BoardJob, signal: AbortSignal): Promise<Read<DaemonState>>;
     /**
      * Runs one declared block-helper step: an allowlisted, board-owned script an
      * expanded workflow `block` node names to run before or after its agent turn. `call.token` is a
