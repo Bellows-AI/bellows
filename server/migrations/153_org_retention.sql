@@ -8,12 +8,14 @@ alter table org_plan add column if not exists max_retention_days integer check (
 -- The window an org's retention pass deletes by, apart from its plan's target: a lower target waits a 30-day notice
 -- (pending_days from pending_from), a higher one applies at once. No row, or a null effective_days, is unlimited, so
 -- every org that exists when this ships gets the notice before its first deletion. A pass leases its org through
--- `claimed_until` (no connection held across the pass), so two replicas never walk one org at once.
+-- `claim_owner` and `claimed_until` (no connection held across the pass); every destructive step re-checks, in its own
+-- transaction, that its pass still owns an unexpired lease, and a release clears only its own.
 create table if not exists org_retention (
     org_id         text primary key references organization (id) on update cascade on delete cascade,
     effective_days integer check (effective_days > 0),
     pending_days   integer check (pending_days > 0),
     pending_from   timestamptz,
+    claim_owner    text,
     claimed_until  timestamptz,
     updated_at     timestamptz not null default now(),
     constraint org_retention_pending_ck check ((pending_days is null) = (pending_from is null))

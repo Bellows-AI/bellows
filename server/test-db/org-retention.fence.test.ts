@@ -308,3 +308,89 @@ describe.skipIf(!enabled)('a stamped thread', () => {
         expect(await stamped(root)).toBe(false);
     });
 });
+
+/** The pool with `hook` run once, before the first top-level statement whose text contains `match`. */
+function hookedAt(match: string, hook: () => Promise<unknown>): { sql: Sql; fired: () => boolean } {
+    let fired = false;
+    const sql = new Proxy(db.sql, {
+        apply(target, self, args: unknown[]) {
+            const strings = args[0] as readonly string[] | undefined;
+            if (!fired && Array.isArray(strings) && strings.join('').includes(match)) {
+                fired = true;
+                return hook().then(() => Reflect.apply(target, self, args));
+            }
+            return Reflect.apply(target, self, args);
+        },
+    });
+    return { sql, fired: () => fired };
+}
+
+describe.skipIf(!enabled)('an upgrade that commits after the pass took its org', () => {
+    it('keeps telemetry the longer window covers', async () => {
+        const session = randomUUID();
+        await db.sql`insert into telemetry_session_owner (session_id, org_id, created_at)
+                     values (${session}, ${org}, now() - interval '200 days')`;
+        for (const ageDays of [8, 179, 200]) {
+            await db.sql`
+                insert into metric_point (metric, session_id, value, temporality, time, org_id)
+                values ('m', ${session}, 1, 'delta', now() - make_interval(days => ${ageDays}), ${org})
+            `;
+        }
+        const racing = hookedAt('from telemetry_session_owner', () => upgradeTo(180));
+        await pass({ sql: racing.sql, writeDrainMs: 0 });
+        expect(racing.fired()).toBe(true);
+        const left = await db.sql<{ days: number }[]>`
+            select extract(day from now() - time)::int as days from metric_point where session_id = ${session} order by 1
+        `;
+        expect(left.map((row) => row.days)).toEqual([8, 179]);
+    });
+
+    it('keeps an empty batch the longer window covers', async () => {
+        const [draft] = await db.sql<{ id: string }[]>`
+            insert into batch (org_id, plan_version, title, policy, concurrency, updated_at)
+            values (${org}, 1, 'draft', 'human', 1, now() - interval '30 days') returning id
+        `;
+        const racing = hookedAt('select b.id from batch b', () => upgradeTo(180));
+        await pass({ sql: racing.sql, writeDrainMs: 0 });
+        expect(racing.fired()).toBe(true);
+        expect(await db.sql`select 1 from batch where id = ${draft!.id}`).toHaveLength(1);
+    });
+});
+
+describe.skipIf(!enabled)('the org lease', () => {
+    it('fences a replica whose lease lapsed: its release spares the new holder, and it deletes nothing more', async () => {
+        const root = await oldThread();
+        await createArtifactStore({
+            sql: db.sql,
+            orgId: org,
+            ready: Promise.resolve(),
+            objects,
+            prefix: PREFIX,
+        }).putChunk(streamRef(root), 0, bytes('transcript'));
+        await pass();
+        await age(root, DRAIN_MS);
+        // Replica A is slow: while it lists the thread's objects its lease lapses and replica B takes the org.
+        let takenOver = false;
+        const slow: ObjectStore = {
+            ...objects,
+            list: async (prefix, options) => {
+                if (!takenOver) {
+                    takenOver = true;
+                    await db.sql`
+                        update org_retention set claim_owner = 'replica-b', claimed_until = now() + interval '5 minutes'
+                        where org_id = ${org}
+                    `;
+                }
+                return objects.list(prefix, options);
+            },
+        };
+        await pass({ objects: slow });
+        expect(takenOver).toBe(true);
+        const [lease] = await db.sql<{ owner: string | null; held: boolean }[]>`
+            select claim_owner as owner, claimed_until > now() as held from org_retention where org_id = ${org}
+        `;
+        expect(lease).toEqual({ owner: 'replica-b', held: true });
+        expect(await present(root)).toBe(true);
+        expect(await keysLeft()).toHaveLength(1);
+    });
+});

@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import type { Fragment, Sql, TransactionSql } from 'postgres';
-import type { ObjectStore } from '../artifacts/object-store.js';
+import { LIST_LIMIT, type ObjectStore } from '../artifacts/object-store.js';
 import { startIntervalLoop } from '../interval-loop.js';
 import { recordAudit } from './audit-log.js';
 import { lockThreadInTx } from './connection-bindings.js';
@@ -7,7 +8,7 @@ import { terminalFragment } from './jobs/job-store-sql-fragments.js';
 import { removeLockedThreadInTx } from './jobs/job-store-thread-actions.js';
 import { OBJECT_WRITE_DRAIN_MS } from './object-write-fence.js';
 import { REQUEST_ROLE } from './org-sql.js';
-import { deleteObjectPage, type OrgPurgeDeps, ownerOrg, type PurgeError, retireSecrets } from './org-purge.js';
+import { type OrgPurgeDeps, ownerOrg, type PurgeError, retireSecrets } from './org-purge.js';
 import { type PlanLimits, planChangeLockKey, planLimits } from './plan-limits.js';
 import { waitAdvisoryXactLock } from './pool.js';
 
@@ -45,7 +46,7 @@ const STAMP_KEEP_HOURS = 24;
 const MS_PER_SECOND = 1000;
 
 /** Closed: what a unit's `last_error` and the pass line name, never tenant data. */
-export type RetentionError = PurgeError | 'batch-unexpired' | 'thread-refused';
+export type RetentionError = PurgeError | 'batch-unexpired' | 'thread-refused' | 'lease-lost';
 
 export interface OrgRetentionDeps {
     sql: Sql;
@@ -76,12 +77,37 @@ interface Counts {
 interface OrgPass {
     deps: OrgRetentionDeps;
     orgId: string;
+    /** This pass's lease on the org (`org_retention.claim_owner`). */
+    token: string;
     expired: () => boolean;
     signal: AbortSignal | undefined;
     counts: Counts;
 }
 
+declare const fencedBrand: unique symbol;
+
+/**
+ * A transaction `fencedStep` opened: it holds the org's plan-change lock and its `org_retention` row, its pass still
+ * owns an unexpired lease (extended by the step), and its window was re-derived from the current plan. Every
+ * destructive statement in this file runs on one (`server/test/org-retention.fence-structure.test.ts`).
+ */
+type FencedTx = TransactionSql & { readonly [fencedBrand]: true };
+
+/** The window a fenced step deletes by, re-derived in its transaction; `cutoff` is SQL, `-infinity` for unlimited. */
+interface FencedWindow {
+    days: number | null;
+    cutoff: Fragment;
+}
+
+/** The pass's lease was lost: another replica owns the org now, so this pass does nothing more to it. */
+class LeaseLostError extends Error {}
+
+/** Selection only: the cutoff of a window the pass read earlier. A destructive step uses `FencedWindow.cutoff`. */
 const cutoffOf = (sql: Sql | TransactionSql, days: number) => sql`now() - make_interval(days => ${days})`;
+
+/** How long a lease outlives the step that last extended it, should its replica be lost. */
+const LEASE_MARGIN_SECS = 60;
+const leaseSecs = (deps: OrgRetentionDeps) => (deps.passMs ?? RETENTION_PASS_MS) / MS_PER_SECOND + LEASE_MARGIN_SECS;
 
 /**
  * The thread `root` is settled before `cutoff`: every member and every review of one is terminal and finished before
@@ -106,8 +132,8 @@ function settledBefore(sql: Sql | TransactionSql, orgId: string, root: Fragment,
 function batchSettledBefore(sql: Sql | TransactionSql, orgId: string, batch: Fragment, cutoff: Fragment): Fragment {
     return sql`(
         exists (
-            select 1 from batch b where b.org_id = ${orgId} and b.id = ${batch} and b.updated_at < ${cutoff}
-              and (b.status = 'draft' or b.completed_at is not null or b.cancelled_at is not null))
+            select 1 from batch bx where bx.org_id = ${orgId} and bx.id = ${batch} and bx.updated_at < ${cutoff}
+              and (bx.status = 'draft' or bx.completed_at is not null or bx.cancelled_at is not null))
         and not exists (
             select 1 from batch_task t where t.org_id = ${orgId} and t.batch_id = ${batch} and t.root_job_id is not null
               and not ${settledBefore(sql, orgId, sql`t.root_job_id`, cutoff)})
@@ -125,8 +151,8 @@ async function lockStampedRoots(tx: TransactionSql, orgId: string, roots: readon
 }
 
 /** Stamps the roots and the reviews of their members, as one unit. */
-async function stampInTx(tx: TransactionSql, orgId: string, roots: readonly string[], unit: string): Promise<void> {
-    await tx`
+async function stampInTx(ftx: FencedTx, orgId: string, roots: readonly string[], unit: string): Promise<void> {
+    await ftx`
         insert into thread_expiry (org_id, root_job_id, unit)
         select ${orgId}, id, ${unit} from job
         where org_id = ${orgId}
@@ -177,7 +203,35 @@ async function reconcileWindow(tx: TransactionSql, orgId: string, target: number
     return effective;
 }
 
-/** Step 2: stamps up to the bound of eligible lone threads, then of eligible batches. */
+/**
+ * The one door to destruction. Opens a transaction that takes the org's plan-change lock (a plan push takes it too),
+ * then its `org_retention` row: the pass must still own an unexpired lease, which the step extends, so another replica
+ * cannot take the org while the step runs. The window is re-derived there from the current plan (`reconcileWindow`), and
+ * `run` gets the transaction as a `FencedTx` with that window's cutoff as SQL. Throws `LeaseLostError` without the lease.
+ */
+async function fencedStep<T>(pass: OrgPass, run: (ftx: FencedTx, window: FencedWindow) => Promise<T>): Promise<T> {
+    const { deps, orgId, token } = pass;
+    // A plain result holder: postgres.js would unwrap a returned row list into its own type.
+    let result!: T;
+    await deps.sql.begin(async (tx) => {
+        await waitAdvisoryXactLock(tx, planChangeLockKey(orgId));
+        const [held] = await tx`
+            update org_retention set claimed_until = now() + make_interval(secs => ${leaseSecs(deps)})
+            where org_id = ${orgId} and claim_owner = ${token} and claimed_until > now()
+            returning 1
+        `;
+        if (!held) throw new LeaseLostError();
+        const days = await reconcileWindow(tx, orgId, (await planLimits(tx, orgId, deps.planDefaults)).retentionDays);
+        // Unlimited is `-infinity`: nothing is older, so a statement comparing against it deletes nothing.
+        const cutoff = tx`coalesce(
+            (select now() - make_interval(days => r.effective_days) from org_retention r where r.org_id = ${orgId}),
+            '-infinity'::timestamptz)`;
+        result = await run(tx as FencedTx, { days, cutoff });
+    });
+    return result;
+}
+
+/** Step 2: stamps up to the bound of eligible lone threads, then of eligible batches. `days` selects only. */
 async function stampEligible(pass: OrgPass, days: number): Promise<void> {
     const { deps, orgId, counts } = pass;
     const { sql } = deps;
@@ -194,15 +248,15 @@ async function stampEligible(pass: OrgPass, days: number): Promise<void> {
     `;
     for (const { id } of roots) {
         if (pass.expired()) return;
-        const stamped = await sql.begin(async (tx) => {
-            if ((await lockStampedRoots(tx, orgId, [id])).length !== 1) return false;
-            const [still] = await tx<{ ok: boolean }[]>`
-                select ${settledBefore(tx, orgId, tx`${id}::uuid`, cutoffOf(tx, days))}
+        const stamped = await fencedStep(pass, async (ftx, window) => {
+            if ((await lockStampedRoots(ftx, orgId, [id])).length !== 1) return false;
+            const [still] = await ftx<{ ok: boolean }[]>`
+                select ${settledBefore(ftx, orgId, ftx`${id}::uuid`, window.cutoff)}
                    and not exists (select 1 from batch_task t where t.org_id = ${orgId} and t.root_job_id = ${id})
                    as ok
             `;
             if (still?.ok !== true) return false;
-            await stampInTx(tx, orgId, [id], `thread:${id}`);
+            await stampInTx(ftx, orgId, [id], `thread:${id}`);
             return true;
         });
         if (stamped) counts.stamped += 1;
@@ -216,31 +270,31 @@ async function stampEligible(pass: OrgPass, days: number): Promise<void> {
     `;
     for (const { id } of batches) {
         if (pass.expired()) return;
-        await stampBatch(pass, id, days);
+        await stampBatch(pass, id);
     }
 }
 
 /** Stamps every thread of a settled batch as one unit; a batch that backs none is deleted at once. */
-async function stampBatch(pass: OrgPass, batchId: string, days: number): Promise<void> {
+async function stampBatch(pass: OrgPass, batchId: string): Promise<void> {
     const { orgId, counts } = pass;
-    const outcome = await pass.deps.sql.begin(async (tx) => {
-        const [batch] = await tx`select 1 from batch where org_id = ${orgId} and id = ${batchId} for update`;
+    const outcome = await fencedStep(pass, async (ftx, window) => {
+        const [batch] = await ftx`select 1 from batch where org_id = ${orgId} and id = ${batchId} for update`;
         if (!batch) return 'gone';
-        const roots = await tx<{ id: string }[]>`
+        const roots = await ftx<{ id: string }[]>`
             select root_job_id as id from batch_task
             where org_id = ${orgId} and batch_id = ${batchId} and root_job_id is not null
         `;
         const ids = roots.map((row) => row.id);
-        if ((await lockStampedRoots(tx, orgId, ids)).length !== ids.length) return 'gone';
-        const [still] = await tx<{ ok: boolean }[]>`
-            select ${batchSettledBefore(tx, orgId, tx`${batchId}::uuid`, cutoffOf(tx, days))} as ok
+        if ((await lockStampedRoots(ftx, orgId, ids)).length !== ids.length) return 'gone';
+        const [still] = await ftx<{ ok: boolean }[]>`
+            select ${batchSettledBefore(ftx, orgId, ftx`${batchId}::uuid`, window.cutoff)} as ok
         `;
         if (still?.ok !== true) return 'gone';
         if (ids.length === 0) {
-            await tx`delete from batch where org_id = ${orgId} and id = ${batchId}`;
+            await ftx`delete from batch where org_id = ${orgId} and id = ${batchId}`;
             return 'deleted';
         }
-        await stampInTx(tx, orgId, ids, `batch:${batchId}`);
+        await stampInTx(ftx, orgId, ids, `batch:${batchId}`);
         return 'stamped';
     });
     if (outcome === 'stamped') counts.stamped += 1;
@@ -266,16 +320,48 @@ async function unitJobIds(sql: Sql | TransactionSql, orgId: string, roots: reado
 /** Step 3a: every secret whose identity names a member of the unit, physically collected. */
 async function expireSecrets(pass: OrgPass, jobIds: readonly string[]): Promise<RetentionError | null> {
     const { deps, orgId, expired, signal } = pass;
-    return deps.sql.begin(async (tx) => {
-        const owner = ownerOrg(tx);
-        const named = tx`identity_key::jsonb #>> '{4}' = 'job' and identity_key::jsonb #>> '{5}' = any(${jobIds as string[]})`;
-        const owned = await tx<{ ref: string; identity_key: string }[]>`
+    return fencedStep(pass, async (ftx) => {
+        const owner = ownerOrg(ftx);
+        const named = ftx`identity_key::jsonb #>> '{4}' = 'job' and identity_key::jsonb #>> '{5}' = any(${jobIds as string[]})`;
+        const owned = await ftx<{ ref: string; identity_key: string }[]>`
             select ref, identity_key from secret where ${owner} = ${orgId} and ${named}
             union select ref, identity_key from secret_operation where ${owner} = ${orgId} and ${named}
             order by ref
         `;
-        return retireSecrets({ tx, secrets: deps.secrets, expired, signal }, owned);
+        return retireSecrets({ tx: ftx, secrets: deps.secrets, expired, signal }, owned);
     });
+}
+
+/** Object deletes per fenced step: each run between two lease checks stays far inside the lease. */
+const OBJECT_CHUNK = 100;
+
+/** One namespace's next page of keys; null when the answer is not a list of this namespace's keys. */
+async function listPage(pass: OrgPass, namespace: string): Promise<string[] | null> {
+    const keys = await pass.deps.objects.list(namespace, { limit: LIST_LIMIT, signal: pass.signal }).catch(() => null);
+    // An answer that is not a list of this namespace's keys confirms nothing and licenses no delete.
+    return Array.isArray(keys) && keys.every((key) => typeof key === 'string' && key.startsWith(namespace))
+        ? keys
+        : null;
+}
+
+/** Deletes `keys` in chunks, each in its own fenced step; the first unconfirmed delete stops it. */
+async function deleteKeys(pass: OrgPass, keys: readonly string[]): Promise<RetentionError | null> {
+    for (let at = 0; at < keys.length; at += OBJECT_CHUNK) {
+        if (pass.expired()) return 'pass-timeout';
+        const chunk = keys.slice(at, at + OBJECT_CHUNK);
+        const failed = await fencedStep(pass, async () => {
+            for (const key of chunk) {
+                const deleted = await pass.deps.objects.delete(key).then(
+                    () => true,
+                    () => false
+                );
+                if (!deleted) return 'object-delete-failed' as const;
+            }
+            return null;
+        });
+        if (failed) return failed;
+    }
+    return null;
 }
 
 /** Step 3b: every object under the unit's prefixes (`<prefix><org>/<member>/<root>/`), until each list is empty. */
@@ -290,10 +376,13 @@ async function expireObjects(pass: OrgPass, unit: Unit, jobIds: readonly string[
     `;
     for (const { member_id: member, root_job_id: root } of prefixes) {
         const namespace = `${deps.prefix}${orgId}/${member}/${root}/`;
-        for (let page: PurgeError | null | 'empty' = null; page !== 'empty'; ) {
+        for (;;) {
             if (pass.expired()) return 'pass-timeout';
-            page = await deleteObjectPage(deps.objects, namespace, pass.signal);
-            if (page !== null && page !== 'empty') return page;
+            const keys = await listPage(pass, namespace);
+            if (!keys) return 'object-list-failed';
+            if (keys.length === 0) break;
+            const failed = await deleteKeys(pass, keys);
+            if (failed) return failed;
         }
     }
     return null;
@@ -310,18 +399,14 @@ async function unitSettled(sql: Sql | TransactionSql, orgId: string, unit: Unit,
 }
 
 /**
- * The deletion start: under the org's plan-change lock (a push takes it too) the window is reconciled again and the
- * unit re-checked against it; only then is `deleting_at` written, before any secret or object is touched. `'revive'`
- * when the window no longer covers the unit; null once the phase is written.
+ * The deletion start, a fenced step: the unit re-checked against the window derived there; only then is `deleting_at`
+ * written, before any secret or object is touched. `'revive'` when the window no longer covers the unit.
  */
 async function beginDeletion(pass: OrgPass, unit: Unit): Promise<'revive' | null> {
-    const { deps, orgId } = pass;
-    return deps.sql.begin(async (tx) => {
-        await waitAdvisoryXactLock(tx, planChangeLockKey(orgId));
-        await tx`select 1 from org_retention where org_id = ${orgId} for update`;
-        const days = await reconcileWindow(tx, orgId, (await planLimits(tx, orgId, deps.planDefaults)).retentionDays);
-        if (days === null || !(await unitSettled(tx, orgId, unit, cutoffOf(tx, days)))) return 'revive';
-        await tx`update thread_expiry set deleting_at = now() where org_id = ${orgId} and unit = ${unit.unit}`;
+    const { orgId } = pass;
+    return fencedStep(pass, async (ftx, window) => {
+        if (window.days === null || !(await unitSettled(ftx, orgId, unit, window.cutoff))) return 'revive';
+        await ftx`update thread_expiry set deleting_at = now() where org_id = ${orgId} and unit = ${unit.unit}`;
         return null;
     });
 }
@@ -348,26 +433,26 @@ async function lockUnitThreads(tx: TransactionSql, orgId: string, unit: Unit): P
 /** The Remove path refused a stamped thread, or one is no longer settled: the whole row step rolls back. */
 class ThreadRefusedError extends Error {}
 
-/** Step 3c: the unit's rows, in one transaction under its locks. Past the deletion start, so no window re-check. */
+/** Step 3c: the unit's rows, in one fenced step under its locks. Past the deletion start, so no window re-check. */
 async function expireRows(pass: OrgPass, unit: Unit): Promise<RetentionError | null> {
-    const { deps, orgId } = pass;
-    const step = deps.sql.begin(async (tx) => {
+    const { orgId } = pass;
+    const step = fencedStep(pass, async (ftx) => {
         const batchId = unit.unit.startsWith('batch:') ? unit.unit.slice('batch:'.length) : null;
-        if (batchId) await tx`select 1 from batch where org_id = ${orgId} and id = ${batchId} for update`;
-        const roots = await lockUnitThreads(tx, orgId, unit);
-        const jobIds = await unitJobIds(tx, orgId, unit.roots);
-        if (batchId) await tx`delete from batch where org_id = ${orgId} and id = ${batchId}`;
+        if (batchId) await ftx`select 1 from batch where org_id = ${orgId} and id = ${batchId} for update`;
+        const roots = await lockUnitThreads(ftx, orgId, unit);
+        const jobIds = await unitJobIds(ftx, orgId, unit.roots);
+        if (batchId) await ftx`delete from batch where org_id = ${orgId} and id = ${batchId}`;
         for (const root of roots) {
-            const removed = await removeLockedThreadInTx(tx, { orgId, prs: undefined }, root, null);
+            const removed = await removeLockedThreadInTx(ftx, { orgId, prs: undefined }, root, null);
             if (typeof removed === 'string' && removed !== 'missing') throw new ThreadRefusedError();
         }
-        const stamped = tx`${unit.roots}::uuid[]`;
-        await tx`delete from artifact_chunk where org_id = ${orgId} and job_id = any(${jobIds})`;
-        await tx`delete from artifact_manifest where org_id = ${orgId} and job_id = any(${jobIds})`;
-        await tx`delete from job_pr where org_id = ${orgId} and root_job_id = any(${stamped})`;
-        await tx`delete from workflow_wait where org_id = ${orgId} and root_job_id = any(${stamped})`;
-        await tx`delete from notification_event where org_id = ${orgId} and root_job_id = any(${stamped})`;
-        await tx`
+        const stamped = ftx`${unit.roots}::uuid[]`;
+        await ftx`delete from artifact_chunk where org_id = ${orgId} and job_id = any(${jobIds})`;
+        await ftx`delete from artifact_manifest where org_id = ${orgId} and job_id = any(${jobIds})`;
+        await ftx`delete from job_pr where org_id = ${orgId} and root_job_id = any(${stamped})`;
+        await ftx`delete from workflow_wait where org_id = ${orgId} and root_job_id = any(${stamped})`;
+        await ftx`delete from notification_event where org_id = ${orgId} and root_job_id = any(${stamped})`;
+        await ftx`
             update thread_expiry set rows_deleted_at = now(), last_error = null
             where org_id = ${orgId} and unit = ${unit.unit}
         `;
@@ -398,18 +483,24 @@ async function expireStamped(pass: OrgPass, days: number | null): Promise<void> 
         const outcome = await expireUnit(pass, unit, days);
         if (outcome === null) counts.expired += 1;
         else if (outcome === 'revive') {
-            await deps.sql`
-                delete from thread_expiry where org_id = ${orgId} and unit = ${unit.unit} and deleting_at is null
-            `;
+            await fencedStep(
+                pass,
+                (ftx) => ftx`
+                    delete from thread_expiry where org_id = ${orgId} and unit = ${unit.unit} and deleting_at is null
+                `
+            );
             counts.revived += 1;
         } else {
             counts.pending += 1;
             if (outcome !== 'writes-draining') {
                 counts.errors.push(outcome);
-                await deps.sql`
-                    update thread_expiry set attempts = attempts + 1, last_error = ${outcome}
-                    where org_id = ${orgId} and unit = ${unit.unit}
-                `;
+                await fencedStep(
+                    pass,
+                    (ftx) => ftx`
+                        update thread_expiry set attempts = attempts + 1, last_error = ${outcome}
+                        where org_id = ${orgId} and unit = ${unit.unit}
+                    `
+                );
             }
         }
     }
@@ -432,15 +523,16 @@ async function expireUnit(pass: OrgPass, unit: Unit, days: number | null): Promi
 }
 
 /**
- * Step 4: the org's telemetry older than the window, in bounded batches. A point's org was resolved from its session's
- * owner row, task binding or branch row (`metric_point_org_of`), so those name every session an org's point can have;
- * each is probed and deleted through `metric_point_session`. An old branch row goes unless it is the last link to a
- * session that still has points of the org, so no point is left unreachable.
+ * Step 4: the org's telemetry older than the window, in bounded batches, each a fenced step comparing against the
+ * window derived there. A point's org was resolved from its session's owner row, task binding or branch row
+ * (`metric_point_org_of`), so those name every session an org's point can have; each is probed and deleted through
+ * `metric_point_session`. An old branch row goes unless it is the last link to a session that still has points of the
+ * org, so no point is left unreachable. `days` selects only.
  */
 async function expireTelemetry(pass: OrgPass, days: number): Promise<void> {
     const { deps, orgId, counts } = pass;
     const { sql } = deps;
-    const cutoff = cutoffOf(sql, days);
+    const selection = cutoffOf(sql, days);
     const sessions = await sql<{ session_id: string }[]>`
         select s.session_id from (
             select session_id from telemetry_session_owner where org_id = ${orgId}
@@ -448,62 +540,75 @@ async function expireTelemetry(pass: OrgPass, days: number): Promise<void> {
             union select session_id from session_branch where org_id = ${orgId}
         ) s
         where exists (select 1 from metric_point p
-                      where p.session_id = s.session_id and p.org_id = ${orgId} and p.time < ${cutoff})
+                      where p.session_id = s.session_id and p.org_id = ${orgId} and p.time < ${selection})
         order by s.session_id limit ${POINT_BATCHES}
     `;
     let batches = POINT_BATCHES;
     for (const { session_id: session } of sessions) {
         for (let deleted = POINT_BATCH_ROWS; deleted === POINT_BATCH_ROWS && batches > 0; batches -= 1) {
             if (pass.expired()) return;
-            const gone = await sql`
-                delete from metric_point where (tableoid, ctid) in (
-                    select tableoid, ctid from metric_point
-                    where session_id = ${session} and org_id = ${orgId} and time < ${cutoff}
-                    limit ${POINT_BATCH_ROWS})
-            `;
-            deleted = gone.count;
-            counts.points += gone.count;
+            deleted = await fencedStep(pass, async (ftx, window) => {
+                const gone = await ftx`
+                    delete from metric_point where (tableoid, ctid) in (
+                        select tableoid, ctid from metric_point
+                        where session_id = ${session} and org_id = ${orgId} and time < ${window.cutoff}
+                        limit ${POINT_BATCH_ROWS})
+                `;
+                return gone.count;
+            });
+            counts.points += deleted;
         }
     }
-    const branches = await sql`
-        delete from session_branch where ctid in (
-            select b.ctid from session_branch b
-            where b.org_id = ${orgId} and b.last_seen < ${cutoff}
-              and (not exists (select 1 from metric_point p where p.session_id = b.session_id and p.org_id = ${orgId})
-                   or exists (select 1 from telemetry_session_owner o
-                              where o.session_id = b.session_id and o.org_id = ${orgId})
-                   or exists (select 1 from job_execution_session e
-                              where e.org_id = ${orgId} and e.session_id = b.session_id)
-                   or exists (select 1 from session_branch n
-                              where n.org_id = ${orgId} and n.session_id = b.session_id and n.last_seen >= ${cutoff}))
-            limit ${POINT_BATCH_ROWS})
-    `;
-    counts.branches += branches.count;
+    counts.branches += await fencedStep(pass, async (ftx, window) => {
+        const gone = await ftx`
+            delete from session_branch where ctid in (
+                select b.ctid from session_branch b
+                where b.org_id = ${orgId} and b.last_seen < ${window.cutoff}
+                  and (not exists (select 1 from metric_point p
+                                   where p.session_id = b.session_id and p.org_id = ${orgId})
+                       or exists (select 1 from telemetry_session_owner o
+                                  where o.session_id = b.session_id and o.org_id = ${orgId})
+                       or exists (select 1 from job_execution_session e
+                                  where e.org_id = ${orgId} and e.session_id = b.session_id)
+                       or exists (select 1 from session_branch n
+                                  where n.org_id = ${orgId} and n.session_id = b.session_id
+                                    and n.last_seen >= ${window.cutoff}))
+                limit ${POINT_BATCH_ROWS})
+        `;
+        return gone.count;
+    });
 }
 
-/** How long a lease on an org outlives the pass that took it, should its replica be lost. */
-const LEASE_MARGIN_SECS = 60;
-
 /**
- * Takes the org for this pass in one short transaction: a lease (`claimed_until`), the org still active, and the window
- * reconciled under the plan-change lock. Null when another replica holds the lease or the org is not active. No
- * connection is held across the pass: every later step is its own short transaction, one at a time.
+ * Takes the org for this pass in one short transaction: a lease (`claim_owner` = a fresh token, `claimed_until`), the
+ * org still active, and the window reconciled under the plan-change lock. Null when another replica holds the lease
+ * or the org is not active. No connection is held across the pass: every later step is its own short transaction.
  */
-async function claimOrg(deps: OrgRetentionDeps, orgId: string): Promise<{ days: number | null } | null> {
-    const leaseSecs = (deps.passMs ?? RETENTION_PASS_MS) / MS_PER_SECOND + LEASE_MARGIN_SECS;
+async function claimOrg(deps: OrgRetentionDeps, orgId: string, token: string): Promise<{ days: number | null } | null> {
     return deps.sql.begin(async (tx) => {
         const [org] = await tx<{ status: string }[]>`select status from organization where id = ${orgId} for share`;
         if (org?.status !== 'active') return null;
         await waitAdvisoryXactLock(tx, planChangeLockKey(orgId));
         await tx`insert into org_retention (org_id) values (${orgId}) on conflict do nothing`;
         const [claimed] = await tx`
-            update org_retention set claimed_until = now() + make_interval(secs => ${leaseSecs}), updated_at = now()
+            update org_retention set claim_owner = ${token},
+                claimed_until = now() + make_interval(secs => ${leaseSecs(deps)}), updated_at = now()
             where org_id = ${orgId} and (claimed_until is null or claimed_until < now())
             returning 1
         `;
         if (!claimed) return null;
         const target = (await planLimits(tx, orgId, deps.planDefaults)).retentionDays;
         return { days: await reconcileWindow(tx, orgId, target) };
+    });
+}
+
+/** Ends this pass's lease, and no other's. */
+async function releaseOrg(deps: OrgRetentionDeps, orgId: string, token: string): Promise<void> {
+    await deps.sql`
+        update org_retention set claim_owner = null, claimed_until = null
+        where org_id = ${orgId} and claim_owner = ${token}
+    `.catch(() => {
+        // The lease lapses on its own; the next pass takes the org then.
     });
 }
 
@@ -514,23 +619,29 @@ async function retainOrg(
     expired: () => boolean,
     signal: AbortSignal | undefined
 ): Promise<Counts | null> {
-    const claimed = await claimOrg(deps, orgId);
+    const token = randomUUID();
+    const claimed = await claimOrg(deps, orgId, token);
     if (!claimed) return null;
     const { days } = claimed;
     const counts: Counts = { days, stamped: 0, expired: 0, revived: 0, pending: 0, points: 0, branches: 0, errors: [] };
-    const pass: OrgPass = { deps, orgId, expired, signal, counts };
+    const pass: OrgPass = { deps, orgId, token, expired, signal, counts };
     try {
         if (days !== null) await stampEligible(pass, days);
         await expireStamped(pass, days);
         if (days !== null) await expireTelemetry(pass, days);
-        await deps.sql`
-            delete from thread_expiry where org_id = ${orgId}
-              and rows_deleted_at < now() - make_interval(hours => ${STAMP_KEEP_HOURS})
-        `;
+        await fencedStep(
+            pass,
+            (ftx) => ftx`
+                delete from thread_expiry where org_id = ${orgId}
+                  and rows_deleted_at < now() - make_interval(hours => ${STAMP_KEEP_HOURS})
+            `
+        );
+    } catch (e) {
+        if (!(e instanceof LeaseLostError)) throw e;
+        // Another replica owns the org now: this pass stops, and its release below leaves that lease alone.
+        counts.errors.push('lease-lost');
     } finally {
-        await deps.sql`update org_retention set claimed_until = null where org_id = ${orgId}`.catch(() => {
-            // The lease lapses on its own; the next pass takes the org then.
-        });
+        await releaseOrg(deps, orgId, token);
     }
     return counts;
 }
