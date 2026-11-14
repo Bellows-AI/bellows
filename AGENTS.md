@@ -76,6 +76,7 @@ commit message needs a force-push to fix.
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | `org_id` policies, `app.org_id`, the cross-org role and pool, `security_invoker` views | [docs/row-level-security.md](docs/row-level-security.md) |
 | `server/src/secrets/*`, secret storage, `AppDeps.secrets` | [docs/secrets.md](docs/secrets.md) |
+| Plan retention, `retentionDays`, `ARTIFACTS_RETENTION_DAYS`, expiring threads, objects and telemetry | [docs/retention.md](docs/retention.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | `core/src/skills.ts`, `server/src/skills/*`, `server/src/db/skill-store.ts`, `128_skills.sql`, `routes/skills*.ts`, `server/src/skill-catalog.ts`, `docker/skills/` | [docs/skills.md](docs/skills.md) |
 | `server/src/mcp/*`, `POST /api/mcp`, MCP tools, `route-class.ts` | [docs/mcp.md](docs/mcp.md) |
