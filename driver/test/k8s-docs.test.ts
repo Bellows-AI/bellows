@@ -29,6 +29,21 @@ describe('the volume-affinity loss record', () => {
     });
 });
 
+describe('the runner classes record', () => {
+    // The docker refusal names docs/kubernetes-limits.md; the limit it points at must be there.
+    it('states that a docker runner class carries resources only', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'a runner class carries resources only — one setting `runtimeClassName`, `nodeSelector`, `tolerations`, `affinity` or `docker` is refused at boot'
+        );
+    });
+
+    it('states the zone hazard of every class, the export Job included', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "every runner class's node pools must span the zones task volumes live in, the default class's too since the reaper's export Job runs in it"
+        );
+    });
+});
+
 describe('the EKS prerequisites record', () => {
     it('states the node and add-on prerequisites in docs/kubernetes.md', () => {
         expect(kubernetesDocs).toContain('EKS prerequisites');

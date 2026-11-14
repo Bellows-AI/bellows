@@ -64,7 +64,8 @@ database sits inside `isolation.blockedCidrs`; a runner that must reach a privat
 `scripts/test-k8s.sh`'s offline EKS lane renders this shape as assertions (`EKS_SETS`); a mismatch
 is a bug in one of them.
 
-- `runner.nodeSelector` / `runner.tolerations` — onto step 1's tainted group.
+- `runner.classes.standard.nodeSelector` / `.tolerations` — onto step 1's tainted group. Every class's node
+  group, and the default class's (the export Job runs there), must span the zones the task volumes live in.
 - `driver.runnerDoNotDisrupt` — off by default; an undisruptable pod pins its node for up to
   `driver.jobTimeoutMs`.
 - `auth.publicUrl` — the real public origin, with `auth.cookieSecure: 'true'`.

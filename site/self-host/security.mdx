@@ -9,7 +9,7 @@ This page is for a security reviewer. It states what each control does and what 
 
 - An agent runs code you did not write, next to credentials. Bellows confines it with hardened containers, separate user ids, a network policy, and an admission policy. It holds no long-lived credential.
 - The agent gets a short-lived GitHub token for one repository, fetched on demand. The token is not in its environment.
-- By default this is **not** kernel or VM isolation: every runner shares the node's kernel with other pods. Set `runner.runtimeClassName` (for example `gvisor` on GKE Sandbox) to run every runner pod in a sandbox kernel.
+- By default this is **not** kernel or VM isolation: every runner shares the node's kernel with other pods. Set a runner class's `runtimeClassName` (for example `gvisor` on GKE Sandbox) to run that class's runner pods in a sandbox kernel.
 - Membership is not a sandbox. Anyone in an organization can queue a command that an agent runs on any tracked repository.
 
 ## Trust boundaries
@@ -21,7 +21,7 @@ This page is for a security reviewer. It states what each control does and what 
 | Runner pod | Its per-attempt credentials, model credentials, a memory-only GitHub token cache | No ServiceAccount token, no App key |
 | Agent tool commands | Nothing | No GitHub token, no model credential, no control-channel token |
 
-Keep the runner node group separate from the dashboard's nodes (`runner.nodeSelector`, `runner.tolerations`). Then agent code never shares a node with the process that holds the App key.
+Keep the runner node group separate from the dashboard's nodes (each runner class's `nodeSelector` and `tolerations` under `runner.classes`). Then agent code never shares a node with the process that holds the App key.
 
 ## Runner isolation
 
@@ -38,7 +38,7 @@ On Kubernetes, the admission policy requires these on every pod the driver creat
 | No host access | No host ports, no host namespaces, no host path mounts, no `nodeName` pinning |
 | Limited mounts | Only the task volume, `emptyDir` and the pod's own per-attempt Secrets |
 | Limited Secret reads | Only the pod's own per-attempt Secrets and the runner credentials |
-| Sandbox runtime | `runtimeClassName` equal to `runner.runtimeClassName`, when it is set |
+| Runner class | A `factory.runner-class` label naming a class in `runner.classes`, and a `runtimeClassName` equal to that class's (none when the class sets none) |
 
 One exception exists. The `agent` container starts as root with only `SETUID` and `SETGID` added, so it can start commands as another user. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
 
@@ -164,7 +164,7 @@ Attachment type is decided from the file's bytes, not its declared type. SVG, HT
 
 ## Known limits
 
-- Kernel isolation needs a RuntimeClass. Without `runner.runtimeClassName`, runners share the node kernel. With it, the admission policy refuses any pod the driver creates outside that RuntimeClass, even from a compromised driver. The chart does not provision the runtime: install gVisor, Kata Containers or Firecracker on the runner nodes, or use a GKE Sandbox node pool.
+- Kernel isolation needs a RuntimeClass. A runner class without `runtimeClassName` shares the node kernel. With it, the admission policy refuses any pod of that class outside that RuntimeClass, even from a compromised driver; a pod without the label of a declared class is refused too. The chart does not provision the runtime: install gVisor, Kata Containers or Firecracker on the runner nodes, or use a GKE Sandbox node pool.
 - The network controls do nothing without an enforcing CNI.
 - A taken-over run's gate requests keep the lost driver's endpoint, and a node that goes NotReady is noticed only when the cluster acts on it (about 300 seconds by default).
 - A task volume is a thread boundary. A volume's size is a request, and a cap only where the provisioner enforces it.
