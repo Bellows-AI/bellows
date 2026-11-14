@@ -1065,11 +1065,11 @@ default/????????-????-????-????-????????????) ;;
     exit 1
     ;;
 esac
-compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
+member_seeded="$(compose exec -T postgres psql -U factory -d "$DB" -q -v ON_ERROR_STOP=1 -c \
     "insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
      values ('$member_org', 'claude-code', 'test-jobs-fixture', '$SMOKE_REPO', 'main', now(), now())
-     on conflict do nothing" >/dev/null 2>&1 || {
-    echo "test-jobs: could not select $SMOKE_REPO for the stand-in member"
+     on conflict do nothing" 2>&1)" || {
+    echo "test-jobs: could not select $SMOKE_REPO for the stand-in member: $member_seeded"
     exit 1
 }
 expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/executors \

@@ -25,11 +25,14 @@ lane_extra_pids="$lane_extra_pids $mcp_idp_pid"
 lane_extra_pids="${lane_extra_pids# }"
 
 # The member's organization has the smoke repository tracked, as the board fixture does for the stand-in member.
-compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
-    "insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+# The member has not signed in yet, so the organization row the seed references is planted first; the sign-in's
+# upsert then completes it. server/test-db/lane-seeds.mcp.test.ts runs this SQL against a migrated schema.
+mcp_seeded="$(compose exec -T postgres psql -U factory -d "$DB" -q -v ON_ERROR_STOP=1 -c \
+    "insert into organization (id, name) values ('$MCP_ORG', '$MCP_ORG') on conflict do nothing;
+     insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
      values ('$MCP_ORG', 'claude-code', 'test-jobs-mcp', '$SMOKE_REPO', 'main', now(), now())
-     on conflict do nothing" >/dev/null 2>&1 || {
-    echo "test-jobs: could not select $SMOKE_REPO for the mcp organization"
+     on conflict do nothing" 2>&1)" || {
+    echo "test-jobs: could not select $SMOKE_REPO for the mcp organization: $mcp_seeded"
     exit 1
 }
 
