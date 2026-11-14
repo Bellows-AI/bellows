@@ -170,13 +170,16 @@ function settled(child: ChildProcess): Promise<{ stdout: Buffer; stderr: string;
     );
 }
 
+// A zombie still answers `kill(pid, 0)`: where PID 1 does not reap (a container's bare `sleep`), a killed
+// orphan stays one. Only a readable `Z` state counts as ended; a failed `ps` leaves the pid alive.
 const alive = (pid: number): boolean => {
     try {
         process.kill(pid, 0);
-        return true;
     } catch {
         return false;
     }
+    const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+    return !(ps.status === 0 && ps.stdout.trim().startsWith('Z'));
 };
 
 async function until(what: string, check: () => boolean, ms = 5000): Promise<void> {
