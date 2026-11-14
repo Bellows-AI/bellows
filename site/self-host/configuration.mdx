@@ -209,6 +209,7 @@ A runner class names where a task's runners run and what they may use. A task ru
 | `RUNNER_CLASSES` | | one class, `default`, with no fields | JSON object of classes by name (lowercase letters, digits and `-`). Each class may set `resources` and `gateResources` (`requests` and `limits`, each with `cpu` and `memory`), and on Kubernetes `runtimeClassName`, `nodeSelector`, `tolerations`, `affinity`, `docker`, `dockerStorage` and `dockerResources`. Unknown keys are fatal. |
 | `RUNNER_DEFAULT_CLASS` | | `default` | The class a task runs in when it names none. It must be a class `RUNNER_CLASSES` declares. |
 | `RUNNER_DOCKER_IMAGE` | docker class | none | The Docker daemon image a Docker class runs beside the task, pinned by digest. The driver refuses to start without it once any class has Docker. The Helm chart sets it from `runner.docker.image`. |
+| `RUNNER_DOCKER_MIRRORS` | | none | Kubernetes only. A JSON array of `https://` registry mirror URLs every Docker class's daemon pulls Docker Hub images through. Unset pulls directly. An `http://` mirror or any other malformed value stops the driver at start. The Helm chart sets it from `runner.docker.registryMirrors`. |
 
 Resources are Kubernetes quantities: CPU as cores or millicores (`2`, `500m`), memory with an optional suffix (`1Gi`). A request above its limit is fatal. No resources means no requests or limits; a memory limit can OOM-kill a large build. `resources` size the runner, services and helpers; `gateResources` size gate runs, and an unset slot falls back to `resources`.
 

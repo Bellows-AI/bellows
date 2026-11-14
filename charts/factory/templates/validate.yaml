@@ -34,6 +34,15 @@ code out of its sandbox and node pool. Each names its runner class twin. */}}
 {{- if and (ne (include "factory.runnerDockerClasses" .) "[]") (not (regexMatch "^sha256:[a-f0-9]{64}$" (toString (dig "docker" "image" "digest" "" .Values.runner)))) }}
 {{- fail "runner.docker.image.digest must be a sha256:<64 hex> digest when a runner class sets docker: true: the driver runs the daemon only pinned by digest" }}
 {{- end }}
+{{- $mirrors := dig "docker" "registryMirrors" list .Values.runner }}
+{{- if not (kindIs "slice" $mirrors) }}
+{{- fail (printf "runner.docker.registryMirrors must be a list of https:// URLs, got %v" $mirrors) }}
+{{- end }}
+{{- range $mirrors }}
+{{- if not (regexMatch "^https://[^\\s@?#]+$" (toString .)) }}
+{{- fail (printf "runner.docker.registryMirrors entries must be https:// URLs (no credentials, query or whitespace): a plain-http mirror needs an insecure registry, got %q" (toString .)) }}
+{{- end }}
+{{- end }}
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}

@@ -241,6 +241,35 @@ describe('the driver config: runner classes', () => {
         expect(loadDriverConfig({ ...plain, RUNNER_DEFAULT_CLASS: 'standard' }).runnerDockerImage).toBeNull();
     });
 
+    // The daemons' registry mirrors: one global list, each an https:// URL. Unset is none — the
+    // daemon pulls directly — and a malformed value refuses boot rather than being dropped.
+    it('parses RUNNER_DOCKER_MIRRORS, a JSON array of https:// URLs, and refuses a malformed one', () => {
+        expect(loadDriverConfig(classesEnv()).runnerDockerMirrors).toEqual([]);
+        expect(loadDriverConfig({ ...classesEnv(), RUNNER_DOCKER_MIRRORS: ' ' }).runnerDockerMirrors).toEqual([]);
+        const mirrors = ['https://mirror.example', 'https://registry.example:5000/hub'];
+        expect(
+            loadDriverConfig({ ...classesEnv(), RUNNER_DOCKER_MIRRORS: JSON.stringify(mirrors) }).runnerDockerMirrors
+        ).toEqual(mirrors);
+        for (const bad of [
+            'https://mirror.example',
+            '{"url":"https://mirror.example"}',
+            '[1]',
+            '[""]',
+            '["mirror.example"]',
+            '["https://mirror.example/a b"]',
+            '["https://user:pass@mirror.example"]',
+            '["https://mirror.example/?x=1"]',
+        ]) {
+            expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_DOCKER_MIRRORS: bad }), bad).toThrow(
+                /RUNNER_DOCKER_MIRRORS/
+            );
+        }
+        // A plain-http mirror needs --insecure-registry, which the daemon is never given.
+        expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_DOCKER_MIRRORS: '["http://mirror.example"]' })).toThrow(
+            /RUNNER_DOCKER_MIRRORS.*https:\/\/.*http:\/\/mirror\.example/
+        );
+    });
+
     it('refuses a daemon storage or daemon resources that are not quantities', () => {
         for (const fields of [
             { dockerStorage: 'lots' },

@@ -409,7 +409,11 @@ function dockerdSidecar(config: DriverConfig, runnerClass: RunnerClass): RunnerP
         ...resourcesField(runnerClass.dockerResources),
         securityContext: { allowPrivilegeEscalation: false, capabilities: { add: [...DOCKERD_CAPS] } },
         command: dockerdStartArgv(),
-        env: [],
+        // The registry mirrors, a parameter of the script it turns into `--registry-mirror` flags.
+        env:
+            config.runnerDockerMirrors.length > 0
+                ? [{ name: 'DOCKERD_MIRRORS', value: config.runnerDockerMirrors.join(' ') }]
+                : [],
         startupProbe: dockerdStartupProbe(),
         volumeMounts: [taskMount(), ...dockerdMounts()],
     };

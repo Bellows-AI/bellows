@@ -553,6 +553,14 @@ runner:
             repository: docker
             tag: '27-dind'
             digest: 'sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce'
+        # Registry mirrors every docker class's daemon pulls Docker Hub images through
+        # (RUNNER_DOCKER_MIRRORS, one global list, each `--registry-mirror`). Empty pulls directly.
+        # Each must be an https:// URL — a plain-http mirror needs an insecure registry, which the
+        # daemon is never given — and the chart and the driver refuse anything else. Other
+        # registries (ghcr.io, mirror.gcr.io, …) are pulled directly. A mirror on a private or
+        # in-cluster address is blocked by isolation.blockedCidrs until its /32 is in
+        # isolation.allowedCidrs, which opens it to the whole runner pod, agent included.
+        registryMirrors: []
     # Created by this chart when secret.create is true, with one key per `env` name, valued from
     # `credentials` (empty when absent). Referencing the Secret by name is the whole point: the
     # credential never appears in the pod spec, which anyone who can `get pods` can read.

@@ -121,6 +121,11 @@ spec:
                       # boot a docker class without it.
                       - name: RUNNER_DOCKER_IMAGE
                         value: {{ include "factory.image" (list $ $.Values.runner.docker.image) | quote }}
+                      {{- with $.Values.runner.docker.registryMirrors }}
+                      # The daemons' registry mirrors, a JSON array of https:// URLs.
+                      - name: RUNNER_DOCKER_MIRRORS
+                        value: {{ toJson . | quote }}
+                      {{- end }}
                       {{- end }}
                       # The claim each thread's task volume is created with.
                       {{- with $.Values.taskVolume.storageClass }}
