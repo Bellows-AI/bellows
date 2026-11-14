@@ -32,11 +32,12 @@ let boardUrl: string;
 let token: string;
 let repo: string;
 let board: Board;
+let orgId: string;
 
 beforeEach(async () => {
     if (!enabled) return;
     const sql = db.sql;
-    const orgId = testOrg();
+    orgId = testOrg();
     await sql`insert into organization (id, name) values (${orgId}, ${`cli-org-${orgId}`})`;
     const auth = createAuthStore({ sql });
     const login = `cli-${randomUUID().slice(0, 8)}`;
@@ -153,5 +154,17 @@ describe.skipIf(!enabled)('the driver board client against the real store', () =
         expect(row.status).toBe('queued');
         expect(row.lease_token).toBeNull();
         expect(await board.heartbeat(job!)).toBe('lost');
+    });
+
+    it('the driver parses runnerClass off a real claim', async () => {
+        const executors = createUserExecutorStore({ sql: db.sql, orgId });
+        const main = (await executors.listOrg()).find((row) => row.name === 'main')!;
+        await executors.updateOrg(main.id, { runnerClass: 'gvisor' });
+        const id = await enqueue();
+
+        const job = await board.claim('wire-driver');
+
+        expect(job?.id).toBe(id);
+        expect(job?.runnerClass).toBe('gvisor');
     });
 });

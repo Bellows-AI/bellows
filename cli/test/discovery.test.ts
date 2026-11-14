@@ -74,9 +74,22 @@ describe('bellows executor list', () => {
         expect(await run(['executor', 'list', '--json'], io)).toBe(0);
 
         expect(JSON.parse(out.join('')).data.executors).toEqual([
-            { scope: 'user', name: 'mine', type: 'claude', suspended: false, default: true },
-            { scope: 'org', name: 'team', type: 'claude', suspended: true, default: false },
+            { scope: 'user', name: 'mine', type: 'claude', runnerClass: null, suspended: false, default: true },
+            { scope: 'org', name: 'team', type: 'claude', runnerClass: null, suspended: true, default: false },
         ]);
+    });
+
+    it('list shows the class an org profile runs on', async () => {
+        const fixture = workspace({ orgExecutors: [{ name: 'team', type: 'claude', runnerClass: 'builds' }] });
+        const json_ = harness({ '/api/workspace': () => json(fixture) });
+        expect(await run(['executor', 'list', '--json'], json_.io)).toBe(0);
+        expect(JSON.parse(json_.out.join('')).data.executors[1]).toMatchObject({ scope: 'org', runnerClass: 'builds' });
+
+        const human = harness({ '/api/workspace': () => json(fixture) });
+        expect(await run(['executor', 'list'], human.io)).toBe(0);
+        expect(human.out.join('')).toBe(
+            'user  mine  claude  active  default\norg  team  claude  class builds  active\n'
+        );
     });
 
     it('renders the human form and an empty state', async () => {

@@ -74,6 +74,11 @@ export type ValidExecutor = {
     config: object;
     /** The default workflow's gate-repair round limit this executor launches tasks with. */
     gateFixRounds: number;
+    /**
+     * The runner class tasks on this executor run in, null for the deployment's default. Only an
+     * organization profile names one; the org PUT is whole-entry, so every edit sends it back.
+     */
+    runnerClass: string | null;
 };
 
 /** Which field a draft's failure belongs to, so the dialog shows it beside that field. */
@@ -245,6 +250,8 @@ export interface ExecutorDraft {
     configs: Record<ExecutorType, string>;
     customModel: Record<ExecutorType, boolean>;
     gateFixRounds: string;
+    /** The chosen runner class; '' is the deployment's default. */
+    runnerClass: string;
 }
 
 function perType<T>(value: (type: ExecutorType) => T): Record<ExecutorType, T> {
@@ -261,6 +268,7 @@ export function initialExecutorDraft(row: ExecutorRow | undefined): ExecutorDraf
         configs: perType((type) => (type === rowType ? JSON.stringify(config, null, 2) : '{}')),
         customModel: perType((type) => type === rowType && readModel(config).kind === 'custom'),
         gateFixRounds: row ? String(row.gateFixRounds) : '',
+        runnerClass: row?.runnerClass ?? '',
     };
 }
 
@@ -307,7 +315,13 @@ export function validateExecutorDraft(
 
     return {
         ok: true,
-        value: { name: draft.name.trim(), type, config: parsed.value, gateFixRounds: rounds.value },
+        value: {
+            name: draft.name.trim(),
+            type,
+            config: parsed.value,
+            gateFixRounds: rounds.value,
+            runnerClass: draft.runnerClass || null,
+        },
     };
 }
 
@@ -330,6 +344,7 @@ function savedShape(draft: ExecutorDraft): string {
         draft.type,
         parsed.ok ? canonicalJson(parsed.value) : draft.configs[draft.type],
         rounds.ok ? rounds.value : draft.gateFixRounds,
+        draft.runnerClass,
     ]);
 }
 
@@ -419,6 +434,8 @@ export type ExecutorRow = {
     type: string;
     config: object;
     gateFixRounds: number;
+    /** An organization profile's runner class; personal rows carry none. */
+    runnerClass?: string | null;
     /** Carried back unchanged so a whole-list save never resumes a suspended row (issue 440). */
     suspended?: boolean;
 };
@@ -555,6 +572,38 @@ export const NO_CHANGES_REASON = 'No changes to save.';
 /** What the gate-repair field decides; tied to the number input with aria-describedby. */
 export const GATE_FIX_ROUNDS_HELP =
     'How many rounds a task on this executor may spend automatically repairing a failed gate (0 turns repair off). The limit is fixed when the task is created.';
+
+/** The runner class select (organization profiles only) and its help. */
+export const RUNNER_CLASS_LABEL = 'Runner class';
+export const RUNNER_CLASS_DEFAULT_LABEL = 'Deployment default';
+export const RUNNER_CLASS_HELP =
+    'Where this executor’s tasks run. A class with Docker gives the task a Docker daemon; the class is resolved when a task starts.';
+
+/** A runner class as the board declares it: its name and whether its runners get a Docker daemon. */
+export interface RunnerClassChoice {
+    name: string;
+    /** Null for a class the profile names but the board no longer declares. */
+    docker: boolean | null;
+}
+
+/** One class option's text, saying whether the class has Docker. */
+export function runnerClassOptionLabel(choice: RunnerClassChoice): string {
+    if (choice.docker === null) return `${choice.name} — not declared on this deployment`;
+    return `${choice.name} — ${choice.docker ? 'with Docker' : 'no Docker'}`;
+}
+
+/**
+ * The select's classes: every declared one, plus the profile's own class when the board no longer
+ * declares it — shown rather than silently dropped, so opening an edit never changes the class.
+ */
+export function runnerClassChoices(
+    declared: readonly { name: string; docker: boolean }[],
+    current: string
+): RunnerClassChoice[] {
+    const choices: RunnerClassChoice[] = declared.map(({ name, docker }) => ({ name, docker }));
+    if (current && !declared.some((option) => option.name === current)) choices.push({ name: current, docker: null });
+    return choices;
+}
 
 /**
  * Everything the dialog renders from its draft, derived in one pure pass (issue 261): each field's

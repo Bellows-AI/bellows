@@ -3,13 +3,20 @@ import { ERROR_CODES, type ExecutorScope, ORG_SCOPE, USER_SCOPE } from '@factory
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
-import { executorFieldRefusal, MAX_EXECUTORS_PER_USER, parseExecutorFields } from './executor-fields.js';
+import {
+    executorFieldRefusal,
+    executorFieldStatus,
+    MAX_EXECUTORS_PER_USER,
+    parseExecutorFields,
+    personalRunnerClassRefusal,
+} from './executor-fields.js';
 import {
     ExecutorDefaultNotFoundError,
     ExecutorSuspendedError,
     type ExecutorProfile,
 } from '../db/user-executor-store.js';
 import type { UserExecutorStore } from '../db/user-executor-store.js';
+import type { RunnerClassOption } from '../config-runner-classes.js';
 import type { OrgRegistry } from '../orgs.js';
 
 const HTTP_OK = 200;
@@ -46,6 +53,8 @@ function parseExecutorEntry(entry: unknown): ExecutorEntry | string {
     }
     const fields = parseExecutorFields(entry);
     if (typeof fields === 'string') return fields;
+    const classRefusal = personalRunnerClassRefusal(fields.runnerClass);
+    if (classRefusal) return classRefusal;
     // Optional (issue 440): the edit dialog carries a row's suspension through a rename; an entry
     // that omits it keeps whatever its same-named predecessor carried.
     const { suspended } = entry as { suspended?: unknown };
@@ -97,6 +106,7 @@ function personalRow(row: ExecutorProfile) {
 
 interface WorkspaceDeps {
     orgs: OrgRegistry;
+    runnerClasses: readonly RunnerClassOption[];
 }
 
 /** The caller's org's executor store, or the reason a route cannot serve them. */
@@ -118,10 +128,10 @@ async function runtimeOf(
 /** `list`'s per-entry name-shape and duplicate-name checks, in one place. */
 function validateExecutorList(
     raw: unknown
-): { ok: true; value: ExecutorEntry[] } | { ok: false; code: string; message: string } {
+): { ok: true; value: ExecutorEntry[] } | { ok: false; code: string; message: string; status?: number | undefined } {
     const list = parseExecutors(raw);
     if (typeof list === 'string') {
-        return { ok: false, code: executorFieldRefusal(list), message: list };
+        return { ok: false, code: executorFieldRefusal(list), message: list, status: executorFieldStatus(list) };
     }
     for (const executor of list) {
         const reason = badSegment('name', executor.name);
@@ -182,6 +192,7 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
             type: row.type,
             createdAt: row.createdAt,
             suspended: row.suspended,
+            runnerClass: row.runnerClass,
         })),
         // The member's resolved default: their stored preference while it still resolves, else the
         // deterministic fallback the store computes — what a new task draft autoselects.
@@ -213,6 +224,8 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
         executors: loaded.value.map((row) =>
             isBridged(request.raw) ? personalRow(row) : { ...personalRow(row), config: row.config }
         ),
+        // The classes an org profile may name (RUNNER_CLASSES), each with whether it gets a docker daemon.
+        runnerClasses: deps.runnerClasses,
     });
 }
 
@@ -224,7 +237,7 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     const { userId, executors } = ctx;
 
     const parsed = validateExecutorList(request.body);
-    if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
+    if (!parsed.ok) return bad(reply, parsed.code, parsed.message, parsed.status);
     const { value: list } = parsed;
 
     const saved = await guard(
@@ -346,12 +359,14 @@ async function handlePutDefaultExecutor(deps: WorkspaceDeps, request: FastifyReq
 export interface WorkspaceRoutesDeps {
     /** The per-org runtimes; the executor store is the caller's org's. */
     readonly orgs: OrgRegistry;
+    /** The board's runner classes (RUNNER_CLASSES), listed for the executor dialog. */
+    readonly runnerClasses: readonly RunnerClassOption[];
 }
 
 export const workspaceRoutes =
-    ({ orgs }: WorkspaceRoutesDeps): FastifyPluginAsync =>
+    ({ orgs, runnerClasses }: WorkspaceRoutesDeps): FastifyPluginAsync =>
     async (app) => {
-        const deps: WorkspaceDeps = { orgs };
+        const deps: WorkspaceDeps = { orgs, runnerClasses };
 
         app.get('/api/workspace', (request, reply) => handleGetWorkspace(deps, request, reply));
         app.get('/api/workspace/executors', (request, reply) => handleGetExecutors(deps, request, reply));

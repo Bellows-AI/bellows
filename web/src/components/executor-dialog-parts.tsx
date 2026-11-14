@@ -18,7 +18,12 @@ import {
     MODEL_DEFAULT_LABEL,
     MODEL_NOT_TEXT,
     NAME_HELP,
+    RUNNER_CLASS_DEFAULT_LABEL,
+    RUNNER_CLASS_HELP,
+    RUNNER_CLASS_LABEL,
     RUNNER_MANAGED_NOTE,
+    runnerClassChoices,
+    runnerClassOptionLabel,
     SAVE_LABEL,
 } from '../workspace/executors.js';
 import { JsonEditor } from './JsonEditor.js';
@@ -104,6 +109,47 @@ export function AgentField({
             </select>
             <p className="picker-help" id={`${ids}-agent-help`}>
                 {AGENT_HELP}
+            </p>
+        </div>
+    );
+}
+
+/**
+ * The runner class (organization profiles only): the deployment's default, or one declared class.
+ * Nothing renders without `declared` (a personal profile), nor when there is nothing to choose.
+ */
+export function RunnerClassField({
+    ids,
+    value,
+    declared,
+    onChange,
+}: {
+    ids: string;
+    value: string;
+    declared: readonly { name: string; docker: boolean }[] | undefined;
+    onChange: (value: string) => void;
+}) {
+    const choices = declared ? runnerClassChoices(declared, value) : [];
+    if (choices.length === 0) return null;
+    return (
+        <div className="picker-field">
+            <label htmlFor={`${ids}-runner-class`}>{RUNNER_CLASS_LABEL}</label>
+            <select
+                id={`${ids}-runner-class`}
+                className="field"
+                value={value}
+                aria-describedby={describedBy(ids, 'runner-class-help')}
+                onChange={(event) => onChange(event.target.value)}
+            >
+                <option value="">{RUNNER_CLASS_DEFAULT_LABEL}</option>
+                {choices.map((choice) => (
+                    <option key={choice.name} value={choice.name}>
+                        {runnerClassOptionLabel(choice)}
+                    </option>
+                ))}
+            </select>
+            <p className="picker-help" id={`${ids}-runner-class-help`}>
+                {RUNNER_CLASS_HELP}
             </p>
         </div>
     );

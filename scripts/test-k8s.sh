@@ -1192,9 +1192,28 @@ printf '%s\n' 'runner:' '    classes:' '        sandbox:' '            runtimeCl
     '            affinity: {podAntiAffinity: {preferredDuringSchedulingIgnoredDuringExecution: [{weight: 1}]}}' \
     '            docker: true' >"$work/two-classes.yaml"
 two_classes="$(gh_render -f "$work/two-classes.yaml")"
-[ "$(grep -c -- '- name: RUNNER_CLASSES$' <<<"$two_classes")" = 1 ] &&
+two_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$two_classes")"
+[ "$(grep -c -- '- name: RUNNER_CLASSES$' <<<"$two_driver")" = 1 ] &&
     ok 'two classes render one RUNNER_CLASSES env on the driver' ||
-    bad 'two classes render one RUNNER_CLASSES env on the driver' "$(grep -c RUNNER_CLASSES <<<"$two_classes") matches"
+    bad 'two classes render one RUNNER_CLASSES env on the driver' "$(grep -c RUNNER_CLASSES <<<"$two_driver") matches"
+# The dashboard reads the same map (names and docker flags) to offer and validate an org profile's
+# runner class; the driver and the dashboard are the only two readers.
+dashboard_classes_json() { # dashboard_classes_json <render> — the RUNNER_CLASSES value on the dashboard Deployment
+    awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$1" |
+        grep -A1 -- '- name: RUNNER_CLASSES$' | sed -n 's/^ *value: //p'
+}
+[ "$(grep -c -- '- name: RUNNER_CLASSES$' <<<"$two_classes")" = 2 ] &&
+    ok 'RUNNER_CLASSES renders on the driver and the dashboard alone' ||
+    bad 'RUNNER_CLASSES renders on the driver and the dashboard alone' "$(grep -c RUNNER_CLASSES <<<"$two_classes") matches"
+[ -n "$(dashboard_classes_json "$two_classes")" ] &&
+    [ "$(dashboard_classes_json "$two_classes")" = "$(classes_json "$two_classes")" ] &&
+    ok 'the dashboard is handed the same runner classes as the driver' ||
+    bad 'the dashboard is handed the same runner classes as the driver' \
+        "dashboard: $(dashboard_classes_json "$two_classes" | cut -c1-200)"
+[ "$(dashboard_classes_json "$(cat "$work/rendered.yaml")")" = "$(classes_json "$(cat "$work/rendered.yaml")")" ] &&
+    ok 'the default dashboard is handed the default runner classes' ||
+    bad 'the default dashboard is handed the default runner classes' \
+        "dashboard: $(dashboard_classes_json "$(cat "$work/rendered.yaml")" | cut -c1-200)"
 expect_class 'the driver is handed both classes' "$two_classes" 'Object.keys(c)' '["sandbox","standard"]'
 expect_class 'the driver is handed the class RuntimeClass' "$two_classes" 'c.sandbox.runtimeClassName' '"gvisor"'
 expect_class 'the driver is handed the class node selector' "$two_classes" 'c.sandbox.nodeSelector' '{"pool":"sandbox"}'

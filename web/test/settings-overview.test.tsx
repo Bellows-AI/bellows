@@ -261,6 +261,7 @@ describe('deriveReadiness — executors', () => {
                                     type: 'claude',
                                     createdAt: '2026-01-02T00:00:00Z',
                                     suspended: false,
+                                    runnerClass: null,
                                 },
                             ],
                             defaultExecutor: { scope: 'org', name: 'team-runner' },

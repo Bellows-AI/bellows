@@ -9,7 +9,12 @@ import {
     updateOrgExecutor,
     type OrgExecutorFull,
 } from '../api/orgExecutors.js';
-import type { DefaultExecutor, OrgExecutor } from '../api/useWorkspace.js';
+import {
+    listExecutorConfigs,
+    type DefaultExecutor,
+    type OrgExecutor,
+    type RunnerClassOption,
+} from '../api/useWorkspace.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { OrgExecutorConfirmDialog } from '../components/OrgExecutorConfirmDialog.js';
 import type { Session } from '../api/useSession.js';
@@ -58,19 +63,29 @@ export function OrgExecutorsSection({
     const isAdmin = session?.role === ADMIN_ROLE;
     const [dialog, setDialog] = useState<OrgDialogState | null>(null);
     const [list, setList] = useState<OrgExecutorFull[]>([]);
+    const [runnerClasses, setRunnerClasses] = useState<RunnerClassOption[]>([]);
     /** The pending ownership-changing action, or null: no confirmation, no write (issue 411). */
     const [confirm, setConfirm] = useState<OrgRowConfirm | null>(null);
     const [confirming, setConfirming] = useState(false);
 
-    /** The dialog opens with the org list — configs included for an admin, one on-demand read. */
+    /**
+     * The dialog opens with the org list — configs included for an admin — and the board's declared
+     * runner classes, two on-demand reads. Either failing opens nothing: a dialog missing the class
+     * list could not show, and so could not keep, the class the row names.
+     */
     const openDialog = async (editing: string | null) => {
         onError(null);
         onSaved('');
-        const result = await listOrgExecutorConfigs();
+        const [result, classes] = await Promise.all([listOrgExecutorConfigs(), listExecutorConfigs()]);
         if (!result.ok) {
             onError(result.error);
             return;
         }
+        if (!classes.ok) {
+            onError(classes.error);
+            return;
+        }
+        setRunnerClasses(classes.runnerClasses);
         if (editing !== null && !result.executors.some((executor) => executor.name === editing)) {
             onError(`"${editing}" no longer exists — refresh the page.`);
             return;
@@ -168,6 +183,7 @@ export function OrgExecutorsSection({
                 onSave={save}
                 onSaved={onSaved}
                 saving={saving}
+                runnerClasses={runnerClasses}
             />
         </>
     );

@@ -135,6 +135,7 @@ async function boot(scenario: Scenario = {}) {
         name: 'shared',
         type: 'claude-code',
         config: { token: 'ORG-SECRET' },
+        runnerClass: 'builds',
         createdBy: people.alice.user.id,
     });
     if (scenario.opencodeExecutor) {
@@ -309,8 +310,8 @@ describe('list_executors', () => {
     it('lists personal then organization profiles with scope and default, and never a configuration', async () => {
         const result = await call(await boot(), 'alice', 'list_executors');
         expect(result.data.executors).toMatchObject([
-            { scope: 'user', name: 'mine', type: 'claude-code', suspended: false },
-            { scope: 'org', name: 'shared', type: 'claude-code', suspended: false },
+            { scope: 'user', name: 'mine', type: 'claude-code', runnerClass: null, suspended: false },
+            { scope: 'org', name: 'shared', type: 'claude-code', runnerClass: 'builds', suspended: false },
         ]);
         expect(result.data.executors.filter((e: { default: boolean }) => e.default)).toHaveLength(1);
         expect(JSON.stringify(result)).not.toContain('SECRET');

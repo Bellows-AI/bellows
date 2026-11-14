@@ -30,6 +30,7 @@ describe('listExecutorConfigs', () => {
                         config: {},
                     },
                 ],
+                runnerClasses: [{ name: 'builds', docker: true }],
             })
         );
         vi.stubGlobal('fetch', fetch);
@@ -41,7 +42,20 @@ describe('listExecutorConfigs', () => {
             executors: [
                 { name: 'main', type: 'claude-code', createdAt: 'x', isDefault: false, gateFixRounds: 3, config: {} },
             ],
+            runnerClasses: [{ name: 'builds', docker: true }],
         });
+    });
+
+    it('refuses a body whose runner classes are missing or do not say whether they have Docker', async () => {
+        // The org dialog shows the declared classes; a list it cannot read must never pass for "none".
+        const unexpected = 'Could not load the executors: unexpected response shape.';
+        for (const runnerClasses of [undefined, 'builds', [{ name: 'builds' }], [{ docker: true }]]) {
+            vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ executors: [], runnerClasses })));
+            expect(await listExecutorConfigs(), JSON.stringify(runnerClasses)).toEqual({
+                ok: false,
+                error: unexpected,
+            });
+        }
     });
 
     it('refuses a malformed success body instead of handing garbage to the dialog', async () => {

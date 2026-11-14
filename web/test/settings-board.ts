@@ -1,10 +1,10 @@
 import { ADMIN_ROLE, CLAUDE_CODE, type Role } from '@factory-ai/core';
 import type { ConnectionView } from '../src/api/connections.js';
-import type { OrgExecutorFull } from '../src/api/orgExecutors.js';
+import type { OrgExecutorFull, OrgExecutorInput } from '../src/api/orgExecutors.js';
 import type { SubscriptionScope, SubscriptionView } from '../src/api/notificationSubscriptions.js';
 import type { InstallationRepo } from '../src/api/useRepos.js';
 import type { Session } from '../src/api/useSession.js';
-import type { WorkspaceExecutorFull, WorkspacePayload } from '../src/api/useWorkspace.js';
+import type { RunnerClassOption, WorkspaceExecutorFull, WorkspacePayload } from '../src/api/useWorkspace.js';
 import type { FetchCall, FetchHandler, FetchReply } from './dom.js';
 
 /**
@@ -18,6 +18,8 @@ export interface SettingsBoard {
     installationRepos: InstallationRepo[];
     executors: WorkspaceExecutorFull[];
     orgExecutors: (OrgExecutorFull & { suspended: boolean })[];
+    /** The runner classes the board declares, as `GET /api/workspace/executors` answers them. */
+    runnerClasses: RunnerClassOption[];
     connections: ConnectionView[];
     /** The notification subscriptions of each scope, and the channel kinds the board can send through. */
     subscriptions: Record<SubscriptionScope, SubscriptionView[]>;
@@ -36,6 +38,7 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         installationRepos: [],
         executors: [],
         orgExecutors: [],
+        runnerClasses: [],
         connections: [],
         subscriptions: { org: [], workspace: [] },
         connectorKinds: ['discord'],
@@ -74,6 +77,7 @@ export const orgExecutor = (name: string): SettingsBoard['orgExecutors'][number]
     type: CLAUDE_CODE,
     config: {},
     gateFixRounds: 3,
+    runnerClass: null,
     createdAt: AT,
     updatedAt: AT,
     createdBy: null,
@@ -130,11 +134,12 @@ function defaultExecutor(board: SettingsBoard) {
 function workspace(board: SettingsBoard) {
     return {
         executors: board.executors.map(({ config: _config, ...row }) => row),
-        orgExecutors: board.orgExecutors.map(({ name, type, createdAt, suspended }) => ({
+        orgExecutors: board.orgExecutors.map(({ name, type, createdAt, suspended, runnerClass }) => ({
             name,
             type,
             createdAt,
             suspended,
+            runnerClass,
         })),
         defaultExecutor: defaultExecutor(board),
     };
@@ -155,7 +160,9 @@ function routes(board: SettingsBoard, { method, url, body }: FetchCall): FetchRe
         };
     }
     if (method === 'GET' && path === '/api/workspace') return workspace(board);
-    if (method === 'GET' && path === '/api/workspace/executors') return { executors: board.executors };
+    if (method === 'GET' && path === '/api/workspace/executors') {
+        return { executors: board.executors, runnerClasses: board.runnerClasses };
+    }
     if (method === 'PUT' && path === '/api/workspace/executors') {
         const rows = (body as { executors: ExecutorRow[] }).executors;
         board.executors = rows.map((row) => ({
@@ -179,11 +186,23 @@ function routes(board: SettingsBoard, { method, url, body }: FetchCall): FetchRe
         return { status: 204 };
     }
     if (method === 'GET' && path === '/api/org/executors') return { executors: board.orgExecutors };
+    if (method === 'POST' && path === '/api/org/executors') {
+        board.orgExecutors.push({ ...orgExecutor(''), ...(body as OrgExecutorInput) });
+        return { status: 201, body: {} };
+    }
     if (path.startsWith('/api/org/executors/')) {
         const index = byId(board.orgExecutors);
         if (index < 0) return { status: 404, body: { error: 'No such executor' } };
         if (method === 'DELETE') board.orgExecutors.splice(index, 1);
-        else if (path.endsWith('/suspension')) {
+        // The route's whole-entry edit: a body that leaves `runnerClass` out resets it to the default.
+        else if (method === 'PUT') {
+            const input = body as Partial<OrgExecutorInput>;
+            board.orgExecutors[index] = {
+                ...board.orgExecutors[index]!,
+                ...input,
+                runnerClass: input.runnerClass ?? null,
+            };
+        } else if (path.endsWith('/suspension')) {
             board.orgExecutors[index] = {
                 ...board.orgExecutors[index]!,
                 suspended: (body as { suspended: boolean }).suspended,

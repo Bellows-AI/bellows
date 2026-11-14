@@ -72,6 +72,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
             config,
             gateFixRounds: 3,
             suspended: false,
+            runnerClass: null,
         });
         expect(await store.configFor(ALICE, 'deleted')).toBeNull();
         // Another member's row is not this member's answer.
@@ -99,6 +100,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
             config: {},
             gateFixRounds: 7,
             suspended: false,
+            runnerClass: null,
         });
     });
 
@@ -272,6 +274,51 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
         await expect(store.changeScope(personal.id, 'org', ALICE)).rejects.toThrow(/executor_profile_name_uk/);
         // Nothing moved.
         expect((await store.list(ALICE)).map((row) => row.name)).toEqual(['mine']);
+    });
+
+    it("stores and returns an org profile's runnerClass", async () => {
+        const created = await store.createOrg({
+            name: 'sandboxed',
+            type: 'claude-code',
+            config: {},
+            runnerClass: 'gvisor',
+            createdBy: ALICE,
+        });
+        expect(created.runnerClass).toBe('gvisor');
+        expect((await store.listOrg())[0]?.runnerClass).toBe('gvisor');
+        expect((await store.listOrgWithConfigs())[0]?.runnerClass).toBe('gvisor');
+        // The claim-time read carries it, for any member selecting the org row.
+        expect((await store.configFor(BOB, 'sandboxed', 'org'))?.runnerClass).toBe('gvisor');
+
+        // An edit that does not name the class keeps it; an explicit null clears it.
+        expect((await store.updateOrg(created.id, { config: { model: 'm' } }))?.runnerClass).toBe('gvisor');
+        expect((await store.updateOrg(created.id, { runnerClass: null }))?.runnerClass).toBeNull();
+        expect((await store.configFor(BOB, 'sandboxed', 'org'))?.runnerClass).toBeNull();
+
+        // A profile created without one names no class: the driver's default.
+        const plain = await store.createOrg({ name: 'plain', type: 'claude-code', config: {}, createdBy: ALICE });
+        expect(plain.runnerClass).toBeNull();
+    });
+
+    it('never stores a runnerClass on a personal row: a demotion clears it and the row check refuses one', async () => {
+        const created = await store.createOrg({
+            name: 'sandboxed',
+            type: 'claude-code',
+            config: {},
+            runnerClass: 'gvisor',
+            createdBy: ALICE,
+        });
+        const demoted = await store.changeScope(created.id, 'user', ALICE);
+        expect(demoted?.runnerClass).toBeNull();
+        expect((await store.list(ALICE))[0]?.runnerClass).toBeNull();
+        expect((await store.configFor(ALICE, 'sandboxed', 'user'))?.runnerClass).toBeNull();
+
+        await expect(
+            sql`
+                insert into executor_profile (org_id, user_id, name, type, config, runner_class)
+                values (${ORG}, ${BOB}, 'personal', 'claude-code', '{}'::jsonb, 'gvisor')
+            `
+        ).rejects.toThrow(/executor_profile_runner_class_ck/);
     });
 });
 

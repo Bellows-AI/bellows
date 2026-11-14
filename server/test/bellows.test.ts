@@ -308,6 +308,13 @@ describe('parseBellows: rejects malformed structure, invalid gates and limits', 
         ['a tab indent', 'environment:\n\timage: node:24\n', /tab/i],
         ['an unknown top-level key', `pipeline:\n    steps: []\n${EXAMPLE}`, /pipeline/],
         ['an unknown key inside environment', 'environment:\n    image: node:24\n    timeout: 30\n', /timeout/],
+        // A runner class is an org admin's choice on an executor profile: a repo never names one.
+        ['a top-level runnerClass', `runnerClass: sandboxed\n${EXAMPLE}`, /runnerClass/],
+        [
+            'a runnerClass inside environment',
+            'environment:\n    image: node:24\n    runnerClass: sandboxed\n',
+            /runnerClass/,
+        ],
         ['an unknown field in a gate', `${GATES}        - name: test\n          cwd: /app\n`, /cwd/],
         [
             'gates without an image',
