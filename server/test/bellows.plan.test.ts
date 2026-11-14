@@ -290,7 +290,7 @@ describe("this repository's own .bellows.yaml", () => {
             ['postgres', [5432]],
             ['s3', [9000]],
         ]);
-        expect(plan.config?.gates.map((gate) => gate.name)).toEqual(['test', 'lint']);
+        expect(plan.config?.gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db']);
     });
 });
 

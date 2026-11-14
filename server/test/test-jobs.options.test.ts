@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,6 +72,9 @@ esac`,
     *) exit 99 ;;
 esac`,
     npm: 'echo unexpected-npm >>"$HARNESS_TRACE"; exit 99',
+    // The client tools a lane on a declared Postgres (TEST_JOBS_PG_URL) calls in place of `compose exec`.
+    psql: 'printf \'psql %s\\n\' "$*" >>"$HARNESS_TRACE"',
+    pg_isready: 'printf \'pg_isready %s\\n\' "$*" >>"$HARNESS_TRACE"',
     timeout: `shift
 if [ "$1" = docker ] && [ "$2" = wait ]; then
     [ -z "$SUPERVISOR_WAIT_STATUS" ] || exit "$SUPERVISOR_WAIT_STATUS"
@@ -273,6 +276,35 @@ describe('test-jobs phase options', () => {
         expect(lane.timings()).toMatch(/^cleanup\t\d+$/m);
     });
 
+    // In a gate the repository's declared `postgres` service already holds 5432 on the pod loopback,
+    // which a compose Postgres publishing the same port would collide with.
+    it('with TEST_JOBS_PG_URL set the lane never starts or publishes the compose Postgres and its DATABASE_URL uses that server', async () => {
+        const lane = fixture();
+        const server = 'postgres://factory:factory@postgres:5432';
+        const result = await lane.run(['--phase', 'board'], { TEST_JOBS_PG_URL: server });
+        // The build fails (npm is a stub), after the database was created and before any board.
+        expect(result.status).toBe(1);
+        const trace = lane.trace();
+        expect(trace).not.toMatch(/^compose (up|exec)/m);
+        expect(trace).toContain(`pg_isready -d ${server}/postgres`);
+        const database = /create database (factory_jobs_\w+_test)/.exec(trace)?.[1];
+        expect(database).toBeTruthy();
+        expect(trace).toContain(`psql -d ${server}/postgres`);
+        // The run's own database on that server: what the boards' DATABASE_URL names.
+        expect(trace).toContain(`psql -d ${server}/${database} `);
+        expect(trace).toContain(`drop database if exists ${database}`);
+    });
+
+    it('refuses a TEST_JOBS_PG_URL that names a database: each run creates its own disposable one', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'board'], {
+            TEST_JOBS_PG_URL: 'postgres://factory:factory@postgres:5432/factory',
+        });
+        expect(result.status).toBe(2);
+        expect(result.stdout).toContain('TEST_JOBS_PG_URL');
+        expect(lane.trace()).not.toMatch(/psql|pg_isready|compose up/);
+    });
+
     it('gives separate runs distinct disposable databases and image cleanup targets', async () => {
         const lanes = [fixture(), fixture()];
         // Concurrent: the two runs share nothing, and the ids must differ even when started together.
@@ -472,6 +504,39 @@ describe('test-jobs phase options', () => {
         expect(help.stdout).toContain('--phase driver,services');
         expect(help.stdout).toContain('--changed BASE');
         expect(help.stdout).toContain('the full lane');
+    });
+});
+
+// With TEST_JOBS_PG_URL no compose Postgres exists, so a phase that reaches the database another way
+// than compose() (which routes `compose exec -T postgres` to the server) or DATABASE_URL fails there.
+describe('test-jobs on a declared Postgres server', () => {
+    const lanes = () => [
+        'scripts/test-jobs.sh',
+        ...readdirSync(join(ROOT, 'scripts/lanes/jobs'))
+            .filter((name) => name.endsWith('.sh'))
+            .map((name) => `scripts/lanes/jobs/${name}`),
+    ];
+    const code = (path: string) =>
+        readFileSync(join(ROOT, path), 'utf8')
+            .split('\n')
+            .filter((line) => !line.trimStart().startsWith('#'));
+
+    // The compose postgres container, found by label or exec'd by id, exists only without the variable.
+    it('a phase reaches the compose postgres container directly only on the branch without TEST_JOBS_PG_URL', () => {
+        for (const path of lanes()) {
+            const lines = code(path);
+            lines.forEach((line, index) => {
+                if (!/docker exec\b.*\bpsql\b|com\.docker\.compose\.service=postgres/.test(line)) return;
+                const guard = lines.slice(Math.max(0, index - 12), index).join('\n');
+                expect(guard, `${path}: ${line.trim()}`).toMatch(/\[ -n "\$\{TEST_JOBS_PG_URL:-\}" \]/);
+            });
+        }
+    });
+
+    it('the capacity phase reads its database through one argv that names the server when it is set', () => {
+        const text = readFileSync(join(ROOT, 'scripts/lanes/jobs/capacity.sh'), 'utf8');
+        expect(text).toContain('cap_pg_argv=(env "PGOPTIONS=$cap_pg_options" psql -d "$DATABASE_URL")');
+        expect(text.match(/"\$\{cap_pg_argv\[@\]\}"/g)).toHaveLength(2);
     });
 });
 

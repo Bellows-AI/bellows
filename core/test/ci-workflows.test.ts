@@ -270,6 +270,7 @@ describe('ci workflows', () => {
             'docker/driver.Dockerfile',
             'docker/claude-executor/Dockerfile',
             'docker/opencode-executor/Dockerfile',
+            'docker/dev-runner/Dockerfile',
         ];
         for (const path of dockerfiles) {
             // A stage or a named build context (`--from=skills`) is a bare word; an image carries a
@@ -286,7 +287,7 @@ describe('ci workflows', () => {
         expect(workflow(RELEASE).jobs.buildkit!.env!.BUILDKIT).toMatch(/^mirror\.gcr\.io\/moby\/buildkit:/);
     });
 
-    // Eight build cells pulling buildkit anonymously at once trip a registry's per-IP limits, and a
+    // Ten build cells pulling buildkit anonymously at once trip a registry's per-IP limits, and a
     // retry on the same runner reuses the same IP. One job pulls it once into the release registry;
     // every cell boots its builder from there.
     it('pulls buildkit once per release, retrying only on toomanyrequests', () => {
@@ -509,10 +510,12 @@ describe('ci workflows', () => {
         expect(called, 'the release workflow does not reuse the validation workflow').toBeTruthy();
         const build = doc.jobs.build!;
         expect(needs(build)).toContain(called![0]);
-        // The four the chart names. Publishing three of them leaves an install that cannot pull.
+        // The four the chart names (publishing three of them leaves an install that cannot pull), and
+        // the dev runner image this repository's .bellows.yaml gates run in.
         const matrix = build.strategy!.matrix!.image!;
         expect(matrix.map((entry) => entry.name).sort()).toEqual([
             'claude-executor',
+            'dev-runner',
             'factory-ai',
             'factory-driver',
             'opencode-executor',

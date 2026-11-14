@@ -61,6 +61,23 @@ describe('the docker class record', () => {
         expect(securityDocs).toContain('**A docker class gives task code root over the task volume**');
     });
 
+    // gVisor refuses Docker's MASQUERADE rule and has no nftables, so the sidecar runs with iptables off:
+    // a user-defined network gets no embedded DNS, and the test:jobs lane cannot run in the class.
+    it('states the networks a docker class under gVisor gives nested containers, for operators and users', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'in a docker class under gVisor, nested containers get the default bridge and host networks only'
+        );
+        expect(prose(kubernetesDocs)).toContain('compose service names do not resolve');
+        expect(prose(kubernetesDocs)).toContain('`docker build --network host`');
+        expect(readFileSync(join(ROOT, 'driver/src/scripts/dockerd-start.sh'), 'utf8')).toContain('--iptables=false');
+        const site = (path: string) => prose(readFileSync(join(ROOT, 'site', path), 'utf8'));
+        for (const page of ['guides/executors.mdx', 'self-host/kubernetes.mdx']) {
+            expect(site(page), page).toContain('Compose service names do not resolve');
+            expect(site(page), page).toContain('`docker build --network host`');
+        }
+        expect(prose(limitsDocs)).toContain('`make runners` took 93 s');
+    });
+
     it("states that admission trusts the class's RuntimeClass name, not its handler", () => {
         expect(prose(kubernetesDocs)).toContain("admission trusts a docker class's RuntimeClass name, not its handler");
     });

@@ -114,6 +114,7 @@ export const RULES = [
     [/^docker\/skills\//, NONE, 'agent prompt text, pinned by unit tests; no lane runs it'],
     [/^docker\/(claude-executor|opencode-executor)\/(README\.md|test\.sh)$/, NONE, 'image documentation and self-test'],
     [/^docker\/otel-collector\.yaml$/, NONE, 'collector config, not loaded by the lane'],
+    [/^docker\/dev-runner\/Dockerfile$/, NONE, 'the .bellows.yaml gate image, not loaded by the lane'],
 
     // --- scripts --------------------------------------------------------------------------------
     [/^scripts\/fake-model-endpoint\.mjs$/, REAL, 'scripted model endpoint'],
