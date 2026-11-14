@@ -22,6 +22,7 @@ import {
     HTTP_NOT_FOUND,
     HTTP_OK,
     HTTP_UNAVAILABLE,
+    HTTP_UNPROCESSABLE,
     trackApps,
 } from './helpers-http.js';
 
@@ -36,11 +37,14 @@ const track = trackApps();
 
 const CLAUDE_CODE = { name: 'team-runner', type: 'claude-code', config: { model: 'sonnet' } };
 
-async function boot(executors: MemoryUserExecutorStore = memoryUserExecutorStore()) {
+async function boot(
+    executors: MemoryUserExecutorStore = memoryUserExecutorStore(),
+    overrides: Partial<AppConfig> = {}
+) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
-    const config = testConfig({ auth: githubAuth() });
+    const config = testConfig({ auth: githubAuth(), ...overrides });
     const instance = await build(executors, auth, config);
     track(instance);
     return {
@@ -340,6 +344,124 @@ describe('organization executors: admin CRUD', () => {
             expect(response.statusCode, JSON.stringify(payload)).toBe(HTTP_BAD_REQUEST);
             expect(response.json().code).toBe(code);
         }
+    });
+});
+
+describe('organization executors: runner class', () => {
+    /** The board's declared classes (RUNNER_CLASSES): names and the docker flag only. */
+    const CLASSES = {
+        runnerClasses: [
+            { name: 'standard', docker: false },
+            { name: 'sandboxed', docker: true },
+        ],
+    };
+
+    it('refuses a profile naming an undeclared class with an error naming `runnerClass`', async () => {
+        const { instance, adminCookie, executors } = await boot(memoryUserExecutorStore(), CLASSES);
+        const created = await instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie: adminCookie },
+            payload: { ...CLAUDE_CODE, runnerClass: 'gpu' },
+        });
+        expect(created.statusCode).toBe(HTTP_UNPROCESSABLE);
+        expect(created.json().code).toBe('BAD_RUNNER_CLASS');
+        expect(created.json().error).toMatch(/runnerClass/);
+        expect(created.json().error).toMatch(/standard, sandboxed/);
+        expect(executors.rows()).toEqual([]);
+
+        await instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie: adminCookie },
+            payload: CLAUDE_CODE,
+        });
+        const id = executors.rows()[0]!.id;
+        for (const runnerClass of ['gpu', 42, '']) {
+            const edited = await instance.inject({
+                method: 'PUT',
+                url: `/api/org/executors/${id}`,
+                headers: { cookie: adminCookie },
+                payload: { ...CLAUDE_CODE, runnerClass },
+            });
+            expect(edited.statusCode, String(runnerClass)).toBe(HTTP_UNPROCESSABLE);
+            expect(edited.json().code, String(runnerClass)).toBe('BAD_RUNNER_CLASS');
+            expect(edited.json().error, String(runnerClass)).toMatch(/runnerClass/);
+        }
+        expect(executors.rows()).toEqual([expect.objectContaining({ name: 'team-runner' })]);
+    });
+
+    it('refuses any class on a board that declares none', async () => {
+        const { instance, adminCookie, executors } = await boot();
+        const created = await instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie: adminCookie },
+            payload: { ...CLAUDE_CODE, runnerClass: 'standard' },
+        });
+        expect(created.statusCode).toBe(HTTP_UNPROCESSABLE);
+        expect(created.json().code).toBe('BAD_RUNNER_CLASS');
+        expect(created.json().error).toMatch(/runnerClass/);
+        expect(executors.rows()).toEqual([]);
+    });
+
+    it('accepts a declared class', async () => {
+        const { instance, adminCookie, memberCookie, executors } = await boot(memoryUserExecutorStore(), CLASSES);
+        const created = await instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie: adminCookie },
+            payload: { ...CLAUDE_CODE, runnerClass: 'sandboxed' },
+        });
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        expect(created.json().runnerClass).toBe('sandboxed');
+
+        // Both the admin list and the members' selection metadata say which class a profile runs in.
+        for (const cookie of [adminCookie, memberCookie]) {
+            const listed = await instance.inject({ method: 'GET', url: '/api/org/executors', headers: { cookie } });
+            expect(listed.json().executors).toEqual([expect.objectContaining({ runnerClass: 'sandboxed' })]);
+        }
+        const poll = await instance.inject({ method: 'GET', url: '/api/workspace', headers: { cookie: memberCookie } });
+        expect(poll.json().orgExecutors).toEqual([expect.objectContaining({ runnerClass: 'sandboxed' })]);
+
+        // An edit carries the whole entry: naming no class (or null) returns the profile to the default.
+        const id = executors.rows()[0]!.id;
+        const edited = await instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${id}`,
+            headers: { cookie: adminCookie },
+            payload: { ...CLAUDE_CODE, runnerClass: null },
+        });
+        expect(edited.statusCode).toBe(HTTP_OK);
+        expect(edited.json().runnerClass).toBeNull();
+    });
+
+    it('a non-admin cannot set runnerClass on an org profile', async () => {
+        const { instance, adminCookie, memberCookie, executors } = await boot(memoryUserExecutorStore(), CLASSES);
+        const refused = await instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie: memberCookie },
+            payload: { ...CLAUDE_CODE, runnerClass: 'sandboxed' },
+        });
+        expect(refused.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(executors.rows()).toEqual([]);
+
+        await instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie: adminCookie },
+            payload: CLAUDE_CODE,
+        });
+        const id = executors.rows()[0]!.id;
+        const edit = await instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${id}`,
+            headers: { cookie: memberCookie },
+            payload: { ...CLAUDE_CODE, runnerClass: 'sandboxed' },
+        });
+        expect(edit.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(executors.rows()).toEqual([expect.objectContaining({ runnerClass: null })]);
     });
 });
 

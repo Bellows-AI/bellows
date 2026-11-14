@@ -21,13 +21,19 @@ export interface ExecutorFields {
     type: string;
     config: Record<string, unknown>;
     gateFixRounds: number;
+    /** The runner class the profile runs in; null is the driver's default. Checked against the board's classes by the route. */
+    runnerClass: string | null;
 }
+
+/** A runner-class refusal answers 422: the body is well formed, the class is not one this board offers. */
+export const HTTP_UNPROCESSABLE = 422;
 
 /** The refusal codes a `parseExecutorFields` message can name, in one map for both routes. */
 export function executorFieldRefusal(message: string): ErrorCode {
     if (message.startsWith('at most')) return ERROR_CODES.TOO_MANY_EXECUTORS;
     if (message.startsWith('unknown executor type')) return ERROR_CODES.BAD_EXECUTOR_TYPE;
     if (message.startsWith('gateFixRounds')) return ERROR_CODES.BAD_EXECUTOR_ROUNDS;
+    if (message.startsWith('runnerClass')) return ERROR_CODES.BAD_RUNNER_CLASS;
     return ERROR_CODES.BAD_BODY;
 }
 
@@ -45,6 +51,31 @@ function parseGateFixRounds(item: { name?: unknown; gateFixRounds?: unknown }): 
     return rounds;
 }
 
+/** The status a `parseExecutorFields` refusal answers with: 422 for a runner class, 400 otherwise. */
+export function executorFieldStatus(message: string): number | undefined {
+    return message.startsWith('runnerClass') ? HTTP_UNPROCESSABLE : undefined;
+}
+
+/**
+ * The org routes' runner-class rule: null, or a class this board declares (RUNNER_CLASSES). A refusal
+ * names the field and the declared classes; a board declaring none refuses every class.
+ */
+export function orgRunnerClassRefusal(
+    runnerClass: string | null,
+    declared: readonly { name: string }[]
+): string | null {
+    if (runnerClass === null || declared.some((option) => option.name === runnerClass)) return null;
+    const names = declared.map((option) => option.name).join(', ');
+    return `runnerClass "${runnerClass}" is not a runner class this board declares (${names ? `declared: ${names}` : 'it declares none'})`;
+}
+
+/** The personal route's rule: a runner class is an organization admin's choice, on organization profiles only. */
+export function personalRunnerClassRefusal(runnerClass: string | null): string | null {
+    return runnerClass === null
+        ? null
+        : 'runnerClass is set on organization profiles only, by an organization admin; a personal profile runs in the default class';
+}
+
 /**
  * The fields every executor payload entry carries: the name/type/config shape, the known type and
  * the round limit. A string return is the refusal message; the caller stops at the first.
@@ -55,6 +86,7 @@ export function parseExecutorFields(entry: unknown): ExecutorFields | string {
         type?: unknown;
         config?: unknown;
         gateFixRounds?: unknown;
+        runnerClass?: unknown;
     };
     if (typeof item?.name !== 'string' || typeof item?.type !== 'string') {
         return 'each entry must be { name: string, type: string, config: object }';
@@ -67,10 +99,16 @@ export function parseExecutorFields(entry: unknown): ExecutorFields | string {
     }
     const gateFixRounds = parseGateFixRounds(item);
     if (typeof gateFixRounds === 'string') return gateFixRounds;
+    // Optional, absent meaning null: the driver's default class. The route decides which names it takes.
+    const runnerClass = item.runnerClass ?? null;
+    if (runnerClass !== null && typeof runnerClass !== 'string') {
+        return `runnerClass for "${item.name}" must be a runner class name or null`;
+    }
     return {
         name: item.name,
         type: item.type,
         config: item.config as Record<string, unknown>,
         gateFixRounds,
+        runnerClass,
     };
 }

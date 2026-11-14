@@ -430,12 +430,12 @@ export async function buildApp({
         githubMint,
         githubRevoke,
     });
-    await app.register(workspaceRoutes({ orgs }));
+    await app.register(workspaceRoutes({ orgs, runnerClasses: config.runnerClasses }));
     // Plans and usage: like the webhook, no route exists unless the deployment turned commerce on.
     await registerCommerce(app, config, orgs, commercePlanWriter);
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
-    await app.register(orgExecutorRoutes({ orgs }));
+    await app.register(orgExecutorRoutes({ orgs, runnerClasses: config.runnerClasses }));
     // Notification subscriptions: the org's settings for who hears about a task verdict.
     await app.register(
         notificationSubscriptionRoutes({

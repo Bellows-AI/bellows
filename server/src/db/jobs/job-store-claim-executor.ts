@@ -23,6 +23,8 @@ export interface ResolvedClaimExecutor {
     claimEnv: Record<string, string> | undefined;
     executorType: ExecutorType | null;
     executorRefusal: string | null;
+    /** The stamped profile's runner class; null for the driver's default, a suspended or a missing profile. */
+    runnerClass: string | null;
 }
 
 /**
@@ -110,6 +112,7 @@ export async function resolveClaimExecutor(
     // this selection's answer.
     let executorType: ExecutorType | null = null;
     let executorRefusal: string | null = null;
+    let runnerClass: string | null = null;
     if (executorConfig && row.executor !== null && row.run_as !== null) {
         const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
         const configured = await executorConfig.configFor(row.run_as, row.executor, scope, tx);
@@ -123,7 +126,10 @@ export async function resolveClaimExecutor(
                 executorType = configured.type as ExecutorType;
             }
             claimEnv = mergeExecutorConfigEnv(claimEnv, configured);
+            // Resolved here, at claim, like the type: an admin's edit reaches every later claim. The
+            // driver is the authority on the name, and fails the task when it declares no such class.
+            runnerClass = configured?.runnerClass ?? null;
         }
     }
-    return { claimEnv, executorType, executorRefusal };
+    return { claimEnv, executorType, executorRefusal, runnerClass };
 }

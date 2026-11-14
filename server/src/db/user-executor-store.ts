@@ -31,14 +31,21 @@ export interface ExecutorProfile {
      * a valid default, and refused at submission and claim. Resuming clears it.
      */
     readonly suspended: boolean;
+    /**
+     * The runner class the profile's tasks run in (RUNNER_CLASSES); null is the driver's default. Set on
+     * org rows only, by an admin — `executor_profile_runner_class_ck` keeps a personal row at null.
+     * Resolved at claim like the type, so an edit reaches every later claim.
+     */
+    readonly runnerClass: string | null;
 }
 
-/** What `configFor` answers: the row's type, the raw config the member pasted, its round limit and whether it is suspended. */
+/** What `configFor` answers: the row's type, the raw config the member pasted, its round limit, whether it is suspended and its runner class. */
 export interface UserExecutorConfig {
     readonly type: string;
     readonly config: Record<string, unknown>;
     readonly gateFixRounds: number;
     readonly suspended: boolean;
+    readonly runnerClass: string | null;
 }
 
 /**
@@ -113,15 +120,23 @@ export interface UserExecutorStore {
         type: string;
         config: Record<string, unknown>;
         gateFixRounds?: number;
+        runnerClass?: string | null;
         createdBy: string;
     }): Promise<ExecutorProfile & { config: Record<string, unknown> }>;
     /**
      * Edits an org-scope row in place. Null when the id names no org row of this organization —
-     * a personal row is not addressable through the org CRUD surface.
+     * a personal row is not addressable through the org CRUD surface. An omitted `runnerClass` keeps the
+     * row's; null clears it.
      */
     updateOrg(
         id: string,
-        patch: { name?: string; type?: string; config?: Record<string, unknown>; gateFixRounds?: number }
+        patch: {
+            name?: string;
+            type?: string;
+            config?: Record<string, unknown>;
+            gateFixRounds?: number;
+            runnerClass?: string | null;
+        }
     ): Promise<(ExecutorProfile & { config: Record<string, unknown> }) | null>;
     /** Removes an org-scope row. False when the id names no org row of this organization. */
     deleteOrg(id: string): Promise<boolean>;
@@ -129,7 +144,8 @@ export interface UserExecutorStore {
      * Moves one row between scopes: a member's own personal row up to org scope (issue 391), or an
      * org row down into the calling admin's personal list. Only the caller's OWN personal row
      * promotes — the update's WHERE clause holds that, so the route's caller is the enforcement.
-     * A name already taken in the target scope surfaces as the name index.
+     * A name already taken in the target scope surfaces as the name index. A demotion clears the
+     * row's runner class: a personal profile names none.
      */
     changeScope(id: string, to: ExecutorScope, userId: string): Promise<ExecutorProfile | null>;
     /** How many org-scope rows the organization holds — the cap check's read. */
@@ -172,6 +188,7 @@ interface Row {
     gate_fix_rounds: number;
     created_by: string | null;
     suspended: boolean;
+    runner_class: string | null;
 }
 
 const toExecutorProfile = (row: Row): ExecutorProfile => ({
@@ -183,6 +200,7 @@ const toExecutorProfile = (row: Row): ExecutorProfile => ({
     gateFixRounds: row.gate_fix_rounds,
     createdBy: row.created_by,
     suspended: row.suspended,
+    runnerClass: row.runner_class,
 });
 
 /** `replace()`'s transaction body: the member's personal list, delete-then-insert. */
@@ -250,9 +268,43 @@ async function setSuspendedRow(
     const rows = await sql<Row[]>`
         update executor_profile set suspended = ${suspended}, updated_at = now()
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
-        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended
+        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
     `;
     return rows[0] ? toExecutorProfile(rows[0]) : null;
+}
+
+/**
+ * `configFor`'s claim-time read. The scope's ownership plus the name names at most one row — the org
+ * scope keys on a NULL owner, the personal scope on the caller's id — so the read cannot be ambiguous,
+ * and a name that exists in the other scope is simply not this selection's answer.
+ */
+async function readConfig(
+    exec: Sql,
+    { orgId, owner, name }: { orgId: string; owner: string | null; name: string }
+): Promise<UserExecutorConfig | null> {
+    const rows = await exec<
+        {
+            type: string;
+            config: Record<string, unknown>;
+            gate_fix_rounds: number;
+            suspended: boolean;
+            runner_class: string | null;
+        }[]
+    >`
+        select type, config, gate_fix_rounds, suspended, runner_class
+        from executor_profile
+        where org_id = ${orgId} and user_id is not distinct from ${owner} and name = ${name}
+    `;
+    const row = rows[0];
+    return row
+        ? {
+              type: row.type,
+              config: row.config,
+              gateFixRounds: row.gate_fix_rounds,
+              suspended: row.suspended,
+              runnerClass: row.runner_class,
+          }
+        : null;
 }
 
 /** The organization is bound at construction: one store serves one organization. */
@@ -305,7 +357,7 @@ export function createUserExecutorStore({
             // `config` is deliberately not selected: the routes echo these rows on every poll, and
             // pasted config may hold credentials.
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -316,7 +368,7 @@ export function createUserExecutorStore({
         async listWithConfigs(userId) {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, config
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -326,28 +378,13 @@ export function createUserExecutorStore({
 
         async configFor(userId, name, scope = USER_SCOPE, exec = sql) {
             await gate();
-            // The scope's ownership plus the name names at most one row — the org scope keys on a
-            // NULL owner, the personal scope on the caller's id — so the read cannot be ambiguous,
-            // and a name that exists in the other scope is simply not this selection's answer.
-            const rows = await (exec as Sql)<
-                { type: string; config: Record<string, unknown>; gate_fix_rounds: number; suspended: boolean }[]
-            >`
-                select type, config, gate_fix_rounds, suspended
-                from executor_profile
-                where org_id = ${orgId}
-                  and user_id is not distinct from ${scope === USER_SCOPE ? userId : null}
-                  and name = ${name}
-            `;
-            const row = rows[0];
-            return row
-                ? { type: row.type, config: row.config, gateFixRounds: row.gate_fix_rounds, suspended: row.suspended }
-                : null;
+            return readConfig(exec as Sql, { orgId, owner: scope === USER_SCOPE ? userId : null, name });
         },
 
         async listOrg() {
             await gate();
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
                 order by position asc, name asc
@@ -358,7 +395,7 @@ export function createUserExecutorStore({
         async listOrgWithConfigs() {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, config
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
                 order by position asc, name asc
@@ -370,12 +407,14 @@ export function createUserExecutorStore({
             await gate();
             const position = await nextPosition(sql, null);
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds, position, created_by)
+                insert into executor_profile
+                    (org_id, user_id, name, type, config, gate_fix_rounds, position, created_by, runner_class)
                 values (
                     ${orgId}, null, ${input.name}, ${input.type}, ${input.config as never},
-                    ${input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS}, ${position}, ${input.createdBy}
+                    ${input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS}, ${position}, ${input.createdBy},
+                    ${input.runnerClass ?? null}
                 )
-                returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, config
+                returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
             `;
             const row = rows[0];
             if (!row) throw new Error('createOrg returned no row');
@@ -390,9 +429,11 @@ export function createUserExecutorStore({
                     type = coalesce(${patch.type ?? null}, type),
                     config = coalesce(${patch.config ? (patch.config as never) : null}, config),
                     gate_fix_rounds = coalesce(${patch.gateFixRounds ?? null}, gate_fix_rounds),
+                    runner_class = case when ${patch.runnerClass !== undefined} then ${patch.runnerClass ?? null}
+                                        else runner_class end,
                     updated_at = now()
                 where org_id = ${orgId} and id = ${id} and user_id is null
-                returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, config
+                returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
             `;
             const row = rows[0];
             return row ? { ...toExecutorProfile(row), config: row.config } : null;
@@ -416,9 +457,10 @@ export function createUserExecutorStore({
                     const position = await nextPosition(tx, userId);
                     return tx<Row[]>`
                         update executor_profile set
-                            user_id = ${userId}, position = ${position}, created_by = null, updated_at = now()
+                            user_id = ${userId}, position = ${position}, created_by = null, runner_class = null,
+                            updated_at = now()
                         where org_id = ${orgId} and id = ${id} and user_id is null
-                        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended
+                        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
                     `;
                 });
                 const row = rows[0];
@@ -433,7 +475,7 @@ export function createUserExecutorStore({
                     update executor_profile set
                         user_id = null, position = ${position}, created_by = ${userId}, updated_at = now()
                     where org_id = ${orgId} and id = ${id} and user_id = ${userId}
-                    returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended
+                    returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
                 `;
             });
             const row = rows[0];

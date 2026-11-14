@@ -51,6 +51,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
             attachmentDraftTtlHours: 24,
         },
         admission: {},
+        runnerClasses: [],
         integrations: { callbackOrigin: null, jira: null },
         commerce: { enabled: false },
         mcp: { enabled: false },

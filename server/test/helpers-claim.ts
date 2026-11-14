@@ -10,6 +10,7 @@ export const makeClaim = (overrides: Partial<Claim> & Pick<Claim, 'id' | 'comman
     leaseExpiresAt: '2026-08-21T12:05:00.000Z',
     executorType: null,
     executorRefusal: null,
+    runnerClass: null,
     skillRefusal: null,
     skillPin: [],
     skillHidden: [],

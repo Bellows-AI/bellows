@@ -572,6 +572,11 @@ export interface Claim {
      */
     executorRefusal: string | null;
     /**
+     * The runner class the stamped profile names, resolved at claim; null runs in the driver's default.
+     * The driver is the authority on the name: one it does not declare fails the task `config`.
+     */
+    runnerClass: string | null;
+    /**
      * Why the task's selected skills cannot run — a skill the catalog lacks, or a
      * connection whose env names the task's environment does not hold. Names only, never a value.
      * The driver fails the task `config` with this sentence before any runner starts; null when
@@ -1104,7 +1109,12 @@ export interface CreateJobStoreDeps {
             name: string,
             scope: ExecutorScope,
             exec: Sql | TransactionSql
-        ): Promise<{ type: string; config: Record<string, unknown>; suspended: boolean } | null>;
+        ): Promise<{
+            type: string;
+            config: Record<string, unknown>;
+            suspended: boolean;
+            runnerClass: string | null;
+        } | null>;
     };
     /**
      * The PR lifecycle store, when the deployment records publications and PR waits (036).

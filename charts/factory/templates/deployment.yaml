@@ -141,6 +141,11 @@ spec:
                         value: {{ .Values.dashboard.admission.maxRunningPerOrg | quote }}
                       - name: ADMISSION_MAX_RUNNING_PER_REPO
                         value: {{ .Values.dashboard.admission.maxRunningPerRepo | quote }}
+                      # The runner classes, the same JSON the driver reads: the board offers their
+                      # names (and docker flags) to an org executor profile and refuses any other
+                      # class. The driver stays the authority on the rest of a class.
+                      - name: RUNNER_CLASSES
+                        value: {{ include "factory.runnerClasses" . | quote }}
                       # The optional commerce service (docs/configuration.md); off, the other two are ignored.
                       - name: COMMERCE_ENABLED
                         value: {{ .Values.dashboard.commerce.enabled | quote }}

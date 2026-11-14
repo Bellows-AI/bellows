@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
 import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
 import { loadMcpConfig, type McpConfig } from './config-mcp.js';
+import { loadRunnerClassOptions, type RunnerClassOption } from './config-runner-classes.js';
 import type { TelemetrySource } from './telemetry/client.js';
 
 export interface Repo {
@@ -176,6 +177,8 @@ export interface AppConfig {
     readonly mcp: McpConfig;
     /** Batches (BATCHES_ENABLED); off by default. Off: routes answer 404, MCP tools are unlisted, loops do not start. */
     readonly batches: { readonly enabled: boolean };
+    /** The runner classes an org executor profile may name (RUNNER_CLASSES); none when unset. See `config-runner-classes.ts`. */
+    readonly runnerClasses: readonly RunnerClassOption[];
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -694,6 +697,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         integrations: { callbackOrigin: publicOriginOrNull(env, host, port)?.origin ?? null, jira: loadJiraOAuth(env) },
         commerce: loadCommerceConfig(env),
         batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
+        runnerClasses: loadRunnerClassOptions(env.RUNNER_CLASSES),
         mcp: loadMcpConfig(
             env,
             bool(env.MCP_ENABLED, false, 'MCP_ENABLED'),

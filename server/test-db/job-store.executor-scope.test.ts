@@ -113,6 +113,32 @@ describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)',
         expect(claim?.id).toBe(id);
         expect(claim?.executorType).toBeNull();
     });
+
+    it("the claim carries the profile's runnerClass; null when unset", async () => {
+        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        await executors.createOrg({
+            name: 'sandboxed',
+            type: 'claude-code',
+            config: {},
+            runnerClass: 'gvisor',
+            createdBy: ALICE,
+        });
+        await executors.createOrg({ name: 'plain', type: 'claude-code', config: {}, createdBy: ALICE });
+        const classed = await mustCreate(
+            store.create('echo hi', BOB, { repo: null, executor: 'sandboxed', executorScope: 'org' })
+        );
+
+        const first = await store.claim('w5', LEASE_SECONDS);
+        expect(first?.id).toBe(classed.id);
+        expect(first?.runnerClass).toBe('gvisor');
+
+        const plain = await mustCreate(
+            store.create('echo hi', BOB, { repo: null, executor: 'plain', executorScope: 'org' })
+        );
+        const second = await store.claim('w6', LEASE_SECONDS);
+        expect(second?.id).toBe(plain.id);
+        expect(second?.runnerClass).toBeNull();
+    });
 });
 
 describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 440)', () => {

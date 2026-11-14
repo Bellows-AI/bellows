@@ -21,6 +21,7 @@ export interface MemoryUserExecutorStore extends UserExecutorStore {
         gateFixRounds: number;
         createdBy: string | null;
         suspended: boolean;
+        runnerClass: string | null;
     }[];
     /** The stored per-member default preferences, so a test can assert what a route wrote. */
     defaults(): { userId: string; scope: ExecutorScope; name: string }[];
@@ -42,6 +43,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         gateFixRounds: number;
         createdBy: string | null;
         suspended: boolean;
+        runnerClass: string | null;
         position: number;
         createdAt: string;
         updatedAt: string;
@@ -79,6 +81,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         gateFixRounds: r.gateFixRounds,
         createdBy: r.createdBy,
         suspended: r.suspended,
+        runnerClass: r.runnerClass,
     });
 
     return {
@@ -92,6 +95,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 gateFixRounds: r.gateFixRounds,
                 createdBy: r.createdBy,
                 suspended: r.suspended,
+                runnerClass: r.runnerClass,
             })),
 
         defaults: () => [...preferences.entries()].map(([key, def]) => ({ userId: key, ...def })),
@@ -111,6 +115,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                     gateFixRounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
                     createdBy: null,
                     suspended: executor.suspended ?? suspendedNames.has(executor.name),
+                    runnerClass: null,
                     position: rows.filter((r) => r.userId === userId).length,
                     createdAt: at(),
                     updatedAt: at(),
@@ -158,6 +163,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 config: structuredClone(row.config),
                 gateFixRounds: row.gateFixRounds,
                 suspended: row.suspended,
+                runnerClass: row.runnerClass,
             };
         },
 
@@ -180,6 +186,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 gateFixRounds: input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
                 createdBy: input.createdBy,
                 suspended: false,
+                runnerClass: input.runnerClass ?? null,
                 position: byScope(null).length,
                 createdAt: at(),
                 updatedAt: at(),
@@ -198,6 +205,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
             if (patch.type !== undefined) row.type = patch.type;
             if (patch.config !== undefined) row.config = structuredClone(patch.config);
             if (patch.gateFixRounds !== undefined) row.gateFixRounds = patch.gateFixRounds;
+            if (patch.runnerClass !== undefined) row.runnerClass = patch.runnerClass;
             row.updatedAt = at();
             return { ...toProfile(row), config: structuredClone(row.config) };
         },
@@ -217,6 +225,8 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 assertFree(userId, row.name);
                 row.userId = userId;
                 row.createdBy = null;
+                // A personal profile names no runner class, as the row check holds in SQL.
+                row.runnerClass = null;
                 row.position = byScope(userId).length - 1;
             } else {
                 // Only the caller's OWN personal row promotes.
