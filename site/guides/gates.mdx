@@ -113,6 +113,7 @@ environment:
 services:
     - name: postgres
       image: postgres:17
+      user: "999:999"
       ports: [5432]
       environment:
           POSTGRES_USER: factory

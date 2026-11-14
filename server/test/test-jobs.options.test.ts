@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -504,6 +504,39 @@ describe('test-jobs phase options', () => {
         expect(help.stdout).toContain('--phase driver,services');
         expect(help.stdout).toContain('--changed BASE');
         expect(help.stdout).toContain('the full lane');
+    });
+});
+
+// With TEST_JOBS_PG_URL no compose Postgres exists, so a phase that reaches the database another way
+// than compose() (which routes `compose exec -T postgres` to the server) or DATABASE_URL fails there.
+describe('test-jobs on a declared Postgres server', () => {
+    const lanes = () => [
+        'scripts/test-jobs.sh',
+        ...readdirSync(join(ROOT, 'scripts/lanes/jobs'))
+            .filter((name) => name.endsWith('.sh'))
+            .map((name) => `scripts/lanes/jobs/${name}`),
+    ];
+    const code = (path: string) =>
+        readFileSync(join(ROOT, path), 'utf8')
+            .split('\n')
+            .filter((line) => !line.trimStart().startsWith('#'));
+
+    // The compose postgres container, found by label or exec'd by id, exists only without the variable.
+    it('a phase reaches the compose postgres container directly only on the branch without TEST_JOBS_PG_URL', () => {
+        for (const path of lanes()) {
+            const lines = code(path);
+            lines.forEach((line, index) => {
+                if (!/docker exec\b.*\bpsql\b|com\.docker\.compose\.service=postgres/.test(line)) return;
+                const guard = lines.slice(Math.max(0, index - 12), index).join('\n');
+                expect(guard, `${path}: ${line.trim()}`).toMatch(/\[ -n "\$\{TEST_JOBS_PG_URL:-\}" \]/);
+            });
+        }
+    });
+
+    it('the capacity phase reads its database through one argv that names the server when it is set', () => {
+        const text = readFileSync(join(ROOT, 'scripts/lanes/jobs/capacity.sh'), 'utf8');
+        expect(text).toContain('cap_pg_argv=(env "PGOPTIONS=$cap_pg_options" psql -d "$DATABASE_URL")');
+        expect(text.match(/"\$\{cap_pg_argv\[@\]\}"/g)).toHaveLength(2);
     });
 });
 
