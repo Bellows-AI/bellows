@@ -43,6 +43,11 @@ serve() {
                     export "$line"
                 done < "$1/env"
             fi
+            # The broker's shell, as factory-launch set it, whatever the request named: a request env
+            # is member-settable, and its own SHELL or CLAUDE_CODE_SHELL would run the review's tools as
+            # the reviewer, with its lease.
+            SHELL=/usr/local/libexec/factory-tool/bash
+            CLAUDE_CODE_SHELL=/usr/local/libexec/factory-tool/bash
             /bin/rm -f "$1/env"
             cwd=$(/bin/cat "$1/cwd")
             cd "$cwd" 2>/dev/null || { echo "[review] the worktree $cwd is missing"; exit 126; }

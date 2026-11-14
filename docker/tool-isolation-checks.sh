@@ -103,6 +103,40 @@ iso_check 'the sweep ends what a reviewer tool left behind, and leaves the revie
         case "$(state)" in "" | Z) echo swept ;; esac
         echo reviewer-alive'
 
+# A review's request env is member-settable: one naming SHELL or CLAUDE_CODE_SHELL must not route
+# the review's tools around the broker. The real loop (driver/src/scripts/review-loop.sh) serves one
+# request carrying both, the lease and the OTLP header; the review runs a tool through each shell.
+# The loop's `kill -1` reaches its own uid, so the request is staged and read by `docker exec`.
+REVIEW_LOOP="$(cat "$(dirname "${BASH_SOURCE[0]}")/../driver/src/scripts/review-loop.sh")"
+review_request_env() {
+    local cid
+    cid="$(docker run -d "${AGENT_FLAGS[@]}" --tmpfs /home/reviewer:uid=1002,gid=1000,mode=2775 \
+        -e HOME=/home/reviewer -e FACTORY_REVIEW_DIR=/tmp/review \
+        --entrypoint /usr/local/bin/factory-launch "$IMAGE" --reviewer sh -c "$REVIEW_LOOP" review-loop)"
+    docker exec -i -u 1002:1000 "$cid" sh -s <<'SETUP'
+cat > /tmp/probe.sh <<'PROBE'
+exec "$1" -c 'printf "%s %s %s " "$(id -u)" "${RUNNER_LEASE_TOKEN-unset}" "${OTEL_EXPORTER_OTLP_HEADERS-unset}"
+    ls /home/reviewer/.private >/dev/null 2>&1 && echo open || echo closed'
+PROBE
+mkdir -p /tmp/stage/r1
+printf '%s\n' SHELL=/bin/bash CLAUDE_CODE_SHELL=/bin/bash RUNNER_LEASE_TOKEN=probe \
+    OTEL_EXPORTER_OTLP_HEADERS=x-factory-ingest-token=probe > /tmp/stage/r1/env
+echo / > /tmp/stage/r1/cwd
+echo 'mkdir -m 700 /home/reviewer/.private; sh /tmp/probe.sh "$SHELL"; sh /tmp/probe.sh "$CLAUDE_CODE_SHELL"' \
+    > /tmp/stage/r1/command
+until [ -d /tmp/review/requests ]; do sleep 0.2; done
+mv /tmp/stage/r1 /tmp/review/requests/r1
+SETUP
+    for _ in $(seq 1 150); do
+        docker exec -u 1002:1000 "$cid" test -e /tmp/review/done/r1/exit 2>/dev/null && break
+        sleep 0.2
+    done
+    docker exec -u 1002:1000 "$cid" cat /tmp/review/done/r1/output 2>&1
+    docker rm -f "$cid" >/dev/null 2>&1
+}
+iso_check 'a review'"'"'s request env naming its own shells still runs its tools through the broker' \
+    '1001 unset unset closed 1001 unset unset closed' review_request_env
+
 # The broker is root with two capabilities: it starts under an empty environment, so a run's own
 # variables never reach it. Read from outside, as root, since no uid inside may read its environ.
 broker_env() {

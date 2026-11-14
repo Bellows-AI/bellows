@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { reviewerLaunchArgv, reviewLoopArgv, reviewLoopScript } from '../src/container-scripts.js';
 import { MAILBOXES, REVIEW_FILES } from '../src/supervisor-contract.js';
+import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
  * The reviewer container's loop (`scripts/review-loop.sh`), pinned by its bytes ONLY. It is never
@@ -62,6 +65,21 @@ describe('the review loop script', () => {
         expect(subshell).toContain('export "$line"');
         expect(subshell.indexOf('/bin/rm -f "$1/env"')).toBeLessThan(subshell.indexOf('exec /bin/sh'));
         expect(subshell).toContain('exit 126');
+    });
+
+    // A request's env is member-settable: SHELL or CLAUDE_CODE_SHELL in it would route the review's
+    // tools around the broker, as the reviewer, with its lease (docker/tool-isolation-checks.sh).
+    it('sets the launcher’s broker shells back after a request’s env, before the command runs', () => {
+        // A literal, not a value saved at the loop's start: a request env can name any variable.
+        const subshell = code.slice(code.indexOf('done < "$1/env"'), code.indexOf('exec /bin/sh'));
+        expect(subshell).toContain(
+            'SHELL=/usr/local/libexec/factory-tool/bash\n            CLAUDE_CODE_SHELL=/usr/local/libexec/factory-tool/bash\n'
+        );
+        // The launcher's own value, both names.
+        const launch = readFileSync(join(ROOT, 'docker/executor-common/factory-launch.sh'), 'utf8');
+        expect(launch).toContain(
+            'CLAUDE_CODE_SHELL=/usr/local/libexec/factory-tool/bash\nSHELL=/usr/local/libexec/factory-tool/bash\n'
+        );
     });
 
     it('runs the request’s command as the executor entrypoint argv, with no gate shell', () => {
