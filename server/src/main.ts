@@ -127,7 +127,15 @@ function startCollectors({
         track(() => startAttachmentSweep({ ...crossOrg, artifacts, config: config.artifacts, metrics }))
     );
     void ready.then(() =>
-        track(() => startSkillSweep({ ...crossOrg, artifacts, metrics, retentionDays: config.artifacts.retentionDays }))
+        track(() =>
+            startSkillSweep({
+                ...crossOrg,
+                artifacts,
+                metrics,
+                retentionDays: config.artifacts.retentionDays,
+                planDefaults: config.planDefaults,
+            })
+        )
     );
     // A deleted org's purge: an operator's delete anywhere, GitHub's deletion deadline in cloud mode only.
     void ready.then(() =>

@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -76,5 +77,71 @@ describe('the retention pass', () => {
         find(source);
         expect(loose).toEqual([]);
         expect(casts.map(enclosingFunction)).toEqual(['fencedStep']);
+    });
+});
+
+/**
+ * Outside the pass, any file that reads a retention window and deletes rows does so only in a transaction that took
+ * the window first through `lockedRetentionWindow` (the plan-change lock, the window re-derived from the current plan).
+ */
+const SERVER_SRC = new URL('../src/', import.meta.url);
+const WINDOW_READ = /effective_days|retentionDays|org_retention|lockedRetentionWindow/;
+
+function sourcesUnder(dir: URL): string[] {
+    return readdirSync(dir, { recursive: true, encoding: 'utf8' })
+        .filter((name) => name.endsWith('.ts'))
+        .map((name) => fileURLToPath(new URL(name, dir)));
+}
+
+/** The `delete from` statements of `file` not inside a transaction callback that called lockedRetentionWindow first. */
+function unlockedDeletes(file: string): { deletes: number; unlocked: string[] } {
+    const body = readFileSync(file, 'utf8');
+    const tree = ts.createSourceFile(file, body, ts.ScriptTarget.Latest, true);
+    let deletes = 0;
+    const unlocked: string[] = [];
+    const walk = (node: ts.Node): void => {
+        if (ts.isTaggedTemplateExpression(node)) {
+            const t = node.template;
+            const text = ts.isNoSubstitutionTemplateLiteral(t)
+                ? t.text
+                : [t.head.text, ...t.templateSpans.map((s) => s.literal.text)].join(' ');
+            if (/\bdelete\s+from\b/i.test(text)) {
+                deletes++;
+                if (!lockedBefore(node, tree)) unlocked.push(text.trim().slice(0, 60));
+            }
+        }
+        ts.forEachChild(node, walk);
+    };
+    walk(tree);
+    return { deletes, unlocked };
+}
+
+/** The nearest enclosing `.begin(callback)` callback calls lockedRetentionWindow before `node`. */
+function lockedBefore(node: ts.Node, tree: ts.SourceFile): boolean {
+    for (let up: ts.Node | undefined = node.parent; up; up = up.parent) {
+        const call = up.parent;
+        if (
+            (ts.isArrowFunction(up) || ts.isFunctionExpression(up)) &&
+            call &&
+            ts.isCallExpression(call) &&
+            ts.isPropertyAccessExpression(call.expression) &&
+            call.expression.name.text === 'begin'
+        ) {
+            const before = tree.text.slice(up.getStart(tree), node.getStart(tree));
+            return before.includes('lockedRetentionWindow(');
+        }
+    }
+    return false;
+}
+
+describe('every retention-window delete outside the pass', () => {
+    it('runs under the plan-change lock with the window re-derived in its transaction', () => {
+        const readers = sourcesUnder(SERVER_SRC).filter(
+            (file) => !file.endsWith('db/org-retention.ts') && WINDOW_READ.test(readFileSync(file, 'utf8'))
+        );
+        const findings = readers.map((file) => ({ file, ...unlockedDeletes(file) }));
+        const collector = findings.find((f) => f.file.endsWith('skills/skill-collector.ts'));
+        expect(collector?.deletes).toBeGreaterThanOrEqual(2);
+        expect(findings.filter((f) => f.unlocked.length > 0).map((f) => [f.file, f.unlocked])).toEqual([]);
     });
 });

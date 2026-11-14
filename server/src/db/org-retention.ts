@@ -94,7 +94,7 @@ declare const fencedBrand: unique symbol;
 type FencedTx = TransactionSql & { readonly [fencedBrand]: true };
 
 /** The window a fenced step deletes by, re-derived in its transaction; `cutoff` is SQL, `-infinity` for unlimited. */
-interface FencedWindow {
+export interface FencedWindow {
     days: number | null;
     cutoff: Fragment;
 }
@@ -221,14 +221,31 @@ async function fencedStep<T>(pass: OrgPass, run: (ftx: FencedTx, window: FencedW
             returning 1
         `;
         if (!held) throw new LeaseLostError();
-        const days = await reconcileWindow(tx, orgId, (await planLimits(tx, orgId, deps.planDefaults)).retentionDays);
-        // Unlimited is `-infinity`: nothing is older, so a statement comparing against it deletes nothing.
-        const cutoff = tx`coalesce(
-            (select now() - make_interval(days => r.effective_days) from org_retention r where r.org_id = ${orgId}),
-            '-infinity'::timestamptz)`;
-        result = await run(tx as FencedTx, { days, cutoff });
+        result = await run(tx as FencedTx, await lockedRetentionWindow(tx, orgId, deps.planDefaults));
     });
     return result;
+}
+
+/**
+ * The org's retention window as a delete in `tx` must use it: under the per-org plan-change lock (re-entrant; a plan push
+ * takes it too) and the org's `org_retention` row, reconciled from the current plan in this transaction. `cutoff` is
+ * SQL, `-infinity` for unlimited. The pass's `fencedStep` and every other retention-window delete (the skill sweep)
+ * take it; `server/test/org-retention.fence-structure.test.ts` fails a delete that does not.
+ */
+export async function lockedRetentionWindow(
+    tx: TransactionSql,
+    orgId: string,
+    planDefaults: PlanLimits
+): Promise<FencedWindow> {
+    await waitAdvisoryXactLock(tx, planChangeLockKey(orgId));
+    await tx`insert into org_retention (org_id) values (${orgId}) on conflict do nothing`;
+    await tx`select 1 from org_retention where org_id = ${orgId} for update`;
+    const days = await reconcileWindow(tx, orgId, (await planLimits(tx, orgId, planDefaults)).retentionDays);
+    // Unlimited is `-infinity`: nothing is older, so a statement comparing against it deletes nothing.
+    const cutoff = tx`coalesce(
+        (select now() - make_interval(days => r.effective_days) from org_retention r where r.org_id = ${orgId}),
+        '-infinity'::timestamptz)`;
+    return { days, cutoff };
 }
 
 /** Step 2: stamps up to the bound of eligible lone threads, then of eligible batches. `days` selects only. */

@@ -67,6 +67,7 @@ const collectorOf = (over: Partial<ObjectStore> = {}, referenced?: (ids: string[
         objects: { ...objects, ...over } as ObjectStore,
         prefix: PREFIX,
         retentionDays: RETENTION_DAYS,
+        planDefaults: {},
         ...(referenced ? { referenced } : {}),
     });
 
@@ -476,6 +477,36 @@ describe.skipIf(!enabled)('the skill retention sweep', () => {
         expect(await versionRows(live.id)).toHaveLength(2);
         expect(await versionRows(recent.id)).toHaveLength(1);
         expect(await objectOf(recent.current.objectKey)).not.toBeNull();
+    });
+
+    it('keeps a deleted skill a plan upgrade now covers, before the retention pass reconciled the window', async () => {
+        // The pass last applied 7 days; an upgrade to 180 days has committed since and not been reconciled.
+        await sql`insert into org_retention (org_id, effective_days) values (${ORG}, 7)`;
+        await sql`insert into org_plan (org_id, plan, version, max_retention_days) values (${ORG}, 'enterprise', 1, 180)`;
+        const store = storeOf();
+        const skill = await created(store, null, 'upgraded');
+        await store.remove(null, skill.id);
+        await deletedAgo(skill.id, RETENTION_DAYS);
+
+        const summary = await collectorOf().collect();
+        expect(summary).toMatchObject({ versions: 0, objects: 0, skills: 0 });
+        expect(await versionRows(skill.id)).toHaveLength(1);
+        expect(await objectOf(skill.current.objectKey)).not.toBeNull();
+        expect(await sql`select 1 from skill where id = ${skill.id}`).toHaveLength(1);
+        const [window] = await sql`select effective_days from org_retention where org_id = ${ORG}`;
+        expect(window?.effective_days).toBe(180);
+    });
+
+    it('sweeps by the org window when it is shorter than the deployment default', async () => {
+        await sql`insert into org_retention (org_id, effective_days) values (${ORG}, 7)`;
+        await sql`insert into org_plan (org_id, plan, version, max_retention_days) values (${ORG}, 'free', 1, 7)`;
+        const store = storeOf();
+        const skill = await created(store, null, 'short-window');
+        await store.remove(null, skill.id);
+        await deletedAgo(skill.id, 8);
+
+        expect(await collectorOf().collect()).toMatchObject({ versions: 1, objects: 1, skills: 1 });
+        expect(await sql`select 1 from skill where id = ${skill.id}`).toHaveLength(0);
     });
 
     it('sweeps a skill deleted past the window: versions, objects and the skill row', async () => {
