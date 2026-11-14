@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import type { BoardJob } from '../src/board/board.js';
 import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
@@ -15,6 +16,8 @@ import {
     SUPERVISOR_BINDING,
 } from '../src/supervisor-contract.js';
 import { TASK_UNSCHEDULABLE_LABEL, taskVolumeName } from '../src/task-volume.js';
+import { type CelPolicy, refusals } from './fixtures/cel-subset.js';
+import { SUPERVISED } from './fixtures/k8s-suite.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
@@ -325,7 +328,7 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         expect(pods).toContain(`c.securityContext.runAsUser == ${REVIEWER_UID}`);
         expect(pods).toContain('a driver-specced reviewer runs as its own uid');
         expect(pods).toContain(
-            'a driver-specced reviewer mounts the task volume read-only but for its home, and its review mailbox'
+            'a driver-specced reviewer mounts the task volume read-only but for its home, its review mailbox and its telemetry config'
         );
         expect(pods).toContain(
             'a driver-specced reviewer references the credentials Secret alone: no envFrom, never the attempt Secret'
@@ -368,5 +371,95 @@ describe('the admission policy admits the holder binding (#829)', () => {
         expect(objects).toContain('(!has(object.immutable) || !object.immutable)');
         expect(objects).toContain('variables.newFinalizers == variables.oldFinalizers');
         expect(objects).toContain('variables.newAnnotations == variables.oldAnnotations');
+    });
+});
+
+/*
+ * The pod policy's CEL, evaluated against the Jobs the driver actually builds: the template is
+ * rendered here the way helm renders a default install (its template actions replaced by the values
+ * they stand for, every other one by a placeholder outside the expressions), so a new mount, volume
+ * or env reference the policy refuses fails offline instead of as a 422 on a real apiserver.
+ */
+describe('the pod policy admits every runner Job the driver builds', () => {
+    const CREDENTIALS = 'factory-runner-credentials';
+    const value = (variable: string) => new RegExp(`\\$${variable} := "([^"]+)"`).exec(template)![1]!;
+    const rendered = policy('pods')
+        .replace(/[ \t]*\{\{\/\*[\s\S]*?\*\/\}\}\n?/g, '')
+        .replace(/[ \t]*\{\{- with \.Values\.runner\.runtimeClassName \}\}[\s\S]*?\{\{- end \}\}\n?/, '')
+        .replace(/\{\{ squote \$(\w+) \}\}/g, (_, variable: string) => `'${value(variable)}'`)
+        .replace('{{ toJson $allowed | quote }}', JSON.stringify(JSON.stringify([CREDENTIALS])))
+        .replace('{{ toJson .Values.imagePullSecrets | quote }}', JSON.stringify('[]'))
+        .replace(/^[ \t]*\{\{[^\n]*\}\}[ \t]*\n/gm, '')
+        .replace(/\{\{[^\n]*?\}\}/g, 'x');
+    const pods = (parseYaml(rendered) as { spec: CelPolicy }).spec;
+    const config = loadDriverConfig({
+        EXECUTOR: 'kubernetes',
+        K8S_NAMESPACE: 'factory',
+        RUNNER_CREDENTIALS_SECRET: CREDENTIALS,
+    });
+    const prompted: BoardJob = { ...job, masterPrompt: 'Factory execution contract' };
+    const gated: BoardJob = {
+        ...prompted,
+        repo: 'Bellows-AI/bellows',
+        gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+        services: [{ name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } }],
+    };
+    const session = { id: SESSION, resume: false };
+    /** The Job as the apiserver receives it: JSON, so an unset optional field is absent. */
+    const asSent = (spec: unknown) => JSON.parse(JSON.stringify(spec)) as { spec: { template: { spec: Pod } } };
+    type Pod = {
+        volumes: { name: string; secret?: { items?: { key: string; path: string }[] } }[];
+        initContainers?: { name: string; volumeMounts?: { name: string; subPath?: string }[] }[];
+    };
+    const refusedOf = (spec: unknown) => refusals(pods, asSent(spec), { kind: { kind: 'Job' } });
+    const reviewing = (executorType: BoardJob['executorType']): BoardJob => ({
+        ...gated,
+        ...SUPERVISED,
+        executorType,
+        reviewerProfiles: ['security'],
+    });
+
+    it('renders every expression of the pod policy into the evaluated subset', () => {
+        expect(pods.validations.length).toBeGreaterThan(15);
+        for (const { expression } of [...pods.variables, ...pods.validations]) expect(expression).not.toContain('{{');
+    });
+
+    it.each([
+        ['an agent attempt', () => runnerJobSpec(config, prompted, session)],
+        ['an agentless supervisor group', () => runnerJobSpec(config, { ...prompted, agent: false }, null)],
+        ['a gated attempt with a declared service', () => runnerJobSpec(config, gated, session)],
+        [
+            'a supervised claude-code attempt with a reviewer',
+            () => runnerJobSpec(config, reviewing('claude-code'), session),
+        ],
+        // opencode adopts no minted session: its attempt resumes one.
+        [
+            'a supervised opencode attempt with a reviewer',
+            () => runnerJobSpec(config, reviewing('opencode'), { ...session, resume: true }),
+        ],
+        [
+            'the reader Job of an adopted ended group',
+            () => readerJobSpec(config, prompted, 'factory-read-0', { argv: ['node'], env: {}, timeoutMs: 1_000 }),
+        ],
+    ])('admits %s', (_, build) => {
+        expect(refusedOf(build())).toEqual([]);
+    });
+
+    it('still refuses a reviewer that mounts anything beyond its own', () => {
+        const spec = asSent(runnerJobSpec(config, reviewing('claude-code'), session));
+        const reviewer = spec.spec.template.spec.initContainers!.find((c) => c.name === REVIEWER_CONTAINER)!;
+        reviewer.volumeMounts!.push({ name: SUPERVISOR_BINDING.volume });
+        expect(refusedOf(spec)).toEqual([
+            'a driver-specced reviewer mounts the task volume read-only but for its home, its review mailbox and its telemetry config',
+        ]);
+    });
+
+    it('refuses a telemetry-config volume that projects any other key of the attempt Secret', () => {
+        const spec = asSent(runnerJobSpec(config, reviewing('claude-code'), session));
+        const volume = spec.spec.template.spec.volumes.find((v) => v.name === 'telemetry-config')!;
+        volume.secret!.items = [{ key: 'RUNNER_LEASE_TOKEN', path: 'managed-settings.json' }];
+        expect(refusedOf(spec)).toEqual([
+            'the telemetry-config volume projects the one telemetry config key of the attempt Secret, which names no credential',
+        ]);
     });
 });
