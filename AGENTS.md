@@ -74,6 +74,7 @@ commit message needs a force-push to fix.
 | `parseRange`, `filterTelemetryInput()`, the range selector | [docs/date-range.md](docs/date-range.md) |
 | `web/src/styles/`, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) + [lanes](docs/design-system/) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
+| `org_id` policies, `app.org_id`, the cross-org role and pool, `security_invoker` views | [docs/row-level-security.md](docs/row-level-security.md) |
 | `server/src/secrets/*`, secret storage, `AppDeps.secrets` | [docs/secrets.md](docs/secrets.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | `core/src/skills.ts`, `server/src/skills/*`, `server/src/db/skill-store.ts`, `128_skills.sql`, `routes/skills*.ts`, `server/src/skill-catalog.ts`, `docker/skills/` | [docs/skills.md](docs/skills.md) |
