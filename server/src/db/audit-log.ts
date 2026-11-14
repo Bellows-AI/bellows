@@ -27,6 +27,7 @@ export type AuditAction =
     | 'org.refuse'
     | 'org.activate'
     | 'org.delete'
+    | 'org.retention_downgrade'
     | 'org.export';
 
 /** Names and flags only: a value here is never a token, secret or credential. */

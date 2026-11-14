@@ -171,8 +171,17 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
             maxWallSeconds: 7200,
             maxTokens: 50_000_000,
             maxStorageBytes: 10_737_418_240,
+            maxRetentionDays: null,
             version: 3,
         });
+    });
+
+    it('carries the retention days an Enterprise plan agreed', async () => {
+        const { writer, calls } = fakeWriter({ verdict: 'stored' });
+        const { app } = await boot({ writer });
+        const response = await put(app, { ...BODY, plan: 'enterprise', maxRetentionDays: 400 });
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(calls[0]?.push.maxRetentionDays).toBe(400);
     });
 
     it('accepts null limits and period', async () => {
@@ -240,6 +249,8 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
         ['a fractional storage allowance', { ...BODY, maxStorageBytes: 1.5 }],
         ['an unsafe token allowance', { ...BODY, maxTokens: 2 ** 53 }],
         ['a missing allowance field', { ...BODY, maxStorageBytes: undefined }],
+        ['a zero retention window', { ...BODY, maxRetentionDays: 0 }],
+        ['a fractional retention window', { ...BODY, maxRetentionDays: 7.5 }],
         ['an unparseable date', { ...BODY, periodStart: 'yesterday' }],
         ['a numeric date', { ...BODY, periodEnd: 1_788_000_000 }],
         ['a period that ends before it starts', { ...BODY, periodStart: BODY.periodEnd, periodEnd: BODY.periodStart }],

@@ -7,7 +7,7 @@ import { startIntervalLoop } from '../interval-loop.js';
 
 /**
  * The skill retention sweep (docs/skills.md). A version is removed only when (a) its skill was soft-deleted at least
- * `retentionDays` ago AND (b) no job
+ * its org's retention window (docs/retention.md), or with none `retentionDays`, ago AND (b) no job
  * references it (`findReferencedVersions`, which reads `job.skill_pin`). The object follows its last row, under
  * the same per-key lock the writer takes, so a writer re-creating the same content cannot lose its object. Any query
  * that fails aborts the pass and any object delete that is unconfirmed leaves its row: nothing unconfirmed is deleted.
@@ -71,9 +71,16 @@ export function createSkillCollector({
 }): SkillCollector {
     const namespace = skillKeyNamespace(prefix);
 
+    /**
+     * How long a deleted skill stays: its org's retention window where it has one (docs/retention.md), else
+     * `retentionDays`.
+     */
+    const kept = sql`make_interval(days => coalesce(
+        (select r.effective_days from org_retention r where r.org_id = s.org_id), ${retentionDays}))`;
+
     /** The one eligibility rule, restated inside the delete so a racing writer or restore loses cleanly. */
     const eligible = sql`(
-        (s.deleted_at is not null and s.deleted_at < now() - make_interval(days => ${retentionDays}))
+        (s.deleted_at is not null and s.deleted_at < now() - ${kept})
     )`;
 
     /** One candidate: row first, then (if it was the last name for the key) the object, all under the key's lock. */
@@ -136,7 +143,7 @@ export function createSkillCollector({
             }
             const emptied = await sql`
                 delete from skill s
-                where s.deleted_at < now() - make_interval(days => ${retentionDays})
+                where s.deleted_at < now() - ${kept}
                   and not exists (select 1 from skill_version v where v.skill_id = s.id)
                 returning s.id
             `;

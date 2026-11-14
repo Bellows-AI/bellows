@@ -404,7 +404,7 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
             // call. A 412 is success only when what the store holds is the recorded body: the
             // recorded sha256 is this body's, so a held object that differs is an orphan from
             // outside the index, and the retry must not report it stored.
-            const written = await fencedPut({ sql, orgId, objects }, key, body);
+            const written = await fencedPut({ sql, orgId, objects, root: ref.root }, key, body);
             if (written === 'exists') await readVerified(key, recorded);
             return { result: written === 'created' ? 'stored' : 'duplicate', key };
         },

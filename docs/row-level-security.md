@@ -24,7 +24,7 @@ Each call `main.ts` hands the cross-org pool, pinned by `server/test/cross-org-p
 
 - Sign-in and credentials: `createAuthStore`, `membershipGuardFor`, `mcpStores` (OAuth store, upload capabilities, their expiry sweeps), `bootstrappedDriverCredentials`, and `server/src/auth/driver-credential-cli.ts`.
 - A worker credential to its org: `createOrgOfLease`, `createOrgOfIngest`, `createOrgOfJob`, `createOrgOfReclaim`, and through `runnerCredentialDeps` the lease checks `createAttemptOfLease` and `createPairMatches`.
-- Deletes decided by what no org references: `startCollectors` with `startAttachmentSweep`, `startSkillSweep` and `startOrgPurge`; the integration recovery (`createIntegrationRuntime`); `startMetricPointOrgBackfill`.
+- Deletes decided by what no org references: `startCollectors` with `startAttachmentSweep`, `startSkillSweep`, `startOrgPurge` and `startOrgRetention`; the integration recovery (`createIntegrationRuntime`); `startMetricPointOrgBackfill`.
 
 Definer functions, inside the caller's transaction, answering a count, a slot or one boolean per id passed:
 

@@ -127,6 +127,8 @@ spec:
                         value: {{ .Values.dashboard.planDefaults.maxTokens | quote }}
                       - name: PLAN_DEFAULT_MAX_STORAGE_BYTES
                         value: {{ .Values.dashboard.planDefaults.maxStorageBytes | quote }}
+                      - name: PLAN_DEFAULT_MAX_RETENTION_DAYS
+                        value: {{ .Values.dashboard.planDefaults.maxRetentionDays | quote }}
                       # The board operator's GitHub user ids (cloud only); empty is nobody.
                       - name: OPERATOR_GITHUB_IDS
                         value: {{ .Values.dashboard.operatorGithubIds | quote }}

@@ -9,6 +9,7 @@ const FREE = {
     PLAN_DEFAULT_MAX_WALL_SECONDS: '3600',
     PLAN_DEFAULT_MAX_TOKENS: '20000000',
     PLAN_DEFAULT_MAX_STORAGE_BYTES: '1073741824',
+    PLAN_DEFAULT_MAX_RETENTION_DAYS: '7',
 };
 
 describe('plan default limits (the Free plan)', () => {
@@ -23,6 +24,7 @@ describe('plan default limits (the Free plan)', () => {
             wallSeconds: 3600,
             tokens: 20_000_000,
             storageBytes: 1_073_741_824,
+            retentionDays: 7,
         });
     });
 
@@ -39,5 +41,26 @@ describe('plan default limits (the Free plan)', () => {
         expect(() => loadConfig({ ...BASE, PLAN_DEFAULT_MAX_QUEUED: raw }, NONE)).toThrow(
             /PLAN_DEFAULT_MAX_QUEUED must be a positive integer/
         );
+    });
+});
+
+describe('one retention knob per deployment', () => {
+    it('keeps ARTIFACTS_RETENTION_DAYS on a self-hosted board with no plan window', () => {
+        expect(loadConfig({ ...BASE, ARTIFACTS_RETENTION_DAYS: '30' }, NONE).artifacts.retentionDays).toBe(30);
+    });
+
+    it('refuses ARTIFACTS_RETENTION_DAYS in cloud mode: each org keeps its plan window', () => {
+        const env = { ...BASE, ...FREE, DEPLOYMENT_MODE: 'cloud', ARTIFACTS_RETENTION_DAYS: '30' };
+        expect(() => loadConfig(env, NONE)).toThrow(/cloud refuses ARTIFACTS_RETENTION_DAYS/);
+    });
+
+    it('refuses ARTIFACTS_RETENTION_DAYS beside PLAN_DEFAULT_MAX_RETENTION_DAYS on any board', () => {
+        const env = { ...BASE, PLAN_DEFAULT_MAX_RETENTION_DAYS: '7', ARTIFACTS_RETENTION_DAYS: '30' };
+        expect(() => loadConfig(env, NONE)).toThrow(/two retention windows/);
+    });
+
+    it('takes an empty ARTIFACTS_RETENTION_DAYS as unset, as the chart renders it', () => {
+        const env = { ...BASE, ...FREE, DEPLOYMENT_MODE: 'cloud', ARTIFACTS_RETENTION_DAYS: '' };
+        expect(loadConfig(env, NONE).planDefaults.retentionDays).toBe(7);
     });
 });

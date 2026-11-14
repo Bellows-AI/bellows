@@ -4,6 +4,7 @@ import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-st
 import { createAttachmentRows } from './attachments/attachment-rows.js';
 import { createSkillStore, type SkillStore } from './db/skill-store.js';
 import { createOrgExport, type OrgExport } from './db/org-export.js';
+import { orgRetentionView, type RetentionView } from './db/org-retention.js';
 import { createAttachmentStore, type AttachmentStore } from './attachments/attachment-store.js';
 import type { ArtifactBackend } from './artifacts/backend.js';
 import type { AppConfig } from './config.js';
@@ -88,6 +89,8 @@ export interface OrgRuntime {
     skills?: SkillStore | undefined;
     /** The organization's export archive (`GET /api/org/export`); present with the artifact index. */
     orgExport?: OrgExport | undefined;
+    /** The org's retention window and any pending lower one (`GET /api/org/retention`). */
+    retention?: (() => Promise<RetentionView>) | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
     /** The integration grants (094) connections hang off: the refresh lineage store; present with the other stores. */
@@ -431,6 +434,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
             repos,
             telemetry,
             service: createStatsService({ config, repos, telemetry }),
+            retention: () => orgRetentionView(sql, orgId, config.planDefaults),
             ...(client
                 ? {
                       branchHead: (repo: string, branch: string) => client.readBranchHead(repo, branch),

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { CLOUD, DEPLOYMENT_MODES, type DeploymentMode, SELF_HOSTED } from '@factory-ai/core';
-import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
+import { loadArtifactsConfig, refuseSecondRetentionKnob, type ArtifactsConfig } from './config-artifacts.js';
 import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
 import { loadRequestLimits, loadStatementTimeoutMs, parseTrustedProxies, type RequestLimits } from './config-limits.js';
 import { loadMcpConfig, type McpConfig } from './config-mcp.js';
@@ -171,8 +171,9 @@ export interface AppConfig {
     /**
      * The plan limits an organization with no pushed plan gets, and each limit a push left null: the Free plan
      * (PLAN_DEFAULT_MAX_RUNNING, PLAN_DEFAULT_MAX_QUEUED, PLAN_DEFAULT_MAX_WALL_SECONDS, PLAN_DEFAULT_MAX_TOKENS,
-     * PLAN_DEFAULT_MAX_STORAGE_BYTES). Unset is unlimited, which only a self-hosted board allows: cloud refuses to
-     * boot without all five. See `db/plan-limits.ts` and `db/plan-allowances.ts`.
+     * PLAN_DEFAULT_MAX_STORAGE_BYTES, PLAN_DEFAULT_MAX_RETENTION_DAYS). Unset is unlimited, which only a self-hosted
+     * board allows: cloud refuses to boot without all six. See `db/plan-limits.ts`, `db/plan-allowances.ts` and
+     * `db/org-retention.ts`.
      */
     readonly planDefaults: PlanLimits;
     /**
@@ -304,6 +305,7 @@ const PLAN_DEFAULT_VARIABLES = {
     wallSeconds: 'PLAN_DEFAULT_MAX_WALL_SECONDS',
     tokens: 'PLAN_DEFAULT_MAX_TOKENS',
     storageBytes: 'PLAN_DEFAULT_MAX_STORAGE_BYTES',
+    retentionDays: 'PLAN_DEFAULT_MAX_RETENTION_DAYS',
 } as const satisfies Record<keyof PlanLimits, string>;
 
 function loadPlanDefaults(env: NodeJS.ProcessEnv, deploymentMode: DeploymentMode): PlanLimits {
@@ -317,6 +319,7 @@ function loadPlanDefaults(env: NodeJS.ProcessEnv, deploymentMode: DeploymentMode
             );
         }
     }
+    refuseSecondRetentionKnob(env, deploymentMode, limits.retentionDays);
     return limits;
 }
 
