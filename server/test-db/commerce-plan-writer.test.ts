@@ -72,6 +72,23 @@ describe.skipIf(!enabled)('commerce plan writer — database', () => {
         expect(await writer.put(ORG, push({ maxTokens: 1 }))).toEqual({ verdict: 'stale', currentVersion: 1 });
     });
 
+    it("stores an Enterprise retention window, and a push that leaves it out stores the board's default", async () => {
+        await writer.put(ORG, push({ plan: 'enterprise', maxRetentionDays: 400 }));
+        const days = async () =>
+            (await sql<{ d: number | null }[]>`select max_retention_days as d from org_plan where org_id = ${ORG}`)[0]
+                ?.d;
+        expect(await days()).toBe(400);
+        expect(await writer.put(ORG, push({ plan: 'enterprise', maxRetentionDays: 400 }))).toEqual({
+            verdict: 'replayed',
+        });
+        expect(await writer.put(ORG, push({ plan: 'enterprise', maxRetentionDays: 401 }))).toEqual({
+            verdict: 'stale',
+            currentVersion: 1,
+        });
+        await writer.put(ORG, push({ version: 2 }));
+        expect(await days()).toBeNull();
+    });
+
     it('a newer version overwrites', async () => {
         await writer.put(ORG, push({ version: 1 }));
         expect(await writer.put(ORG, push({ version: 2, plan: 'enterprise', usedMinutes: 99 }))).toEqual({

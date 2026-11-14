@@ -4,6 +4,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad } from './helpers.js';
+import { orgRetentionRoutes } from './org-retention.js';
 
 /**
  * `GET /api/org/export`: the caller's organization as one tar (`db/org-export.ts`), streamed as it is read. An `admin`
@@ -22,6 +23,8 @@ const HTTP_UNAVAILABLE = 503;
 export const orgExportRoutes =
     ({ orgs }: { orgs: OrgRegistry }): FastifyPluginAsync =>
     async (app) => {
+        // The other organization-wide read beside the export: how long its data is kept.
+        await app.register(orgRetentionRoutes({ orgs }));
         app.get('/api/org/export', async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);

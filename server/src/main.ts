@@ -45,6 +45,7 @@ import { startSecretCollector } from './secrets/secret-collector.js';
 import { startMetricPointOrgBackfill } from './telemetry/org-backfill.js';
 import type { CoordinatedSecretStore } from './secrets/postgres-secret-store.js';
 import { startOrgPurge } from './db/org-purge.js';
+import { startOrgRetention } from './db/org-retention.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
 import { startNotificationDelivery } from './notifications/delivery-loop.js';
 import { productionConnectors } from './notifications/registry.js';
@@ -126,7 +127,15 @@ function startCollectors({
         track(() => startAttachmentSweep({ ...crossOrg, artifacts, config: config.artifacts, metrics }))
     );
     void ready.then(() =>
-        track(() => startSkillSweep({ ...crossOrg, artifacts, metrics, retentionDays: config.artifacts.retentionDays }))
+        track(() =>
+            startSkillSweep({
+                ...crossOrg,
+                artifacts,
+                metrics,
+                retentionDays: config.artifacts.retentionDays,
+                planDefaults: config.planDefaults,
+            })
+        )
     );
     // A deleted org's purge: an operator's delete anywhere, GitHub's deletion deadline in cloud mode only.
     void ready.then(() =>
@@ -137,6 +146,18 @@ function startCollectors({
                 objects: artifacts.objects,
                 prefix: artifacts.prefix,
                 deploymentMode: config.deploymentMode,
+            })
+        )
+    );
+    // Each org's retention window (docs/retention.md): deletes settled threads, their objects and old telemetry.
+    void ready.then(() =>
+        track(() =>
+            startOrgRetention({
+                sql: crossOrg.sql,
+                secrets,
+                objects: artifacts.objects,
+                prefix: artifacts.prefix,
+                planDefaults: config.planDefaults,
             })
         )
     );

@@ -18,7 +18,15 @@ export interface PlanLimits {
     readonly tokens?: number;
     /** Attachment and run-log bytes the org may hold (`plan-allowances.ts`); an upload past it is refused. */
     readonly storageBytes?: number;
+    /** Days a settled thread is kept (`org-retention.ts`); the pass applies a lower value only after a notice. */
+    readonly retentionDays?: number;
 }
+
+/**
+ * The per-org transaction lock a plan push and the retention pass's deletion start both take (`org-retention.ts`):
+ * a push that raises the window either commits before a deletion starts, which then re-reads it, or after.
+ */
+export const planChangeLockKey = (orgId: string): string => `org-plan:${orgId}`;
 
 /** Why the board stopped a run on its own (`job.stop_cause`). */
 export type StopCause = 'wall-time';
@@ -46,9 +54,10 @@ export async function planLimits(sql: Sql | TransactionSql, orgId: string, defau
             max_wall_seconds: number | null;
             max_tokens: string | null;
             max_storage_bytes: string | null;
+            max_retention_days: number | null;
         }[]
     >`
-        select max_running, max_queued, max_wall_seconds, max_tokens, max_storage_bytes
+        select max_running, max_queued, max_wall_seconds, max_tokens, max_storage_bytes, max_retention_days
         from org_plan where org_id = ${orgId}
     `;
     const limits = {
@@ -57,6 +66,7 @@ export async function planLimits(sql: Sql | TransactionSql, orgId: string, defau
         wallSeconds: row?.max_wall_seconds ?? defaults.wallSeconds,
         tokens: bigOrNull(row?.max_tokens) ?? defaults.tokens,
         storageBytes: bigOrNull(row?.max_storage_bytes) ?? defaults.storageBytes,
+        retentionDays: row?.max_retention_days ?? defaults.retentionDays,
     };
     return Object.fromEntries(Object.entries(limits).filter(([, value]) => value !== undefined));
 }

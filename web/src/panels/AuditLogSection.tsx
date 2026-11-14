@@ -31,6 +31,7 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
     'connection.disconnect': 'Disconnected',
     'connection.access': 'Changed connection access',
     'task.admin_action': 'Acted on a member’s task',
+    'org.retention_downgrade': 'Scheduled a shorter retention window',
 };
 
 const ACTOR_LABELS: Readonly<Record<AuditEvent['actorKind'], string>> = {

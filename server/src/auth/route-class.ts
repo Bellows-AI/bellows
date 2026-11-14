@@ -94,6 +94,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     // The whole organization's data, every member's included: an admin read, never reachable by a scoped grant.
     ['GET', '/api/org/export', 'none', ADMIN_ROLE],
     ['GET', '/api/org/executors', 'read', MEMBER_ROLE],
+    ['GET', '/api/org/retention', 'read', MEMBER_ROLE],
     ['GET', '/api/org/skills', 'read', MEMBER_ROLE],
     ['GET', '/api/org/skills/:id', 'read', MEMBER_ROLE],
     ['GET', '/api/org/skills/:id/zip', 'read', MEMBER_ROLE],

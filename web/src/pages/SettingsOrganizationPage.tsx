@@ -7,6 +7,7 @@ import { AuditLogSection } from '../panels/AuditLogSection.js';
 import { EnvVarsSection } from '../panels/EnvVarsSection.js';
 import { MembersSection } from '../panels/MembersSection.js';
 import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
+import { RetentionSection } from '../panels/RetentionSection.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
@@ -45,6 +46,9 @@ export function SettingsOrganizationPage() {
             <MembersSection session={session} />
 
             <NotificationSubscriptionsSection session={session} scope="org" />
+
+            {/* How long finished tasks are kept (docs/retention.md): every member reads it. */}
+            <RetentionSection />
 
             {/* Who did what in the organization, with its export: an admin read, like the roster. */}
             <AuditLogSection session={session} />

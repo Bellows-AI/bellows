@@ -793,9 +793,9 @@ CLOUD_SETS=(--set deploymentMode=cloud
     --set-string dashboard.admission.maxRunning=20 --set-string dashboard.admission.maxRunningPerOrg=4
     --set-string dashboard.planDefaults.maxRunning=1 --set-string dashboard.planDefaults.maxQueued=10
     --set-string dashboard.planDefaults.maxWallSeconds=3600 --set-string dashboard.planDefaults.maxTokens=20000000
-    --set-string dashboard.planDefaults.maxStorageBytes=1073741824)
+    --set-string dashboard.planDefaults.maxStorageBytes=1073741824 --set-string dashboard.planDefaults.maxRetentionDays=7)
 for cap in admission.maxRunning admission.maxRunningPerOrg planDefaults.maxRunning planDefaults.maxQueued \
-    planDefaults.maxWallSeconds planDefaults.maxTokens planDefaults.maxStorageBytes; do
+    planDefaults.maxWallSeconds planDefaults.maxTokens planDefaults.maxStorageBytes planDefaults.maxRetentionDays; do
     refuses "cloud mode with an empty dashboard.$cap is refused" "deploymentMode cloud requires dashboard.$cap" \
         "${GH_SETS[@]}" "${CLOUD_SETS[@]}" --set-string "dashboard.$cap="
 done
@@ -803,6 +803,13 @@ cloud="$(gh_render "${CLOUD_SETS[@]}")"
 expect_contains 'cloud mode renders DEPLOYMENT_MODE' "$(grep -A1 'name: DEPLOYMENT_MODE$' <<<"$cloud")" 'value: "cloud"'
 expect_contains 'cloud mode renders the Free plan limits' "$(grep -A1 'name: PLAN_DEFAULT_MAX_QUEUED$' <<<"$cloud")" \
     'value: "10"'
+expect_contains 'cloud mode renders the Free retention window' \
+    "$(grep -A1 'name: PLAN_DEFAULT_MAX_RETENTION_DAYS$' <<<"$cloud")" 'value: "7"'
+# One retention knob per deployment (docs/retention.md).
+refuses 'cloud mode refuses artifacts.retentionDays' 'deploymentMode cloud refuses artifacts.retentionDays' \
+    "${GH_SETS[@]}" "${CLOUD_SETS[@]}" --set-string artifacts.retentionDays=30
+refuses 'a second retention window is refused' 'two retention windows' \
+    "${GH_SETS[@]}" --set-string artifacts.retentionDays=30 --set-string dashboard.planDefaults.maxRetentionDays=7
 operator="$(gh_render "${CLOUD_SETS[@]}" --set-string 'dashboard.operatorGithubIds=101\,202')"
 expect_contains 'the operator GitHub ids render as a comma list' \
     "$(grep -A1 'name: OPERATOR_GITHUB_IDS$' <<<"$operator")" 'value: "101,202"'

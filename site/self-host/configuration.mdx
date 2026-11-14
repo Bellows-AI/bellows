@@ -84,7 +84,7 @@ Admission budgets apply to every claim across all drivers and replicas. Unset me
 
 `DRIVER_CONCURRENCY` (below) limits one driver.
 
-Plan limits apply per organization. A plan pushed by the commerce service sets them; these defaults apply to an organization with no pushed plan and to any limit a plan leaves empty. Unset means unlimited. `DEPLOYMENT_MODE=cloud` refuses to boot unless all five are set, and the Helm chart refuses to render cloud mode without them (`dashboard.planDefaults`) or without `dashboard.admission.maxRunning` and `maxRunningPerOrg`.
+Plan limits apply per organization. A plan pushed by the commerce service sets them; these defaults apply to an organization with no pushed plan and to any limit a plan leaves empty. Unset means unlimited. `DEPLOYMENT_MODE=cloud` refuses to boot unless all six are set, and the Helm chart refuses to render cloud mode without them (`dashboard.planDefaults`) or without `dashboard.admission.maxRunning` and `maxRunningPerOrg`.
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
@@ -93,6 +93,7 @@ Plan limits apply per organization. A plan pushed by the commerce service sets t
 | `PLAN_DEFAULT_MAX_WALL_SECONDS` | cloud | unlimited | Most wall time one run may use, in seconds. The run is then stopped. |
 | `PLAN_DEFAULT_MAX_TOKENS` | cloud | unlimited | Most tokens an organization's runs may report per period (the plan's billing period, else the UTC calendar month). New tasks past it are refused with `429 PLAN_LIMIT`; running tasks finish. |
 | `PLAN_DEFAULT_MAX_STORAGE_BYTES` | cloud | unlimited | Most bytes of attachments and run logs per organization. An upload past it is refused with `429 PLAN_LIMIT`; a run log past it is truncated. |
+| `PLAN_DEFAULT_MAX_RETENTION_DAYS` | cloud | unlimited | Days a finished task is kept before it is deleted with its logs, transcripts and files ([Data retention](/guides/retention)). A shorter window applies 30 days after it is set; a longer one at once. Not together with `ARTIFACTS_RETENTION_DAYS`. |
 
 ### Telemetry
 
@@ -120,7 +121,7 @@ Artifacts and member uploads share one backend. The gcs backend takes its creden
 | `ARTIFACTS_GCS_BUCKET` | gcs | none | Bucket name. Created outside the board, which needs object read, write and delete on it only. |
 | `ARTIFACTS_GCS_PREFIX` | | `factory/` | Key prefix inside the bucket. |
 | `ARTIFACTS_GCS_KMS_KEY` | | empty | Full Cloud KMS key name for new objects. Empty uses Google-managed encryption. |
-| `ARTIFACTS_RETENTION_DAYS` | | `90` | Days after which a sweep deletes the artifacts of a removed task. Minimum `1`. |
+| `ARTIFACTS_RETENTION_DAYS` | | `90` | Days a deleted skill's versions are kept on a board with no retention window. Minimum `1`. Refused in cloud mode and beside `PLAN_DEFAULT_MAX_RETENTION_DAYS`. |
 | `ARTIFACTS_ORG_QUOTA_BYTES` | | `0` (off) | Per-organization byte quota. |
 | `ATTACHMENTS_DRAFT_TTL_HOURS` | | `24` | Hours an upload may wait unattached before it is deleted. Minimum `1`. |
 

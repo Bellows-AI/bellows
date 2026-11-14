@@ -86,7 +86,7 @@ export const orgObjectPrefixes = (prefix: string, orgId: string): string[] => [
 ];
 
 /** The org an identity key names as owner: the org itself, or the org a user-owned secret carries (null if none). */
-const ownerOrg = (sql: Sql | TransactionSql) => sql`
+export const ownerOrg = (sql: Sql | TransactionSql) => sql`
     case identity_key::jsonb #>> '{0,0}' when 'organization' then identity_key::jsonb #>> '{0,1}'
                                          else identity_key::jsonb #>> '{0,2}' end`;
 
@@ -137,15 +137,23 @@ function identityOf(key: string): SecretIdentity | null {
     }
 }
 
+/** What retiring secrets takes: the transaction, the store, and the pass's clock and signal. */
+export interface SecretRetirement {
+    tx: TransactionSql;
+    secrets: OrgPurgeDeps['secrets'];
+    expired: () => boolean;
+    signal: AbortSignal | undefined;
+}
+
 /** Resolves the reference's unresolved operations and deletes its live version, each confirmed by the store. */
-async function retireSecret(pass: Pass, ref: SecretRef, identity: SecretIdentity): Promise<StepResult> {
-    const { tx, deps } = pass;
+async function retireSecret(pass: SecretRetirement, ref: SecretRef, identity: SecretIdentity): Promise<StepResult> {
+    const { tx, secrets } = pass;
     const open = await tx<{ operation_id: string }[]>`
         select operation_id from secret_operation where ref = ${ref} and state in ('pending', 'unknown')
     `;
     for (const { operation_id } of open) {
         const call = { identity, ref, operationId: operation_id as OperationId, signal: pass.signal };
-        const settled = await deps.secrets.reconcileOperation(call).catch(() => null);
+        const settled = await secrets.reconcileOperation(call).catch(() => null);
         if (!settled?.ok || settled.status.state === 'pending' || settled.status.state === 'unknown') {
             return 'secret-reconcile-failed';
         }
@@ -155,10 +163,10 @@ async function retireSecret(pass: Pass, ref: SecretRef, identity: SecretIdentity
         where a.ref = ${ref} and s.state = 'active'
     `;
     if (!live) return null;
-    const deleted = await deps.secrets
+    const deleted = await secrets
         .issueOperationId()
         .then((operationId) =>
-            deps.secrets.delete({
+            secrets.delete({
                 identity,
                 ref,
                 operationId,
@@ -171,8 +179,19 @@ async function retireSecret(pass: Pass, ref: SecretRef, identity: SecretIdentity
 }
 
 async function purgeSecrets(pass: Pass): Promise<StepResult> {
-    const { tx, deps } = pass;
-    const owned = await discover(tx, pass.orgId);
+    const { tx, deps, expired, signal } = pass;
+    return retireSecrets({ tx, secrets: deps.secrets, expired, signal }, await discover(tx, pass.orgId));
+}
+
+/**
+ * Retires each secret, runs the collector, and confirms none is left: no version, live reference or open operation.
+ * Only then are the tombstone and operation rows deleted. Null when confirmed; otherwise the closed code of the step.
+ */
+export async function retireSecrets(
+    pass: SecretRetirement,
+    owned: readonly { ref: string; identity_key: string }[]
+): Promise<PurgeError | null> {
+    const { tx, secrets } = pass;
     for (const { ref, identity_key } of owned) {
         if (pass.expired()) return 'pass-timeout';
         const identity = identityOf(identity_key);
@@ -181,7 +200,7 @@ async function purgeSecrets(pass: Pass): Promise<StepResult> {
         if (failed) return failed;
     }
     if (owned.length === 0) return null;
-    const collected = await deps.secrets.collect().then(
+    const collected = await secrets.collect().then(
         () => true,
         () => false
     );
@@ -201,9 +220,12 @@ async function purgeSecrets(pass: Pass): Promise<StepResult> {
 }
 
 /** Deletes one page of a namespace's keys; `'empty'` only when the list confirmed none is left. */
-async function deletePage(pass: Pass, namespace: string): Promise<StepResult | 'empty'> {
-    const { objects } = pass.deps;
-    const keys = await objects.list(namespace, { limit: LIST_LIMIT, signal: pass.signal }).catch(() => null);
+export async function deleteObjectPage(
+    objects: ObjectStore,
+    namespace: string,
+    signal: AbortSignal | undefined
+): Promise<PurgeError | null | 'empty'> {
+    const keys = await objects.list(namespace, { limit: LIST_LIMIT, signal }).catch(() => null);
     // An answer that is not a list of this namespace's keys confirms nothing and licenses no delete.
     if (!Array.isArray(keys) || keys.some((key) => typeof key !== 'string' || !key.startsWith(namespace))) {
         return 'object-list-failed';
@@ -228,7 +250,8 @@ async function purgeObjects(pass: Pass): Promise<StepResult> {
     `;
     if (drained?.done !== true) return 'writes-draining';
     for (const namespace of orgObjectPrefixes(pass.deps.prefix, pass.orgId)) {
-        for (let page: StepResult | 'empty' = null; page !== 'empty'; page = await deletePage(pass, namespace)) {
+        const next = () => deleteObjectPage(pass.deps.objects, namespace, pass.signal);
+        for (let page: StepResult | 'empty' = null; page !== 'empty'; page = await next()) {
             if (page) return page;
             if (pass.expired()) return 'pass-timeout';
         }

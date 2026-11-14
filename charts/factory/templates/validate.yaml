@@ -115,11 +115,17 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- fail (printf "deploymentMode cloud requires dashboard.admission.%s: no cloud board admits unlimited work" $name) }}
 {{- end }}
 {{- end }}
-{{- range $name := list "maxRunning" "maxQueued" "maxWallSeconds" "maxTokens" "maxStorageBytes" }}
+{{- range $name := list "maxRunning" "maxQueued" "maxWallSeconds" "maxTokens" "maxStorageBytes" "maxRetentionDays" }}
 {{- if not (toString (index $.Values.dashboard.planDefaults $name)) }}
 {{- fail (printf "deploymentMode cloud requires dashboard.planDefaults.%s: the Free plan's limit, so no cloud organization is unlimited" $name) }}
 {{- end }}
 {{- end }}
+{{- if toString .Values.artifacts.retentionDays }}
+{{- fail "deploymentMode cloud refuses artifacts.retentionDays: each organization keeps its plan window" }}
+{{- end }}
+{{- end }}
+{{- if and (toString .Values.artifacts.retentionDays) (toString .Values.dashboard.planDefaults.maxRetentionDays) }}
+{{- fail "artifacts.retentionDays and dashboard.planDefaults.maxRetentionDays are two retention windows: set one" }}
 {{- end }}
 {{- if and .Values.mcp.enabled (not (hasPrefix "https://" .Values.auth.publicUrl)) }}
 {{- fail "mcp.enabled requires an https auth.publicUrl: the MCP endpoint carries bearer tokens" }}

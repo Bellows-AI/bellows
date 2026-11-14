@@ -37,6 +37,7 @@ const BODY_FIELDS = [
     'maxWallSeconds',
     'maxTokens',
     'maxStorageBytes',
+    'maxRetentionDays',
     'version',
 ];
 const LIMIT_FIELDS = ['maxRunning', 'maxQueued', 'maxWallSeconds'] as const;
@@ -60,7 +61,10 @@ function dateOrNull(value: unknown): Date | null | undefined {
     return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
-/** The push, or the reason the body is not one. Every field is required; all but `plan` and `version` may be null. */
+/**
+ * The push, or the reason the body is not one. Every field is required, but `maxRetentionDays`, which a service
+ * pushing no window leaves out; all but `plan` and `version` may be null.
+ */
 function parsePush(raw: unknown): PlanPush | string {
     const fields = body(raw);
     const unknown = Object.keys(fields).find((key) => !BODY_FIELDS.includes(key));
@@ -81,6 +85,8 @@ function parsePush(raw: unknown): PlanPush | string {
     if (bad) return `${bad} must be a positive integer or null`;
     const badAllowance = ALLOWANCE_FIELDS.find((name) => !isAllowance(fields[name]));
     if (badAllowance) return `${badAllowance} must be a positive integer or null`;
+    const retentionDays = fields.maxRetentionDays ?? null;
+    if (!isLimit(retentionDays)) return 'maxRetentionDays must be a positive integer or null';
     const limit = (name: (typeof LIMIT_FIELDS)[number] | (typeof ALLOWANCE_FIELDS)[number]) =>
         fields[name] as number | null;
     return {
@@ -94,6 +100,7 @@ function parsePush(raw: unknown): PlanPush | string {
         maxWallSeconds: limit('maxWallSeconds'),
         maxTokens: limit('maxTokens'),
         maxStorageBytes: limit('maxStorageBytes'),
+        maxRetentionDays: retentionDays,
         version,
     };
 }

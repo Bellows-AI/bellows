@@ -93,6 +93,7 @@ describe.skipIf(!enabled)('plan limits per organization', () => {
                 PLAN_DEFAULT_MAX_WALL_SECONDS: '3600',
                 PLAN_DEFAULT_MAX_TOKENS: '1000000',
                 PLAN_DEFAULT_MAX_STORAGE_BYTES: '1048576',
+                PLAN_DEFAULT_MAX_RETENTION_DAYS: '7',
             },
             { mode: 'none' }
         );
@@ -102,6 +103,7 @@ describe.skipIf(!enabled)('plan limits per organization', () => {
             wallSeconds: 3600,
             tokens: 1_000_000,
             storageBytes: 1_048_576,
+            retentionDays: 7,
         });
     });
 
