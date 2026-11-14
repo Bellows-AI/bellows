@@ -108,6 +108,21 @@ RuntimeClass against, keyed by the pod template's `factory.runner-class` label.
 {{- end -}}
 
 {{/*
+The runner classes whose groups get a Docker daemon (runner.classes.<name>.docker), as a JSON list:
+the CEL list admission allows the `dockerd` sidecar's capabilities in, and what decides whether the
+driver is handed the daemon image (RUNNER_DOCKER_IMAGE).
+*/}}
+{{- define "factory.runnerDockerClasses" -}}
+{{- $docker := list }}
+{{- range $name, $class := .Values.runner.classes }}
+{{- if dig "docker" false ($class | default dict) }}
+{{- $docker = append $docker $name }}
+{{- end }}
+{{- end }}
+{{- toJson $docker -}}
+{{- end -}}
+
+{{/*
 A rolling restart whenever the chart-created Secret changes: env read by secretKeyRef is resolved
 once, at container start, so without this a rotated credential waits for the next unrelated roll.
 */}}

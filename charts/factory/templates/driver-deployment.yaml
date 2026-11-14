@@ -116,6 +116,12 @@ spec:
                         value: {{ include "factory.runnerClasses" $ | quote }}
                       - name: RUNNER_DEFAULT_CLASS
                         value: {{ $.Values.runner.defaultClass | quote }}
+                      {{- if ne (include "factory.runnerDockerClasses" $) "[]" }}
+                      # The docker classes' daemon image, digest-pinned: the driver refuses to
+                      # boot a docker class without it.
+                      - name: RUNNER_DOCKER_IMAGE
+                        value: {{ include "factory.image" (list $ $.Values.runner.docker.image) | quote }}
+                      {{- end }}
                       # The claim each thread's task volume is created with.
                       {{- with $.Values.taskVolume.storageClass }}
                       - name: TASK_VOLUME_STORAGE_CLASS

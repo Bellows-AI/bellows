@@ -1190,7 +1190,8 @@ printf '%s\n' 'runner:' '    classes:' '        sandbox:' '            runtimeCl
     '            nodeSelector: {pool: sandbox}' \
     '            tolerations: [{key: pool, operator: Equal, value: sandbox, effect: NoSchedule}]' \
     '            affinity: {podAntiAffinity: {preferredDuringSchedulingIgnoredDuringExecution: [{weight: 1}]}}' \
-    '            docker: true' >"$work/two-classes.yaml"
+    '            docker: true' '            dockerStorage: 8Gi' \
+    '            dockerResources: {requests: {cpu: "1", memory: 2Gi}, limits: {memory: 10Gi}}' >"$work/two-classes.yaml"
 two_classes="$(gh_render -f "$work/two-classes.yaml")"
 two_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$two_classes")"
 [ "$(grep -c -- '- name: RUNNER_CLASSES$' <<<"$two_driver")" = 1 ] &&
@@ -1246,6 +1247,30 @@ refuses 'a class RuntimeClass that is no DNS name is refused' \
 refuses 'a docker class without a RuntimeClass is refused' \
     'runner.classes.standard.docker requires a runtimeClassName' \
     "${GH_SETS[@]}" --set runner.classes.standard.docker=true
+# A docker class's daemon. Its storage and resources ride the class to the driver; its image
+# is handed to the driver, digest-pinned, only when a class sets docker: true — the driver refuses
+# to boot a docker class without it, and refuses an image no digest pins.
+expect_class 'the driver is handed the class daemon storage' "$two_classes" 'c.sandbox.dockerStorage' '"8Gi"'
+expect_class 'the driver is handed the class daemon resources' "$two_classes" 'c.sandbox.dockerResources' \
+    '{"limits":{"memory":"10Gi"},"requests":{"cpu":"1","memory":"2Gi"}}'
+two_docker_image="$(grep -A1 -- '- name: RUNNER_DOCKER_IMAGE$' <<<"$two_driver" | sed -n 's/^ *value: //p' | tr -d '"')"
+[[ "$two_docker_image" =~ ^docker:27-dind@sha256:[0-9a-f]{64}$ ]] &&
+    ok 'a docker class hands the driver the digest-pinned daemon image' ||
+    bad 'a docker class hands the driver the digest-pinned daemon image' "got '$two_docker_image'"
+expect_not_contains 'no docker class hands the driver no daemon image' "$gh" 'name: RUNNER_DOCKER_IMAGE'
+[[ "$(grep -A1 -- '- name: RUNNER_DOCKER_IMAGE$' <<<"$(gh_render -f "$work/two-classes.yaml" \
+    --set global.imageRegistry=registry.example/mirror)" | sed -n 's/^ *value: //p' | tr -d '"')" == \
+    registry.example/mirror/docker:27-dind@sha256:* ]] &&
+    ok 'the daemon image composes with the registry prefix' ||
+    bad 'the daemon image composes with the registry prefix' 'no prefixed RUNNER_DOCKER_IMAGE'
+refuses 'a docker class with an unpinned daemon image is refused' \
+    'runner.docker.image.digest must be a sha256:<64 hex> digest when a runner class sets docker: true' \
+    "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set runner.docker.image.digest=
+expect_contains 'the admission CEL lists the docker classes' "$two_admission" '- name: dockerClasses
+          expression: "[\"sandbox\"]"'
+expect_contains 'the admission CEL lists no docker class by default' \
+    "$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/' <<<"$gh")" '- name: dockerClasses
+          expression: "[]"'
 # A retired driver-wide runner value is refused, never dropped: a kept runner.runtimeClassName would
 # otherwise render a default class without it and move agent code out of its sandbox and node pool.
 for retired in 'runtimeClassName=gvisor' 'nodeSelector.pool=sandbox' 'tolerations[0].key=pool' \
@@ -1364,8 +1389,8 @@ expect_contains 'the admission policy maps hostAliases only to loopback' "$admis
     "variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')"
 expect_contains 'the admission policy keeps svc- containers out of the main containers' "$admission" \
     "variables.spec.containers.all(c, !c.name.startsWith('svc-'))"
-expect_contains 'the admission policy restarts only the gate, reviewer and svc- sidecars' "$admission" \
-    "(c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-'))"
+expect_contains 'the admission policy restarts only the gate, reviewer, svc- and dockerd sidecars' "$admission" \
+    "(c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-') || c.name == 'dockerd'))"
 expect_contains 'the admission policy pins the reviewer to its own uid' "$admission" \
     "c.securityContext.runAsUser == 1002"
 expect_contains 'the admission policy lets the reviewer write only its home on the volume' "$admission" \
@@ -1381,6 +1406,24 @@ expect_contains 'the admission policy admits the launch pair on a runner Job age
     "request.kind.kind == 'Job' && c.name == 'agent' &&"
 expect_contains 'the admission policy admits no capability past the launch pair' "$admission" \
     "c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])"
+# The docker daemon's three, on `dockerd` alone, a restartable init container of a pod
+# whose class is a docker class under that class's own (non-empty) RuntimeClass; the same container
+# is the one drop-ALL waiver. Every other rule holds for it. The socket volume is the agent's, the
+# gate's and dockerd's alone. The real apiserver's verdicts are the --cluster admission phase.
+expect_contains 'the admission policy reads the pod docker class' "$admission" \
+    'variables.runnerClass in variables.dockerClasses &&'
+expect_contains 'the admission policy requires the docker class own non-empty RuntimeClass' "$admission" \
+    "variables.runnerClasses[variables.runnerClass] != '' &&"
+expect_contains 'the admission policy admits dockerd only as a restartable init container' "$admission" \
+    "variables.spec.initContainers.exists(c, c.name == 'dockerd' && has(c.restartPolicy) && c.restartPolicy == 'Always') &&"
+expect_contains 'the admission policy admits the daemon caps on dockerd of a docker class alone' "$admission" \
+    "(c.name == 'dockerd' && variables.dockerd &&
+                    c.securityContext.capabilities.add.all(a, a in ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW']))"
+expect_contains 'the admission policy waives drop ALL for dockerd of a docker class alone' "$admission" \
+    "variables.containers.all(c, (c.name == 'dockerd' && variables.dockerd) ||"
+expect_contains 'the admission policy mounts the docker socket in agent, gate and dockerd alone' "$admission" \
+    "c.name in ['agent', 'gate', 'dockerd'] || !has(c.volumeMounts) ||
+                c.volumeMounts.all(m, m.name != 'docker-sock')"
 
 # The chart-pod egress, split per component and port-scoped. A runner reached every port on
 # all three before; now the dashboard is its serving port and the collector its two OTLP ports.
@@ -2042,6 +2085,8 @@ S3
         --set "artifacts.s3.endpoint=http://$RELEASE-s3:9000" --set artifacts.s3.forcePathStyle=true
         --set "artifacts.credentialsExistingSecret=$RELEASE-s3")
 fi
+# The `dind` class is a docker class the admission phase dry-runs its dockerd probes against
+# (scripts/lanes/k8s/admission.sh); no task names it and kind has no sandbox RuntimeClass to run it.
 helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${REPLICA_SETS[@]+"${REPLICA_SETS[@]}"} \
     --set "dashboard.image.repository=$DASH_REPO" --set-string "dashboard.image.tag=$RELEASE" \
     --set "driver.image.repository=$DRIVER_REPO" --set-string "driver.image.tag=$RELEASE" \
@@ -2055,6 +2100,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${RE
     --set-string driver.handoverMs=10000 \
     --set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))" --set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS" \
     --set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))" \
+    --set runner.classes.dind.runtimeClassName=factory-probe-sandbox --set runner.classes.dind.docker=true \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1

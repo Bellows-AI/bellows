@@ -536,8 +536,23 @@ runner:
                     cpu: '2'
                     memory: 2Gi
             # Whether the class's groups get a Docker daemon. True requires a runtimeClassName (a
-            # sandbox), which the chart checks at render time.
+            # sandbox), which the chart checks at render time: a `dockerd` sidecar of the task pod
+            # (runner.docker.image) the agent and the gate reach over a unix socket, which admission
+            # lets add NET_ADMIN, SYS_ADMIN and NET_RAW in that class's pods alone.
             docker: false
+            # A docker class's daemon, beside `docker: true` (ignored without it):
+            #   dockerStorage: 8Gi        # the memory-backed data root's sizeLimit (images, layers,
+            #                             # containers), counted against the pod's memory; unset is
+            #                             # unbounded but for the pod's own limit
+            #   dockerResources: { requests: { cpu: '1', memory: 2Gi }, limits: { memory: 10Gi } }
+    # The image of a docker class's `dockerd` sidecar (RUNNER_DOCKER_IMAGE), handed to the driver
+    # only when a class sets `docker: true`. Pinned by digest, which the driver requires: the daemon
+    # never moves with a tag. The repository composes with global.imageRegistry like every image.
+    docker:
+        image:
+            repository: docker
+            tag: '27-dind'
+            digest: 'sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce'
     # Created by this chart when secret.create is true, with one key per `env` name, valued from
     # `credentials` (empty when absent). Referencing the Secret by name is the whole point: the
     # credential never appears in the pod spec, which anyone who can `get pods` can read.
