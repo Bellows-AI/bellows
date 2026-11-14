@@ -34,11 +34,11 @@ const CROSS_ORG_CALLS = {
 } as const;
 
 /** The callee of each call `crossOrg` reaches as an argument, or inside one (spread, property, object). */
-function calleesOf(file: string, text: string): string[] {
+function calleesOf(file: string, text: string, name = 'crossOrg'): string[] {
     const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
     const callees: string[] = [];
     const visit = (node: ts.Node): void => {
-        if (ts.isIdentifier(node) && node.text === 'crossOrg') {
+        if (ts.isIdentifier(node) && node.text === name) {
             for (let up: ts.Node | undefined = node.parent; up; up = up.parent) {
                 if (ts.isFunctionLike(up) || ts.isVariableDeclaration(up)) break;
                 if (ts.isCallExpression(up) && up.arguments.some((arg) => arg.pos <= node.pos && node.end <= arg.end)) {
@@ -69,6 +69,12 @@ describe('the cross-org pool', () => {
         expect(main.match(/\bcrossOrgSql\b/g)?.length).toBeGreaterThanOrEqual(2);
         const callees = calleesOf('main.ts', main);
         expect([...new Set(callees)].sort()).toEqual(Object.keys(CROSS_ORG_CALLS).sort());
+    });
+
+    it('leaves the owner to the migrations: main.ts hands the owner pool to nothing else', () => {
+        // The policies exempt the owner until a later release forces them, so a request on it would bypass them.
+        const callees = calleesOf('main.ts', read('main.ts'), 'ownerSql');
+        expect([...new Set(callees)].sort()).toEqual(['createClose', 'migrateAsOwner']);
     });
 
     it('is reached through crossOrgPool alone: no other module names the bypassing role', () => {

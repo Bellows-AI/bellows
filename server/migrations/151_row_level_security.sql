@@ -66,8 +66,10 @@ end
 $$;
 
 -- The policy, on every table with an org_id: the registry (server/src/db/org-tables.ts) is exactly this set, and a
--- partition gets it too so a statement naming the partition is bound as well. FORCE binds the owner as well, unless
--- it bypasses RLS itself.
+-- partition gets it too so a statement naming the partition is bound as well. Enabled, not forced: the owner stays
+-- exempt, because the previous release's pods run every statement as the owner with no setting and keep serving
+-- through a rollout. Forcing it is the contract step of a later release; this release runs nothing as the owner
+-- but its migrations (server/test/cross-org-pool.test.ts).
 do $$
 declare
     t text;
@@ -80,7 +82,6 @@ begin
         order by c.relname
     loop
         execute format('alter table %I enable row level security', t);
-        execute format('alter table %I force row level security', t);
         execute format(
             'create policy org_isolation on %I using (org_id = current_setting(''app.org_id'', true)) '
             'with check (org_id = current_setting(''app.org_id'', true))',
@@ -226,6 +227,28 @@ begin
         raise exception 'bellows_session_owned_elsewhere needs app.org_id';
     end if;
     return exists (select 1 from telemetry_session_owner o where o.session_id = p_session and o.org_id <> org);
+end
+$$;
+
+-- The repair of a legacy point (148): the first evidence of a session gives its org-less points the one org the
+-- evidence names. Evidence is now written by the request role, under whose policy an org-less point and another
+-- org's evidence are invisible, so the trigger runs as the cross-org role. Same body, same per-session lock; a
+-- trigger function cannot be called but as a trigger.
+create or replace function metric_point_repair_org() returns trigger
+language plpgsql volatile security definer as $$
+begin
+    perform metric_point_org_lock(new.session_id);
+    if metric_point_org_of(new.session_id) = new.org_id then
+        update metric_point set org_id = new.org_id
+        where session_id = new.session_id and org_id is null;
+    end if;
+    return null;
+end
+$$;
+do $$
+begin
+    execute format('alter function metric_point_repair_org() set search_path = pg_catalog, %I, pg_temp', current_schema());
+    alter function metric_point_repair_org() owner to bellows_cross_org;
 end
 $$;
 

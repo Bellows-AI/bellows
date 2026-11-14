@@ -1,7 +1,7 @@
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { orgSql, REQUEST_ROLE } from '../src/db/org-sql.js';
-import { boardPool } from '../src/db/pool.js';
+import { CROSS_ORG_ROLE, orgSql, REQUEST_ROLE } from '../src/db/org-sql.js';
+import { boardPool, crossOrgPool, requestPools } from '../src/db/pool.js';
 import { craftJob, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
@@ -101,5 +101,27 @@ describe.skipIf(!enabled)('orgSql', () => {
 
     it('refuses an empty organization', () => {
         expect(() => orgSql(pool, '')).toThrow();
+    });
+});
+
+/**
+ * The policies exempt the owner (151 enables, a later release forces), so no request may run as it: the board's request
+ * and secrets pools take the request role, the cross-org pool its own, and only the migration connection is the owner.
+ */
+describe.skipIf(!enabled)("the board's pools", () => {
+    it('run requests and secrets as the request role, the cross-org paths as the cross-org role', async () => {
+        const options = { max: 1, statementTimeoutMs: 10_000 };
+        const pools = requestPools({ databaseUrl: db.url as string, databaseRequestUrl: null }, options);
+        const crossOrg = crossOrgPool(db.url as string, options);
+        try {
+            const roleOf = async (sql: Sql) => (await sql<{ role: string }[]>`select current_user as role`)[0]!.role;
+            expect(await roleOf(pools.request)).toBe(REQUEST_ROLE);
+            expect(await roleOf(pools.secrets)).toBe(REQUEST_ROLE);
+            expect(await roleOf(crossOrg)).toBe(CROSS_ORG_ROLE);
+            const [owner] = await db.sql<{ role: string }[]>`select current_user as role`;
+            expect(await roleOf(pools.owner)).toBe(owner!.role);
+        } finally {
+            await Promise.all([pools.request, pools.secrets, pools.owner, crossOrg].map((p) => p.end({ timeout: 5 })));
+        }
     });
 });

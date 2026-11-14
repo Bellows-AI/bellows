@@ -126,6 +126,28 @@ describe.skipIf(!enabled)('row-level security for the request role', () => {
         expect(leaks).toEqual([]);
     });
 
+    it('leaves the owner unbound: a pod of the previous release, on the owner with no setting, reads every row', async () => {
+        // The owner here is a role of its own, as on a managed database where the owner is no superuser.
+        const owner = `rls_owner_${orgA}`;
+        const blind: string[] = [];
+        await withPlantedRows(async (tx) => {
+            await tx.unsafe(`create role ${owner} nologin`);
+            const tables = await tx<{ name: string }[]>`
+                select c.relname as name from pg_class c
+                join pg_attribute a on a.attrelid = c.oid and a.attname = 'org_id' and not a.attisdropped
+                where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p')
+            `;
+            for (const { name } of tables) await tx.unsafe(`alter table "${name}" owner to ${owner}`);
+            await tx.unsafe(`set local role ${owner}`);
+            await asOrg(tx, null);
+            for (const table of ORG_TABLES) {
+                const rows = await tx.unsafe<{ org_id: string }[]>(`select org_id from "${table}"`);
+                if (rows.length !== 2) blind.push(`${table}: ${rows.length} rows`);
+            }
+        });
+        expect(blind).toEqual([]);
+    });
+
     it("refuses a write of another organization's row", async () => {
         await withPlantedRows(async (tx) => {
             await tx.unsafe(`set local role ${REQUEST_ROLE}`);

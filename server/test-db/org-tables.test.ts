@@ -50,7 +50,7 @@ describe.skipIf(!enabled)('org-owned tables', () => {
         expect(ORG_TABLES.filter((table) => !keyed.has(table))).toEqual([]);
     });
 
-    it('forces row-level security on every table with an org_id, partitions included, under the org policy', async () => {
+    it('enables row-level security on every table with an org_id, partitions included, under the org policy', async () => {
         const rows = await db.sql<{ name: string; enabled: boolean; forced: boolean; policies: string[] }[]>`
             select c.relname as name, c.relrowsecurity as enabled, c.relforcerowsecurity as forced,
                    coalesce(array_agg(p.polname || ':' || p.polcmd::text || ':' || pg_get_expr(p.polqual, p.polrelid) || ':'
@@ -65,11 +65,7 @@ describe.skipIf(!enabled)('org-owned tables', () => {
         `;
         const policy = "(org_id = current_setting('app.org_id'::text, true))";
         const unbound = rows.filter(
-            (r) =>
-                !r.enabled ||
-                !r.forced ||
-                r.policies.length !== 1 ||
-                r.policies[0] !== `org_isolation:*:${policy}:${policy}`
+            (r) => !r.enabled || r.policies.length !== 1 || r.policies[0] !== `org_isolation:*:${policy}:${policy}`
         );
         expect(unbound.map((r) => `${r.name} ${JSON.stringify(r)}`)).toEqual([]);
         expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining([...ORG_TABLES]));
