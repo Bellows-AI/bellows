@@ -40,17 +40,26 @@ $(printf '%s\n' "$2" | sed 's/^/        /')
 EOF
 }
 as_driver() { kubectl create --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server -f - 2>&1; }
+# A refusal counts only when the POLICY gave it. The apiserver's field validation answers before
+# admission does, also as "is invalid:", so a probe it rejects never tests a rule; the denial frame
+# below is what only a ValidatingAdmissionPolicy writes.
+expect_refused() { # expect_refused <name> <dry-run output> <the policy's message>
+    case "$2" in
+    *"ValidatingAdmissionPolicy '"*"' denied request: "*"$3"*) ok "$1" ;;
+    *) bad "$1" "wanted the policy's refusal '$3' in: $2" ;;
+    esac
+}
 
 allowed="$(probe_pod ok "    containers: [{name: c, image: alpine, $HARD_C, envFrom: [{secretRef: {name: factory-job-probe-env}}]}]" | as_driver)"
 expect_contains 'the policy admits a pod reading a per-attempt Secret' "$allowed" 'created (server dry run)'
 stolen="$(probe_pod steal "    containers: [{name: c, image: alpine, $HARD_C, envFrom: [{secretRef: {name: $RELEASE-factory-dashboard}}]}]" | as_driver)"
-expect_contains 'the policy refuses a pod reading the dashboard Secret' "$stolen" 'may read only its own per-attempt Secrets'
+expect_refused 'the policy refuses a pod reading the dashboard Secret' "$stolen" 'may read only its own per-attempt Secrets'
 mounted="$(probe_pod mount "    containers: [{name: c, image: alpine, $HARD_C}]
     volumes: [{name: s, secret: {secretName: $RELEASE-factory-dashboard}}]" | as_driver)"
-expect_contains 'the policy refuses a pod mounting the dashboard Secret' "$mounted" 'may mount only a task volume claim'
+expect_refused 'the policy refuses a pod mounting the dashboard Secret' "$mounted" 'may mount only a task volume claim'
 host="$(probe_pod host "    containers: [{name: c, image: alpine, $HARD_C}]
     volumes: [{name: h, hostPath: {path: /}}]" | as_driver)"
-expect_contains 'the policy refuses a hostPath pod' "$host" 'may mount only a task volume claim'
+expect_refused 'the policy refuses a hostPath pod' "$host" 'may mount only a task volume claim'
 TASK_CLAIM=factory-task-44444444-4444-4444-8444-444444444444-1
 task="$(probe_pod task "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /task}]}]
     volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
@@ -60,13 +69,13 @@ reviewer_home="$(probe_pod reviewerhome "    containers: [{name: c, image: alpin
 expect_contains 'the policy admits a pod mounting the reviewer home of a task volume' "$reviewer_home" 'created (server dry run)'
 foreign="$(probe_pod foreign "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w}]}]
     volumes: [{name: w, persistentVolumeClaim: {claimName: $RELEASE-not-a-task}}]" | as_driver)"
-expect_contains 'the policy refuses a pod mounting a claim that is no task volume' "$foreign" 'may mount only a task volume claim'
+expect_refused 'the policy refuses a pod mounting a claim that is no task volume' "$foreign" 'may mount only a task volume claim'
 other="$(probe_pod othersub "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /w, subPath: other}]}]
     volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
-expect_contains 'the policy refuses a task volume mounted at any other subPath' "$other" 'only whole or at the reviewer home'
+expect_refused 'the policy refuses a task volume mounted at any other subPath' "$other" 'only whole or at the reviewer home'
 expr="$(probe_pod expr "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /w, subPathExpr: '\$(HOME)'}]}]
     volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
-expect_contains 'the policy refuses a subPathExpr task volume mount' "$expr" 'only whole or at the reviewer home'
+expect_refused 'the policy refuses a subPathExpr task volume mount' "$expr" 'only whole or at the reviewer home'
 task_claim() { # task_claim <name> <access mode> — the PersistentVolumeClaim the driver creates
     cat <<EOF
 apiVersion: v1
@@ -82,15 +91,15 @@ EOF
 task_ok="$(task_claim "$TASK_CLAIM" ReadWriteOnce | as_driver)"
 expect_contains 'the policy admits a task volume claim' "$task_ok" 'created (server dry run)'
 task_rwx="$(task_claim "$TASK_CLAIM" ReadWriteMany | as_driver)"
-expect_contains 'the policy refuses a ReadWriteMany task volume claim' "$task_rwx" 'is never ReadWriteMany'
+expect_refused 'the policy refuses a ReadWriteMany task volume claim' "$task_rwx" 'is never ReadWriteMany'
 task_name="$(task_claim factory-task-55555555-5555-4555-8555-555555555555-1 ReadWriteOnce | as_driver)"
-expect_contains 'the policy refuses a task volume claim not named for its labelled root' "$task_name" \
+expect_refused 'the policy refuses a task volume claim not named for its labelled root' "$task_name" \
     'named for their labelled thread root and generation'
 task_other="$(task_claim scratch ReadWriteOnce | as_driver)"
-expect_contains 'the policy refuses a claim that is not a task volume' "$task_other" \
+expect_refused 'the policy refuses a claim that is not a task volume' "$task_other" \
     'named for their labelled thread root and generation'
 deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
-expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
+expect_refused 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
 
 # The holder binding: a per-attempt Secret's binding key is the one thing the driver may
 # update on a Secret.
@@ -119,22 +128,22 @@ as_driver_secret() {
 bound="$(as_driver_secret "$PROBE_ENV" '{"data":{"binding.json":"e30="}}')"
 expect_contains 'the policy admits a binding patch on an attempt Secret' "$bound" 'patched'
 other_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":"eA=="}}')"
-expect_contains 'the policy refuses a Secret patch of another key' "$other_key" 'changes only its binding'
+expect_refused 'the policy refuses a Secret patch of another key' "$other_key" 'changes only its binding'
 relabelled_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"labels":{"factory.lease":"thief"}}}')"
-expect_contains 'the policy refuses relabelling an attempt Secret' "$relabelled_secret" 'changes only its binding'
+expect_refused 'the policy refuses relabelling an attempt Secret' "$relabelled_secret" 'changes only its binding'
 retyped_secret="$(as_driver_secret "$PROBE_ENV" '{"type":"kubernetes.io/basic-auth"}')"
 # A Secret's type is immutable in the apiserver itself, which refuses the change before admission runs.
 expect_contains 'the apiserver refuses retyping an attempt Secret' "$retyped_secret" 'field is immutable'
 reowned_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","name":"thief","uid":"00000000-0000-0000-0000-000000000000"}]}}')"
-expect_contains 'the policy refuses re-owning an attempt Secret' "$reowned_secret" 'changes only its binding'
+expect_refused 'the policy refuses re-owning an attempt Secret' "$reowned_secret" 'changes only its binding'
 dropped_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":null}}')"
-expect_contains 'the policy refuses deleting an existing Secret data key' "$dropped_key" 'changes only its binding'
+expect_refused 'the policy refuses deleting an existing Secret data key' "$dropped_key" 'changes only its binding'
 immutable_secret="$(as_driver_secret "$PROBE_ENV" '{"immutable":true}')"
-expect_contains 'the policy refuses freezing an attempt Secret' "$immutable_secret" 'changes only its binding'
+expect_refused 'the policy refuses freezing an attempt Secret' "$immutable_secret" 'changes only its binding'
 finalized_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"finalizers":["factory/probe"]}}')"
-expect_contains 'the policy refuses adding a finalizer to an attempt Secret' "$finalized_secret" 'changes only its binding'
+expect_refused 'the policy refuses adding a finalizer to an attempt Secret' "$finalized_secret" 'changes only its binding'
 dashboard_patch="$(as_driver_secret "$RELEASE-factory-dashboard" '{"data":{"binding.json":"e30="}}')"
-expect_contains 'the policy refuses patching the dashboard Secret' "$dashboard_patch" 'only objects labelled factory.job'
+expect_refused 'the policy refuses patching the dashboard Secret' "$dashboard_patch" 'only objects labelled factory.job'
 kubectl delete secret "$PROBE_ENV" -n "$NAMESPACE" >/dev/null
 
 # Issue #382, the half that cannot be asserted by rendering. Phase one proved the CEL is in the
@@ -144,23 +153,23 @@ kubectl delete secret "$PROBE_ENV" -n "$NAMESPACE" >/dev/null
 # a total outage — and one that compiles but matches nothing passes phase one unchanged. Each
 # probe below removes exactly one field from the shape the probes above all carry.
 no_seccomp="$(probe_pod noseccomp "    containers: [{name: c, image: alpine, $HARD_C}]" '' '{}' | as_driver)"
-expect_contains 'the policy refuses a pod with no seccomp profile' "$no_seccomp" 'RuntimeDefault seccomp profile'
+expect_refused 'the policy refuses a pod with no seccomp profile' "$no_seccomp" 'RuntimeDefault seccomp profile'
 wrong_seccomp="$(probe_pod unconfined "    containers: [{name: c, image: alpine, $HARD_C}]" '' \
     '{seccompProfile: {type: Unconfined}}' | as_driver)"
-expect_contains 'the policy refuses an Unconfined seccomp profile' "$wrong_seccomp" 'RuntimeDefault seccomp profile'
+expect_refused 'the policy refuses an Unconfined seccomp profile' "$wrong_seccomp" 'RuntimeDefault seccomp profile'
 no_sc="$(probe_pod nosc '    containers: [{name: c, image: alpine}]' | as_driver)"
-expect_contains 'the policy refuses a container with no securityContext at all' "$no_sc" 'allowPrivilegeEscalation: false'
+expect_refused 'the policy refuses a container with no securityContext at all' "$no_sc" 'allowPrivilegeEscalation: false'
 escalating="$(probe_pod escalate \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: true, capabilities: {drop: [ALL]}}}]' |
     as_driver)"
-expect_contains 'the policy refuses a container that may escalate' "$escalating" 'allowPrivilegeEscalation: false'
+expect_refused 'the policy refuses a container that may escalate' "$escalating" 'allowPrivilegeEscalation: false'
 # The container-level override, against the real apiserver: the pod keeps RuntimeDefault and the
 # CONTAINER asks for Unconfined. Admitted, this is a runner with no syscall filter at all while
 # every pod-level assertion still reads green — which is why it is probed rather than reasoned about.
 container_unconfined="$(probe_pod cseccomp \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: Unconfined}}}]' |
     as_driver)"
-expect_contains 'the policy refuses a container that overrides the pod seccomp profile' \
+expect_refused 'the policy refuses a container that overrides the pod seccomp profile' \
     "$container_unconfined" 'may not override the pod seccomp profile'
 
 # Issue #814: the one capability add the policy admits — SETUID and SETGID, on a runner Job's
@@ -185,9 +194,9 @@ EOF
 launch="$(probe_job launch agent 'SETUID, SETGID' | as_driver)"
 expect_contains 'the policy admits the agent launch pair on a runner Job' "$launch" 'created (server dry run)'
 launch_more="$(probe_job launchmore agent 'SETUID, NET_RAW' | as_driver)"
-expect_contains 'the policy refuses any other capability on the agent' "$launch_more" 'may not be privileged or add capabilities'
+expect_refused 'the policy refuses any other capability on the agent' "$launch_more" 'may not be privileged or add capabilities'
 launch_other="$(probe_job launchother supervisor 'SETUID' | as_driver)"
-expect_contains 'the policy refuses the launch pair on any other container' "$launch_other" 'may not be privileged or add capabilities'
+expect_refused 'the policy refuses the launch pair on any other container' "$launch_other" 'may not be privileged or add capabilities'
 # A bare Pod is refused before admission: the Role grants no pod create at all.
 bare_pod="$(as_driver <<EOF
 apiVersion: v1
@@ -207,25 +216,25 @@ expect_contains 'the driver may not create a bare Pod' "$bare_pod" 'cannot creat
 no_drop="$(probe_pod nodrop \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: []}}}]' |
     as_driver)"
-expect_contains 'the policy refuses a container that drops nothing' "$no_drop" 'must drop ALL capabilities'
+expect_refused 'the policy refuses a container that drops nothing' "$no_drop" 'must drop ALL capabilities'
 # There is no opt-out: the label a declared unhardened service once carried buys a
 # container nothing.
 opted_out="$(probe_pod optout \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
     'factory.unhardened: "true"' | as_driver)"
-expect_contains 'the policy refuses the retired unhardened label its capabilities' "$opted_out" 'must drop ALL capabilities'
+expect_refused 'the policy refuses the retired unhardened label its capabilities' "$opted_out" 'must drop ALL capabilities'
 
 # Runner classes: a pod runs under its class's RuntimeClass — none for `standard` — and carries the
 # label of a class the chart declares. A mismatch, an unknown class and a missing label are refused.
 classless="$(CLASS_LABEL='' probe_pod classless "    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses a pod without a runner class label' "$classless" 'label of a declared runner class'
+expect_refused 'the policy refuses a pod without a runner class label' "$classless" 'label of a declared runner class'
 unknown_class="$(CLASS_LABEL='factory.runner-class: nope' probe_pod unknownclass \
     "    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses a pod naming an undeclared runner class' "$unknown_class" \
+expect_refused 'the policy refuses a pod naming an undeclared runner class' "$unknown_class" \
     'label of a declared runner class'
 mismatched="$(probe_pod mismatch "    runtimeClassName: gvisor
     containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses a RuntimeClass its runner class does not name' "$mismatched" \
+expect_refused 'the policy refuses a RuntimeClass its runner class does not name' "$mismatched" \
     'its runner class RuntimeClass'
 
 # The task pod's shape: its declared services are `svc-` sidecars named on its
@@ -236,16 +245,16 @@ sidecar="$(probe_pod sidecar "    initContainers: [{name: svc-db, image: alpine,
 expect_contains 'the policy admits a svc- sidecar named on loopback' "$sidecar" 'created (server dry run)'
 aliased="$(probe_pod alias "    containers: [{name: c, image: alpine, $HARD_C}]
     hostAliases: [{ip: 10.0.0.1, hostnames: [db]}]" | as_driver)"
-expect_contains 'the policy refuses a hostAlias off loopback' "$aliased" 'hostAliases only to 127.0.0.1'
+expect_refused 'the policy refuses a hostAlias off loopback' "$aliased" 'hostAliases only to 127.0.0.1'
 main_svc="$(probe_pod mainsvc "    containers: [{name: svc-db, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses a svc- main container' "$main_svc" 'only as restartable init containers'
+expect_refused 'the policy refuses a svc- main container' "$main_svc" 'only as restartable init containers'
 once_svc="$(probe_pod oncesvc "    initContainers: [{name: svc-db, image: alpine, $HARD_C}]
     containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses a svc- init container that is not restartable' "$once_svc" \
+expect_refused 'the policy refuses a svc- init container that is not restartable' "$once_svc" \
     'only as restartable init containers'
 proxy="$(probe_pod proxy "    initContainers: [{name: proxy, image: alpine, restartPolicy: Always, $HARD_C}]
     containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses a restartable init container that is neither gate nor svc-' "$proxy" \
+expect_refused 'the policy refuses a restartable init container that is neither gate nor svc-' "$proxy" \
     'only as restartable init containers'
 
 # A docker class's `dockerd` sidecar. The install declares `dind`, a docker class under the
@@ -267,43 +276,47 @@ expect_contains 'the policy admits the dockerd sidecar of a docker class under i
     'created (server dry run)'
 dockerd_other="$(dind_pod dockerdother "    initContainers: [{name: proxy, image: docker, restartPolicy: Always, $DOCKERD_C}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses the daemon caps on any other container' "$dockerd_other" \
+expect_refused 'the policy refuses the daemon caps on any other container' "$dockerd_other" \
     'may not be privileged or add capabilities'
 dockerd_standard="$(probe_pod dockerdstandard "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses dockerd in a class that is no docker class' "$dockerd_standard" \
+expect_refused 'the policy refuses dockerd in a class that is no docker class' "$dockerd_standard" \
     'may not be privileged or add capabilities'
 dockerd_rc="$(CLASS_LABEL='factory.runner-class: dind' probe_pod dockerdrc "    runtimeClassName: other-sandbox
     initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
 # The class's own RuntimeClass rule answers first; the dockerd waiver reads the same pin again.
-expect_contains 'the policy refuses dockerd under a RuntimeClass its docker class does not name' "$dockerd_rc" \
+expect_refused 'the policy refuses dockerd under a RuntimeClass its docker class does not name' "$dockerd_rc" \
     'its runner class RuntimeClass'
 dockerd_main="$(dind_pod dockerdmain "    containers: [{name: dockerd, image: docker, $DOCKERD_C}]" | as_driver)"
-expect_contains 'the policy refuses dockerd as a main container' "$dockerd_main" \
+expect_refused 'the policy refuses dockerd as a main container' "$dockerd_main" \
     'may not be privileged or add capabilities'
 dockerd_more="$(dind_pod dockerdmore "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {allowPrivilegeEscalation: false, capabilities: {add: [NET_ADMIN, SYS_PTRACE]}}}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses any capability past the daemon three on dockerd' "$dockerd_more" \
+expect_refused 'the policy refuses any capability past the daemon three on dockerd' "$dockerd_more" \
     'may not be privileged or add capabilities'
 dockerd_escalate="$(dind_pod dockerdescalate "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {allowPrivilegeEscalation: true, capabilities: {add: [NET_ADMIN]}}}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy still refuses an escalating dockerd' "$dockerd_escalate" 'allowPrivilegeEscalation: false'
-dockerd_privileged="$(dind_pod dockerdpriv "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {allowPrivilegeEscalation: false, privileged: true}}]
+expect_refused 'the policy still refuses an escalating dockerd' "$dockerd_escalate" 'allowPrivilegeEscalation: false'
+# The admitted dockerd made privileged. Field validation refuses `privileged: true` beside
+# `allowPrivilegeEscalation: false`, so the probe leaves escalation unset; the privileged rule
+# answers before the escalation one.
+dockerd_privileged="$(dind_pod dockerdpriv "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {privileged: true, runAsUser: 0, capabilities: {add: [NET_ADMIN, SYS_ADMIN, NET_RAW]}}}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy still refuses a privileged dockerd' "$dockerd_privileged" 'may not be privileged'
+expect_refused 'the policy still refuses a privileged dockerd' "$dockerd_privileged" \
+    'may not be privileged or add capabilities'
 dockerd_seccomp="$(dind_pod dockerdseccomp "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}]
     containers: [{name: agent, image: alpine, $HARD_C}]" '{}' | as_driver)"
-expect_contains 'the policy still requires the pod RuntimeDefault profile of a dockerd pod' "$dockerd_seccomp" \
+expect_refused 'the policy still requires the pod RuntimeDefault profile of a dockerd pod' "$dockerd_seccomp" \
     'RuntimeDefault seccomp profile'
 dockerd_once="$(dind_pod dockerdonce "    initContainers: [{name: dockerd, image: docker, $HARD_C}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_contains 'the policy refuses a dockerd that is not restartable' "$dockerd_once" \
+expect_refused 'the policy refuses a dockerd that is not restartable' "$dockerd_once" \
     'only as restartable init containers'
 sock_svc="$(dind_pod socksvc "    initContainers: [{name: svc-db, image: alpine, restartPolicy: Always, $HARD_C, $SOCK_MOUNT}]
     containers: [{name: agent, image: alpine, $HARD_C}]
     $SOCK_VOL" | as_driver)"
-expect_contains 'the policy refuses a svc- service mounting the docker socket volume' "$sock_svc" \
+expect_refused 'the policy refuses a svc- service mounting the docker socket volume' "$sock_svc" \
     'docker socket volume in the agent, the gate and dockerd alone'
 
 # --- The agent's tool isolation, on the real kubelet ----------------------------------
