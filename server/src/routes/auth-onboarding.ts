@@ -293,7 +293,11 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
      * their account can see, and what arrives pre-checked. `selected` is the stored choice —
      * already intersected with the report — when there is one (a reselect), and every
      * reported installation otherwise (a first sign-in, where the default matches today's
-     * behavior and confirming is a no-op narrowing).
+     * behavior and confirming is a no-op narrowing). Neither ever includes an org an admin
+     * removal blocks. The org an invite link names (`org`) is added pre-checked, and served
+     * as `org`, only when the report names it and no block stands — so a restored member
+     * lands in one click. The URL grants nothing by itself: completion re-checks the block.
+     * A failed block read is a 500, never "no blocks".
      */
     app.get('/api/auth/github/pending', async (request, reply) => {
         const resolved = await resolvePendingSignIn(store, secret, request);
@@ -304,7 +308,17 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
         }
         const { pending } = resolved;
         const stored = await store.storedSelection(pending.identity.githubUserId);
-        const remembered = stored.filter((id) => pending.installations.some((install) => install.id === id));
+        const blocked = new Set(await store.blockedOrgs(pending.identity.githubUserId));
+        const reported = pending.installations.map((install) => install.id);
+        const remembered = stored.filter((id) => reported.includes(id));
+        const requested =
+            pending.orgPreference !== null &&
+            reported.includes(pending.orgPreference) &&
+            !blocked.has(pending.orgPreference)
+                ? pending.orgPreference
+                : null;
+        const ticked = new Set(remembered.length > 0 ? remembered : reported.filter((id) => !blocked.has(id)));
+        if (requested) ticked.add(requested);
         return reply.code(HTTP_OK).send({
             identity: {
                 login: pending.identity.login,
@@ -337,9 +351,9 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
                     };
                 })
             ),
-            selected: remembered.length > 0 ? remembered : pending.installations.map((install) => install.id),
+            selected: reported.filter((id) => ticked.has(id)),
             reselect: remembered.length > 0,
-            org: pending.orgPreference,
+            org: requested,
             returnTo: pending.returnTo,
         });
     });

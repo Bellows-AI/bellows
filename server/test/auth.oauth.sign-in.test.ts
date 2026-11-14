@@ -208,7 +208,8 @@ describe('the setup callback', () => {
                 { id: ORG, account: 'acme' },
                 { id: '888888', account: 'new-org' },
             ],
-            selected: [ORG],
+            // The org just installed is named by the restart, so it arrives pre-checked beside the stored choice.
+            selected: [ORG, '888888'],
             org: '888888',
             reselect: true,
         });

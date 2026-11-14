@@ -4,11 +4,12 @@ import { nowIso } from './helpers-auth-store.js';
 /**
  * The memory double's admin removals, the same outcomes as server/src/auth/member-removal.ts: the block row, the
  * membership's end (a session or token resolves through the membership, so both die with it), the last-admin
- * refusal, the restore, and the invitation read's basis. An org row records no GitHub account kind here.
+ * refusal, the restore, an account's blocks, and the invitation read's basis. An org row records no GitHub
+ * account kind here.
  */
 export function removalMethods(
     state: AuthState
-): Pick<MemoryAuthStore, 'blockMember' | 'restoreMember' | 'listRemovedMembers' | 'invitationBasis'> {
+): Pick<MemoryAuthStore, 'blockMember' | 'restoreMember' | 'listRemovedMembers' | 'blockedOrgs' | 'invitationBasis'> {
     const loginOf = (userId: string) => state.users.find((u) => u.id === userId)?.login ?? null;
     return {
         async blockMember(orgId, userId, removedBy) {
@@ -39,6 +40,14 @@ export function removalMethods(
                     removedBy: loginOf(r.removedBy),
                 }))
                 .sort((a, b) => a.githubLogin.localeCompare(b.githubLogin));
+        },
+
+        async blockedOrgs(githubUserId) {
+            const userIds = new Set(state.users.filter((u) => u.githubUserId === githubUserId).map((u) => u.id));
+            return state.removals
+                .filter((r) => userIds.has(r.userId))
+                .map((r) => r.orgId)
+                .sort();
         },
 
         async invitationBasis(orgId) {

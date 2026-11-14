@@ -241,6 +241,8 @@ export interface AuthStore extends OrgStatusStore {
     restoreMember(orgId: string, userId: string, actorId: string): Promise<'restored' | 'missing'>;
     /** The org's removals, login-ordered — what `GET /api/org/members/removed` serves. */
     listRemovedMembers(orgId: string): Promise<RemovedMemberView[]>;
+    /** The orgs an admin removal blocks this GitHub account from; `[]` for an unknown account. A failed read throws. */
+    blockedOrgs(githubUserId: number): Promise<string[]>;
     /**
      * What the invitation read needs: the organization, described for GitHub's member list, and the GitHub ids
      * of everyone who signed in or was removed. Null when the org has no row.

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { describe, expect, it, vi } from 'vitest';
 import type { InstallationRepo } from '../src/github/app-client.js';
 import { PENDING_COOKIE, SESSION_COOKIE } from '../src/auth/session.js';
 import {
@@ -593,5 +594,87 @@ describe('the selection screen (#125)', () => {
         const preserved = await finishOnboarding(app, second, { orgs: [ORG] });
         expect(preserved.statusCode).toBe(200);
         expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+    });
+});
+
+describe('the invite link pre-ticks its organization', () => {
+    const TWO = [
+        { id: '888888', account: 'other-org' },
+        { id: ORG, account: 'acme' },
+    ];
+
+    /** Onboards the signing-in account with `orgs` and returns its user id. */
+    async function onboard(app: FastifyInstance, orgs: string[]): Promise<string> {
+        const response = await finishOnboarding(app, await beginOnboarding(app), { orgs });
+        const session = response.cookies.find((c) => c.name === SESSION_COOKIE)!.value;
+        const me = await app.inject({ method: 'GET', url: '/api/auth/me', cookies: { [SESSION_COOKIE]: session } });
+        return me.json().user.id as string;
+    }
+
+    /** What the selection screen reads after following an invite link (`reselect=1`, `org` named or not). */
+    async function screenFor(app: FastifyInstance, org?: string) {
+        return pendingRoute(app, await beginOnboarding(app, '/', org, true));
+    }
+
+    it('pre-ticks the link org on a reselect even when the stored choice omits it', async () => {
+        const { app } = await setup({ installations: TWO });
+        await onboard(app, ['888888']);
+
+        const screen = await screenFor(app, ORG);
+        // Report order, the stored choice plus the org the link named.
+        expect(screen.json().selected).toEqual(['888888', ORG]);
+        expect(screen.json().org).toBe(ORG);
+    });
+
+    it('a removed account neither pre-ticks nor marks the org; after the restore it does', async () => {
+        const { app, auth } = await setup({ installations: TWO });
+        const admin = auth.seedMember(ORG, 'admin-cat', 'admin');
+        const userId = await onboard(app, ['888888', ORG]);
+        expect(await auth.blockMember(ORG, userId, admin.user.id)).toBe('removed');
+
+        // `selected` already omitted the blocked org before the fix; `org: null` is the new part.
+        const blocked = await screenFor(app, ORG);
+        expect(blocked.json().selected).toEqual(['888888']);
+        expect(blocked.json().org).toBeNull();
+
+        expect(await auth.restoreMember(ORG, userId, admin.user.id)).toBe('restored');
+        const restored = await screenFor(app, ORG);
+        expect(restored.json().selected).toEqual(['888888', ORG]);
+        expect(restored.json().org).toBe(ORG);
+    });
+
+    it('an org the report does not name is neither pre-ticked nor marked', async () => {
+        const { app } = await setup({ installations: TWO });
+        await onboard(app, [ORG]);
+
+        // Only the `org: null` half is new: `selected` ignored the unknown org before the fix too.
+        const screen = await screenFor(app, '777777');
+        expect(screen.json().selected).toEqual([ORG]);
+        expect(screen.json().org).toBeNull();
+    });
+
+    it("a first sign-in's every-installation default leaves out a blocked org", async () => {
+        const { app, auth } = await setup({ installations: TWO });
+        const admin = auth.seedMember(ORG, 'admin-cat', 'admin');
+        const userId = await onboard(app, [ORG]);
+        expect(await auth.blockMember(ORG, userId, admin.user.id)).toBe('removed');
+
+        // No membership row is left, so the screen falls back to its default — minus the block.
+        const screen = await screenFor(app);
+        expect(screen.json().selected).toEqual(['888888']);
+    });
+
+    it('a failed block read fails the pending read and spends nothing', async () => {
+        const { app, auth } = await setup({ installations: TWO });
+        await onboard(app, ['888888']);
+        const cookie = await beginOnboarding(app, '/', ORG, true);
+
+        // Never read as "no blocks": an unconfirmed answer must not pre-tick anything.
+        vi.spyOn(auth, 'blockedOrgs').mockRejectedValueOnce(new Error('boom'));
+        expect((await pendingRoute(app, cookie)).statusCode).toBe(500);
+
+        const retried = await pendingRoute(app, cookie);
+        expect(retried.statusCode).toBe(200);
+        expect(retried.json().selected).toEqual(['888888', ORG]);
     });
 });
