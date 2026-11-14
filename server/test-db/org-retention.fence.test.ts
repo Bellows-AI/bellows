@@ -8,6 +8,7 @@ import { createArtifactStore } from '../src/artifacts/artifact-store.js';
 import { chunkKey } from '../src/artifacts/keys.js';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import type { ObjectStore } from '../src/artifacts/object-store.js';
+import { createCommercePlanWriter } from '../src/db/commerce-plan-writer.js';
 import { createFollowUpRow, createRetryRow } from '../src/db/jobs/job-store-thread-actions.js';
 import { ThreadExpiringError } from '../src/db/object-write-fence.js';
 import { type OrgRetentionDeps, runRetentionPass } from '../src/db/org-retention.js';
@@ -37,6 +38,7 @@ beforeEach(async () => {
     if (!enabled) return;
     objects = createFilesystemStore(await mkdtemp(join(tmpdir(), 'factory-retention-fence-')));
     await db.sql`insert into org_retention (org_id, effective_days) values (${org}, 7)`;
+    pushVersion = 0;
 });
 
 const pass = (over: Partial<OrgRetentionDeps> = {}) =>
@@ -72,6 +74,42 @@ const streamRef = (root: string) => ({
     stream: 'raw',
 });
 const keysLeft = () => objects.list(`${PREFIX}${org}/`);
+
+/** A plan push raising the window, through the commerce writer: version 1 the first time, then one more each call. */
+let pushVersion = 0;
+async function upgradeTo(days: number): Promise<void> {
+    pushVersion += 1;
+    const writer = createCommercePlanWriter({ sql: db.sql, ready: Promise.resolve() });
+    const verdict = await writer.put(org, {
+        plan: 'enterprise',
+        includedMinutes: null,
+        usedMinutes: null,
+        periodStart: null,
+        periodEnd: null,
+        maxRunning: null,
+        maxQueued: null,
+        maxWallSeconds: null,
+        maxTokens: null,
+        maxStorageBytes: null,
+        maxRetentionDays: days,
+        version: pushVersion,
+    });
+    expect(verdict).toEqual({ verdict: 'stored' });
+}
+
+/** Runs `run` with the row step failing as a board lost mid-transaction would: its statements roll back together. */
+async function crashRowStep(run: () => Promise<unknown>): Promise<void> {
+    await db.sql`create function retention_test_crash() returns trigger language plpgsql as $$
+                 begin raise exception 'board lost'; end $$`;
+    await db.sql`create trigger retention_test_crash before delete on job_pr
+                 for each statement execute function retention_test_crash()`;
+    try {
+        await run();
+    } finally {
+        await db.sql`drop trigger retention_test_crash on job_pr`;
+        await db.sql`drop function retention_test_crash()`;
+    }
+}
 
 /** The pool with its fence read held back until released: a writer paused between its earlier steps and its put. */
 function pausedAtFence(): { sql: Sql; arrived: Promise<void>; release: () => void } {
@@ -226,5 +264,47 @@ describe.skipIf(!enabled)('a stamped thread', () => {
         await pass();
         expect(await present(root)).toBe(false);
         expect(await keysLeft()).toEqual([]);
+    });
+
+    it('once its deletion began, an upgrade never revives it: a failed row step is finished by the next pass', async () => {
+        const root = await oldThread();
+        await createArtifactStore({
+            sql: db.sql,
+            orgId: org,
+            ready: Promise.resolve(),
+            objects,
+            prefix: PREFIX,
+        }).putChunk(streamRef(root), 0, bytes('transcript'));
+        await pass();
+        await age(root, DRAIN_MS);
+        await crashRowStep(() => pass());
+        // The objects are gone; reviving the thread now would hand a follow-up a task with no transcripts.
+        expect(await keysLeft()).toEqual([]);
+        await upgradeTo(400);
+        await pass();
+        expect(await present(root)).toBe(false);
+        expect(
+            await db.sql`select 1 from thread_expiry where root_job_id = ${root} and rows_deleted_at is null`
+        ).toHaveLength(0);
+    });
+
+    it('keeps a task when an upgrade commits between its stamp and the start of its deletion', async () => {
+        const root = await oldThread();
+        // The upgrade commits right after the pass took its org and stamped, before any unit is expired.
+        let pushed = false;
+        const racing = new Proxy(db.sql, {
+            apply(target, self, args: unknown[]) {
+                const strings = args[0] as readonly string[] | undefined;
+                if (!pushed && Array.isArray(strings) && strings.join('').includes('group by unit')) {
+                    pushed = true;
+                    return upgradeTo(400).then(() => Reflect.apply(target, self, args));
+                }
+                return Reflect.apply(target, self, args);
+            },
+        });
+        await pass({ sql: racing, writeDrainMs: 0 });
+        expect(pushed).toBe(true);
+        expect(await present(root)).toBe(true);
+        expect(await stamped(root)).toBe(false);
     });
 });

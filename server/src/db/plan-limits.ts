@@ -22,6 +22,12 @@ export interface PlanLimits {
     readonly retentionDays?: number;
 }
 
+/**
+ * The per-org transaction lock a plan push and the retention pass's deletion start both take (`org-retention.ts`):
+ * a push that raises the window either commits before a deletion starts, which then re-reads it, or after.
+ */
+export const planChangeLockKey = (orgId: string): string => `org-plan:${orgId}`;
+
 /** Why the board stopped a run on its own (`job.stop_cause`). */
 export type StopCause = 'wall-time';
 

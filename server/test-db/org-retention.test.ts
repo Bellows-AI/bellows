@@ -7,7 +7,7 @@ import { createArtifactStore } from '../src/artifacts/artifact-store.js';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import type { ObjectStore } from '../src/artifacts/object-store.js';
 import { type OrgRetentionDeps, orgRetentionView, runRetentionPass } from '../src/db/org-retention.js';
-import { requestPools } from '../src/db/pool.js';
+import { crossOrgPool, requestPools } from '../src/db/pool.js';
 import { createSecretRef } from '../src/secrets/secret-input.js';
 import type { SecretIdentity } from '../src/secrets/secret-store.js';
 import { testSecretStore } from './env-secrets-harness.js';
@@ -350,6 +350,73 @@ describe.skipIf(!enabled)('what is deleted and what is kept', () => {
             { branch: 'new' },
         ]);
     });
+});
+
+describe.skipIf(!enabled)('telemetry with no owner row', () => {
+    it("expires an org's old points whose session only a task binding or a branch row names, and keeps recent ones", async () => {
+        await settle(org, 7);
+        const root = await thread(org, 30 * DAY);
+        const bound = randomUUID();
+        const branched = randomUUID();
+        // Sessions stored before owner rows existed: their org came from a task binding or a branch row.
+        await db.sql`
+            insert into job_execution (org_id, job_id, claim_seq, root_job_id, created_at)
+            values (${org}, ${root}, 1, ${root}, now() - interval '31 days')
+        `;
+        await db.sql`
+            insert into job_execution_session (org_id, job_id, claim_seq, session_id, origin)
+            values (${org}, ${root}, 1, ${bound}, 'backfill')
+        `;
+        await db.sql`
+            insert into session_branch (session_id, repo, branch, first_seen, last_seen, org_id)
+            values (${branched}, 'acme/widgets', 'main', now() - interval '40 days', now(), ${org})
+        `;
+        for (const [session, ageDays] of [
+            [bound, 30],
+            [bound, 1],
+            [branched, 30],
+            [branched, 1],
+        ] as const) {
+            await db.sql`
+                insert into metric_point (metric, session_id, value, temporality, time, org_id)
+                values ('m', ${session}, 1, 'delta', now() - make_interval(days => ${ageDays}), ${org})
+            `;
+        }
+        await pass();
+        const points = await db.sql<{ session_id: string; days: number }[]>`
+            select session_id, extract(day from now() - time)::int as days from metric_point order by session_id
+        `;
+        expect(points.map((p) => p.days)).toEqual([1, 1]);
+        expect(new Set(points.map((p) => p.session_id))).toEqual(new Set([bound, branched]));
+    });
+});
+
+describe.skipIf(!enabled)('a cross-org pool of one connection', () => {
+    it('completes the pass: no step waits on a second connection while it holds the only one', async () => {
+        await settle(org, 7);
+        const root = await thread(org, 30 * DAY);
+        await chunkOf(org, root);
+        const session = randomUUID();
+        await db.sql`insert into telemetry_session_owner (session_id, org_id, created_at)
+                     values (${session}, ${org}, now() - interval '30 days')`;
+        await db.sql`
+            insert into metric_point (metric, session_id, value, temporality, time, org_id)
+            values ('m', ${session}, 1, 'delta', now() - interval '30 days', ${org})
+        `;
+        const single = crossOrgPool(db.url as string, { max: 1, statementTimeoutMs: 10_000 });
+        try {
+            let timer: NodeJS.Timeout | undefined;
+            const stuck = new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('the pass waited on a second connection')), 10_000);
+            });
+            await Promise.race([pass({ sql: single }), stuck]).finally(() => clearTimeout(timer));
+        } finally {
+            await single.end({ timeout: 1 });
+        }
+        expect(await present(root)).toBe(false);
+        expect(await objectsUnder(org)).toEqual([]);
+        expect(await db.sql`select 1 from metric_point where session_id = ${session}`).toHaveLength(0);
+    }, 30_000);
 });
 
 describe.skipIf(!enabled)('the pass', () => {

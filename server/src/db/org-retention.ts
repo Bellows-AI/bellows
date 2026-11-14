@@ -8,7 +8,8 @@ import { removeLockedThreadInTx } from './jobs/job-store-thread-actions.js';
 import { OBJECT_WRITE_DRAIN_MS } from './object-write-fence.js';
 import { REQUEST_ROLE } from './org-sql.js';
 import { deleteObjectPage, type OrgPurgeDeps, ownerOrg, type PurgeError, retireSecrets } from './org-purge.js';
-import { type PlanLimits, planLimits } from './plan-limits.js';
+import { type PlanLimits, planChangeLockKey, planLimits } from './plan-limits.js';
+import { waitAdvisoryXactLock } from './pool.js';
 
 /**
  * Plan-based retention (docs/retention.md): an interval loop on every replica, on the cross-org pool, that deletes every
@@ -250,6 +251,8 @@ interface Unit {
     unit: string;
     roots: string[];
     drained: boolean;
+    /** Its deletion began (`deleting_at`): it is only ever finished, never revived. */
+    deleting: boolean;
 }
 
 /** The unit's job ids: every member of each stamped root (reviews are stamped roots too). */
@@ -296,13 +299,35 @@ async function expireObjects(pass: OrgPass, unit: Unit, jobIds: readonly string[
     return null;
 }
 
-/** The unit's thread roots (not its reviews), locked, or `'revive'` once one is no longer settled before the window. */
-async function lockUnitThreads(
-    tx: TransactionSql,
-    orgId: string,
-    unit: Unit,
-    days: number
-): Promise<string[] | 'revive'> {
+/** Every thread root of the unit (not its reviews) is settled before `cutoff`; false when one is not. */
+async function unitSettled(sql: Sql | TransactionSql, orgId: string, unit: Unit, cutoff: Fragment): Promise<boolean> {
+    const [row] = await sql<{ ok: boolean | null }[]>`
+        select bool_and(${settledBefore(sql, orgId, sql`r.id`, cutoff)}) as ok
+        from job r where r.org_id = ${orgId} and r.id = any(${unit.roots}::uuid[]) and r.review_of is null
+    `;
+    // No thread root left (a row step that committed before its stamp was marked) is nothing to keep.
+    return row?.ok !== false;
+}
+
+/**
+ * The deletion start: under the org's plan-change lock (a push takes it too) the window is reconciled again and the
+ * unit re-checked against it; only then is `deleting_at` written, before any secret or object is touched. `'revive'`
+ * when the window no longer covers the unit; null once the phase is written.
+ */
+async function beginDeletion(pass: OrgPass, unit: Unit): Promise<'revive' | null> {
+    const { deps, orgId } = pass;
+    return deps.sql.begin(async (tx) => {
+        await waitAdvisoryXactLock(tx, planChangeLockKey(orgId));
+        await tx`select 1 from org_retention where org_id = ${orgId} for update`;
+        const days = await reconcileWindow(tx, orgId, (await planLimits(tx, orgId, deps.planDefaults)).retentionDays);
+        if (days === null || !(await unitSettled(tx, orgId, unit, cutoffOf(tx, days)))) return 'revive';
+        await tx`update thread_expiry set deleting_at = now() where org_id = ${orgId} and unit = ${unit.unit}`;
+        return null;
+    });
+}
+
+/** The unit's thread roots (not its reviews), locked; every member is still terminal, as its stamp froze it. */
+async function lockUnitThreads(tx: TransactionSql, orgId: string, unit: Unit): Promise<string[]> {
     const threads = await tx<{ id: string }[]>`
         select id from job where org_id = ${orgId} and id = any(${unit.roots}::uuid[]) and review_of is null
     `;
@@ -311,27 +336,25 @@ async function lockUnitThreads(
         orgId,
         threads.map((row) => row.id)
     );
-    const cutoff = cutoffOf(tx, days);
     for (const root of roots) {
-        const [still] = await tx<
-            { ok: boolean }[]
-        >`select ${settledBefore(tx, orgId, tx`${root}::uuid`, cutoff)} as ok`;
-        if (still?.ok !== true) return 'revive';
+        const [still] = await tx<{ ok: boolean }[]>`
+            select ${settledBefore(tx, orgId, tx`${root}::uuid`, tx`now()`)} as ok
+        `;
+        if (still?.ok !== true) throw new ThreadRefusedError();
     }
     return roots;
 }
 
-/** The Remove path refused a stamped thread: the whole row step rolls back. */
+/** The Remove path refused a stamped thread, or one is no longer settled: the whole row step rolls back. */
 class ThreadRefusedError extends Error {}
 
-/** Step 3c: the unit's rows, in one transaction under its locks, eligibility re-checked; `'revive'` if it lapsed. */
-async function expireRows(pass: OrgPass, unit: Unit, days: number): Promise<RetentionError | 'revive' | null> {
+/** Step 3c: the unit's rows, in one transaction under its locks. Past the deletion start, so no window re-check. */
+async function expireRows(pass: OrgPass, unit: Unit): Promise<RetentionError | null> {
     const { deps, orgId } = pass;
     const step = deps.sql.begin(async (tx) => {
         const batchId = unit.unit.startsWith('batch:') ? unit.unit.slice('batch:'.length) : null;
         if (batchId) await tx`select 1 from batch where org_id = ${orgId} and id = ${batchId} for update`;
-        const roots = await lockUnitThreads(tx, orgId, unit, days);
-        if (roots === 'revive') return 'revive';
+        const roots = await lockUnitThreads(tx, orgId, unit);
         const jobIds = await unitJobIds(tx, orgId, unit.roots);
         if (batchId) await tx`delete from batch where org_id = ${orgId} and id = ${batchId}`;
         for (const root of roots) {
@@ -362,7 +385,8 @@ async function expireStamped(pass: OrgPass, days: number | null): Promise<void> 
     const drainSecs = (deps.writeDrainMs ?? OBJECT_WRITE_DRAIN_MS) / MS_PER_SECOND;
     const units = await deps.sql<Unit[]>`
         select unit, array_agg(root_job_id::text order by root_job_id) as roots,
-               bool_and(now() >= stamped_at + make_interval(secs => ${drainSecs})) as drained
+               bool_and(now() >= stamped_at + make_interval(secs => ${drainSecs})) as drained,
+               bool_or(deleting_at is not null) as deleting
         from thread_expiry where org_id = ${orgId} and rows_deleted_at is null
         group by unit order by min(stamped_at), unit limit ${deps.threadsPerPass ?? THREADS_PER_PASS}
     `;
@@ -374,7 +398,9 @@ async function expireStamped(pass: OrgPass, days: number | null): Promise<void> 
         const outcome = await expireUnit(pass, unit, days);
         if (outcome === null) counts.expired += 1;
         else if (outcome === 'revive') {
-            await deps.sql`delete from thread_expiry where org_id = ${orgId} and unit = ${unit.unit}`;
+            await deps.sql`
+                delete from thread_expiry where org_id = ${orgId} and unit = ${unit.unit} and deleting_at is null
+            `;
             counts.revived += 1;
         } else {
             counts.pending += 1;
@@ -390,34 +416,40 @@ async function expireStamped(pass: OrgPass, days: number | null): Promise<void> 
 }
 
 async function expireUnit(pass: OrgPass, unit: Unit, days: number | null): Promise<RetentionError | 'revive' | null> {
-    // An upgrade (or an unlimited window) lifts the stamp before anything is deleted: the window covers it again.
-    if (days === null) return 'revive';
     const { sql } = pass.deps;
-    const [eligible] = await sql<{ ok: boolean }[]>`
-        select bool_and(${settledBefore(sql, pass.orgId, sql`r.id`, cutoffOf(sql, days))}) as ok
-        from job r where r.org_id = ${pass.orgId} and r.id = any(${unit.roots}::uuid[]) and r.review_of is null
-    `;
-    if (eligible?.ok === false) return 'revive';
-    if (!unit.drained) return 'writes-draining';
+    if (!unit.deleting) {
+        // An upgrade (or an unlimited window) lifts the stamp before anything is deleted: the window covers it again.
+        if (days === null || !(await unitSettled(sql, pass.orgId, unit, cutoffOf(sql, days)))) return 'revive';
+        if (!unit.drained) return 'writes-draining';
+        if ((await beginDeletion(pass, unit)) === 'revive') return 'revive';
+    }
     const jobIds = await unitJobIds(sql, pass.orgId, unit.roots);
     return (
         (await expireSecrets(pass, jobIds)) ??
         (await expireObjects(pass, unit, jobIds)) ??
-        (await expireRows(pass, unit, days))
+        (await expireRows(pass, unit))
     );
 }
 
-/** Step 4: the org's telemetry older than the window, in bounded batches; sessions reached by their owner row. */
+/**
+ * Step 4: the org's telemetry older than the window, in bounded batches. A point's org was resolved from its session's
+ * owner row, task binding or branch row (`metric_point_org_of`), so those name every session an org's point can have;
+ * each is probed and deleted through `metric_point_session`. An old branch row goes unless it is the last link to a
+ * session that still has points of the org, so no point is left unreachable.
+ */
 async function expireTelemetry(pass: OrgPass, days: number): Promise<void> {
     const { deps, orgId, counts } = pass;
     const { sql } = deps;
     const cutoff = cutoffOf(sql, days);
     const sessions = await sql<{ session_id: string }[]>`
-        select o.session_id from telemetry_session_owner o
-        where o.org_id = ${orgId} and o.created_at < ${cutoff}
-          and exists (select 1 from metric_point p
-                      where p.session_id = o.session_id and p.org_id = ${orgId} and p.time < ${cutoff})
-        order by o.created_at, o.session_id limit ${POINT_BATCHES}
+        select s.session_id from (
+            select session_id from telemetry_session_owner where org_id = ${orgId}
+            union select session_id from job_execution_session where org_id = ${orgId}
+            union select session_id from session_branch where org_id = ${orgId}
+        ) s
+        where exists (select 1 from metric_point p
+                      where p.session_id = s.session_id and p.org_id = ${orgId} and p.time < ${cutoff})
+        order by s.session_id limit ${POINT_BATCHES}
     `;
     let batches = POINT_BATCHES;
     for (const { session_id: session } of sessions) {
@@ -435,38 +467,59 @@ async function expireTelemetry(pass: OrgPass, days: number): Promise<void> {
     }
     const branches = await sql`
         delete from session_branch where ctid in (
-            select ctid from session_branch where org_id = ${orgId} and last_seen < ${cutoff} limit ${POINT_BATCH_ROWS})
+            select b.ctid from session_branch b
+            where b.org_id = ${orgId} and b.last_seen < ${cutoff}
+              and (not exists (select 1 from metric_point p where p.session_id = b.session_id and p.org_id = ${orgId})
+                   or exists (select 1 from telemetry_session_owner o
+                              where o.session_id = b.session_id and o.org_id = ${orgId})
+                   or exists (select 1 from job_execution_session e
+                              where e.org_id = ${orgId} and e.session_id = b.session_id)
+                   or exists (select 1 from session_branch n
+                              where n.org_id = ${orgId} and n.session_id = b.session_id and n.last_seen >= ${cutoff}))
+            limit ${POINT_BATCH_ROWS})
     `;
     counts.branches += branches.count;
 }
 
-/** One org's pass under its row lock; null when another replica holds it. */
+/** How long a lease on an org outlives the pass that took it, should its replica be lost. */
+const LEASE_MARGIN_SECS = 60;
+
+/**
+ * Takes the org for this pass in one short transaction: a lease (`claimed_until`), the org still active, and the window
+ * reconciled under the plan-change lock. Null when another replica holds the lease or the org is not active. No
+ * connection is held across the pass: every later step is its own short transaction, one at a time.
+ */
+async function claimOrg(deps: OrgRetentionDeps, orgId: string): Promise<{ days: number | null } | null> {
+    const leaseSecs = (deps.passMs ?? RETENTION_PASS_MS) / MS_PER_SECOND + LEASE_MARGIN_SECS;
+    return deps.sql.begin(async (tx) => {
+        const [org] = await tx<{ status: string }[]>`select status from organization where id = ${orgId} for share`;
+        if (org?.status !== 'active') return null;
+        await waitAdvisoryXactLock(tx, planChangeLockKey(orgId));
+        await tx`insert into org_retention (org_id) values (${orgId}) on conflict do nothing`;
+        const [claimed] = await tx`
+            update org_retention set claimed_until = now() + make_interval(secs => ${leaseSecs}), updated_at = now()
+            where org_id = ${orgId} and (claimed_until is null or claimed_until < now())
+            returning 1
+        `;
+        if (!claimed) return null;
+        const target = (await planLimits(tx, orgId, deps.planDefaults)).retentionDays;
+        return { days: await reconcileWindow(tx, orgId, target) };
+    });
+}
+
+/** One org's pass, its steps sequential short transactions; null when another replica holds it. */
 async function retainOrg(
     deps: OrgRetentionDeps,
     orgId: string,
     expired: () => boolean,
     signal: AbortSignal | undefined
 ): Promise<Counts | null> {
-    return deps.sql.begin(async (tx) => {
-        await tx`insert into org_retention (org_id) values (${orgId}) on conflict do nothing`;
-        const [locked] = await tx`select 1 from org_retention where org_id = ${orgId} for update skip locked`;
-        if (!locked) return null;
-        const [org] = await tx<{ status: string }[]>`select status from organization where id = ${orgId} for share`;
-        if (org?.status !== 'active') return null;
-        const target = (await planLimits(tx, orgId, deps.planDefaults)).retentionDays;
-        const days = await reconcileWindow(tx, orgId, target);
-        await tx`update org_retention set updated_at = now() where org_id = ${orgId}`;
-        const counts: Counts = {
-            days,
-            stamped: 0,
-            expired: 0,
-            revived: 0,
-            pending: 0,
-            points: 0,
-            branches: 0,
-            errors: [],
-        };
-        const pass: OrgPass = { deps, orgId, expired, signal, counts };
+    const claimed = await claimOrg(deps, orgId);
+    if (!claimed) return null;
+    const { days } = claimed;
+    const counts: Counts = { days, stamped: 0, expired: 0, revived: 0, pending: 0, points: 0, branches: 0, errors: [] };
+    const pass: OrgPass = { deps, orgId, expired, signal, counts };
+    try {
         if (days !== null) await stampEligible(pass, days);
         await expireStamped(pass, days);
         if (days !== null) await expireTelemetry(pass, days);
@@ -474,8 +527,12 @@ async function retainOrg(
             delete from thread_expiry where org_id = ${orgId}
               and rows_deleted_at < now() - make_interval(hours => ${STAMP_KEEP_HOURS})
         `;
-        return counts;
-    });
+    } finally {
+        await deps.sql`update org_retention set claimed_until = null where org_id = ${orgId}`.catch(() => {
+            // The lease lapses on its own; the next pass takes the org then.
+        });
+    }
+    return counts;
 }
 
 /** One pass over every active org, least recently served first; never throws for one org's failure. */
