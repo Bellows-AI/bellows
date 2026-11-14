@@ -1,6 +1,6 @@
 #!/bin/sh
 # Re-resolves every pinned image digest to what its tag points at today, rewriting the pin in place:
-# the external `FROM` lines of the four Dockerfiles and the chart's collector image. The weekly
+# the external `FROM` lines of the four Dockerfiles and the chart's collector and dockerd images. The weekly
 # .github/workflows/mirror-images.yml runs it and opens a pull request when it changed anything;
 # run by hand it leaves the diff for you to review. Needs a docker with buildx and registry access.
 # POSIX sh: the runner images and CI shells differ.
@@ -32,12 +32,22 @@ for file in docker/Dockerfile docker/driver.Dockerfile docker/claude-executor/Do
     done
 done
 
-# The collector: repository, tag and digest are three lines of one values block.
-pin="$(awk '/repository: otel\/opentelemetry-collector-contrib/ { repo = $2 }
-    repo && $1 == "tag:" { tag = $2 }
-    repo && $1 == "digest:" { print repo, tag, $2; exit }' charts/factory/values.yaml | tr -d "'")"
-# shellcheck disable=SC2086
-set -- $pin
-[ "$#" -eq 3 ] || { echo 'pin-digests: the chart no longer pins a collector image and digest' >&2; exit 1; }
-new="$(resolve "$1:$2")"
-[ "$new" = "$3" ] || repin charts/factory/values.yaml "digest: '$3'" "digest: '$new'"
+# repin_chart <repository> <source>: a chart image whose repository, tag and digest are three lines of
+# one values block, re-resolved through <source> (the repository as a registry serves it).
+repin_chart() {
+    pin="$(awk -v want="$1" '$1 == "repository:" && $2 == want { repo = $2 }
+        repo && $1 == "tag:" { tag = $2 }
+        repo && $1 == "digest:" { print tag, $2; exit }' charts/factory/values.yaml | tr -d "'")"
+    tag="${pin% *}"
+    old="${pin#* }"
+    [ -n "$pin" ] && [ "$tag" != "$pin" ] || {
+        echo "pin-digests: the chart no longer pins $1 by tag and digest" >&2
+        exit 1
+    }
+    new="$(resolve "$2:$tag")"
+    [ "$new" = "$old" ] || repin charts/factory/values.yaml "digest: '$old'" "digest: '$new'"
+}
+
+# The collector, and a docker class's dockerd sidecar (runner.docker.image).
+repin_chart otel/opentelemetry-collector-contrib otel/opentelemetry-collector-contrib
+repin_chart docker mirror.gcr.io/library/docker

@@ -31,6 +31,9 @@ code out of its sandbox and node pool. Each names its runner class twin. */}}
 {{- fail (printf "runner.classes.%s.docker requires a runtimeClassName: a Docker daemon runs only in a sandbox" $name) }}
 {{- end }}
 {{- end }}
+{{- if and (ne (include "factory.runnerDockerClasses" .) "[]") (not (regexMatch "^sha256:[a-f0-9]{64}$" (toString (dig "docker" "image" "digest" "" .Values.runner)))) }}
+{{- fail "runner.docker.image.digest must be a sha256:<64 hex> digest when a runner class sets docker: true: the driver runs the daemon only pinned by digest" }}
+{{- end }}
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}

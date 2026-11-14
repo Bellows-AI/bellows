@@ -30,14 +30,20 @@ export interface RunnerClass {
     runnerResources: RunnerResources;
     /** The gate's; each unset slot is the class's runner slot. */
     gateResources: RunnerResources;
-    /** Whether the class's groups get a docker daemon. */
+    /** Whether the class's groups get a docker daemon (the `dockerd` sidecar, `k8s/k8s-dockerd.ts`). */
     docker: boolean;
+    /** The daemon's memory-backed data root size (`sizeLimit`); null leaves it unbounded but by the pod's memory. */
+    dockerStorage: string | null;
+    /** The daemon container's own resources. */
+    dockerResources: RunnerResources;
 }
 
 /** The configured classes and the one a claim naming none runs in. */
 export interface RunnerClasses {
     runnerClasses: Readonly<Record<string, RunnerClass>>;
     defaultRunnerClass: string;
+    /** The daemon image a docker class runs (RUNNER_DOCKER_IMAGE), digest-pinned; null when no class has one. */
+    runnerDockerImage: string | null;
 }
 
 /** The name of the class a driver with no RUNNER_CLASSES runs every claim in: no fields at all. */
@@ -58,6 +64,20 @@ export function defaultClassOf(config: RunnerClasses): RunnerClass {
     const declared = config.runnerClasses[config.defaultRunnerClass];
     if (!declared) throw new Error(`the default runner class "${config.defaultRunnerClass}" is not declared`);
     return declared;
+}
+
+/** The name a docker class's platform daemon endpoint takes in the agent's and the gate's env. */
+export const DOCKER_HOST_ENV = 'DOCKER_HOST';
+
+/**
+ * The claim as its class runs it: in a docker class the platform's DOCKER_HOST wins, so a member's
+ * own value is dropped from the claim env (every env the attempt renders is built from it); in any
+ * other class the claim is untouched. Not a reserved name: outside a docker class it is the member's.
+ */
+export function classClaimOf<T extends Pick<BoardJob, 'runnerClass' | 'env'>>(config: RunnerClasses, job: T): T {
+    if (!classOf(config, job)?.docker || !job.env || !Object.hasOwn(job.env, DOCKER_HOST_ENV)) return job;
+    const { [DOCKER_HOST_ENV]: _member, ...env } = job.env;
+    return { ...job, env };
 }
 
 /** Why a claim cannot launch on this driver for its class, or null when its class is declared. */
@@ -264,6 +284,8 @@ const CLASS_KEYS = [
     'resources',
     'gateResources',
     'docker',
+    'dockerStorage',
+    'dockerResources',
 ] as const;
 
 /** One declared class, validated whole at boot: a bad field never reaches a pod spec. */
@@ -289,6 +311,8 @@ function runnerClassOf(name: string, value: unknown): RunnerClass {
         runnerResources: runner.resources,
         gateResources: loadResources(fields.gateResources, `${label}.gateResources`, runner).resources,
         docker: fields.docker === true,
+        dockerStorage: runnerResource(fields.dockerStorage, `${label}.dockerStorage`, 'memory'),
+        dockerResources: loadResources(fields.dockerResources, `${label}.dockerResources`).resources,
     };
 }
 
@@ -336,7 +360,31 @@ export function loadRunnerClasses(env: NodeJS.ProcessEnv, executor: 'docker' | '
         );
     }
     if (executor === 'docker') Object.values(runnerClasses).forEach(assertDockerClass);
-    return { runnerClasses, defaultRunnerClass };
+    return { runnerClasses, defaultRunnerClass, runnerDockerImage: dockerImage(env, runnerClasses) };
+}
+
+/** A digest reference: the daemon a docker class runs never moves with a tag (`docker:27-dind@sha256:…`). */
+const DIGEST_PINNED = /@sha256:[a-f0-9]{64}$/;
+
+/**
+ * The daemon image (RUNNER_DOCKER_IMAGE): required once a class has `docker: true`, and pinned by
+ * digest whenever set — the one image of a docker class no build of this repo made. Null when unset
+ * and no class needs it.
+ */
+function dockerImage(env: NodeJS.ProcessEnv, runnerClasses: Record<string, RunnerClass>): string | null {
+    const image = optionalText(env.RUNNER_DOCKER_IMAGE);
+    const needing = Object.values(runnerClasses).find((declared) => declared.docker);
+    if (image === null) {
+        if (needing)
+            throw new Error(`RUNNER_DOCKER_IMAGE is required: RUNNER_CLASSES.${needing.name} sets docker: true`);
+        return null;
+    }
+    if (!DIGEST_PINNED.test(image)) {
+        throw new Error(
+            `RUNNER_DOCKER_IMAGE must be pinned by digest (<image>@sha256:<64 hex>), got "${image.slice(0, ERROR_PREVIEW_CHARS)}"`
+        );
+    }
+    return image;
 }
 
 /** Under docker a class carries resources alone: scheduling, a RuntimeClass or a daemon is refused, naming the stated limit. */

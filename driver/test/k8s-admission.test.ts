@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
+import { DOCKER_SOCK_VOLUME, DOCKERD_CAPS, DOCKERD_CONTAINER } from '../src/k8s/k8s-dockerd.js';
 import { readerJobSpec, runnerJobSpec, secretName, volumeExportJobSpec } from '../src/k8s/k8s-podspec.js';
 import { RUNNER_CLASS_LABEL } from '../src/labels.js';
 import { SERVICE_ADDRESS } from '../src/services.js';
@@ -228,6 +229,7 @@ describe('the admission policy pins each pod to its runner class RuntimeClass', 
         K8S_NAMESPACE: 'factory',
         RUNNER_CLASSES: JSON.stringify({ standard: {}, sandbox }),
         RUNNER_DEFAULT_CLASS: 'standard',
+        RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
     });
     /** The class → RuntimeClass map the chart renders for these classes ('' for none). */
     const runtimeClasses: Record<string, string> = { standard: '', sandbox: 'gvisor' };
@@ -272,6 +274,122 @@ describe('the admission policy pins each pod to its runner class RuntimeClass', 
                 runtimeClasses[name]
             );
         }
+    });
+});
+
+/*
+ * A docker class's task pod runs a `dockerd` native sidecar that adds NET_ADMIN, SYS_ADMIN
+ * and NET_RAW and keeps no `drop: ALL`. Admission allows exactly that container that shape, and only
+ * in a pod whose class label names a docker class and whose RuntimeClass is that class's own,
+ * non-empty one; every other rule (pod RuntimeDefault, no escalation, nothing privileged) still holds
+ * for it. The socket volume is mounted by the agent, the gate and `dockerd` alone. No CEL
+ * evaluator runs offline: the template is pinned here and the real apiserver's admissions and
+ * refusals are the --cluster admission phase (scripts/lanes/k8s/admission.sh).
+ */
+describe('the admission policy admits the dockerd sidecar of a docker class', () => {
+    const pods = policy('pods');
+    const helpers = readFileSync(join(ROOT, 'charts/factory/templates/_helpers.tpl'), 'utf8');
+    const caps = `[${DOCKERD_CAPS.map((cap) => `'${cap}'`).join(', ')}]`;
+    const config = loadDriverConfig({
+        EXECUTOR: 'kubernetes',
+        K8S_NAMESPACE: 'factory',
+        RUNNER_CLASSES: JSON.stringify({ standard: {}, sandbox: { runtimeClassName: 'gvisor', docker: true } }),
+        RUNNER_DEFAULT_CLASS: 'standard',
+        RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
+    });
+    const pod = runnerJobSpec(
+        config,
+        {
+            ...job,
+            masterPrompt: 'Factory execution contract',
+            runnerClass: 'sandbox',
+            repo: 'Bellows-AI/bellows',
+            gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+            services: [{ name: 'db', image: 'postgres:17', environment: [], user: { uid: 999, gid: 999 } }],
+        },
+        { id: SESSION, resume: false }
+    ).spec.template.spec;
+    const containers = [...pod.containers, ...(pod.initContainers ?? [])];
+
+    it('reads the docker classes from the chart values, by one helper', () => {
+        expect(helpers).toContain('define "factory.runnerDockerClasses"');
+        expect(pods).toContain('include "factory.runnerDockerClasses"');
+    });
+
+    it('allows the three caps and no drop-ALL on dockerd of a docker class under its RuntimeClass', () => {
+        // The pod is a docker class's, under that class's own RuntimeClass, which is never empty.
+        expect(pods).toContain('variables.runnerClass in variables.dockerClasses');
+        expect(pods).toContain("variables.runnerClasses[variables.runnerClass] != ''");
+        expect(pods).toContain('variables.spec.runtimeClassName == variables.runnerClasses[variables.runnerClass]');
+        // dockerd is a restartable init container, never a main one.
+        expect(pods).toContain(
+            `variables.spec.initContainers.exists(c, c.name == '${DOCKERD_CONTAINER}' && has(c.restartPolicy) && c.restartPolicy == 'Always')`
+        );
+        expect(pods).toContain(`variables.spec.containers.all(c, c.name != '${DOCKERD_CONTAINER}')`);
+        // The add rule admits exactly the daemon's three, on dockerd alone, under that condition.
+        expect(pods).toContain(
+            `(c.name == '${DOCKERD_CONTAINER}' && variables.dockerd &&\n                    c.securityContext.capabilities.add.all(a, a in ${caps}))`
+        );
+        // The drop-ALL rule is waived for that container under the same condition, and no other.
+        expect(pods).toContain(`(c.name == '${DOCKERD_CONTAINER}' && variables.dockerd) ||`);
+        expect(pods).toContain(`|| c.name == '${DOCKERD_CONTAINER}'))`);
+    });
+
+    it('refuses them on any other container, on dockerd in a non-docker class, under another RuntimeClass, or as a main container', () => {
+        // The waiver is a conjunction of the name and the pod-wide condition: no other name, and a
+        // dockerd fails it whenever the class, the RuntimeClass or the container's place is wrong.
+        const dockerd = /- name: dockerd\n\s+expression: >-\n([\s\S]*?)\n\s+validations:/.exec(pods)?.[1] ?? '';
+        expect(dockerd).toContain('variables.dockerPod &&');
+        const dockerPod = /- name: dockerPod\n\s+expression: >-\n([\s\S]*?)\n\s+- name: /.exec(pods)?.[1] ?? '';
+        for (const clause of [
+            'variables.runnerClass in variables.dockerClasses',
+            "variables.runnerClasses[variables.runnerClass] != ''",
+            'has(variables.spec.runtimeClassName)',
+        ]) {
+            expect(dockerPod).toContain(clause);
+        }
+        expect(pods).toContain(
+            "a driver-specced container may not be privileged or add capabilities, but for the agent launch pair and the docker daemon's three"
+        );
+    });
+
+    it('still requires drop ALL, no-escalation and RuntimeDefault everywhere else', () => {
+        expect(pods).toContain("'ALL' in c.securityContext.capabilities.drop");
+        expect(pods).toContain('c.securityContext.allowPrivilegeEscalation == false');
+        expect(pods).toContain("variables.spec.securityContext.seccompProfile.type == 'RuntimeDefault'");
+        // The driver's own docker-class pod: dockerd adds exactly the three and drops nothing; every
+        // other container drops ALL and adds nothing past the agent's launch pair.
+        expect(pod.securityContext?.seccompProfile?.type).toBe('RuntimeDefault');
+        expect(pod.runtimeClassName).toBe('gvisor');
+        expect(pod.containers.some((c) => c.name === DOCKERD_CONTAINER)).toBe(false);
+        const daemon = pod.initContainers?.find((c) => c.name === DOCKERD_CONTAINER);
+        expect(daemon?.restartPolicy).toBe('Always');
+        for (const container of containers) {
+            const context = container.securityContext;
+            expect(context?.allowPrivilegeEscalation, container.name).toBe(false);
+            expect((context as { privileged?: boolean } | undefined)?.privileged, container.name).toBeUndefined();
+            const added = (context?.capabilities as { add?: string[] } | undefined)?.add ?? [];
+            if (container.name === DOCKERD_CONTAINER) {
+                expect(added).toEqual([...DOCKERD_CAPS]);
+                continue;
+            }
+            expect(context?.capabilities?.drop, container.name).toContain('ALL');
+            if (container.name !== AGENT_CONTAINER) expect(added, container.name).toEqual([]);
+        }
+    });
+
+    it('refuses a pod where a container other than agent, gate or dockerd mounts the socket volume', () => {
+        expect(pods).toContain(
+            `c.name in ['${AGENT_CONTAINER}', '${GATE_CONTAINER}', '${DOCKERD_CONTAINER}'] || !has(c.volumeMounts) ||\n                c.volumeMounts.all(m, m.name != '${DOCKER_SOCK_VOLUME}')`
+        );
+        expect(pods).toContain(
+            'a driver-specced pod mounts the docker socket volume in the agent, the gate and dockerd alone'
+        );
+        const mounting = containers
+            .filter((c) => (c.volumeMounts ?? []).some((m) => m.name === DOCKER_SOCK_VOLUME))
+            .map((c) => c.name)
+            .sort();
+        expect(mounting).toEqual([AGENT_CONTAINER, DOCKERD_CONTAINER, GATE_CONTAINER].sort());
     });
 });
 

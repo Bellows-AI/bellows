@@ -16,7 +16,8 @@ service sidecars, every aux Job — because `create jobs` would otherwise be `re
   - a mount of a task volume carries no subPathExpr and no subPath but the reviewer's home
     (`.factory/reviewer`).
   - no ServiceAccount token, no other ServiceAccount, no host namespaces, nothing privileged, no
-    added capabilities.
+    added capabilities but the agent's launch pair and, in a docker class under its RuntimeClass,
+    the `dockerd` sidecar's three — the one container that also keeps no `drop: ALL`.
   - the runner class (runner.classes): the pod template's `factory.runner-class` label names a
     declared class, and the pod's RuntimeClass is that class's — none when the class names none.
   - the executor hardening is REQUIRED, not merely permitted (#382): the RuntimeDefault seccomp
@@ -97,6 +98,25 @@ spec:
               has(object.spec.template.metadata) && has(object.spec.template.metadata.labels) &&
               'factory.runner-class' in object.spec.template.metadata.labels ?
               object.spec.template.metadata.labels['factory.runner-class'] : ''
+        # The classes whose groups get a Docker daemon; whether this pod is one of theirs,
+        # under that class's own RuntimeClass, which is never empty (the chart refuses a docker class
+        # without one); and whether its `dockerd` is a restartable init container, never a main one.
+        # Container names are unique across containers and initContainers, so a `dockerd` the
+        # waivers below read under `variables.dockerd` is that sidecar.
+        - name: dockerClasses
+          expression: {{ include "factory.runnerDockerClasses" . | quote }}
+        - name: dockerPod
+          expression: >-
+              variables.runnerClass in variables.dockerClasses &&
+              variables.runnerClass in variables.runnerClasses &&
+              variables.runnerClasses[variables.runnerClass] != '' &&
+              has(variables.spec.runtimeClassName) &&
+              variables.spec.runtimeClassName == variables.runnerClasses[variables.runnerClass]
+        - name: dockerd
+          expression: >-
+              variables.dockerPod && has(variables.spec.initContainers) &&
+              variables.spec.initContainers.exists(c, c.name == 'dockerd' && has(c.restartPolicy) && c.restartPolicy == 'Always') &&
+              variables.spec.containers.all(c, c.name != 'dockerd')
     validations:
         - expression: "has(variables.spec.automountServiceAccountToken) && variables.spec.automountServiceAccountToken == false"
           message: 'a driver-specced pod must set automountServiceAccountToken: false'
@@ -152,6 +172,9 @@ spec:
         the agent's commands as the tool uid; factory-launch drops both, and root, before the CLI
         runs. Container names are unique across a pod's containers and initContainers, so no other
         container can carry them.
+        The docker daemon of a docker class (`dockerd`, a restartable init container of a
+        pod under its docker class's RuntimeClass, variables.dockerd) adds NET_ADMIN, SYS_ADMIN and
+        NET_RAW, and only these. It is never privileged, like every other container.
         */}}
         - expression: >-
               variables.containers.all(c, !has(c.securityContext) || (
@@ -159,8 +182,10 @@ spec:
                 (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
                   size(c.securityContext.capabilities.add) == 0 ||
                   (request.kind.kind == 'Job' && c.name == 'agent' &&
-                    c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])))))
-          message: 'a driver-specced container may not be privileged or add capabilities, but for the agent launch pair'
+                    c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])) ||
+                  (c.name == 'dockerd' && variables.dockerd &&
+                    c.securityContext.capabilities.add.all(a, a in ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW'])))))
+          message: "a driver-specced container may not be privileged or add capabilities, but for the agent launch pair and the docker daemon's three"
         {{/*
         Issue #382. Everything above FORBIDS a dangerous shape; these three REQUIRE the safe one,
         which is a different control: a driver that silently stopped setting `capabilities.drop`
@@ -189,15 +214,22 @@ spec:
                 has(c.securityContext.allowPrivilegeEscalation) &&
                 c.securityContext.allowPrivilegeEscalation == false)
           message: 'a driver-specced container must set allowPrivilegeEscalation: false'
+        {{/*
+        The one waiver, the docker daemon under variables.dockerd — `drop: ALL` breaks it.
+        Every other container drops ALL, and the daemon still keeps the pod profile and no escalation.
+        */}}
         - expression: >-
-              variables.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
-                has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop)
+              variables.containers.all(c, (c.name == 'dockerd' && variables.dockerd) ||
+                (has(c.securityContext) && has(c.securityContext.capabilities) &&
+                has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop))
           message: 'a driver-specced container must drop ALL capabilities'
         {{/*
         Issue #773. A declared service is a sidecar of the task pod, reached on the pod's own
         loopback by its name: `hostAliases` may point nowhere else, or a name the agent dials could
         be sent off the pod. Only a restartable init container may be a `svc-` service, and the
-        restartable ones are the gate, the reviewer and the services, nothing else (driver/src/k8s/k8s-podspec.ts).
+        restartable ones are the gate, the reviewer, the services and a docker class's `dockerd`,
+        nothing else (driver/src/k8s/k8s-podspec.ts). The docker socket volume is mounted by
+        the agent, the gate and `dockerd` alone, never a `svc-` service.
         */}}
         - expression: >-
               !has(variables.spec.hostAliases) || variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')
@@ -206,8 +238,13 @@ spec:
               variables.spec.containers.all(c, !c.name.startsWith('svc-')) &&
               (!has(variables.spec.initContainers) || variables.spec.initContainers.all(c,
                 (has(c.restartPolicy) && c.restartPolicy == 'Always') ==
-                  (c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-'))))
-          message: 'a driver-specced pod runs its gate, reviewer and svc- services only as restartable init containers'
+                  (c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-') || c.name == 'dockerd')))
+          message: 'a driver-specced pod runs its gate, reviewer, svc- services and dockerd only as restartable init containers'
+        - expression: >-
+              variables.containers.all(c,
+                c.name in ['agent', 'gate', 'dockerd'] || !has(c.volumeMounts) ||
+                c.volumeMounts.all(m, m.name != 'docker-sock'))
+          message: 'a driver-specced pod mounts the docker socket volume in the agent, the gate and dockerd alone'
         {{/*
         Issue #774. The reviewer is a restartable init container of its own uid (1002,
         driver/src/claim.ts REVIEWER_UID): never the CLI's 1000, the tool's 1001 or any other, and

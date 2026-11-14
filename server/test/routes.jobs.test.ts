@@ -125,6 +125,7 @@ interface StoreStub extends JobStore {
             refused?: boolean;
             blocked?: boolean;
             nodeLoss?: boolean;
+            daemonLoss?: boolean;
         };
     }[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
@@ -2240,6 +2241,28 @@ describe('POST /api/jobs/:id/interrupt', () => {
         });
     });
 
+    it('passes a dockerd-loss release through to the store, beside its node-loss flag', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'the docker daemon was lost under the gates',
+            release: true,
+            nodeLoss: true,
+            daemonLoss: true,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.interrupted[0]!.interruption).toEqual({
+            reason: 'the docker daemon was lost under the gates',
+            release: true,
+            claimSeq: null,
+            nodeLoss: true,
+            daemonLoss: true,
+        });
+    });
+
     it('stores no node-loss flag when the body sends none or false', async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
@@ -2306,6 +2329,8 @@ describe('POST /api/jobs/:id/interrupt', () => {
         ['a blocked adoption', { reason: 'adopted', release: false, claimSeq: 2, blocked: true }],
         ['a nodeLoss flag that is not a boolean', { reason: 'evicted', release: true, nodeLoss: 'yes' }],
         ['a nodeLoss adoption', { reason: 'adopted', release: false, claimSeq: 2, nodeLoss: true }],
+        ['a daemonLoss flag that is not a boolean', { reason: 'lost', release: true, daemonLoss: 'yes' }],
+        ['a daemonLoss adoption', { reason: 'adopted', release: false, claimSeq: 2, daemonLoss: true }],
     ])('refuses %s with 400 BAD_BODY, touching nothing', async (_name, fields) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);

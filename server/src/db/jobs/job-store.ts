@@ -202,7 +202,7 @@ function workerMethods(
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
  */
-export { LEASE_EXPIRED_REASON } from './job-store-run-control.js';
+export { LEASE_EXPIRED_REASON, REPEATED_DAEMON_LOSS_NOTE } from './job-store-run-control.js';
 export {
     INTERRUPTION_BUDGET,
     INTERRUPTION_WINDOW_MS,

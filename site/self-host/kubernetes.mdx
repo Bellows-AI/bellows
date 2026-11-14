@@ -159,7 +159,7 @@ Runners are Jobs in the release namespace. The chart sets up these guardrails:
 | --- | --- |
 | Driver Role (namespaced) | Jobs: create, get, delete, list, patch. Secrets: create, delete, patch. ConfigMaps: create, get, delete. Pods: delete, list. PersistentVolumeClaims: create, get, list, delete, patch. `pods/log`: get. `pods/resize`: patch. `metrics.k8s.io` pods: get. It never reads a Secret back. |
 | Runner pods | `automountServiceAccountToken: false`. They run as the default ServiceAccount and hold no cluster credential. |
-| ValidatingAdmissionPolicy (`isolation.admissionPolicy`, default on) | Bound to the driver's ServiceAccount. Admits only pods that mount a task volume, `emptyDir` and the driver's own per-attempt Secrets, with no host access, in their runner class's RuntimeClass, `RuntimeDefault` seccomp, all capabilities dropped and no privilege escalation. Without it, "can create pods" would mean "can read every Secret". |
+| ValidatingAdmissionPolicy (`isolation.admissionPolicy`, default on) | Bound to the driver's ServiceAccount. Admits only pods that mount a task volume, `emptyDir` and the driver's own per-attempt Secrets, with no host access, in their runner class's RuntimeClass, `RuntimeDefault` seccomp, all capabilities dropped and no privilege escalation. The one capability exception besides the agent's is the Docker daemon of a Docker class, under that class's RuntimeClass. Without it, "can create pods" would mean "can read every Secret". |
 | NetworkPolicy (`isolation.networkPolicy`, default on) | No ingress. Egress to DNS, the dashboard, the collector, the driver, other runner pods, and the internet outside `isolation.blockedCidrs`. |
 | LimitRange (`limitRange.enabled`, default on) | A pod without limits inherits 4 CPU and 8Gi memory (requests 100m and 128Mi). |
 
@@ -173,6 +173,10 @@ Tune the runners:
 | `runner.classes.<name>.nodeSelector`, `.tolerations`, `.affinity` | empty | Where the class's agent code runs. Use a tainted node group so it never shares a node with the dashboard. |
 | `runner.classes.standard.resources` | requests `500m` / `1Gi`, limits `4` / `8Gi` | Applies to the runner, services and helpers. A new class starts with no resources: it inherits nothing from `standard`. |
 | `runner.classes.standard.gateResources` | requests `2` / `2Gi` | Gate pods. Unset slots fall back to the class's `resources`. |
+| `runner.classes.<name>.docker` | `false` | Gives the class's tasks a Docker daemon: a `dockerd` sidecar in the task pod that gates reach through `DOCKER_HOST`, over a unix socket. Requires a `runtimeClassName`, or the render fails. The Docker executor refuses a class with `docker: true`. |
+| `runner.classes.<name>.dockerStorage` | unset | Size of the daemon's data root: images, layers and containers. It is held in memory and counts against the pod's memory. Unset, only the pod's memory limit bounds it. |
+| `runner.classes.<name>.dockerResources` | unset | Requests and limits of the `dockerd` sidecar, in the same shape as `resources`. |
+| `runner.docker.image` | `docker:27-dind`, pinned by digest | The daemon's image, used only when a class sets `docker: true`. A digest is required: the render fails without one. `global.imageRegistry` prefixes it like every other image; `ghcr.io/bellows-ai` holds the pinned digest as `docker:27-dind`. |
 | `isolation.blockedCidrs` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16` | Blocked for runners, including the cloud metadata address. |
 | `isolation.allowedCidrs` | `[]` | Add a private host a runner must reach, as a `/32`. |
 | `isolation.dnsCidrs` | `169.254.20.10/32` | Extra resolver addresses allowed on port 53. List your resolver if your DNS pods are labelled neither `k8s-app: kube-dns` nor `k8s-app: node-local-dns`. |
@@ -190,7 +194,16 @@ runner:
       nodeSelector: { pool: sandbox }
       resources:
         requests: { cpu: 500m, memory: 1Gi }
+    sandbox-docker:
+      runtimeClassName: gvisor
+      nodeSelector: { pool: sandbox }
+      docker: true
+      dockerStorage: 8Gi
+      dockerResources:
+        requests: { cpu: '1', memory: 2Gi }
 ```
+
+A Docker class runs its daemon as root with the task volume mounted, so task code in it has root over that volume. Run it only under a sandbox RuntimeClass. See [Security model](/self-host/security).
 
 Every class's node pools must cover the zones your task volumes live in, the default class's too. A runner placed in a zone its task volume cannot reach stays Pending.
 

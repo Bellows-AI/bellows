@@ -74,6 +74,8 @@ An organization profile can choose a **Runner class**: the kind of runner its ta
 - The class is read when a task starts, so a change applies to tasks that start afterwards.
 - A class your deployment doesn't declare is refused when you save.
 
+A class **with Docker** gives each task its own Docker daemon. Your gates get `DOCKER_HOST` pointing at it, so a gate command can run `docker` or `docker compose` when the `image` in your `.bellows.yaml` has the Docker CLI. The agent's own executor image has no Docker CLI, so the agent uses Docker through your gates, not directly. The daemon starts empty on every attempt. If it restarts while a gate fails, the attempt is interrupted and redone instead of counting as a failure. Docker classes exist only on Kubernetes.
+
 <Warning>
 Keep API keys out of the configuration JSON. Set them as environment variables under **Settings → Workspace** (your own) or **Settings → Organization** (shared). The form links to **Workspace settings**.
 </Warning>

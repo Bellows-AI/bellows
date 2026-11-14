@@ -313,7 +313,7 @@ describe('ci workflows', () => {
         expect(mirror.permissions).toEqual({});
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
-        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault', 'pin-digests']);
+        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault', 'dind', 'pin-digests']);
         expect(job.env!.SOURCE).toBe(composePostgres());
         expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
@@ -363,6 +363,24 @@ describe('ci workflows', () => {
         expect(commands).toContain('grep -q toomanyrequests');
         expect(commands).toMatch(/for attempt[\s\S]*sleep[\s\S]*imagetools create/);
         expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
+    });
+
+    // global.imageRegistry prefixes the docker class's dockerd image like every image the chart
+    // renders, so the registry must hold the exact digest the chart pins, under the chart's tag.
+    it("mirrors the chart's pinned dockerd image into GHCR by digest, checked against the pin, and re-pins it weekly", () => {
+        const job = workflow(MIRROR).jobs.dind!;
+        expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
+        const commands = runs(job).join('\n');
+        expect(commands).toContain('docker login ghcr.io');
+        expect(commands).toContain('$2 == "docker"');
+        expect(commands).toContain('charts/factory/values.yaml');
+        expect(commands).toContain(
+            'docker buildx imagetools create -t "$REGISTRY/docker:$tag" "mirror.gcr.io/library/docker@$digest"'
+        );
+        expect(commands).toContain('test "$mirrored" = "$digest"');
+        expect(commands).toContain('grep -q toomanyrequests');
+        expect(commands).toMatch(/for attempt[\s\S]*sleep[\s\S]*imagetools create/);
+        expect(read('scripts/pin-digests.sh')).toContain('repin_chart docker mirror.gcr.io/library/docker');
     });
 
     it('pins Vault to an exact release, opt-in under the secrets-vault compose profile', () => {

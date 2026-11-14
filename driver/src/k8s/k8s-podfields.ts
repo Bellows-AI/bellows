@@ -201,7 +201,8 @@ export function podHardeningField(): { seccompProfile: { type: 'RuntimeDefault' 
  */
 export interface ContainerSecurityContext {
     allowPrivilegeEscalation: false;
-    capabilities: { drop: string[]; add?: string[] };
+    /** `drop: ALL` on every container but a docker class's `dockerd`, which adds its three and drops none (`k8s-dockerd.ts`). */
+    capabilities: { drop?: string[]; add?: string[] };
     runAsNonRoot?: true;
     runAsUser?: number;
     runAsGroup?: number;
@@ -242,7 +243,7 @@ export interface RunnerMount {
  */
 export type RunnerVolume =
     | { name: string; persistentVolumeClaim: { claimName: string } }
-    | { name: string; emptyDir: Record<string, never> | { medium: 'Memory'; sizeLimit: string } }
+    | { name: string; emptyDir: Record<string, never> | { medium: 'Memory'; sizeLimit?: string } }
     | TelemetryConfigVolume
     | BindingVolume;
 

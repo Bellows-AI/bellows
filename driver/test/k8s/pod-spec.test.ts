@@ -29,8 +29,22 @@ import {
     gateView,
     everyPodSpec,
     namespace,
+    gatedOf,
+    SUPERVISED,
 } from '../fixtures/k8s-suite.js';
 import { sized } from '../fixtures/runner-classes.js';
+import { dockerdStartArgv } from '../../src/container-scripts.js';
+import { classClaimOf } from '../../src/runner-classes.js';
+import {
+    DOCKER_DATA_ROOT,
+    DOCKER_DATA_VOLUME,
+    DOCKER_SOCK_DIR,
+    DOCKER_SOCK_VOLUME,
+    DOCKER_SOCKET,
+    DOCKER_TMP_DIR,
+    DOCKER_TMP_VOLUME,
+    DOCKERD_CONTAINER,
+} from '../../src/k8s/k8s-dockerd.js';
 
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
 const WINDDOWN_S =
@@ -743,6 +757,134 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
             runAsUser: 1000,
             runAsGroup: 1000,
         });
+    });
+});
+
+// A docker class's group gets a daemon of its own: a `dockerd` native sidecar, up before the gate,
+// reached over a unix socket only the agent, the gate and the daemon mount. Everything else about
+// the pod — the agent's and the gate's hardening, the services' isolation — is as in any class.
+describe('a docker class', () => {
+    const DOCKER_IMAGE = `docker:27-dind@sha256:${'a'.repeat(64)}`;
+    const classesEnv = {
+        EXECUTOR: 'kubernetes',
+        K8S_NAMESPACE: namespace,
+        RUNNER_CLASSES: JSON.stringify({
+            standard: {},
+            sandbox: {
+                runtimeClassName: 'gvisor',
+                docker: true,
+                dockerStorage: '6Gi',
+                dockerResources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { memory: '8Gi' } },
+            },
+        }),
+        RUNNER_DEFAULT_CLASS: 'standard',
+        RUNNER_DOCKER_IMAGE: DOCKER_IMAGE,
+    };
+    const config = { ...loadDriverConfig(classesEnv), servicesEnabled: true };
+    const podOf = (runnerClass: string, of: BoardJob = job) =>
+        runnerJobSpec(
+            config,
+            {
+                ...gatedOf(of),
+                ...SUPERVISED,
+                runnerClass,
+                services: [{ name: 'cache', image: 'redis', environment: [] }],
+            },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+    const named = (pod: ReturnType<typeof podOf>, name: string) => {
+        const found = [...pod.containers, ...(pod.initContainers ?? [])].find((c) => c.name === name);
+        if (!found) throw new Error(`the pod has no ${name} container`);
+        return found;
+    };
+    const envOf = (container: { env: { name: string; value?: string }[] }, name: string) =>
+        container.env.filter((entry) => entry.name === name);
+
+    it('adds the dockerd sidecar: restartable, before the gate, privileged only by its three caps', () => {
+        const pod = podOf('sandbox');
+        const init = (pod.initContainers ?? []).map((c) => c.name);
+        expect(init.indexOf(DOCKERD_CONTAINER)).toBe(0);
+        expect(init.indexOf(DOCKERD_CONTAINER)).toBeLessThan(init.indexOf('gate'));
+        const dockerd = named(pod, DOCKERD_CONTAINER);
+        expect(dockerd.image).toBe(DOCKER_IMAGE);
+        expect(dockerd.restartPolicy).toBe('Always');
+        expect(dockerd.securityContext).toEqual({
+            allowPrivilegeEscalation: false,
+            capabilities: { add: ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW'] },
+        });
+        expect(dockerd.command).toEqual(dockerdStartArgv());
+        expect(dockerd.resources).toEqual({ requests: { cpu: '500m', memory: '1Gi' }, limits: { memory: '8Gi' } });
+        // An exec startupProbe on the shared socket: the gate after it starts only once the daemon answers.
+        expect(dockerd.startupProbe?.exec.command.join(' ')).toContain(`unix://${DOCKER_SOCKET}`);
+        expect(dockerd.volumeMounts).toEqual(
+            expect.arrayContaining([
+                { name: DOCKER_DATA_VOLUME, mountPath: DOCKER_DATA_ROOT },
+                { name: DOCKER_TMP_VOLUME, mountPath: DOCKER_TMP_DIR },
+                { name: DOCKER_SOCK_VOLUME, mountPath: DOCKER_SOCK_DIR },
+                expect.objectContaining({ name: TASK_VOLUME, mountPath: TASK_MOUNT }),
+            ])
+        );
+        expect(DOCKER_DATA_ROOT).toBe('/var/lib/docker');
+        expect(DOCKER_SOCK_DIR).toBe('/run/factory-docker');
+        expect(pod.volumes).toEqual(
+            expect.arrayContaining([
+                { name: DOCKER_DATA_VOLUME, emptyDir: { medium: 'Memory', sizeLimit: '6Gi' } },
+                { name: DOCKER_TMP_VOLUME, emptyDir: {} },
+                { name: DOCKER_SOCK_VOLUME, emptyDir: {} },
+            ])
+        );
+    });
+
+    it('points the agent and the gate at the socket and the shared temp dir, their hardening unchanged', () => {
+        const pod = podOf('sandbox');
+        const plain = podOf('standard');
+        for (const name of [AGENT_CONTAINER, 'gate']) {
+            const container = named(pod, name);
+            expect(envOf(container, 'DOCKER_HOST'), name).toEqual([
+                { name: 'DOCKER_HOST', value: `unix://${DOCKER_SOCKET}` },
+            ]);
+            expect(envOf(container, 'TMPDIR'), name).toEqual([{ name: 'TMPDIR', value: DOCKER_TMP_DIR }]);
+            expect(container.volumeMounts, name).toEqual(
+                expect.arrayContaining([
+                    { name: DOCKER_SOCK_VOLUME, mountPath: DOCKER_SOCK_DIR },
+                    { name: DOCKER_TMP_VOLUME, mountPath: DOCKER_TMP_DIR },
+                ])
+            );
+            expect(container.securityContext, name).toEqual(named(plain, name).securityContext);
+        }
+        expect(named(pod, 'gate').securityContext).toMatchObject({ runAsUser: 1000, capabilities: { drop: ['ALL'] } });
+        expect(DOCKER_SOCKET).toBe('/run/factory-docker/docker.sock');
+    });
+
+    it('mounts the socket in the agent, the gate and dockerd alone: no svc-* member, no other container', () => {
+        const pod = podOf('sandbox');
+        const mounting = [...pod.containers, ...(pod.initContainers ?? [])]
+            .filter((c) => c.volumeMounts.some((mount) => mount.name === DOCKER_SOCK_VOLUME))
+            .map((c) => c.name)
+            .sort();
+        expect(mounting).toEqual([AGENT_CONTAINER, DOCKERD_CONTAINER, 'gate'].sort());
+        expect(named(pod, 'svc-cache').volumeMounts.map((mount) => mount.name)).not.toContain(DOCKER_SOCK_VOLUME);
+    });
+
+    it('lets the platform DOCKER_HOST win over a claim value in a docker class only', () => {
+        const claimed: BoardJob = { ...job, env: { DOCKER_HOST: 'tcp://10.0.0.1:2375', KEEP: '1' } };
+        const sandbox = classClaimOf(config, { ...claimed, runnerClass: 'sandbox' });
+        expect(sandbox.env).toEqual({ KEEP: '1' });
+        const standard = classClaimOf(config, { ...claimed, runnerClass: 'standard' });
+        expect(standard.env).toEqual(claimed.env);
+        const agent = named(podOf('sandbox', sandbox), AGENT_CONTAINER);
+        expect(envOf(agent, 'DOCKER_HOST')).toEqual([{ name: 'DOCKER_HOST', value: `unix://${DOCKER_SOCKET}` }]);
+    });
+
+    it('a non-docker class has no dockerd, no docker-sock volume, no DOCKER_HOST', () => {
+        const pod = podOf('standard');
+        const all = [...pod.containers, ...(pod.initContainers ?? [])];
+        expect(all.map((c) => c.name)).not.toContain(DOCKERD_CONTAINER);
+        expect(pod.volumes.filter((volume) => volume.name.startsWith('docker-'))).toEqual([]);
+        for (const container of all) {
+            expect(envOf(container, 'DOCKER_HOST'), container.name).toEqual([]);
+            expect(container.volumeMounts.map((mount) => mount.name)).not.toContain(DOCKER_SOCK_VOLUME);
+        }
     });
 });
 

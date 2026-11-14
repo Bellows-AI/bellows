@@ -24,6 +24,17 @@ function heldContainerOf(name: string | undefined): HeldContainer {
 }
 
 /**
+ * The first container the kubelet holds in CrashLoopBackOff, in words, else null. Never a refusal of
+ * its own — the container may yet come up (a docker class's dockerd) — only what the start's bound names.
+ */
+export function crashLoopingOf(statuses: readonly K8sContainerStatus[]): string | null {
+    const looping = statuses.find((c) => c.state?.waiting?.reason === 'CrashLoopBackOff');
+    if (!looping) return null;
+    const words = looping.state?.waiting?.message;
+    return `the ${looping.name} container is crash-looping (CrashLoopBackOff${words ? `: ${words}` : ''})`;
+}
+
+/**
  * The held container and its image: the status's own, else — for a sidecar — the image the pod spec
  * gave it, never the executor image a caller would otherwise fill in.
  */

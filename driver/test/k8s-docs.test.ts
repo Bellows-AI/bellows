@@ -51,6 +51,38 @@ describe('the runner classes record', () => {
     });
 });
 
+describe('the docker class record', () => {
+    // The daemon runs as root over the task volume and the tool uid reaches its socket.
+    it('states that a docker class gives task code root over the task volume', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'a docker class gives task code root over the task volume, so tool-uid isolation does not hold there'
+        );
+        expect(prose(kubernetesDocs)).toContain('The docker executor has no docker class (refused at boot, above)');
+        expect(securityDocs).toContain('**A docker class gives task code root over the task volume**');
+    });
+
+    it("states that admission trusts the class's RuntimeClass name, not its handler", () => {
+        expect(prose(kubernetesDocs)).toContain("admission trusts a docker class's RuntimeClass name, not its handler");
+    });
+
+    it('states the dockerd restart interruption, its per-phase granularity and the ad-hoc note', () => {
+        const doc = prose(kubernetesDocs);
+        expect(doc).toContain(
+            'a `dockerd` loss — its restart count moved, or it is not running at either read — is checked per verdict gate phase, not per gate'
+        );
+        expect(doc).toContain('refunded under the node-loss bound');
+        // A run of them is bounded on the board; any other interruption between two starts the count again.
+        expect(doc).toContain('the third consecutive dockerd loss on spends an attempt and the interruption budget');
+        expect(doc).toContain('any other interruption between two dockerd losses starts the count again');
+        expect(doc).toContain('the task pod is torn down, not kept');
+        expect(doc).toContain('An ad-hoc gate run gets a note only.');
+    });
+
+    it('states that no lane starts a real dockerd', () => {
+        expect(prose(kubernetesDocs)).toContain('no lane starts a real `dockerd`');
+    });
+});
+
 describe('the EKS prerequisites record', () => {
     it('states the node and add-on prerequisites in docs/kubernetes.md', () => {
         expect(kubernetesDocs).toContain('EKS prerequisites');

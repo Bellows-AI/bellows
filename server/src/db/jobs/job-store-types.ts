@@ -163,6 +163,11 @@ export interface JobInterruption {
     requirement?: true;
     /** The platform took the attempt away: outside the interruption budget, bounded by `NODE_LOSS_BUDGET`. */
     nodeLoss?: true;
+    /**
+     * A docker class's dockerd lost under a failed gate. Refunded beside `nodeLoss` twice in a row; the
+     * third consecutive one on is stored without `nodeLoss`, unrefunded (`REPEATED_DAEMON_LOSS_NOTE`).
+     */
+    daemonLoss?: true;
     /** A lease that expired under a silent driver, recorded by the claim that took the row over: bounded like a node loss. */
     leaseExpired?: true;
     /** Whether the interruption's attempt was refunded; absent on entries written before the field existed. */

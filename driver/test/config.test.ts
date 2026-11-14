@@ -174,7 +174,14 @@ describe('the driver config: runner classes', () => {
         gateResources: { requests: { cpu: '2', memory: '2Gi' } },
         docker: false,
     };
-    const SANDBOX = { runtimeClassName: 'gvisor', nodeSelector: { pool: 'sandbox' }, docker: true };
+    const SANDBOX = {
+        runtimeClassName: 'gvisor',
+        nodeSelector: { pool: 'sandbox' },
+        docker: true,
+        dockerStorage: '6Gi',
+        dockerResources: { requests: { cpu: '500m' }, limits: { memory: '8Gi' } },
+    };
+    const DOCKER_IMAGE = `docker:27-dind@sha256:${'0'.repeat(64)}`;
     const classesEnv = (
         classes: Record<string, unknown> = { standard: STANDARD, sandbox: SANDBOX },
         name = 'standard'
@@ -182,6 +189,7 @@ describe('the driver config: runner classes', () => {
         EXECUTOR: 'kubernetes',
         RUNNER_CLASSES: JSON.stringify(classes),
         RUNNER_DEFAULT_CLASS: name,
+        RUNNER_DOCKER_IMAGE: DOCKER_IMAGE,
     });
     const UNSIZED = { cpuRequest: null, cpuLimit: null, memoryRequest: null, memoryLimit: null };
 
@@ -200,6 +208,8 @@ describe('the driver config: runner classes', () => {
                 // Each unset gate slot falls back to the class's own runner slot.
                 gateResources: { cpuRequest: '2', cpuLimit: '4', memoryRequest: '2Gi', memoryLimit: '8Gi' },
                 docker: false,
+                dockerStorage: null,
+                dockerResources: UNSIZED,
             },
             sandbox: {
                 name: 'sandbox',
@@ -210,8 +220,39 @@ describe('the driver config: runner classes', () => {
                 runnerResources: UNSIZED,
                 gateResources: UNSIZED,
                 docker: true,
+                dockerStorage: '6Gi',
+                dockerResources: { cpuRequest: '500m', cpuLimit: null, memoryRequest: null, memoryLimit: '8Gi' },
             },
         });
+        expect(config.runnerDockerImage).toBe(DOCKER_IMAGE);
+    });
+
+    // The daemon image is the one image a docker class runs that no build of this repo made: it is
+    // required once any class has a daemon, and pinned by digest so a tag move never changes it (F10).
+    it('requires RUNNER_DOCKER_IMAGE, digest-pinned, when any class has docker: true', () => {
+        const { RUNNER_DOCKER_IMAGE: _image, ...unset } = classesEnv();
+        expect(() => loadDriverConfig(unset)).toThrow(/RUNNER_DOCKER_IMAGE.*RUNNER_CLASSES\.sandbox/);
+        expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_DOCKER_IMAGE: 'docker:27-dind' })).toThrow(
+            /RUNNER_DOCKER_IMAGE must be pinned by digest/
+        );
+        expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_DOCKER_IMAGE: ' ' })).toThrow(/RUNNER_DOCKER_IMAGE/);
+        const plain = { EXECUTOR: 'kubernetes', RUNNER_CLASSES: JSON.stringify({ standard: STANDARD }) };
+        expect(() => loadDriverConfig({ ...plain, RUNNER_DEFAULT_CLASS: 'standard' })).not.toThrow();
+        expect(loadDriverConfig({ ...plain, RUNNER_DEFAULT_CLASS: 'standard' }).runnerDockerImage).toBeNull();
+    });
+
+    it('refuses a daemon storage or daemon resources that are not quantities', () => {
+        for (const fields of [
+            { dockerStorage: 'lots' },
+            { dockerResources: { requests: { cpu: 'x' } } },
+            { dockerResources: { limits: { memory: '1Gi' }, requests: { memory: '2Gi' } } },
+            { dockerResources: { request: {} } },
+        ]) {
+            expect(
+                () => loadDriverConfig(classesEnv({ standard: STANDARD, sandbox: { ...SANDBOX, ...fields } })),
+                JSON.stringify(fields)
+            ).toThrow(/RUNNER_CLASSES\.sandbox\.docker(Storage|Resources)/);
+        }
     });
 
     it('refuses at boot a non-DNS class name, an unknown key, an undeclared default and RUNNER_RUNTIME_CLASS set at all', () => {
@@ -255,6 +296,8 @@ describe('the driver config: runner classes', () => {
                 runnerResources: UNSIZED,
                 gateResources: UNSIZED,
                 docker: false,
+                dockerStorage: null,
+                dockerResources: UNSIZED,
             },
         });
         expect(() => loadDriverConfig({ RUNNER_DEFAULT_CLASS: 'standard' })).toThrow(/RUNNER_DEFAULT_CLASS "standard"/);

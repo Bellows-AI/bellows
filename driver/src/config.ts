@@ -257,6 +257,8 @@ export interface DriverConfig {
      */
     runnerClasses: RunnerClasses['runnerClasses'];
     defaultRunnerClass: string;
+    /** The `dockerd` sidecar's image (RUNNER_DOCKER_IMAGE), digest-pinned; required once a class has `docker: true`. */
+    runnerDockerImage: string | null;
 }
 
 /** The deployment image paired with one task-selected executor type. */
