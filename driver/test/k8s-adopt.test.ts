@@ -12,6 +12,7 @@ import { claimPath, jobPath } from '../src/k8s/k8s-auxspec.js';
 import { releaseClaimAfterGroupEnd } from '../src/k8s/k8s-fence.js';
 import { ensureGroup, finishGroup } from '../src/k8s/k8s-group.js';
 import { type CloseReads, adoptFinishedRunner } from '../src/k8s/k8s-adopt.js';
+import { ledgerOf, RunnerAbandoned } from '../src/k8s/k8s-kill.js';
 import { pollRunnerJobUntilTerminal } from '../src/k8s/k8s-poll.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s/k8s-podspec.js';
 import type { K8sDeps } from '../src/k8s/k8s-transport.js';
@@ -775,6 +776,43 @@ describe('a live run (#829)', () => {
 
             expect(polled).toEqual({ timedOut: false, jobSucceeded: false });
             expect(calls.slice(before).filter((call) => call.method !== 'GET')).toEqual([]);
+        });
+
+        /** The taken-over attempt's poll world of the test above: the report in hand, the Job still active. */
+        const takenOverPoll = async () => {
+            const { deps: base } = exitedWorld(`${RELEASED}\n`);
+            await adoptFinishedRunner(base, adopter, reads());
+            const deps: K8sDeps = {
+                ...base,
+                request: (method, path, body, options) =>
+                    method === 'GET' && path === jobPath(NS, priorName)
+                        ? Promise.resolve({
+                              status: 200,
+                              body: JSON.stringify({ metadata: { uid: `uid-${priorName}` }, status: { active: 1 } }),
+                          })
+                        : base.request(method, path, body, options),
+            };
+            return { deps, taken: ownGroup({ ...adopter, groupLease: job.leaseToken }) };
+        };
+
+        // The same driver process held the group under the earlier claim and abandoned it when that lease
+        // lapsed: that abandonment is the earlier attempt's, never the takeover's.
+        it('an earlier attempt abandoned in this process does not end the taken-over poll', async () => {
+            const { deps, taken } = await takenOverPoll();
+            ledgerOf(deps).abandon(job);
+
+            const polled = await pollRunnerJobUntilTerminal(deps, taken, { over: () => true });
+
+            expect(polled).toEqual({ timedOut: false, jobSucceeded: false });
+        });
+
+        it("the takeover's own abandonment still ends its poll", async () => {
+            const { deps, taken } = await takenOverPoll();
+            ledgerOf(deps).abandon(taken);
+
+            await expect(pollRunnerJobUntilTerminal(deps, taken, { over: () => true })).rejects.toBeInstanceOf(
+                RunnerAbandoned
+            );
         });
 
         it('deletes nothing once the attempt stood down during the log read', async () => {

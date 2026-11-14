@@ -17,6 +17,8 @@ import type { Board, BoardJob } from '../../src/board/board.js';
 import { BoardHttpError } from '../../src/board/board-retry.js';
 import { envFileBody } from '../../src/claim.js';
 import { createGateServer, createSupervisedGateManager } from '../../src/gates.js';
+import { killedOutcome } from '../../src/k8s/k8s-kill.js';
+import { createKillLedger } from '../../src/kill-ledger.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import { type AdoptedRun, type LiveRun, ownGroup, type Read, type Runner } from '../../src/runner.js';
 import { createStepBroker, StepChannelClosed } from '../../src/step-control.js';
@@ -134,7 +136,10 @@ export interface Group {
 
 export interface Row {
     id: string;
-    status: 'queued' | 'running' | 'succeeded' | 'dead';
+    /** A verdict's status as reported (or as staged by a driver lost after staging). */
+    status: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead';
+    /** The verdict's exit code; null until one is in. */
+    exitCode: number | null;
     claimSeq: number;
     leaseToken: string | null;
     leaseExpiresAt: number;
@@ -199,6 +204,13 @@ export class Sim {
 
     /** Whether the job declares one on-demand gate, run by whichever driver holds the claim (`gateRuns`). */
     readonly gated: boolean;
+    /**
+     * How a run this process abandoned answers its caller: kubernetes ends its poll as a killed run
+     * (`killedOutcome`), docker's followed log errors and the run rejects.
+     */
+    readonly executor: 'kubernetes' | 'docker';
+    /** Every group a driver ended (`Runner.finish`), with whether its agent was still running then. */
+    readonly finished: { claimSeq: number; agentRunning: boolean }[] = [];
     /** Every gate run a driver's gate manager executed, with the driver that ran it. */
     readonly gateRuns: { driver: string; command: string }[] = [];
     /** The env file the docker writer renders for each agent run a driver started (what the agent's process would hold). */
@@ -215,9 +227,10 @@ export class Sim {
 
     constructor(
         readonly t: Timing,
-        opts: { wallClock?: boolean; gated?: boolean } = {}
+        opts: { wallClock?: boolean; gated?: boolean; executor?: 'kubernetes' | 'docker' } = {}
     ) {
         this.gated = Boolean(opts.gated);
+        this.executor = opts.executor ?? 'kubernetes';
         this.now = opts.wallClock ? Date.now : this.host.loopNow;
         this.config = {
             ...baseConfig(),
@@ -232,6 +245,7 @@ export class Sim {
         this.row = {
             id: baseJob(1).id,
             status: 'queued',
+            exitCode: null,
             claimSeq: 0,
             leaseToken: null,
             leaseExpiresAt: 0,
@@ -284,6 +298,13 @@ export class Sim {
 
     readonly holds = (claimed: BoardJob) => this.row.status === 'running' && this.row.leaseToken === claimed.leaseToken;
 
+    /** The verdict lands as reported: its status and exit code, never a success the driver did not report. */
+    private settle(result: unknown) {
+        const { status, exitCode } = result as { status?: string; exitCode?: number | null };
+        this.row.status = status === 'succeeded' ? 'succeeded' : 'failed';
+        this.row.exitCode = exitCode ?? null;
+    }
+
     /** The board's calls with no driver in between: a scenario that needs one call at one instant. */
     readonly directBoard = () => this.boardImpl();
 
@@ -301,7 +322,7 @@ export class Sim {
                         reason: 'the driver was lost after staging',
                         ...this.silence(),
                     });
-                    r.status = 'succeeded';
+                    this.settle(r.staged.result);
                     return null;
                 }
                 r.interruptions.push({ claimSeq: r.claimSeq, reason: 'lease expired', ...this.silence() });
@@ -337,7 +358,7 @@ export class Sim {
             },
             complete: async (claimed, result) => {
                 if (!this.holds(claimed)) return { state: 'lost', reclaimId: null };
-                r.status = 'succeeded';
+                this.settle(result);
                 r.output = String((result as { output?: string }).output ?? '');
                 return { state: 'held', reclaimId: null };
             },
@@ -482,6 +503,8 @@ export class Sim {
         const sim = this;
         const base = stubRunner(async () => ok());
         const groupJob = (j: BoardJob) => ownGroup(j);
+        // The executors' own ledger (`createKillLedger`): what this process abandoned, as the runner keys it.
+        const ledger = createKillLedger({ write: async () => {} });
         return Object.assign(base, {
             async runGate(_job: BoardJob, gate: { command: string }): Promise<StepResult> {
                 sim.gateRuns.push({ driver: d.name, command: gate.command });
@@ -526,7 +549,17 @@ export class Sim {
                 }
                 const reported = d.steps.awaitReport(token);
                 reported.catch(() => undefined);
-                const outcome = await Promise.race([reported, group.gone.then(() => null)]);
+                // The executor's poll (k8s) or followed log (docker) ends when this process abandons the attempt.
+                const left = ledger.abandoned(ownGroup(job));
+                const abandoned = new Promise<'abandoned'>((resolve) => {
+                    if (left.aborted) resolve('abandoned');
+                    else left.addEventListener('abort', () => resolve('abandoned'), { once: true });
+                });
+                const outcome = await Promise.race([reported, group.gone.then(() => null), abandoned]);
+                if (outcome === 'abandoned') {
+                    if (sim.executor === 'kubernetes') return killedOutcome();
+                    throw new Error(`following the log of claim ${group.claimSeq} ended with a signal`);
+                }
                 if (outcome === null) {
                     // The pod went away under a live driver: the platform's words, as the k8s poll reads them.
                     return ok({
@@ -621,7 +654,15 @@ export class Sim {
                 sim.rebind(groupJob(group).leaseToken, bindingBody(binding));
             },
             async finish(job: BoardJob) {
+                const g = sim.groupOf(job);
+                sim.finished.push({
+                    claimSeq: job.claimSeq,
+                    agentRunning:
+                        g !== undefined && !existsSync(join(g.root, 'out', AGENT_MAILBOX_DIR, MAILBOX_FILES.agentExit)),
+                });
                 await orderFinish(host, job).catch(() => undefined);
+                // `finishGroup`: the group's runner is deleted once its supervisor was told to finish.
+                if (g && sim.groupOf(job) === g) sim.deleteGroup(g);
             },
             async kill(job: BoardJob) {
                 sim.driverKills.push({
@@ -632,7 +673,9 @@ export class Sim {
                 const g = sim.groupOf(job);
                 if (g) sim.deleteGroup(g);
             },
-            abandon() {},
+            abandon(job: BoardJob) {
+                ledger.abandon(ownGroup(job));
+            },
         }) as unknown as Runner;
     }
 
