@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path';
+import { CLOUD, type DeploymentMode } from '@factory-ai/core';
 
 /**
  * Where artifacts live (docs/configuration.md). Environment only, parsed by `loadConfig` like the
@@ -151,4 +152,26 @@ export function loadArtifactsConfig(env: NodeJS.ProcessEnv): ArtifactsConfig {
             1
         ),
     };
+}
+
+/**
+ * One retention knob per deployment (docs/retention.md): cloud times every org by its plan, so it refuses
+ * ARTIFACTS_RETENTION_DAYS, and no board takes it beside PLAN_DEFAULT_MAX_RETENTION_DAYS.
+ */
+export function refuseSecondRetentionKnob(
+    env: NodeJS.ProcessEnv,
+    mode: DeploymentMode,
+    planDays: number | undefined
+): void {
+    if (!env.ARTIFACTS_RETENTION_DAYS?.trim()) return;
+    if (mode === CLOUD) {
+        throw new Error(
+            'DEPLOYMENT_MODE=cloud refuses ARTIFACTS_RETENTION_DAYS: each organization keeps its plan window'
+        );
+    }
+    if (planDays !== undefined) {
+        throw new Error(
+            'ARTIFACTS_RETENTION_DAYS and PLAN_DEFAULT_MAX_RETENTION_DAYS are two retention windows: set one'
+        );
+    }
 }

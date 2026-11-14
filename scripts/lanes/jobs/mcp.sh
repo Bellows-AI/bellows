@@ -25,22 +25,25 @@ lane_extra_pids="$lane_extra_pids $mcp_idp_pid"
 lane_extra_pids="${lane_extra_pids# }"
 
 # The member's organization has the smoke repository tracked, as the board fixture does for the stand-in member.
-compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
-    "insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+# The member has not signed in yet, so the organization row the seed references is planted first; the sign-in's
+# upsert then completes it. server/test-db/lane-seeds.mcp.test.ts runs this SQL against a migrated schema.
+mcp_seeded="$(compose exec -T postgres psql -U factory -d "$DB" -q -v ON_ERROR_STOP=1 -c \
+    "insert into organization (id, name) values ('$MCP_ORG', '$MCP_ORG') on conflict do nothing;
+     insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
      values ('$MCP_ORG', 'claude-code', 'test-jobs-mcp', '$SMOKE_REPO', 'main', now(), now())
-     on conflict do nothing" >/dev/null 2>&1 || {
-    echo "test-jobs: could not select $SMOKE_REPO for the mcp organization"
+     on conflict do nothing" 2>&1)" || {
+    echo "test-jobs: could not select $SMOKE_REPO for the mcp organization: $mcp_seeded"
     exit 1
 }
 
-MCP_TOKEN="mcp-$(openssl rand -hex 16)" # the board's and the driver's shared worker secret, 32+ characters
+MCP_TOKEN="drv_$(openssl rand -hex 32)" # the drivers' credential; their board records only its SHA-256
 MCP_IDP="http://127.0.0.1:$MCP_IDP_PORT"
 env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$MCP_PORT" HOST=127.0.0.1 \
     REPO_CLONE_BASE="$PLAN_BASE" AUTH_MODE=github MCP_ENABLED=true PUBLIC_URL="$MCP_BASE" \
     GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
     GITHUB_OAUTH_AUTHORIZE_URL="$MCP_IDP/login/oauth/authorize" GITHUB_OAUTH_USER_URL="$MCP_IDP/user" \
     GITHUB_OAUTH_TOKEN_URL="$MCP_IDP/login/oauth/access_token" \
-    SESSION_SECRET=a-job-harness-session-secret-32-chars JOB_BOARD_TOKEN="$MCP_TOKEN" \
+    SESSION_SECRET=a-job-harness-session-secret-32-chars DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$MCP_TOKEN")" \
     node server/dist/offline.js >>"$work/mcp-server.log" 2>&1 &
 server_pid=$!
 
@@ -57,7 +60,7 @@ if [ -z "$mcp_up" ]; then
     bad 'mcp: the board with MCP_ENABLED came up' "$(tail -5 "$work/mcp-server.log")"
 else
     ok 'mcp: the board with MCP_ENABLED came up'
-    disruption_driver JOB_BOARD_URL="$MCP_BASE" JOB_BOARD_TOKEN="$MCP_TOKEN"
+    disruption_driver JOB_BOARD_URL="$MCP_BASE" DRIVER_CREDENTIAL="$MCP_TOKEN"
 
     mcp_out="$work/mcp-client.out"
     MCP_BOARD="$MCP_BASE" MCP_RUN_ID="$RUN_ID" timeout 240 node scripts/mcp-phase-client.mjs >"$mcp_out" 2>"$work/mcp-client.err"

@@ -57,8 +57,8 @@ let built: Built;
 
 /** Two organizations; the cases the spec names, one session each. */
 async function buildWorld(): Promise<Built> {
-    const A = w.org();
-    const B = w.org();
+    const A = await w.org();
+    const B = await w.org();
     const ids: Record<string, string> = {};
     const s = (label: string): string => (ids[label] = w.marker(label));
     const a1 = await w.user('author-a1');
@@ -234,7 +234,7 @@ async function buildWorld(): Promise<Built> {
         value: number,
         time: string,
         over: Partial<Parameters<World['point']>[0]> = {}
-    ) => w.point({ session, field: 'tokens_input', value, time, ...over });
+    ) => w.point({ org: A, session, field: 'tokens_input', value, time, ...over });
     await put(ids.shared!, AMOUNT.j1Run, at('10:30'));
     await put(ids.shared!, AMOUNT.j1Gap, at('11:30'));
     await put(ids.shared!, AMOUNT.j2Run, at('12:30'));
@@ -248,20 +248,20 @@ async function buildWorld(): Promise<Built> {
     await put(ids.branchOnly!, AMOUNT.branchOnly, at('09:25'));
     await put(ids.backfill!, AMOUNT.backfill, at('09:00'));
     await put(ids.adopted!, AMOUNT.adoptedRun, at('08:10'));
-    await put(ids.otherOrg!, AMOUNT.otherOrg, at('09:30'));
+    await put(ids.otherOrg!, AMOUNT.otherOrg, at('09:30'), { org: B });
     await put(ids.twoAgents!, AMOUNT.sharedOpencode, at('09:30'), { agent: 'opencode' });
     await put(ids.twoAgents!, AMOUNT.sharedClaude, at('09:31'));
     await put(null, AMOUNT.nullSession, at('09:00'));
     // A cumulative counter on the shared session: first reading unlocated, then an increment inside the run
     // (assigned) and one that spans the gap between the runs (task-owned, run-unassigned).
     const cum = { temporality: 'cumulative', startTime: at('10:00'), field: 'tokens_output' } as const;
-    await w.point({ session: ids.shared!, value: 5, time: at('10:10'), ...cum });
-    await w.point({ session: ids.shared!, value: 8, time: at('10:40'), ...cum });
-    await w.point({ session: ids.shared!, value: 20, time: at('12:20'), ...cum });
+    await w.point({ org: A, session: ids.shared!, value: 5, time: at('10:10'), ...cum });
+    await w.point({ org: A, session: ids.shared!, value: 8, time: at('10:40'), ...cum });
+    await w.point({ org: A, session: ids.shared!, value: 20, time: at('12:20'), ...cum });
     // A cumulative counter with no start time: its first reading has no placement at all.
     const open = { temporality: 'cumulative', field: 'tokens_cacheRead' } as const;
-    await w.point({ session: ids.shared!, value: 9, time: at('10:20'), ...open });
-    await w.point({ session: ids.shared!, value: 11, time: at('10:45'), ...open });
+    await w.point({ org: A, session: ids.shared!, value: 9, time: at('10:20'), ...open });
+    await w.point({ org: A, session: ids.shared!, value: 11, time: at('10:45'), ...open });
 
     return {
         A,
@@ -342,7 +342,7 @@ describe.skipIf(!enabled)('token reconciliation', () => {
     });
 
     it('reads edit decisions only when asked, and keeps them out of the token figures', async () => {
-        await w.point({ session: built.ids.shared!, field: 'edits_accept', value: 3, time: at('10:30') });
+        await w.point({ org: built.A, session: built.ids.shared!, field: 'edits_accept', value: 3, time: at('10:30') });
         const client = createPostgresTelemetryClient({ sql, orgId: built.A });
         const jobId = built.ids.root!;
 
@@ -498,7 +498,7 @@ describe.skipIf(!enabled)('token reconciliation', () => {
 
     it('returns an org-less, hook-less session to no organization', async () => {
         const orphan = w.marker('orphan');
-        await w.point({ session: orphan, field: 'tokens_input', value: 4, time: at('09:00', '11') });
+        await w.point({ org: built.A, session: orphan, field: 'tokens_input', value: 4, time: at('09:00', '11') });
         for (const org of [built.A, built.B]) {
             const f = await facts(org);
             expect(text(f)).not.toContain(orphan);
@@ -606,6 +606,7 @@ describe.skipIf(!enabled)('token reconciliation', () => {
             sessions: [{ id: built.ids.adopted! }],
         });
         await w.point({
+            org: built.A,
             session: built.ids.adopted!,
             field: 'tokens_input',
             value: 0,

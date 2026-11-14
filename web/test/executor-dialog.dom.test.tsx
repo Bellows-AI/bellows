@@ -7,6 +7,7 @@ import {
     ADD_LABEL,
     ADVANCED_LABEL,
     AGENT_HELP,
+    CLOUD_OAUTH_NOTE,
     CONFIG_JSON_LABEL,
     EXECUTOR_GUIDANCE,
     EXECUTOR_SCOPE,
@@ -257,5 +258,22 @@ describe('the executor dialog', () => {
         expect(button(SAVE_LABEL).disabled).toBe(true);
         await user.keyboard('{Escape}');
         await dialogGone();
+    });
+
+    it('in cloud mode, says an OAuth token cannot be configured and an API key can', async () => {
+        stubFetch(boardHandler(settingsBoard({ deploymentMode: 'cloud' })));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+        expect(executorDialog().textContent).toContain(CLOUD_OAUTH_NOTE);
+        expect(CLOUD_OAUTH_NOTE).toContain('ANTHROPIC_API_KEY');
+    });
+
+    it('self-hosted, the cloud note is absent', async () => {
+        stubFetch(boardHandler(settingsBoard()));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+        expect(executorDialog().textContent).not.toContain(CLOUD_OAUTH_NOTE);
     });
 });

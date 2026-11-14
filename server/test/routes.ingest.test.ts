@@ -3,11 +3,12 @@ import { buildApp } from '../src/app.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import type { JobWorkerStore } from '../src/db/jobs/job-store-worker.js';
 import type { MetricRow } from '../src/telemetry/otlp.js';
-import type { SessionBranchReport, TelemetryStore } from '../src/telemetry/store.js';
+import type { SessionBranchReport, SessionClaimant, TelemetryStore } from '../src/telemetry/store.js';
 import { githubAuth, memoryAuthStore, staticRegistry, testConfig, jobStoreSlice } from './helpers.js';
 import {
     HTTP_ACCEPTED,
     HTTP_BAD_REQUEST,
+    HTTP_FORBIDDEN,
     HTTP_NOT_FOUND,
     HTTP_OK,
     HTTP_PAYLOAD_TOO_LARGE,
@@ -27,17 +28,27 @@ interface Recorded {
 
 interface StoreStub extends TelemetryStore {
     metrics: MetricRow[];
+    metricOrgs: string[];
     branches: Recorded[];
+    claimants: { claimant: SessionClaimant; sessionIds: string[] }[];
 }
 
-function stubStore(options: { fail?: boolean } = {}): StoreStub {
+function stubStore(options: { fail?: boolean; foreign?: readonly string[]; ownershipFails?: boolean } = {}): StoreStub {
     const stub: StoreStub = {
         metrics: [],
+        metricOrgs: [],
         branches: [],
-        async insertMetrics(rows) {
+        claimants: [],
+        async insertMetrics(rows, orgId) {
             if (options.fail) throw storeOutage('database is down');
             stub.metrics.push(...rows);
+            stub.metricOrgs.push(...rows.map(() => orgId));
             return rows.length;
+        },
+        async claimSessions(claimant, sessionIds) {
+            if (options.ownershipFails) throw storeOutage('database is down');
+            stub.claimants.push({ claimant, sessionIds: [...sessionIds] });
+            return new Set(sessionIds.filter((id) => options.foreign?.includes(id)));
         },
         // The org is a parameter now, not a resolver's answer: it arrives from the credential
         // verified at the ingest boundary, and these assertions pin that it did.
@@ -73,6 +84,7 @@ function sessionBoard(answer: Awaited<ReturnType<JobWorkerStore['session']>> = '
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
 const CREDENTIAL_ORG = 'credential-org';
+const INGEST_TOKEN = '33333333-3333-4333-8333-333333333333';
 
 /**
  * A github-mode build: no credential reaches the route without passing the hook, and the
@@ -93,6 +105,8 @@ async function githubHarnessWith(
         orgOfLease:
             orgOfLease ??
             (async (jobId, leaseToken) => (jobId === JOB_ID && leaseToken === LEASE ? CREDENTIAL_ORG : null)),
+        orgOfIngest: async (jobId, ingestToken) =>
+            jobId === JOB_ID && ingestToken === INGEST_TOKEN ? CREDENTIAL_ORG : null,
     });
     track(instance);
     return instance;
@@ -209,6 +223,50 @@ describe('POST /api/otlp/v1/metrics', () => {
             expect(res.statusCode).toBe(HTTP_OK);
         }
         expect(store.metrics).toEqual([]);
+    });
+
+    describe('session ownership', () => {
+        const ingestCredential = { 'x-factory-job-id': JOB_ID, 'x-factory-ingest-token': INGEST_TOKEN };
+        /** One token point per session, each on its own resource. */
+        const exportOf = (sessions: string[]) => ({
+            resourceMetrics: sessions.map((session) => ({
+                ...otlpBody.resourceMetrics[0],
+                resource: { attributes: [{ key: 'session.id', value: { stringValue: session } }] },
+            })),
+        });
+        const postExport = (instance: Awaited<ReturnType<typeof githubHarnessWith>>, sessions: string[]) =>
+            instance.inject({
+                method: 'POST',
+                url: '/api/otlp/v1/metrics',
+                headers: { ...json, ...ingestCredential },
+                payload: exportOf(sessions),
+            });
+
+        it('stores each point under the credential’s organization, asking ownership for the attempt', async () => {
+            const store = stubStore();
+            const res = await postExport(await githubHarnessWith(store), ['s1']);
+            expect(res.statusCode).toBe(HTTP_OK);
+            expect(store.metricOrgs).toEqual([CREDENTIAL_ORG]);
+            expect(store.claimants).toEqual([
+                { claimant: { orgId: CREDENTIAL_ORG, jobId: JOB_ID }, sessionIds: ['s1'] },
+            ]);
+        });
+
+        it('refuses a point whose session belongs to another attempt or organization, keeping the rest', async () => {
+            const store = stubStore({ foreign: ['victim'] });
+            const res = await postExport(await githubHarnessWith(store), ['s1', 'victim']);
+            // 200 with a partial rejection: the OTLP shape that tells an exporter not to resend it.
+            expect(res.statusCode).toBe(HTTP_OK);
+            expect(res.json().partialSuccess.rejectedDataPoints).toBe(1);
+            expect(store.metrics.map((row) => row.sessionId)).toEqual(['s1']);
+        });
+
+        it('answers 503 and stores nothing when ownership cannot be confirmed', async () => {
+            const store = stubStore({ ownershipFails: true });
+            const res = await postExport(await githubHarnessWith(store), ['s1']);
+            expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+            expect(store.metrics).toEqual([]);
+        });
     });
 
     it('does not exist when there is nowhere to write', async () => {
@@ -418,6 +476,29 @@ describe('POST /api/sessions/branch — the live opencode session', () => {
 
         expect(res.statusCode).toBe(HTTP_ACCEPTED);
         expect(board.calls).toHaveLength(1);
+    });
+
+    it('refuses a report naming a session another attempt or organization holds: no branch, no session', async () => {
+        const store = stubStore({ foreign: ['ses_live1'] });
+        const board = sessionBoard();
+        const res = await post(await githubHarnessWith(store, undefined, board.jobs), opencode);
+
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(store.claimants).toEqual([
+            { claimant: { orgId: CREDENTIAL_ORG, jobId: JOB_ID }, sessionIds: ['ses_live1'] },
+        ]);
+        expect(store.branches).toEqual([]);
+        expect(board.calls).toEqual([]);
+    });
+
+    it('answers 503 and records nothing when ownership cannot be confirmed', async () => {
+        const store = stubStore({ ownershipFails: true });
+        const board = sessionBoard();
+        const res = await post(await githubHarnessWith(store, undefined, board.jobs), opencode);
+
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(store.branches).toEqual([]);
+        expect(board.calls).toEqual([]);
     });
 });
 

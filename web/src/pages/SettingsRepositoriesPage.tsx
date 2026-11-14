@@ -1,3 +1,4 @@
+import { ADMIN_ROLE } from '@factory-ai/core';
 import { useEffect, useRef, useState } from 'react';
 import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { EnvVarView, UseEnv } from '../api/useEnv.js';
@@ -36,12 +37,15 @@ function ConfiguredRepoEnv({
     name,
     scope,
     env,
+    readOnly,
 }: {
     configured: string;
     owner: string;
     name: string;
     scope: { vars: EnvVarView[] } | undefined;
     env: UseEnv;
+    /** A repository scope reaches every member's runs, so only an admin writes it (`PUT /api/env/repo`). */
+    readOnly: boolean;
 }) {
     if (env.loading && !env.data) return <StateNote state="loading">Loading environment…</StateNote>;
     if (!env.data) return null;
@@ -54,6 +58,7 @@ function ConfiguredRepoEnv({
             onSave={(vars) => env.saveRepo({ owner, name }, vars)}
             draftId={`repo:${configured}`}
             draftLabel={configured}
+            readOnly={readOnly}
         />
     );
 }
@@ -135,7 +140,14 @@ export function SettingsRepositoriesPage() {
             />
             <RepositoryConfigDetail repo={configured && owner && name ? { owner, name } : null} headingRef={headingRef}>
                 {configured && owner && name ? (
-                    <ConfiguredRepoEnv configured={configured} owner={owner} name={name} scope={scope} env={env} />
+                    <ConfiguredRepoEnv
+                        configured={configured}
+                        owner={owner}
+                        name={name}
+                        scope={scope}
+                        env={env}
+                        readOnly={session?.role !== ADMIN_ROLE}
+                    />
                 ) : null}
             </RepositoryConfigDetail>
         </>

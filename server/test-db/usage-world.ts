@@ -11,7 +11,8 @@ import { account, randomGithubId, testOrg } from './fixtures.js';
  */
 export interface World {
     sql: Sql;
-    org(): string;
+    /** A new organization, planted: every org-owned row is keyed to it. */
+    org(): Promise<string>;
     /** A unique session id (or repo / login) carrying `label`. */
     marker(label: string): string;
     user(label: string): Promise<{ id: string; login: string }>;
@@ -54,6 +55,8 @@ export interface ExecutionRow {
 }
 
 export interface PointRow {
+    /** The organization that wrote the point. */
+    org: string;
     session: string | null;
     field: string;
     value: number;
@@ -71,7 +74,11 @@ export function createWorld(sql: Sql): World {
     const marker = (label: string): string => `${label}-${randomUUID().slice(0, 8)}`;
     return {
         sql,
-        org: testOrg,
+        async org() {
+            const id = testOrg();
+            await sql`insert into organization (id, name) values (${id}, ${id})`;
+            return id;
+        },
         marker,
         async user(label) {
             const login = marker(label);
@@ -151,6 +158,7 @@ export function createWorld(sql: Sql): World {
         },
         async point(row) {
             await sql`insert into metric_point ${sql({
+                org_id: row.org,
                 agent: row.agent ?? 'claude-code',
                 source: row.source ?? 'otel',
                 metric: FIELD_METRIC,

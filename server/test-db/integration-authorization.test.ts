@@ -43,9 +43,10 @@ import type { PostgresHarness } from './secrets-postgres-harness.js';
  */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
+const OTHER_ORG = testOrg();
 const ALICE = testUser('auth-alice');
 const BOB = testUser('auth-bob');
-const db = useTestDb({ orgs: [ORG], users: [ALICE, BOB], max: 14 });
+const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE, BOB], max: 14 });
 
 const CODE = 'authcode-SECRET-1';
 const asAlice = () => contextOfSession({ user: { id: ALICE.id } }, ORG);
@@ -609,6 +610,28 @@ describe.skipIf(!enabled)('complete: one lineage, claimed before the exchange', 
         });
         expect(await grantOf(bobs.grantId)).toEqual(before);
         expect(await grantsOfAccount(bobs.account)).toHaveLength(1);
+        expect(r.fake.revoked).toEqual([]);
+    });
+
+    it('an account granted in another org is no conflict: the connect creates this org its own grant, theirs untouched', async () => {
+        const r = rig({ revokeScope: 'token' });
+        const account = acctId();
+        const theirGrants = createConnectionGrants({ sql: db.sql, orgId: OTHER_ORG });
+        const theirs = await attachJira(theirGrants, BOB.id, { externalAccountId: account, cloudId: 'acme' });
+        const before = await grantOf(theirs.grant.id);
+        r.fake.identity = {
+            externalAccountId: account,
+            label: `${account}@example.test`,
+            resources: [{ id: 'acme', label: 'acme.fake.test' }],
+            authority: { scopes: ['fake:read'] },
+        };
+        const started = await begin(r);
+        expect(await complete(r, { state: started.state, code: CODE })).toMatchObject({ ok: true });
+        const grants = await grantsOfAccount(account);
+        expect(grants).toHaveLength(2);
+        const ours = grants.find((g) => g.id !== theirs.grant.id)!;
+        expect(ours).toMatchObject({ status: 'active', principal_user_id: ALICE.id });
+        expect(await grantOf(theirs.grant.id)).toEqual(before);
         expect(r.fake.revoked).toEqual([]);
     });
 

@@ -30,7 +30,7 @@ const PRECEDENCE_SUMMARY =
 const COPY: Record<ConfigurationScopeId, { impact: string; editability: string; detail: string }> = {
     organization: {
         impact: 'Applies to every member\u2019s tasks in the organization.',
-        editability: 'Any member can edit.',
+        editability: 'Only an organization admin can edit.',
         detail: 'Environment values resolve organization < workspace < repository: a workspace or repository value with the same name overrides this scope.',
     },
     workspace: {
@@ -40,7 +40,7 @@ const COPY: Record<ConfigurationScopeId, { impact: string; editability: string; 
     },
     repository: {
         impact: 'Applies to every task using {repo} in the organization.',
-        editability: 'Any member can edit.',
+        editability: 'Only an organization admin can edit.',
         detail: 'Environment values resolve organization < workspace < repository: these values override the organization and workspace scopes, and nothing more specific remains.',
     },
 };

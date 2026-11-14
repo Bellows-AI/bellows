@@ -66,6 +66,11 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',
     'RUNNER_LEASE_TOKEN',
+    // The runner's telemetry export credential (driver/src/telemetry-config.ts), under every OTLP header name.
+    'OTEL_EXPORTER_OTLP_HEADERS',
+    'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
+    'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
+    'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
     'BELLOWS_SESSION_ID',
     'BELLOWS_RESUME_MAY_BE_UNWRITTEN',
     'OPENCODE_CONFIG_CONTENT',

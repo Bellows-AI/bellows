@@ -54,7 +54,7 @@ const mustAttach = async (store: ConnectionGrants, userId: string, externalAccou
 };
 
 describe.skipIf(!enabled)('connection grants', () => {
-    it('one active grant per provider external account: a second site reuses it, another user or org is refused', async () => {
+    it('one active grant per provider external account in an org: a second site reuses it, another user is refused', async () => {
         const acct = account();
         const first = await mustAttach(grants, ALICE.id, acct);
         const second = await mustAttach(grants, ALICE.id, acct);
@@ -62,7 +62,6 @@ describe.skipIf(!enabled)('connection grants', () => {
         expect(second.connectionId).not.toBe(first.connectionId);
 
         expect(await attach(grants, BOB.id, acct)).toEqual({ ok: false, reason: 'grant-conflict' });
-        expect(await attach(otherOrgGrants, ALICE.id, acct)).toEqual({ ok: false, reason: 'grant-conflict' });
 
         const rows =
             await sql`select 1 from integration_grant where provider = 'jira' and external_account_id = ${acct}`;
@@ -71,6 +70,29 @@ describe.skipIf(!enabled)('connection grants', () => {
             select credential, principal_user_id, grant_id from connector_connection where id = ${second.connectionId}
         `;
         expect(conn).toEqual({ credential: 'oauth_grant', principal_user_id: ALICE.id, grant_id: first.grant.id });
+    });
+
+    it('the external account is unique per org: two orgs each hold a grant of it, the in-org refusals are unchanged', async () => {
+        const acct = account();
+        const cloud = `cloud-${randomUUID()}`;
+        const ours = await mustAttach(grants, ALICE.id, acct, cloud);
+        const theirs = await mustAttach(otherOrgGrants, BOB.id, acct, cloud);
+        expect(theirs.grant.id).not.toBe(ours.grant.id);
+        expect(theirs.grant.orgId).toBe(OTHER_ORG);
+
+        expect(await attach(grants, BOB.id, acct)).toEqual({ ok: false, reason: 'grant-conflict' });
+        expect(await attach(otherOrgGrants, ALICE.id, acct)).toEqual({ ok: false, reason: 'grant-conflict' });
+        expect(await attach(grants, ALICE.id, acct, cloud)).toEqual({ ok: false, reason: 'duplicate-connection' });
+        expect(await attach(otherOrgGrants, BOB.id, acct, cloud)).toEqual({
+            ok: false,
+            reason: 'duplicate-connection',
+        });
+
+        const rows = await sql<{ org_id: string }[]>`
+            select org_id from integration_grant where provider = 'jira' and external_account_id = ${acct}
+            order by org_id = ${ORG} desc
+        `;
+        expect(rows.map((r) => r.org_id)).toEqual([ORG, OTHER_ORG]);
     });
 
     it('a revoked grant frees its external account for another principal', async () => {

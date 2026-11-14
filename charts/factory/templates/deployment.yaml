@@ -141,6 +141,37 @@ spec:
                         value: {{ .Values.dashboard.admission.maxRunningPerOrg | quote }}
                       - name: ADMISSION_MAX_RUNNING_PER_REPO
                         value: {{ .Values.dashboard.admission.maxRunningPerRepo | quote }}
+                      # The Free plan's limits (server/src/db/plan-limits.ts); empty is unlimited.
+                      - name: PLAN_DEFAULT_MAX_RUNNING
+                        value: {{ .Values.dashboard.planDefaults.maxRunning | quote }}
+                      - name: PLAN_DEFAULT_MAX_QUEUED
+                        value: {{ .Values.dashboard.planDefaults.maxQueued | quote }}
+                      - name: PLAN_DEFAULT_MAX_WALL_SECONDS
+                        value: {{ .Values.dashboard.planDefaults.maxWallSeconds | quote }}
+                      - name: PLAN_DEFAULT_MAX_TOKENS
+                        value: {{ .Values.dashboard.planDefaults.maxTokens | quote }}
+                      - name: PLAN_DEFAULT_MAX_STORAGE_BYTES
+                        value: {{ .Values.dashboard.planDefaults.maxStorageBytes | quote }}
+                      - name: PLAN_DEFAULT_MAX_RETENTION_DAYS
+                        value: {{ .Values.dashboard.planDefaults.maxRetentionDays | quote }}
+                      # The board operator's GitHub user ids (cloud only); empty is nobody.
+                      - name: OPERATOR_GITHUB_IDS
+                        value: {{ .Values.dashboard.operatorGithubIds | quote }}
+                      # The request limits (server/src/config-limits.ts), each per replica; empty is the default.
+                      - name: TRUSTED_PROXIES
+                        value: {{ .Values.dashboard.limits.trustedProxies | quote }}
+                      - name: RATE_LIMIT_PER_CREDENTIAL
+                        value: {{ .Values.dashboard.limits.requestsPerCredential | quote }}
+                      - name: RATE_LIMIT_PER_ORG
+                        value: {{ .Values.dashboard.limits.requestsPerOrg | quote }}
+                      - name: MCP_STREAMS_PER_ORG
+                        value: {{ .Values.dashboard.limits.mcpStreamsPerOrg | quote }}
+                      - name: DB_STATEMENT_TIMEOUT_MS
+                        value: {{ .Values.dashboard.limits.statementTimeoutMs | quote }}
+                      # Each replica's three pools and its migration connection share dashboard.dbConnections
+                      # (templates/validate.yaml).
+                      - name: DB_POOL_MAX
+                        value: {{ div (sub (int64 .Values.dashboard.dbConnections) (int64 .Values.dashboard.replicas)) (mul 3 (int64 .Values.dashboard.replicas)) | quote }}
                       # The optional commerce service (docs/configuration.md); off, the other two are ignored.
                       - name: COMMERCE_ENABLED
                         value: {{ .Values.dashboard.commerce.enabled | quote }}
@@ -175,6 +206,13 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: database-url
+                      # The request role's own login (docs/row-level-security.md); absent, the owner's takes the role.
+                      - name: DATABASE_REQUEST_URL
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: database-request-url
+                                optional: true
                       # Where task artifacts go (server/src/config-artifacts.ts).
                       - name: ARTIFACTS_BACKEND
                         value: {{ .Values.artifacts.backend | quote }}
@@ -248,14 +286,11 @@ spec:
                       # Batches (docs/configuration.md); off by default.
                       - name: BATCHES_ENABLED
                         value: {{ .Values.batches.enabled | quote }}
+                      # Where this board runs (docs/configuration.md): self-hosted or cloud.
+                      - name: DEPLOYMENT_MODE
+                        value: {{ .Values.deploymentMode | quote }}
                       - name: COOKIE_SECURE
                         value: {{ .Values.auth.cookieSecure | quote }}
-                      - name: INGEST_TOKEN
-                        valueFrom:
-                            secretKeyRef:
-                                name: {{ include "factory.secretName" . }}
-                                key: ingest-token
-                                optional: true
                       # The App's installation webhook: present, the route verifies GitHub's HMAC
                       # against it; empty, the route does not exist at all.
                       - name: GITHUB_WEBHOOK_SECRET
@@ -264,15 +299,12 @@ spec:
                                 name: {{ include "factory.secretName" . }}
                                 key: github-webhook-secret
                                 optional: true
-                      # The shared board secret — the same value the driver presents. Required in
-                      # github mode: the server refuses to boot without it, which is what names
-                      # the missing key.
-                      - name: JOB_BOARD_TOKEN
-                        valueFrom:
-                            secretKeyRef:
-                                name: {{ include "factory.secretName" . }}
-                                key: job-board-token
-                                optional: true
+                      {{- with include "factory.driverCredentialSha256" . }}
+                      # The driver's credential, by its SHA-256 only: recorded as a pool credential at
+                      # boot, never revived once revoked or rotated (docs/auth.md).
+                      - name: DRIVER_CREDENTIAL_SHA256
+                        value: {{ . | quote }}
+                      {{- end }}
                       # The secret store (docs/secrets.md): this container only, none optional — a
                       # dashboard that cannot decrypt must not come up. The backend, the active key id
                       # and the provider settings are not secret. Required on `dashboard.offline` too.

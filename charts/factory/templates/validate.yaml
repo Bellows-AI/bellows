@@ -106,6 +106,27 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if not .Values.auth.publicUrl }}
 {{- fail "auth.publicUrl is required: the origin GitHub redirects back to" }}
 {{- end }}
+{{- if not (has .Values.deploymentMode (list "self-hosted" "cloud")) }}
+{{- fail (printf "deploymentMode must be self-hosted or cloud, got %q" .Values.deploymentMode) }}
+{{- end }}
+{{- if eq .Values.deploymentMode "cloud" }}
+{{- range $name := list "maxRunning" "maxRunningPerOrg" }}
+{{- if not (toString (index $.Values.dashboard.admission $name)) }}
+{{- fail (printf "deploymentMode cloud requires dashboard.admission.%s: no cloud board admits unlimited work" $name) }}
+{{- end }}
+{{- end }}
+{{- range $name := list "maxRunning" "maxQueued" "maxWallSeconds" "maxTokens" "maxStorageBytes" "maxRetentionDays" }}
+{{- if not (toString (index $.Values.dashboard.planDefaults $name)) }}
+{{- fail (printf "deploymentMode cloud requires dashboard.planDefaults.%s: the Free plan's limit, so no cloud organization is unlimited" $name) }}
+{{- end }}
+{{- end }}
+{{- if toString .Values.artifacts.retentionDays }}
+{{- fail "deploymentMode cloud refuses artifacts.retentionDays: each organization keeps its plan window" }}
+{{- end }}
+{{- end }}
+{{- if and (toString .Values.artifacts.retentionDays) (toString .Values.dashboard.planDefaults.maxRetentionDays) }}
+{{- fail "artifacts.retentionDays and dashboard.planDefaults.maxRetentionDays are two retention windows: set one" }}
+{{- end }}
 {{- if and .Values.mcp.enabled (not (hasPrefix "https://" .Values.auth.publicUrl)) }}
 {{- fail "mcp.enabled requires an https auth.publicUrl: the MCP endpoint carries bearer tokens" }}
 {{- end }}
@@ -134,6 +155,10 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- $preStop := .Values.dashboard.preStopSeconds }}
 {{- if or (not (or (kindIs "int64" $preStop) (kindIs "float64" $preStop))) (lt (float64 $preStop) 0.0) (ge (float64 $preStop) 30.0) (ne (float64 (int64 $preStop)) (float64 $preStop)) }}
 {{- fail "dashboard.preStopSeconds must be a whole number from 0 below 30 s" }}
+{{- end }}
+{{- $connections := .Values.dashboard.dbConnections }}
+{{- if or (not (or (kindIs "int64" $connections) (kindIs "float64" $connections))) (lt (float64 $connections) (mul 7 (int64 $replicas) | float64)) }}
+{{- fail (printf "dashboard.dbConnections must be a whole number of at least 7 per replica: each replica runs three pools of at least 2 and one migration connection (dashboard.dbConnections=%v, dashboard.replicas=%v)" $connections $replicas) }}
 {{- end }}
 {{- if and (gt (int64 $replicas) 1) (eq .Values.artifacts.backend "filesystem") }}
 {{- fail (printf "dashboard.replicas above 1 requires artifacts.backend=s3 or gcs: the filesystem backend is one pod's /tmp (dashboard.replicas=%v, artifacts.backend=filesystem)" $replicas) }}
@@ -166,9 +191,26 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if lt (len .Values.secret.sessionSecret) 32 }}
 {{- fail "secret.sessionSecret of at least 32 characters is required (openssl rand -hex 32)" }}
 {{- end }}
-{{- if lt (len .Values.secret.jobBoardToken) 32 }}
-{{- fail "secret.jobBoardToken of at least 32 characters is required (openssl rand -hex 32): the driver's credential on the worker routes" }}
 {{- end }}
+{{- with .Values.driver.credential }}
+{{- if and .value .existingSecret }}
+{{- fail "driver.credential: set value or existingSecret, not both" }}
+{{- end }}
+{{- if not (or .value .existingSecret) }}
+{{- fail "driver.credential.value (echo \"drv_$(openssl rand -hex 32)\") or driver.credential.existingSecret is required: the driver's own credential on the worker routes" }}
+{{- end }}
+{{- if and .value (not (regexMatch "^drv_[0-9a-f]{64}$" .value)) }}
+{{- fail "driver.credential.value must be drv_ followed by 64 hex characters (echo \"drv_$(openssl rand -hex 32)\")" }}
+{{- end }}
+{{- if and .sha256 (not (regexMatch "^[0-9a-fA-F]{64}$" .sha256)) }}
+{{- fail "driver.credential.sha256 must be the 64-hex SHA-256 of the credential" }}
+{{- end }}
+{{- if and .value .sha256 }}
+{{- fail "driver.credential.sha256 is for an existingSecret; with value the chart computes it" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.driver.metricsPort (not .Values.driver.credential.existingSecret) (lt (len .Values.driver.metricsToken) 32) }}
+{{- fail "driver.metricsToken of at least 32 characters is required with driver.metricsPort (openssl rand -hex 32): the scrape's own bearer, never the driver credential" }}
 {{- end }}
 {{- if not .Values.dashboard.offline }}
 {{- if not .Values.github.appId }}

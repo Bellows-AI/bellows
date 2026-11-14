@@ -22,8 +22,9 @@ import type { JobReclaimStore } from './job-store-reclaims.js';
 import type { JobReadStore } from './job-store-reads.js';
 import type { JobWorkerStore } from './job-store-worker.js';
 import type { JobConclusionStore } from './job-store-conclusions.js';
-import type { UserRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
+import type { DeploymentMode, UserRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
 import type { AdmissionBudgets, ClaimObserver, JobAdmissionStore } from './job-store-admission.js';
+import type { PlanLimits } from '../plan-limits.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from '../pr-lifecycle-store.js';
 import type { BellowsConfig } from '../../workspace/bellows.js';
@@ -163,6 +164,8 @@ export interface JobInterruption {
     requirement?: true;
     /** The platform took the attempt away: outside the interruption budget, bounded by `NODE_LOSS_BUDGET`. */
     nodeLoss?: true;
+    /** A hand-back while the organization was suspended: never a failure or a node loss, outside every budget. */
+    orgSuspended?: true;
     /** A lease that expired under a silent driver, recorded by the claim that took the row over: bounded like a node loss. */
     leaseExpired?: true;
     /** Whether the interruption's attempt was refunded; absent on entries written before the field existed. */
@@ -558,7 +561,17 @@ export interface Claim {
     /** The row's claim sequence (057): bumped by every claim, never refunded like `attempts`. */
     claimSeq: number;
     leaseToken: string;
+    /**
+     * The attempt's telemetry export credential (with its id), rendered into the runner's telemetry
+     * config. Unlike `leaseToken` no claim rotates it, so an adopted runner keeps exporting under it.
+     */
+    ingestToken: string;
     leaseExpiresAt: string;
+    /**
+     * The organization's key (`auth/org-key.ts`), the same on every claim of every row of the org whichever driver
+     * claims it: the drivers key gate identities and helper receipts with it, so both survive a takeover.
+     */
+    orgKey?: string;
     /**
      * The executor profile type selected by the task's stamped executor label. Null when the
      * profile no longer exists; the driver reports that as a task failure instead of choosing a
@@ -1050,6 +1063,8 @@ export interface CreateJobStoreDeps {
      * retry, follow-up and Done refuse one with `batches_disabled`; a job outside a batch is unchanged.
      */
     batches?: boolean;
+    /** `config.deploymentMode`, default self-hosted. Cloud refuses a claim whose effective env or profile carries a Claude subscription OAuth token. */
+    deploymentMode?: DeploymentMode;
     ready?: Promise<unknown>;
     /**
      * The env-var store's resolver, when the deployment stores runner environment. Present in
@@ -1099,7 +1114,10 @@ export interface CreateJobStoreDeps {
      * guards the env resolver leaves the job queued with its attempt unburned.
      */
     executorConfig?: {
-        configFor(
+        /** Awaited before a claim or review transaction opens: the profiles' plaintext conversion. */
+        ready?(): Promise<void>;
+        /** Every stored credential resolved from the secret store; an unconfirmed read throws. */
+        claimConfigFor(
             userId: string,
             name: string,
             scope: ExecutorScope,
@@ -1116,8 +1134,12 @@ export interface CreateJobStoreDeps {
     prs?: JobStorePrs;
     /** The shared admission budgets every claim enforces; absent is unlimited. */
     admission?: AdmissionBudgets;
+    /** The board's plan default (the Free plan) for an org whose pushed plan sets no limit; absent is none. */
+    planDefaults?: PlanLimits;
     /** What the claim reports about itself; absent in the tests that predate it. */
     metrics?: ClaimObserver;
+    /** This organization's key, sent on every claim (`Claim.orgKey`); absent, claims carry none. */
+    orgKey?: string;
 }
 
 /** The PR lifecycle store's claim-time surface — named once so a helper can take it explicitly. */
@@ -1188,18 +1210,21 @@ export interface JobStorePrs {
  * precompiled SQL fragments, and the optional collaborators. `createJobStore` builds one and each
  * method is a thin delegation to its function in the sibling `job-store-*.ts` files.
  */
-/** `admission` is the deps' budgets, defaulted to none (unlimited). */
-export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admission'>> {
+/** `admission` and `planDefaults` are the deps', each defaulted to none (unlimited). */
+export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admission' | 'planDefaults'>> {
     sql: Sql;
     orgId: string;
     /** The deployment's batch flag (`CreateJobStoreDeps.batches`). */
     batches: boolean;
+    /** `CreateJobStoreDeps.deploymentMode`, defaulted. */
+    deploymentMode: DeploymentMode;
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;
     metrics: ClaimObserver | undefined;
+    orgKey: string | undefined;
     wallTick: Fragment;
     authorJoin: Fragment;
     authorColumns: Fragment;

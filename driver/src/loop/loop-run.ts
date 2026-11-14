@@ -29,10 +29,10 @@ import {
     newJobState,
     raceStep,
     launchConfirmer,
-    registerLive,
     stopIfDraining,
     watchOutput,
 } from './loop-attempt.js';
+import { registerLive } from './loop-handover.js';
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from '../timeout-note.js';
 import {
@@ -402,6 +402,8 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // the run still reports the session and uploads the artifacts BEFORE the park.
     // The board holds the task for a connection its helper asked for: the attempt stood down for it.
     if (state.requirement !== null && !state.draining) recordEnding(state, 'requirement');
+    // Its organization was suspended: the attempt stood down to be handed back, resumed on the reactivation.
+    if (state.orgSuspended && !state.draining) recordEnding(state, 'org-suspended');
     stopIfDraining(state);
     const lastWords = () => pump.flush(outcome.output).then(() => reportRunTail(ctx, executorType, outcome));
     if (await endIfDown(ctx, 'its run', lastWords)) return { done: true };

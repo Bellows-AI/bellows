@@ -23,7 +23,8 @@ export const NODE_LOSS_WINDOW_MS = 21_600_000;
 /**
  * Whether the row's interruption budget is spent. A blocked hand-back waits on a leftover rather than
  * losing an attempt to the infrastructure, so it is outside the count; a requirement hand-back waits on a
- * person, so it is too; a node loss or an expired lease is the platform's, so it has its own bound. Only interruptions inside
+ * person, so it is too, as is a hand-back of a suspended organization's attempt; a node loss or an expired lease is
+ * the platform's, so it has its own bound. Only interruptions inside
  * `INTERRUPTION_WINDOW_MS` count; an `at` that does not parse counts as spent.
  * The cutoff is bound per call from the process clock that wrote each `at`, never DB now().
  */
@@ -31,6 +32,7 @@ const poisonSpent = (q: Sql | TransactionSql): Fragment => q`(
     select count(*) from jsonb_array_elements(interruptions) as spent
     where spent ->> 'blocked' is distinct from 'true' and spent ->> 'requirement' is distinct from 'true'
       and spent ->> 'nodeLoss' is distinct from 'true' and spent ->> 'leaseExpired' is distinct from 'true'
+      and spent ->> 'orgSuspended' is distinct from 'true'
       and case when spent ->> 'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
           then (spent ->> 'at')::timestamptz > ${new Date(Date.now() - INTERRUPTION_WINDOW_MS)} else true end
 ) >= ${INTERRUPTION_BUDGET}`;
@@ -55,7 +57,7 @@ export const spentRule = (q: Sql | TransactionSql): Fragment =>
     q`(case when ${poisonSpent(q)} then 'poison budget' when ${nodeLossSpent(q)} then 'node-loss bound' end)`;
 
 /**
- * Whether an interrupt may still be recorded. A blocked or requirement release spends no budget and is accepted
+ * Whether an interrupt may still be recorded. A blocked, requirement or org-suspended release spends no budget and is accepted
  * past a spent one; a node-loss release spends only the node-loss bound, so a spent poison budget does not refuse
  * it; every other interrupt (an unflagged release, an adoption) is refused once either is spent.
  */
@@ -66,8 +68,9 @@ export const releaseOpen = (
         blocked,
         requirement,
         nodeLoss,
-    }: { release: boolean; blocked: boolean; requirement: boolean; nodeLoss: boolean }
+        orgSuspended,
+    }: { release: boolean; blocked: boolean; requirement: boolean; nodeLoss: boolean; orgSuspended: boolean }
 ): Fragment => {
-    if (release && (blocked || requirement)) return q`true`;
+    if (release && (blocked || requirement || orgSuspended)) return q`true`;
     return release && nodeLoss ? q`not ${nodeLossSpent(q)}` : q`not ${interruptionsSpent(q)}`;
 };

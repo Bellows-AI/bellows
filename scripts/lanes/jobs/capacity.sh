@@ -15,7 +15,7 @@ echo '# capacity'
 
 CAP_DIR='/task/.lane-cap'
 CAP_MK="mkdir -p $CAP_DIR;" # the volume is born at the claim: every command makes the directory first
-CAP_TOKEN="cap-$(openssl rand -hex 16)" # the boards' and drivers' shared worker secret, 32+ characters
+CAP_TOKEN="drv_$(openssl rand -hex 32)" # the drivers' credential; their board records only its SHA-256
 cap_pg=''
 cap_a_pid=''
 cap_b_pid=''
@@ -78,7 +78,7 @@ cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board
         AUTH_MODE=github \
         GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
         SESSION_SECRET=a-job-harness-session-secret-32-chars \
-        JOB_BOARD_TOKEN="$CAP_TOKEN" ADMISSION_MAX_RUNNING=2 \
+        DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$CAP_TOKEN")" ADMISSION_MAX_RUNNING=2 \
         node server/dist/offline.js >>"$2" 2>&1 &
     cap_board_pid=$!
 }
@@ -272,10 +272,10 @@ cap_run() {
 
     # Both drivers start together and race for the first wave: polls reading the same demand at once may both
     # serve the heavy org (docs/jobs.md), so the light org either made the first wave or must get the first slot freed.
-    disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://127.0.0.1:$PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
+    disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://127.0.0.1:$PORT" DRIVER_CREDENTIAL="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_a_pid=$driver_pid
-    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://127.0.0.1:$CAP_LIGHT_PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
+    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://127.0.0.1:$CAP_LIGHT_PORT" DRIVER_CREDENTIAL="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_b_pid=$driver_pid
     driver_pid=""

@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
+import { CLOUD, DEPLOYMENT_MODES, type DeploymentMode, SELF_HOSTED } from '@factory-ai/core';
+import { loadArtifactsConfig, refuseSecondRetentionKnob, type ArtifactsConfig } from './config-artifacts.js';
 import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
+import { loadRequestLimits, loadStatementTimeoutMs, parseTrustedProxies, type RequestLimits } from './config-limits.js';
 import { loadMcpConfig, type McpConfig } from './config-mcp.js';
 import type { TelemetrySource } from './telemetry/client.js';
+import type { PlanLimits } from './db/plan-limits.js';
 
 export interface Repo {
     readonly owner: string;
@@ -80,7 +83,6 @@ export type AuthConfig =
            * impossible. Same argument docs/configuration.md already makes for GITHUB_TOKEN.
            */
           readonly mode: 'none';
-          readonly ingestToken: string | null;
       }
     | {
           readonly mode: 'github';
@@ -106,16 +108,6 @@ export type AuthConfig =
            * choose the `redirect_uri`, which is redirect poisoning.
            */
           readonly publicUrl: string;
-          readonly ingestToken: string | null;
-          /**
-           * The shared secret the driver presents on the worker routes (JOB_BOARD_TOKEN on both
-           * sides — the same variable name on the board and the driver is what makes "the same
-           * value" verifiable at a glance). The deployment's one driver credential: whoever holds
-           * it can claim work and report results, so it is required in this mode — a board that
-           * cannot authenticate its own driver is the silent 401 loop this variable exists to
-           * prevent, and fatal-at-boot is what names it.
-           */
-          readonly jobBoardToken: string;
           /** Overridable so the browser check can drive a stub. Environment only — see loadAuth. */
           readonly authorizeUrl: string;
           readonly tokenUrl: string;
@@ -141,8 +133,24 @@ export interface AppConfig {
      * Required. The database is the only place figures come from, so there is no mode that runs
      * without one, and therefore no `null` to branch on at 30-odd call sites.
      */
+    /** The owner's login: migrations, and the cross-org pool under the cross-org role (docs/row-level-security.md). */
     readonly databaseUrl: string;
+    /**
+     * The request role's own login (DATABASE_REQUEST_URL), to the same database; null, the owner's login takes the
+     * role at connection start instead. Never logged.
+     */
+    readonly databaseRequestUrl: string | null;
+    /**
+     * Each of the board's three pools (request, secrets, cross-org), per replica (DB_POOL_MAX), beside the one
+     * migration connection; the chart divides its budget by the replicas.
+     */
     readonly dbPoolMax: number;
+    /** One statement's budget on the board's pools (DB_STATEMENT_TIMEOUT_MS); see `db/pool.ts` for what lifts it. */
+    readonly dbStatementTimeoutMs: number;
+    /** The proxies whose `X-Forwarded-For` names the client (TRUSTED_PROXIES); empty trusts none. */
+    readonly trustedProxies: readonly string[];
+    /** The human request rate and the MCP stream cap (RATE_LIMIT_*, MCP_STREAMS_PER_ORG). See `config-limits.ts`. */
+    readonly requestLimits: RequestLimits;
     readonly telemetryTtlMs: number;
     readonly auth: AuthConfig;
     /**
@@ -161,6 +169,14 @@ export interface AppConfig {
      */
     readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
     /**
+     * The plan limits an organization with no pushed plan gets, and each limit a push left null: the Free plan
+     * (PLAN_DEFAULT_MAX_RUNNING, PLAN_DEFAULT_MAX_QUEUED, PLAN_DEFAULT_MAX_WALL_SECONDS, PLAN_DEFAULT_MAX_TOKENS,
+     * PLAN_DEFAULT_MAX_STORAGE_BYTES, PLAN_DEFAULT_MAX_RETENTION_DAYS). Unset is unlimited, which only a self-hosted
+     * board allows: cloud refuses to boot without all six. See `db/plan-limits.ts`, `db/plan-allowances.ts` and
+     * `db/org-retention.ts`.
+     */
+    readonly planDefaults: PlanLimits;
+    /**
      * Outbound OAuth. `callbackOrigin` is the origin a provider redirects back to: `PUBLIC_URL`, else the
      * loopback bind's own, else null. Null never fails the boot; starting an authorization then answers
      * `not-configured`.
@@ -176,6 +192,58 @@ export interface AppConfig {
     readonly mcp: McpConfig;
     /** Batches (BATCHES_ENABLED); off by default. Off: routes answer 404, MCP tools are unlisted, loops do not start. */
     readonly batches: { readonly enabled: boolean };
+    /**
+     * Where this board runs (DEPLOYMENT_MODE): `self-hosted` (unset) or `cloud`. Server environment
+     * only — no request can change it. Cloud refuses a Claude subscription OAuth token in executor
+     * settings, member env and at claim (`forbiddenCredentialIn`).
+     */
+    readonly deploymentMode: DeploymentMode;
+    /**
+     * The board operator (OPERATOR_GITHUB_IDS): the GitHub user ids that may list, suspend, refuse and reactivate
+     * every organization (`routes/operator.ts`). Empty is nobody; cloud mode only, since only cloud reads a status.
+     */
+    readonly operatorGithubIds: readonly number[];
+    /**
+     * DRIVER_CREDENTIAL_SHA256: the SHA-256 of a pool driver credential the board records at boot, so a deployment
+     * with no operator (self-hosted) can start its first driver. Only the hash is ever configured; a credential
+     * already recorded under it — revoked or rotated included — is left as it is. Null records none.
+     */
+    readonly driverCredentialBootstrap: Buffer | null;
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+function loadDriverCredentialBootstrap(raw: string | undefined): Buffer | null {
+    const value = raw?.trim().toLowerCase() ?? '';
+    if (value === '') return null;
+    if (!SHA256_HEX.test(value)) {
+        throw new Error(
+            'DRIVER_CREDENTIAL_SHA256 must be the 64-hex SHA-256 of the driver credential (printf %s "$DRIVER_CREDENTIAL" | sha256sum)'
+        );
+    }
+    return Buffer.from(value, 'hex');
+}
+
+const GITHUB_ID = /^[1-9]\d*$/;
+
+function loadOperatorGithubIds(raw: string | undefined, deploymentMode: DeploymentMode): readonly number[] {
+    if (raw === undefined || raw.trim() === '') return [];
+    const ids = raw.split(',').map((part) => part.trim());
+    if (!ids.every((id) => GITHUB_ID.test(id))) {
+        throw new Error(`OPERATOR_GITHUB_IDS must be a comma-separated list of GitHub user ids, got "${raw}"`);
+    }
+    if (deploymentMode !== CLOUD) {
+        throw new Error(
+            'OPERATOR_GITHUB_IDS needs DEPLOYMENT_MODE=cloud: a self-hosted board reads no organization status'
+        );
+    }
+    return ids.map(Number);
+}
+
+function loadDeploymentMode(raw: string | undefined): DeploymentMode {
+    if (raw === undefined) return SELF_HOSTED;
+    if ((DEPLOYMENT_MODES as readonly string[]).includes(raw)) return raw as DeploymentMode;
+    throw new Error(`DEPLOYMENT_MODE must be "self-hosted" or "cloud", got "${raw}"`);
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -195,6 +263,17 @@ function databaseName(url: string): string | null {
     } catch {
         return null;
     }
+}
+
+/** Trimmed, empty meaning unset. A second database would put requests where the migrations never ran. */
+function loadDatabaseRequestUrl(env: NodeJS.ProcessEnv, databaseUrl: string): string | null {
+    const url = env.DATABASE_REQUEST_URL?.trim() || null;
+    if (url !== null && databaseName(url) !== databaseName(databaseUrl)) {
+        throw new Error(
+            "DATABASE_REQUEST_URL must name the database DATABASE_URL names: it is the request role's login to the same database."
+        );
+    }
+    return url;
 }
 
 function int(raw: string | undefined, fallback: number, label: string): number {
@@ -218,6 +297,30 @@ function loadAdmission(env: NodeJS.ProcessEnv): AppConfig['admission'] {
         repo: optionalInt(env.ADMISSION_MAX_RUNNING_PER_REPO, 'ADMISSION_MAX_RUNNING_PER_REPO'),
     };
     return Object.fromEntries(Object.entries(budgets).filter(([, value]) => value !== undefined));
+}
+
+const PLAN_DEFAULT_VARIABLES = {
+    running: 'PLAN_DEFAULT_MAX_RUNNING',
+    queued: 'PLAN_DEFAULT_MAX_QUEUED',
+    wallSeconds: 'PLAN_DEFAULT_MAX_WALL_SECONDS',
+    tokens: 'PLAN_DEFAULT_MAX_TOKENS',
+    storageBytes: 'PLAN_DEFAULT_MAX_STORAGE_BYTES',
+    retentionDays: 'PLAN_DEFAULT_MAX_RETENTION_DAYS',
+} as const satisfies Record<keyof PlanLimits, string>;
+
+function loadPlanDefaults(env: NodeJS.ProcessEnv, deploymentMode: DeploymentMode): PlanLimits {
+    const limits: Record<string, number> = {};
+    for (const [limit, name] of Object.entries(PLAN_DEFAULT_VARIABLES)) {
+        const value = optionalInt(env[name], name);
+        if (value !== undefined) limits[limit] = value;
+        else if (deploymentMode === CLOUD) {
+            throw new Error(
+                `DEPLOYMENT_MODE=cloud requires ${name}: the Free plan's limit an organization with no pushed plan gets, so no cloud organization is unlimited`
+            );
+        }
+    }
+    refuseSecondRetentionKnob(env, deploymentMode, limits.retentionDays);
+    return limits;
 }
 
 const DEFAULT_PORT = 8080;
@@ -409,28 +512,6 @@ function requireGithubAuthFields(env: NodeJS.ProcessEnv): {
 }
 
 /**
- * Required in this mode, not optional: a github-mode board authenticates its driver with this one
- * secret, and a board that boots without it fails every claim with 401s the driver logs forever
- * and nobody reads — the exact silent-forever failure fatal-at-boot replaces. The length floor is
- * the webhook secret's: a short shared secret is an enumerable credential however constant-time
- * the comparison is.
- */
-function requireJobBoardToken(env: NodeJS.ProcessEnv): string {
-    const jobBoardToken = env.JOB_BOARD_TOKEN?.trim();
-    if (!jobBoardToken) {
-        throw new Error(
-            'AUTH_MODE is "github" but JOB_BOARD_TOKEN is not set. It is the secret the driver presents on the worker routes — the same value in the driver\'s environment and this one. Generate one with: openssl rand -hex 32.'
-        );
-    }
-    if (jobBoardToken.length < MIN_SESSION_SECRET_LENGTH) {
-        throw new Error(
-            `JOB_BOARD_TOKEN must be at least ${MIN_SESSION_SECRET_LENGTH} characters, got ${jobBoardToken.length}. Generate one with: openssl rand -hex 32.`
-        );
-    }
-    return jobBoardToken;
-}
-
-/**
  * Defaulted only for a loopback bind, where the origin is unambiguous. A deployment reachable from
  * elsewhere has to say what its origin is, because `http://0.0.0.0:8080` is not a URL any browser
  * will ever be redirected back to and a wrong one fails at GitHub with an opaque error.
@@ -468,7 +549,6 @@ function resolvePublicOrigin(env: NodeJS.ProcessEnv, host: string, port: number)
  * rather than reached.
  */
 function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfig {
-    const ingestToken = env.INGEST_TOKEN?.trim() || null;
     const mode = env.AUTH_MODE?.trim() || 'none';
     if (mode !== 'none' && mode !== 'github') {
         throw new Error(`AUTH_MODE must be "github" or "none", got "${env.AUTH_MODE}"`);
@@ -476,11 +556,10 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
 
     if (mode === 'none') {
         assertNoneModeBindable(env, host);
-        return Object.freeze({ mode, ingestToken });
+        return Object.freeze({ mode });
     }
 
     const { clientId, clientSecret, sessionSecret } = requireGithubAuthFields(env);
-    const jobBoardToken = requireJobBoardToken(env);
     const origin = resolvePublicOrigin(env, host, port);
     const sessionTtlHours = int(env.SESSION_TTL_HOURS, DEFAULT_SESSION_TTL_HOURS, 'SESSION_TTL_HOURS');
 
@@ -493,8 +572,6 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         // Follows the public origin's scheme: an https deployment must not ship a cookie that rides plain http.
         cookieSecure: bool(env.COOKIE_SECURE, origin.protocol === 'https:', 'COOKIE_SECURE'),
         publicUrl: origin.origin,
-        ingestToken,
-        jobBoardToken,
         // Environment only. A configurable authorize URL in a file that ships with a deployment is
         // a phishing vector; as an environment variable it stays a test seam that main.ts logs
         // loudly when it is used.
@@ -639,7 +716,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         );
     }
 
-    // Parsed like INGEST_TOKEN: trim, empty meaning unset. Unset, the installation webhook route
+    const databaseRequestUrl = loadDatabaseRequestUrl(env, databaseUrl);
+
+    // Trimmed, empty meaning unset. Unset, the installation webhook route
     // does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     const webhookSecret = env.GITHUB_WEBHOOK_SECRET?.trim() || null;
     // The secret IS the webhook's credential — its HMAC decides whose memberships get deleted —
@@ -677,6 +756,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     const port = int(env.PORT, DEFAULT_PORT, 'PORT');
     const host = env.HOST ?? '127.0.0.1';
     const dbPoolMax = int(env.DB_POOL_MAX, DEFAULT_DB_POOL_MAX, 'DB_POOL_MAX');
+    const deploymentMode = loadDeploymentMode(env.DEPLOYMENT_MODE);
 
     return Object.freeze({
         github,
@@ -685,15 +765,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         webRoot: env.WEB_ROOT ?? null,
         telemetrySource,
         databaseUrl,
+        databaseRequestUrl,
         dbPoolMax,
+        dbStatementTimeoutMs: loadStatementTimeoutMs(env),
+        trustedProxies: parseTrustedProxies(env.TRUSTED_PROXIES),
+        requestLimits: loadRequestLimits(env),
         telemetryTtlMs: telemetryTtlSeconds * MS_PER_SECOND,
         auth: loadAuth(env, host, port),
         webhookSecret,
         artifacts: loadArtifactsConfig(env),
         admission: loadAdmission(env),
+        planDefaults: loadPlanDefaults(env, deploymentMode),
         integrations: { callbackOrigin: publicOriginOrNull(env, host, port)?.origin ?? null, jira: loadJiraOAuth(env) },
         commerce: loadCommerceConfig(env),
         batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
+        deploymentMode,
+        operatorGithubIds: loadOperatorGithubIds(env.OPERATOR_GITHUB_IDS, deploymentMode),
+        driverCredentialBootstrap: loadDriverCredentialBootstrap(env.DRIVER_CREDENTIAL_SHA256),
         mcp: loadMcpConfig(
             env,
             bool(env.MCP_ENABLED, false, 'MCP_ENABLED'),

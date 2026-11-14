@@ -91,6 +91,27 @@ out of every `kubectl get pods -o yaml` — so only this name is wired through.
 A rolling restart whenever the chart-created Secret changes: env read by secretKeyRef is resolved
 once, at container start, so without this a rotated credential waits for the next unrelated roll.
 */}}
+{{/*
+The driver's own Secret: `credential` (its `drv_` credential, mounted as a file the driver re-reads for every
+call) and `metrics-token` (its scrape's bearer). Never the dashboard's Secret: the dashboard holds only the
+credential's SHA-256 (`factory.driverCredentialSha256`), and no other pod references this one.
+*/}}
+{{- define "factory.driverSecretName" -}}
+{{- default (printf "%s-driver" (include "factory.fullname" .)) .Values.driver.credential.existingSecret -}}
+{{- end -}}
+
+{{/*
+The SHA-256 the dashboard records as a pool credential at boot (DRIVER_CREDENTIAL_SHA256): computed from a
+chart-held `driver.credential.value`, or `driver.credential.sha256` beside an existing Secret; empty records none.
+*/}}
+{{- define "factory.driverCredentialSha256" -}}
+{{- if .Values.driver.credential.value -}}
+{{- sha256sum .Values.driver.credential.value -}}
+{{- else -}}
+{{- .Values.driver.credential.sha256 | lower -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "factory.secretChecksum" -}}
 checksum/secret: {{ include (print .Template.BasePath "/secret.yaml") . | sha256sum }}
 {{- end -}}

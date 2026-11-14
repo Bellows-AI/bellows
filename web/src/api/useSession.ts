@@ -1,4 +1,4 @@
-import { ADMIN_ROLE, type Role } from '@factory-ai/core';
+import { ADMIN_ROLE, type DeploymentMode, type Role } from '@factory-ai/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { request } from './request.js';
 import { reportUnauthenticated, subscribeUnauthenticated } from './unauthenticated.js';
@@ -26,6 +26,8 @@ export interface Session {
     mcp: boolean;
     /** Whether this board has Batches turned on (`BATCHES_ENABLED`). Anything but `true` means off. */
     batches: boolean;
+    /** Where this board runs (`DEPLOYMENT_MODE`); cloud refuses a Claude subscription OAuth token in settings. */
+    deploymentMode: DeploymentMode;
 }
 
 /** The role as the settings pages print it. */

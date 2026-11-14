@@ -47,9 +47,8 @@ export const tokenRoutes =
     async (app) => {
         /**
          * Every route scopes to the CALLER's org: a personal token is minted into the org
-         * the caller is signed into, and an org token into the org of the admin... of the member
-         * who mints it — installation access is membership and there are no roles above member,
-         * so the org-token routes lost their admin gate with the roster that fed it.
+         * the caller is signed into, and an org token into the org of the admin who mints it. The
+         * org-token routes are `admin` rows in ROUTE_CLASSES, refused to a member by the auth hook.
          */
         const orgIdOf = (request: FastifyRequest): string => {
             const caller = callerOf(request);
@@ -137,12 +136,12 @@ export const tokenRoutes =
         app.post('/api/tokens/org/:id/revoke', async (request, reply) => {
             const route = resolveCallerRoute(request, reply);
             if (!route) return reply;
-            const { id } = route;
+            const { caller, id } = route;
 
             const revoked = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
-                () => store.revokeOrgToken(orgIdOf(request), id)
+                () => store.revokeOrgToken(orgIdOf(request), id, caller.user.id)
             );
             if (!revoked.ok) return reply;
             if (revoked.value === 'missing') return bad(reply, ERROR_CODES.NOT_FOUND, 'No such token', HTTP_NOT_FOUND);

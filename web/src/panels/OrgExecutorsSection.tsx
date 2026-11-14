@@ -1,4 +1,4 @@
-import { ADMIN_ROLE } from '@factory-ai/core';
+import { ADMIN_ROLE, CLOUD } from '@factory-ai/core';
 import { useState } from 'react';
 import {
     changeOrgExecutorScope,
@@ -168,6 +168,7 @@ export function OrgExecutorsSection({
                 onSave={save}
                 onSaved={onSaved}
                 saving={saving}
+                cloud={session?.deploymentMode === CLOUD}
             />
         </>
     );

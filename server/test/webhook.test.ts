@@ -169,6 +169,34 @@ describe('POST /api/github/webhook', () => {
         expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: ORG, name: ORG }]);
     });
 
+    it('hands an uninstall, a suspension and its lifting to the org status; every other installation action is a no-op', async () => {
+        const { store } = await build();
+        const asked: [string, string][] = [];
+        store.setInstallationStatus = async (orgId, action) => {
+            asked.push([orgId, action]);
+            return { outcome: 'missing' };
+        };
+        for (const action of ['deleted', 'suspend', 'unsuspend', 'created', 'new_permissions_accepted']) {
+            const body = JSON.stringify({ action, installation: { id: Number(ORG) } });
+            const response = await deliver(body, {
+                'x-github-event': 'installation',
+                'x-hub-signature-256': signature(body),
+            });
+            expect(response.statusCode).toBe(HTTP_OK);
+        }
+        const unnamed = JSON.stringify({ action: 'deleted', installation: null });
+        expect(
+            (await deliver(unnamed, { 'x-github-event': 'installation', 'x-hub-signature-256': signature(unnamed) }))
+                .statusCode
+        ).toBe(HTTP_OK);
+
+        expect(asked).toEqual([
+            [ORG, 'deleted'],
+            [ORG, 'suspend'],
+            [ORG, 'unsuspend'],
+        ]);
+    });
+
     it('answers a signed body it cannot parse with 200, never a 5xx', async () => {
         // Documented choice: the signature proved the sender, and a redelivery of bytes that did
         // not parse the first time will not parse the second — a 4xx/5xx would only loop GitHub.

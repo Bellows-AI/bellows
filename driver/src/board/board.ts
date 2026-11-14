@@ -74,7 +74,17 @@ export interface BoardJob extends ClaimSkills {
      */
     claimSeq: number;
     leaseToken: string;
+    /**
+     * The attempt's telemetry export credential, rendered with its id into the runner's telemetry
+     * config (telemetry-config.ts). No claim rotates it, so an adopted runner's file stays valid.
+     */
+    ingestToken: string;
     leaseExpiresAt: string;
+    /**
+     * The board's key for this row's organization, the same on every claim of it whichever driver holds it: it keys
+     * gate identities and helper receipts (`gate-identity.ts`). Driver-only: never handed to a runner.
+     */
+    orgKey?: string;
     /**
      * The CLI/image family selected by this task's executor profile. Null means the stamped
      * executor no longer resolves; the loop fails that task explicitly instead of choosing a
@@ -341,6 +351,8 @@ export type HeartbeatVerdict =
           answeredQuestions?: AnsweredQuestion[];
           /** An open runtime connection requirement this job's attempt raised: hand the attempt back. */
           requirementWait?: boolean;
+          /** The task's organization is suspended: hand the attempt back as a resumable interruption. */
+          release?: 'org-suspended';
       }
     | 'lost'
     | 'removed';
@@ -597,7 +609,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
      * (`POST /api/jobs/:id/credentials/github`, docs/connections.md) — asked right before each
      * supervised step that reaches GitHub (the sync's fetch, a publish, a github-writing helper)
      * and at gate start, so no step runs on an hour-old token. The attempt pair is its credential,
-     * never the board secret. Null — no App installation (409), a refused attempt, a failed ask —
+     * never the driver credential. Null — no App installation (409), a refused attempt, a failed ask —
      * runs the step without one; the step then fails honestly on a private repository.
      */
     githubCredential(job: BoardJob): Promise<string | null>;
@@ -777,20 +789,22 @@ async function reviewAnswerOf(response: Response): Promise<ReviewAnswer> {
 }
 
 /**
- * The one POST every board call goes through: the JSON headers, the board secret when there is one,
+ * The one POST every board call goes through: the JSON headers, the driver credential when there is one,
  * and the status policy. 409 is a verdict, not a failure; 404 is a verdict too for the calls that
  * ask for one (a heartbeat against a removed thread, an ack for a row that left the queue); `allow`
  * names any further status a call reads as an answer (a question report's 429). Everything else
  * outside 2xx is the board being broken or the driver being wrong, and neither should be swallowed
  * into a silent no-op.
  */
-function createPost({ url, token, fetch }: { url: string; token: string | undefined; fetch: Fetch }) {
+function createPost({ url, credential, fetch }: { url: string; credential: () => string; fetch: Fetch }) {
     return async (
         path: string,
         body: unknown,
         allow404 = false,
         { signal, allow = [] }: { signal?: AbortSignal | undefined; allow?: readonly number[] } = {}
     ): Promise<Response> => {
+        // Read per call: a rotated credential travels from the next call on (`board-credential.ts`).
+        const token = credential();
         const response = await fetch(`${url}${path}`, {
             method: 'POST',
             headers: {
@@ -836,7 +850,7 @@ function reviewCalls(post: ReturnType<typeof createPost>): Pick<Board, 'requestR
 export function createBoard({
     url,
     leaseSeconds,
-    token,
+    credential = () => '',
     fetch = globalThis.fetch,
     onMalformedClaim = (fields: string[]) =>
         console.error(`[driver] the board delivered a malformed claim (${fields.join(', ')}); left to its lease`),
@@ -846,17 +860,17 @@ export function createBoard({
     /** Told the names of the fields that made a claim malformed; the claim is then left to its lease. */
     onMalformedClaim?: (fields: string[]) => void;
     /**
-     * The shared board secret, when the board requires one. Empty against a board with AUTH_MODE=none.
+     * This driver's credential (`board-credential.ts`), read for every call; '' against a board with AUTH_MODE=none.
      *
      * This is the driver's entire share of authentication: one header. It stays that way on purpose
      * — this process depends on nothing, `core` included, because it is a client of an HTTP board
      * and giving it the server's types would hand a process that needs only `fetch` and `docker` the
      * whole server dependency tree.
      */
-    token?: string | undefined;
+    credential?: () => string;
     fetch?: Fetch;
 }): Board {
-    const post = createPost({ url, token, fetch });
+    const post = createPost({ url, credential, fetch });
 
     return {
         async claim(worker) {
@@ -900,7 +914,7 @@ export function createBoard({
         ...verdictCalls(post, leaseSeconds),
         ...phaseCheckpointCalls(post),
         ...recordCalls(post),
-        ...artifactCalls({ url, token, fetch }),
+        ...artifactCalls({ url, credential, fetch }),
         ...checkpointCalls(post),
         ...attachmentCalls(post),
         ...skillCalls(post),

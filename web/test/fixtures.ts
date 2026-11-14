@@ -35,6 +35,7 @@ export function memberSession(
         mode: 'github',
         mcp: false,
         batches: false,
+        deploymentMode: 'self-hosted',
         ...rest,
     };
 }

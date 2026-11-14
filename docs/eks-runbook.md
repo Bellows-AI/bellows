@@ -72,8 +72,8 @@ is a bug in one of them.
   `dashboard.serviceAccount.annotations` allowing Secrets Manager `Create`/`Get`/`Describe`/`DeleteSecret` on
   `<prefix>/*`). Under `aws`, create, read and delete one secret through the dashboard: it is the first check of
   the signed Secrets Manager requests against real AWS (the emulator ignores signatures).
-- `secret.existingSecret` or the chart-created Secret, carrying `database-url` and
-  `job-board-token`. On the External Secrets path: a remote path outside the controller's IAM
+- `secret.existingSecret` or the chart-created Secret, carrying `database-url`; and
+  `driver.credential.existingSecret` (`credential`, `metrics-token`) or `driver.credential.value`. On the External Secrets path: a remote path outside the controller's IAM
   scope fails with `could not get secret data from provider` and the `AccessDeniedException` is in
   the controller's events, not the ExternalSecret's status; a missing remote key fails the whole
   sync, so spell optional keys `{{ default "" (index . "SOME_KEY") }}`; and one remote per owner,

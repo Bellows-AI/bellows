@@ -568,6 +568,7 @@ describe('F1: the credential mount and the attempt pair are the agent containerâ
         lastAttempt: false,
         claimSeq: 1,
         leaseToken: LEASE,
+        ingestToken: '33333333-3333-4333-8333-333333333333',
         leaseExpiresAt: '2026-10-29T12:05:00.000Z',
         executorType: 'claude-code',
         executorRefusal: null,

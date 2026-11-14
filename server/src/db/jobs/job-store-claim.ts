@@ -5,7 +5,7 @@
  */
 
 import { OBJECTIVE_MODE, type JobMode } from '@factory-ai/core';
-import { type ClaimConnections, claimConnectionsInTx, recordUnboundRequirements } from './job-store-connections.js';
+import { type ClaimConnections, claimConnectionsInTx, rowHeld } from './job-store-connections.js';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
@@ -19,6 +19,7 @@ import {
     type ClaimOptions,
     type ClaimRefusal,
     fullScope,
+    orgAdmission,
     repoRoom,
 } from './job-store-admission.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
@@ -42,6 +43,7 @@ import type {
 import { type ClaimCandidateRow, rootRowFree, withClaimAttachments } from './job-store-claim-row.js';
 import { claimCommand } from '../follow-up-recap.js';
 import { claimPromptInput, resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
+import { activeOrgOf } from '../org-status.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from '../workflows/workflow-blocks/runtime.js';
 import {
     type WorkflowDefinition,
@@ -241,7 +243,7 @@ async function reserveCandidate(
     refusal: ClaimRefusal,
     takeoverOnly: boolean
 ): Promise<ReservedCandidate | null> {
-    const { sql, orgId, admission, batches } = ctx;
+    const { sql, orgId, admission, batches, deploymentMode } = ctx;
     const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
     const full = await fullScope(sql, admission, orgId);
     if (full === 'global') refusal.global = true;
@@ -272,6 +274,9 @@ async function reserveCandidate(
                   select 1 from job_integration_requirement q
                   where q.org_id = j.org_id and q.root_job_id = j.root_job_id and q.satisfied_at is null
               ))
+              -- Only an active org's rows (cloud; a missing org row is not active), a takeover included: a suspended
+              -- org's attempts are handed back resumably (the heartbeat's release) and wait for its reactivation.
+              and ${activeOrgOf(sql, deploymentMode, 'j')}
               and (j.status = 'running' or (${room}::boolean and ${repoRoom(sql, admission)}))
             order by ${awaitingTakeover(sql, 'j')} desc, coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
             limit 1
@@ -406,9 +411,10 @@ async function acquireCandidate(
         if (!locked) return NEXT_CANDIDATE;
         if (!(await tryThreadLock(tx, orgId, reserved))) return REFUSED;
         probe.locked();
-        // A required integration with no live binding is a requirement, not a claim: checked under the
-        // locks and before any admission slot is taken, restoring the reservation's deferral.
-        if (locked.status === 'queued' && (await recordUnboundRequirements(tx, orgId, rootJobId))) {
+        // A row held back — its org suspended or refused meanwhile (a takeover too), or a queued row's required
+        // integration with no live binding — is not a claim: checked under the locks and before any admission slot is
+        // taken, restoring the reservation's deferral.
+        if (await rowHeld(tx, ctx, locked.status, rootJobId)) {
             await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
                      where org_id = ${orgId} and id = ${reserved.id}`;
             return NEXT_CANDIDATE;
@@ -431,6 +437,9 @@ async function acquireCandidate(
                 -- still holding it is told to retry with the current pair, never refused for good. A claim of a
                 -- queued row supersedes no running attempt.
                 prior_lease_token = case when status = 'running' then lease_token else null end,
+                -- The telemetry export credential (144): never rotated, so an adopted runner keeps exporting
+                -- under it; minted here only for a row from before the column that holds none.
+                ingest_token     = coalesce(ingest_token, gen_random_uuid()),
                 -- A lost attempt is recorded, refunded while the budgets last and marked unrefunded once they
                 -- are spent: the interruption names the claim it supersedes, so an adoption of that claim's
                 -- runner is the same disruption.
@@ -479,7 +488,7 @@ async function acquireCandidate(
             -- least once with its command in the transcript". A fresh or crashed follow-up has
             -- never been parked, so its command still has to go out; a suspended one settles
             -- stopped, and is never claimed again.
-            returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at,
+            returning id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
                       (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
                       session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
@@ -538,11 +547,13 @@ async function claimNextCandidate(
     options: ClaimGate
 ): ReturnType<JobStore['claim']> {
     const refused: string[] = [];
+    // The org budget is the plan's running limit where that is lower, read once for the poll.
+    const budgeted = { ...ctx, admission: await orgAdmission(ctx.sql, ctx.admission, ctx.orgId, ctx.planDefaults) };
     for (;;) {
-        const reserved = await reserveCandidate(ctx, refused, options.refusal, options.takeoverOnly);
+        const reserved = await reserveCandidate(budgeted, refused, options.refusal, options.takeoverOnly);
         if (!reserved) return null;
-        const gates = await prepareCandidate(ctx, reserved);
-        const claim = await acquireCandidate(ctx, { worker, leaseSeconds, ...options }, reserved, gates);
+        const gates = await prepareCandidate(budgeted, reserved);
+        const claim = await acquireCandidate(budgeted, { worker, leaseSeconds, ...options }, reserved, gates);
         if (claim === REFUSED) refused.push(reserved.id);
         else if (claim !== NEXT_CANDIDATE) return claim;
     }
@@ -572,10 +583,10 @@ async function assembleClaim(
     },
     prepared: { rootJobId: string; gates: ResolvedClaimGates; connections: ClaimConnections }
 ): Promise<Omit<Claim, 'attachments'>> {
-    const { orgId, env, githubApp, executorConfig, prs } = ctx;
+    const { orgId, env, githubApp, executorConfig, prs, deploymentMode } = ctx;
     const { rootJobId } = prepared;
     const { connections } = prepared;
-    const executor = await resolveClaimExecutor(tx, { env, executorConfig }, row);
+    const executor = await resolveClaimExecutor(tx, { env, executorConfig, deploymentMode }, row);
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
@@ -606,6 +617,8 @@ export async function claimJob(
 ): ReturnType<JobStore['claim']> {
     const { sql, orgId, wallTick, prs } = ctx;
     const sweepStart = performance.now();
+    // Outside every transaction below: the conversion takes pool connections of its own.
+    await ctx.executorConfig?.ready?.();
 
     // An expired attempt that staged its conclusion is committed before anything else reads the
     // board: no stop settle, retirement, takeover or remote read may come first, and a
@@ -946,6 +959,7 @@ export function buildClaimResult(
         lastAttempt: row.last_attempt,
         claimSeq: Number(row.claim_seq),
         leaseToken: row.lease_token,
+        ingestToken: row.ingest_token,
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,
         executorRefusal,

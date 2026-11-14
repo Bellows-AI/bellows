@@ -11,6 +11,8 @@ import {
     stubTelemetryClient,
     telemetryStoreStub,
     testConfig,
+    TEST_DRIVER_CREDENTIAL,
+    testDriverCredentials,
 } from './helpers.js';
 import {
     HTTP_BAD_REQUEST,
@@ -34,6 +36,11 @@ const BODY = {
     usedMinutes: 10,
     periodStart: '2026-08-01T00:00:00.000Z',
     periodEnd: '2026-09-01T00:00:00.000Z',
+    maxRunning: 4,
+    maxQueued: 50,
+    maxWallSeconds: 7200,
+    maxTokens: 50_000_000,
+    maxStorageBytes: 10_737_418_240,
     version: 3,
 };
 
@@ -92,6 +99,7 @@ async function boot(
             orgs,
             store: telemetryStoreStub(),
             auth: store,
+            driverCredentials: testDriverCredentials,
             commercePlanWriter: options.writer ?? fakeWriter().writer,
         })
     );
@@ -158,8 +166,22 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
             usedMinutes: 10,
             periodStart: new Date('2026-08-01T00:00:00.000Z'),
             periodEnd: new Date('2026-09-01T00:00:00.000Z'),
+            maxRunning: 4,
+            maxQueued: 50,
+            maxWallSeconds: 7200,
+            maxTokens: 50_000_000,
+            maxStorageBytes: 10_737_418_240,
+            maxRetentionDays: null,
             version: 3,
         });
+    });
+
+    it('carries the retention days an Enterprise plan agreed', async () => {
+        const { writer, calls } = fakeWriter({ verdict: 'stored' });
+        const { app } = await boot({ writer });
+        const response = await put(app, { ...BODY, plan: 'enterprise', maxRetentionDays: 400 });
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(calls[0]?.push.maxRetentionDays).toBe(400);
     });
 
     it('accepts null limits and period', async () => {
@@ -172,9 +194,23 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
             usedMinutes: null,
             periodStart: null,
             periodEnd: null,
+            maxRunning: null,
+            maxQueued: null,
+            maxWallSeconds: null,
+            maxTokens: null,
+            maxStorageBytes: null,
         });
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(calls[0]?.push).toMatchObject({ includedMinutes: null, periodStart: null, periodEnd: null });
+        expect(calls[0]?.push).toMatchObject({
+            includedMinutes: null,
+            periodStart: null,
+            periodEnd: null,
+            maxRunning: null,
+            maxQueued: null,
+            maxWallSeconds: null,
+            maxTokens: null,
+            maxStorageBytes: null,
+        });
     });
 
     it('a replay answers 200', async () => {
@@ -205,6 +241,16 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
         ['fractional used minutes', { ...BODY, usedMinutes: 1.5 }],
         ['string minutes', { ...BODY, usedMinutes: '10' }],
         ['a missing minutes field', { ...BODY, includedMinutes: undefined }],
+        ['a zero running limit', { ...BODY, maxRunning: 0 }],
+        ['a fractional queued limit', { ...BODY, maxQueued: 2.5 }],
+        ['a string wall time', { ...BODY, maxWallSeconds: '3600' }],
+        ['a missing limit field', { ...BODY, maxQueued: undefined }],
+        ['a zero token allowance', { ...BODY, maxTokens: 0 }],
+        ['a fractional storage allowance', { ...BODY, maxStorageBytes: 1.5 }],
+        ['an unsafe token allowance', { ...BODY, maxTokens: 2 ** 53 }],
+        ['a missing allowance field', { ...BODY, maxStorageBytes: undefined }],
+        ['a zero retention window', { ...BODY, maxRetentionDays: 0 }],
+        ['a fractional retention window', { ...BODY, maxRetentionDays: 7.5 }],
         ['an unparseable date', { ...BODY, periodStart: 'yesterday' }],
         ['a numeric date', { ...BODY, periodEnd: 1_788_000_000 }],
         ['a period that ends before it starts', { ...BODY, periodStart: BODY.periodEnd, periodEnd: BODY.periodStart }],
@@ -246,7 +292,7 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
     });
 
     it.each([['github'], ['none']])('without a bearer, or with a wrong one, is 401 in %s mode', async (mode) => {
-        const auth: AuthConfig = mode === 'github' ? githubAuth() : { mode: 'none', ingestToken: null };
+        const auth: AuthConfig = mode === 'github' ? githubAuth() : { mode: 'none' };
         const { writer, calls } = fakeWriter();
         const { app } = await boot({ auth, writer });
         const none = await app.inject({ method: 'PUT', url: `/api/commerce/orgs/${ORG}/plan`, payload: BODY });
@@ -261,10 +307,8 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
     });
 
     it('the worker token is not the commerce token', async () => {
-        const auth = githubAuth();
-        const { app } = await boot({ auth });
-        const workerToken = auth.mode === 'github' ? auth.jobBoardToken : '';
-        const response = await put(app, BODY, { authorization: `Bearer ${workerToken}` });
+        const { app } = await boot({ auth: githubAuth() });
+        const response = await put(app, BODY, { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` });
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 

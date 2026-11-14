@@ -1,13 +1,15 @@
-import type { Sql } from 'postgres';
+import type { Fragment, Sql, TransactionSql } from 'postgres';
 import type { ArtifactBackend } from '../artifacts/backend.js';
 import type { ObjectStore } from '../artifacts/object-store.js';
 import type { ServerMetrics } from '../metrics.js';
+import { type FencedWindow, lockedRetentionWindow } from '../db/org-retention.js';
+import type { PlanLimits } from '../db/plan-limits.js';
 import { lockObjectKey, skillKeyNamespace } from '../db/skill-store.js';
 import { startIntervalLoop } from '../interval-loop.js';
 
 /**
  * The skill retention sweep (docs/skills.md). A version is removed only when (a) its skill was soft-deleted at least
- * `retentionDays` ago AND (b) no job
+ * its org's retention window (docs/retention.md), or with none `retentionDays`, ago AND (b) no job
  * references it (`findReferencedVersions`, which reads `job.skill_pin`). The object follows its last row, under
  * the same per-key lock the writer takes, so a writer re-creating the same content cannot lose its object. Any query
  * that fails aborts the pass and any object delete that is unconfirmed leaves its row: nothing unconfirmed is deleted.
@@ -53,6 +55,7 @@ export interface SkillCollector {
 interface Candidate {
     id: string;
     object_key: string;
+    org_id: string;
 }
 
 export function createSkillCollector({
@@ -60,30 +63,45 @@ export function createSkillCollector({
     objects,
     prefix,
     retentionDays,
+    planDefaults,
     referenced = (ids) => findReferencedVersions(sql, ids),
 }: {
     sql: Sql;
     objects: ObjectStore;
     prefix: string;
     retentionDays: number;
+    /** The plan defaults the org windows derive from (`AppConfig.planDefaults`). */
+    planDefaults: PlanLimits;
     /** Tests only: replaces the job-reference query. */
     referenced?: (versionIds: string[]) => Promise<Set<string>>;
 }): SkillCollector {
     const namespace = skillKeyNamespace(prefix);
 
-    /** The one eligibility rule, restated inside the delete so a racing writer or restore loses cleanly. */
-    const eligible = sql`(
-        (s.deleted_at is not null and s.deleted_at < now() - make_interval(days => ${retentionDays}))
-    )`;
+    /**
+     * Selection only: how long a deleted skill stays by the window the retention pass last applied, else
+     * `retentionDays`. A delete decides by `deletedBefore`, derived under the plan-change lock in its own transaction.
+     */
+    const kept = sql`make_interval(days => coalesce(
+        (select r.effective_days from org_retention r where r.org_id = s.org_id), ${retentionDays}))`;
+    const eligible = sql`(s.deleted_at is not null and s.deleted_at < now() - ${kept})`;
+
+    /**
+     * The cutoff a delete in `tx` uses: its org's retention window (docs/retention.md), taken in that transaction through
+     * `lockedRetentionWindow`, or with none `retentionDays`. Synchronous: an awaited fragment would run on its own.
+     */
+    const deletedBefore = (tx: TransactionSql, window: FencedWindow): Fragment =>
+        window.days === null ? tx`now() - make_interval(days => ${retentionDays})` : window.cutoff;
 
     /** One candidate: row first, then (if it was the last name for the key) the object, all under the key's lock. */
     async function sweepOne(row: Candidate): Promise<{ objectDeleted: boolean } | 'skipped'> {
         if (!row.object_key.startsWith(namespace)) throw new Error('object key outside the skill namespace');
         return sql.begin(async (tx) => {
+            const cutoff = deletedBefore(tx, await lockedRetentionWindow(tx, row.org_id, planDefaults));
             await lockObjectKey(tx, row.object_key);
             const gone = await tx`
                 delete from skill_version v using skill s
-                where v.id = ${row.id} and s.id = v.skill_id and ${eligible}
+                where v.id = ${row.id} and s.id = v.skill_id and s.org_id = ${row.org_id}
+                  and s.deleted_at is not null and s.deleted_at < ${cutoff}
                 returning v.id
             `;
             if (gone.length === 0) return 'skipped';
@@ -110,7 +128,7 @@ export function createSkillCollector({
     /** Sweeps one page of candidates; returns how many rows the page held. */
     async function sweepPage(last: string, summary: SkillCollectSummary, live: () => boolean): Promise<Candidate[]> {
         const batch = await sql<Candidate[]>`
-            select v.id, v.object_key from skill_version v join skill s on s.id = v.skill_id
+            select v.id, v.object_key, s.org_id from skill_version v join skill s on s.id = v.skill_id
             where v.id > ${last} and ${eligible}
             order by v.id limit ${BATCH}
         `;
@@ -134,13 +152,23 @@ export function createSkillCollector({
                 if (batch.length < BATCH) break;
                 last = batch[batch.length - 1]!.id;
             }
-            const emptied = await sql`
-                delete from skill s
-                where s.deleted_at < now() - make_interval(days => ${retentionDays})
-                  and not exists (select 1 from skill_version v where v.skill_id = s.id)
-                returning s.id
+            const emptiedOrgs = await sql<{ org_id: string }[]>`
+                select distinct s.org_id from skill s
+                where ${eligible} and not exists (select 1 from skill_version v where v.skill_id = s.id)
             `;
-            summary.skills = emptied.length;
+            for (const { org_id: orgId } of emptiedOrgs) {
+                if (!live()) break;
+                const emptied = await sql.begin(async (tx) => {
+                    const cutoff = deletedBefore(tx, await lockedRetentionWindow(tx, orgId, planDefaults));
+                    return tx`
+                        delete from skill s
+                        where s.org_id = ${orgId} and s.deleted_at < ${cutoff}
+                          and not exists (select 1 from skill_version v where v.skill_id = s.id)
+                        returning s.id
+                    `;
+                });
+                summary.skills += emptied.length;
+            }
             return summary;
         },
     };
@@ -153,6 +181,7 @@ export function startSkillSweep({
     artifacts,
     metrics,
     retentionDays,
+    planDefaults,
     intervalMs = SKILL_COLLECT_INTERVAL_MS,
 }: {
     sql: Sql;
@@ -161,6 +190,7 @@ export function startSkillSweep({
     metrics: Pick<ServerMetrics, 'timedPass'>;
     /** `ArtifactsConfig.retentionDays`: how long a deleted skill's versions stay. */
     retentionDays: number;
+    planDefaults: PlanLimits;
     intervalMs?: number;
 }): () => Promise<void> {
     const collector = createSkillCollector({
@@ -168,6 +198,7 @@ export function startSkillSweep({
         objects: artifacts.objects,
         prefix: artifacts.prefix,
         retentionDays,
+        planDefaults,
     });
     return startIntervalLoop(
         'skills',

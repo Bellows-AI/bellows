@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 import { parseFixtureFetch } from '../src/telemetry/fixture-client.js';
 import type { TelemetryInput } from '@factory-ai/core';
 import type { TelemetryFetch } from '../src/telemetry/client.js';
+import type { DriverCredentialStore } from '../src/auth/driver-credentials.js';
 import type { AppConfig, AuthConfig } from '../src/config.js';
+import { DEFAULT_REQUEST_LIMITS, DEFAULT_STATEMENT_TIMEOUT_MS } from '../src/config-limits.js';
 
 const TELEMETRY_FIXTURE = new URL('../../core/test/fixtures/telemetry-usage.json', import.meta.url);
 
@@ -37,11 +39,16 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         // Never connected to: the harness injects a telemetry stub directly. It is a literal here
         // because AppConfig requires one, not because anything opens it.
         databaseUrl: 'postgres://factory:factory@127.0.0.1:5432/factory_test',
+        databaseRequestUrl: null,
         dbPoolMax: DEFAULT_DB_POOL_MAX,
+        dbStatementTimeoutMs: DEFAULT_STATEMENT_TIMEOUT_MS,
+        // loadConfig's defaults: no proxy trusted, the production request limits.
+        trustedProxies: [],
+        requestLimits: DEFAULT_REQUEST_LIMITS,
         telemetryTtlMs: DEFAULT_TELEMETRY_TTL_MS,
         // Matches loadConfig's default. Note that this is only what the *config* says: the app is
         // built with no auth store at all unless a test passes one, so by default no hook runs.
-        auth: { mode: 'none', ingestToken: null },
+        auth: { mode: 'none' },
         // No webhook secret, so no installation webhook route — the tests that want one set it.
         webhookSecret: null,
         artifacts: {
@@ -51,19 +58,37 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
             attachmentDraftTtlHours: 24,
         },
         admission: {},
+        planDefaults: {},
         integrations: { callbackOrigin: null, jira: null },
         commerce: { enabled: false },
         mcp: { enabled: false },
         // The production default: a batch test opts in, so a forgotten opt-in fails loudly.
         batches: { enabled: false },
+        deploymentMode: 'self-hosted',
+        operatorGithubIds: [],
+        driverCredentialBootstrap: null,
         ...overrides,
     };
 }
 
 export const TEST_SESSION_SECRET = 'test-session-secret-of-at-least-32-chars';
 
-/** The shared board secret github-mode tests present as `Bearer $JOB_BOARD_TOKEN`. */
-export const TEST_JOB_BOARD_TOKEN = 'test-job-board-token-of-at-least-32-chars';
+/** The pool driver credential github-mode tests present on the worker routes. */
+export const TEST_DRIVER_CREDENTIAL = `drv_${'7e'.repeat(32)}`;
+
+const notInThisTest = async (): Promise<never> => {
+    throw new Error('the credential store is not exercised by this test');
+};
+
+/** A credential store that knows only TEST_DRIVER_CREDENTIAL, as the pool; the operator surface is not served. */
+export const testDriverCredentials: DriverCredentialStore = {
+    resolve: async (token) => (token === TEST_DRIVER_CREDENTIAL ? { id: 'test-pool', orgs: null } : null),
+    list: notInThisTest,
+    issue: notInThisTest,
+    revoke: notInThisTest,
+    rotate: notInThisTest,
+    bootstrap: notInThisTest,
+};
 
 const DAYS_PER_FORTNIGHT = 14;
 const HOURS_PER_DAY = 24;
@@ -81,8 +106,6 @@ export function githubAuth(overrides: Partial<Extract<AuthConfig, { mode: 'githu
         sessionTtlMs: FORTNIGHT_MS,
         cookieSecure: false,
         publicUrl: 'http://127.0.0.1:8080',
-        ingestToken: null,
-        jobBoardToken: TEST_JOB_BOARD_TOKEN,
         authorizeUrl: 'https://github.test/login/oauth/authorize',
         tokenUrl: 'https://github.test/login/oauth/access_token',
         userUrl: 'https://api.github.test/user',

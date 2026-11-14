@@ -141,6 +141,7 @@ export async function interruptJob(
         blocked = false,
         requirement = false,
         nodeLoss = false,
+        orgSuspended = false,
     }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
@@ -156,11 +157,12 @@ export async function interruptJob(
         ...(blocked ? { blocked: true } : {}),
         ...(requirement ? { requirement: true } : {}),
         ...(nodeLoss ? { nodeLoss: true } : {}),
+        ...(orgSuspended ? { orgSuspended: true } : {}),
         refunded: true,
     });
-    // Blocked and requirement spend no budget, so both are accepted past a spent one; a node loss spends only
+    // Blocked, requirement and org-suspended releases spend no budget, so both are accepted past a spent one; a node loss spends only
     // its own bound, accepted past a spent poison budget (see `releaseOpen`).
-    const open = releaseOpen(sql, { release, blocked, requirement, nodeLoss });
+    const open = releaseOpen(sql, { release, blocked, requirement, nodeLoss, orgSuspended });
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
     )`;
@@ -171,7 +173,15 @@ export async function interruptJob(
         jobId: id,
         leaseToken,
         operation: 'interrupt',
-        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked, requirement, nodeLoss }),
+        fingerprint: fingerprintOf({
+            reason,
+            release,
+            claimSeq,
+            blocked,
+            requirement,
+            nodeLoss,
+            ...(orgSuspended ? { orgSuspended } : {}),
+        }),
     };
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome: nothing hands it back instead.

@@ -12,7 +12,7 @@ import { type RepoSource, staticRepoSource } from '../src/github/repo-source.js'
 import { createStatsService } from '../src/stats-service.js';
 import type { InstallationRepo } from '../src/github/app-client.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
-import { testConfig } from './helpers-config.js';
+import { testConfig, testDriverCredentials } from './helpers-config.js';
 import { stubTelemetryClient, type TelemetryStub } from './helpers-telemetry.js';
 
 /**
@@ -202,6 +202,9 @@ export const telemetryStoreStub = (): TelemetryStore => ({
         return 0;
     },
     async recordBranch() {},
+    async claimSessions() {
+        return new Set<string>();
+    },
 });
 
 /**
@@ -220,6 +223,8 @@ export function buildWithAuth(
         orgs: staticRegistry({ config, telemetry: stubTelemetryClient(), ...parts }),
         store: telemetryStoreStub(),
         auth: store,
+        // The worker routes accept TEST_DRIVER_CREDENTIAL as the pool.
+        driverCredentials: testDriverCredentials,
         ...deps,
     });
 }

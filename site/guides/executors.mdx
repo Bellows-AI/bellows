@@ -69,6 +69,16 @@ The same section has **gate repair rounds**: how many times a task on this execu
 Keep API keys out of the configuration JSON. Set them as environment variables under **Settings → Workspace** (your own) or **Settings → Organization** (shared). The form links to **Workspace settings**.
 </Warning>
 
+A key that does end up in the configuration is never stored in it. Bellows moves the value of any key-shaped setting, such as `ANTHROPIC_API_KEY` under `env` or an OpenCode provider's `apiKey`, into the secret store. The configuration then shows `stored-credential:` followed by a reference. Leave that text as it is to keep the key, or replace it with a new key. The task's agent still receives the real value.
+
+<Note>
+On Bellows Cloud, a configuration can't point the deployment's model credential at another host. `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` under `env`, or an OpenCode provider's `baseURL`, is refused on save with `CREDENTIAL_REDIRECT_REFUSED` unless your own key is set with it: `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` under `env`, or the provider's own `apiKey`. A task is checked again when it starts, against the configuration together with every environment variable it receives, and fails before the agent starts if the redirect has no key of yours. Self-hosted boards accept a redirect.
+</Note>
+
+<Note>
+Bellows Cloud does not accept a Claude subscription OAuth token. A configuration that sets `CLAUDE_CODE_OAUTH_TOKEN` anywhere, for example under `env`, is refused on save with `CLOUD_CREDENTIAL_REFUSED`, and a profile saved with one earlier fails its task before the agent starts. Nothing saved is deleted. Use your own Anthropic API key (`ANTHROPIC_API_KEY`) instead. Self-hosted boards accept the token as before.
+</Note>
+
 ## Pick an executor for a task
 
 In the **New task** composer, the **Executor** chip next to **Repository** lists every profile you can use. Suspended profiles are not listed.

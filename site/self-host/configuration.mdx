@@ -16,10 +16,16 @@ Bellows is configured with environment variables only. Locally they come from `.
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | Yes | none | Postgres connection string. A fetching process refuses a database whose name ends in `_test`, `_seed`, `_synthetic`, `_demo` or `_e2e`. |
-| `DB_POOL_MAX` | | `50` | Maximum Postgres connections, shared by all routes and background loops. |
+| `DATABASE_URL` | Yes | none | Postgres connection string of the login that owns the schema. It runs the migrations, which create the roles `bellows_request` (requests) and `bellows_cross_org` (`BYPASSRLS`, the paths that read across organizations), and its connections take those roles. Where it may not create roles, create both first. A fetching process refuses a database whose name ends in `_test`, `_seed`, `_synthetic`, `_demo` or `_e2e`. |
+| `DATABASE_REQUEST_URL` | | none | A login of its own for requests, to the same database: a member of `bellows_request` that owns nothing. Unset, the `DATABASE_URL` login takes the role on each connection. Helm: `database.requestUrl`, or the `database-request-url` key of an existing Secret. |
+| `DB_POOL_MAX` | | `50` | Maximum Postgres connections in each of the server's three pools (requests, secrets, cross-org), per replica, beside one migration connection at boot. Keep replicas × (3 × this + 1) under the database's connection limit. Helm computes it from `dashboard.dbConnections` (default `100`) less the replicas, divided by 3 × `dashboard.replicas`. |
+| `DB_STATEMENT_TIMEOUT_MS` | | `60000` | Longest a single database statement may run before Postgres cancels it. Migrations, advisory-lock waits, the organization purge and the telemetry org backfill are exempt. Helm: `dashboard.limits.statementTimeoutMs`. |
 | `PORT` | | `8080` | Port the server listens on. |
 | `HOST` | | `127.0.0.1` | Bind address. The container image sets `0.0.0.0`. |
+| `TRUSTED_PROXIES` | | none | Addresses or CIDRs of the load balancer or ingress in front, comma-separated. Only a request from one of them has its `X-Forwarded-For` read as the client address. Empty trusts none. Helm: `dashboard.limits.trustedProxies`. |
+| `RATE_LIMIT_PER_CREDENTIAL` | | `600` | Requests per minute one sign-in session or token may make, per replica. Over it the server answers `429` with `Retry-After`. Helm: `dashboard.limits.requestsPerCredential`. |
+| `RATE_LIMIT_PER_ORG` | | `3000` | Requests per minute all of one organization's credentials may make together, per replica. Helm: `dashboard.limits.requestsPerOrg`. |
+| `MCP_STREAMS_PER_ORG` | | `16` | MCP requests one organization may have open at once, per replica. Helm: `dashboard.limits.mcpStreamsPerOrg`. |
 | `WEB_ROOT` | | unset | Directory of the built web app. Unset serves no web app. |
 | `PUBLIC_URL` | github mode, non-loopback bind | `http://<HOST>:<PORT>` on a loopback bind | Absolute origin of the board. Used for the OAuth redirect and as the MCP resource. |
 
@@ -34,8 +40,7 @@ Bellows is configured with environment variables only. Locally they come from `.
 | `SESSION_SECRET` | github mode | none | Signs the session cookie. At least 32 characters. Changing it signs everyone out. |
 | `SESSION_TTL_HOURS` | | `336` (14 days) | Session lifetime in hours. Positive integer. |
 | `COOKIE_SECURE` | | follows `PUBLIC_URL` | Sets `Secure` on the session cookie: on for an `https` `PUBLIC_URL`, off for `http`. Set `0` or `1` to override. |
-| `JOB_BOARD_TOKEN` | github mode | none | Shared secret the driver presents on the worker routes. At least 32 characters. Set the same value on the server and the driver. |
-| `INGEST_TOKEN` | | unset | Optional shared secret for the telemetry ingest routes, sent as `X-Factory-Ingest-Token`. Unset leaves them open. |
+| `DRIVER_CREDENTIAL_SHA256` | | none | SHA-256 (64 hex) of a driver credential. The server records it as a pool credential at boot. It never holds the credential itself, and a revoked or rotated one stays so. |
 | `GITHUB_WEBHOOK_SECRET` | | unset | HMAC secret for the App's installation webhook at `<PUBLIC_URL>/api/github/webhook`. At least 32 characters. Unset removes the route. |
 
 ### GitHub App
@@ -64,6 +69,8 @@ See [Jira app](/self-host/jira-app).
 | `MCP_ENABLED` | | off | Turns on the MCP endpoint `POST /api/mcp`. Needs an https `PUBLIC_URL` (http is accepted only for a loopback `PUBLIC_URL` on a loopback `HOST`). Off, the endpoint answers 404. |
 | `MCP_TRUSTED_ORIGINS` | | none | Comma-separated exact http(s) origins, besides `PUBLIC_URL`, that may call MCP from a browser. No wildcards, paths or trailing slashes. |
 | `BATCHES_ENABLED` | | off | Turns on batches. Off, `/api/batches` answers 404 `BATCHES_DISABLED`, batch MCP tools are not listed, and the batch loops do not start. |
+| `DEPLOYMENT_MODE` | | `self-hosted` | `self-hosted` or `cloud`; any other value refuses to boot. Cloud refuses a Claude subscription OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) in executor settings and environment variables, and fails a task whose stored settings carry one. Cloud requires the `PLAN_DEFAULT_MAX_*` limits (below). The Helm chart (`deploymentMode`) refuses cloud without `telemetry.ingestToken`. |
+| `OPERATOR_GITHUB_IDS` | | none | Cloud only. Comma-separated numeric GitHub user ids of the board operator, who can list every organization and suspend, refuse or reactivate one ([`bellows operator`](/cli/commands)). Setting it on a self-hosted board refuses to boot. Helm: `dashboard.operatorGithubIds`. |
 
 ### Admission and capacity
 
@@ -77,13 +84,23 @@ Admission budgets apply to every claim across all drivers and replicas. Unset me
 
 `DRIVER_CONCURRENCY` (below) limits one driver.
 
+Plan limits apply per organization. A plan pushed by the commerce service sets them; these defaults apply to an organization with no pushed plan and to any limit a plan leaves empty. Unset means unlimited. `DEPLOYMENT_MODE=cloud` refuses to boot unless all six are set, and the Helm chart refuses to render cloud mode without them (`dashboard.planDefaults`) or without `dashboard.admission.maxRunning` and `maxRunningPerOrg`.
+
+| Variable | Req | Default | Meaning |
+| --- | --- | --- | --- |
+| `PLAN_DEFAULT_MAX_RUNNING` | cloud | unlimited | Most running tasks per organization. The lower of this and `ADMISSION_MAX_RUNNING_PER_ORG` applies. |
+| `PLAN_DEFAULT_MAX_QUEUED` | cloud | unlimited | Most queued tasks per organization. A new task past it is refused with `429 PLAN_LIMIT`. |
+| `PLAN_DEFAULT_MAX_WALL_SECONDS` | cloud | unlimited | Most wall time one run may use, in seconds. The run is then stopped. |
+| `PLAN_DEFAULT_MAX_TOKENS` | cloud | unlimited | Most tokens an organization's runs may report per period (the plan's billing period, else the UTC calendar month). New tasks past it are refused with `429 PLAN_LIMIT`; running tasks finish. |
+| `PLAN_DEFAULT_MAX_STORAGE_BYTES` | cloud | unlimited | Most bytes of attachments and run logs per organization. An upload past it is refused with `429 PLAN_LIMIT`; a run log past it is truncated. |
+| `PLAN_DEFAULT_MAX_RETENTION_DAYS` | cloud | unlimited | Days a finished task is kept before it is deleted with its logs, transcripts and files ([Data retention](/guides/retention)). A shorter window applies 30 days after it is set; a longer one at once. Not together with `ARTIFACTS_RETENTION_DAYS`. |
+
 ### Telemetry
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
 | `TELEMETRY_SOURCE` | | `postgres` | `postgres`, `fixture` or `off`. `fixture` is for development. |
 | `TELEMETRY_TTL_SECONDS` | | `30` | How long the dashboard caches a telemetry read. Minimum `5`. |
-| `INGEST_TOKEN` | | unset | See Authentication. |
 
 ### Artifacts and attachments
 
@@ -104,7 +121,7 @@ Artifacts and member uploads share one backend. The gcs backend takes its creden
 | `ARTIFACTS_GCS_BUCKET` | gcs | none | Bucket name. Created outside the board, which needs object read, write and delete on it only. |
 | `ARTIFACTS_GCS_PREFIX` | | `factory/` | Key prefix inside the bucket. |
 | `ARTIFACTS_GCS_KMS_KEY` | | empty | Full Cloud KMS key name for new objects. Empty uses Google-managed encryption. |
-| `ARTIFACTS_RETENTION_DAYS` | | `90` | Days after which a sweep deletes the artifacts of a removed task. Minimum `1`. |
+| `ARTIFACTS_RETENTION_DAYS` | | `90` | Days a deleted skill's versions are kept on a board with no retention window. Minimum `1`. Refused in cloud mode and beside `PLAN_DEFAULT_MAX_RETENTION_DAYS`. |
 | `ARTIFACTS_ORG_QUOTA_BYTES` | | `0` (off) | Per-organization byte quota. |
 | `ATTACHMENTS_DRAFT_TTL_HOURS` | | `24` | Hours an upload may wait unattached before it is deleted. Minimum `1`. |
 
@@ -147,7 +164,8 @@ The driver reads only the environment. It has no database access and talks to th
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
 | `JOB_BOARD_URL` | | `http://127.0.0.1:8080` | Where the board is. http(s) only. |
-| `JOB_BOARD_TOKEN` | github mode | empty | Same value as the server. Empty sends no header, for an open board. |
+| `DRIVER_CREDENTIAL` | github mode | empty | This driver's own credential (`drv_` + 64 hex), issued by the board or recorded from its SHA-256. Empty sends no header, for an open board. |
+| `DRIVER_CREDENTIAL_FILE` | | unset | A file holding the credential instead, read again for every call: a rotated credential takes effect without a restart. Not with `DRIVER_CREDENTIAL`. |
 | `DRIVER_WORKER` | | `driver-<pid>` | Name of this driver on every claim. |
 | `EXECUTOR` | | `docker` | `docker` or `kubernetes`. Any other value is fatal. |
 | `REPO_CLONE_BASE` | | `https://github.com` | Where checkouts are cloned from: `<base>/<owner>/<name>.git`. |
@@ -198,7 +216,8 @@ The driver reads only the environment. It has no database access and talks to th
 | --- | --- | --- | --- |
 | `GATE_LISTEN_HOST` | | `127.0.0.1` | Bind address of the gate server, which runs shell commands. Compose sets `0.0.0.0`. |
 | `GATE_ADVERTISE_URL` | | `http://host.docker.internal:<port>` | URL runners use to reach the gate server. The bound port is appended if the URL has none. |
-| `DRIVER_METRICS_PORT` | | unset (off) | Port for a Prometheus scrape at `GET /metrics`, protected by the board token. Needs `JOB_BOARD_TOKEN` when `GATE_LISTEN_HOST` is not loopback. |
+| `DRIVER_METRICS_PORT` | | unset (off) | Port for a Prometheus scrape at `GET /metrics`. Needs `DRIVER_METRICS_TOKEN` when `GATE_LISTEN_HOST` is not loopback. |
+| `DRIVER_METRICS_TOKEN` | | empty | The scrape's bearer. Its own secret, never the driver credential. |
 
 ### Resources
 

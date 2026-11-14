@@ -1,7 +1,10 @@
 import type { Sql } from 'postgres';
+import { orgSql } from './db/org-sql.js';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import { createAttachmentRows } from './attachments/attachment-rows.js';
 import { createSkillStore, type SkillStore } from './db/skill-store.js';
+import { createOrgExport, type OrgExport } from './db/org-export.js';
+import { orgRetentionView, type RetentionView } from './db/org-retention.js';
 import { createAttachmentStore, type AttachmentStore } from './attachments/attachment-store.js';
 import type { ArtifactBackend } from './artifacts/backend.js';
 import type { AppConfig } from './config.js';
@@ -84,6 +87,10 @@ export interface OrgRuntime {
     attachments?: AttachmentStore | undefined;
     /** The org and workspace skills (128) over the same object store; present with the artifact index. */
     skills?: SkillStore | undefined;
+    /** The organization's export archive (`GET /api/org/export`); present with the artifact index. */
+    orgExport?: OrgExport | undefined;
+    /** The org's retention window and any pending lower one (`GET /api/org/retention`). */
+    retention?: (() => Promise<RetentionView>) | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
     /** The integration grants (094) connections hang off: the refresh lineage store; present with the other stores. */
@@ -122,6 +129,8 @@ export type OrgRegistryDeps = {
     artifacts?: ArtifactBackend;
     /** What each org's job store reports about its claims. */
     claimMetrics?: ClaimObserver;
+    /** The per-organization key every claim carries (`auth/org-key.ts`); absent (route tests), claims carry none. */
+    orgKeyOf?: (orgId: string) => string;
 } & (
     | {
           withStores: true;
@@ -158,10 +167,12 @@ function buildOrgStores({
     tokens,
     client,
     claimMetrics,
+    orgKey,
     secrets,
     secretLog,
 }: {
     claimMetrics: ClaimObserver | undefined;
+    orgKey: string | undefined;
     secrets: SecretStore;
     secretLog: (diagnostic: SecretDiagnostic) => void;
     sql: Sql;
@@ -189,7 +200,7 @@ function buildOrgStores({
     const envVars = createEnvVarStore({ sql, orgId, ready, secrets, secretLog });
     const connections = createConnectionStore({ sql, orgId, ready });
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
-    const userExecutors = createUserExecutorStore({ sql, orgId, ready });
+    const userExecutors = createUserExecutorStore({ sql, orgId, ready, secrets, secretLog });
     const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready, secrets, secretLog });
     const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready, secrets });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
@@ -213,8 +224,11 @@ function buildOrgStores({
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
         admission: config.admission,
+        planDefaults: config.planDefaults,
         batches: config.batches.enabled,
+        deploymentMode: config.deploymentMode,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),
+        ...(orgKey ? { orgKey } : {}),
     });
     // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled
     // batch through the job store's own stop and closes an ended batch's threads through its Done.
@@ -227,6 +241,8 @@ function buildOrgStores({
         close: (id, by) => jobs.markDone(id, by),
         telemetrySource: config.telemetrySource,
         githubApp: tokens !== undefined,
+        deploymentMode: config.deploymentMode,
+        planDefaults: config.planDefaults,
         ...(client ? { revisionOf: (repo: string, branch: string) => client.readBranchHead(repo, branch) } : {}),
     });
     // The PR observer (063): reads the org's installation, records merges through the job store and
@@ -326,6 +342,7 @@ function artifactStoreOf({
         objects: backend.objects,
         prefix: backend.prefix,
         orgQuotaBytes: config.artifacts.orgQuotaBytes,
+        planDefaults: config.planDefaults,
     });
 }
 
@@ -334,16 +351,18 @@ function attachmentStoreOf({
     sql,
     orgId,
     ready,
+    config,
     backend,
 }: {
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
+    config: AppConfig;
     backend: ArtifactBackend | undefined;
 }): AttachmentStore | undefined {
     if (!backend) return undefined;
     return createAttachmentStore({
-        rows: createAttachmentRows({ sql, orgId, ready }),
+        rows: createAttachmentRows({ sql, orgId, ready, planDefaults: config.planDefaults }),
         objects: backend.objects,
         orgId,
         prefix: backend.prefix,
@@ -364,11 +383,19 @@ function skillStoreOf({
     return createSkillStore({ sql, objects: backend.objects, orgId, prefix: backend.prefix });
 }
 
+/** The org's export over the process's object store, or undefined when none was configured. */
+function orgExportOf(sql: Sql, orgId: string, backend: ArtifactBackend | undefined): OrgExport | undefined {
+    if (!backend) return undefined;
+    return createOrgExport({ sql, objects: backend.objects, prefix: backend.prefix, orgId });
+}
+
 export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
-    const { sql, ready, config, artifacts, claimMetrics } = deps;
+    const { sql: pool, ready, config, artifacts, claimMetrics } = deps;
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
     const build = async (orgId: string): Promise<OrgRuntime | null> => {
+        // Every statement below runs as this org, so the policies bind each store built here.
+        const sql = orgSql(pool, orgId);
         await ready;
         const rows = await sql<{ id: string; name: string; installation_id: string | null }[]>`
             select id, name, installation_id::text as installation_id from organization where id = ${orgId}
@@ -407,6 +434,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
             repos,
             telemetry,
             service: createStatsService({ config, repos, telemetry }),
+            retention: () => orgRetentionView(sql, orgId, config.planDefaults),
             ...(client
                 ? {
                       branchHead: (repo: string, branch: string) => client.readBranchHead(repo, branch),
@@ -427,13 +455,15 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                 tokens,
                 client,
                 claimMetrics,
+                orgKey: deps.orgKeyOf?.(orgId),
                 secrets: deps.secrets,
                 secretLog: deps.secretLog,
             });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
-            runtime.attachments = attachmentStoreOf({ sql, orgId, ready, backend: artifacts });
+            runtime.attachments = attachmentStoreOf({ sql, orgId, ready, config, backend: artifacts });
             runtime.skills = skillStoreOf({ sql, orgId, backend: artifacts });
+            runtime.orgExport = orgExportOf(sql, orgId, artifacts);
         }
 
         return runtime;
@@ -465,7 +495,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
 
         async list() {
             await ready;
-            const rows = await sql<{ id: string; name: string; installation_id: string | null }[]>`
+            const rows = await pool<{ id: string; name: string; installation_id: string | null }[]>`
                 select id, name, installation_id::text as installation_id from organization order by name
             `;
             return rows.map((row) => ({ id: row.id, name: row.name, installationId: row.installation_id }));

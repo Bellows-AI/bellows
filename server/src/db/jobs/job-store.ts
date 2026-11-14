@@ -20,6 +20,7 @@
  * of them: the decisions here look simplifiable and mostly are not.
  */
 
+import { SELF_HOSTED } from '@factory-ai/core';
 import { bindConnectionRow, dismissRequirementRow, requireConnectionRow } from './job-store-connections.js';
 import {
     createFollowUpRow,
@@ -37,7 +38,7 @@ import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob } from './job-store-claim.js';
 import { activityRecordsOf, taskJobIdsOf } from './job-store-activity-records.js';
-import { orgDemand } from './job-store-admission.js';
+import { orgAdmission, orgDemand } from './job-store-admission.js';
 import { claimReclaimRow, ackReclaimRow, renewReclaimRow } from './job-store-reclaims.js';
 import {
     threadOf,
@@ -105,11 +106,14 @@ function workerMethods(
 > {
     return {
         async claim(worker, leaseSeconds, options) {
-            return claimJob(ctx, worker, leaseSeconds, options);
+            const claimed = await claimJob(ctx, worker, leaseSeconds, options);
+            // The organization's key, bound where the org is: the same on every claim of the org (`auth/org-key.ts`).
+            return claimed && ctx.orgKey ? { ...claimed, orgKey: ctx.orgKey } : claimed;
         },
 
         async demand() {
-            return orgDemand(ctx.sql, ctx.orgId);
+            const { org } = await orgAdmission(ctx.sql, ctx.admission, ctx.orgId, ctx.planDefaults);
+            return orgDemand(ctx.sql, ctx.orgId, org);
         },
 
         async heartbeat(id, leaseToken, leaseSeconds) {
@@ -222,8 +226,11 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         executorConfig,
         prs,
         admission = {},
+        planDefaults = {},
         batches = true,
+        deploymentMode = SELF_HOSTED,
         metrics,
+        orgKey,
     } = deps;
     const gate = async () => {
         if (ready) await ready;
@@ -238,6 +245,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         executorConfig,
         prs,
         metrics,
+        orgKey,
         wallTick: wallTickFragment(sql),
         authorJoin: authorJoinFragment(sql),
         authorColumns: authorColumnsFragment(sql),
@@ -246,7 +254,9 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         publicationJoin: publicationJoinFragment(sql),
         publicationColumns: publicationColumnsFragment(sql),
         admission,
+        planDefaults,
         batches,
+        deploymentMode,
     };
 
     return gated(gate, jobStoreMethods(ctx));

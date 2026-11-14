@@ -62,6 +62,7 @@ import {
 import { bindingBody, gateImageOf, supervisorControlNames, supervisorLiterals } from '../supervisor-plan.js';
 import { groupServices, SERVICE_ADDRESS } from '../services.js';
 import { exportEnv, exportsTranscript } from '../transcript-export.js';
+import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from '../telemetry-config.js';
 
 /**
  * The docker half of a run's container group: the task supervisor and, for a run that exports its
@@ -330,12 +331,21 @@ async function createGate(deps: GroupDeps, job: BoardJob): Promise<void> {
     }
 }
 
-/** The reviewer container, created after the supervisor whose network namespace it joins; none without profiles. */
+/**
+ * The reviewer container, created after the supervisor whose network namespace it joins; none without profiles.
+ * Its executor's telemetry config is the driver-rendered one, copied in as into the agent: the
+ * image's baked file names the compose collector and outranks a review's env. It names no
+ * credential; each review's own rides that review's env (review-step.ts).
+ */
 async function createReviewer(deps: GroupDeps, job: BoardJob): Promise<void> {
     if (!groupShape(job, null).reviewing) return;
     try {
         await assertTaskVolumeIsOurs(deps.execDocker, job);
         await deps.execDocker(reviewerCreateArgs(deps.config, job));
+        const telemetry = telemetryConfig(job.executorType, deps.config.otelEndpoint);
+        await deps.execDocker(['cp', '-', `${reviewerName(job)}:${telemetryCopyTarget(telemetry)}`], {
+            input: telemetryConfigTar(telemetry),
+        });
     } catch (e) {
         await removeGroup(deps.teardown ?? deps.execDocker, job);
         throw startupRefusalOf(e);

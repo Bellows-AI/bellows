@@ -98,14 +98,12 @@ export function createPostgresTelemetryClient({ sql, orgId, ready, log }: Postgr
         async health(): Promise<TelemetryHealth> {
             try {
                 if (ready) await ready;
-                // Deliberately NOT org-scoped. This answers "is the ingest pipeline alive", which
-                // is a property of the deployment, not of an organization — and metric_point has
-                // no org column anyway, so scoping it would mean joining through session_branch
-                // and thereby reporting `empty` for a pipeline that is receiving data from a
-                // session the hook never reported. That is the exact state `empty` exists to
-                // distinguish itself from.
-                const [row] = await sql<{ n: number }[]>`select count(*)::int as n from metric_point`;
-                if ((row?.n ?? 0) === 0) {
+                // Org-scoped by the point's own org, which ingest stores from the credential: a
+                // session the hook never reported still counts, and another organization's
+                // pipeline never makes this one look alive. `exists` stops at the first row.
+                const [row] = await sql<{ any: boolean }[]>`
+                    select exists (select 1 from metric_point where org_id = ${orgId}) as any`;
+                if (!row?.any) {
                     return { status: 'empty', reason: 'No telemetry datapoints have arrived yet' };
                 }
                 return { status: 'ok', reason: null };

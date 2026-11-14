@@ -5,7 +5,7 @@ import { envFileBody, setupTimeoutMs } from '../claim.js';
 import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
 import { declaredTimeoutMs, type GateLedger, type GateRun } from '../gates.js';
-import { gateIdentity } from '../gate-identity.js';
+import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
 import { GATE_RUNS_READ_MS, reusableRun, reusedReport } from './gate-reuse.js';
 import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
@@ -351,13 +351,13 @@ export const stableGateEnvBody = (job: BoardJob): string => envFileBody(withoutG
 
 /**
  * The gate-run record of one claim: the runner's tree probes, the identity of a gate's
- * configuration — its env, which never holds a GitHub token, keyed by the board token — and the board
+ * configuration — its env, which never holds a GitHub token, keyed by the claim's organization key — and the board
  * write. The identity is computed from the current claim's job, never from a registered copy.
  */
 export function gateLedger(rt: LoopRuntime, job: BoardJob, runClaimSeq: number): GateLedger {
     return {
         probe: (signal, sinceMs) => rt.runner.probeGateTree(job, sinceMs ?? null, signal),
-        identity: (gate) => gateIdentity(rt.config.boardToken, job, gate, stableGateEnvBody(job)),
+        identity: (gate) => gateIdentity(orgKeyOf(job), job, gate, stableGateEnvBody(job)),
         write: async (row, signal) => (await rt.board.gateRun(job, { runClaimSeq, ...row }, signal)) === 'ok',
     };
 }

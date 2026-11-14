@@ -21,6 +21,7 @@ const renderPanel = (overrides: Partial<ComponentProps<typeof MembersPanel>> = {
             members={[member('admin-cat', 'admin'), member('octocat', 'member')]}
             saving={false}
             onChange={() => {}}
+            onRemove={() => {}}
             {...overrides}
         />
     );
@@ -59,10 +60,12 @@ describe('the members panel', () => {
 
     it('disables the Member option on a sole admin — the last-admin refusal, visible before the click', () => {
         const html = renderPanel();
-        // Exactly one disabled option in the whole table: the sole admin's Member choice.
-        expect(html.match(/disabled/g)?.length).toBe(1);
+        // Exactly one disabled option in the whole table: the sole admin's Member choice — and exactly one
+        // disabled button: the sole admin's Remove.
+        expect(html.match(/<option[^>]*disabled/g)?.length).toBe(1);
         const adminRow = html.slice(html.indexOf('Role for admin-cat'));
         expect(adminRow).toMatch(/<option[^>]*disabled[^>]*>Member<\/option>/);
+        expect(html.match(/<button[^>]*disabled/g)).toEqual([expect.stringContaining('Remove admin-cat')]);
     });
 
     it('leaves every option open once a second admin exists', () => {

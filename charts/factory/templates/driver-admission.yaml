@@ -25,7 +25,8 @@ service sidecars, every aux Job — because `create jobs` would otherwise be `re
     and a `svc-` container is only a restartable init container — the restartable ones are the
     `gate`, the `reviewer` and the `svc-` services, nothing else.
   - the reviewer (#774) runs as uid 1002 and mounts the task volume read-only but for its home
-    (`.factory/reviewer`), and its review mailbox, nothing else.
+    (`.factory/reviewer`), its review mailbox, and its telemetry config (one file, read-only, of the
+    `telemetry-config` volume, which projects that one key of the per-attempt Secret), nothing else.
 `-resize` fences the one in-place resize the driver makes (issue #773): a `pods/resize` update of a
 pod it labelled `factory.job` that changes no main container and no init container but `gate` or `reviewer`, one of them.
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
@@ -199,8 +200,12 @@ spec:
         Issue #774. The reviewer is a restartable init container of its own uid (1002,
         driver/src/claim.ts REVIEWER_UID): never the CLI's 1000, the tool's 1001 or any other, and
         it mounts the task volume read-only but for its own home (its `.factory/reviewer`
-        directory, read-write), and its review mailbox, nothing else; it reads
-        the model credentials Secret (the one the agent reads) and no other, no envFrom.
+        directory, read-write), its review mailbox, and its telemetry config, nothing else; it reads
+        the model credentials Secret (the one the agent reads) and no other, no envFrom. The telemetry
+        config is the agent's own mount (driver/src/telemetry-config.ts): read-only, one file by
+        subPath, of the `telemetry-config` volume — which, wherever it appears, projects the one
+        config-file key of the per-attempt Secret (key and path alike, `managed-settings.json` or
+        `otel.json`) and nothing else, so no credential key of that Secret rides it.
         */}}
         - expression: >-
               variables.spec.containers.all(c, c.name != 'reviewer') &&
@@ -212,8 +217,16 @@ spec:
                 !has(c.volumeMounts) || c.volumeMounts.all(m,
                   (m.name == 'task' && has(m.readOnly) && m.readOnly) ||
                   (m.name == 'task' && has(m.subPath) && m.subPath == '.factory/reviewer') ||
-                  m.name == 'ctl-review'))
-          message: 'a driver-specced reviewer mounts the task volume read-only but for its home, and its review mailbox'
+                  m.name == 'ctl-review' ||
+                  (m.name == 'telemetry-config' && has(m.readOnly) && m.readOnly &&
+                    has(m.subPath) && m.subPath in ['managed-settings.json', 'otel.json'])))
+          message: 'a driver-specced reviewer mounts the task volume read-only but for its home, its review mailbox and its telemetry config'
+        - expression: >-
+              !has(variables.spec.volumes) || variables.spec.volumes.all(v, v.name != 'telemetry-config' ||
+                (has(v.secret) && has(v.secret.secretName) && v.secret.secretName.matches({{ squote $secretName }}) &&
+                  has(v.secret.items) && size(v.secret.items) == 1 &&
+                  v.secret.items.all(i, i.key == i.path && i.key in ['managed-settings.json', 'otel.json'])))
+          message: 'the telemetry-config volume projects the one telemetry config key of the attempt Secret, which names no credential'
         - expression: >-
               !has(variables.spec.initContainers) || variables.spec.initContainers.all(c, c.name != 'reviewer' ||
                 (!has(c.envFrom) || size(c.envFrom) == 0) &&

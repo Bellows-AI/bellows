@@ -143,6 +143,8 @@ export async function requestReviewFor(
     request: ReviewRequest
 ): Promise<RequestReviewResult> {
     const { sql, orgId } = ctx;
+    // Before the transaction: the profiles' conversion takes pool connections of its own.
+    await ctx.executorConfig?.ready?.();
     return sql.begin(async (tx): Promise<RequestReviewResult> => {
         const caller = await lockedCaller(tx, orgId, id, leaseToken);
         if (!caller) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
@@ -252,6 +254,8 @@ async function leaseRunning(
     await tx`
         update job set
             lease_token = gen_random_uuid(),
+            -- Never rotated (144); minted only for a review row from before the column.
+            ingest_token = coalesce(ingest_token, gen_random_uuid()),
             claim_seq = claim_seq + 1,
             claimed_by = ${caller.claimed_by},
             lease_expires_at = ${caller.lease_expires_at},
@@ -287,6 +291,7 @@ interface ReviewClaimRow {
     max_attempts: number;
     claim_seq: string;
     lease_token: string;
+    ingest_token: string;
     lease_expires_at: Date;
     run_as: string | null;
     session_id: string | null;
@@ -312,10 +317,11 @@ interface ReviewClaimRow {
  * grants. The board decides all of it; the caller names none of it.
  */
 async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: string): Promise<Claim> {
-    const { orgId, env, executorConfig } = ctx;
+    const { orgId, env, executorConfig, deploymentMode } = ctx;
     await recordExecution(tx, orgId, reviewId);
     const [row] = await tx<ReviewClaimRow[]>`
-        select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, execution_user_id as run_as,
+        select id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
+               execution_user_id as run_as,
                session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                review_spec, review_ref, skill_hidden,
                (session_id is not null
@@ -324,7 +330,11 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
         from job where org_id = ${orgId} and id = ${reviewId}
     `;
     const spec = row!.review_spec;
-    const executor = await resolveClaimExecutor(tx, { env, executorConfig, grant: spec.connections }, row!);
+    const executor = await resolveClaimExecutor(
+        tx,
+        { env, executorConfig, deploymentMode, grant: spec.connections },
+        row!
+    );
     const claim = buildClaimResult(
         {
             ...row!,
@@ -358,7 +368,9 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
     );
     const reviewRun = { profile: spec.name, ref: row!.review_ref, timeoutMinutes: spec.timeoutMinutes };
     // The review binds nothing: its files are the reviewed row's, and a read that throws fails the claim.
-    return withClaimAttachments(tx, orgId, { ...claim, reviewRun });
+    // The organization's key rides every claim, a review's too (`auth/org-key.ts`).
+    const keyed = ctx.orgKey ? { ...claim, orgKey: ctx.orgKey } : claim;
+    return withClaimAttachments(tx, orgId, { ...keyed, reviewRun });
 }
 
 export async function readReviewFor(
@@ -368,6 +380,7 @@ export async function readReviewFor(
     key: string
 ): Promise<ReadReviewResult> {
     const { sql, orgId } = ctx;
+    await ctx.executorConfig?.ready?.();
     return sql.begin(async (tx): Promise<ReadReviewResult> => {
         const caller = await lockedCaller(tx, orgId, id, leaseToken);
         if (!caller) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };

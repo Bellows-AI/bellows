@@ -17,7 +17,7 @@ This page is for a security reviewer. It states what each control does and what 
 | Component | Holds | Does not hold |
 | --- | --- | --- |
 | Dashboard | GitHub App private key, secret-store keys, artifact store credentials, session secret | Agent-written code (it runs in runner pods, never here) |
-| Driver | The shared board token, a namespaced Role that creates Jobs | No `get` or `list` on Secrets. It never reads a Secret back |
+| Driver | Its own driver credential (a mounted file), its metrics token, a namespaced Role that creates Jobs | No `get` or `list` on Secrets. It never reads a Secret back. No runner receives its credential |
 | Runner pod | Its per-attempt credentials, model credentials, a memory-only GitHub token cache | No ServiceAccount token, no App key |
 | Agent tool commands | Nothing | No GitHub token, no model credential, no control-channel token |
 
@@ -121,9 +121,13 @@ A secret a task can read is a secret the agent can use, and a prompt could ask i
 
 The chart has no open mode. An unauthenticated `POST /api/jobs` would be remote code execution, so the Ingress is off by default and you enable it on purpose.
 
-Sign-in uses the OAuth App with the `read:org` scope and reads no repository data. Access follows installation membership, re-checked on every request. A removed membership ends sessions and tokens on the next request. With the webhook configured (see [Create the GitHub App](/self-host/github-app)), a GitHub-side removal takes effect as soon as GitHub reports it. Without it, it waits for that person's next sign-in.
+Sign-in uses the OAuth App with the `read:org` scope and reads no repository data. Access follows installation membership, re-checked on every request. A removed membership ends sessions and tokens on the next request. With the webhook configured (see [Create the GitHub App](/self-host/github-app)), a GitHub-side removal takes effect as soon as GitHub reports it. Without it, Bellows asks GitHub again (the App's Members read permission) when a session or personal token is used more than 10 minutes after the last answer, and every 5 minutes for idle ones, so a removed person is refused within 10 minutes of their next request. Bellows removes access only when GitHub confirms the person is not a member. A failed, slow or unexpected answer removes nothing.
 
-The first member of an organization is its admin. Demoting the last admin is refused.
+A GitHub organization owner is an admin, and so is the account a user installation belongs to. An installation that has not yet accepted the Members permission keeps the older rule: the first member to sign in is the admin. Bellows never demotes an admin on GitHub's word, and demoting the last admin is refused.
+
+An admin removes a member under **Settings → Organization**, section **Members**. Their sessions end and their personal tokens are revoked at once. The removal sticks: signing in again does not bring the membership back until an admin restores it from **Removed members** on the same page.
+
+Only an admin can mint, list or revoke organization access tokens, save organization or repository variables and secrets, change member roles, remove or restore members, manage organization executors, skills and notifications, read the [audit log](/guides/audit-log) or download the [organization export](/guides/export). A member's session or personal access token gets `403` there. Every member manages their own personal tokens, workspace variables, executors, skills and notifications.
 
 ## Tokens
 
@@ -133,7 +137,7 @@ The first member of an organization is its admin. Demoting the last admin is ref
 | Personal access token | `fat_` | Everything its owner can do |
 | Organization access token | `oat_` | Read only, on its allowed routes |
 | MCP access and refresh tokens | `mat_`, `mrt_` | Only `/api/mcp`, within the granted scopes |
-| Worker credential | `JOB_BOARD_TOKEN` | The driver's routes. One deployment-wide secret of at least 32 characters |
+| Driver credential | `drv_` | The driver's routes, for the pool or named organizations. One per driver, revocable and rotatable with an overlap window |
 
 Only hashes of tokens are stored. Each credential kind works on its own routes and never falls through to another. A worker token is refused on human routes, and the reverse.
 
@@ -154,8 +158,8 @@ MCP is off unless you set `mcp.enabled`. It requires an `https` public URL, sinc
 - Runner egress is controlled by a NetworkPolicy. It works only if your CNI enforces it. Check from inside a runner pod that traffic to `169.254.169.254` and to private ranges fails.
 - IPv6 egress is not covered. Every rule is IPv4.
 - A NetworkPolicy does not restrict HTTP routes. A runner can call any public URL.
-- The driver's metrics port (`driver.metricsPort`, default `9464`) answers only with `Authorization: Bearer <JOB_BOARD_TOKEN>`. It has no Service. The driver refuses a metrics port with no token off loopback.
-- The OTLP collector accepts unauthenticated telemetry unless you set `telemetry.ingestToken`.
+- The driver's metrics port (`driver.metricsPort`, default `9464`) answers only with `Authorization: Bearer <driver.metricsToken>`, never the driver credential. It has no Service. The driver refuses a metrics port with no token off loopback.
+- With `AUTH_MODE=github` the dashboard accepts a runner's telemetry only under that task attempt's own credential, which the driver writes into the runner and the collector forwards. A laptop exporter sends a personal access token instead (`OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>`). Each point is stored under the organization of the credential that sent it, and usage figures count only an organization's own points. A point or branch report for a session that belongs to another task attempt or organization is refused.
 - On EKS, also set the node's metadata hop limit to 1 so a pod cannot reach node credentials. See [Kubernetes and Helm](/self-host/kubernetes).
 
 ## Uploads

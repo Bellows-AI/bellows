@@ -23,6 +23,22 @@ Values come from the Bellows code. Where a value is set by whoever runs Bellows,
 
 See [Writing good tasks](/guides/writing-good-tasks) and [Task lifecycle](/guides/task-lifecycle).
 
+## Organization plan
+
+Each organization's plan sets these. With no plan, the operator's default plan applies; on Bellows Cloud that is the Free plan.
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Running tasks | Set by the plan | New tasks stay **Queued** until one of yours ends. When runners are scarce, organizations get them in proportion to their running limits |
+| Queued tasks | Set by the plan | Refused with `429` and code `PLAN_LIMIT` (`limit: queued`). Retrying a request with the same idempotency key still returns its task |
+| Run wall time | Set by the plan. Time spent waiting for your answer does not count | The run is stopped and shows **Stopped · Needs review**. **Follow up** continues it |
+| Tokens per period | Set by the plan. The period is your billing period, or the calendar month (UTC) without one. Counts the input, output and cache tokens your runs report | New tasks and batches are refused with `429` and code `PLAN_LIMIT` (`limit: tokens`). Runs already going finish, and follow-ups still work |
+| Stored files and run logs | Set by the plan, in bytes. Counts your attachments (until you remove them) and your runs' logs and transcripts | An upload is refused with `429` and code `PLAN_LIMIT` (`limit: storage`). A run's log past it is cut off and marked truncated |
+
+On Bellows Cloud, an organization is active on the Free plan as soon as the GitHub App is installed and someone signs in. The operator can suspend or refuse an organization. While it is suspended or refused, new tasks and batches are refused with `403` and code `ORG_INACTIVE`, with `status` set to `suspended` or `refused`. Queued tasks wait. Runs already in progress are interrupted, not failed: each keeps its session and checkout. When the organization is reactivated, its queued tasks start and interrupted runs resume where they left off.
+
+Uninstalling the GitHub App, or GitHub suspending the installation, suspends the organization the same way and keeps all of its data. If GitHub lifts its suspension of the installation within 30 days, the organization is active again, unless the operator has also suspended or refused it. Otherwise, 30 days later the organization is deleted: its tasks, logs, transcripts, settings, stored files and secrets are purged and cannot be restored. A self-hosted board never deletes an organization on its own.
+
 ## Infrastructure interruptions
 
 | Limit | Value | When exceeded |
@@ -133,6 +149,18 @@ See [Skills](/guides/skills).
 | Reserved names | `GITHUB_TOKEN`, `GH_TOKEN`, names starting with `LD_`, and names Bellows uses itself | Refused on save |
 
 See [Environment variables and secrets](/guides/env-and-secrets).
+
+## Requests
+
+These count per server replica, so a board with two replicas admits up to twice the rate. Runners and drivers are never rate limited, so a busy organization cannot cost a running task its lease. A board with sign-in turned off (`AUTH_MODE=none`) has no request rate.
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Requests per sign-in session or token | 600 a minute. Set by the operator | `429` with code `RATE_LIMITED` and a `Retry-After` header in seconds |
+| Requests per organization, all its members together | 3,000 a minute. Set by the operator | `429` with code `RATE_LIMITED` and `Retry-After` |
+| MCP requests open at once per organization | 16. Set by the operator | `429` with `Retry-After: 5` |
+| Run log read page (`GET /api/jobs/:id/artifacts/read`) | 256 KiB by default, up to 4 MiB | Refused: `BAD_LIMIT` |
+| One database statement | 60 seconds. Set by the operator | The request fails. A statistics query over a long range is the usual cause; narrow the range |
 
 ## Tokens
 

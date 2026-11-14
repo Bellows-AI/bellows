@@ -257,7 +257,7 @@ async function interrupt(
     after: Promise<void>
 ): Promise<LeaseState | null> {
     const { rt, job, state } = ctx;
-    const { reason, exitCode, refused, blocked, requirement, nodeLoss, beforeInterrupt } = decision;
+    const { reason, exitCode, refused, blocked, requirement, nodeLoss, orgSuspended, beforeInterrupt } = decision;
     await beforeInterrupt?.().catch((e: Error) =>
         rt.log(`job ${job.id}: the work before the hand-back failed, handing back anyway: ${e.message}`)
     );
@@ -274,6 +274,7 @@ async function interrupt(
                 ...(blocked ? { blocked } : {}),
                 ...(requirement ? { requirement } : {}),
                 ...(nodeLoss ? { nodeLoss } : {}),
+                ...(orgSuspended ? { orgSuspended } : {}),
             }),
         { leaseLapsed: state.leaseExpiry.signal }
     ).catch((e: Error) => {

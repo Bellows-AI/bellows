@@ -10,6 +10,11 @@ export function testSecretStore(sql: Sql, keys: MutableKeys = new MutableKeys())
     return createPostgresSecretStore({ sql, keys, deadlineMs: 3000 });
 }
 
+/** What a store holding secrets takes besides its SQL: the real test store and a silent diagnostic sink. */
+export function testSecretDeps(sql: Sql) {
+    return { secrets: testSecretStore(sql), secretLog: () => {} };
+}
+
 /** The store with some calls replaced, to script a fault on exactly one of them. */
 export function faultySecrets(store: SecretStore, overrides: Partial<SecretStore>): SecretStore {
     return {

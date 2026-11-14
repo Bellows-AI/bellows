@@ -16,7 +16,7 @@ const ORG = testOrg();
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 
-const db = useTestDb({ max: 8 });
+const db = useTestDb({ max: 8, orgs: [ORG] });
 
 beforeAll(async () => {
     if (!enabled) return;

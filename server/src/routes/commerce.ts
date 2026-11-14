@@ -26,10 +26,33 @@ const BODY_LIMIT = 4096;
 
 /** `organization_id_ck` (010) restated: the writer would only fail on it, and a 400 names the cause. */
 const ORG_ID = /^[a-z0-9][a-z0-9_-]{0,38}$/;
-const BODY_FIELDS = ['plan', 'includedMinutes', 'usedMinutes', 'periodStart', 'periodEnd', 'version'];
+const BODY_FIELDS = [
+    'plan',
+    'includedMinutes',
+    'usedMinutes',
+    'periodStart',
+    'periodEnd',
+    'maxRunning',
+    'maxQueued',
+    'maxWallSeconds',
+    'maxTokens',
+    'maxStorageBytes',
+    'maxRetentionDays',
+    'version',
+];
+const LIMIT_FIELDS = ['maxRunning', 'maxQueued', 'maxWallSeconds'] as const;
+/** The allowances are `bigint` columns: any positive safe integer, or null for the board's default. */
+const ALLOWANCE_FIELDS = ['maxTokens', 'maxStorageBytes'] as const;
 
 const isMinutes = (value: unknown): value is number | null =>
     value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
+
+/** A plan limit: a positive integer within the column's `integer`, or null for the board's default. */
+const MAX_LIMIT = 2_147_483_647;
+const isLimit = (value: unknown): value is number | null =>
+    value === null || (typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= MAX_LIMIT);
+const isAllowance = (value: unknown): value is number | null =>
+    value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
 
 function dateOrNull(value: unknown): Date | null | undefined {
     if (value === null) return null;
@@ -38,7 +61,10 @@ function dateOrNull(value: unknown): Date | null | undefined {
     return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
-/** The push, or the reason the body is not one. Every field is required; the four optional ones may be null. */
+/**
+ * The push, or the reason the body is not one. Every field is required, but `maxRetentionDays`, which a service
+ * pushing no window leaves out; all but `plan` and `version` may be null.
+ */
 function parsePush(raw: unknown): PlanPush | string {
     const fields = body(raw);
     const unknown = Object.keys(fields).find((key) => !BODY_FIELDS.includes(key));
@@ -55,7 +81,28 @@ function parsePush(raw: unknown): PlanPush | string {
     if (typeof version !== 'number' || !Number.isSafeInteger(version) || version <= 0) {
         return 'version must be a positive integer';
     }
-    return { plan: plan as PlanName, includedMinutes, usedMinutes, periodStart: start, periodEnd: end, version };
+    const bad = LIMIT_FIELDS.find((name) => !isLimit(fields[name]));
+    if (bad) return `${bad} must be a positive integer or null`;
+    const badAllowance = ALLOWANCE_FIELDS.find((name) => !isAllowance(fields[name]));
+    if (badAllowance) return `${badAllowance} must be a positive integer or null`;
+    const retentionDays = fields.maxRetentionDays ?? null;
+    if (!isLimit(retentionDays)) return 'maxRetentionDays must be a positive integer or null';
+    const limit = (name: (typeof LIMIT_FIELDS)[number] | (typeof ALLOWANCE_FIELDS)[number]) =>
+        fields[name] as number | null;
+    return {
+        plan: plan as PlanName,
+        includedMinutes,
+        usedMinutes,
+        periodStart: start,
+        periodEnd: end,
+        maxRunning: limit('maxRunning'),
+        maxQueued: limit('maxQueued'),
+        maxWallSeconds: limit('maxWallSeconds'),
+        maxTokens: limit('maxTokens'),
+        maxStorageBytes: limit('maxStorageBytes'),
+        maxRetentionDays: retentionDays,
+        version,
+    };
 }
 
 /** The writer's verdict as the service sees it: 200 once committed (or already stored), else why not. */

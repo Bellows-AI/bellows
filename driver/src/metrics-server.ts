@@ -5,9 +5,10 @@ import { CONTENT_TYPE } from './prometheus.js';
 
 /**
  * The driver's own scrape listener: `GET /metrics`, behind `Authorization: Bearer
- * $JOB_BOARD_TOKEN` when one is configured. Separate from the gate server, which is ephemeral and
- * serves run control: a runner can reach this port, and holds no board token. `config.ts` refuses a
- * port with no token on a non-loopback host.
+ * $DRIVER_METRICS_TOKEN` when one is configured — the scraper's own secret, never the driver
+ * credential. Separate from the gate server, which is ephemeral and serves run control: a runner can
+ * reach this port, and holds no metrics token. `config.ts` refuses a port with no token on a
+ * non-loopback host.
  */
 
 const HTTP_OK = 200;

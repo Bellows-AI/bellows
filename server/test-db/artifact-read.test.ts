@@ -104,6 +104,7 @@ describe.skipIf(!enabled).each(BACKENDS)('artifact reads over $name', ({ make, p
 describe.skipIf(!enabled)('transcript exports and token metrics', () => {
     const point = (session: string, source: string, value: number) => sql`
         insert into metric_point ${sql({
+            org_id: ORG,
             agent: 'claude-code',
             metric: 'claude_code.token.usage',
             field: 'tokens_input',

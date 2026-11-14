@@ -1,8 +1,11 @@
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
+import type { DriverCredentialStore } from './auth/driver-credentials.js';
 import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
+import { registerRequestRateLimit, trustProxyOf } from './auth/request-limits.js';
 import type { OAuthStore } from './auth/oauth-store.js';
+import type { MembershipReader } from './auth/membership.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
 import { mcpRoutes } from './mcp/routes.js';
@@ -32,6 +35,10 @@ import { orgExecutorRoutes } from './routes/org-executors.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
+import { auditRoutes } from './routes/audit.js';
+import { operatorRoutes } from './routes/operator.js';
+import { operatorDriverCredentialRoutes } from './routes/operator-driver-credentials.js';
+import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -91,17 +98,26 @@ export interface AppDeps {
      */
     auth?: AuthStore | undefined;
     /**
+     * GitHub's member list of an organization, for the members page's invitations (routes/org-members.ts). Present
+     * under a GitHub App; absent, the invitation read serves the sign-in link and says the list is unavailable.
+     */
+    githubRoster?: Pick<MembershipReader, 'roster'> | undefined;
+    /**
      * The branch route's lease-pair verifier, threaded through to the auth hook. main.ts builds it
      * from the job store's SQL; the tests that exercise the runner credential stub it.
      */
     orgOfLease?: ((jobId: string, leaseToken: string) => Promise<string | null>) | undefined;
+    /** The OTLP routes' runner-credential verifier (job id + ingest token), threaded through to the auth hook. */
+    orgOfIngest?: ((jobId: string, ingestToken: string) => Promise<string | null>) | undefined;
     /**
      * The worker routes' org resolvers, threaded through to the auth hook beside `orgOfLease`:
-     * where the shared board secret authenticates a call, the org comes from the row its URL
+     * where a pool driver credential authenticates a call, the org comes from the row its URL
      * names. main.ts builds both from the job store's SQL.
      */
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
+    /** Per-driver credentials: the worker routes resolve `drv_` tokens through it; the operator issues them. */
+    driverCredentials?: DriverCredentialStore | undefined;
     /**
      * The runner credential routes' per-call check (`createAttemptOfLease`); the GitHub route exists
      * exactly when it does, and the managed-connection broker when `integrations` is present too.
@@ -215,6 +231,7 @@ async function registerMcp(
         batches: config.batches.enabled,
         origin: new URL(config.mcp.resource).origin,
         metrics,
+        streamsPerOrg: config.requestLimits.streamsPerOrg,
     });
 }
 
@@ -303,9 +320,12 @@ export async function buildApp({
     orgs,
     store,
     auth,
+    githubRoster,
     orgOfLease,
+    orgOfIngest,
     orgOfJob,
     orgOfReclaim,
+    driverCredentials,
     attemptOfLease,
     integrations,
     githubMint,
@@ -329,7 +349,7 @@ export async function buildApp({
     metrics,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
-    const app = Fastify({ logger });
+    const app = Fastify({ logger, trustProxy: trustProxyOf(config.trustedProxies) });
     app.setErrorHandler(errorHandler);
 
     // Aborted the moment `app.close()` begins, before it waits for the open requests: the long-polls (settle, batch
@@ -364,8 +384,20 @@ export async function buildApp({
     // Before every route, so nothing can be registered ahead of the wall by accident. Without a
     // store the property is still decorated, so `request.auth` reads the same everywhere rather than
     // being absent in one configuration and null in another.
-    if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfJob, orgOfReclaim, oauth });
-    else app.decorateRequest('auth', null);
+    if (auth) {
+        await registerAuth(app, {
+            config,
+            store: auth,
+            orgOfLease,
+            orgOfIngest,
+            orgOfJob,
+            orgOfReclaim,
+            driverCredentials,
+            oauth,
+        });
+        // After the auth hook, whose principal it counts.
+        registerRequestRateLimit(app, { config, now });
+    } else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes(ready));
     await app.register(versionRoutes(version));
@@ -430,12 +462,14 @@ export async function buildApp({
         githubMint,
         githubRevoke,
     });
-    await app.register(workspaceRoutes({ orgs }));
+    await app.register(workspaceRoutes({ orgs, deploymentMode: config.deploymentMode }));
     // Plans and usage: like the webhook, no route exists unless the deployment turned commerce on.
     await registerCommerce(app, config, orgs, commercePlanWriter);
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
-    await app.register(orgExecutorRoutes({ orgs }));
+    await app.register(orgExecutorRoutes({ orgs, deploymentMode: config.deploymentMode }));
+    // The organization's export archive: an admin read over every org table and object.
+    await app.register(orgExportRoutes({ orgs }));
     // Notification subscriptions: the org's settings for who hears about a task verdict.
     await app.register(
         notificationSubscriptionRoutes({
@@ -446,7 +480,14 @@ export async function buildApp({
     );
     // The member roster and its role writes (issue 410), the same person-shaped surface: the
     // caller's role decides, the store has no role of its own to check.
-    if (auth) await app.register(orgMemberRoutes({ store: auth }));
+    // The organization's audit log export is an admin read beside the roster; the operator's org status surface
+    // is the same store's (OPERATOR_GITHUB_IDS decides in the auth hook).
+    if (auth) {
+        await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
+        await app.register(auditRoutes({ store: auth }));
+        await app.register(operatorRoutes({ store: auth }));
+        await app.register(operatorDriverCredentialRoutes({ credentials: driverCredentials }));
+    }
 
     if (config.webRoot) {
         const { default: fastifyStatic } = await import('@fastify/static');

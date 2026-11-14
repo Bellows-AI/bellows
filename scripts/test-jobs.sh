@@ -145,14 +145,17 @@ COMPOSE_DRIVER="factory-jobs-$RUN_ID-compose-driver"
 # The compose phase pins its own project name, so the volumes and network its `run` creates can be
 # torn down by name without touching the stack services the script itself started (postgres).
 COMPOSE_PROJECT="factory-jobs-$RUN_ID-compose"
-# docker-compose.yml requires JOB_BOARD_TOKEN for the dashboard service, and compose interpolates the
+# docker-compose.yml requires DRIVER_CREDENTIAL_SHA256 for the dashboard service, and compose interpolates the
 # whole file on every call (on a current compose even `exec` into postgres), so every call goes
-# through compose(). The compose phase's driver is started with the token cleared
-# (`-e JOB_BOARD_TOKEN=`), like every host-driven one: this value only satisfies the parse.
-COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
+# through compose(). The compose phase's driver is started with its credential cleared
+# (`-e DRIVER_CREDENTIAL=`), like every host-driven one: this value only satisfies the parse.
+COMPOSE_CREDENTIAL_SHA256="${DRIVER_CREDENTIAL_SHA256:-$(printf '%064d' 0)}"
 # The file's path is fixed here (compose() and cleanup() name it); the file itself is written after the preflight.
 SECRETS_ENV_FILE_PATH="${TMPDIR:-/tmp}/factory-jobs-$RUN_ID-secrets.env"
-compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
+compose() { DRIVER_CREDENTIAL_SHA256="$COMPOSE_CREDENTIAL_SHA256" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
+# A github-mode lane board holds only its driver credential's SHA-256 (DRIVER_CREDENTIAL_SHA256), the
+# lane's driver the credential itself (DRIVER_CREDENTIAL, `drv_…`): the same split a deployment has.
+credential_sha256() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$1"; }
 # The repository every task runs against: a ready selection on the board and, in the
 # driver volume, a clone whose origin is a bare repository beside it — no GitHub, no network.
 SMOKE_REPO="factory-smoke/demo"
@@ -1062,11 +1065,11 @@ default/????????-????-????-????-????????????) ;;
     exit 1
     ;;
 esac
-compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
+member_seeded="$(compose exec -T postgres psql -U factory -d "$DB" -q -v ON_ERROR_STOP=1 -c \
     "insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
      values ('$member_org', 'claude-code', 'test-jobs-fixture', '$SMOKE_REPO', 'main', now(), now())
-     on conflict do nothing" >/dev/null 2>&1 || {
-    echo "test-jobs: could not select $SMOKE_REPO for the stand-in member"
+     on conflict do nothing" 2>&1)" || {
+    echo "test-jobs: could not select $SMOKE_REPO for the stand-in member: $member_seeded"
     exit 1
 }
 expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/executors \

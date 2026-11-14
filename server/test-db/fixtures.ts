@@ -58,7 +58,8 @@ export const startRow = (sql: Sql | TransactionSql, id: string) =>
 
 /**
  * Runs `fn` with no trigger firing, as the schema ran before 084: for a state no transition reaches
- * any more, or a migration replayed that predates the guard. Test setup only.
+ * any more, a migration replayed that predates the guard, or a row the org foreign key (141) now
+ * refuses. Test setup only.
  */
 export const withoutTransitionGuard = (sql: Sql, fn: (tx: TransactionSql) => Promise<unknown>) =>
     sql.begin(async (tx) => {
@@ -178,7 +179,7 @@ export const expectMinutes = (wall: number | null, minutes: number): void => {
 };
 
 /** An ISO stamp verbatim, or `minutes` before now, or null when neither is given. */
-export const stampOrMinutesAgo = (sql: Sql, iso: string | undefined, minutes: number | undefined) =>
+export const stampOrMinutesAgo = (sql: Sql | TransactionSql, iso: string | undefined, minutes: number | undefined) =>
     iso ?? (minutes === undefined ? null : sql`now() - (${minutes} * interval '1 minute')`);
 
 export interface CraftShape {
@@ -213,7 +214,7 @@ export interface CraftShape {
  * for, each null (or its column default) unless asked.
  */
 export const craftJob = async (
-    ctx: { sql: Sql; org: string; author: string },
+    ctx: { sql: Sql | TransactionSql; org: string; author: string },
     shape: CraftShape = {}
 ): Promise<string> => {
     const { sql } = ctx;

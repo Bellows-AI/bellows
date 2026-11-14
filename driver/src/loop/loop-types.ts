@@ -169,6 +169,8 @@ export type EndDecision =
           requirement?: true;
           /** The platform took the attempt away, on the executor's structured evidence: outside the poison budget. */
           nodeLoss?: true;
+          /** The task's organization is suspended: released outside every budget, resumed on its reactivation. */
+          orgSuspended?: true;
           /** The work that must land while the lease still lets it, before the hand-back (the output tail, the session). */
           beforeInterrupt?: () => Promise<void>;
       }

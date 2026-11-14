@@ -32,7 +32,7 @@ compose -p "$COMPOSE_PROJECT" run --rm --use-aliases --name "$COMPOSE_DRIVER" --
     -e REPO_CLONE_BASE="$CLONE_BASE" \
     -e RUNNER_NETWORK="${COMPOSE_PROJECT}_default" \
     -e RUNNER_SERVICES=0 \
-    -e JOB_BOARD_TOKEN= \
+    -e DRIVER_CREDENTIAL= \
     driver >>"$work/compose-driver.log" 2>&1 &
 compose_pid=$!
 

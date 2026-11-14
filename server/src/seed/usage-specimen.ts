@@ -172,8 +172,8 @@ async function plantReading(p: Plant, r: Reading): Promise<void> {
     if (r.source !== undefined) attrs.query_source = r.source;
     const startedAt = r.cumulative?.from == null ? null : at(r.cumulative.from);
     await sql`
-        insert into metric_point (agent, metric, field, session_id, value, temporality, start_time, time, attrs, source)
-        values (${CLAUDE_CODE}, 'claude_code.token.usage', ${`tokens_${r.field}`}, ${r.session}, ${r.value},
+        insert into metric_point (org_id, agent, metric, field, session_id, value, temporality, start_time, time, attrs, source)
+        values (${p.orgId}, ${CLAUDE_CODE}, 'claude_code.token.usage', ${`tokens_${r.field}`}, ${r.session}, ${r.value},
                 ${r.cumulative === undefined ? 'delta' : 'cumulative'}, ${startedAt}, ${at(r.at)}, ${sql.json(attrs)},
                 'seed')
         on conflict do nothing

@@ -281,7 +281,8 @@ describe("the board's environment", () => {
     // does any more once branch ingest moved to the pair, so it is gone.
     it('carries the attempt pair in the env file, last, and never on the argv', () => {
         expect(envFileBody(envJob, loadDriverConfig({}))).toBe(
-            'MY_TOKEN=board-secret\nRUNNER_JOB_ID=11111111-1111-4111-8111-111111111111\nRUNNER_LEASE_TOKEN=22222222-2222-4222-8222-222222222222\n'
+            'MY_TOKEN=board-secret\nRUNNER_JOB_ID=11111111-1111-4111-8111-111111111111\nRUNNER_LEASE_TOKEN=22222222-2222-4222-8222-222222222222\n' +
+                'OTEL_EXPORTER_OTLP_HEADERS=x-factory-job-id=11111111-1111-4111-8111-111111111111,x-factory-ingest-token=33333333-3333-4333-8333-333333333333\n'
         );
         const line = dockerArgs(
             loadDriverConfig({}),
@@ -430,7 +431,8 @@ describe("the board's environment", () => {
     it('always writes the env file for the runner — the pair rides it even with no claim env', () => {
         // The claim-less body is exactly the pair: the runner's own credential, nothing else.
         expect(envFileBody(job, loadDriverConfig({}))).toBe(
-            'RUNNER_JOB_ID=11111111-1111-4111-8111-111111111111\nRUNNER_LEASE_TOKEN=22222222-2222-4222-8222-222222222222\n'
+            'RUNNER_JOB_ID=11111111-1111-4111-8111-111111111111\nRUNNER_LEASE_TOKEN=22222222-2222-4222-8222-222222222222\n' +
+                'OTEL_EXPORTER_OTLP_HEADERS=x-factory-job-id=11111111-1111-4111-8111-111111111111,x-factory-ingest-token=33333333-3333-4333-8333-333333333333\n'
         );
         const line = dockerArgs(
             loadDriverConfig({}),

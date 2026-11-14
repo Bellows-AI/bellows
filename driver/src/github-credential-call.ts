@@ -69,7 +69,7 @@ const pause = (ms: number, signal?: AbortSignal): Promise<void> =>
 /**
  * `Board.githubGrant` / `Board.githubCredential`: the attempt's GitHub token from
  * `POST /api/jobs/:id/credentials/github` (docs/connections.md), authenticated by the attempt pair and
- * never the board secret. A board that did not answer is asked again — `githubGrant` until its signal
+ * never the driver credential. A board that did not answer is asked again — `githubGrant` until its signal
  * aborts (an absolute deadline), `githubCredential` a bounded number of times — and then the answer is
  * `unanswered`, which is no verdict: only a confirmed 4xx is `refused`.
  */

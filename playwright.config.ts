@@ -74,7 +74,7 @@ export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
 const AUTH_SPECS =
-    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills)\.spec\.ts$/;
+    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members|audit-log)\.spec\.ts$/;
 /**
  * Heavy captures that gate nothing — the baseline gallery, the fixed-seed gremlins — carry this tag
  * and run only under playwright.nightly.config.ts (`npm run verify:ui:nightly`), with the specimen.
@@ -180,9 +180,6 @@ export default defineConfig({
                 GITHUB_OAUTH_CLIENT_ID: 'stub-client-id',
                 GITHUB_OAUTH_CLIENT_SECRET: 'stub-client-secret',
                 SESSION_SECRET: 'an-e2e-session-secret-of-at-least-32-chars',
-                // Required in github mode: the board refuses to boot without its driver secret,
-                // even where no driver ever connects.
-                JOB_BOARD_TOKEN: 'an-e2e-board-secret-of-at-least-32-chars',
                 PUBLIC_URL: `http://127.0.0.1:${AUTH_PORT}`,
                 // The MCP authorization server: an http loopback PUBLIC_URL needs a loopback bind.
                 MCP_ENABLED: 'true',

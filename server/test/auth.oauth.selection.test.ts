@@ -215,6 +215,42 @@ describe('the selection screen (#125)', () => {
         expect(next.headers.location).toBe('/onboarding');
     });
 
+    it('completion writes no allowlist for a chosen org the sign-in did not admit', async () => {
+        // Sign-in may refuse a chosen org (an admin's removal, a confirmed non-member on GitHub) and land
+        // in another; the refused org's repository selection is not this account's to change.
+        const repo = (owner: string, name: string): InstallationRepo => ({
+            owner,
+            name,
+            private: false,
+            defaultBranch: null,
+            pushedAt: null,
+        });
+        const listing: Record<string, InstallationRepo[]> = {
+            [ORG]: [repo('acme', 'web'), repo('acme', 'other')],
+            '888888': [repo('other-org', 'api'), repo('other-org', 'web')],
+        };
+        const { app, auth } = await setup({
+            installations: TWO,
+            installationListing: async (id) => listing[id] ?? null,
+        });
+        const signIn = auth.signIn.bind(auth);
+        auth.signIn = (identity, _orgId, installations, check) =>
+            signIn(
+                identity,
+                '888888',
+                installations.filter((install) => install.id !== ORG),
+                check
+            );
+        const cookie = await beginOnboarding(app);
+        const done = await finishOnboarding(app, cookie, {
+            orgs: [ORG, '888888'],
+            repos: { [ORG]: ['acme/web'], '888888': ['other-org/api'] },
+        });
+        expect(done.statusCode).toBe(200);
+        expect(await auth.trackedRepos(ORG)).toEqual([]);
+        expect(await auth.trackedRepos('888888')).toEqual(['other-org/api']);
+    });
+
     it('a failed reselect restores the prior choice instead of destroying it', async () => {
         // The test above fails a FIRST sign-in: nothing pre-exists, so "undo" and "restore" are
         // the same thing. A RESELECT is where they differ — the account already holds memberships

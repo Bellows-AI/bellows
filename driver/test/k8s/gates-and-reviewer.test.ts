@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import {
+    AGENT_CONTAINER,
     EXPORTER_CONTAINER,
     MAILBOXES,
     REVIEWER_CONTAINER,
@@ -227,7 +228,9 @@ describe('the gate sidecar', () => {
 describe('the reviewer sidecar (issue #774)', () => {
     const reviewing: BoardJob = { ...gatedOf(job), ...SUPERVISED, reviewerProfiles: ['security'] };
     const podOf = (of: BoardJob, config: DriverConfig = gatedConfig) =>
-        runnerJobSpec(config, of, { id: SESSION, resume: false }).spec.template.spec;
+        // An opencode run never adopts a minted session: it starts with none.
+        runnerJobSpec(config, of, of.executorType === 'opencode' ? null : { id: SESSION, resume: false }).spec.template
+            .spec;
     const reviewerOf = (of: BoardJob = reviewing) => {
         const reviewer = podOf(of).initContainers?.find((container) => container.name === REVIEWER_CONTAINER);
         if (!reviewer) throw new Error('no reviewer sidecar');
@@ -256,7 +259,7 @@ describe('the reviewer sidecar (issue #774)', () => {
         }
     });
 
-    it('the reviewer runs as REVIEWER_UID ≠ TOOL_UID, mounts only its read-only tree, its mailbox and its home', () => {
+    it('the reviewer runs as REVIEWER_UID ≠ TOOL_UID, mounts only its read-only tree, its mailbox, its home and its telemetry config', () => {
         const reviewer = reviewerOf();
         expect(REVIEWER_UID).not.toBe(TOOL_UID);
         expect(REVIEWER_UID).not.toBe(GATE_UID);
@@ -265,6 +268,12 @@ describe('the reviewer sidecar (issue #774)', () => {
             { name: TASK_VOLUME, mountPath: TASK_MOUNT, readOnly: true },
             { name: MAILBOXES.review.name, mountPath: MAILBOXES.review.path },
             { name: TASK_VOLUME, mountPath: REVIEWER_HOME, subPath: REVIEWER_TREE_DIR },
+            {
+                name: 'telemetry-config',
+                mountPath: '/etc/claude-code/managed-settings.json',
+                subPath: 'managed-settings.json',
+                readOnly: true,
+            },
         ]);
         expect(podOf(reviewing).volumes).toContainEqual({ name: MAILBOXES.review.name, emptyDir: {} });
     });
@@ -284,6 +293,21 @@ describe('the reviewer sidecar (issue #774)', () => {
             mountPath: MAILBOXES.review.path,
         });
     });
+
+    // The image's baked telemetry config names the compose collector, and managed settings outrank
+    // the review's env: the reviewer mounts the driver-rendered file the agent mounts — that one
+    // key of the pod's telemetry volume, which names no credential (each review's rides its env).
+    it.each(['claude-code', 'opencode'] as const)(
+        'the %s reviewer mounts the rendered telemetry config',
+        (executorType) => {
+            const of = { ...reviewing, executorType };
+            const reviewer = reviewerOf(of);
+            const agent = podOf(of).containers.find((container) => container.name === AGENT_CONTAINER);
+            const agentMount = agent?.volumeMounts?.find((mount) => mount.name === 'telemetry-config');
+            expect(agentMount).toBeDefined();
+            expect(reviewer.volumeMounts).toContainEqual(agentMount);
+        }
+    );
 
     it('the reviewer’s env and mounts carry no publish token and no credential helper, no attempt-Secret ref', () => {
         const reviewer = reviewerOf({ ...reviewing, env: { SOME_TOKEN: 'claim-secret' } });

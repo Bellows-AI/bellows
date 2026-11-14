@@ -20,6 +20,9 @@ export interface InstallationAccount {
     id: string;
     /** The account (organization or user) the App is installed on, by login. A label. */
     account: string | null;
+    /** GitHub's `account.type` and `account.id`, present when reported: whom the membership re-check asks. */
+    accountType?: string;
+    accountId?: number;
 }
 
 /**
@@ -157,7 +160,7 @@ export function createGitHubIdentityClient(
 
 interface InstallationPayload {
     id?: number;
-    account?: { login?: string } | null;
+    account?: { login?: string; type?: string; id?: number } | null;
 }
 
 async function fetchInstallationPage(
@@ -184,5 +187,10 @@ async function fetchInstallationPage(
  */
 function toInstallationAccount(install: InstallationPayload): InstallationAccount | null {
     if (typeof install.id !== 'number') return null;
-    return { id: String(install.id), account: install.account?.login ?? null };
+    const { type, id } = install.account ?? {};
+    return {
+        id: String(install.id),
+        account: install.account?.login ?? null,
+        ...(typeof type === 'string' && typeof id === 'number' ? { accountType: type, accountId: id } : {}),
+    };
 }

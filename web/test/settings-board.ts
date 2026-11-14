@@ -1,4 +1,4 @@
-import { ADMIN_ROLE, CLAUDE_CODE, type Role } from '@factory-ai/core';
+import { ADMIN_ROLE, CLAUDE_CODE, type DeploymentMode, type Role } from '@factory-ai/core';
 import type { ConnectionView } from '../src/api/connections.js';
 import type { OrgExecutorFull } from '../src/api/orgExecutors.js';
 import type { SubscriptionScope, SubscriptionView } from '../src/api/notificationSubscriptions.js';
@@ -24,6 +24,8 @@ export interface SettingsBoard {
     connectorKinds: string[];
     /** Whether `GET /api/integrations` reports Jira as configured on this deployment. */
     jiraConfigured: boolean;
+    /** `/api/auth/me`'s deployment mode. */
+    deploymentMode: DeploymentMode;
 }
 
 const AT = '2026-09-01T00:00:00.000Z';
@@ -40,6 +42,7 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         subscriptions: { org: [], workspace: [] },
         connectorKinds: ['discord'],
         jiraConfigured: true,
+        deploymentMode: 'self-hosted',
         ...overrides,
     };
 }
@@ -116,6 +119,7 @@ function session(board: SettingsBoard): Session {
         mode: 'github',
         mcp: false,
         batches: false,
+        deploymentMode: board.deploymentMode,
     };
 }
 

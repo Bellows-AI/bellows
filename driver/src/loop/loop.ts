@@ -8,7 +8,8 @@ import { runJob } from './loop-run.js';
 import { processReclaim, processVerdictReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from '../executors.js';
 import { withBoardRetry } from '../board/board-retry.js';
-import { down, handOver } from './loop-attempt.js';
+import { down } from './loop-attempt.js';
+import { handOver } from './loop-handover.js';
 
 export interface Loop {
     /**

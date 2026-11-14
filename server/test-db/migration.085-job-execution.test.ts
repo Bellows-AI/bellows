@@ -86,6 +86,7 @@ describe.skipIf(!enabled)('085_job_execution', () => {
             status?: string;
         }) => {
             const id = randomUUID();
+            await pool`insert into organization (id, name) values ('o', 'o') on conflict do nothing`;
             const [author] = await pool<{ id: string }[]>`
                 insert into app_user (github_user_id, github_login) values (${Math.floor(Math.random() * 1e9)}, ${`u${id}`})
                 returning id`;

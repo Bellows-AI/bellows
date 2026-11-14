@@ -10,6 +10,8 @@ import {
 } from '../src/supervisor-contract.js';
 import { orphanBoundMs, supervisorLiterals, takeoverBoundMs } from '../src/supervisor-plan.js';
 
+const CREDENTIAL = `drv_${'ab'.repeat(32)}`;
+
 describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
         const config = loadDriverConfig({});
@@ -282,6 +284,7 @@ describe('the driver config: runner resources', () => {
         lastAttempt: false,
         claimSeq: 1,
         leaseToken: '22222222-2222-4222-8222-222222222222',
+        ingestToken: '33333333-3333-4333-8333-333333333333',
         leaseExpiresAt: '2026-08-29T12:05:00.000Z',
         executorType: 'claude-code',
         executorRefusal: null,
@@ -575,18 +578,24 @@ describe('the driver config: no service search domain (#773)', () => {
         });
 
         it('takes a port, bound to the gate host', () => {
-            const config = loadDriverConfig({ DRIVER_METRICS_PORT: '9464', JOB_BOARD_TOKEN: 't' });
+            const config = loadDriverConfig({ DRIVER_METRICS_PORT: '9464', DRIVER_METRICS_TOKEN: 't' });
             expect(config.metricsPort).toBe(9464);
+            expect(config.metricsToken).toBe('t');
         });
 
         it.each(['0', '70000', 'abc', '-1', '1.5'])('refuses %s', (port) => {
             expect(() => loadDriverConfig({ DRIVER_METRICS_PORT: port })).toThrow(/DRIVER_METRICS_PORT/);
         });
 
-        it('refuses a port with no board token on a non-loopback host: runners can reach it and hold no token', () => {
+        it('refuses a port with no metrics token on a non-loopback host: runners can reach it and hold no token', () => {
             expect(() => loadDriverConfig({ DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0' })).toThrow(
-                /JOB_BOARD_TOKEN/
+                /DRIVER_METRICS_TOKEN/
             );
+        });
+
+        it('is not guarded by the driver credential: the scrape token is its own', () => {
+            const env = { DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0', DRIVER_CREDENTIAL: CREDENTIAL };
+            expect(() => loadDriverConfig(env)).toThrow(/DRIVER_METRICS_TOKEN/);
         });
 
         it.each(['127.0.0.1', 'localhost', '::1'])('allows a port with no token on loopback %s', (host) => {
@@ -594,8 +603,44 @@ describe('the driver config: no service search domain (#773)', () => {
         });
 
         it('allows a non-loopback host when the token is set', () => {
-            const env = { DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0', JOB_BOARD_TOKEN: 't' };
+            const env = { DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0', DRIVER_METRICS_TOKEN: 't' };
             expect(loadDriverConfig(env).metricsPort).toBe(9464);
+        });
+    });
+
+    describe('the driver credential', () => {
+        it('is none unless set: a board with AUTH_MODE=none asks for none', () => {
+            const config = loadDriverConfig({});
+            expect([config.boardCredential, config.boardCredentialFile]).toEqual(['', null]);
+        });
+
+        it('takes a `drv_` credential from DRIVER_CREDENTIAL, or a file to read it from', () => {
+            expect(loadDriverConfig({ DRIVER_CREDENTIAL: ` ${CREDENTIAL} ` }).boardCredential).toBe(CREDENTIAL);
+            expect(loadDriverConfig({ DRIVER_CREDENTIAL_FILE: '/run/driver/credential' }).boardCredentialFile).toBe(
+                '/run/driver/credential'
+            );
+        });
+
+        it('refuses a credential the board would never accept, without echoing it', () => {
+            expect(() => loadDriverConfig({ DRIVER_CREDENTIAL: 'not-a-credential' })).toThrow(/DRIVER_CREDENTIAL/);
+            expect(() => loadDriverConfig({ DRIVER_CREDENTIAL: 'not-a-credential' })).not.toThrow(/not-a-credential/);
+        });
+
+        it('refuses both sources at once', () => {
+            expect(() =>
+                loadDriverConfig({ DRIVER_CREDENTIAL: CREDENTIAL, DRIVER_CREDENTIAL_FILE: '/run/driver/credential' })
+            ).toThrow(/DRIVER_CREDENTIAL_FILE/);
+        });
+
+        it.each(['DRIVER_CREDENTIAL', 'DRIVER_CREDENTIAL_FILE', 'DRIVER_METRICS_TOKEN'])(
+            'refuses %s in RUNNER_ENV: a runner never holds the driver’s own secrets',
+            (name) => {
+                expect(() => loadDriverConfig({ RUNNER_ENV: `A,${name}` })).toThrow(`RUNNER_ENV must not name ${name}`);
+            }
+        );
+
+        it('reads no JOB_BOARD_TOKEN', () => {
+            expect(loadDriverConfig({ JOB_BOARD_TOKEN: CREDENTIAL }).boardCredential).toBe('');
         });
     });
 });

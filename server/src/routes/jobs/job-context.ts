@@ -43,22 +43,35 @@ export async function telemetryFor(orgs: OrgRegistry, request: FastifyRequest) {
 }
 
 /**
- * The boards a WORKER call may reach. The shared secret authenticates the driver, not an
- * org, so a claim names no row and no org: it is offered EVERY org's queue, first claim
- * wins and the empty orgs cost one idle poll each. Every other worker route arrives with
- * the org the auth hook read from the row its URL names, and is a one-element list.
+ * Every listed org's board with its org id, whatever the credential may reach, and how many orgs were listed:
+ * fewer boards than `listed` means a runtime failed to build. Resolved in parallel — the lookups are independent,
+ * and this runs on every driver poll. Warm runtimes are cached promises and cost nothing; a cold start would
+ * otherwise serialise every org's build behind the first. The registry's order is preserved, which is what
+ * `boardScan`'s rotation counts positions against.
+ */
+export async function everyBoard<K extends keyof JobStore = keyof JobStore>(
+    orgs: OrgRegistry,
+    reach: readonly string[] | null = null
+): Promise<{ boards: { orgId: string; board: Pick<JobStore, K> }[]; listed: number }> {
+    const listed = (await orgs.list()).filter((org) => reach === null || reach.includes(org.id));
+    const runtimes = await Promise.all(listed.map(async (org) => ({ orgId: org.id, rt: await orgs.for(org.id) })));
+    const boards = runtimes.flatMap(({ orgId, rt }) => (rt?.jobs ? [{ orgId, board: rt.jobs }] : []));
+    return { boards, listed: listed.length };
+}
+
+/**
+ * The boards a WORKER call may reach. A driver credential authenticates the driver, not an
+ * org, so a claim names no row and no org: it is offered the queue of every org the credential
+ * serves (the pool: every org), first claim wins and the empty orgs cost one idle poll each.
+ * Every other worker route arrives with the org the auth hook read from the row its URL names,
+ * and is a one-element list.
  */
 export async function boardsFor<K extends keyof JobStore = keyof JobStore>(
     orgs: OrgRegistry,
     request: FastifyRequest
 ): Promise<Pick<JobStore, K>[]> {
     if (request.auth?.kind === 'worker' && request.auth.orgId === null) {
-        // Resolved in parallel — the lookups are independent, and this runs on every driver poll.
-        // Warm runtimes are cached promises and cost nothing; a cold start would otherwise
-        // serialise every org's build behind the first. The registry's order is preserved, which
-        // is what `boardScan`'s rotation counts positions against.
-        const runtimes = await Promise.all((await orgs.list()).map((org) => orgs.for(org.id)));
-        return runtimes.flatMap((rt) => (rt?.jobs ? [rt.jobs] : []));
+        return (await everyBoard<K>(orgs, request.auth.orgs)).boards.map(({ board }) => board);
     }
     const store = await storeFor(orgs, request);
     return store ? [store] : [];
@@ -171,8 +184,10 @@ async function scanUnderBudget<Board, T>(
  * The job claim's scan: the boards in the order their rows give, so every board
  * replica and every driver sees the same priority instead of each replica's own rotation. An org
  * whose lost attempt waits for its takeover comes first — recovery needs no budget slot, and a
- * takeover window is bounded — then the org with the fewest running rows, then the one whose
- * oldest waiting row queued first. Only an exact tie falls back to the rotation. A board whose
+ * takeover window is bounded — then the org running the smallest share of its cap (running / cap, so two
+ * orgs with full queues get runners in proportion to their caps), then the one served least recently (never
+ * served first, so a single refilling slot alternates rather than going to the oldest queue every time), then
+ * the one whose oldest waiting row queued first. Only an exact tie falls back to the rotation. A board whose
  * demand read fails goes last, still scanned, so one unhealthy org never blocks the others.
  */
 export function fairBoardScan(): FairBoardScanner {
@@ -196,9 +211,10 @@ export function fairBoardScan(): FairBoardScanner {
         );
         const rank = (index: number) => {
             const demand = demands[index];
-            if (!demand) return [2, 0, Number.POSITIVE_INFINITY];
+            if (!demand) return [2, 0, 0, Number.POSITIVE_INFINITY];
+            const served = demand.lastServed?.getTime() ?? Number.NEGATIVE_INFINITY;
             const waited = demand.oldestWaiting?.getTime() ?? Number.POSITIVE_INFINITY;
-            return [demand.takeover ? 0 : 1, demand.running, waited];
+            return [demand.takeover ? 0 : 1, demand.running / (demand.cap ?? 1), served, waited];
         };
         const rotation = (index: number) => (index - start + boards.length) % boards.length;
         const order = boards

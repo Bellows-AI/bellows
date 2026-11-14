@@ -63,10 +63,41 @@ dashboard:
     # The shared admission budgets every claim enforces, across every driver and replica (issue
     # #831): the most tasks running at once in total, per org and per repo. Empty is unlimited.
     # A driver's `concurrency` stays a per-process cap; these are the cluster-wide ones.
+    # deploymentMode cloud refuses to render with maxRunning or maxRunningPerOrg empty.
     admission:
         maxRunning: ''
         maxRunningPerOrg: ''
         maxRunningPerRepo: ''
+    # The plan limits an org with no pushed plan gets, and each limit a push left null: the Free plan
+    # (docs/commerce.md). Empty is unlimited; deploymentMode cloud refuses to render with any empty.
+    planDefaults:
+        maxRunning: ''
+        maxQueued: ''
+        maxWallSeconds: ''
+        # Tokens an org's runs may report per period, and attachment and run-log bytes it may hold.
+        maxTokens: ''
+        maxStorageBytes: ''
+        # Days a finished task is kept (docs/retention.md); a push lowering it waits a 30-day notice.
+        maxRetentionDays: ''
+    # The board operator (docs/organizations.md): comma-separated numeric GitHub user ids that may suspend,
+    # refuse and reactivate organizations. Empty is nobody; the board refuses it outside deploymentMode cloud.
+    operatorGithubIds: ''
+    # The request limits (docs/limits.md), each counted per replica; empty takes the board's default
+    # (600 and 3000 requests a minute per credential and per org, 16 MCP requests open per org, 60000 ms
+    # per statement). trustedProxies: the addresses or CIDRs of the load balancer or ingress in front,
+    # comma-separated, whose X-Forwarded-For names the client; empty trusts none, so behind a proxy
+    # every caller shares the proxy's address in the OAuth registration limit.
+    limits:
+        trustedProxies: ''
+        requestsPerCredential: ''
+        requestsPerOrg: ''
+        mcpStreamsPerOrg: ''
+        statementTimeoutMs: ''
+    # The database connections the board may hold across every replica. Each replica holds one migration
+    # connection at boot and runs three pools (request, secrets, cross-org) of (dbConnections - replicas) /
+    # (3 x replicas) apiece (DB_POOL_MAX); the render refuses fewer than 2 per pool.
+    # Keep it under the database's max_connections, less what else connects to it.
+    dbConnections: 100
     # The optional commerce service (docs/configuration.md). Off, the board opens no connection and
     # registers no route. On, `url` and `secret.commerceToken` (at least 32 characters) are required.
     commerce:
@@ -135,6 +166,11 @@ mcp:
 batches:
     enabled: false
 
+# Where this board runs (docs/configuration.md): self-hosted or cloud. Cloud refuses a Claude subscription OAuth token
+# in executor settings, member env and at claim, and refuses to render without the dashboard.admission maxRunning and
+# maxRunningPerOrg caps, or any dashboard.planDefaults limit.
+deploymentMode: self-hosted
+
 github:
     # The id and the key are required unless dashboard.offline: without them the server refuses to
     # boot — there is no no-fetch mode to fall back to.
@@ -151,7 +187,6 @@ integrations:
 telemetry:
     source: postgres
     ttlSeconds: '30'
-    ingestToken: ''
 
 database:
     # The chart deploys no database: point this at any managed PostgreSQL 17 — RDS and Aurora
@@ -160,8 +195,13 @@ database:
     # REQUIRED when the chart creates the Secret — the URL carries the password, so it
     # lands there as `database-url` and reaches the pod by secretKeyRef. With
     # `secret.existingSecret`, put the `database-url` key in that Secret instead. Local clusters
-    # get one from charts/factory-local-state (values-local.yaml points here).
+    # get one from charts/factory-local-state (values-local.yaml points here). The URL's login owns the
+    # schema: it runs the migrations and takes the bellows_cross_org role for the cross-org paths.
     url: ''
+    # Optional: the request role's own login to the same database, a member of bellows_request that owns
+    # nothing (docs/row-level-security.md). Lands in the Secret as `database-request-url` (or put that key
+    # in `secret.existingSecret`). Empty, the `url` login takes bellows_request per connection.
+    requestUrl: ''
     # Runs `pg_isready -d $DATABASE_URL` in an init container before the server starts: the
     # server's migration retry gives up after ~55s and then serves every DB-backed route as a 500.
     # Any image with the postgres client tools will do.
@@ -229,8 +269,9 @@ artifacts:
         kmsKey: ''
     # s3 only. A Secret holding `access-key-id` and `secret-access-key`. Empty: EKS Pod Identity, then IRSA.
     credentialsExistingSecret: ''
-    # A board sweep deletes the artifacts of a removed task after this many days.
-    retentionDays: 90
+    # Days a deleted skill's versions stay on a board with no plan window (docs/retention.md); empty is 90. One
+    # retention knob per deployment: deploymentMode cloud, or a dashboard.planDefaults.maxRetentionDays, refuses it.
+    retentionDays: ''
     # Per-org byte quota; 0 is off.
     orgQuotaBytes: 0
     # An upload not attached to a task within this many hours is collected.
@@ -240,7 +281,7 @@ secret:
     # Creates the dashboard Secret from the values below. With existingSecret set, the chart
     # creates nothing and references that one — for a Secret managed by external-secrets or
     # sealed-secrets. In the dashboard's pod spec every key but `database-url` is optional, so the
-    # server names any a managed Secret misses; the driver requires `job-board-token`.
+    # server names any a managed Secret misses. The driver's credential is not here: see driver.credential.
     create: true
     existingSecret: ''
     # REQUIRED.
@@ -250,10 +291,6 @@ secret:
     # The App's installation webhook HMAC secret (GITHUB_WEBHOOK_SECRET). Empty, the webhook route
     # does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     githubWebhookSecret: ''
-    # The shared board secret: the dashboard validates `Bearer $JOB_BOARD_TOKEN` on the worker
-    # routes against it and the driver presents it. One value, both sides — generate with
-    # `openssl rand -hex 32`. REQUIRED, at least 32 characters.
-    jobBoardToken: ''
     # The bearer secret shared with the commerce service (COMMERCE_TOKEN); read only when
     # `dashboard.commerce.enabled`. At least 32 characters then.
     commerceToken: ''
@@ -335,10 +372,28 @@ driver:
     # pod IP as the gate endpoint, and the re-claim fence's checkout claim keeps two drivers off
     # one checkout (docs/kubernetes.md).
     replicas: 1
-    # The port of the driver's Prometheus scrape (GET /metrics, Authorization: Bearer <board token>),
+    # REQUIRED: the driver's own credential on the worker routes (docs/auth.md), in the `<release>-driver`
+    # Secret only the driver pod mounts — the dashboard holds just its SHA-256. The driver re-reads the mounted
+    # file for every call, so a rotation needs no restart: rotate it (`bellows operator rotate-credential`, or
+    # `driver-credential-cli.js rotate` in the dashboard container), write the new token into the Secret, and the
+    # old one keeps working for the rotation's overlap window while the kubelet refreshes the file.
+    credential:
+        # `echo "drv_$(openssl rand -hex 32)"`. The chart creates the Secret and the dashboard records its SHA-256
+        # as a pool credential at boot. Changing it adds a credential; revoke the old one with the CLI.
+        value: ''
+        # A Secret you manage, holding `credential` (and `metrics-token` with metricsPort): an operator-issued
+        # credential, or one rotated in place. With it the chart creates no driver Secret.
+        existingSecret: ''
+        # With existingSecret only: the credential's SHA-256, for the dashboard to record as a pool credential
+        # (`printf %s "$credential" | sha256sum`). Empty records none (the operator issued it).
+        sha256: ''
+    # The port of the driver's Prometheus scrape (GET /metrics, Authorization: Bearer <metricsToken>),
     # on the pod IP. '' serves none. No Service and no scrape annotations: point a PodMonitor or a
     # scrape config at the `metrics` container port (docs/telemetry.md).
     metricsPort: '9464'
+    # The scrape's own bearer (DRIVER_METRICS_TOKEN), at least 32 characters, never the driver credential:
+    # REQUIRED with metricsPort unless driver.credential.existingSecret holds `metrics-token`.
+    metricsToken: ''
     # One driver serves both task-selected executor types. These values choose image locations —
     # bare repository paths the global.imageRegistry prefix composes with (a tag may be included:
     # `claude-executor:v1.2.3`; tagless reads :latest); the task's executor profile chooses which

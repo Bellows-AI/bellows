@@ -12,6 +12,8 @@ GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"
 unset GITHUB_TOKEN GH_TOKEN
 # The branch reporter beside it, resolved the same way.
 BRANCH_REPORTER="$(cd "$(dirname "$0")" && pwd)/branch-reporter.cjs"
+# The telemetry credential helper beside it, resolved the same way.
+OTEL_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/otel-credential.cjs"
 
 # The task supervisor releases the agent. The group exists from the attempt's first
 # step, the sync, and the tree this container works in does not exist until then, so the agent waits
@@ -287,6 +289,21 @@ fi
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
+# Telemetry's credential (docs/telemetry.md): the attempt's job id and ingest token ride
+# OTEL_EXPORTER_OTLP_HEADERS, which the opencode-otel plugin never reads. The helper copies the
+# root-owned plugin config with them merged in, privately under this uid's HOME, and the plugin is
+# pointed at the copy. The variable is dropped before the CLI starts; the tool broker withholds it
+# from every command regardless.
+if [ -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]; then
+    if FACTORY_OTEL_COPY="$(node "$OTEL_CREDENTIAL")"; then
+        OPENCODE_OTEL_CONFIG_PATH="$FACTORY_OTEL_COPY"
+        export OPENCODE_OTEL_CONFIG_PATH
+    else
+        echo "opencode-executor: could not write the telemetry config with its credential; exports will be refused." >&2
+    fi
+    unset OTEL_EXPORTER_OTLP_HEADERS
+fi
+
 # The cooperative Stop: the mailbox agent reads what the task supervisor wrote into
 # the read-only FACTORY_CTL_IN directory and writes the stop marker the baked factory-stop plugin
 # checks at each step boundary; it also beats the heartbeat the supervisor reads and forwards a

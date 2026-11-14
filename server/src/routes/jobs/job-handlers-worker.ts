@@ -8,6 +8,7 @@ import {
     type FairBoardScanner,
     boardsFor,
     branchHeadFor,
+    everyBoard,
     executorsFor,
     reposFor,
     storeFor,
@@ -37,6 +38,7 @@ import { UUID } from '../../identifiers.js';
 import type { ClaimPollOutcome } from '../../metrics.js';
 import {
     HTTP_CONFLICT,
+    HTTP_FORBIDDEN,
     HTTP_NO_CONTENT,
     HTTP_NOT_FOUND,
     HTTP_OK,
@@ -366,6 +368,10 @@ export async function handleHeartbeat(orgs: OrgRegistry, request: FastifyRequest
         cancelRequested: beat.value.cancelRequested,
         answeredQuestions: beat.value.answeredQuestions,
         requirementWait: beat.value.requirementWait,
+        // Why the board asks the stop on its own (`wall-time`); null for a member's stop.
+        stopCause: beat.value.stopCause,
+        // `org-suspended`: hand the attempt back as a resumable interruption (`orgSuspended`); null otherwise.
+        release: beat.value.release,
     });
 }
 
@@ -557,22 +563,31 @@ export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest
  * The strictness is the driver's safety: ANY board failing ⇒ 503, so a sweep is never decided by
  * a partial answer — "absent means unknown" is only true when every board that could know the id
  * actually answered.
+ *
+ * A credential scoped to some organizations is asked across EVERY org's board too, and refused 403
+ * when a named id belongs to an org it does not serve: such an id is not absent, only not this
+ * credential's, and answering it as absent would hand the reaper a sweep verdict over another
+ * org's runner. The driver reads the 403 as "the board cannot answer" and leaves the batch alone.
  */
 export async function handleLeases(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const boards = await boardsFor<keyof JobReadStore>(orgs, request);
-    if (!boards.length) return noBoard(reply);
-    // Fail closed on the every-org worker path: boardsFor DROPS an org whose runtime failed to
-    // build, and every id of a dropped board would read as "unknown to the board" — a reap
-    // verdict. Answering from a partial registry is the one thing this route must never do, so a
-    // registry that cannot fully answer is a 503, exactly like a board that throws. The org-less
-    // shape is the worker-token path only; `none` mode falls through to the caller's own org —
-    // one board IS the whole registry there, whatever foreign org rows a shared database holds.
-    if (
-        request.auth?.kind === 'worker' &&
-        request.auth.orgId === null &&
-        (await orgs.list()).length !== boards.length
-    ) {
-        return bad(reply, ERROR_CODES.UNAVAILABLE, 'Not every organization board answered', HTTP_UNAVAILABLE);
+    const worker = request.auth?.kind === 'worker' && request.auth.orgId === null ? request.auth : null;
+    let boards: { orgId: string | null; board: Pick<JobReadStore, 'leases'> }[];
+    if (worker) {
+        const every = await everyBoard<keyof JobReadStore>(orgs);
+        if (!every.boards.length) return noBoard(reply);
+        // Fail closed on the every-org worker path: everyBoard DROPS an org whose runtime failed to
+        // build, and every id of a dropped board would read as "unknown to the board" — a reap
+        // verdict. Answering from a partial registry is the one thing this route must never do, so a
+        // registry that cannot fully answer is a 503, exactly like a board that throws. The org-less
+        // shape is the worker-credential path only; `none` mode falls through to the caller's own org —
+        // one board IS the whole registry there, whatever foreign org rows a shared database holds.
+        if (every.listed !== every.boards.length) {
+            return bad(reply, ERROR_CODES.UNAVAILABLE, 'Not every organization board answered', HTTP_UNAVAILABLE);
+        }
+        boards = every.boards;
+    } else {
+        boards = (await boardsFor<keyof JobReadStore>(orgs, request)).map((board) => ({ orgId: null, board }));
+        if (!boards.length) return noBoard(reply);
     }
 
     const { ids, threads } = body(request.body);
@@ -588,9 +603,18 @@ export async function handleLeases(orgs: OrgRegistry, request: FastifyRequest, r
     const answered = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job lease lookup failed'),
-        () => Promise.all(boards.map((board) => board.leases(ids as string[], threads === true)))
+        () => Promise.all(boards.map(({ board }) => board.leases(ids as string[], threads === true)))
     );
     if (!answered.ok) return reply;
+    const reach = worker?.orgs;
+    if (reach && boards.some(({ orgId }, i) => orgId && !reach.includes(orgId) && answered.value[i]!.length)) {
+        return bad(
+            reply,
+            ERROR_CODES.FORBIDDEN,
+            'Some of these jobs belong to an organization this driver credential does not serve',
+            HTTP_FORBIDDEN
+        );
+    }
     const jobs = [...new Map(answered.value.flat().map((row) => [row.id, row])).values()];
     return reply.code(HTTP_OK).send({ jobs });
 }

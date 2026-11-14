@@ -1,5 +1,12 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { ADMIN_ROLE, ERROR_CODES, ORG_SCOPE, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import {
+    ADMIN_ROLE,
+    type DeploymentMode,
+    ERROR_CODES,
+    ORG_SCOPE,
+    USER_SCOPE,
+    type ExecutorScope,
+} from '@factory-ai/core';
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
@@ -16,7 +23,6 @@ import {
 const HTTP_OK = 200;
 const HTTP_CREATED = 201;
 const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
@@ -38,7 +44,7 @@ async function storeOf(orgs: OrgRegistry, request: FastifyRequest): Promise<User
     return rt?.userExecutors ?? null;
 }
 
-/** Organization profiles are an administrator's surface; a member's mutations refuse here. */
+/** Whether the caller administers the org: an admin reads the profiles' config, a member only selects them. */
 function requireAdmin(caller: Caller): boolean {
     return caller.role === ADMIN_ROLE;
 }
@@ -49,7 +55,10 @@ function isNameTaken(error: unknown): boolean {
     throw error;
 }
 
-/** The store and admin caller every mutating route needs — or null once the refusal is sent. */
+/**
+ * The store and caller every mutating route needs — or null once the refusal is sent. Every mutating route is an
+ * `admin` row in `ROUTE_CLASSES`, so the auth hook has already refused a member.
+ */
 async function adminContext(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeOf(orgs, request);
     if (!store) {
@@ -59,15 +68,6 @@ async function adminContext(orgs: OrgRegistry, request: FastifyRequest, reply: F
     const caller = callerOf(request);
     if (!caller) {
         bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-        return null;
-    }
-    if (!requireAdmin(caller)) {
-        bad(
-            reply,
-            ERROR_CODES.FORBIDDEN,
-            'Only an organization admin can manage organization executors',
-            HTTP_FORBIDDEN
-        );
         return null;
     }
     return { store, caller };
@@ -171,12 +171,16 @@ async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest
     return reply.code(HTTP_OK).send({ executors: loaded.value.map(selectionMetadata) });
 }
 
-async function handleCreateOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+async function handleCreateOrgExecutor(
+    { orgs, deploymentMode }: OrgExecutorRoutesDeps,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
     const ctx = await adminContext(orgs, request, reply);
     if (!ctx) return reply;
     const { store, caller } = ctx;
 
-    const fields = parseExecutorFields(jsonBody(request.body));
+    const fields = parseExecutorFields(jsonBody(request.body), deploymentMode);
     if (typeof fields === 'string') return bad(reply, executorFieldRefusal(fields), fields);
     const reason = badProfileName(fields.name);
     if (reason) return bad(reply, ERROR_CODES.BAD_EXECUTOR_NAME, `"${fields.name}": ${reason}`);
@@ -208,7 +212,11 @@ async function handleCreateOrgExecutor(orgs: OrgRegistry, request: FastifyReques
     return reply.code(HTTP_CREATED).send(saved.value.ok);
 }
 
-async function handleUpdateOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+async function handleUpdateOrgExecutor(
+    { orgs, deploymentMode }: OrgExecutorRoutesDeps,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
     const ctx = await adminContext(orgs, request, reply);
     if (!ctx) return reply;
     const { store } = ctx;
@@ -220,7 +228,7 @@ async function handleUpdateOrgExecutor(orgs: OrgRegistry, request: FastifyReques
     // here would let a caller believe they moved a profile between scopes when nothing changed.
     if ('scope' in raw) return bad(reply, ERROR_CODES.BAD_SCOPE, 'scope changes only through the scope route');
 
-    const fields = parseExecutorFields(raw);
+    const fields = parseExecutorFields(raw, deploymentMode);
     if (typeof fields === 'string') return bad(reply, executorFieldRefusal(fields), fields);
     const reason = badProfileName(fields.name);
     if (reason) return bad(reply, ERROR_CODES.BAD_EXECUTOR_NAME, `"${fields.name}": ${reason}`);
@@ -337,7 +345,7 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
 /**
  * Organization-scoped executor profiles (issue 391): the administrators' CRUD over the profiles
  * every member of the organization may select. A person's surface, like the workflow routes it
- * mirrors — the board secret never gets past the auth wall here, because executor management is a
+ * mirrors — a driver credential never gets past the auth wall here, because executor management is a
  * human's decision.
  *
  * - `GET /api/org/executors` — every member reads selection metadata (id, name, type, createdAt);
@@ -349,17 +357,24 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
  * - `POST /api/org/executors/:id/scope` — promote/demote, admin-gated; the store only ever moves
  *   the calling admin's own personal row up.
  */
+interface OrgExecutorRoutesDeps {
+    readonly orgs: OrgRegistry;
+    /** `config.deploymentMode`: cloud refuses a Claude subscription OAuth token in a config. */
+    readonly deploymentMode: DeploymentMode;
+}
+
 export const orgExecutorRoutes =
-    ({ orgs }: { orgs: OrgRegistry }): FastifyPluginAsync =>
+    (deps: OrgExecutorRoutesDeps): FastifyPluginAsync =>
     async (app) => {
+        const { orgs } = deps;
         app.get('/api/org/executors', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleListOrgExecutors(orgs, request, reply)
         );
         app.post('/api/org/executors', { bodyLimit: BODY_LIMIT }, (request, reply) =>
-            handleCreateOrgExecutor(orgs, request, reply)
+            handleCreateOrgExecutor(deps, request, reply)
         );
         app.put('/api/org/executors/:id', { bodyLimit: BODY_LIMIT }, (request, reply) =>
-            handleUpdateOrgExecutor(orgs, request, reply)
+            handleUpdateOrgExecutor(deps, request, reply)
         );
         app.delete('/api/org/executors/:id', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDeleteOrgExecutor(orgs, request, reply)

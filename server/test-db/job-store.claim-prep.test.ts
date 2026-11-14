@@ -34,7 +34,7 @@ const HEALTHY = 'acme/web';
 const POISON = 'acme/poison';
 const REVISION = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 
-const db = useTestDb({ max: 8 });
+const db = useTestDb({ max: 8, orgs: [ORG] });
 
 let sql: Sql;
 let plain: JobStore;

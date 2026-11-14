@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import type { Sql, TransactionSql } from 'postgres';
 import { LOCAL_ORG_ID } from '../identifiers.js';
+import { liftStatementTimeout } from './pool.js';
 import { TelemetryError } from '../telemetry/errors.js';
 import { ADMIN_ROLE } from '@factory-ai/core';
 
@@ -159,7 +160,8 @@ function files(dir: URL): { version: string; sql: string; repeatable: boolean }[
  * One attempt's worth of `migrate()`'s work: one transaction under the migration lock, so two
  * processes booting together serialize, and the second reads `schema_migrations` only after the
  * first committed. A lock wait past `lockWaitMs` fails the attempt; the xact lock cannot outlive
- * the transaction or a dead backend.
+ * the transaction or a dead backend. The pool's statement timeout does not bound it: a migration
+ * or a backfill inside one runs as long as its data takes, and `lockWaitMs` bounds the wait.
  */
 async function applyMigrations(
     pool: Sql,
@@ -168,6 +170,7 @@ async function applyMigrations(
     log: (message: string) => void
 ): Promise<void> {
     await pool.begin(async (tx) => {
+        await liftStatementTimeout(tx);
         await tx`select set_config('lock_timeout', ${`${lockWaitMs}ms`}, true)`;
         await tx`select pg_advisory_xact_lock(hashtextextended(${MIGRATION_LOCK_KEY}, 0))`;
         await tx`set local lock_timeout to default`;
@@ -245,6 +248,16 @@ async function applyLocked(
         await sql`insert into schema_migrations (version, checksum) values (${version}, ${checksum(body)})
                   on conflict (version) do nothing`;
     }
+
+    // The seed and the reaps write and delete org rows of every org: as the cross-org role, so the forced policies
+    // (151_row_level_security.sql) read nothing as absent when the owner itself does not bypass RLS. A directory
+    // without that migration (a test's own) granted the role nothing and stays the owner.
+    const [role] = await sql<{ exists: boolean }[]>`
+        select case when exists (select 1 from pg_roles where rolname = 'bellows_cross_org')
+                         and to_regclass('session') is not null
+                    then has_table_privilege('bellows_cross_org', 'session', 'DELETE') else false end as exists
+    `;
+    if (role?.exists) await sql`set local role bellows_cross_org`;
 
     if (options.localUser) {
         // After the files, so the columns and defaults exist. Inside the retry loop, so a

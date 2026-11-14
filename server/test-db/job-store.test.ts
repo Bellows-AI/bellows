@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
-import { createOrgOfLease } from '../src/db/jobs/job-store-org-resolvers.js';
+import { createOrgOfIngest, createOrgOfLease } from '../src/db/jobs/job-store-org-resolvers.js';
 import type { GateReport, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { expireLease, mustCreate, spendInterruptionBudget, testOrg } from './fixtures.js';
@@ -15,6 +15,8 @@ let store: JobStore;
 let otherOrgStore: JobStore;
 /** The org-less lease resolver the branch-ingest credential is verified against. */
 let orgOfLease: (jobId: string, leaseToken: string) => Promise<string | null>;
+/** The org-less resolver the telemetry export credential is verified against. */
+let orgOfIngest: (jobId: string, ingestToken: string) => Promise<string | null>;
 
 const ORG = testOrg();
 const OTHER_ORG = testOrg();
@@ -32,7 +34,7 @@ const LEASE_SECONDS = 300;
  * `max: 8` is higher than the app pool's 4: the claim exclusivity test needs real parallelism,
  * and a pool of two would serialise it into a test that passes for the wrong reason.
  */
-const db = useTestDb({ max: 8, orgs: [ORG] });
+const db = useTestDb({ max: 8, orgs: [ORG, OTHER_ORG] });
 
 beforeAll(async () => {
     if (!enabled) return;
@@ -40,6 +42,7 @@ beforeAll(async () => {
     store = createJobStore({ sql, orgId: ORG });
     otherOrgStore = createJobStore({ sql, orgId: OTHER_ORG });
     orgOfLease = createOrgOfLease({ sql });
+    orgOfIngest = createOrgOfIngest({ sql });
 });
 
 /**
@@ -358,6 +361,89 @@ describe.skipIf(!enabled)('job store', () => {
             expect((await row(id))[0]?.status).toBe('dead');
 
             expect(await orgOfLease(id, claim!.leaseToken)).toBeNull();
+        });
+    });
+
+    // The export credential rendered into the runner's telemetry config at container creation.
+    // That file never changes, so the credential must outlive every takeover of the attempt: an
+    // adoption rotates the lease, never the ingest token.
+    describe('orgOfIngest', () => {
+        it('resolves the org for the claim’s ingest token, and only for that row and token', async () => {
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', LEASE_SECONDS);
+
+            expect(claim!.ingestToken).toMatch(/^[0-9a-f-]{36}$/);
+            expect(claim!.ingestToken).not.toBe(claim!.leaseToken);
+            expect(await orgOfIngest(id, claim!.ingestToken)).toBe(ORG);
+            expect(await orgOfIngest(id, claim!.leaseToken)).toBeNull();
+            expect(await orgOfIngest(ABSENT, claim!.ingestToken)).toBeNull();
+        });
+
+        it('survives adoptions: every takeover of the attempt hands out the same token, and it resolves', async () => {
+            const { id } = await queue('echo hi');
+            const first = await store.claim('w1', LEASE_SECONDS);
+            await expireLease(sql, id);
+            // Between the lapse and the takeover the runner keeps exporting: still accepted.
+            expect(await orgOfIngest(id, first!.ingestToken)).toBe(ORG);
+            const second = await store.claim('w2', LEASE_SECONDS);
+            await expireLease(sql, id);
+            const third = await store.claim('w3', LEASE_SECONDS);
+
+            expect(third!.leaseToken).not.toBe(first!.leaseToken);
+            expect(second!.ingestToken).toBe(first!.ingestToken);
+            expect(third!.ingestToken).toBe(first!.ingestToken);
+            expect(await orgOfIngest(id, first!.ingestToken)).toBe(ORG);
+        });
+
+        // A row from before the column (or one the backfill had not reached) holds no token: its
+        // next claim mints one, and every later claim of the attempt keeps it.
+        it('mints a token at the claim of a row that holds none, then keeps it through an adoption', async () => {
+            const { id } = await queue('echo hi');
+            await sql`update job set ingest_token = null where id = ${id}`;
+            // A null token never matches: not a null-for-null comparison, not any token.
+            expect(await orgOfIngest(id, ABSENT)).toBeNull();
+            const first = await store.claim('w1', LEASE_SECONDS);
+            expect(first!.ingestToken).toMatch(/^[0-9a-f-]{36}$/);
+            await expireLease(sql, id);
+            const second = await store.claim('w2', LEASE_SECONDS);
+            expect(second!.ingestToken).toBe(first!.ingestToken);
+            expect(await orgOfIngest(id, first!.ingestToken)).toBe(ORG);
+        });
+
+        // A row a pre-column claim runs holds no token: the adoption that takes it over mints one,
+        // and the adopted runner exports under it from then on.
+        it('mints a token at the adoption of a running row that holds none', async () => {
+            const { id } = await queue('echo hi');
+            await store.claim('w1', LEASE_SECONDS);
+            await sql`update job set ingest_token = null where id = ${id}`;
+            expect(await orgOfIngest(id, ABSENT)).toBeNull();
+            await expireLease(sql, id);
+            const adopted = await store.claim('w2', LEASE_SECONDS);
+            expect(adopted!.ingestToken).toMatch(/^[0-9a-f-]{36}$/);
+            expect(await orgOfIngest(id, adopted!.ingestToken)).toBe(ORG);
+        });
+
+        it('keeps resolving within the tail grace after the verdict, then stops', async () => {
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', LEASE_SECONDS);
+            await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+            expect(await orgOfIngest(id, claim!.ingestToken)).toBe(ORG);
+
+            await sql`update job set finished_at = now() - interval '2 hours' where id = ${id}`;
+            expect(await orgOfIngest(id, claim!.ingestToken)).toBeNull();
+        });
+
+        it('stops resolving for a running row abandoned past the grace, and never for a row no claim ran', async () => {
+            const { id } = await queue('echo hi');
+            const claim = await store.claim('w1', LEASE_SECONDS);
+            await sql`update job set lease_expires_at = now() - interval '2 hours' where id = ${id}`;
+            expect(await orgOfIngest(id, claim!.ingestToken)).toBeNull();
+
+            const queued = await queue('echo hi');
+            const [unclaimed] = await sql<{ ingest_token: string }[]>`
+                select ingest_token from job where id = ${queued.id}
+            `;
+            expect(await orgOfIngest(queued.id, unclaimed!.ingest_token)).toBeNull();
         });
     });
 

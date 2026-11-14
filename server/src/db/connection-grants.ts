@@ -1,5 +1,6 @@
 import type { Sql, TransactionSql } from 'postgres';
 import type { SecretIdentity } from '../secrets/secret-store.js';
+import { recordAudit, userActor } from './audit-log.js';
 
 /**
  * Integration grants (094, 096): the credential lineage of one external account. A connection is a principal's
@@ -85,7 +86,7 @@ export type ReconnectResult =
     | { ok: false; reason: 'not-found' | 'account-mismatch' | 'revoked' | 'claim-lost' };
 
 export interface ConnectionGrants {
-    /** Upserts the grant by `(provider, externalAccountId)` and adds an active connection under it. */
+    /** Upserts the org's grant by `(provider, externalAccountId)` and adds an active connection under it. */
     attachGrantConnection(input: AttachGrantConnection): Promise<AttachResult>;
     /** Ends a lineage claim by kind; applies only while `claimToken` is still the grant's claim. */
     finalize(grantId: string, claimToken: string, input: FinalizeInput): Promise<FinalizeResult>;
@@ -238,7 +239,7 @@ export function attachRefusalOf(error: unknown): AttachRefusal | null {
 }
 
 /**
- * Upserts the grant by `(provider, externalAccountId)` and adds an active connection under it, inside the caller's
+ * Upserts the org's grant by `(provider, externalAccountId)` and adds an active connection under it, inside the caller's
  * transaction. A unique violation propagates: `attachRefusalOf` names it. The `kind` column is the 054 rollout
  * column (`'jira'` only); the contract release drops it, so every connection carries it until then.
  */
@@ -251,14 +252,14 @@ export async function attachInTx(
     const userId = input.principal.userId;
     const existing = await tx<GrantRow[]>`
         select ${tx.unsafe(grantColumns())} from integration_grant
-        where provider = ${input.provider} and external_account_id = ${input.externalAccountId}
+        where org_id = ${orgId} and provider = ${input.provider} and external_account_id = ${input.externalAccountId}
           and status <> 'revoked'
         for update
     `;
     let grant: IntegrationGrant;
     if (existing[0]) {
         grant = toGrant(existing[0]);
-        if (grant.orgId !== orgId || grant.principalUserId !== userId) return { ok: false, reason: 'grant-conflict' };
+        if (grant.principalUserId !== userId) return { ok: false, reason: 'grant-conflict' };
     } else {
         const created = await tx<GrantRow[]>`
             insert into integration_grant
@@ -280,6 +281,13 @@ export async function attachInTx(
                 ${input.provider}, 'oauth_grant', ${userId}, ${input.externalAccountId}, ${grant.id})
         returning id
     `;
+    await recordAudit(tx, {
+        orgId,
+        actor: userActor(userId),
+        action: 'connection.connect',
+        target: connection!.id,
+        detail: { provider: input.provider, site: input.resource.label, access: input.access },
+    });
     return { ok: true, grant, connectionId: connection!.id };
 }
 

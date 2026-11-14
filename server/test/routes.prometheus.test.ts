@@ -12,7 +12,7 @@ import {
     staticRegistry,
     stubTelemetryClient,
     testConfig,
-    TEST_JOB_BOARD_TOKEN,
+    TEST_DRIVER_CREDENTIAL,
     jobStoreSlice,
 } from './helpers.js';
 import { HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
@@ -133,12 +133,12 @@ describe('GET /api/metrics credentials', () => {
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
-    it('serves the shared board secret', async () => {
+    it('serves a pool driver credential', async () => {
         const { app } = await github();
         const response = await app.inject({
             method: 'GET',
             url: '/api/metrics',
-            headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
+            headers: { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` },
         });
         expect(response.statusCode).toBe(HTTP_OK);
     });
