@@ -234,6 +234,7 @@ describe('RUNNER_CLASSES', () => {
             sandbox: SANDBOX,
         }),
         RUNNER_DEFAULT_CLASS: 'standard',
+        RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
     });
     const podOf = (runnerClass: string | null) =>
         runnerJobSpec(classes, { ...gatedOf(job), runnerClass }, { id: SESSION, resume: false }).spec.template;

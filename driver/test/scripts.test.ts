@@ -78,6 +78,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['credential-helper.sh', 'sh'],
     ['gate-shell.sh', 'sh'],
     ['gate-github.sh', 'sh'],
+    ['dockerd-start.sh', 'sh'],
     // `sh -n` below only parses it: the gate loop is never run outside its container
     // (scripts-gate-loop.test.ts says why).
     ['gate-loop.sh', 'sh'],

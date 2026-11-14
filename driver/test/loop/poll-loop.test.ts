@@ -23,6 +23,34 @@ import {
 /** A queue row's acquisition token, never its id. */
 const ROW_TOKEN = '77777777-7777-4777-8777-777777777777';
 
+// In a docker class the platform's DOCKER_HOST is the agent's and the gate's: a member's own value
+// never reaches the attempt (every env it renders is built from the claim it runs). Outside one the
+// name is the member's like any other.
+describe('a docker class claim', () => {
+    const DOCKER_ENV = {
+        EXECUTOR: 'kubernetes',
+        RUNNER_CLASSES: JSON.stringify({ standard: {}, sandbox: { runtimeClassName: 'gvisor', docker: true } }),
+        RUNNER_DEFAULT_CLASS: 'standard',
+        RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
+    };
+    const launchedEnv = async (runnerClass: string) => {
+        const launched: BoardJob[] = [];
+        const board = stubBoard([{ ...job(1), runnerClass, env: { DOCKER_HOST: 'tcp://10.0.0.1:2375', KEEP: '1' } }]);
+        const runner = stubRunner(async (claimed) => {
+            launched.push(claimed);
+            return ok();
+        });
+        await drive({ ...board, runner }, DOCKER_ENV);
+        expect(launched).toHaveLength(1);
+        return launched[0]!.env;
+    };
+
+    it('launches without the claim DOCKER_HOST in a docker class, and with it in any other', async () => {
+        expect(await launchedEnv('sandbox')).toEqual({ KEEP: '1' });
+        expect(await launchedEnv('standard')).toEqual({ DOCKER_HOST: 'tcp://10.0.0.1:2375', KEEP: '1' });
+    });
+});
+
 describe('the poll loop', () => {
     it('claims a job, runs it and reports success', async () => {
         const board = stubBoard([job(1)]);

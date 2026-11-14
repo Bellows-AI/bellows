@@ -5,6 +5,7 @@ import type { Runner } from '../runner.js';
 import { checkoutKey } from '../publish/publish.js';
 import type { GateStack, LiveAttempt, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
+import { classClaimOf } from '../runner-classes.js';
 import { processReclaim, processVerdictReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from '../executors.js';
 import { withBoardRetry } from '../board/board-retry.js';
@@ -298,7 +299,8 @@ export function createLoop({
     // Contained here: one attempt's throw is that attempt's, logged, never a rejected
     // `start()` or an unhandled rejection that takes every other claim down with the process.
     function track(job: BoardJob): void {
-        const promise = runJob(rt, job)
+        // As its class runs it: a docker class's platform DOCKER_HOST wins in every env the attempt renders.
+        const promise = runJob(rt, classClaimOf(config, job))
             .catch((e: Error) => log(`job ${job.id}: the attempt threw, leaving it to the lease: ${e.message}`))
             .finally(() => active.delete(promise));
         active.add(promise);

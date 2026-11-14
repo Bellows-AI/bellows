@@ -9,7 +9,16 @@ import {
     VOLUME_EXPORT_RUN_LABEL,
 } from '../labels.js';
 import { CLAUDE_CODE } from '../executors.js';
-import { defaultClassOf, jobClassOf } from '../runner-classes.js';
+import { defaultClassOf, jobClassOf, type RunnerClass } from '../runner-classes.js';
+import {
+    DOCKERD_CAPS,
+    DOCKERD_CONTAINER,
+    dockerClientEnv,
+    dockerClientMounts,
+    dockerdMounts,
+    dockerdStartupProbe,
+    dockerVolumes,
+} from './k8s-dockerd.js';
 import { createHash } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
 import { executorImage, type DriverConfig } from '../config.js';
@@ -33,6 +42,7 @@ import { TASK_MOUNT, TASK_VOLUME, taskInitScript, taskPodVolume } from '../task-
 import {
     claudeTurnsScript,
     claudeExportScript,
+    dockerdStartArgv,
     gateLoopArgv,
     opencodeReadoutScript,
     reviewLoopArgv,
@@ -110,6 +120,8 @@ export interface RunnerPodContainer {
     restartPolicy?: 'Always';
     /** A service sidecar's generation probe: what the kubelet restarts it on. */
     livenessProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
+    /** The `dockerd` sidecar's socket probe: the init containers after it start once it passes. */
+    startupProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
     resources?: PodResources;
     /** The executor hardening — `containerHardeningField`, always present. */
     securityContext: ContainerSecurityContext;
@@ -360,9 +372,9 @@ function servicesPodFields(services: readonly ServiceSpec[]): {
  * HOME that uid can write; the declared image's own default (root, usually) would leave files the
  * uid-1000 reclaim can never remove. Its env is the gate env's own literals: the claim env and the
  * GitHub token ride each request, never this spec. It is sized idle (`gateResourcesField`) and
- * resized in place for verify.
+ * resized in place for verify. In a docker class it is a daemon client: DOCKER_HOST, TMPDIR and their mounts.
  */
-function gateSidecar(config: DriverConfig, job: BoardJob, image: string): RunnerPodContainer {
+function gateSidecar(config: DriverConfig, job: BoardJob, image: string, docker: boolean): RunnerPodContainer {
     const hardened = containerHardeningField().securityContext;
     return {
         name: GATE_CONTAINER,
@@ -373,8 +385,33 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
         securityContext: { ...hardened, runAsUser: GATE_UID, runAsGroup: GATE_GID },
         command: gateLoopArgv(),
         workingDir: MAILBOXES.gate.path,
-        env: gateEnv(job).map(([name, value]) => ({ name, value })),
-        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.gate, 'rw')],
+        env: [...gateEnv(job), ...(docker ? dockerClientEnv() : [])].map(([name, value]) => ({ name, value })),
+        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.gate, 'rw'), ...(docker ? dockerClientMounts() : [])],
+    };
+}
+
+/**
+ * A docker class's daemon: the digest-pinned dind image as a native sidecar, first of the init
+ * containers so the gate after it starts only once its startupProbe answers on the shared socket.
+ * Root in the sandbox with NET_ADMIN, SYS_ADMIN and NET_RAW over the runtime default set — `drop:
+ * ALL` breaks it — and still no escalation, under the pod's RuntimeDefault seccomp profile. It mounts
+ * the task volume and the shared temp dir at the clients' own paths, so their bind mounts resolve,
+ * its memory-backed data root and the socket. Sized by the class's `dockerResources`.
+ */
+function dockerdSidecar(config: DriverConfig, runnerClass: RunnerClass): RunnerPodContainer {
+    if (!config.runnerDockerImage)
+        throw new Error(`RUNNER_DOCKER_IMAGE is required by the docker class ${runnerClass.name}`);
+    return {
+        name: DOCKERD_CONTAINER,
+        image: config.runnerDockerImage,
+        imagePullPolicy: config.imagePullPolicy,
+        restartPolicy: 'Always',
+        ...resourcesField(runnerClass.dockerResources),
+        securityContext: { allowPrivilegeEscalation: false, capabilities: { add: [...DOCKERD_CAPS] } },
+        command: dockerdStartArgv(),
+        env: [],
+        startupProbe: dockerdStartupProbe(),
+        volumeMounts: [taskMount(), ...dockerdMounts()],
     };
 }
 
@@ -468,6 +505,8 @@ function agentPart(
 ): { container: RunnerPodContainer; volumes: RunnerVolume[] } {
     const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(job) }, ...runnerCredentialEnv(config, job)];
     const { mounts, volumes } = runnerVolumesField(config, job, secretName(job));
+    // A docker class's daemon client: the platform endpoint wins over any claim value (`classClaimOf`).
+    const docker = jobClassOf(config, job).docker;
 
     // The argv each CLI speaks, and the executor-specific env beside it (opencode's session
     // database path, or claude-code's transcript store and session id) — decided once, for both
@@ -481,6 +520,7 @@ function agentPart(
     // credential rides this container's env (runnerCredentialEnv never reads `supervisorEnv`), and
     // no publish token either — a publication's credential is the supervisor's step env alone.
     env.push(...agentMailboxEnv().map(([name, value]) => ({ name, value })));
+    if (docker) env.push(...dockerClientEnv().map(([name, value]) => ({ name, value })));
     return {
         // The GitHub helper's token cache, in memory and the agent's own (docs/connections.md):
         // mounted in this container alone, never on the task volume, gone with the pod.
@@ -513,6 +553,7 @@ function agentPart(
                 mailboxMount(MAILBOXES.in, 'ro'),
                 mailboxMount(MAILBOXES.out, 'rw'),
                 { name: CREDENTIAL_CACHE_VOLUME, mountPath: CREDENTIAL_CACHE_DIR },
+                ...(docker ? dockerClientMounts() : []),
             ],
         },
     };
@@ -558,9 +599,12 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     const services = groupServices(config, job);
     const servicesFields = servicesPodFields(services);
     // Every init container starts, in order, before the main containers, so no order spares the
-    // supervisor a sidecar that never starts: the gate leads, the services follow as declared.
+    // supervisor a sidecar that never starts: a docker class's daemon leads (the gate after it waits
+    // on its startupProbe), then the gate, then the services as declared.
+    const docker = runnerClass.docker;
     const sidecars = [
-        ...(gateImage ? [gateSidecar(config, job, gateImage)] : []),
+        ...(docker ? [dockerdSidecar(config, runnerClass)] : []),
+        ...(gateImage ? [gateSidecar(config, job, gateImage, docker)] : []),
         ...(reviewing ? [taskInitContainer(config, job), reviewerSidecar(config, job)] : []),
         ...services.map((service) => serviceSidecar(config, job, service)),
     ];
@@ -649,6 +693,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                         ...mailboxVolumes(reviewing),
                         bindingVolume(secretName(job)),
                         ...servicesFields.volumes,
+                        ...(docker ? dockerVolumes(runnerClass) : []),
                     ],
                 },
             },

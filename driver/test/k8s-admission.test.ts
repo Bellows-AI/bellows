@@ -228,6 +228,7 @@ describe('the admission policy pins each pod to its runner class RuntimeClass', 
         K8S_NAMESPACE: 'factory',
         RUNNER_CLASSES: JSON.stringify({ standard: {}, sandbox }),
         RUNNER_DEFAULT_CLASS: 'standard',
+        RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
     });
     /** The class → RuntimeClass map the chart renders for these classes ('' for none). */
     const runtimeClasses: Record<string, string> = { standard: '', sandbox: 'gvisor' };

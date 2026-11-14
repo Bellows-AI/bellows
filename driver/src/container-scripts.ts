@@ -70,6 +70,12 @@ export const reviewLoopScript = script('review-loop.sh');
 /** The reviewer container's command on both executors: the loop, running each request's executor entrypoint argv. */
 export const reviewLoopArgv = (): string[] => ['sh', '-c', reviewLoopScript, 'review-loop'];
 
+/** A docker class's daemon, its sandbox prepared first (kubernetes): see scripts/dockerd-start.sh. */
+export const dockerdStartScript = script('dockerd-start.sh');
+
+/** The `dockerd` sidecar's command. */
+export const dockerdStartArgv = (): string[] => ['sh', '-c', dockerdStartScript, 'dockerd-start'];
+
 /** A declared service sidecar's liveness probe (kubernetes): see scripts/service-generation-probe.sh. */
 export const serviceGenerationProbeScript = script('service-generation-probe.sh');
 
