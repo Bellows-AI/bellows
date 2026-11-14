@@ -19,6 +19,7 @@ import type { GateStack } from './loop/loop-types.js';
 import { createReaper } from './reaper.js';
 import { run } from './docker/docker-runner-support.js';
 import { stripSecretStoreEnv } from './strip-secret-store-env.js';
+import { createDrain } from './drain.js';
 
 stripSecretStoreEnv(process.env);
 
@@ -132,28 +133,17 @@ const reaper = createReaper({
 });
 if (config.reapIntervalMs > 0) reaper.start();
 
-// Stop claiming, then drain. A second signal is the escape hatch, since a drain waits for a job
-// that may have half an hour left on it. A drain that outlasts DRIVER_HANDOVER_MS hands its runs
-// over: their leases go back as interruptions, claimable at once, and their runners
-// stay up for the next claim — rather than the SIGKILL landing with every lease still held.
-let stopping = false;
-let handedOver = false;
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(signal, () => {
-        if (stopping) {
-            console.log('[driver] second signal, exiting now — runners are left to the lease');
-            process.exit(1);
-        }
-        stopping = true;
-        console.log('[driver] draining; signal again to exit immediately');
-        loop.stop();
-        reaper.stop();
-        setTimeout(() => {
-            handedOver = true;
-            void loop.handover('the driver was drained');
-        }, config.handoverMs).unref();
-    });
-}
+// Stop claiming, then hand over. A second signal is the escape hatch. The runs in flight go back
+// to the board as interruptions — claimable at once, runners left up for the next claim — at
+// DRIVER_HANDOVER_MS (0: inside the signal), not with every lease held when the SIGKILL lands.
+const drain = createDrain({
+    loop,
+    reaper,
+    handoverMs: config.handoverMs,
+    log: (m) => console.log(`[driver] ${m}`),
+    exit: (code) => process.exit(code),
+});
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => drain.onSignal());
 
 // Bound before the first claim so a scrape sees the whole run, and closed after the drain below.
 const metricsServer =
@@ -175,4 +165,4 @@ await gates.manager.stop();
 await gates.server.close();
 await metricsServer?.close();
 // A handed-over run's poll is still pending in this process, and is no longer this driver's.
-if (handedOver) process.exit(0);
+if (drain.handedOver()) process.exit(0);

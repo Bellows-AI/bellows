@@ -42,9 +42,15 @@ dashboard:
         digest: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
-    # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp). Every
+    # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp), at
+    # least two schedulable nodes (the spread below), and the PDB keeps one pod through a drain. Every
     # replica is still replaced by Recreate, so two versions never share the schema mid-upgrade.
     replicas: 1
+    # Above one replica, empty renders the default: never two pods on a node (kubernetes.io/hostname,
+    # DoNotSchedule, minDomains 2) and zones preferred (topology.kubernetes.io/zone, ScheduleAnyway), each
+    # counting only this revision's pods (matchLabelKeys pod-template-hash; Kubernetes 1.27+). A non-empty
+    # list replaces the default, at any replica count. Entries are Kubernetes topologySpreadConstraints.
+    topologySpreadConstraints: []
     # Above one replica, a stopping pod sleeps this long before SIGTERM so the Service and the load
     # balancer stop routing to it first; the server then closes gracefully within 10 s. The pod's
     # termination grace period is this plus 15 s. Below 30; 0 turns it off. At one replica it is not rendered.
@@ -431,11 +437,13 @@ driver:
         seconds: 15
         spoolMax: 1Gi
         streamMax: 1Gi
-    # On SIGTERM the driver stops claiming and drains: in-flight jobs finish, then it exits. This is
-    # how long the kubelet waits before SIGKILL. A minute before it (DRIVER_HANDOVER_MS), the drain
-    # hands what is still running over: each lease goes back as an interruption, refunded and
-    # claimable at once, and each runner Job keeps running under its own deadline for the next
-    # claim. Raise it toward jobTimeoutMs to let more runs finish in place.
+    # On SIGTERM the driver stops claiming and hands what is running over (DRIVER_HANDOVER_MS, ms,
+    # a string): each lease goes back as an interruption, refunded and claimable at once, and each
+    # runner Job keeps running under its own deadline for the next claim. "0" hands over inside the
+    # signal, which a spot node needs: it is gone two minutes after its notice, and a lease not
+    # released by then waits out leaseSeconds. A positive value lets runs finish in place first.
+    handoverMs: "0"
+    # How long the kubelet waits before SIGKILL: the outer bound on the drain after the handover.
     terminationGracePeriodSeconds: 600
     # Off by default and a real decision, here as everywhere: on, the agent edits and runs whatever
     # it likes inside the runner without asking. Read docs/jobs.md first.

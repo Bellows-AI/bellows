@@ -163,10 +163,10 @@ spec:
                         value: {{ $.Values.driver.reapIntervalMs | quote }}
                       - name: DRIVER_REAP_GRACE_MS
                         value: {{ $.Values.driver.reapGraceMs | quote }}
-                      # A drain hands its runs over a minute before the kubelet's SIGKILL (issue
-                      # #792): their leases go back as interruptions and their runners stay up.
+                      # A drain hands its runs over at DRIVER_HANDOVER_MS (default at once): their
+                      # leases go back as interruptions and their runners stay up.
                       - name: DRIVER_HANDOVER_MS
-                        value: {{ mul (max 0 (sub (int $.Values.driver.terminationGracePeriodSeconds) 60)) 1000 | quote }}
+                        value: {{ $.Values.driver.handoverMs | quote }}
                       # What a released run's group waits for a newer holder on top of the lease.
                       - name: DRIVER_REBIND_GRACE_MS
                         value: {{ $.Values.driver.rebindGraceMs | quote }}

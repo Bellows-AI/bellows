@@ -23,22 +23,28 @@ export const NODE_LOSS_WINDOW_MS = 21_600_000;
 /**
  * Whether the row's interruption budget is spent. A blocked hand-back waits on a leftover rather than
  * losing an attempt to the infrastructure, so it is outside the count; a requirement hand-back waits on a
- * person, so it is too, as is a hand-back of a suspended organization's attempt; a node loss is the platform's, so it has its own bound. Only interruptions inside
+ * person, so it is too, as is a hand-back of a suspended organization's attempt; a node loss or an expired lease is
+ * the platform's, so it has its own bound. Only interruptions inside
  * `INTERRUPTION_WINDOW_MS` count; an `at` that does not parse counts as spent.
  * The cutoff is bound per call from the process clock that wrote each `at`, never DB now().
  */
 const poisonSpent = (q: Sql | TransactionSql): Fragment => q`(
     select count(*) from jsonb_array_elements(interruptions) as spent
     where spent ->> 'blocked' is distinct from 'true' and spent ->> 'requirement' is distinct from 'true'
-      and spent ->> 'nodeLoss' is distinct from 'true' and spent ->> 'orgSuspended' is distinct from 'true'
+      and spent ->> 'nodeLoss' is distinct from 'true' and spent ->> 'leaseExpired' is distinct from 'true'
+      and spent ->> 'orgSuspended' is distinct from 'true'
       and case when spent ->> 'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
           then (spent ->> 'at')::timestamptz > ${new Date(Date.now() - INTERRUPTION_WINDOW_MS)} else true end
 ) >= ${INTERRUPTION_BUDGET}`;
 
-/** Whether the row's node-loss bound is spent: `NODE_LOSS_BUDGET` flagged entries inside `NODE_LOSS_WINDOW_MS`. */
+/**
+ * Whether the row's node-loss bound is spent: `NODE_LOSS_BUDGET` node-loss or lease-expiry entries inside
+ * `NODE_LOSS_WINDOW_MS`. A lease that expired is a driver gone silent on a node the platform took, a loss no
+ * run caused, so it is bounded like a node loss and never spends the poison budget.
+ */
 export const nodeLossSpent = (q: Sql | TransactionSql): Fragment => q`(
     select count(*) from jsonb_array_elements(interruptions) as spent
-    where spent ->> 'nodeLoss' = 'true'
+    where (spent ->> 'nodeLoss' = 'true' or spent ->> 'leaseExpired' = 'true')
       and case when spent ->> 'at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
           then (spent ->> 'at')::timestamptz > ${new Date(Date.now() - NODE_LOSS_WINDOW_MS)} else true end
 ) >= ${NODE_LOSS_BUDGET}`;

@@ -253,19 +253,6 @@ export function newJobState(): JobState {
     };
 }
 
-/** Registers the attempt as in flight for a drain's handover; answers what to call once `runJob` is over. */
-export function registerLive(rt: LoopRuntime, job: BoardJob, state: JobState): () => void {
-    let over: () => void = () => {};
-    rt.live?.set(job.id, {
-        job,
-        state,
-        over: new Promise<void>((resolve) => {
-            over = resolve;
-        }),
-    });
-    return over;
-}
-
 /**
  * Ends the agent of a launched attempt now. With a control endpoint open, the supervised way: the
  * kill order is raised for the supervisor (it ends the agent, has the exporter drain what it wrote

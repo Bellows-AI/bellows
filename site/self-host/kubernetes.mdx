@@ -51,7 +51,8 @@ The render refuses to start without them, and names the missing value.
 | --- | --- | --- |
 | `global.imageRegistry` | `''` | Prefixes every image the chart renders, both executor images included, for example `ghcr.io/<owner>`. Empty means bare names, which only work with side-loaded images. |
 | `dashboard.image.tag`, `driver.image.tag` | `''` | Empty uses the chart's `appVersion`, so a chart version names the exact build. |
-| `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs`. |
+| `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs` and at least two schedulable nodes. The pods spread over nodes (never two on one) and zones, and the PodDisruptionBudget keeps one pod through a drain. |
+| `dashboard.topologySpreadConstraints` | `[]` | Empty uses the default spread above one replica; a list replaces it, at any replica count. |
 | `artifacts.backend` | `s3` | `s3`, `gcs` or `filesystem`. `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |
 | `artifacts.retentionDays` | `90` | Artifacts of a removed task are deleted after this many days. |
 | `ingress.enabled` | `false` | See [Ingress and TLS](#ingress-and-tls). |
@@ -67,7 +68,7 @@ The render refuses to start without them, and names the missing value.
 | `mcp.enabled` | `false` | Turns on the MCP endpoint. Needs an `https` `auth.publicUrl`. See [Connect an MCP client](/mcp/connect). |
 | `integrations.jira.clientId`, `secret.atlassianClientSecret` | `''` | See [Set up Jira](/self-host/jira-app). |
 | `secret.githubWebhookSecret` | `''` | Registers the webhook route. See [Create the GitHub App](/self-host/github-app). |
-| `auth.cookieSecure` | `''` | Set `'true'` behind TLS. |
+| `auth.cookieSecure` | `''` | Empty follows `publicUrl`: `Secure` for https. Set `'true'` or `'false'` to override. |
 
 ### Model credentials
 
@@ -382,7 +383,7 @@ helm upgrade bellows oci://ghcr.io/<owner>/charts/factory \
 
 - Back up the database first. The dashboard runs schema migrations at boot.
 - The dashboard is always replaced by Recreate, never rolled, so two versions never share the schema. Expect a few seconds of downtime.
-- The driver drains on shutdown. It stops claiming, and a minute before `driver.terminationGracePeriodSeconds` (default `600`) it hands running tasks back. They are retried at once, and each runner Job keeps running for the next claim. Raise the value to let more runs finish in place.
+- The driver drains on shutdown. On SIGTERM it stops claiming and hands running tasks back at once (`driver.handoverMs`, default `"0"`), so a spot node's two-minute notice is enough. They are retried at once, and each runner Job keeps running for the next claim. Set `driver.handoverMs` above zero, below `driver.terminationGracePeriodSeconds` (default `600`), to let more runs finish in place first.
 - Pin the executor image tags in values when you upgrade, since they are not derived from the chart version.
 
 ## Roll back

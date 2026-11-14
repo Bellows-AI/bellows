@@ -484,10 +484,10 @@ describe('the driver config: the orphan reaper', () => {
 });
 
 describe('the driver config: the drain handover', () => {
-    // Issue #792: how long a draining driver lets its runs finish before it hands them over —
-    // under the chart's ten-minute grace, so the handover lands before the SIGKILL does.
-    it('hands over after nine minutes by default, overridable, zero at once', () => {
-        expect(loadDriverConfig({}).handoverMs).toBe(540_000);
+    // How long a draining driver lets its runs finish before it hands them over: none by default,
+    // so the release lands inside a spot node's two-minute notice.
+    it('hands over at once by default, overridable', () => {
+        expect(loadDriverConfig({}).handoverMs).toBe(0);
         expect(loadDriverConfig({ DRIVER_HANDOVER_MS: '1000' }).handoverMs).toBe(1000);
         expect(loadDriverConfig({ DRIVER_HANDOVER_MS: '0' }).handoverMs).toBe(0);
     });

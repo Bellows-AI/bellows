@@ -67,7 +67,9 @@ exec ${JSON.stringify(realDirname)} "$@"
     it('offers the supervisor control phase (issue #770)', async () => {
         const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|capacity|mcp|drain|bench]');
+        expect(result.stdout).toContain(
+            '|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench]'
+        );
     });
 
     it('delivers pinned org and workspace skills in the recovery phase and holds the sha set across a pod deletion', () => {
@@ -477,6 +479,34 @@ describe('kind lane timing evidence', () => {
     });
 });
 
+describe('kind lane replicas phase', () => {
+    const script = readLaneScript('scripts/test-k8s.sh');
+    const replicas = readLaneScript('scripts/lanes/k8s/replicas.sh');
+    const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+
+    it('runs only when asked for, installs two replicas on its own object store and cordons no node', () => {
+        expect(replicas).toContain('if [ "$PHASE" = replicas ]; then');
+        expect(script).not.toMatch(/selected_phase replicas/);
+        expect(script).toContain('--set dashboard.replicas=2');
+        expect(script).toContain('artifacts.credentialsExistingSecret=$RELEASE-s3');
+        expect(script).toMatch(
+            /if \[ "\$PHASE" = replicas \]; then\n\s+# The two boards must find two nodes, so no worker is cordoned/
+        );
+        expect(script).toContain('the replicas phase needs two Ready, schedulable nodes');
+    });
+
+    it('removes the object store on every exit, installed or not', () => {
+        expect(cleanup).toMatch(/s3_created[\s\S]*kubectl delete pod,service,secret "\$RELEASE-s3"/);
+    });
+
+    it('checks the ledger against the shipped files and the survivor, the driver and every task after a board is deleted', () => {
+        expect(replicas).toContain('schema_migrations');
+        expect(replicas).toContain('start_port_forward "pod/$survivor"');
+        expect(replicas).toContain('await_brief "$id" \'succeeded*\' 300');
+        expect(replicas).toContain('the driver kept its pod and never restarted');
+    });
+});
+
 describe('kind lane takeover and drain phases (issue #829)', () => {
     const script = readLaneScript('scripts/test-k8s.sh');
     const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
@@ -495,7 +525,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(
-            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|mcp\|drain\|bench\)/
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|mcp\|drain\|replicas\|bench\)/
         );
     });
 
@@ -570,7 +600,8 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
     it('installs the driver with a short lease, a short handover and a short rebind grace', () => {
         expect(script).toContain('LANE_LEASE_S=15');
         expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
-        // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
+        // The chart hands over at once by default; the lane's hard-kill case needs a 10 s window.
+        expect(installCall).toContain('--set-string driver.handoverMs=10000');
         expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
         // A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind
         // nodes, docs/kubernetes.md): the grace must outlast it, or the group ends before it can follow.
@@ -759,8 +790,8 @@ describe('kind lane bench phase (issue #831)', () => {
     it('offers the phase in --help and says it is left out of all', async () => {
         const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|drain|bench]');
-        expect(result.stdout).toMatch(/leaves out drain .* and bench/);
+        expect(result.stdout).toContain('|drain|replicas|bench]');
+        expect(result.stdout).toMatch(/leaves out drain and replicas .* and bench/);
     });
 
     it('measures the cells the issue asks for at the chart production pace', () => {

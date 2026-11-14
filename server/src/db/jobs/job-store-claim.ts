@@ -181,9 +181,10 @@ const REFUSED = Symbol('refused by a budget');
  * the exclusion is one indexed lookup, not a walk — and it is symmetric and terminal rows block nothing.
  *
  * `recovering` is a `running` row whose lease expired: an attempt the infrastructure lost — its
- * driver went silent. While the interruption budget lasts, the claim that takes it over
- * records that loss as the superseded attempt's interruption and spends no attempt, so an expiry at
- * the last allowed attempt stays recoverable. Unqualified on purpose: the reservation's only table
+ * driver went silent. While the budgets last, the claim that takes it over records that loss as the
+ * superseded attempt's interruption and spends no attempt, so an expiry at the last allowed attempt
+ * stays recoverable; once they are spent it records the loss as unrefunded and spends one. An expiry
+ * counts toward the node-loss bound, never the poison budget (`job-store-interruption-budget.ts`). Unqualified on purpose: the reservation's only table
  * is the candidate, and the acquisition's SET reads the pre-update row.
  *
  * `exhausted` — attempts and interruption budget both spent — is what the dead retirement retires
@@ -392,7 +393,7 @@ async function acquireCandidate(
 ): Promise<Claim | typeof NEXT_CANDIDATE | typeof REFUSED> {
     const { sql, orgId } = ctx;
     const { sameThreadRunning, recovering, exhausted, baseBranch, ownSession } = claimRules(ctx);
-    const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
+    const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString(), leaseExpired: true });
     const rootJobId = reserved.root_job_id;
     const probe = startAcquire(ctx.metrics);
     const result = await sql.begin(async (tx) => {
@@ -439,12 +440,13 @@ async function acquireCandidate(
                 -- The telemetry export credential (144): never rotated, so an adopted runner keeps exporting
                 -- under it; minted here only for a row from before the column that holds none.
                 ingest_token     = coalesce(ingest_token, gen_random_uuid()),
-                -- A lost attempt is recorded, not spent: the interruption names the claim it
-                -- supersedes, so an adoption of that claim's runner is the same disruption.
+                -- A lost attempt is recorded, refunded while the budgets last and marked unrefunded once they
+                -- are spent: the interruption names the claim it supersedes, so an adoption of that claim's
+                -- runner is the same disruption.
                 attempts         = attempts + case when ${recovering} then 0 else 1 end,
-                interruptions    = case when ${recovering}
+                interruptions    = case when status = 'running'
                     then interruptions || jsonb_build_array(
-                        ${expiry}::jsonb || jsonb_build_object('claimSeq', claim_seq)
+                        ${expiry}::jsonb || jsonb_build_object('claimSeq', claim_seq, 'refunded', ${recovering})
                     )
                     else interruptions
                 end,

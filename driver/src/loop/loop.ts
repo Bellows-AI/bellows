@@ -8,8 +8,8 @@ import { runJob } from './loop-run.js';
 import { processReclaim, processVerdictReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from '../executors.js';
 import { withBoardRetry } from '../board/board-retry.js';
-import { down, type JobState } from './loop-attempt.js';
-import { recordEnding } from './loop-phase.js';
+import { down } from './loop-attempt.js';
+import { handOver } from './loop-handover.js';
 
 export interface Loop {
     /**
@@ -123,23 +123,14 @@ function completeWithRetry(
     });
 }
 
-/**
- * One attempt handed over: the intent is recorded and the attempt told to stop; its own chain ends
- * it as an interruption (`end`, `loop-conclusion.ts`), the runner left for the next claim.
- */
-function handOver(state: JobState, reason: string): void {
-    if (!recordEnding(state, 'handover')) return;
-    state.handoverReason = reason;
-    state.abortNow();
-    state.wake();
-    state.signalHandover();
-}
+/** How long the exit waits, after the handover, on an attempt whose own ending began before it. */
+const ENDING_SETTLE_MS = 5_000;
 
 /**
  * The drain's handover: the attempts in flight — registered on `rt.live`, where each
  * `runJob` reports its own — and the latch `start()` stops waiting at.
  */
-export function handoverOf(rt: LoopRuntime) {
+export function handoverOf(rt: LoopRuntime, pending: () => Promise<unknown>[] = () => []) {
     const live = new Map<string, LiveAttempt>();
     rt.live = live;
     let landed: () => void = () => {};
@@ -147,8 +138,24 @@ export function handoverOf(rt: LoopRuntime) {
         landed = resolve;
     });
     return {
-        done,
+        /**
+         * Lands once `run` has settled, then waits for any attempt that registered after it began
+         * (a claim answered mid-drain, handed over in `registerLive`) to settle too.
+         */
+        async settled(): Promise<void> {
+            await done;
+            // Attempts handed over, a late claim among them, are waited on to the end. Every other
+            // attempt still running (a verdict or a retry begun before the handover, a teardown
+            // after its end) is waited on for a bounded time only: its write is the durable one, but
+            // a call that never answers must not hold the exit past the leases already released.
+            await Promise.all(
+                [...live.values()].filter(({ state }) => state.ending?.kind === 'handover').map(({ over }) => over)
+            );
+            await Promise.race([Promise.all(pending()), rt.sleep(ENDING_SETTLE_MS)]);
+        },
         async run(reason: string): Promise<void> {
+            const began = Date.now();
+            rt.handoverReason = reason;
             // An attempt whose `end` started — a verdict in flight or any other decision — is
             // not handed over: its own ending and teardown decide it.
             const handing = [...live.values()].filter(
@@ -158,6 +165,7 @@ export function handoverOf(rt: LoopRuntime) {
             for (const { state } of handing) handOver(state, reason);
             // `start()` stops waiting only once every handed-over attempt's end has settled.
             await Promise.all(handing.map(({ over }) => over));
+            rt.log(`handover: ${handing.length} attempt(s) settled in ${Date.now() - began} ms`);
             landed();
         },
     };
@@ -244,7 +252,7 @@ export function createLoop({
         ...(gates ? { gates } : {}),
         ...(stopGraceMs === undefined ? {} : { stopGraceMs }),
     };
-    const handoff = handoverOf(rt);
+    const handoff = handoverOf(rt, () => [...active]);
 
     /**
      * The verdict is reported, then the task worktree is reclaimed — but only when the thread is
@@ -410,7 +418,7 @@ export function createLoop({
             // Claiming has stopped; let what is already running finish rather than orphaning
             // containers that are mid-edit in a checkout.
             if (active.size) log(`draining ${active.size} running job(s)`);
-            await Promise.race([Promise.all(active), handoff.done]);
+            await Promise.race([Promise.all(active), handoff.settled()]);
             await draining;
         },
     };

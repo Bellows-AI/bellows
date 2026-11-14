@@ -29,10 +29,10 @@ import {
     newJobState,
     raceStep,
     launchConfirmer,
-    registerLive,
     stopIfDraining,
     watchOutput,
 } from './loop-attempt.js';
+import { registerLive } from './loop-handover.js';
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from '../timeout-note.js';
 import {

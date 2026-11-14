@@ -229,7 +229,8 @@ export interface DriverConfig {
      * How long a draining driver lets its in-flight runs finish before it hands them over
      * (DRIVER_HANDOVER_MS): each attempt still running is then reported to the board as
      * an interruption — refunded, claimable at once — and its runner is left alive for the next
-     * claim, instead of the drain being SIGKILLed with the lease held. `0` hands over at once.
+     * claim, instead of the drain being SIGKILLed with the lease held. The default `0` hands over
+     * inside the signal: a node reclaimed with two minutes' notice never outlives a longer wait.
      */
     handoverMs: number;
     /**
@@ -366,8 +367,8 @@ const DEFAULT_TASK_VOLUME_TTL_MS = MS_PER_DAY;
 const DEFAULT_TASK_VOLUME_BOUND_MS = DAYS_PER_WEEK * MS_PER_DAY;
 /** The longest TASK_VOLUME_TTL_MS / TASK_VOLUME_BOUND_MS the driver accepts: a year. */
 const MAX_TASK_VOLUME_MS = DAYS_PER_YEAR * MS_PER_DAY;
-/** The default DRIVER_HANDOVER_MS: nine minutes, a minute under the chart's drain grace. */
-const DEFAULT_HANDOVER_MS = 540_000;
+/** The default DRIVER_HANDOVER_MS: at once, so the release lands well inside a spot node's two-minute notice. */
+const DEFAULT_HANDOVER_MS = 0;
 
 // An explicit enum, like the server's AUTH_MODE: a value this process does not know is fatal,
 // never a fallback to docker — the first symptom of a fallback would be a driver that claims

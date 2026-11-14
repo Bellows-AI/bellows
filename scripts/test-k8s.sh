@@ -37,11 +37,11 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|bench] | --netpol]'
-        echo 'All cluster phases run smoke prerequisites. The default cluster phase is all, which leaves out drain (it needs a LAYOUT=drain cluster) and bench (an hour or more on an idle host; writes <timings>.bench.tsv).'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench] | --netpol]'
+        echo 'All cluster phases run smoke prerequisites. The default cluster phase is all, which leaves out drain and replicas (both need a LAYOUT=drain cluster) and bench (an hour or more on an idle host; writes <timings>.bench.tsv).'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
         ;;
@@ -205,6 +205,10 @@ cleanup() {
         kubectl get events -n "$NAMESPACE" -o json --request-timeout=20s 2>/dev/null |
             node scripts/k8s-pod-timeline.mjs "$deploy_started_at" \
                 "^($RELEASE-|factory-(runner|reclaim|gate|orphan)-)" >"$PODS_FILE" 2>/dev/null
+    fi
+    # The lane's own object store (the replicas phase); gated on its own flag, so a run that stopped before the install still removes it.
+    if [ "${s3_created:-}" = '1' ]; then
+        kubectl delete pod,service,secret "$RELEASE-s3" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
     fi
     if [ "${installed:-}" = '1' ]; then
         helm uninstall "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
@@ -702,6 +706,35 @@ expect_contains 'the drain sleep is configurable' \
 # The grace period covers the drain sleep plus the server's 10 s close deadline (server/src/shutdown.ts).
 expect_contains 'one dashboard gets the close deadline plus slack' "$gh_dashboard" 'terminationGracePeriodSeconds: 15'
 expect_contains 'two dashboards add the drain sleep to the grace period' "$gh_dashboard_two" 'terminationGracePeriodSeconds: 30'
+# Above one replica the dashboard spreads: never two on a node (a one-node cluster leaves the
+# second Pending, minDomains), and zones preferred. One replica has nothing to spread.
+expect_contains 'two dashboards never share a node' "$gh_dashboard_two" \
+    $'topologyKey: kubernetes.io/hostname\n'
+expect_contains 'the hostname spread is a hard rule' "$gh_dashboard_two" \
+    $'whenUnsatisfiable: DoNotSchedule'
+expect_contains 'the hostname spread needs two nodes' "$gh_dashboard_two" 'minDomains: 2'
+expect_contains 'two dashboards prefer separate zones' "$gh_dashboard_two" \
+    $'topologyKey: topology.kubernetes.io/zone\n'
+expect_contains 'the zone spread is only a preference' "$gh_dashboard_two" 'whenUnsatisfiable: ScheduleAnyway'
+expect_contains 'the dashboard spread counts only this revision' "$gh_dashboard_two" \
+    $'matchLabelKeys:\n'
+expect_contains 'the dashboard spread keys on the pod template hash' "$gh_dashboard_two" '- pod-template-hash'
+expect_contains 'the dashboard spread selects the dashboard pods' "$gh_dashboard_two" \
+    $'labelSelector:\n'
+expect_not_contains 'one dashboard renders no spread' "$gh_dashboard" 'topologySpreadConstraints'
+cat >"$work/spread.yaml" <<'SPREAD'
+dashboard:
+    topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: example.com/rack
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+              matchLabels:
+                  app.kubernetes.io/component: dashboard
+SPREAD
+gh_dashboard_custom="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$(gh_render --set dashboard.replicas=2 -f "$work/spread.yaml")")"
+expect_contains 'an explicit dashboard spread is rendered' "$gh_dashboard_custom" 'topologyKey: example.com/rack'
+expect_not_contains 'an explicit dashboard spread replaces the default' "$gh_dashboard_custom" 'kubernetes.io/hostname'
 # Readiness is the migrations; liveness is the process. A database outage must not restart-loop.
 expect_contains 'the dashboard starts on /api/ready'  "$gh_dashboard" 'startupProbe:'
 expect_contains 'readiness reads the migrations'      "$gh_dashboard" 'path: /api/ready'
@@ -720,7 +753,7 @@ gh_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/
 expect_contains 'the driver has a liveness probe'      "$gh_driver" 'livenessProbe:'
 expect_contains 'the driver writes the heartbeat it reads' "$gh_driver" 'DRIVER_HEARTBEAT_FILE'
 expect_contains 'the driver drains before SIGKILL'     "$gh_driver" 'terminationGracePeriodSeconds: 600'
-expect_contains 'the driver hands over a minute before SIGKILL' "$(grep -A1 'name: DRIVER_HANDOVER_MS' <<<"$gh_driver")" 'value: "540000"'
+expect_contains 'the driver hands over at once on SIGTERM' "$(grep -A1 'name: DRIVER_HANDOVER_MS' <<<"$gh_driver")" 'value: "0"'
 expect_contains 'the driver gives a released group the default rebind grace' "$(grep -A1 'name: DRIVER_REBIND_GRACE_MS' <<<"$gh_driver")" 'value: "240000"'
 expect_contains 'the driver keeps the production orphan floor' "$(grep -A1 'name: DRIVER_ORPHAN_MIN_MS' <<<"$gh_driver")" 'value: "30000"'
 expect_contains 'the driver keeps the production step long poll' "$(grep -A1 'name: DRIVER_STEP_WAIT_MS' <<<"$gh_driver")" 'value: "15000"'
@@ -1411,6 +1444,14 @@ expect_contains 'the opt-in carries the value the operator set' "$dnd" 'value: "
     bad 'the dashboard PDB renders at the production defaults' "$(grep -c 'kind: PodDisruptionBudget' <<<"$gh") PDBs"
 expect_contains 'the dashboard PDB allows one unavailable' "$gh" 'maxUnavailable: 1'
 expect_not_contains 'no driver PDB below two replicas' "$gh" 'minAvailable: 1'
+expect_not_contains 'one dashboard keeps no minimum available, a drain must not wedge' "$gh" 'minAvailable'
+dashboard_pdb_two="$(awk '/^# Source: factory\/templates\/pdb.yaml/ { n++ } n == 1 && /^---$/ { exit } n == 1 { print }' <<<"$(gh_render --set dashboard.replicas=2)")"
+expect_contains 'two dashboards keep one through a drain' "$dashboard_pdb_two" 'minAvailable: 1'
+expect_contains 'the dashboard PDB selects the dashboard component' "$dashboard_pdb_two" 'component: dashboard'
+expect_not_contains 'two dashboards set no maxUnavailable' "$dashboard_pdb_two" 'maxUnavailable'
+helm lint charts/factory "${GH_SETS[@]}" --set dashboard.replicas=2 >/dev/null 2>&1 &&
+    ok 'helm lint passes above one dashboard replica' ||
+    bad 'helm lint passes above one dashboard replica' 'lint failed'
 two="$(gh_render --set driver.replicas=2)"
 [ "$(grep -c 'kind: PodDisruptionBudget' <<<"$two")" -eq 2 ] &&
     ok 'the driver PDB renders above one replica' ||
@@ -1893,6 +1934,16 @@ push_ref "$STUB_IMAGE" "$STUB_REF"
 # every node, and a node pulling from the registry fetches only the layers it lacks.
 push_ref "$COLLECTOR_IMAGE" "$COLLECTOR_REF"
 push_ref "$POSTGRES_IMAGE" "$POSTGRES_REF"
+if [ "$PHASE" = replicas ]; then
+    # Two dashboards need an object store (the filesystem backend is one pod's /tmp): the compose file's pinned image.
+    S3_IMAGE="$(awk '$1 == "image:" && /rustfs\/rustfs/ { print $2; exit }' "$REPO/docker-compose.yml")"
+    [ -n "$S3_IMAGE" ] && docker pull -q "$S3_IMAGE" >/dev/null || {
+        echo 'test-k8s: could not pull the object store image named in docker-compose.yml'
+        exit 1
+    }
+    S3_REF="$LANE_REGISTRY/$S3_IMAGE"
+    push_ref "$S3_IMAGE" "$S3_REF"
+fi
 
 echo "installing the releases $STATE_RELEASE and $RELEASE"
 begin_phase deploy
@@ -1915,7 +1966,19 @@ lane_uncordon() { # lane_uncordon <node> -> schedulable again and dropped from t
         mv "$cordoned_file.next" "$cordoned_file"
     }
 }
-if [ -n "$shared_nodes" ]; then
+if [ "$PHASE" = replicas ]; then
+    # The two boards must find two nodes, so no worker is cordoned. An unreadable node list refuses the run.
+    spread_nodes="$(kubectl get nodes --request-timeout=10s \
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.unschedulable}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}')" || {
+        echo 'test-k8s: could not list the cluster nodes'
+        exit 1
+    }
+    [ "$(printf '%s\n' "$spread_nodes" | awk -F'\t' '$2 == "" && $3 == "True"' | grep -c .)" -ge 2 ] || {
+        echo 'test-k8s: the replicas phase needs two Ready, schedulable nodes: the dashboards never share one'
+        echo "make cleanup CLUSTER=$kind_name; make cluster CLUSTER=$kind_name LAYOUT=drain"
+        exit 1
+    }
+elif [ -n "$shared_nodes" ]; then
     # State and app land on the control plane: a drain case moves the driver and the runner, never the board.
     workers="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name --request-timeout=10s)" || {
         echo 'test-k8s: could not list the worker nodes'
@@ -1959,7 +2022,59 @@ secret_store_sets "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" "$(o
 CREDENTIAL="drv_$(openssl rand -hex 32)"
 METRICS_TOKEN="$(openssl rand -hex 32)"
 auth_sets "$BASE" "$(openssl rand -hex 32)" "$CREDENTIAL"
-helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
+REPLICA_SETS=()
+if [ "$PHASE" = replicas ]; then
+    # A throwaway S3-compatible store for this run: one pod, its Service and the credentials Secret, all named for the release.
+    kubectl create secret generic "$RELEASE-s3" -n "$NAMESPACE" --from-literal=access-key-id=factory \
+        --from-literal=secret-access-key="$(openssl rand -hex 16)" >/dev/null && s3_created=1 || {
+        echo 'test-k8s: could not create the object store secret'
+        exit 1
+    }
+    kubectl apply -n "$NAMESPACE" -f - >/dev/null <<S3
+apiVersion: v1
+kind: Pod
+metadata:
+    name: $RELEASE-s3
+    labels:
+        app.kubernetes.io/name: $RELEASE-s3
+spec:
+    containers:
+        - name: s3
+          image: $S3_REF
+          env:
+              - name: RUSTFS_ACCESS_KEY
+                valueFrom: { secretKeyRef: { name: $RELEASE-s3, key: access-key-id } }
+              - name: RUSTFS_SECRET_KEY
+                valueFrom: { secretKeyRef: { name: $RELEASE-s3, key: secret-access-key } }
+          ports:
+              - containerPort: 9000
+          readinessProbe:
+              httpGet: { path: /health, port: 9000 }
+              periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: $RELEASE-s3
+spec:
+    selector:
+        app.kubernetes.io/name: $RELEASE-s3
+    ports:
+        - port: 9000
+S3
+    [ $? -eq 0 ] || {
+        echo 'test-k8s: could not create the object store'
+        exit 1
+    }
+    kubectl wait --for=condition=Ready --timeout=180s "pod/$RELEASE-s3" -n "$NAMESPACE" >/dev/null 2>&1 || {
+        echo 'test-k8s: the object store did not become ready'
+        exit 1
+    }
+    REPLICA_SETS=(--set dashboard.replicas=2 --set artifacts.backend=s3 --set artifacts.s3.bucket=factory-artifacts
+        --set "artifacts.s3.endpoint=http://$RELEASE-s3:9000" --set artifacts.s3.forcePathStyle=true
+        --set "artifacts.credentialsExistingSecret=$RELEASE-s3")
+fi
+helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${REPLICA_SETS[@]+"${REPLICA_SETS[@]}"} \
     --set "dashboard.image.repository=$DASH_REPO" --set-string "dashboard.image.tag=$RELEASE" \
     --set "driver.image.repository=$DRIVER_REPO" --set-string "driver.image.tag=$RELEASE" \
     --set "driver.executorImages.claudeCode=$STUB_REF" \
@@ -1969,6 +2084,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     --set "driver.repoCloneBase=git://$RELEASE-origin:9418" \
     --set-string driver.leaseSeconds="$LANE_LEASE_S" --set driver.terminationGracePeriodSeconds=70 \
+    --set-string driver.handoverMs=10000 \
     --set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))" --set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS" \
     --set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))" \
     -n "$NAMESPACE" >/dev/null || {
@@ -2613,6 +2729,16 @@ if [ -n "${runner_log_pid:-}" ]; then
 fi
 
 # The board's jobs, as the admission and recovery phases queue and read them.
+lane_psql() { # lane_psql <sql> -> the answer, unaligned; non-zero when the read failed
+    bounded 15 kubectl exec -n "$NAMESPACE" --request-timeout=10s "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 postgres://factory:factory@127.0.0.1:5432/factory_dev -c "$1" 2>&1
+}
+
+start_port_forward() { # start_port_forward [target] -> the dashboard Service (or the named pod/svc) on $PORT again; the pid in pf_pid
+    kubectl port-forward "${1:-svc/$RELEASE-factory}" "$PORT:8080" -n "$NAMESPACE" >>"$PF_LOG" 2>&1 &
+    pf_pid=$!
+}
+
 queue_job() { # queue_job <command> -> the new job's id, empty when the board refused it or answered without a string id
     local id
     id="$(ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}" node "$REPO/scripts/acceptance-job.mjs" POST "$BASE/api/jobs" id \
@@ -2713,6 +2839,8 @@ driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 --reques
 . "$REPO/scripts/lanes/k8s/takeover.sh"
 
 . "$REPO/scripts/lanes/k8s/drain.sh"
+
+. "$REPO/scripts/lanes/k8s/replicas.sh"
 
 . "$REPO/scripts/lanes/k8s/control.sh"
 

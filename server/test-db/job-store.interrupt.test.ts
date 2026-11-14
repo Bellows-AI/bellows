@@ -11,7 +11,7 @@ import {
 } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { recordInterruptions, spendInterruptionBudget, testOrg } from './fixtures.js';
+import { lapseDeferral, recordInterruptions, spendInterruptionBudget, testOrg } from './fixtures.js';
 
 /**
  * Issue #792: an attempt the infrastructure interrupted (a node drained under the driver, a runner
@@ -63,7 +63,9 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
 
         const row = await store.get(id);
         expect(row).toMatchObject({ status: 'queued', attempts: 0 });
-        expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: 'the driver was drained', claimSeq: 1 }]);
+        expect(row!.interruptions).toEqual([
+            { at: expect.any(String), reason: 'the driver was drained', claimSeq: 1, refunded: true },
+        ]);
         // Claimable now — no lease to wait out.
         expect(await claim()).toMatchObject({ id, attempts: 1, claimSeq: 2 });
         // A released row is queued, not an expired lease: the claim records nothing of its own.
@@ -132,7 +134,9 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
 
         const row = await store.get(id);
         expect(row).toMatchObject({ status: 'running', attempts: 1 });
-        expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: LEASE_EXPIRED_REASON, claimSeq: 1 }]);
+        expect(row!.interruptions).toEqual([
+            { at: expect.any(String), reason: LEASE_EXPIRED_REASON, claimSeq: 1, leaseExpired: true, refunded: true },
+        ]);
         expect(await store.interrupt(id, stale.leaseToken, { reason: 'late', release: true })).toEqual({
             result: 'lost',
         });
@@ -209,7 +213,9 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
 
         const row = await store.get(id);
         expect(row).toMatchObject({ status: 'running', attempts: 1 });
-        expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: 'the driver was drained', claimSeq: 1 }]);
+        expect(row!.interruptions).toEqual([
+            { at: expect.any(String), reason: 'the driver was drained', claimSeq: 1, refunded: true },
+        ]);
     });
 
     // The command is what the first claim got, so the runner that claim launched stays adoptable
@@ -284,7 +290,9 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
         expect(await claim()).toMatchObject({ id, attempts: 1, maxAttempts: 1, claimSeq: 2 });
         const row = await store.get(id);
         expect(row).toMatchObject({ status: 'running', attempts: 1 });
-        expect(row!.interruptions).toEqual([{ at: expect.any(String), reason: LEASE_EXPIRED_REASON, claimSeq: 1 }]);
+        expect(row!.interruptions).toEqual([
+            { at: expect.any(String), reason: LEASE_EXPIRED_REASON, claimSeq: 1, leaseExpired: true, refunded: true },
+        ]);
     });
 
     // The driver reports a failed verdict for an attempt it cannot run only when the board would not
@@ -355,7 +363,7 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
         await age(id);
 
         expect(await claim()).toMatchObject({ id, attempts: 2, claimSeq: 2 });
-        expect((await store.get(id))!.interruptions).toHaveLength(INTERRUPTION_BUDGET);
+        expect((await store.get(id))!.interruptions).toHaveLength(INTERRUPTION_BUDGET + 1);
     });
 
     // The session itself may be what kills the run — a transcript too large for the pod, a corrupt
@@ -418,10 +426,11 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
         const first = await claim();
         const session = randomUUID();
         await store.session(id, first.leaseToken, session);
-        for (let round = 0; round < INTERRUPTION_BUDGET; round += 1) {
+        for (let round = 0; round < 2; round += 1) {
             await age(id);
             expect(await claim()).toMatchObject({ id, attempts: 1, resumeSessionId: session });
         }
+        await spendInterruptionBudget(sql, id);
         await age(id);
         expect(await store.claim(WORKER, 60)).toBeNull();
         expect(await store.get(id)).toMatchObject({ status: 'dead', sessionId: session });
@@ -642,5 +651,130 @@ describe.skipIf(!enabled)('node loss spends its own bound, not the poison budget
             expect(await store.claim(WORKER, 60)).toBeNull();
             expect(await store.get(id)).toMatchObject({ status: 'dead' });
         });
+    });
+});
+
+describe.skipIf(!enabled)('an attempt the infrastructure took is never spent — database', () => {
+    const N = INTERRUPTION_BUDGET + 2;
+
+    /** Claims, hands back and re-claims N times: a run lost to infrastructure each round, none of them failed. */
+    const handBackRounds = async (flags: { reason: string; nodeLoss?: boolean; blocked?: boolean }) => {
+        const id = await queue();
+        for (let round = 0; round < N; round += 1) {
+            const c = await claim();
+            expect(c.attempts).toBe(1);
+            expect(await store.interrupt(id, c.leaseToken, { release: true, ...flags })).toEqual({
+                result: 'ok',
+                status: 'queued',
+            });
+            expect(await store.get(id)).toMatchObject({ attempts: 0 });
+            await lapseDeferral(sql, id);
+        }
+        const row = (await store.get(id))!;
+        expect(row.interruptions).toHaveLength(N);
+        expect(row.interruptions.every((i) => i.refunded === true)).toBe(true);
+        expect(await claim()).toMatchObject({ id, attempts: 1 });
+    };
+
+    it('drained: attempts are unchanged and every interruption says it was refunded', async () => {
+        await handBackRounds({ reason: 'the driver was drained', nodeLoss: true });
+    });
+
+    it('runner evicted: attempts are unchanged and every interruption says it was refunded', async () => {
+        await handBackRounds({
+            reason: 'infrastructure loss: the runner pod was deleted before it exited (Evicted)',
+            nodeLoss: true,
+        });
+    });
+
+    it('supervisor lost: attempts are unchanged and every interruption says it was refunded', async () => {
+        await handBackRounds({
+            reason: 'the task supervisor channel closed before its step was answered',
+            nodeLoss: true,
+        });
+    });
+
+    it('supervisor lost with its pod unreadable: attempts are unchanged and every interruption says it was refunded', async () => {
+        await handBackRounds({
+            reason: 'the task supervisor channel closed before its step was answered',
+            blocked: true,
+        });
+    });
+
+    it('lease expired: attempts are unchanged past the poison budget and every interruption says it was refunded', async () => {
+        const id = await queue();
+        const first = await claim();
+        await store.session(id, first.leaseToken, randomUUID());
+        for (let round = 0; round < N; round += 1) {
+            await age(id);
+            expect(await claim()).toMatchObject({ id, attempts: 1, claimSeq: round + 2, continuesInterrupted: true });
+        }
+        const row = (await store.get(id))!;
+        expect(row.interruptions).toHaveLength(N);
+        expect(row.interruptions).toEqual(
+            Array.from({ length: N }, (_, n) => ({
+                at: expect.any(String),
+                reason: LEASE_EXPIRED_REASON,
+                claimSeq: n + 1,
+                leaseExpired: true,
+                refunded: true,
+            }))
+        );
+    });
+
+    it('lease expired after four poison interruptions: still recovered, never retired', async () => {
+        const id = await queue();
+        await claim();
+        await recordInterruptions(sql, id, INTERRUPTION_BUDGET - 1);
+        for (let round = 0; round < N; round += 1) {
+            await age(id);
+            expect(await claim()).toMatchObject({ id, attempts: 1 });
+        }
+    });
+
+    it('handed over, adopted, then evicted by the same node loss: refunded once, attempts unchanged', async () => {
+        const id = await queue();
+        for (let round = 0; round < N; round += 1) {
+            const first = await claim();
+            await store.interrupt(id, first.leaseToken, {
+                reason: 'the driver was drained',
+                release: true,
+                nodeLoss: true,
+            });
+            const second = await claim();
+            expect(
+                await store.interrupt(id, second.leaseToken, {
+                    reason: 'the driver was drained',
+                    release: false,
+                    claimSeq: first.claimSeq,
+                    nodeLoss: true,
+                })
+            ).toMatchObject({ result: 'ok' });
+            expect(await store.get(id)).toMatchObject({ attempts: 1 });
+            await store.interrupt(id, second.leaseToken, { reason: 'evicted', release: true, nodeLoss: true });
+            expect(await store.get(id)).toMatchObject({ attempts: 0 });
+        }
+    });
+
+    it('says an interruption spent its attempt once the poison budget refused its release', async () => {
+        const id = await queue();
+        await claim();
+        await spendInterruptionBudget(sql, id);
+        await age(id);
+        expect(await claim()).toMatchObject({ id, attempts: 2 });
+        const entries = (await store.get(id))!.interruptions;
+        expect(entries).toHaveLength(INTERRUPTION_BUDGET + 1);
+        expect(entries.at(-1)).toMatchObject({ reason: LEASE_EXPIRED_REASON, claimSeq: 1, refunded: false });
+    });
+
+    it('counts lease expiries against the node-loss bound, past which an expiry spends its attempt', async () => {
+        const id = await queue();
+        await claim();
+        await recordInterruptions(sql, id, NODE_LOSS_BUDGET - 1, { nodeLoss: true });
+        await age(id);
+        expect(await claim()).toMatchObject({ id, attempts: 1 });
+        await age(id);
+        expect(await claim()).toMatchObject({ id, attempts: 2 });
+        expect((await store.get(id))!.interruptions.at(-1)).toMatchObject({ refunded: false, leaseExpired: true });
     });
 });

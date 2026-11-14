@@ -166,6 +166,10 @@ export interface JobInterruption {
     nodeLoss?: true;
     /** A hand-back while the organization was suspended: never a failure or a node loss, outside every budget. */
     orgSuspended?: true;
+    /** A lease that expired under a silent driver, recorded by the claim that took the row over: bounded like a node loss. */
+    leaseExpired?: true;
+    /** Whether the interruption's attempt was refunded; absent on entries written before the field existed. */
+    refunded?: boolean;
 }
 
 export interface Job {

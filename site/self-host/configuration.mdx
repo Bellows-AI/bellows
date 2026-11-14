@@ -39,7 +39,7 @@ Bellows is configured with environment variables only. Locally they come from `.
 | `GITHUB_OAUTH_CLIENT_SECRET` | github mode | none | Client secret of the OAuth App. |
 | `SESSION_SECRET` | github mode | none | Signs the session cookie. At least 32 characters. Changing it signs everyone out. |
 | `SESSION_TTL_HOURS` | | `336` (14 days) | Session lifetime in hours. Positive integer. |
-| `COOKIE_SECURE` | | off | Sets `Secure` on the session cookie. Turn on behind TLS. |
+| `COOKIE_SECURE` | | follows `PUBLIC_URL` | Sets `Secure` on the session cookie: on for an `https` `PUBLIC_URL`, off for `http`. Set `0` or `1` to override. |
 | `DRIVER_CREDENTIAL_SHA256` | | none | SHA-256 (64 hex) of a driver credential. The server records it as a pool credential at boot. It never holds the credential itself, and a revoked or rotated one stays so. |
 | `GITHUB_WEBHOOK_SECRET` | | unset | HMAC secret for the App's installation webhook at `<PUBLIC_URL>/api/github/webhook`. At least 32 characters. Unset removes the route. |
 
@@ -194,7 +194,7 @@ The driver reads only the environment. It has no database access and talks to th
 | `DRIVER_LEASE_SECONDS` | | `300` | Lease length per claim. `10` to `3600`. |
 | `DRIVER_JOB_TIMEOUT_MS` | | `7200000` (2 hours) | Wall-clock cap per run. `1000` ms to 24 hours. |
 | `GATE_TIMEOUT_MS` | | `600000` (10 minutes) | Cap on one gate run. A timeout fails the gate with exit 124. `1000` ms to 24 hours. |
-| `DRIVER_HANDOVER_MS` | | `540000` | How long a stopping driver lets runs finish before handing them back to the board. Compose sets `5000`. |
+| `DRIVER_HANDOVER_MS` | | `0` | How long a stopping driver lets runs finish before handing them back to the board. `0` hands them back at once, which a spot node's two-minute notice needs. Compose sets `5000`. |
 | `DRIVER_REBIND_GRACE_MS` | | `240000` (4 min) | Wait past the lease for a new holder to take over a released group. `1000` ms to 24 hours. |
 | `DRIVER_ORPHAN_MIN_MS` | | `30000` | Floor of a lost driver's orphan bound. `1000` ms and up. Refused if the lease cannot hold it. |
 | `DRIVER_STEP_WAIT_MS` | | `15000` | One step long poll. `500` ms and up. |

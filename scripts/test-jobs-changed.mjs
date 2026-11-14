@@ -68,7 +68,7 @@ export const RULES = [
     [/^(server|core)\/(src|migrations)\//, FULL, 'the board every phase boots'],
 
     // --- docker executor, specific concerns ------------------------------------------------------
-    [/^driver\/src\/(loop\/loop-adopt|loop\/loop-reclaim|loop\/loop-fence|loop\/loop-lease|loop\/loop-race|adopt-skeleton|task-restore|reclaim-calls|kill-ledger|loop\/loop-ledger|operation-ledger)\.ts$/, RECOVERY, 'adoption and takeover'],
+    [/^driver\/src\/(drain|loop\/loop-adopt|loop\/loop-reclaim|loop\/loop-fence|loop\/loop-lease|loop\/loop-race|adopt-skeleton|task-restore|reclaim-calls|kill-ledger|loop\/loop-ledger|operation-ledger)\.ts$/, RECOVERY, 'adoption and takeover'],
     [/^driver\/src\/scripts\/(checkpoint\.cjs|checkpoint-restore\.cjs|binding-write\.sh|operation-ledger\.cjs)$/, [...RECOVERY, 'driver'], 'checkpoints and the ledger'],
     [/^driver\/src\/(supervisor-contract|supervisor-plan|supervised-steps|step-control|control-channel|docker\/docker-mailbox|docker\/docker-group|docker\/docker-group-probe|group-watch|termination|startup-cause)\.ts$/, ['driver', ...RECOVERY], 'task supervisor protocol'],
     [/^driver\/src\/(run-deadline|docker\/docker-run-timers|timeout-note)\.ts$/, ['run-deadline'], 'run deadline'],
@@ -90,7 +90,7 @@ export const RULES = [
     [/^driver\/src\/scripts\/gate-(loop|shell|github)\.sh$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', 'pinned-skills', ...RECOVERY], 'task volume'],
     [/^driver\/src\/(docker\/docker-close-read|close-read|docker\/docker-teardown|loop\/loop-conclusion|loop\/loop-post-run)\.ts$/, ['driver', ...RECOVERY], 'task conclusion'],
-    [/^driver\/src\/(master-prompt|continuation|transcript-export|loop\/loop-export|export-control|evidence-policy|helper-receipts|verdict-budget|loop\/loop-verdict|loop\/loop-attempt|telemetry-config)\.ts$/, ['driver', 'cooperative-stop'], 'agent run and its readout'],
+    [/^driver\/src\/(master-prompt|continuation|transcript-export|loop\/loop-export|export-control|evidence-policy|helper-receipts|verdict-budget|loop\/loop-verdict|loop\/loop-attempt|loop\/loop-handover|telemetry-config)\.ts$/, ['driver', 'cooperative-stop'], 'agent run and its readout'],
     [/^driver\/src\/scripts\/(claude-export|claude-turns|opencode-cache-probe|opencode-readout)\.cjs$/, ['cooperative-stop', 'tool-isolation'], 'agent transcript readout'],
     [/^driver\/src\/scripts\/helper-noop\.cjs$/, ['driver'], 'helper receipts'],
     [/^driver\/src\/(board\/board|board\/board-[a-z-]+|board-credential|poll|artifact-calls|artifact-upload|driver-metrics|metrics-server|prometheus)\.ts$/, ['board', 'driver'], 'board client'],

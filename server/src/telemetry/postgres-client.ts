@@ -49,7 +49,7 @@ export function createPostgresTelemetryClient({ sql, orgId, ready, log }: Postgr
                 });
             } catch (e) {
                 if (e instanceof TelemetryError) throw e;
-                throw new TelemetryError((e as Error).message, 'QUERY');
+                throw new TelemetryError((e as Error).message, 'QUERY', { cause: e });
             }
         },
 
@@ -91,7 +91,7 @@ export function createPostgresTelemetryClient({ sql, orgId, ready, log }: Postgr
                 // A migration failure keeps its own code: "the schema is not there" and "the
                 // query is wrong" want different fixes.
                 if (e instanceof TelemetryError) throw e;
-                throw new TelemetryError((e as Error).message, 'QUERY');
+                throw new TelemetryError((e as Error).message, 'QUERY', { cause: e });
             }
         },
 

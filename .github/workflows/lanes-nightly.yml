@@ -23,7 +23,7 @@ jobs:
             fail-fast: false
             matrix:
                 # Every phase `scripts/test-k8s.sh --help` names, bench excepted: it takes an hour or more.
-                phase: [smoke, admission, workspace, recovery, services, takeover, control, acceptance, capacity, mcp, drain]
+                phase: [smoke, admission, workspace, recovery, services, takeover, control, acceptance, capacity, mcp, drain, replicas]
         steps:
             - uses: actions/checkout@v4
             - name: install helm by checksum
@@ -37,10 +37,10 @@ jobs:
                   tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
                   install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
                   helm version --short
-            # kind and kubectl ship on ubuntu-latest; the drain phase alone needs the three-worker layout.
+            # kind and kubectl ship on ubuntu-latest; the drain and replicas phases need the three-worker layout.
             - name: scripts/kind-cluster.sh create
               env:
-                  LAYOUT: ${{ matrix.phase == 'drain' && 'drain' || '' }}
+                  LAYOUT: ${{ (matrix.phase == 'drain' || matrix.phase == 'replicas') && 'drain' || '' }}
               run: sh scripts/kind-cluster.sh create ci
             - name: scripts/test-k8s.sh --cluster --phase ${{ matrix.phase }}
               env:

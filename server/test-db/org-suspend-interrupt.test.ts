@@ -120,6 +120,7 @@ describe.skipIf(!enabled)('a suspension interrupts running work resumably', () =
                 reason: 'the organization is suspended',
                 claimSeq: claim.claimSeq,
                 orgSuspended: true,
+                refunded: true,
             },
         ]);
         expect(row.interruptions[0]).not.toHaveProperty('nodeLoss');

@@ -129,7 +129,7 @@ export interface ThreadJob {
     /** How long `environment.setup` ran before the agent; null when none ran. */
     setupMs: number | null;
     /** The attempts the infrastructure interrupted; empty when none was. */
-    interruptions: { at: string; reason: string; claimSeq: number }[];
+    interruptions: { at: string; reason: string; claimSeq: number; refunded?: boolean }[];
     taskWallClockMs: number | null;
     waitReason: string | null;
     waitingSince: string | null;
@@ -657,11 +657,12 @@ export const interruptedThread = thread([
         sessionId: 'bbbbbbbb-0000-4000-8000-000000000127',
         summary: 'Finished on the third claim.',
         interruptions: [
-            { at: '2026-09-01T12:05:00.000Z', reason: 'the driver was drained', claimSeq: 1 },
+            { at: '2026-09-01T12:05:00.000Z', reason: 'the driver was drained', claimSeq: 1, refunded: true },
             {
                 at: '2026-09-01T12:12:00.000Z',
                 reason: 'infrastructure loss: the runner pod was deleted before it exited (Evicted)',
                 claimSeq: 2,
+                refunded: true,
             },
         ],
     }),

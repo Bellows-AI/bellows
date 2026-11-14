@@ -43,8 +43,8 @@ Uninstalling the GitHub App, or GitHub suspending the installation, suspends the
 
 | Limit | Value | When exceeded |
 | --- | --- | --- |
-| Interruptions not proven to be node loss (including a driver that went silent and its lease expiring) | 5 per trailing hour, per task | The task ends dead |
-| Node loss (a drained driver, an evicted or removed runner, a lost supervisor confirmed taken away) | 100 per trailing 6 hours, per task | The task ends dead |
+| Interruptions not proven to be node loss | 5 per trailing hour, per task | The task ends dead |
+| Node loss (a drained driver, an evicted or removed runner, a lost supervisor confirmed taken away, a driver that went silent and its lease expiring) | 100 per trailing 6 hours, per task | The task ends dead |
 
 An interruption is retried for you and does not count as a failed attempt. See [Task lifecycle](/guides/task-lifecycle).
 
