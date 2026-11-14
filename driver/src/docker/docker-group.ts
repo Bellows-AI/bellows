@@ -293,6 +293,8 @@ export function groupShape(
  * infrastructure refusal the loop leaves to its lease, never a run that silently loses its record.
  */
 export async function createGroup(deps: GroupDeps, job: BoardJob, session: RunSession | null): Promise<void> {
+    // Before anything is created: a class no longer declared is refused whole, never half a group.
+    jobClassOf(deps.config, job);
     const shape = groupShape(job, session);
     const { exporting } = shape;
     try {

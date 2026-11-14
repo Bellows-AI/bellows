@@ -139,19 +139,30 @@ describe('the claim refusals, decided before anything launches', () => {
     });
 });
 
-// A class removed by a chart upgrade while a run is live must not fail the task whose group survived:
-// the refusal holds only for a claim that would launch, never for one that adopts or takes over.
+// A class removed by a chart upgrade while a run survived must not fail the task: a live group is
+// taken over, a finished one is handed back until the class is declared again.
 describe('a runner class no longer declared, on a group that survived', () => {
     const retired = { runnerClass: 'retired' } as const;
 
-    it('an adoption of a finished runner whose class is no longer declared adopts it', async () => {
+    // A finished run's gates, publish and readouts each need a new pod, which no class this driver
+    // declares may host: the attempt is handed back as an interruption naming the class (within the
+    // board's budget), its group left, so the next claim finishes the run once the class is declared
+    // again. Never a failure, and never moved into another class.
+    it('hands back an adopted finished run whose class is no longer declared, as an interruption naming it', async () => {
         const r = await attempt(
             { ...job(1), ...retired },
             { adopt: async () => ({ outcome: ok({ output: 'the adopted run' }), claimSeq: 4 }) }
         );
 
-        expect(r.board.completed).toHaveLength(1);
-        expect(r.board.completed[0]).toMatchObject({ status: 'succeeded', output: 'the adopted run' });
+        expect(r.board.completed).toEqual([]);
+        expect(r.board.interrupted).toContainEqual(
+            expect.objectContaining({
+                reason: expect.stringContaining('the runner class "retired" is not declared on this driver'),
+                refused: true,
+            })
+        );
+        expect(r.runner.finished).toEqual([]);
+        expect(r.runner.synced).toEqual([]);
     });
 
     it('a takeover of a live group whose class is no longer declared adopts it', async () => {

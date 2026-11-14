@@ -411,6 +411,26 @@ describe('the task group of one attempt', () => {
         expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
     });
 
+    // A class removed while a run survived: the group a follow-on step needs is never specced in another
+    // class, and the attempt is handed back as a transient refusal (an interruption the next claim
+    // redoes once the class is declared again), never a failure of recoverable work.
+    it('refuses a group whose runner class is no longer declared as transient, creating nothing', async () => {
+        const api = cluster();
+        const s = steps(() => ok('{"ok":true,"reason":null}'));
+        const k8s = runner(api.request, s.sink);
+
+        const refused = k8s.syncCheckout({ ...job, runnerClass: 'retired' }, undefined, SESSION);
+
+        await expect(refused).rejects.toBeInstanceOf(StartupRefused);
+        await expect(refused).rejects.toMatchObject({
+            startupCause: 'transient',
+            message: 'the runner class "retired" is not declared on this driver',
+        });
+        expect(s.submitted).toEqual([]);
+        expect(api.created.jobs).toEqual([]);
+        expect(api.created.secrets).toEqual([]);
+    });
+
     // #924: a pod lost before the supervisor's first contact ends the attempt at once, not at the bound.
     describe('a task pod lost before its supervisor made contact', () => {
         const starting = { metadata: { name: 'pod-1' }, status: { phase: 'Pending' } };

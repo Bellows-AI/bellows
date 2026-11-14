@@ -21,6 +21,7 @@ import {
     dockerRunner,
 } from '../fixtures/docker-suite.js';
 import { sized } from '../fixtures/runner-classes.js';
+import { StartupRefused } from '../../src/startup-cause.js';
 
 describe('the docker run arguments', () => {
     // The plan itself is pinned in runner-plan.test.ts; this is docker's rendering of it: every
@@ -105,6 +106,23 @@ describe('the docker run arguments', () => {
         expect(args()).not.toContain('--memory');
         expect(args()).not.toContain('--memory-reservation');
         expect(args()).not.toContain('--cpu-shares');
+    });
+
+    it('refuses an agent container whose runner class is no longer declared as transient, never sized by another', () => {
+        const refused = (() => {
+            try {
+                return dockerArgs(
+                    loadDriverConfig({}),
+                    { ...job, runnerClass: 'retired' },
+                    { id: SESSION, resume: false },
+                    { envFile: '/tmp/env-file' }
+                );
+            } catch (e) {
+                return e;
+            }
+        })();
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect(refused).toMatchObject({ startupCause: 'transient' });
     });
 
     // Stated limit, not an oversight: docker has no absolute CPU floor — `--cpu-shares` is a

@@ -144,14 +144,20 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
 
 /**
  * The claim's runner class, refused before the sync creates anything: a class this driver does not
- * declare fails the task `config`, never runs it in the default. After the adoption and never before
- * it — unlike the claim refusals — because a group that survived a chart upgrade removing its class
- * is adopted or taken over, never failed.
+ * declare fails a new launch `config`, never runs it in the default. After the adoption, because a
+ * run that survived a chart upgrade removing its class is never failed: a live group is taken over
+ * as it is, and a finished one — whose gates, publish and readouts each need a new pod no declared
+ * class may host — is handed back as an interruption naming the class, its group left, so the next
+ * claim finishes it once the class is declared again.
  */
 export function runnerClassStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
-    if (ctx.adopted || ctx.takeover) return Promise.resolve(null);
-    const refusal = runnerClassRefusal(ctx.rt.config, ctx.job);
-    return Promise.resolve(
-        refusal ? faultHalt('names a runner class this driver does not declare, failing', refusal, 'config') : null
-    );
+    const refusal = ctx.takeover ? null : runnerClassRefusal(ctx.rt.config, ctx.job);
+    if (refusal === null) return Promise.resolve(null);
+    if (!ctx.adopted) {
+        return Promise.resolve(
+            faultHalt('names a runner class this driver does not declare, failing', refusal, 'config')
+        );
+    }
+    ctx.state.groupDisposition = 'handover';
+    return Promise.resolve({ halt: 'interrupt', reason: `the adopted run cannot finish: ${refusal}`, refused: true });
 }

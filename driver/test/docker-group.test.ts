@@ -319,6 +319,17 @@ describe('creating and starting the group', () => {
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
     });
 
+    it('creates nothing for a group whose runner class is no longer declared: a transient refusal naming it', async () => {
+        const { calls, deps } = recorder();
+        const refused = await createGroup(deps, { ...gated, runnerClass: 'retired' }, SESSION).catch((e: unknown) => e);
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect(refused).toMatchObject({
+            startupCause: 'transient',
+            message: 'the runner class "retired" is not declared on this driver',
+        });
+        expect(calls).toEqual([]);
+    });
+
     it('creates no container when the task volume is gone: a transient refusal, never an empty volume made by a mount', async () => {
         const { calls, deps } = recorder(() => false, true);
         const refused = await createGroup(deps, job, SESSION).catch((e: unknown) => e);

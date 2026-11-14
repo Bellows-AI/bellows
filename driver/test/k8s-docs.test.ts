@@ -42,6 +42,13 @@ describe('the runner classes record', () => {
             "every runner class's node pools must span the zones task volumes live in, the default class's too since the reaper's export Job runs in it"
         );
     });
+
+    // The interruption the driver lands for a run whose class was removed: never a failure, never moved.
+    it('states that a run whose class is no longer declared is handed back, never failed or moved', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'a finished run adopted, or a group respecced after a node loss, whose class is no longer declared is handed back as an interruption naming the class'
+        );
+    });
 });
 
 describe('the EKS prerequisites record', () => {

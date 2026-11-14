@@ -11,6 +11,7 @@ import { jobsPath, runnerName } from '../src/k8s/k8s-podspec.js';
 import { jobPodsPath } from '../src/k8s/k8s-auxspec.js';
 import type { K8sDeps, K8sMethod, K8sResponse } from '../src/k8s/k8s-transport.js';
 import { taskVolumeName } from '../src/task-volume.js';
+import { StartupRefused } from '../src/startup-cause.js';
 
 const NS = 'factory';
 const job = {
@@ -64,6 +65,19 @@ function world(special: (method: K8sMethod, path: string) => K8sResponse | undef
 }
 
 describe('the reader Job of an adopted finished group', () => {
+    it('refuses a reader whose runner class is no longer declared as transient, creating nothing', async () => {
+        const { deps, calls } = world();
+        const refused = await readViaReaderJob(deps, { ...job, runnerClass: 'retired' }, readout).catch(
+            (e: unknown) => e
+        );
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect(refused).toMatchObject({
+            startupCause: 'transient',
+            message: 'the runner class "retired" is not declared on this driver',
+        });
+        expect(calls.filter((c) => c.method === 'POST')).toEqual([]);
+    });
+
     it('runs the readout over the task volume without a supervisor and answers its stdout', async () => {
         const { deps, calls } = world();
         const answered = await readViaReaderJob(deps, job, readout);

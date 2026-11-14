@@ -1,5 +1,6 @@
 import type { BoardJob } from './board/board.js';
 import { cpuQuantityToCores, memoryQuantityToBytes } from './quantities.js';
+import { StartupRefused } from './startup-cause.js';
 
 /**
  * Runner classes: where agent code lands and what it is sized at, one named set per class
@@ -64,10 +65,16 @@ export function runnerClassRefusal(config: RunnerClasses, job: Pick<BoardJob, 'r
     return classOf(config, job) ? null : `the runner class "${job.runnerClass}" is not declared on this driver`;
 }
 
-/** The claim's class, for a spec about to be built: an undeclared one is refused, never defaulted. */
+/**
+ * The claim's class, for a spec about to be built: an undeclared one is refused, never defaulted —
+ * moving a run to another class could drop its sandbox. Only a run that survived its class's removal
+ * reaches here (a new launch was refused before the sync), so the refusal is transient: the attempt
+ * is handed back as an interruption within the board's budget, the group, checkout and volume left,
+ * and the next claim finishes the run once the class is declared again.
+ */
 export function jobClassOf(config: RunnerClasses, job: Pick<BoardJob, 'runnerClass'>): RunnerClass {
     const declared = classOf(config, job);
-    if (!declared) throw new Error(runnerClassRefusal(config, job) ?? 'no runner class');
+    if (!declared) throw new StartupRefused(runnerClassRefusal(config, job) ?? 'no runner class', 'transient');
     return declared;
 }
 
