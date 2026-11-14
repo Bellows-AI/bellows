@@ -7,9 +7,20 @@ Values that live in `secret.existingSecret` cannot be seen from here — the ser
 those at boot, which is why every such key is `optional` in the pod spec: a missing key reads as
 the server's own message, never as an opaque CreateContainerConfigError.
 */}}
-{{- with .Values.runner.runtimeClassName }}
-{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" .) }}
-{{- fail (printf "runner.runtimeClassName must be a RuntimeClass name (a DNS-1123 subdomain), got %q" .) }}
+{{- /* Runner classes: the driver's own boot checks (driver/src/runner-classes.ts), at render time. */}}
+{{- if not (hasKey (.Values.runner.classes | default dict) (toString .Values.runner.defaultClass)) }}
+{{- fail (printf "runner.defaultClass %q is not a class runner.classes declares" (toString .Values.runner.defaultClass)) }}
+{{- end }}
+{{- range $name, $class := .Values.runner.classes }}
+{{- if or (gt (len $name) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name)) }}
+{{- fail (printf "runner.classes key %q must be a DNS-1123 label: it is a pod label value and a CEL map key" $name) }}
+{{- end }}
+{{- $runtimeClass := dig "runtimeClassName" "" ($class | default dict) }}
+{{- if and $runtimeClass (or (gt (len $runtimeClass) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $runtimeClass))) }}
+{{- fail (printf "runner.classes.%s.runtimeClassName must be a RuntimeClass name (a DNS-1123 subdomain), got %q" $name $runtimeClass) }}
+{{- end }}
+{{- if and (dig "docker" false ($class | default dict)) (not $runtimeClass) }}
+{{- fail (printf "runner.classes.%s.docker requires a runtimeClassName: a Docker daemon runs only in a sandbox" $name) }}
 {{- end }}
 {{- end }}
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}

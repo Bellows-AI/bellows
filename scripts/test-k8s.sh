@@ -489,50 +489,58 @@ render | grep 'atlassian-client-secret: ""' >/dev/null &&
     ok 'the generated Secret renders the Atlassian key empty by default' ||
     bad 'the generated Secret renders the Atlassian key empty by default' 'no atlassian-client-secret key'
 
-# Runner pod resources: requests by default so Karpenter and the Cluster Autoscaler
-# can size for the runner fleet — a zero-request pod schedules onto any free pod slot and
-# provisions nothing. Limits only when set: a memory limit on an agent run OOM-kills a big build
-# mid-work, the requests-only posture the dashboard pod above already carries deliberately.
+# Runner classes (RUNNER_CLASSES): each class carries its RuntimeClass, scheduling and resources, and
+# reaches the driver as ONE JSON env; the driver validates it whole at boot. Requests by default so
+# Karpenter and the Cluster Autoscaler can size for the runner fleet — a zero-request pod schedules
+# onto any free pod slot and provisions nothing. Limits are generous: a memory limit on an agent run
+# OOM-kills a big build mid-work.
+classes_json() { # classes_json <render> — the RUNNER_CLASSES value on the driver Deployment, as JSON
+    awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$1" |
+        grep -A1 -- '- name: RUNNER_CLASSES$' | sed -n 's/^ *value: //p'
+}
+expect_class() { # expect_class <name> <render> <expression over the classes `c`> <JSON it must equal>
+    local got
+    # `node -e` has no script path in argv: the first argument is argv[1].
+    got="$(node -e 'const c = JSON.parse(JSON.parse(process.argv[1]));
+process.stdout.write(JSON.stringify(eval(process.argv[2])) ?? "undefined")' "$(classes_json "$2")" "$3" 2>&1)"
+    [ "$got" = "$4" ] && ok "$1" || bad "$1" "$3 = ${got:0:300}"
+}
 runner_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' "$work/rendered.yaml")"
-expect_contains 'the driver forwards the runner cpu request'       "$runner_resources" 'name: RUNNER_CPU_REQUEST'
-expect_contains 'the cpu request renders from the chart value'     "$runner_resources" 'value: "500m"'
-expect_contains 'the driver forwards the runner memory request'    "$runner_resources" 'name: RUNNER_MEMORY_REQUEST'
-expect_contains 'the memory request renders from the chart value'  "$runner_resources" 'value: "1Gi"'
-expect_contains 'the driver forwards a default cpu limit (issue #454)' "$runner_resources" 'name: RUNNER_CPU_LIMIT'
-expect_contains 'the driver forwards a default memory limit'       "$runner_resources" 'name: RUNNER_MEMORY_LIMIT'
-expect_contains 'the memory limit defaults to 8Gi'                 "$runner_resources" 'value: "8Gi"'
-unlimited="$(render --set runner.resources.limits=null)"
-unlimited_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$unlimited")"
-expect_not_contains 'limits: null removes the cpu limit'           "$unlimited_resources" 'RUNNER_CPU_LIMIT'
-expect_not_contains 'limits: null removes the memory limit'        "$unlimited_resources" 'RUNNER_MEMORY_LIMIT'
+[ "$(grep -c -- '- name: RUNNER_CLASSES$' <<<"$runner_resources")" = 1 ] &&
+    ok 'the driver is handed the runner classes as one env' ||
+    bad 'the driver is handed the runner classes as one env' "$(grep -c RUNNER_CLASSES <<<"$runner_resources") matches"
+expect_contains 'the default class is standard' "$(grep -A1 -- '- name: RUNNER_DEFAULT_CLASS$' <<<"$runner_resources")" \
+    'value: "standard"'
+for removed in RUNNER_RUNTIME_CLASS RUNNER_NODE_SELECTOR RUNNER_TOLERATIONS RUNNER_AFFINITY \
+    RUNNER_CPU_REQUEST RUNNER_MEMORY_REQUEST RUNNER_CPU_LIMIT RUNNER_MEMORY_LIMIT \
+    GATE_CPU_REQUEST GATE_MEMORY_REQUEST GATE_CPU_LIMIT GATE_MEMORY_LIMIT; do
+    expect_not_contains "no $removed env renders: the driver refuses it at boot" "$runner_resources" "name: $removed"
+done
+rendered="$(cat "$work/rendered.yaml")"
+expect_class 'the standard class declares one class on defaults' "$rendered" 'Object.keys(c)' '["standard"]'
+expect_class 'the runner requests render from the chart value' "$rendered" 'c.standard.resources.requests' \
+    '{"cpu":"500m","memory":"1Gi"}'
+expect_class 'the runner limits default to 4 cpu / 8Gi (issue #454)' "$rendered" 'c.standard.resources.limits' \
+    '{"cpu":"4","memory":"8Gi"}'
+expect_class 'the standard class names no RuntimeClass' "$rendered" 'c.standard.runtimeClassName' '""'
+expect_class 'limits: null removes the runner limits' "$(render --set runner.classes.standard.resources.limits=null)" \
+    'c.standard.resources.limits' 'undefined'
+expect_class 'a configured memory limit renders as the operator spelled it' \
+    "$(render --set runner.classes.standard.resources.limits.memory=4Gi)" 'c.standard.resources.limits.memory' '"4Gi"'
 # The namespace LimitRange hands a pod created without limits its defaults.
-expect_contains 'a LimitRange renders by default'                  "$(cat "$work/rendered.yaml")" 'kind: LimitRange'
-expect_contains 'the LimitRange defaults the container memory limit' "$(cat "$work/rendered.yaml")" 'type: Container'
+expect_contains 'a LimitRange renders by default'                  "$rendered" 'kind: LimitRange'
+expect_contains 'the LimitRange defaults the container memory limit' "$rendered" 'type: Container'
 expect_not_contains 'limitRange.enabled=false renders no LimitRange' "$(render --set limitRange.enabled=false)" 'kind: LimitRange'
-limited="$(render --set runner.resources.limits.memory=4Gi)"
-limited_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$limited")"
-expect_contains 'a configured memory limit forwards'               "$limited_resources" 'name: RUNNER_MEMORY_LIMIT'
-expect_contains 'the limit renders as the operator spelled it'     "$limited_resources" 'value: "4Gi"'
-emptied="$(render --set runner.resources.requests.cpu= --set runner.resources.requests.memory=)"
-emptied_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$emptied")"
-expect_not_contains 'empty cpu requests forward nothing'           "$emptied_resources" 'RUNNER_CPU_REQUEST'
-expect_not_contains 'empty memory requests forward nothing'        "$emptied_resources" 'RUNNER_MEMORY_REQUEST'
-# Gate pod resources: a gate runs the whole suite, so it requests more than a runner.
-expect_contains 'the driver forwards the gate cpu request'         "$runner_resources" 'name: GATE_CPU_REQUEST'
-# values-local.yaml lowers the gate request to fit one node; the chart default is pinned on the
-# EKS shape below, which renders without it.
-expect_contains 'the local gate cpu request renders from values-local' "$(grep -A1 'name: GATE_CPU_REQUEST' <<<"$runner_resources")" 'value: "1"'
-expect_contains 'the driver forwards the gate memory request'      "$runner_resources" 'name: GATE_MEMORY_REQUEST'
-expect_contains 'the local gate memory request renders from values-local' "$(grep -A1 'name: GATE_MEMORY_REQUEST' <<<"$runner_resources")" 'value: "1Gi"'
-expect_not_contains 'gate limits default to the runner limits'     "$runner_resources" 'GATE_CPU_LIMIT'
-gate_limited="$(render --set runner.gateResources.limits.memory=6Gi)"
-gate_limited_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$gate_limited")"
-expect_contains 'a configured gate memory limit forwards'          "$gate_limited_resources" 'name: GATE_MEMORY_LIMIT'
-expect_contains 'the gate limit renders as the operator spelled it' "$(grep -A1 'name: GATE_MEMORY_LIMIT' <<<"$gate_limited_resources")" 'value: "6Gi"'
-gate_unsized="$(render --set runner.gateResources.requests=null)"
-gate_unsized_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$gate_unsized")"
-expect_not_contains 'gate requests: null forwards no gate cpu request' "$gate_unsized_resources" 'GATE_CPU_REQUEST'
-expect_not_contains 'gate requests: null forwards no gate memory request' "$gate_unsized_resources" 'GATE_MEMORY_REQUEST'
+# Gate pod resources: a gate runs the whole suite, so it requests more than a runner. values-local.yaml
+# lowers the request to fit one node; the chart default is pinned on the EKS shape below.
+expect_class 'the local gate requests render from values-local' "$rendered" 'c.standard.gateResources.requests' \
+    '{"cpu":"1","memory":"1Gi"}'
+expect_class 'gate limits default to the runner limits' "$rendered" 'c.standard.gateResources.limits' 'undefined'
+expect_class 'a configured gate memory limit renders' \
+    "$(render --set runner.classes.standard.gateResources.limits.memory=6Gi)" \
+    'c.standard.gateResources.limits.memory' '"6Gi"'
+expect_class 'gate requests: null renders no gate requests' \
+    "$(render --set runner.classes.standard.gateResources.requests=null)" 'c.standard.gateResources.requests' 'undefined'
 
 # The runner's branch attribution credential is attempt-scoped: the driver mints nothing here and
 # forwards no deployment-wide ingest token — the runner presents the job id and lease token of the
@@ -1175,23 +1183,50 @@ pulled="$(gh_render --set 'imagePullSecrets={regcred}')"
 expect_contains 'chart pods name the pull secret'      "$pulled" 'name: "regcred"'
 expect_contains 'the driver forwards the pull secret'  "$pulled" 'value: "regcred"'
 
-# The runner group's scheduling knobs: forwarded to the driver as JSON, which is how
-# they reach every pod it specs. Unset, nothing renders — an untainted cluster sees the same spec
-# as before.
-expect_not_contains 'no runner scheduling var renders on defaults' "$gh" 'name: RUNNER_NODE_SELECTOR'
-expect_not_contains 'no runner tolerations var renders on defaults' "$gh" 'name: RUNNER_TOLERATIONS'
-expect_not_contains 'no runner affinity var renders on defaults' "$gh" 'name: RUNNER_AFFINITY'
-scheduled="$(gh_render --set runner.nodeSelector.dedicated=factory-runners \
-    --set 'runner.tolerations[0].key=dedicated' --set 'runner.tolerations[0].operator=Equal' \
-    --set 'runner.tolerations[0].value=factory-runners' --set 'runner.tolerations[0].effect=NoSchedule' \
-    --set 'runner.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight=1')"
-expect_contains 'the driver is handed the runner node selector as JSON' "$scheduled" \
-    'value: "{\"dedicated\":\"factory-runners\"}"'
-expect_contains 'the driver is handed the runner tolerations as JSON' "$scheduled" \
-    'value: "[{\"effect\":\"NoSchedule\",\"key\":\"dedicated\",\"operator\":\"Equal\",\"value\":\"factory-runners\"}]"'
-expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" 'name: RUNNER_AFFINITY'
-expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" \
-    'value: "{\"podAntiAffinity\":{\"preferredDuringSchedulingIgnoredDuringExecution\":[{\"weight\":1}]}}"'
+# Two runner classes: each class's RuntimeClass and scheduling knobs reach the driver in the one
+# RUNNER_CLASSES env, which is how they reach every pod of a claim in that class. The admission
+# policy pins each pod's RuntimeClass to its class's, so the CEL map holds both classes.
+printf '%s\n' 'runner:' '    classes:' '        sandbox:' '            runtimeClassName: gvisor' \
+    '            nodeSelector: {pool: sandbox}' \
+    '            tolerations: [{key: pool, operator: Equal, value: sandbox, effect: NoSchedule}]' \
+    '            affinity: {podAntiAffinity: {preferredDuringSchedulingIgnoredDuringExecution: [{weight: 1}]}}' \
+    '            docker: true' >"$work/two-classes.yaml"
+two_classes="$(gh_render -f "$work/two-classes.yaml")"
+[ "$(grep -c -- '- name: RUNNER_CLASSES$' <<<"$two_classes")" = 1 ] &&
+    ok 'two classes render one RUNNER_CLASSES env on the driver' ||
+    bad 'two classes render one RUNNER_CLASSES env on the driver' "$(grep -c RUNNER_CLASSES <<<"$two_classes") matches"
+expect_class 'the driver is handed both classes' "$two_classes" 'Object.keys(c)' '["sandbox","standard"]'
+expect_class 'the driver is handed the class RuntimeClass' "$two_classes" 'c.sandbox.runtimeClassName' '"gvisor"'
+expect_class 'the driver is handed the class node selector' "$two_classes" 'c.sandbox.nodeSelector' '{"pool":"sandbox"}'
+expect_class 'the driver is handed the class tolerations' "$two_classes" 'c.sandbox.tolerations' \
+    '[{"effect":"NoSchedule","key":"pool","operator":"Equal","value":"sandbox"}]'
+expect_class 'the driver is handed the class affinity' "$two_classes" 'c.sandbox.affinity' \
+    '{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":1}]}}'
+expect_class 'the driver is handed the class docker flag' "$two_classes" 'c.sandbox.docker' 'true'
+expect_class 'a declared class keeps the standard class beside it' "$two_classes" 'c.standard.resources.requests' \
+    '{"cpu":"500m","memory":"1Gi"}'
+for removed in RUNNER_RUNTIME_CLASS RUNNER_NODE_SELECTOR RUNNER_TOLERATIONS RUNNER_AFFINITY; do
+    expect_not_contains "two classes render no $removed env" "$two_classes" "name: $removed"
+done
+two_admission="$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/' <<<"$two_classes")"
+expect_contains 'the admission CEL maps both classes to their RuntimeClass' "$two_admission" \
+    'expression: "{\"sandbox\":\"gvisor\",\"standard\":\"\"}"'
+expect_contains 'the admission CEL maps the default class to no RuntimeClass' \
+    "$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/' <<<"$gh")" \
+    'expression: "{\"standard\":\"\"}"'
+expect_contains 'admission requires the class label' "$two_admission" 'variables.runnerClass in variables.runnerClasses'
+expect_contains 'admission requires the class RuntimeClass' "$two_admission" \
+    "== variables.runnerClasses[variables.runnerClass]"
+refuses 'a default class not declared is refused' 'runner.defaultClass "nope" is not a class runner.classes declares' \
+    "${GH_SETS[@]}" --set runner.defaultClass=nope
+refuses 'a class name that is no DNS label is refused' 'runner.classes key "Big_Pool" must be a DNS-1123 label' \
+    "${GH_SETS[@]}" --set runner.classes.Big_Pool.docker=false
+refuses 'a class RuntimeClass that is no DNS name is refused' \
+    'runner.classes.standard.runtimeClassName must be a RuntimeClass name' \
+    "${GH_SETS[@]}" --set "runner.classes.standard.runtimeClassName=gvisor' || true"
+refuses 'a docker class without a RuntimeClass is refused' \
+    'runner.classes.standard.docker requires a runtimeClassName' \
+    "${GH_SETS[@]}" --set runner.classes.standard.docker=true
 
 # Dashboard Service annotations: a load balancer's per-Service knobs (a GKE BackendConfig for Cloud
 # Armor, NEG settings). None by default.
@@ -1202,18 +1237,6 @@ printf '%s\n' 'dashboard:' '    service:' '        annotations:' \
 annotated="$(gh_render -f "$work/service-annotations.yaml")"
 expect_contains 'the dashboard Service carries its annotations' "$(service_doc "$annotated")" \
     'cloud.google.com/backend-config: '"'"'{"default":"bellows-dashboard"}'"'"''
-
-# The runner RuntimeClass: forwarded to the driver and required by admission when set;
-# unset, neither renders.
-expect_not_contains 'no runner RuntimeClass var renders on defaults' "$gh" 'name: RUNNER_RUNTIME_CLASS'
-expect_not_contains 'no RuntimeClass admission rule renders on defaults' "$gh" 'variables.spec.runtimeClassName'
-sandboxed="$(gh_render --set runner.runtimeClassName=gvisor)"
-expect_contains 'the driver is handed the runner RuntimeClass' "$sandboxed" 'value: "gvisor"'
-expect_contains 'admission requires the runner RuntimeClass' "$sandboxed" \
-    "variables.spec.runtimeClassName == 'gvisor'"
-expect_contains 'the refusal names the RuntimeClass' "$sandboxed" 'runner pods must run under the gvisor RuntimeClass'
-refuses 'a RuntimeClass that is no DNS name is refused' 'runner.runtimeClassName must be a RuntimeClass name' \
-    "${GH_SETS[@]}" --set "runner.runtimeClassName=gvisor' || true"
 
 # The runner Secret has a key for every forwarded name, valued or not.
 runner_secret="$(gh_render --set-string "runner.env=ONE\,TWO" --set runner.credentials.ONE=x)"
@@ -1400,9 +1423,11 @@ EKS_SETS=(
     --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/listen-ports=[{"HTTP":80}\,{"HTTPS":443}]'
     --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/ssl-redirect=443'
     --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/healthcheck-path=/api/health'
-    --set runner.nodeSelector.dedicated=factory-runners
-    --set 'runner.tolerations[0].key=dedicated' --set 'runner.tolerations[0].operator=Equal'
-    --set 'runner.tolerations[0].value=factory-runners' --set 'runner.tolerations[0].effect=NoSchedule'
+    --set runner.classes.standard.nodeSelector.dedicated=factory-runners
+    --set 'runner.classes.standard.tolerations[0].key=dedicated'
+    --set 'runner.classes.standard.tolerations[0].operator=Equal'
+    --set 'runner.classes.standard.tolerations[0].value=factory-runners'
+    --set 'runner.classes.standard.tolerations[0].effect=NoSchedule'
     --set driver.runnerDoNotDisrupt=1
     --set 'isolation.allowedCidrs={10.5.5.5/32}'
 )
@@ -1417,8 +1442,8 @@ fi
 expect_not_contains 'the EKS shape renders no claim' "$eks" 'kind: PersistentVolumeClaim'
 expect_contains 'the EKS shape names the EBS task volume class' "$(grep -A1 'name: TASK_VOLUME_STORAGE_CLASS' <<<"$eks")" 'value: "ebs-gp3"'
 # The chart's gate request: a gate runs the whole suite, so it requests more than a runner.
-expect_contains 'the gate cpu request renders from the chart value' "$(grep -A1 'name: GATE_CPU_REQUEST' <<<"$eks")" 'value: "2"'
-expect_contains 'the gate memory request renders from the chart value' "$(grep -A1 'name: GATE_MEMORY_REQUEST' <<<"$eks")" 'value: "2Gi"'
+expect_class 'the gate requests render from the chart value' "$eks" 'c.standard.gateResources.requests' \
+    '{"cpu":"2","memory":"2Gi"}'
 # The registry prefix composes with every image, and the wait image stays whole — the two rules
 # the prefix's own block pins separately, pinned together here because the runbook sets both.
 expect_contains 'the EKS shape prefixes the dashboard image' "$eks" "image: ghcr.io/example/factory-ai:$app_version"
@@ -1431,12 +1456,12 @@ expect_contains 'the ALB class fronts the EKS ingress' "$eks_ingress" 'ingressCl
 expect_contains 'the ALB target type routes to pod IPs' "$eks_ingress" 'alb.ingress.kubernetes.io/target-type: ip'
 expect_contains 'the ALB healthcheck path is the liveness route' "$eks_ingress" \
     'alb.ingress.kubernetes.io/healthcheck-path: /api/health'
-# The runner group's scheduling: the driver is handed the node selector and tolerations as JSON,
-# the tainted node group's contract, in the same render that names the storage class.
-expect_contains 'the EKS shape hands the driver the runner node selector as JSON' "$eks" \
-    'value: "{\"dedicated\":\"factory-runners\"}"'
-expect_contains 'the EKS shape hands the driver the runner tolerations as JSON' "$eks" \
-    'value: "[{\"effect\":\"NoSchedule\",\"key\":\"dedicated\",\"operator\":\"Equal\",\"value\":\"factory-runners\"}]"'
+# The runner group's scheduling: the default class hands the driver the node selector and
+# tolerations, the tainted node group's contract, in the same render that names the storage class.
+expect_class 'the EKS shape hands the driver the runner node selector' "$eks" 'c.standard.nodeSelector' \
+    '{"dedicated":"factory-runners"}'
+expect_class 'the EKS shape hands the driver the runner tolerations' "$eks" 'c.standard.tolerations' \
+    '[{"effect":"NoSchedule","key":"dedicated","operator":"Equal","value":"factory-runners"}]'
 eks_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$eks")"
 # Name and value asserted adjacent: `value: "1"` alone is satisfied by RUNNER_SERVICES' default in
 # the same document, so the second needle could never fail on its own.

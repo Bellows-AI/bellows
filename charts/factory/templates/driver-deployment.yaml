@@ -107,28 +107,15 @@ spec:
                       - name: RUNNER_IMAGE_PULL_SECRETS
                         value: {{ join "," . | quote }}
                       {{- end }}
-                      {{- with $.Values.runner.nodeSelector }}
-                      # The runner group's scheduling knobs, forwarded as JSON onto
-                      # every pod the driver specs — runner, gate, sync, reclaim, publish, helper,
-                      # service. The tainted node group agent code lands on and the chart's own
-                      # pods never touch; unset, pods schedule wherever the task volume can
-                      # attach. The driver parses JSON at boot, fatal on a bad shape.
-                      - name: RUNNER_NODE_SELECTOR
-                        value: {{ toJson . | quote }}
-                      {{- end }}
-                      {{- with $.Values.runner.tolerations }}
-                      - name: RUNNER_TOLERATIONS
-                        value: {{ toJson . | quote }}
-                      {{- end }}
-                      {{- with $.Values.runner.affinity }}
-                      - name: RUNNER_AFFINITY
-                        value: {{ toJson . | quote }}
-                      {{- end }}
-                      {{- with $.Values.runner.runtimeClassName }}
-                      # The sandbox every driver pod runs under; admission requires it.
-                      - name: RUNNER_RUNTIME_CLASS
-                        value: {{ . | quote }}
-                      {{- end }}
+                      # The runner classes, one JSON map: each class's RuntimeClass, scheduling
+                      # and resources, forwarded onto every pod of a claim in that class —
+                      # runner, gate, sync, reclaim, publish, helper, service. A claim naming no
+                      # class runs in the default. The driver validates the map at boot, fatal on
+                      # a bad shape; admission pins each pod to its class's RuntimeClass.
+                      - name: RUNNER_CLASSES
+                        value: {{ include "factory.runnerClasses" $ | quote }}
+                      - name: RUNNER_DEFAULT_CLASS
+                        value: {{ $.Values.runner.defaultClass | quote }}
                       # The claim each thread's task volume is created with.
                       {{- with $.Values.taskVolume.storageClass }}
                       - name: TASK_VOLUME_STORAGE_CLASS
@@ -206,54 +193,6 @@ spec:
                       # here as everywhere.
                       - name: RUNNER_SERVICES
                         value: {{ $.Values.driver.services | quote }}
-                      {{- with $.Values.runner.resources }}
-                      # Resource requests and limits on every pod the driver specs:
-                      # requests make the runner fleet Burstable and are what the autoscaler sizes
-                      # for; limits bound a runaway or hostile run.
-                      {{- with .requests }}
-                      {{- with .cpu }}
-                      - name: RUNNER_CPU_REQUEST
-                        value: {{ . | quote }}
-                      {{- end }}
-                      {{- with .memory }}
-                      - name: RUNNER_MEMORY_REQUEST
-                        value: {{ . | quote }}
-                      {{- end }}
-                      {{- end }}
-                      {{- with .limits }}
-                      {{- with .cpu }}
-                      - name: RUNNER_CPU_LIMIT
-                        value: {{ . | quote }}
-                      {{- end }}
-                      {{- with .memory }}
-                      - name: RUNNER_MEMORY_LIMIT
-                        value: {{ . | quote }}
-                      {{- end }}
-                      {{- end }}
-                      {{- end }}
-                      {{- with $.Values.runner.gateResources }}
-                      # The gate Jobs' own sizing; each unset slot is the runner's.
-                      {{- with .requests }}
-                      {{- with .cpu }}
-                      - name: GATE_CPU_REQUEST
-                        value: {{ . | quote }}
-                      {{- end }}
-                      {{- with .memory }}
-                      - name: GATE_MEMORY_REQUEST
-                        value: {{ . | quote }}
-                      {{- end }}
-                      {{- end }}
-                      {{- with .limits }}
-                      {{- with .cpu }}
-                      - name: GATE_CPU_LIMIT
-                        value: {{ . | quote }}
-                      {{- end }}
-                      {{- with .memory }}
-                      - name: GATE_MEMORY_LIMIT
-                        value: {{ . | quote }}
-                      {{- end }}
-                      {{- end }}
-                      {{- end }}
                       {{- if $.Values.driver.skipPermissions }}
                       - name: RUNNER_SKIP_PERMISSIONS
                         value: {{ $.Values.driver.skipPermissions | quote }}
