@@ -400,7 +400,7 @@ describe('the pod policy admits every runner Job the driver builds', () => {
     const prompted: BoardJob = { ...job, masterPrompt: 'Factory execution contract' };
     const gated: BoardJob = {
         ...prompted,
-        repo: 'Bellows-AI/bellows',
+        repo: 'example/project',
         gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         services: [{ name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } }],
     };
