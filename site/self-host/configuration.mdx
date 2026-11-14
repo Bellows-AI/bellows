@@ -213,6 +213,8 @@ Resources are Kubernetes quantities: CPU as cores or millicores (`2`, `500m`), m
 
 On Docker, memory request becomes `--memory-reservation`, limits become `--memory` and `--cpus`, and there is no CPU request. A class that sets `runtimeClassName`, `nodeSelector`, `tolerations` or `affinity` is fatal on Docker.
 
+The board reads `RUNNER_CLASSES` too, for the class names and whether each has Docker, so an organization executor profile can choose a class. The Helm chart gives the board and the driver the same value. Without it the board knows no classes and refuses a profile that names one; a malformed value stops the board from starting. See [Executors](/guides/executors#runner-class).
+
 ```bash
 RUNNER_CLASSES='{"standard":{"resources":{"limits":{"memory":"8Gi"}}},"sandbox":{"runtimeClassName":"gvisor","nodeSelector":{"pool":"sandbox"}}}'
 RUNNER_DEFAULT_CLASS=standard
