@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Board, BoardJob } from '../../src/board/board.js';
+import { BoardHttpError } from '../../src/board/board-retry.js';
 import { envFileBody } from '../../src/claim.js';
 import { createGateServer, createSupervisedGateManager } from '../../src/gates.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
@@ -193,6 +194,8 @@ export class Sim {
     place?: (group: Group) => string | null;
     /** A fault on one board call: the ms it takes to fail (0: at once), as a request timeout would; undefined: none. */
     boardFault?: ((op: string) => number | undefined) | undefined;
+    /** The drivers whose credential the operator revoked: the process runs on, and the board answers it 401. */
+    readonly revoked = new Set<Driver>();
 
     /** Whether the job declares one on-demand gate, run by whichever driver holds the claim (`gateRuns`). */
     readonly gated: boolean;
@@ -358,6 +361,12 @@ export class Sim {
                 if (typeof v !== 'function') return v;
                 return (...a: unknown[]) => {
                     if (d.dead) return never;
+                    // The board's answer to a revoked driver credential, on every worker route alike.
+                    if (this.revoked.has(d)) {
+                        return Promise.reject(
+                            new BoardHttpError(401, `board ${key} answered 401: Invalid worker token`)
+                        );
+                    }
                     const fault = this.boardFault?.(key);
                     if (fault !== undefined)
                         return nap(fault).then(() => Promise.reject(new Error(`board ${key}: injected fault`)));

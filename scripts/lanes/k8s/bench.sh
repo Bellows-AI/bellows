@@ -66,15 +66,18 @@ process.stdin.on("data", (c) => (s += c)).on("end", () => {
 });'
 }
 
-# The scrape runs inside the pod and reads the board token from the pod's own environment: it is in no argv here.
-BENCH_SCRAPE_JS='fetch(process.argv[1], { headers: { authorization: "Bearer " + process.env.JOB_BOARD_TOKEN }, signal: AbortSignal.timeout(8000) })
+# The scrape runs inside the pod and reads its bearer from stdin — the lane's pool driver credential for the
+# board, the driver's metrics token for a driver: it is in no argv here, and no pod's environment holds it.
+BENCH_SCRAPE_JS='const bearer = require("fs").readFileSync(0, "utf8").trim();
+fetch(process.argv[1], { headers: { authorization: "Bearer " + bearer }, signal: AbortSignal.timeout(8000) })
     .then(async (r) => { if (r.status !== 200) process.exit(3); process.stdout.write(await r.text()); })
     .catch(() => process.exit(4));'
 
 bench_scrape() { # bench_scrape <cell> <s|a|b|c> -> the pods listed (<cell>.<board|driver>.<stage>.list) and each one's metrics (<pod>.prom) with the epoch second it answered (<pod>.at); every file is dropped first, so a scrape that fails leaves none
-    local spec comp name container port path pod pods file list
+    local spec comp name container port path pod pods file list bearer
     for spec in dashboard:board:dashboard:8080:/api/metrics driver:driver:driver:9464:/metrics; do
         IFS=: read -r comp name container port path <<<"$spec"
+        if [ "$name" = board ]; then bearer="$CREDENTIAL"; else bearer="$METRICS_TOKEN"; fi
         list="$BENCH_DIR/$1.$name.$2.list"
         rm -f -- "${list:?}"
         pods="$(bench_pods "$comp")" || continue
@@ -82,7 +85,7 @@ bench_scrape() { # bench_scrape <cell> <s|a|b|c> -> the pods listed (<cell>.<boa
         for pod in $pods; do
             file="$BENCH_DIR/$1.$name-$pod.$2"
             rm -f -- "${file:?}.prom" "${file:?}.at" "${file:?}.prom.tmp"
-            if bounded 30 kubectl exec "$pod" -c "$container" -n "$NAMESPACE" --request-timeout=10s -- node -e "$BENCH_SCRAPE_JS" "http://127.0.0.1:$port$path" >"$file.prom.tmp" 2>/dev/null &&
+            if bounded 30 kubectl exec -i "$pod" -c "$container" -n "$NAMESPACE" --request-timeout=10s -- node -e "$BENCH_SCRAPE_JS" "http://127.0.0.1:$port$path" <<<"$bearer" >"$file.prom.tmp" 2>/dev/null &&
                 [ -s "$file.prom.tmp" ]; then
                 date +%s >"$file.at"
                 mv "$file.prom.tmp" "$file.prom"

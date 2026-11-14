@@ -10,6 +10,7 @@ import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.j
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
 import { mustCreate, oauthConnection, testOrg, testUser } from './fixtures.js';
+import { testSecretDeps } from './env-secrets-harness.js';
 
 /**
  * An org admin acts on another member's task: the row's `created_by` is the actor, the thread root's
@@ -62,7 +63,7 @@ beforeAll(async () => {
         sql,
         orgId: ORG,
         prs,
-        executorConfig: createUserExecutorStore({ sql, orgId: ORG }),
+        executorConfig: createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) }),
         env: {
             async resolveFor(target) {
                 envTargets.push(target);
@@ -195,7 +196,7 @@ describe.skipIf(!enabled)('admin follow-up and retry', () => {
     });
 
     it("an admin's turn resolves the author's user-scoped executor", async () => {
-        await createUserExecutorStore({ sql, orgId: ORG }).replace(AUTHOR, [
+        await createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) }).replace(AUTHOR, [
             { name: 'mine', type: 'claude-code', config: { model: 'author-model' } },
         ]);
         const root = await finishedTask(AUTHOR, 'mine');

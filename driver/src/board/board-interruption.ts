@@ -22,4 +22,9 @@ export interface Interruption {
      * row and records the third consecutive one on as an ordinary interruption that spends an attempt.
      */
     daemonLoss?: boolean;
+    /**
+     * The task's organization is suspended (the heartbeat's `release`): released outside every budget, never a node
+     * loss, and held by the board's claim until the organization is reactivated.
+     */
+    orgSuspended?: boolean;
 }

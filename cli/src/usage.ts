@@ -36,6 +36,17 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows batch retry <id> <task> [--json]
        bellows batch accept <id> <task> [--json]
        bellows batch cancel <id> [--json]
+       bellows operator list [--json]                every organization and its status (the board operator only)
+       bellows operator suspend <org-id> [--json]    no new tasks until reactivated
+       bellows operator refuse <org-id> [--json]     no new tasks; only an activate lifts it
+       bellows operator activate <org-id> [--json]
+       bellows operator delete <org-id> --yes [--json]  purge a suspended or refused organization; cannot be undone
+       bellows operator credentials [--json]         every driver credential, its organizations or the pool, and its state
+       bellows operator issue-credential --label <name> (--org <org-id>... | --pool) [--json]
+                                                     a driver credential; its token is printed only this once
+       bellows operator revoke-credential <id> [--json]   refused from its next call
+       bellows operator rotate-credential <id> [--overlap <seconds>] [--json]
+                                                     a new token; the old one works for the overlap (default 3600)
        bellows auth status [--json]      the configuration and each value's source, the board's version,
                                          and who the token acts as
        bellows help | --help | -h          this text; bellows --version prints the CLI's version

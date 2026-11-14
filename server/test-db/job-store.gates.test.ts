@@ -14,7 +14,7 @@ let sql: Sql;
 let store: JobStore;
 const ORG = testOrg();
 
-const db = useTestDb({ max: 4 });
+const db = useTestDb({ max: 4, orgs: [ORG] });
 
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;

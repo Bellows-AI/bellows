@@ -3,10 +3,12 @@ import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { reduceTokenObservations, type TokenObservation, type TokenType } from '@factory-ai/core';
 import { migrate } from '../src/db/migrate.js';
+import { testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
-const db = useTestDb();
+const ORG = testOrg();
+const db = useTestDb({ orgs: [ORG] });
 let sql: Sql;
 
 beforeAll(() => {
@@ -34,6 +36,7 @@ interface Row {
 
 async function put(row: Row): Promise<void> {
     await sql`insert into metric_point ${sql({
+        org_id: ORG,
         agent: row.agent ?? 'claude-code',
         metric: 'claude_code.token.usage',
         field: FIELD_OF[row.type],
@@ -271,10 +274,10 @@ describe.skipIf(!enabled)('SQL token reduction matches the core reducer', () => 
         await put({ session: more.noStart!, type: 'cacheCreation', temporality: 'cumulative', time: at(2), value: 60 });
 
         // Attribute order is not identity: jsonb stores the same attributes the same way.
-        await sql`insert into metric_point (agent, metric, field, session_id, value, temporality, start_time, time, attrs)
-            values ('claude-code', 'claude_code.token.usage', 'tokens_input', ${more.reordered!}, 10, 'cumulative', ${new Date(S0)}, ${new Date(at(1))}, '{"type":"input","query_source":"q","model":"m","series":"z9"}'::jsonb)`;
-        await sql`insert into metric_point (agent, metric, field, session_id, value, temporality, start_time, time, attrs)
-            values ('claude-code', 'claude_code.token.usage', 'tokens_input', ${more.reordered!}, 25, 'cumulative', ${new Date(S0)}, ${new Date(at(2))}, '{"series":"z9","type":"input","model":"m","query_source":"q"}'::jsonb)`;
+        await sql`insert into metric_point (org_id, agent, metric, field, session_id, value, temporality, start_time, time, attrs)
+            values (${ORG}, 'claude-code', 'claude_code.token.usage', 'tokens_input', ${more.reordered!}, 10, 'cumulative', ${new Date(S0)}, ${new Date(at(1))}, '{"type":"input","query_source":"q","model":"m","series":"z9"}'::jsonb)`;
+        await sql`insert into metric_point (org_id, agent, metric, field, session_id, value, temporality, start_time, time, attrs)
+            values (${ORG}, 'claude-code', 'claude_code.token.usage', 'tokens_input', ${more.reordered!}, 25, 'cumulative', ${new Date(S0)}, ${new Date(at(2))}, '{"series":"z9","type":"input","model":"m","query_source":"q"}'::jsonb)`;
 
         const viaSql = await sqlTotals();
         const viaReducer = await reducerTotals();

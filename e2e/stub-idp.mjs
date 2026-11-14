@@ -13,8 +13,13 @@ import { createServer } from 'node:http';
 
 // playwright.config.ts passes STUB_IDP_PORT; the fallback is the same E2E_PORT_BASE + 2 it derives.
 const port = Number(process.env.STUB_IDP_PORT ?? Number(process.env.E2E_PORT_BASE ?? 8123) + 2);
-const login = process.env.STUB_IDP_LOGIN ?? 'e2e-user';
-const userId = Number(process.env.STUB_IDP_USER_ID ?? 424242);
+const defaultIdentity = {
+    login: process.env.STUB_IDP_LOGIN ?? 'e2e-user',
+    id: Number(process.env.STUB_IDP_USER_ID ?? 424242),
+};
+// Who "consents" next. `POST /_control/identity` with `{ login, id }` signs the next round trip in as another
+// account (members.spec.ts: an invited person); an empty body restores the default.
+let identity = { ...defaultIdentity };
 // The installations the account can see — the membership decision. Comma-separated ids;
 // each becomes an organization named after `stub-org-<id>` at sign-in.
 const installations = (process.env.STUB_IDP_INSTALLATIONS ?? '999999')
@@ -115,6 +120,16 @@ createServer(async (request, response) => {
 
     if (url.pathname.startsWith('/atlassian/') && (await atlassianRoute(url, request, response))) return;
 
+    if (url.pathname === '/_control/identity' && request.method === 'POST') {
+        const body = await readJson(request);
+        identity =
+            typeof body.login === 'string' && Number.isInteger(body.id)
+                ? { login: body.login, id: body.id }
+                : { ...defaultIdentity };
+        json(response, identity);
+        return;
+    }
+
     // GitHub's consent screen. Nobody is here to consent, so it redirects straight back — echoing
     // the state it was given, which is what the callback checks against the browser's cookie.
     if (url.pathname === '/login/oauth/authorize') {
@@ -134,7 +149,7 @@ createServer(async (request, response) => {
     if (url.pathname === '/user') {
         // The numeric id is the identity; the login is only a label. Both are pinned here so the
         // seeded data and the account that signs in are the same person.
-        json(response, { id: userId, login, name: 'E2E User', avatar_url: null });
+        json(response, { id: identity.id, login: identity.login, name: 'E2E User', avatar_url: null });
         return;
     }
 
@@ -156,5 +171,5 @@ createServer(async (request, response) => {
     response.writeHead(404);
     response.end();
 }).listen(port, '127.0.0.1', () => {
-    console.log(`[stub-idp] listening on 127.0.0.1:${port} as ${login} (#${userId})`);
+    console.log(`[stub-idp] listening on 127.0.0.1:${port} as ${identity.login} (#${identity.id})`);
 });

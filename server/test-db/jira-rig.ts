@@ -100,6 +100,7 @@ export function jiraRuntime(
     );
     return createIntegrationRuntime({
         sql,
+        crossOrgSql: sql,
         secrets: h.open(),
         providers: registration.providers,
         clients: registration.clients,

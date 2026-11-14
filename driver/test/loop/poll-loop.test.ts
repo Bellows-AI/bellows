@@ -1440,6 +1440,8 @@ describe('the poll loop', () => {
                 lastAttempt: true,
                 claimSeq: 1,
                 leaseToken: ROW_TOKEN,
+                // No agent runs for a removal, so there is no telemetry export to authenticate.
+                ingestToken: '',
                 leaseExpiresAt: '2026-08-21T12:05:00.000Z',
                 resumeSessionId: null,
                 followUp: false,

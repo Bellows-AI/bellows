@@ -3,8 +3,9 @@
  * and reopen — and the reclaim a thread queues once its last member is done.
  */
 
+import { waitAdvisoryXactLock } from '../pool.js';
 import type { Sql, TransactionSql } from 'postgres';
-import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
+import { type DeploymentMode, OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../connection-bindings.js';
 import { cancelWaitsWithEvent, insertAdminActionEvent } from './job-store-admin-event.js';
 import { addFollowUpBindings, bindOnCreate } from './job-store-connections.js';
@@ -25,24 +26,59 @@ import { markExecutionsRemoved } from './job-store-provenance.js';
 import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import { authorOwnsFragment, terminalFragment, doneFragment, threadIdleFragment } from './job-store-sql-fragments.js';
 import type { CreatedRef, CreateTarget } from './job-store-action-types.js';
+import { PlanLimitError } from '../plan-limits.js';
+import { refuseOverTokens } from '../plan-allowances.js';
+import { refuseInactiveOrg } from '../org-status.js';
 
 /** A workflow column's value: the JSON when a workflow was named, SQL null otherwise. */
 const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(value as never) : null);
 
 /**
+ * Refuses a create once the org queues `cap` rows (its plan's queued limit), naming `queued`. The org's creates take
+ * turns on one transaction lock, so two at once never both take the last place.
+ */
+async function refuseAtQueuedCap(tx: TransactionSql, orgId: string, cap: number | undefined): Promise<void> {
+    if (cap === undefined) return;
+    await waitAdvisoryXactLock(tx, `plan:queued:${orgId}`);
+    const [row] = await tx<{ n: number }[]>`
+        select count(*)::int as n from job where org_id = ${orgId} and status = 'queued' and review_of is null
+    `;
+    if (row!.n >= cap) throw new PlanLimitError('queued', cap);
+}
+
+/**
  * The create's body (`createTitledJob`'s), for a caller that already holds a transaction: the batch scheduler creates
- * a task's root in the same transaction that records the decision to.
+ * a task's root in the same transaction that records the decision to. `queuedCap` is the org plan's queued limit
+ * the member's create is refused at, `tokenAllowance` its tokens per period (`plan-allowances.ts`), and
+ * `deploymentMode` refuses it for a cloud org that is not active (`org-status.ts`); the batch scheduler passes none.
  */
 export async function insertJobInTx(
     tx: TransactionSql,
     ctx: Pick<JobStoreContext, 'sql' | 'orgId'> & { githubApp?: boolean | undefined },
-    { command, createdBy, target }: { command: string; createdBy: string | null; target: CreateTarget }
+    {
+        command,
+        createdBy,
+        target,
+        queuedCap,
+        tokenAllowance,
+        deploymentMode,
+    }: {
+        command: string;
+        createdBy: string | null;
+        target: CreateTarget;
+        queuedCap?: number | undefined;
+        tokenAllowance?: number | undefined;
+        deploymentMode?: DeploymentMode | undefined;
+    }
 ): Promise<CreatedRef> {
     const { sql, orgId } = ctx;
     const idem = target.idempotency;
     // A repeat of a recorded request answers the row it made, before anything else is decided.
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return { id: replayed, replayed: true };
+    if (deploymentMode) await refuseInactiveOrg(tx, orgId, deploymentMode);
+    await refuseOverTokens(tx, orgId, tokenAllowance);
+    await refuseAtQueuedCap(tx, orgId, queuedCap);
     // id and root_job_id are the SAME uuid, computed once in the select so the column can
     // be not null from insert — the root's root is itself (022). The workflow triple rides
     // the same insert when a workflow was named: workflow_id names what the task walks,
@@ -450,85 +486,97 @@ export async function removeJobThread(
     id: string,
     removedBy: string | null
 ): ReturnType<JobStore['removeThread']> {
-    const { sql, orgId, prs } = ctx;
+    const { sql, orgId } = ctx;
     // The root row, then the thread lock (the bind's order; the claim only tries): the refusal check and the delete
     // must see every earlier claim of this thread commit, or a claim could walk out with a row after the check passed
     // and before the delete ran — a removed task with a member running again afterwards.
     return sql.begin(async (tx) => {
         const rootJobId = await lockThreadOf(tx, orgId, id);
         if (!rootJobId) return 'missing';
-
-        // The thread's ROOT row carries the labels the reclaim is addressed by — the repo
-        // the worktree was checked out from and the author whose checkout root it lives
-        // under.
-        const [root] = await tx<{ id: string; repo: string | null; created_by: string | null }[]>`
-            select id, repo, created_by from job
-            where org_id = ${orgId} and id = ${rootJobId}
-        `;
-        if (!root) return 'missing';
-        if (await backsBatchTask(tx, orgId, rootJobId)) return 'batch';
-
-        // Every member of the thread carries the same root_job_id (022), so the thread is
-        // one indexed read. Branching included, should two adjustments ever land on one
-        // parent.
-        const members = await tx<{ id: string; status: JobStatus }[]>`
-            select id, status from job
-            where org_id = ${orgId} and root_job_id = ${rootJobId}
-        `;
-        // The one refusal: a member is running. The user stops it first — the per-task
-        // worktree is a live runner's checkout, and tearing it out under the container would
-        // corrupt a run that was happily going. Checked before the review rows are locked: a
-        // running member's verdict holds those rows and waits on this root lock.
-        if (hasRunningMember(members)) return 'conflict';
-        // The thread's named-profile reviews are threads of their own, so they are
-        // not in `members`: a running one is a live runner's checkout too, and they leave with it.
-        const reviews = await tx<{ id: string; status: JobStatus }[]>`
-            select id, status from job
-            where org_id = ${orgId} and review_of = any(${members.map((m) => m.id)}::uuid[])
-            for update
-        `;
-        if (hasRunningMember([...members, ...reviews])) return 'conflict';
-
-        // The rows are gone for good — nothing joins through job.id at claim time (the
-        // claim copies its session labels onto its own row), so deleting the audit trail is
-        // the removal, not a cleanup that orphans something.
-        const removedIds = [...members, ...reviews].map((m) => m.id);
-        await markExecutionsRemoved(tx, orgId, removedIds);
-        await tx`
-            delete from job
-            where org_id = ${orgId} and id = any(${removedIds})
-        `;
-
-        // The thread is gone, and with it every PR wait folded for it — the webhook's
-        // next redelivery folds into nothing, which is the point: no ghost thread wakes.
-        if (prs) {
-            await prs.cancelWaitsForRoot(rootJobId, 'task removed', tx);
-        }
-        // Any parked or already-woken block-wait round is this thread's audit data
-        // too — cancelWaitsForRoot above already makes it permanently unwakeable, this is just not
-        // leaving it behind forever.
-        await revokeThreadAttachmentsInTx(tx, orgId, rootJobId);
-        await tx`delete from workflow_round where org_id = ${orgId} and root_job_id = ${rootJobId}`;
-        // The merge-closure marker is the thread's audit data the same way: the rows
-        // it discriminates are gone.
-        await tx`delete from job_merge_close where org_id = ${orgId} and root_job_id = ${rootJobId}`;
-
-        // Queue the worktree reclaim. The driver polls this queue — nothing is holding a
-        // lease on a removed thread, so no live driver would ever notice the deletion
-        // otherwise — and takes the tree down, acking the row when it has. Same relative
-        // path the claim derives, empty labels included: a tree keyed only on the root id
-        // still gets reclaimed, pointing at nothing additional is fine.
-        const workspacePath = workspacePathFor(orgId, root.created_by);
-        // One per tree: the thread's own, and each review's (its worktree is keyed by its own id).
-        for (const tree of [rootJobId, ...reviews.map((review) => review.id)]) {
-            await tx`
-                insert into task_reclaim (org_id, root_job_id, repo, workspace_path, removed_by)
-                values (${orgId}, ${tree}, ${root.repo}, ${workspacePath}, ${removedBy})
-            `;
-        }
-
-        return { result: 'ok', rootJobId, repo: root.repo, workspacePath };
+        return removeLockedThreadInTx(tx, ctx, rootJobId, removedBy);
     });
+}
+
+/**
+ * The Remove path's body, for a caller holding the thread's root row and lock: `removeJobThread`, and the retention
+ * pass (`org-retention.ts`), which locks a root its expiry stamp hides from `lockThreadRootInTx`.
+ */
+export async function removeLockedThreadInTx(
+    tx: TransactionSql,
+    { orgId, prs }: Pick<JobStoreContext, 'orgId' | 'prs'>,
+    rootJobId: string,
+    removedBy: string | null
+): ReturnType<JobStore['removeThread']> {
+    // The thread's ROOT row carries the labels the reclaim is addressed by — the repo
+    // the worktree was checked out from and the author whose checkout root it lives
+    // under.
+    const [root] = await tx<{ id: string; repo: string | null; created_by: string | null }[]>`
+        select id, repo, created_by from job
+        where org_id = ${orgId} and id = ${rootJobId}
+    `;
+    if (!root) return 'missing';
+    if (await backsBatchTask(tx, orgId, rootJobId)) return 'batch';
+
+    // Every member of the thread carries the same root_job_id (022), so the thread is
+    // one indexed read. Branching included, should two adjustments ever land on one
+    // parent.
+    const members = await tx<{ id: string; status: JobStatus }[]>`
+        select id, status from job
+        where org_id = ${orgId} and root_job_id = ${rootJobId}
+    `;
+    // The one refusal: a member is running. The user stops it first — the per-task
+    // worktree is a live runner's checkout, and tearing it out under the container would
+    // corrupt a run that was happily going. Checked before the review rows are locked: a
+    // running member's verdict holds those rows and waits on this root lock.
+    if (hasRunningMember(members)) return 'conflict';
+    // The thread's named-profile reviews are threads of their own, so they are
+    // not in `members`: a running one is a live runner's checkout too, and they leave with it.
+    const reviews = await tx<{ id: string; status: JobStatus }[]>`
+        select id, status from job
+        where org_id = ${orgId} and review_of = any(${members.map((m) => m.id)}::uuid[])
+        for update
+    `;
+    if (hasRunningMember([...members, ...reviews])) return 'conflict';
+
+    // The rows are gone for good — nothing joins through job.id at claim time (the
+    // claim copies its session labels onto its own row), so deleting the audit trail is
+    // the removal, not a cleanup that orphans something.
+    const removedIds = [...members, ...reviews].map((m) => m.id);
+    await markExecutionsRemoved(tx, orgId, removedIds);
+    await tx`
+        delete from job
+        where org_id = ${orgId} and id = any(${removedIds})
+    `;
+
+    // The thread is gone, and with it every PR wait folded for it — the webhook's
+    // next redelivery folds into nothing, which is the point: no ghost thread wakes.
+    if (prs) {
+        await prs.cancelWaitsForRoot(rootJobId, 'task removed', tx);
+    }
+    // Any parked or already-woken block-wait round is this thread's audit data
+    // too — cancelWaitsForRoot above already makes it permanently unwakeable, this is just not
+    // leaving it behind forever.
+    await revokeThreadAttachmentsInTx(tx, orgId, rootJobId);
+    await tx`delete from workflow_round where org_id = ${orgId} and root_job_id = ${rootJobId}`;
+    // The merge-closure marker is the thread's audit data the same way: the rows
+    // it discriminates are gone.
+    await tx`delete from job_merge_close where org_id = ${orgId} and root_job_id = ${rootJobId}`;
+
+    // Queue the worktree reclaim. The driver polls this queue — nothing is holding a
+    // lease on a removed thread, so no live driver would ever notice the deletion
+    // otherwise — and takes the tree down, acking the row when it has. Same relative
+    // path the claim derives, empty labels included: a tree keyed only on the root id
+    // still gets reclaimed, pointing at nothing additional is fine.
+    const workspacePath = workspacePathFor(orgId, root.created_by);
+    // One per tree: the thread's own, and each review's (its worktree is keyed by its own id).
+    for (const tree of [rootJobId, ...reviews.map((review) => review.id)]) {
+        await tx`
+            insert into task_reclaim (org_id, root_job_id, repo, workspace_path, removed_by)
+            values (${orgId}, ${tree}, ${root.repo}, ${workspacePath}, ${removedBy})
+        `;
+    }
+
+    return { result: 'ok', rootJobId, repo: root.repo, workspacePath };
 }
 
 /**

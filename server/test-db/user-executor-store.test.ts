@@ -9,6 +9,7 @@ import {
 } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
+import { testSecretDeps } from './env-secrets-harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -30,7 +31,7 @@ const db = useTestDb({
 beforeAll(async () => {
     if (!enabled) return;
     sql = db.sql;
-    store = createUserExecutorStore({ sql, orgId: ORG });
+    store = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
 });
 
 describe.skipIf(!enabled)('the user executor store', () => {

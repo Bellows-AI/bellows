@@ -7,6 +7,7 @@ import {
     type ResolveInput,
     type ResolveRefusal,
 } from './connection-bindings.js';
+import { recordAudit, userActor } from './audit-log.js';
 import { revokeGrantIfOrphaned } from './connection-grants.js';
 
 const DISCONNECT_ATTEMPTS = 5;
@@ -117,6 +118,7 @@ async function disconnectOnce(
     `;
     if (rows.length === 0) return { disconnected: false, revokedGrantId: null };
     if ((await rootsOf()).some((root) => !roots.includes(root))) throw new RetryDisconnect();
+    await recordAudit(tx, { orgId, actor: userActor(userId), action: 'connection.disconnect', target: connectionId });
     const grantId = rows[0]!.grant_id;
     const revoked = grantId !== null && (await revokeGrantIfOrphaned(tx, orgId, grantId));
     // Old pods read the root's projection: recompute it wherever this connection was bound.

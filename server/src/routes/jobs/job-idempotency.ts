@@ -6,6 +6,9 @@ import { AttachmentRefusedError } from '../../db/jobs/job-store-attachments.js';
 import { canonical, IdempotencyKeyReusedError } from '../../db/jobs/job-store-idempotency.js';
 import type { IdempotentOperation } from '../../db/jobs/job-store-idempotency.js';
 import { bad, guard } from '../helpers.js';
+import { PlanLimitError } from '../../db/plan-limits.js';
+import { OrgInactiveError } from '../../db/org-status.js';
+import { sendPlanLimit } from '../plan-limit.js';
 import { HTTP_CONFLICT, HTTP_CREATED, HTTP_FORBIDDEN, HTTP_PAYLOAD_TOO_LARGE } from './job-limits.js';
 
 /**
@@ -93,7 +96,14 @@ export async function guardKeyed<T>(
             return { value: await run() };
         } catch (error) {
             if (error instanceof IdempotencyKeyReusedError) return null;
-            if (error instanceof ConnectionRefusedError || error instanceof AttachmentRefusedError) return error;
+            if (
+                error instanceof ConnectionRefusedError ||
+                error instanceof AttachmentRefusedError ||
+                error instanceof PlanLimitError ||
+                error instanceof OrgInactiveError
+            ) {
+                return error;
+            }
             throw error;
         }
     });
@@ -104,6 +114,19 @@ export async function guardKeyed<T>(
     }
     if (result.value instanceof AttachmentRefusedError) {
         await refuseAttachments(reply, result.value);
+        return { ok: false };
+    }
+    if (result.value instanceof PlanLimitError) {
+        await sendPlanLimit(reply, result.value);
+        return { ok: false };
+    }
+    if (result.value instanceof OrgInactiveError) {
+        const { status } = result.value;
+        await reply.code(HTTP_FORBIDDEN).send({
+            error: `The organization is ${status ?? 'not registered'}; it takes no new tasks`,
+            code: ERROR_CODES.ORG_INACTIVE,
+            status,
+        });
         return { ok: false };
     }
     if (result.value === null) {

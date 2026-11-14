@@ -7,7 +7,7 @@ export type CommerceConfig =
     | { readonly enabled: false }
     | { readonly enabled: true; readonly url: string; readonly token: string };
 
-/** The `JOB_BOARD_TOKEN` floor: a bearer secret the board presents to another service. */
+/** The session secret's floor: a bearer secret the board presents to another service. */
 const MIN_COMMERCE_TOKEN_LENGTH = 32;
 
 export function loadCommerceConfig(env: NodeJS.ProcessEnv): CommerceConfig {

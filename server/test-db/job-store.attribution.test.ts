@@ -6,7 +6,7 @@ import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { EnvSecretError } from '../src/db/env-secrets.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { seedEncryptedRow, testSecretStore } from './env-secrets-harness.js';
+import { seedEncryptedRow, testSecretDeps, testSecretStore } from './env-secrets-harness.js';
 import { account, lapseDeferral, mustCreate, randomGithubId, startRow, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -92,9 +92,9 @@ describe.runIf(enabled)('attribution', () => {
         const ENV_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, ENV_CAT_GITHUB_ID, 'env-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql), secretLog: () => {} });
-        await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
+        await envStore.replaceOrg('env-admin', [{ name: 'CORE', value: 'org-value', isSecret: true }]);
         await envStore.replaceWorkspace(userId, [{ name: 'CORE', value: 'workspace-value', isSecret: false }]);
-        await envStore.replaceRepo('Bellows-AI', 'bellows.ai', [
+        await envStore.replaceRepo('env-admin', 'Bellows-AI', 'bellows.ai', [
             { name: 'CORE', value: 'repo-value', isSecret: false },
             { name: 'REPO_ONLY', value: 'repo-only-value', isSecret: true },
         ]);
@@ -181,7 +181,7 @@ describe.runIf(enabled)('attribution', () => {
             name: 'the executor reader',
             failing: (fail) => ({
                 executorConfig: {
-                    configFor: async () => {
+                    claimConfigFor: async () => {
                         if (fail()) throw new Error('executor store down');
                         return null;
                     },
@@ -218,7 +218,7 @@ describe.runIf(enabled)('attribution', () => {
         // holds it — the PUT refuses both, and this is the claim's own guarantee.
         const userId = await account(sql, randomGithubId(), 'no-pat-cat');
         const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql), secretLog: () => {} });
-        await envStore.replaceOrg([
+        await envStore.replaceOrg('env-admin', [
             { name: 'CORE', value: 'org-value', isSecret: true },
             { name: 'GITHUB_TOKEN', value: 'ghp_member', isSecret: true },
         ]);
@@ -249,7 +249,7 @@ describe.runIf(enabled)('attribution', () => {
         let executors: ReturnType<typeof createUserExecutorStore>;
         const configured = () => createJobStore({ sql, orgId: ORG, executorConfig: executors });
         beforeAll(() => {
-            if (enabled) executors = createUserExecutorStore({ sql, orgId: ORG });
+            if (enabled) executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         });
 
         it('hands an opencode row’s config over, with the permission fence stripped', async () => {

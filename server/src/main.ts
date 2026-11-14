@@ -1,18 +1,28 @@
 import { jiraApiBase } from '@factory-ai/core';
-import postgres, { type Sql } from 'postgres';
+import type { Sql } from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createUploadCapabilityStore, type UploadCapabilityStore } from './attachments/upload-capability-store.js';
 import { createOAuthStore, type OAuthStore } from './auth/oauth-store.js';
 import { startOAuthSweep } from './auth/oauth-sweep.js';
+import { membershipGuardFor } from './auth/membership-guard.js';
+import { bootstrappedDriverCredentials } from './auth/driver-credentials.js';
+import { orgKeyDeriver } from './auth/org-key.js';
 import { createAuthStore } from './auth/store.js';
 import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
 import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
 import { createAgentTitle } from './db/agent-title.js';
+import { orgSql } from './db/org-sql.js';
+import { crossOrgPool, requestPools } from './db/pool.js';
 import { createOperationReceipts } from './db/operation-receipts.js';
-import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
+import {
+    createOrgOfIngest,
+    createOrgOfJob,
+    createOrgOfLease,
+    createOrgOfReclaim,
+} from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchLoops } from './batch-loops.js';
 import { type ArtifactBackend, createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
@@ -32,6 +42,10 @@ import { startTempSweep } from './artifacts/fs-store.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSkillSweep } from './skills/skill-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
+import { startMetricPointOrgBackfill } from './telemetry/org-backfill.js';
+import type { CoordinatedSecretStore } from './secrets/postgres-secret-store.js';
+import { startOrgPurge } from './db/org-purge.js';
+import { startOrgRetention } from './db/org-retention.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
 import { startNotificationDelivery } from './notifications/delivery-loop.js';
 import { productionConnectors } from './notifications/registry.js';
@@ -79,11 +93,11 @@ const mcpStores = (db: { sql: Sql; ready: Promise<unknown> }) => ({
 
 /**
  * The garbage collectors run on every replica: unreferenced secret versions and finished operations; abandoned
- * uploads and the files of a removed task. Each delete re-checks its own guard.
+ * uploads and the files of a removed task; a deleted organization's purge. Each delete re-checks its own guard. The
+ * object sweeps and the purge decide by what no org's row references, so they read on the cross-org pool.
  */
 function startCollectors({
-    sql,
-    ready,
+    crossOrg,
     secrets,
     artifacts,
     config,
@@ -92,9 +106,8 @@ function startCollectors({
     uploadCapabilities,
     track,
 }: {
-    sql: Sql;
-    ready: Promise<unknown>;
-    secrets: { collect(): Promise<unknown> };
+    crossOrg: { sql: Sql; ready: Promise<unknown> };
+    secrets: CoordinatedSecretStore;
     artifacts: ArtifactBackend;
     config: AppConfig;
     metrics: ServerMetrics;
@@ -102,6 +115,7 @@ function startCollectors({
     uploadCapabilities: UploadCapabilityStore;
     track: Track;
 }): void {
+    const { ready } = crossOrg;
     void ready.then(() =>
         track(() =>
             startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
@@ -110,16 +124,65 @@ function startCollectors({
     const { sweepTemps } = artifacts;
     if (sweepTemps) track(() => startTempSweep(sweepTemps, { log: (m) => console.log(`[artifacts] ${m}`) }));
     void ready.then(() =>
-        track(() => startAttachmentSweep({ sql, ready, artifacts, config: config.artifacts, metrics }))
+        track(() => startAttachmentSweep({ ...crossOrg, artifacts, config: config.artifacts, metrics }))
     );
     void ready.then(() =>
-        track(() => startSkillSweep({ sql, ready, artifacts, metrics, retentionDays: config.artifacts.retentionDays }))
+        track(() =>
+            startSkillSweep({
+                ...crossOrg,
+                artifacts,
+                metrics,
+                retentionDays: config.artifacts.retentionDays,
+                planDefaults: config.planDefaults,
+            })
+        )
+    );
+    // A deleted org's purge: an operator's delete anywhere, GitHub's deletion deadline in cloud mode only.
+    void ready.then(() =>
+        track(() =>
+            startOrgPurge({
+                sql: crossOrg.sql,
+                secrets,
+                objects: artifacts.objects,
+                prefix: artifacts.prefix,
+                deploymentMode: config.deploymentMode,
+            })
+        )
+    );
+    // Each org's retention window (docs/retention.md): deletes settled threads, their objects and old telemetry.
+    void ready.then(() =>
+        track(() =>
+            startOrgRetention({
+                sql: crossOrg.sql,
+                secrets,
+                objects: artifacts.objects,
+                prefix: artifacts.prefix,
+                planDefaults: config.planDefaults,
+            })
+        )
     );
     // Expired codes, consent transactions and grant families; only a board that serves MCP ever writes them.
     if (config.mcp.enabled)
         void ready.then(() =>
             track(() => startOAuthSweep(oauth, metrics.timedPass, undefined, () => uploadCapabilities.purgeExpired()))
         );
+}
+
+/**
+ * One `migrate()` for every feature sharing the schema: two runners would race each other. It runs as the owner
+ * (DATABASE_URL) on a one-connection pool that closes once the migrations settle.
+ */
+function migrateAsOwner(owner: Sql, config: AppConfig): Promise<void> {
+    const ready = migrate(owner, {
+        localUser: config.auth.mode === 'none',
+        log: (m) => console.log(`[migrate] ${m}`),
+    });
+    ready.catch((e: Error) => console.error(`[migrate] giving up: ${e.message}`));
+    void ready.then(
+        () => owner.end(),
+        () => owner.end()
+    );
+    return ready;
 }
 
 /** The PR-driven batch loops and the adoption of what a lost pod left mid-exchange: every replica, after the migrations. */
@@ -160,21 +223,25 @@ function startRecovery({
     );
 }
 
-/** The attempt checks behind the runner credential routes, and the lanes' optional mint and revoke stand-ins. */
+/**
+ * The attempt checks behind the runner credential routes, and the lanes' optional mint and revoke stand-ins. A lease
+ * resolves to its org on the cross-org pool; what follows runs on the request pool under that org.
+ */
 const runnerCredentialDeps = (
     db: { sql: Sql; ready: Promise<unknown> },
+    crossOrg: { sql: Sql; ready: Promise<unknown> },
     options: StartOptions,
     jira: JiraOAuthConfig | null
 ) => ({
-    attemptOfLease: createAttemptOfLease(db),
-    pairMatches: createPairMatches(db),
+    attemptOfLease: createAttemptOfLease(crossOrg),
+    pairMatches: createPairMatches(crossOrg),
     operationReceipts: createOperationReceipts(db),
     agentTitle: createAgentTitle(db),
     // The runner helper's connection list: Jira only, and only while the provider is configured.
     connectionListing: {
         connectionsOf: async (orgId: string, rootJobId: string) => {
             await db.ready;
-            return liveOAuthConnectionsOf(db.sql, orgId, rootJobId);
+            return liveOAuthConnectionsOf(orgSql(db.sql, orgId), orgId, rootJobId);
         },
         apiBaseOf: (provider: string, resource: string) =>
             provider === 'jira' && jira ? jiraApiBase(jira.apiOrigin, resource) : null,
@@ -224,26 +291,25 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     // and provider settings never ride the config into the routes (docs/secrets.md).
     const secretBackend = loadSecretBackend(process.env);
 
-    // One pool, and one `migrate()`, for every feature sharing the schema. Two runners would
-    // race each other.
-    const sql = postgres(config.databaseUrl, { max: config.dbPoolMax });
+    // Requests run as the request role under the org policies; the paths that read across orgs run on the
+    // cross-org pool (docs/row-level-security.md). Every statement on every pool is bounded by
+    // DB_STATEMENT_TIMEOUT_MS; db/pool.ts names what lifts it.
+    const poolOptions = { max: config.dbPoolMax, statementTimeoutMs: config.dbStatementTimeoutMs };
+    const { owner: ownerSql, request: sql, secrets: secretSql } = requestPools(config, poolOptions);
+    const crossOrgSql = crossOrgPool(config.databaseUrl, poolOptions);
     // NOT awaited. Migrations retry with backoff for the better part of a minute while the database
     // container starts, and blocking here would hold the whole dashboard hostage to it. Every consumer
     // gates its own queries on `ready` and reports unavailable until then.
     //
     // Under AUTH_MODE=none it also seeds the local organization and the stand-in account every
     // request is attributed to. Github mode seeds nothing: sign-in materializes the orgs.
-    const ready = migrate(sql, {
-        localUser: config.auth.mode === 'none',
-        log: (m) => console.log(`[migrate] ${m}`),
-    });
-    ready.catch((e: Error) => console.error(`[migrate] giving up: ${e.message}`));
+    const ready = migrateAsOwner(ownerSql, config);
+    const crossOrg = { sql: crossOrgSql, ready };
 
     // The store opens its own transactions, and the claim resolves environment secrets while holding one
     // pooled connection of its own: on a shared pool, `dbPoolMax` concurrent claims would each hold the
     // connection another's store call is waiting for. A pool of its own (connections open lazily, so an
     // idle one costs nothing) means a store call never borrows a claim's pool (docs/secrets.md).
-    const secretSql = postgres(config.databaseUrl, { max: config.dbPoolMax });
     const secretLog = (d: SecretDiagnostic) => console.log(`[secrets] ${JSON.stringify(d)}`);
     const secrets = createSecretStore({
         sql: secretSql,
@@ -281,16 +347,19 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         secretLog,
         artifacts,
         claimMetrics: metrics.claim,
+        orgKeyOf: orgKeyDeriver(secretBackend.keys.fingerprintKey),
     });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
     // always somewhere for accounts to live. buildApp's optional `auth` is for the route tests.
-    const authStore = createAuthStore({ sql, ready });
+    const authStore = createAuthStore(crossOrg);
+    // GitHub's membership answer in front of the store: sign-in verdicts, the token-path re-check and its pass.
+    const membership = membershipGuardFor(config, { ...crossOrg, store: authStore });
     const identity = config.auth.mode === 'github' ? createGitHubIdentityClient(config.auth) : undefined;
 
     if (config.auth.mode === 'github') {
         console.log(`[auth] GitHub sign-in, callback ${config.auth.publicUrl}${callbackPath}`);
-        console.log('[auth] worker routes take Bearer $JOB_BOARD_TOKEN — the same value the driver holds');
+        console.log('[auth] worker routes take a driver credential (drv_…) the board issued; it keeps only the hash');
         console.log(
             '[auth] the App setup URL must point at the /api/auth/github/setup route for the install round trip'
         );
@@ -316,6 +385,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     const jira = jiraRegistration(config.integrations.jira, config.integrations.callbackOrigin);
     const integrations = createIntegrationRuntime({
         sql,
+        crossOrgSql: crossOrg.sql,
         secrets,
         providers: jira.providers,
         clients: jira.clients,
@@ -323,7 +393,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         log: (d) => console.log(`[integrations] ${JSON.stringify(d)}`),
     });
 
-    const mcp = mcpStores({ sql, ready });
+    const mcp = mcpStores(crossOrg);
+    const driverCredentials = bootstrappedDriverCredentials(crossOrg, config, (m) => console.log(m));
     const app = await buildApp({
         config,
         orgs,
@@ -332,17 +403,21 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         store,
         secrets,
         integrations: { ...integrations, configured: jira.configured },
-        auth: authStore,
+        auth: membership.store,
+        githubRoster: membership.roster,
         ...mcp,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
         // org-less job query, because the pair's answer IS the org. The worker-route resolvers
-        // beside it are the same direction: the shared board secret authenticates the driver, and
+        // beside it are the same direction: a driver credential authenticates the driver, and
         // the org a call operates on comes from the row its URL names.
-        orgOfLease: createOrgOfLease({ sql, ready }),
-        orgOfJob: createOrgOfJob({ sql, ready }),
-        orgOfReclaim: createOrgOfReclaim({ sql, ready }),
-        ...runnerCredentialDeps({ sql, ready }, options, config.integrations.jira),
+        orgOfLease: createOrgOfLease(crossOrg),
+        // The OTLP routes' runner credential: the job id + the ingest token its telemetry config carries.
+        orgOfIngest: createOrgOfIngest(crossOrg),
+        orgOfJob: createOrgOfJob(crossOrg),
+        orgOfReclaim: createOrgOfReclaim(crossOrg),
+        driverCredentials,
+        ...runnerCredentialDeps({ sql, ready }, crossOrg, options, config.integrations.jira),
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
@@ -354,12 +429,15 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     // not awaited: a cold database must not hold `listen()`.
     void ready.then(() => orgs.warmAll()).catch((e: Error) => console.error(`[orgs] warm failed: ${e.message}`));
 
-    startCollectors({ sql, ready, secrets, artifacts, config, metrics, ...mcp, track: stops.add });
+    startCollectors({ crossOrg, secrets, artifacts, config, metrics, ...mcp, track: stops.add });
     startRecovery({ config, orgs, metrics, ready, integrations, track: stops.add });
 
     startDeliveries({ config, orgs, metrics, ready, track: stops.add });
+    void ready.then(() => stops.add(() => membership.start(metrics.timedPass)));
+    // Points stored before they carried an org get the one their session evidence names, a batch at a time.
+    void ready.then(() => stops.add(() => startMetricPointOrgBackfill({ sql: crossOrg.sql })));
 
     await app.listen({ port: config.port, host: config.host });
 
-    return { close: createClose({ app, stops, pools: [sql, secretSql] }) };
+    return { close: createClose({ app, stops, pools: [sql, secretSql, crossOrgSql, ownerSql] }) };
 }

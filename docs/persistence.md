@@ -7,7 +7,9 @@ database-free through the in-memory stores in `server/test/helpers*.ts`.
 | --- | --- | --- |
 | Migration runner, boot seeding, session reaping, ledger checksum, frozen duplicate prefixes | `server/src/db/migrate.ts`, `server/migrations/` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts`, `server/test-db/migrate.checksum.test.ts`, `server/test/migrations-numbering.test.ts` |
 | Schema (ingest and views: [telemetry.md](telemetry.md)); `metric_point_dedup` identity (086) | `server/migrations/*.sql`, `server/migrations/086_metric_point_identity.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts`, `server/test-db/migration.086-metric-point-identity.test.ts` |
-| Inbound OAuth tables (122): refresh serialized on the family row | `server/migrations/122_oauth.sql`, `server/src/auth/oauth-store.ts` | `server/test-db/auth-store.oauth-concurrency.test.ts` |
+| Org-owned tables: every `org_id` is registered and keyed to `organization` on delete cascade (141); that migration refuses an orphan row, naming table and org, and deletes none | `server/src/db/org-tables.ts`, `server/migrations/141_org_foreign_keys.sql` | `server/test-db/org-tables.test.ts` |
+| Row-level security on every org table: each store statement sets `app.org_id` in its own transaction (`orgSql`); a `bypassrls` pool for the listed cross-org paths; `security_invoker` views ([row-level-security.md](row-level-security.md)) | `server/migrations/151_row_level_security.sql`, `server/src/db/org-sql.ts`, `server/src/db/pool.ts` | `server/test-db/row-level-security.test.ts`, `server/test/cross-org-pool.test.ts` |
+| Inbound OAuth tables (122): refresh serialized on the family row; `audit_event` (138): `recordAudit` in each audited action's own transaction, no credential in `detail`, a trigger refusing update and delete but the org's cascade | `server/migrations/122_oauth.sql`, `server/src/auth/oauth-store.ts`, `server/migrations/138_audit_event.sql`, `server/src/db/audit-log.ts` | `server/test-db/auth-store.oauth-concurrency.test.ts`, `server/test-db/audit-log.test.ts` |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/jobs/*` | `server/test-db/job-store.*.test.ts` |
 | Agent questions, `claim_seq`-stamped (050, 074); task title on the root, `title_revision` compare-and-set, `job_title_event` audit (125) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/jobs/job-store-questions.ts`, `server/migrations/125_job_title.sql`, `server/src/db/jobs/job-store-title.ts` | `server/test-db/job-store.questions.test.ts`, `server/test-db/job-store.title.test.ts` |
@@ -32,18 +34,16 @@ database-free through the in-memory stores in `server/test/helpers*.ts`.
   mismatch refuses boot (`MigrationChecksumError`, no retry, `ready` stays rejected so routes answer 503), and a
   null checksum is back-filled once with the shipped hash. Repeatables are exempt. A removed feature's schema is a new `drop` migration (`023_drop_pull_requests.sql`), children before parents.
   `server/test-db/migrate.checksum.test.ts`.
-- **The ten duplicate-prefix pairs are frozen.** The ledger key is the filename, so a rename re-applies the file;
-  a new file takes an unused number. `server/test/migrations-numbering.test.ts`.
+- **The ten duplicate-prefix pairs are frozen.** The ledger key is the filename, so a rename re-applies the file; a new file takes an unused number. `server/test/migrations-numbering.test.ts`.
 - **A data migration batches, or builds its index `CONCURRENTLY` outside the transaction**, so the boot lock is not
-  held for a table scan. `server/src/db/migrate.ts`.
+  held for a table scan; a foreign key's `validate` is the stated exception (141, ~1 s per million rows). `server/src/db/migrate.ts`. `metric_point` (145) is backfilled by the board, a block range per transaction: `server/src/telemetry/org-backfill.ts`.
 - **Versioned migrations run before repeatable ones; `*.repeatable.sql` files are re-applied every boot** and skipped when `schema_migrations` holds a versioned
   file this build does not ship. Every repeatable change, a revert included, ships a new no-op marker, the newest
   named after the repeatables' hash (`090_views_<hash>.sql`). `core/test/migrations.sql.test.ts`.
 - **A release only expands; a contract waits a release.** A drop, rename, type change, `set not null` or rejecting
   trigger lands at least one release after the last code touching the object: an older pod runs against the newer
   schema mid-rollout and after a rollback. `server/test-db/migrate.concurrency.test.ts`.
-- **The schema names no extension.** `metric_point` is `partition by range (time)` with a single DEFAULT partition;
-  removing it breaks every write, and every unique index must keep `time`.
+- **The schema names no extension.** `metric_point` is `partition by range (time)` with a single DEFAULT partition; removing it breaks every write, and every unique index must keep `time`.
 - **Migrations run under one advisory xact lock** (`MIGRATION_LOCK_KEY`), are not awaited before `listen()`, and
   retry with backoff; stores degrade until `ready`. `server/test-db/migrate.concurrency.test.ts`.
 - **`migrate()` seeds the `AUTH_MODE=none` org and reaps expired sessions at boot only** — TypeScript beside the

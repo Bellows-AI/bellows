@@ -25,6 +25,7 @@ const host = { config: loadDriverConfig({}) };
 
 const review = {
     id: '66666666-6666-4666-8666-666666666666',
+    ingestToken: '99999999-9999-4999-8999-999999999999',
     rootJobId: ROOT,
     command: 'review the work',
     rootCommand: 'review the work',
@@ -77,6 +78,14 @@ describe('the reviewer’s review step', () => {
         }
         expect(step?.env.FACTORY_TRANSCRIPT_DIR).toBe(`${REVIEWER_HOME}/transcripts/${ROOT}`);
         expect(step?.argv.length).toBeGreaterThan(0);
+    });
+
+    // The review row's own export credential beside its endpoint — never its caller's.
+    it('carries the review row’s own telemetry export credential', () => {
+        const step = reviewStepEnv(host, review, { id: 'sess-1', resume: false });
+        expect(step?.env.OTEL_EXPORTER_OTLP_HEADERS).toBe(
+            `x-factory-job-id=${review.id},x-factory-ingest-token=${review.ingestToken}`
+        );
     });
 
     // the review row decided its own hidden built-ins; the reviewer's argv and env must carry them, since its

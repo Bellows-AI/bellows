@@ -44,7 +44,7 @@ const onDisk = (config: object, path: string): string => path.replace(TASK_MOUNT
 function volume() {
     const mount = mkdtempSync(join(tmpdir(), 'receipts-'));
     dirs.push(mount);
-    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', JOB_BOARD_TOKEN: 'board-key' });
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes' });
     mounts.set(config, mount);
     return { config };
 }
@@ -62,6 +62,8 @@ const claim = (seq: number, over: Partial<BoardJob> = {}): BoardJob =>
         repo: 'octo/factory',
         env: {},
         supervisorEnv: { [SUPERVISOR_ENV.controlToken]: `control-${seq}` },
+        // The board's per-organization key, the same on every claim of the row whichever driver holds it.
+        orgKey: 'org-key',
         ...over,
     }) as BoardJob;
 
@@ -273,7 +275,7 @@ describe('block-helper receipts across claims', () => {
         expect(receiptOf(config, claim(1))).toMatchObject({ state: 'started' });
     });
 
-    it('keeps no receipt for a job with no worktree, a driver with no board token, or a helper not receipted', async () => {
+    it('keeps no receipt for a job with no worktree, a claim with no organization key, or a helper not receipted', async () => {
         const { config } = volume();
         const remote = { writes: 0 };
         const repoless = supervisor(config, remote);
@@ -281,8 +283,9 @@ describe('block-helper receipts across claims', () => {
         expect(repoless.submitted.filter((s) => s.env.LEDGER)).toEqual([]);
 
         // With no key, a receipt is one the agent could forge: none is kept, every claim runs it.
-        const keyless = supervisor({ ...config, boardToken: '' }, remote);
-        await runHelperStep(keyless.host, claim(1), plan, { effectId: EFFECT });
+        const keyless = supervisor(config, remote);
+        const { orgKey: _none, ...unkeyed } = claim(1);
+        await runHelperStep(keyless.host, unkeyed, plan, { effectId: EFFECT });
         expect(keyless.submitted.filter((s) => s.env.LEDGER)).toEqual([]);
 
         // A probe reads the PR and the tree as they are now; replaying its answer would be stale.

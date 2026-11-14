@@ -1,0 +1,136 @@
+import { ADMIN_ROLE } from '@factory-ai/core';
+import type { Sql } from 'postgres';
+import { recordAudit } from '../db/audit-log.js';
+import { blockMembership, endMemberships, restoreMembership, SYSTEM_ACTOR } from './member-removal.js';
+import type { MembershipTarget, MembershipVerdict } from './membership.js';
+
+/** One membership to re-check, keyed for the store and described for the GitHub read. */
+export interface MembershipCheck extends MembershipTarget {
+    orgId: string;
+    userId: string;
+}
+
+/**
+ * The membership re-check's SQL (docs/auth.md): which memberships are due, what a verdict does to one, and the
+ * admin's persistent removal and its restore.
+ */
+export interface MembershipStore {
+    /** The membership, described for the GitHub read; null when it no longer exists. */
+    target(orgId: string, userId: string): Promise<MembershipCheck | null>;
+    /** Up to `limit` memberships last checked before `before` (never checked first). */
+    due(before: Date, limit: number): Promise<MembershipCheck[]>;
+    /**
+     * Applies a verdict read at `at`. `not-member` deletes the membership and, in the same transaction, the
+     * account's sessions in that org and revokes its personal tokens there; `active` promotes a GitHub owner
+     * (never demotes); every verdict, `unknown` included, stamps `checked_at`, so an unanswered org is asked
+     * once per TTL rather than on every request.
+     */
+    record(orgId: string, userId: string, verdict: MembershipVerdict, at: Date): Promise<void>;
+    /**
+     * An admin's removal: a block row that outlives the membership, then the same deletion and revocation a
+     * `not-member` verdict runs, in one transaction. `last-admin` refuses removing the org's only admin;
+     * `missing` is no such member.
+     */
+    block(orgId: string, userId: string, removedBy: string): Promise<'removed' | 'last-admin' | 'missing'>;
+    /** Lifts a block, audited as `actorId`'s: the account's next sign-in materializes its membership again. */
+    restore(orgId: string, userId: string, actorId: string): Promise<'restored' | 'missing'>;
+}
+
+interface CheckRow {
+    org_id: string;
+    user_id: string;
+    org_name: string;
+    account_type: string | null;
+    account_id: string | null;
+    github_user_id: string;
+    github_login: string;
+}
+
+const toCheck = (row: CheckRow): MembershipCheck => ({
+    orgId: row.org_id,
+    userId: row.user_id,
+    org: {
+        id: row.org_id,
+        login: row.org_name,
+        accountType: row.account_type,
+        accountId: row.account_id === null ? null : Number(row.account_id),
+    },
+    // bigint arrives as a string from postgres.js; Number() is exact for every GitHub id.
+    user: { githubUserId: Number(row.github_user_id), login: row.github_login },
+});
+
+export function createMembershipStore({ sql, ready }: { sql: Sql; ready?: Promise<unknown> }): MembershipStore {
+    const gate = async () => {
+        if (ready) await ready;
+    };
+    const select = () => sql`
+        select m.org_id, m.user_id::text as user_id, o.name as org_name, o.account_type,
+               o.account_id::text as account_id, u.github_user_id::text as github_user_id, u.github_login
+        from org_membership m
+        join organization o on o.id = m.org_id
+        join app_user u on u.id = m.user_id
+    `;
+
+    return {
+        async target(orgId, userId) {
+            await gate();
+            const rows = await sql<CheckRow[]>`${select()} where m.org_id = ${orgId} and m.user_id = ${userId}::uuid`;
+            return rows[0] ? toCheck(rows[0]) : null;
+        },
+
+        async due(before, limit) {
+            await gate();
+            // The stand-in account of AUTH_MODE=none (github id 0) is nobody GitHub knows.
+            const rows = await sql<CheckRow[]>`
+                ${select()}
+                where (m.checked_at is null or m.checked_at < ${before}) and u.github_user_id <> 0
+                order by m.checked_at nulls first
+                limit ${limit}
+            `;
+            return rows.map(toCheck);
+        },
+
+        async record(orgId, userId, verdict, at) {
+            await gate();
+            if (verdict.kind === 'not-member') {
+                const cause = { actor: SYSTEM_ACTOR, reason: 'github-not-member' } as const;
+                await sql.begin((tx) => endMemberships(tx, userId, [orgId], cause));
+                return;
+            }
+            const owner = verdict.kind === 'active' && verdict.owner;
+            await sql.begin(async (tx) => {
+                const rows = await tx<{ previous: string; role: string }[]>`
+                    with prior as (
+                        select role from org_membership
+                        where org_id = ${orgId} and user_id = ${userId}::uuid
+                        for update
+                    )
+                    update org_membership m
+                    set checked_at = ${at}, role = case when ${owner} then ${ADMIN_ROLE} else m.role end
+                    from prior
+                    where m.org_id = ${orgId} and m.user_id = ${userId}::uuid
+                    returning prior.role as previous, m.role
+                `;
+                const row = rows[0];
+                if (!row || row.previous === row.role) return;
+                await recordAudit(tx, {
+                    orgId,
+                    actor: SYSTEM_ACTOR,
+                    action: 'member.role',
+                    target: userId,
+                    detail: { from: row.previous, to: row.role, reason: 'github-owner' },
+                });
+            });
+        },
+
+        async block(orgId, userId, removedBy) {
+            await gate();
+            return blockMembership(sql, orgId, userId, removedBy);
+        },
+
+        async restore(orgId, userId, actorId) {
+            await gate();
+            return restoreMembership(sql, orgId, userId, actorId);
+        },
+    };
+}

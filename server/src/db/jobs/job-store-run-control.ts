@@ -151,6 +151,7 @@ export async function interruptJob(
         requirement = false,
         nodeLoss = false,
         daemonLoss = false,
+        orgSuspended = false,
     }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
@@ -167,6 +168,7 @@ export async function interruptJob(
         ...(requirement ? { requirement: true } : {}),
         ...(nodeLoss ? { nodeLoss: true } : {}),
         ...(daemonLoss ? { daemonLoss: true } : {}),
+        ...(orgSuspended ? { orgSuspended: true } : {}),
         refunded: true,
     });
     // A dockerd loss after two in a row is recorded as an ordinary interruption, unrefunded (`REPEATED_DAEMON_LOSS_NOTE`).
@@ -174,10 +176,11 @@ export async function interruptJob(
         and interruptions -> -2 ->> 'daemonLoss' = 'true', false))`;
     const recordedEntry = sql`case when ${repeated} then (${entry}::jsonb - 'nodeLoss') || jsonb_build_object(
         'refunded', false, 'reason', ${reason + REPEATED_DAEMON_LOSS_NOTE}::text) else ${entry}::jsonb end`;
-    // Blocked and requirement spend no budget, so both are accepted past a spent one; a node loss spends only
-    // its own bound, accepted past a spent poison budget (see `releaseOpen`) — a repeated dockerd loss excepted.
+    // Blocked, requirement and org-suspended releases spend no budget, so each is accepted past a spent one; a node
+    // loss spends only its own bound, accepted past a spent poison budget (see `releaseOpen`) — a repeated dockerd
+    // loss excepted.
     const open = sql`case when ${repeated} then not ${interruptionsSpent(sql)}
-        else ${releaseOpen(sql, { release, blocked, requirement, nodeLoss })} end`;
+        else ${releaseOpen(sql, { release, blocked, requirement, nodeLoss, orgSuspended })} end`;
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
     )`;
@@ -188,7 +191,16 @@ export async function interruptJob(
         jobId: id,
         leaseToken,
         operation: 'interrupt',
-        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked, requirement, nodeLoss, daemonLoss }),
+        fingerprint: fingerprintOf({
+            reason,
+            release,
+            claimSeq,
+            blocked,
+            requirement,
+            nodeLoss,
+            daemonLoss,
+            ...(orgSuspended ? { orgSuspended } : {}),
+        }),
     };
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome: nothing hands it back instead.

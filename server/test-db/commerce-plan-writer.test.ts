@@ -24,6 +24,11 @@ const push = (overrides: Partial<PlanPush> = {}): PlanPush => ({
     usedMinutes: 10,
     periodStart: new Date('2026-08-01T00:00:00Z'),
     periodEnd: new Date('2026-09-01T00:00:00Z'),
+    maxRunning: 4,
+    maxQueued: 50,
+    maxWallSeconds: 7200,
+    maxTokens: 50_000_000,
+    maxStorageBytes: 10_737_418_240,
     version: 1,
     ...overrides,
 });
@@ -48,6 +53,40 @@ describe.skipIf(!enabled)('commerce plan writer — database', () => {
             periodEnd: null,
         });
         expect(await writer.put(ORG, open)).toEqual({ verdict: 'stored' });
+    });
+
+    it('stores the limits the push carries, and a same-version push with other limits is stale', async () => {
+        await writer.put(ORG, push());
+        const [row] = await sql`
+            select max_running, max_queued, max_wall_seconds, max_tokens, max_storage_bytes
+            from org_plan where org_id = ${ORG}`;
+        expect(row).toEqual({
+            max_running: 4,
+            max_queued: 50,
+            max_wall_seconds: 7200,
+            max_tokens: '50000000',
+            max_storage_bytes: '10737418240',
+        });
+        expect(await writer.put(ORG, push())).toEqual({ verdict: 'replayed' });
+        expect(await writer.put(ORG, push({ maxQueued: 51 }))).toEqual({ verdict: 'stale', currentVersion: 1 });
+        expect(await writer.put(ORG, push({ maxTokens: 1 }))).toEqual({ verdict: 'stale', currentVersion: 1 });
+    });
+
+    it("stores an Enterprise retention window, and a push that leaves it out stores the board's default", async () => {
+        await writer.put(ORG, push({ plan: 'enterprise', maxRetentionDays: 400 }));
+        const days = async () =>
+            (await sql<{ d: number | null }[]>`select max_retention_days as d from org_plan where org_id = ${ORG}`)[0]
+                ?.d;
+        expect(await days()).toBe(400);
+        expect(await writer.put(ORG, push({ plan: 'enterprise', maxRetentionDays: 400 }))).toEqual({
+            verdict: 'replayed',
+        });
+        expect(await writer.put(ORG, push({ plan: 'enterprise', maxRetentionDays: 401 }))).toEqual({
+            verdict: 'stale',
+            currentVersion: 1,
+        });
+        await writer.put(ORG, push({ version: 2 }));
+        expect(await days()).toBeNull();
     });
 
     it('a newer version overwrites', async () => {

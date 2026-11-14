@@ -209,6 +209,8 @@ COPY --from=common branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
 # The agent it reports as: a root-owned read-only file, not env a task could override.
 RUN printf '%s\n' opencode >/usr/local/bin/branch-reporter-agent && chmod 0444 /usr/local/bin/branch-reporter-agent
 COPY rate-limit-watch.cjs /usr/local/bin/rate-limit-watch.cjs
+# The telemetry credential helper (otel-credential.cjs): the entrypoint's private, credentialed copy of otel.json.
+COPY otel-credential.cjs /usr/local/bin/otel-credential.cjs
 # The cooperative Stop (issue #442): the mailbox agent copies the task supervisor's Stop into the
 # stop marker, the baked factory-stop plugin (registered in opencode.json) reads it at each step
 # boundary. Root-owned like the other baked plugins, so the agent cannot edit the plugin out of its
@@ -223,7 +225,7 @@ COPY --from=common connection-ask.cjs /usr/local/bin/connection-ask.cjs
 COPY --from=common skill-view.cjs /usr/local/bin/skill-view.cjs
 COPY --from=common gh-wrapper.sh /usr/local/bin/gh
 COPY stop-plugin/ /usr/local/lib/node_modules/factory-stop-plugin/
-RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/skill-view.cjs /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/ctl-agent.cjs
+RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/skill-view.cjs /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/otel-credential.cjs /usr/local/bin/ctl-agent.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
 # the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in

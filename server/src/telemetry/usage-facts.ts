@@ -16,6 +16,7 @@ import {
     type UsageInput,
     type UserRef,
 } from '@factory-ai/core';
+import { setOrg } from '../db/org-sql.js';
 import type { CanonicalField } from './metric-map.js';
 
 export { readGlobalReconciliation } from './usage-reconciliation.js';
@@ -59,9 +60,6 @@ export interface UsageFactsOptions {
     /** Also read the edit-decision points (run activity); off by default, the stats read never needs them. */
     edits?: boolean;
 }
-
-/** The placeholder org of a session_branch row no organization claimed (005_organizations.sql): evidence for nobody. */
-export const UNCLAIMED_ORG = '__unclaimed__';
 
 const TOKEN_FIELDS = ['tokens_input', 'tokens_output', 'tokens_cacheRead', 'tokens_cacheCreation'] as const;
 const EDIT_FIELDS = ['edits_accept', 'edits_reject'] as const;
@@ -147,7 +145,8 @@ const observationOf = (r: ObservationRow): TokenObservation => ({
  * Every read is bound to the tenant before it reaches memory: a session id is read only when the
  * organization has board or branch evidence for it, and a session id any OTHER organization also
  * has evidence for is dropped whole (evidence, points, spans) - it appears in no tenant payload,
- * not even as a count. A session with no evidence anywhere is never read.
+ * not even as a count. A session with no evidence anywhere is never read. Points, spans and field totals are only
+ * the ones the organization itself wrote (`metric_point.org_id`).
  */
 export async function readUsageFacts(
     tx: TransactionSql,
@@ -155,6 +154,8 @@ export async function readUsageFacts(
     options: UsageFactsOptions = {}
 ): Promise<UsageFacts> {
     const started = Date.now();
+    // The org every read below runs as: the policies, and the foreign-session check, answer for it alone.
+    await setOrg(tx, orgId);
     const { taskIds, edits = false } = options;
     const sessionIds = taskIds
         ? tx`select distinct s.session_id
@@ -184,12 +185,12 @@ export async function readUsageFacts(
             select distinct agent, session_id, repo from session_branch
             where org_id = ${orgId} and session_id in (${sessionIds})
         `,
+        // Another organization's evidence is past this org's policy: a definer function answers one boolean per id.
         tx<{ session_id: string }[]>`
-            select session_id from job_execution_session
-            where org_id <> ${orgId} and session_id in (${sessionIds})
-            union
-            select session_id from session_branch
-            where org_id not in (${orgId}, ${UNCLAIMED_ORG}) and session_id in (${sessionIds})
+            select f.session_id
+            from (select array(${sessionIds}) as ids) s,
+                 unnest(s.ids, bellows_sessions_foreign(s.ids)) as f(session_id, held)
+            where f.held
         `,
     ]);
 
@@ -212,8 +213,9 @@ export async function readUsageFacts(
         ).values(),
     ];
     const ownedSessions = [...new Set([...anyAgent, ...pairs.map((p) => p.sessionId)])];
-    // The leading session filter is index-friendly; the OR below then narrows those rows to owned keys.
-    const ownedKeys = tx`(session_id = any(${tx.array(ownedSessions)}::text[]) and (session_id = any(${tx.array(anyAgent)}::text[])
+    // The leading session filter is index-friendly; the OR below then narrows those rows to owned keys. Only the points
+    // this organization wrote: another org's points on an owned key (or a null-org point) are never its usage.
+    const ownedKeys = tx`(org_id = ${orgId} and session_id = any(${tx.array(ownedSessions)}::text[]) and (session_id = any(${tx.array(anyAgent)}::text[])
         or (agent, session_id) in (select * from unnest(${tx.array(pairs.map((p) => p.agent))}::text[], ${tx.array(pairs.map((p) => p.sessionId))}::text[]))))`;
     const [allObservationRows, allSpanRows, allFieldRows] = await Promise.all([
         tx<ObservationRow[]>`

@@ -1,0 +1,48 @@
+---
+title: "Data retention"
+description: "How long Bellows keeps your tasks, logs, transcripts and files, and what is deleted when the window ends."
+---
+
+Your organization's plan sets how long a finished task is kept. The window starts when the task's last run ends, counting every follow-up, retry and review. When it ends, Bellows deletes the whole task.
+
+## Windows
+
+| Plan | Kept for |
+| --- | --- |
+| Free | 7 days |
+| Pro | 180 days |
+| Enterprise | The number of days in your agreement |
+| Self-hosted, no plan | Forever, unless the operator sets a default window |
+
+**Settings → Organization** shows your window. A finished task's page shows the date it will be deleted.
+
+A task that is still queued, running, waiting for your answer or waiting on a pull request is never deleted. Neither is a task interrupted because the organization was suspended: it resumes when the organization is reactivated. While the organization is suspended, nothing is deleted.
+
+## What is deleted
+
+- The task, its follow-ups, retries and reviews, with their status, questions, answers and gate results.
+- Run logs, agent transcripts and checkpoints.
+- Files attached to the task.
+- The task's pull request links and notifications.
+- A batch, once every task in it is past the window.
+- Usage telemetry and branch records older than the window.
+- The runner's working copy of the repository.
+
+Your repository, branches and pull requests on GitHub are not touched.
+
+## What is kept
+
+- The [audit log](/guides/audit-log), for as long as the organization exists.
+- Usage records used for billing: which run used how many minutes, by whom and on which repository. They hold no prompt, log or code.
+- Settings: variables, secrets, executors, connections, skills, workflows and members.
+
+To keep a copy of a task before its window ends, download the [organization export](/guides/export).
+
+## Changing plans
+
+- **A longer window applies at once.**
+- **A shorter window applies 30 days after the change.** Settings → Organization shows the new window and the date it takes effect, and the change is written to the audit log as `org.retention_downgrade`. Download an export in that time to keep anything older.
+
+## Backups
+
+Deleted data can remain in Bellows Cloud's database backups and server logs until those expire on their own schedule.

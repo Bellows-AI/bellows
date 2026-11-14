@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { orgSql } from '../db/org-sql.js';
 import type { SecretStore } from '../secrets/secret-store.js';
 import { type AuthorizationFlow, createAuthorizationFlow } from './authorization-flow.js';
 import type { AuthorizationFlowDeps } from './authorization-types.js';
@@ -19,7 +20,10 @@ export const INTEGRATION_RECOVERY_INTERVAL_MS = 60_000;
 export const INTEGRATION_RECOVERY_LIMIT = 50;
 
 export interface IntegrationRuntimeDeps {
+    /** The request pool: each org's lineage, flow and resolver run on it scoped to their org (`orgSql`). */
     sql: Sql;
+    /** The cross-org pool: the recovery pass enumerates every org's rows left mid-exchange. */
+    crossOrgSql: Sql;
     secrets: SecretStore;
     providers: OAuthProviderLookup;
     clients: AuthorizationFlowDeps['clients'];
@@ -30,6 +34,7 @@ export interface IntegrationRuntimeDeps {
 }
 
 export interface IntegrationRuntime {
+    /** The cross-org pool the recovery pass enumerates on. */
     readonly sql: Sql;
     readonly log: (line: Record<string, unknown>) => void;
     lineageOf(orgId: string): GrantLineage;
@@ -50,7 +55,7 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
         let lineage = lineages.get(orgId);
         if (!lineage) {
             lineage = createGrantLineage({
-                sql: deps.sql,
+                sql: orgSql(deps.sql, orgId),
                 orgId,
                 secrets: deps.secrets,
                 providers: deps.providers,
@@ -65,7 +70,7 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
         let flow = flows.get(orgId);
         if (!flow) {
             flow = createAuthorizationFlow({
-                sql: deps.sql,
+                sql: orgSql(deps.sql, orgId),
                 orgId,
                 secrets: deps.secrets,
                 lineage: lineageOf(orgId),
@@ -82,7 +87,7 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
         let resolver = resolvers.get(orgId);
         if (!resolver) {
             resolver = createCredentialResolver({
-                sql: deps.sql,
+                sql: orgSql(deps.sql, orgId),
                 orgId,
                 secrets: deps.secrets,
                 lineage: lineageOf(orgId),
@@ -93,7 +98,7 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
         return resolver;
     };
     return {
-        sql: deps.sql,
+        sql: deps.crossOrgSql,
         log,
         lineageOf,
         flowOf,

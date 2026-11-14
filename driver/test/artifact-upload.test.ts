@@ -256,7 +256,7 @@ describe('the board’s artifact calls', () => {
         createBoard({
             url: 'http://board.test',
             leaseSeconds: 60,
-            token: 'worker-secret',
+            credential: () => 'worker-secret',
             fetch: (async (url: string, init: RequestInit) => {
                 calls.push({ url, init });
                 return new Response(JSON.stringify(body), { status });
@@ -308,6 +308,17 @@ describe('the board’s artifact calls', () => {
             answering(503, { code: 'UNAVAILABLE' }).putArtifactChunk(job, REF, 0, Buffer.from('x'))
         ).rejects.toThrow(/503/);
     });
+
+    it.each([401, 403])(
+        'throws on a refused driver credential (%i), never a rejection: the caller retries',
+        async (status) => {
+            const manifest = {} as ArtifactManifest;
+            await expect(answering(status, {}).putArtifactChunk(job, REF, 0, Buffer.from('x'))).rejects.toThrow(
+                String(status)
+            );
+            await expect(answering(status, {}).finalizeArtifact(job, REF, manifest)).rejects.toThrow(String(status));
+        }
+    );
 
     it('finalizes with the claim sequence in the body', async () => {
         calls.length = 0;

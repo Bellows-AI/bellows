@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { createBoard } from './board/board.js';
+import { boardCredentialOf } from './board-credential.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
 import { createDockerReaper } from './docker/docker-reaper.js';
 import { boardIdentity } from './task-volume.js';
@@ -48,7 +49,8 @@ const metrics = createDriverMetrics({ boardUrl: config.boardUrl });
 const board = createBoard({
     url: config.boardUrl,
     leaseSeconds: config.leaseSeconds,
-    token: config.boardToken,
+    // Read for every call: a rotated DRIVER_CREDENTIAL_FILE takes effect with no restart.
+    credential: boardCredentialOf(config),
     fetch: metrics.fetch,
     onMalformedClaim: (fields) => {
         console.error(`[driver] the board delivered a malformed claim (${fields.join(', ')}); left to its lease`);
@@ -150,7 +152,7 @@ const metricsServer =
         : createMetricsServer({
               host: config.gateListenHost,
               port: config.metricsPort,
-              token: config.boardToken,
+              token: config.metricsToken,
               render: () => metrics.render(),
           });
 if (metricsServer) console.log(`[driver] metrics on ${config.gateListenHost}:${await metricsServer.listen()}`);

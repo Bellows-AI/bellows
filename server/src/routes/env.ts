@@ -1,10 +1,18 @@
 import {
+    CLOUD,
+    CLOUD_CREDENTIAL_MESSAGE,
+    type DeploymentMode,
     ENV_NAME,
     ENV_NAME_LIMIT,
     ENV_VALUE_LIMIT,
+    credentialRedirectMessage,
     ERROR_CODES,
+    forbiddenCredentialIn,
+    isCredentialRedirectMessage,
     isReservedEnvName,
     MAX_ENV_VARS_PER_SCOPE,
+    redirectsPlatformCredential,
+    STORED_CREDENTIAL_PREFIX,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -88,7 +96,7 @@ function parseVarEntry(entry: unknown): EnvVarEntry | string {
  * Structural validation for a vars list; the client's copy is UX only. Returns the list or the
  * reason it was refused — the workspace route's parseExecutors shape.
  */
-function parseVars(raw: unknown): EnvVarEntry[] | string {
+function parseVars(raw: unknown, deploymentMode: DeploymentMode): EnvVarEntry[] | string {
     const list = jsonBody(raw).vars;
     if (!Array.isArray(list)) return 'vars must be an array of { name, value, isSecret }';
     if (list.length > MAX_ENV_VARS_PER_SCOPE) {
@@ -100,6 +108,22 @@ function parseVars(raw: unknown): EnvVarEntry[] | string {
         if (typeof one === 'string') return one;
         parsed.push(one);
     }
+    // Cloud refuses a Claude subscription OAuth token by NAME; the message never carries a value.
+    if (
+        deploymentMode === CLOUD &&
+        forbiddenCredentialIn(Object.fromEntries(parsed.map((v) => [v.name, '']))) !== null
+    ) {
+        return CLOUD_CREDENTIAL_MESSAGE;
+    }
+    // A redirect of the deployment's model credential needs the member's own key in the same list; a
+    // kept secret (`value: null`) is set, so it counts.
+    const redirect =
+        deploymentMode === CLOUD
+            ? redirectsPlatformCredential(
+                  Object.fromEntries(parsed.map((v) => [v.name, v.value ?? STORED_CREDENTIAL_PREFIX]))
+              )
+            : null;
+    if (redirect !== null) return credentialRedirectMessage(redirect);
     const names = new Set(parsed.map((entry) => entry.name));
     if (names.size !== parsed.length) return 'variable names must be unique within one scope';
     return parsed;
@@ -135,7 +159,8 @@ function repoSegmentReason(repo: Repo): string | null {
  */
 async function validatePutRepoRequest(
     request: FastifyRequest,
-    repos: OrgRuntime['repos']
+    repos: OrgRuntime['repos'],
+    deploymentMode: DeploymentMode
 ): Promise<
     { ok: true; repo: Repo; vars: EnvVarEntry[] } | { ok: false; code: string; message: string; status?: number }
 > {
@@ -143,7 +168,7 @@ async function validatePutRepoRequest(
     if (typeof repo === 'string') return { ok: false, code: ERROR_CODES.BAD_BODY, message: repo };
     const segmentReason = repoSegmentReason(repo);
     if (segmentReason) return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: segmentReason };
-    const vars = parseVars(request.body);
+    const vars = parseVars(request.body, deploymentMode);
     if (typeof vars === 'string') return { ok: false, code: varsCode(vars), message: vars };
     const visible = await checkReposVisible(repos, [repo], { subject: 'the repository' });
     if (!visible.ok) return visible;
@@ -161,7 +186,7 @@ export interface EnvRoutesDeps {
 }
 
 export const envRoutes =
-    ({ config: _config, orgs }: EnvRoutesDeps): FastifyPluginAsync =>
+    ({ config, orgs }: EnvRoutesDeps): FastifyPluginAsync =>
     async (app) => {
         /**
          * The caller's org env context, narrowed to what these routes touch — no runtime (no such
@@ -186,7 +211,7 @@ export const envRoutes =
             const rt = await runtimeOf(request);
             if (!rt) return noEnvStore(reply);
 
-            const vars = parseVars(request.body);
+            const vars = parseVars(request.body, config.deploymentMode);
             if (typeof vars === 'string') {
                 return bad(reply, varsCode(vars), vars);
             }
@@ -225,11 +250,11 @@ export const envRoutes =
             });
         });
 
-        // The "Core secrets" scope: one list for the whole organization. Written by any member —
-        // installation access is membership, and there are no roles above member to gate it with.
+        // The "Core secrets" scope: one list for the whole organization, so an `admin` row in
+        // ROUTE_CLASSES: the auth hook refuses a member before this runs.
         app.put('/api/env/org', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-            return putScope(request, reply, async (store, vars) => {
-                await store.replaceOrg(vars);
+            return putScope(request, reply, async (store, vars, caller) => {
+                await store.replaceOrg(caller.user.id, vars);
                 return store.listOrg();
             });
         });
@@ -243,7 +268,7 @@ export const envRoutes =
         });
 
         // Org-wide per-repository scope: one configuration per repository, applied to every
-        // member's runs in it — the GitHub Actions precedent.
+        // member's runs in it — the GitHub Actions precedent. An `admin` row, like the org scope.
         app.put('/api/env/repo', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
@@ -251,7 +276,7 @@ export const envRoutes =
             if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
-            const parsed = await validatePutRepoRequest(request, rt.repos);
+            const parsed = await validatePutRepoRequest(request, rt.repos, config.deploymentMode);
             if (!parsed.ok) return bad(reply, parsed.code, parsed.message, parsed.status);
             const { repo, vars } = parsed;
 
@@ -259,7 +284,7 @@ export const envRoutes =
                 reply,
                 (e) => request.log.error({ err: e }),
                 async () => {
-                    await store.replaceRepo(repo.owner, repo.name, vars);
+                    await store.replaceRepo(caller.user.id, repo.owner, repo.name, vars);
                     return store.listRepo(repo.owner, repo.name);
                 }
             );
@@ -276,6 +301,8 @@ function varsCode(reason: string): string {
     if (reason.includes('exceeds 255 characters')) return ERROR_CODES.BAD_ENV_NAME;
     if (reason.endsWith('is not a legal environment variable name')) return ERROR_CODES.BAD_ENV_NAME;
     if (reason.endsWith('is reserved by the runner')) return ERROR_CODES.RESERVED_ENV_NAME;
+    if (reason === CLOUD_CREDENTIAL_MESSAGE) return ERROR_CODES.CLOUD_CREDENTIAL_REFUSED;
+    if (isCredentialRedirectMessage(reason)) return ERROR_CODES.CREDENTIAL_REDIRECT_REFUSED;
     if (reason.includes('only a secret may be left blank')) return ERROR_CODES.BAD_VALUE;
     if (reason.startsWith('variable names must be unique')) return ERROR_CODES.ENV_NAME_CONFLICT;
     return ERROR_CODES.BAD_BODY;

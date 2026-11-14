@@ -9,6 +9,7 @@ import type { SubmittedFiles } from '../api/taskWrites.js';
 import type { UseTasks } from '../api/useTasks.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { BatchBacklink } from '../components/BatchBacklink.js';
+import { TaskDeletionNote } from '../components/TaskDeletionNote.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
 import { TaskRenameDialog } from '../components/TaskRenameDialog.js';
 import { TaskControls, TaskHeader } from '../panels/TaskHeader.js';
@@ -303,6 +304,7 @@ export function TaskDetailPage() {
                     <>
                         <TaskHeader jobs={detail.jobs} />
                         <BatchBacklink rootId={detail.jobs?.[0]?.id ?? null} enabled={session?.batches === true} />
+                        <TaskDeletionNote jobs={detail.jobs} />
                     </>
                 }
                 controls={

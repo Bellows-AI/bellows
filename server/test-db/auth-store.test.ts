@@ -439,7 +439,8 @@ describe.skipIf(!enabled)('the stored selection (issue 125)', () => {
             { id: SECOND_ORG, name: SECOND_ORG },
         ]);
 
-        expect(await store.storedSelection(caller.user.githubUserId)).toEqual([ORG, SECOND_ORG]);
+        // A set: no caller reads its order (the callback re-orders by the installation report).
+        expect((await store.storedSelection(caller.user.githubUserId)).sort()).toEqual([ORG, SECOND_ORG].sort());
 
         // A GitHub-side removal plus a narrowing sign-in prunes the answer with it.
         await store.signIn(identity(ACCOUNT_SEQ, 'chooser'), SECOND_ORG, [{ id: SECOND_ORG, name: SECOND_ORG }]);
@@ -596,12 +597,12 @@ describe.skipIf(!enabled)('member role management (issue 410)', () => {
         const admin = await member(50, 'the-admin');
         const memberUser = await member(51, 'the-member');
 
-        await expect(store.setMemberRole(ORG, memberUser.user.id, 'admin')).resolves.toBe('updated');
+        await expect(store.setMemberRole(ORG, memberUser.user.id, 'admin', admin.user.id)).resolves.toBe('updated');
         expect(await store.listMembers(ORG)).toEqual(
             expect.arrayContaining([expect.objectContaining({ userId: memberUser.user.id, role: 'admin' })])
         );
 
-        await expect(store.setMemberRole(ORG, memberUser.user.id, 'member')).resolves.toBe('updated');
+        await expect(store.setMemberRole(ORG, memberUser.user.id, 'member', admin.user.id)).resolves.toBe('updated');
         expect(await store.listMembers(ORG)).toEqual(
             expect.arrayContaining([expect.objectContaining({ userId: memberUser.user.id, role: 'member' })])
         );
@@ -615,7 +616,7 @@ describe.skipIf(!enabled)('member role management (issue 410)', () => {
         const admin = await member(52, 'last-admin-here');
         await member(53, 'plain-member');
 
-        await expect(store.setMemberRole(ORG, admin.user.id, 'member')).resolves.toBe('last-admin');
+        await expect(store.setMemberRole(ORG, admin.user.id, 'member', admin.user.id)).resolves.toBe('last-admin');
         expect(await store.listMembers(ORG)).toEqual(
             expect.arrayContaining([expect.objectContaining({ userId: admin.user.id, role: 'admin' })])
         );
@@ -625,7 +626,7 @@ describe.skipIf(!enabled)('member role management (issue 410)', () => {
         const first = await member(54, 'first-admin');
         const second = await member(55, 'second-admin');
 
-        await expect(store.setMemberRole(ORG, second.user.id, 'member')).resolves.toBe('updated');
+        await expect(store.setMemberRole(ORG, second.user.id, 'member', first.user.id)).resolves.toBe('updated');
         expect(await store.listMembers(ORG)).toEqual(
             expect.arrayContaining([
                 expect.objectContaining({ userId: second.user.id, role: 'member' }),
@@ -638,7 +639,7 @@ describe.skipIf(!enabled)('member role management (issue 410)', () => {
         const outsider = await member(56, 'elsewhere-org-admin', [{ id: SECOND_ORG, name: SECOND_ORG }]);
         await member(57, 'org-admin');
 
-        await expect(store.setMemberRole(ORG, outsider.user.id, 'member')).resolves.toBe('missing');
+        await expect(store.setMemberRole(ORG, outsider.user.id, 'member', outsider.user.id)).resolves.toBe('missing');
     });
 
     it('lists the roster of one org only, login-ordered, with the fields the route serves', async () => {

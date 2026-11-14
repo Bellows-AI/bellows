@@ -26,7 +26,7 @@ function recorder(respond: () => Response) {
 }
 
 const boardOn = (fetch: typeof globalThis.fetch, token?: string) =>
-    createBoard({ url: 'http://board', leaseSeconds: 300, token, fetch });
+    createBoard({ url: 'http://board', leaseSeconds: 300, ...(token ? { credential: () => token } : {}), fetch });
 
 const write = {
     runClaimSeq: 2,

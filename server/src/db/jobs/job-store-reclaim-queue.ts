@@ -3,6 +3,7 @@
  * verdict-time reclaim a completing worker holds. The worker half (claim, ack, renew) is `job-store-reclaims.ts`.
  */
 
+import { waitAdvisoryXactLock } from '../pool.js';
 import type { TransactionSql } from 'postgres';
 import { doneFragment, terminalFragment } from './job-store-sql-fragments.js';
 import { workspacePathFor } from './job-store-rows.js';
@@ -81,7 +82,7 @@ export async function issueVerdictReclaim(
     rootJobId: string,
     { worker, leaseToken }: { worker: string | null; leaseToken: string }
 ): Promise<string | null> {
-    await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+    await waitAdvisoryXactLock(tx, rootJobId);
     const done = await tx`
         select 1 from job where org_id = ${orgId} and root_job_id = ${rootJobId} and ${doneFragment(tx)} limit 1
     `;

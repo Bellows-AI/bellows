@@ -79,6 +79,8 @@ export interface ExecutorDialogProps {
      * nothing to offer — no declared class, and none on the row — renders none either.
      */
     runnerClasses?: readonly RunnerClassOption[];
+    /** Bellows Cloud: the credentials note adds that an OAuth token is refused. */
+    cloud?: boolean;
 }
 
 /** What to do once the reader answers Discard changes. */
@@ -93,6 +95,7 @@ export function ExecutorDialog({
     onSaved,
     saving,
     runnerClasses,
+    cloud = false,
 }: ExecutorDialogProps) {
     const [baseline, setBaseline] = useState<ExecutorDraft>(() => initialExecutorDraft(undefined));
     const [draft, setDraft] = useState<ExecutorDraft>(baseline);
@@ -208,7 +211,7 @@ export function ExecutorDialog({
                         declared={runnerClasses}
                         onChange={(runnerClass) => setDraft({ ...draft, runnerClass })}
                     />
-                    <CredentialsNote href={envHref} onFollow={followEnvLink} />
+                    <CredentialsNote href={envHref} onFollow={followEnvLink} cloud={cloud} />
 
                     <AdvancedConfiguration
                         ids={ids}

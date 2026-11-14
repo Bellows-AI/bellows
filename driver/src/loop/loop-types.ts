@@ -171,6 +171,8 @@ export type EndDecision =
           nodeLoss?: true;
           /** A docker class's dockerd lost under a failed gate: the board refunds two in a row, not a third. */
           daemonLoss?: true;
+          /** The task's organization is suspended: released outside every budget, resumed on its reactivation. */
+          orgSuspended?: true;
           /** The work that must land while the lease still lets it, before the hand-back (the output tail, the session). */
           beforeInterrupt?: () => Promise<void>;
       }

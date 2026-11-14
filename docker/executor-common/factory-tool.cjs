@@ -49,6 +49,8 @@ const AGENT_OUT_MAILBOX = '/factory/out';
 const STICKY_SHARED_MODE = 0o1777;
 /** Never passed to a tool: the CLI's own shell override, and the run-control token (control-proxy.cjs). */
 const WITHHELD = ['CLAUDE_CODE_SHELL'];
+/** Never passed to a tool either: the attempt's telemetry export credential, under every OTLP header variable. */
+const OTLP_HEADERS = /^OTEL_EXPORTER_OTLP_(?:[A-Z]+_)?HEADERS$/;
 const SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'SIGKILL'];
 /** `sh`'s "cannot execute": the command never started, and nothing ran as the CLI uid instead. */
 const REFUSED_EXIT = 126;
@@ -109,13 +111,15 @@ function parseRequest(payload) {
 
 /**
  * The tool's environment: the CLI's, its own HOME, shell and compile cache, a TMPDIR both uids share
- * unless the run named its own, and nothing withheld.
+ * unless the run named its own, and nothing withheld — the CLI's shell override and its telemetry
+ * credential.
  */
 function toolEnv(env, sharedTmp = SHARED_TMP) {
     const out = { ...env, HOME: TOOL_HOME, SHELL: TOOL_SHELL, NODE_COMPILE_CACHE: TOOL_COMPILE_CACHE };
     // A null shared TMPDIR is one the broker could not make: the tool keeps the TMPDIR it had.
     if (sharedTmp && (!env.TMPDIR || env.TMPDIR === '/tmp')) out.TMPDIR = sharedTmp;
     for (const name of WITHHELD) delete out[name];
+    for (const name of Object.keys(out)) if (OTLP_HEADERS.test(name)) delete out[name];
     return out;
 }
 

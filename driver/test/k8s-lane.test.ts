@@ -808,9 +808,11 @@ describe('kind lane bench phase (issue #831)', () => {
         expect(bench).toContain('scripts/bench-summary.mjs');
     });
 
-    it('keeps the board token out of every argv and reads it inside the pod', () => {
-        expect(bench).toContain('process.env.JOB_BOARD_TOKEN');
-        expect(bench).not.toMatch(/JOB_BOARD_TOKEN=|\$JOB_BOARD_TOKEN|\$\{JOB_BOARD_TOKEN/);
+    it('keeps every scrape bearer out of every argv and pod environment: the scrape reads it from stdin', () => {
+        expect(bench).toContain('readFileSync(0, "utf8")');
+        expect(bench).toContain('<<<"$bearer"');
+        expect(bench).not.toMatch(/node -e "\$BENCH_SCRAPE_JS" [^<\n]*\$\{?(CREDENTIAL|METRICS_TOKEN|bearer)/);
+        expect(bench).not.toContain('JOB_BOARD_TOKEN');
     });
 
     it('bounds every cluster call and every wait, and reads a failed read as another poll', () => {

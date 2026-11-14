@@ -8,6 +8,8 @@ const WIRE = {
     attempts: 1,
     claimSeq: 1,
     leaseToken: 'token-1',
+    // The telemetry export credential the runner's config is rendered with: no claim runs without it.
+    ingestToken: 'ingest-1',
     leaseExpiresAt: '2026-08-21T12:05:00.000Z',
 };
 
@@ -20,6 +22,13 @@ describe('parseClaim', () => {
     it('reads a well-formed claim into the job', () => {
         const parsed = parseClaim({ ...WIRE, env: { A: '1' }, repo: 'o/r', agent: false, baseBranch: null });
         expect('claim' in parsed && parsed.claim.id).toBe('job-1');
+    });
+
+    it('keeps the organization key the board issued, and drops one that is not a string', () => {
+        const keyed = parseClaim({ ...WIRE, orgKey: 'org-key' });
+        expect('claim' in keyed && keyed.claim.orgKey).toBe('org-key');
+        const odd = parseClaim({ ...WIRE, orgKey: 7 });
+        expect('claim' in odd && 'orgKey' in odd.claim).toBe(false);
     });
 
     it.each(Object.keys(WIRE))('refuses a claim missing %s', (field) => {

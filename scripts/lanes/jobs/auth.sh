@@ -16,13 +16,15 @@ server_pid=""
 
 # Loopback, not LANE_HOST: only this script's own requests reach this board, never a container.
 AUTH_BASE="http://127.0.0.1:$AUTH_PORT"
+# The lane driver's own credential: the board is started with its SHA-256 only.
+AUTH_CREDENTIAL="drv_$(printf '%064d' 1)"
 
 env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$AUTH_PORT" HOST=127.0.0.1 \
     REPO_CLONE_BASE="$PLAN_BASE" \
     AUTH_MODE=github \
     GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
     SESSION_SECRET=a-job-harness-session-secret-32-chars \
-    JOB_BOARD_TOKEN=a-job-harness-board-secret-32-chars \
+    DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$AUTH_CREDENTIAL")" \
     node server/dist/offline.js >"$work/auth-server.log" 2>&1 &
 server_pid=$!
 
@@ -49,14 +51,13 @@ else
     expect_status_at "$AUTH_BASE" 'queueing a job needs a login' 401 POST /api/jobs '{"command":"rm -rf /"}'
     expect_status_at "$AUTH_BASE" 'claiming needs a worker token' 401 POST /api/jobs/claim '{"worker":"driver-1"}'
 
-    # The shared secret the board was started with above — the same value in both processes is
-    # the whole credential model now, so the harness presents exactly what the board holds.
-    token=a-job-harness-board-secret-32-chars
+    # The credential whose SHA-256 the board recorded at boot: the board never held this value.
+    token="$AUTH_CREDENTIAL"
 
     claim="$(AUTH_HEADER="Bearer $token" BASE="$AUTH_BASE" api POST /api/jobs/claim '{"worker":"harness-driver"}')"
     case "$(status "$claim")" in
-    200 | 204) ok 'the board secret claims' ;;
-    *) bad 'the board secret claims' "got $(status "$claim"): $(body "$claim")" ;;
+    200 | 204) ok 'the driver credential claims' ;;
+    *) bad 'the driver credential claims' "got $(status "$claim"): $(body "$claim")" ;;
     esac
 
     # The other direction, and the one that is easy to get wrong: a credential that may claim work

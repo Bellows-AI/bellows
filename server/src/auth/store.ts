@@ -1,8 +1,13 @@
 import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
+import type { MembershipVerdict } from './membership.js';
 import type { Scope } from './route-class.js';
+import { promoteAdmins } from './admin-promotion.js';
+import { buildRemovalMethods, endMemberships, SYSTEM_ACTOR } from './member-removal.js';
 import { hashToken, mintToken } from './session.js';
+import { type AuditEventView, type AuditRange, readAuditEvents, recordAudit, userActor } from '../db/audit-log.js';
+import { buildOrgStatusMethods, type OrgStatusStore } from '../db/org-status.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
 
 export interface AuthUser {
@@ -34,10 +39,27 @@ export interface MemberView {
     lastLoginAt: string | null;
 }
 
+/** One admin removal of an organization: who, when, and by whom (null once that account is gone). */
+export interface RemovedMemberView {
+    userId: string;
+    githubLogin: string;
+    removedAt: string;
+    removedBy: string | null;
+}
+
 /** One installation-reported organization, as the store sees it: the id and its login label. */
 export interface InstallationRef {
     id: string;
     name: string;
+    /** GitHub's `account.type` (`Organization` or `User`) and `account.id`, when the report carried them. */
+    accountType?: string | null | undefined;
+    accountId?: number | null | undefined;
+}
+
+/** What GitHub answered about each installation at this sign-in (membership.ts), and when it was asked. */
+export interface SignInCheck {
+    verdicts: ReadonlyMap<string, MembershipVerdict>;
+    at: Date;
 }
 
 /**
@@ -78,6 +100,11 @@ export interface Caller {
     sessionHash?: Buffer | undefined;
     /** The id of the personal access token behind this request; absent for every other credential. */
     accessTokenId?: string | undefined;
+    /**
+     * When GitHub was last asked about this membership (null: never); set by the session and personal-token
+     * reads, which re-check it past the TTL (membership-guard.ts).
+     */
+    membershipCheckedAt?: Date | null | undefined;
 }
 
 export type AccessTokenKind = 'personal' | 'org';
@@ -98,7 +125,7 @@ export interface OrgTokenIdentity {
     label: string;
 }
 
-export interface AuthStore {
+export interface AuthStore extends OrgStatusStore {
     /**
      * Binds a GitHub identity to an account and materializes the SELECTION: every
      * installation the caller passes becomes an organization row (id = the installation id, name
@@ -114,7 +141,12 @@ export interface AuthStore {
      * reported by nothing, ever, so it is always in the swept set — the directory is the
      * installations, and a membership outside the selection is residue, not a switchable org.
      */
-    signIn(identity: GitHubIdentity, orgId: string, installations: readonly InstallationRef[]): Promise<Caller>;
+    signIn(
+        identity: GitHubIdentity,
+        orgId: string,
+        installations: readonly InstallationRef[],
+        check?: SignInCheck
+    ): Promise<Caller>;
     /**
      * The account's stored org selection — its membership org ids, by GitHub numeric id.
      * Read-only: an account that abandons the selection screen must leave no rows behind, so the
@@ -151,6 +183,7 @@ export interface AuthStore {
      * for orgs whose checkbox set was actually narrowed.
      */
     replaceTrackedRepos(orgId: string, repos: readonly string[]): Promise<void>;
+    /** A sign-in's session row, and its `auth.sign_in` audit row in the same transaction. */
     createSession(tokenHash: Buffer, userId: string, expiresAt: Date, orgId: string): Promise<void>;
     /**
      * The caller behind a live session token, or null when unknown, expired, unmembered — or
@@ -190,9 +223,29 @@ export interface AuthStore {
      * second one counts the org the first left behind. An org with no admin is the exact
      * hole this issue closes, so the refusal races no one. Outcomes: `updated` (the row now
      * holds `role` — a no-op rewrite included), `last-admin` (refused, row untouched),
-     * `missing` (no such member of this org).
+     * `missing` (no such member of this org). A change of role is audited as `actorId`'s, in the same transaction.
      */
-    setMemberRole(orgId: string, userId: string, role: Role): Promise<'updated' | 'last-admin' | 'missing'>;
+    setMemberRole(
+        orgId: string,
+        userId: string,
+        role: Role,
+        actorId: string
+    ): Promise<'updated' | 'last-admin' | 'missing'>;
+    /**
+     * An admin's removal of a member (member-removal.ts): the block row, then the membership's end with its
+     * sessions and personal tokens, in one transaction. The block keeps the account out at every later sign-in
+     * until `restoreMember`. `last-admin` refuses the org's only admin; `missing` is no such member.
+     */
+    blockMember(orgId: string, userId: string, removedBy: string): Promise<'removed' | 'last-admin' | 'missing'>;
+    /** Lifts an admin's removal (`actorId`'s, audited); `missing` when there was none. The next sign-in admits the account again. */
+    restoreMember(orgId: string, userId: string, actorId: string): Promise<'restored' | 'missing'>;
+    /** The org's removals, login-ordered — what `GET /api/org/members/removed` serves. */
+    listRemovedMembers(orgId: string): Promise<RemovedMemberView[]>;
+    /**
+     * What the invitation read needs: the organization, described for GitHub's member list, and the GitHub ids
+     * of everyone who signed in or was removed. Null when the org has no row.
+     */
+    invitationBasis(orgId: string): Promise<{ org: InstallationRef; githubUserIds: number[] } | null>;
     /** The stand-in account AUTH_MODE=none attributes every request to. */
     localCaller(orgId: string): Promise<Caller | null>;
 
@@ -216,8 +269,11 @@ export interface AuthStore {
     findOrgToken(tokenHash: Buffer): Promise<OrgTokenIdentity | null>;
     listPersonalTokens(orgId: string, userId: string): Promise<AccessTokenView[]>;
     listOrgTokens(orgId: string): Promise<AccessTokenView[]>;
+    /** Mint and revoke are audited in their own transaction: a personal token's actor is its owner. */
     revokePersonalToken(orgId: string, userId: string, id: string): Promise<'revoked' | 'missing'>;
-    revokeOrgToken(orgId: string, id: string): Promise<'revoked' | 'missing'>;
+    revokeOrgToken(orgId: string, id: string, actorId: string): Promise<'revoked' | 'missing'>;
+    /** The org's audit rows in `[from, to)`, oldest first, streamed (docs/persistence.md). */
+    auditEvents(orgId: string, range: AuditRange): AsyncIterable<AuditEventView>;
 }
 
 export interface CallerRow {
@@ -233,6 +289,7 @@ export interface CallerRow {
     role: Role;
     org_id: string;
     org_name: string;
+    checked_at?: Date | null;
 }
 
 interface TokenRow {
@@ -269,9 +326,46 @@ export const toCaller = (row: CallerRow): Caller => ({
     membership: { invitedAt: toIso(row.invited_at), claimedAt: toIso(row.claimed_at) },
     scopes: 'all',
     role: row.role,
+    ...(row.checked_at !== undefined ? { membershipCheckedAt: row.checked_at } : {}),
 });
 
 type Gate = () => Promise<void>;
+
+/** Upserts one organization per installation: the name re-derived, the account kind and id kept when unreported. */
+async function upsertOrganizations(sql: Sql, installations: readonly InstallationRef[]): Promise<void> {
+    await sql`
+        insert into organization (id, name, installation_id, account_type, account_id)
+        select id, name, id::bigint, account_type, account_id
+        from unnest(${installations.map((org) => org.id)}::text[], ${installations.map((org) => org.name)}::text[],
+                    ${installations.map((org) => org.accountType ?? null)}::text[],
+                    ${installations.map((org) => org.accountId ?? null)}::bigint[])
+            as t(id, name, account_type, account_id)
+        on conflict (id) do update set
+            name = excluded.name,
+            installation_id = excluded.installation_id,
+            account_type = coalesce(excluded.account_type, organization.account_type),
+            account_id = coalesce(excluded.account_id, organization.account_id)
+    `;
+}
+
+/**
+ * Which installations a sign-in materializes and how their admin is decided: `admitted` drops a confirmed
+ * non-member, `owners` are the confirmed GitHub owners, `bootstrap` the admitted orgs GitHub gave no
+ * membership answer for (today's first-sign-in rule), `asked` every org a verdict was read for.
+ */
+function admissionOf(installations: readonly InstallationRef[], check: SignInCheck | undefined) {
+    const verdictOf = (id: string) => check?.verdicts.get(id);
+    const admitted = installations.map((org) => org.id).filter((id) => verdictOf(id)?.kind !== 'not-member');
+    return {
+        admitted,
+        owners: admitted.filter((id) => {
+            const verdict = verdictOf(id);
+            return verdict?.kind === 'active' && verdict.owner;
+        }),
+        bootstrap: admitted.filter((id) => verdictOf(id)?.kind !== 'active'),
+        asked: admitted.filter((id) => verdictOf(id) !== undefined),
+    };
+}
 
 /**
  * Sign-in, the selection screen's pending hop, and the stored-selection read: everything that
@@ -297,7 +391,7 @@ function buildIdentityMethods(
     };
 
     return {
-        async signIn(identity, orgId, installations) {
+        async signIn(identity, orgId, installations, check) {
             await gate();
             const login = identity.login.toLowerCase();
 
@@ -323,18 +417,17 @@ function buildIdentityMethods(
             // not only the first, and an account in a dozen installations paid two dozen round
             // trips for it. Still two statements, in this order — `org_membership.org_id` is a FK
             // onto `organization`, so the orgs have to land first.
-            const orgIds = installations.map((org) => org.id);
-            const orgNames = installations.map((org) => org.name);
-            await sql`
-                insert into organization (id, name, installation_id)
-                select id, name, id::bigint from unnest(${orgIds}::text[], ${orgNames}::text[]) as t(id, name)
-                on conflict (id) do update set
-                    name = excluded.name,
-                    installation_id = excluded.installation_id
-            `;
+            await upsertOrganizations(sql, installations);
+            // A confirmed "not a member" (membership.ts) admits nothing, whatever the installation list says;
+            // an admin's removal (`org_membership_removal`) admits nothing until an admin restores it.
+            const plan = admissionOf(installations, check);
+            const orgIds = plan.admitted;
             await sql`
                 insert into org_membership (org_id, github_login, user_id, claimed_at)
                 select id, ${login}, ${userId}::uuid, now() from unnest(${orgIds}::text[]) as t(id)
+                where not exists (
+                    select 1 from org_membership_removal r where r.org_id = t.id and r.user_id = ${userId}::uuid
+                )
                 on conflict (org_id, user_id) do update set github_login = excluded.github_login
             `;
 
@@ -346,27 +439,45 @@ function buildIdentityMethods(
             // first-signers of an installation they can already see, and many admins stay legal.
             // An org whose last admin is swept re-promotes here at the next sign-in, which is the
             // same rule bootstrapping it in the first place.
-            await sql`
-                update org_membership m set role = ${ADMIN_ROLE}
-                from unnest(${orgIds}::text[]) as t(id)
-                where m.org_id = t.id and m.user_id = ${userId}::uuid and m.role = ${MEMBER_ROLE}
-                  and not exists (
-                      select 1 from org_membership a where a.org_id = t.id and a.role = ${ADMIN_ROLE}
-                  )
-            `;
+            //
+            // Only where GitHub gave no membership answer (no `members:read` yet, or the read was
+            // unconfirmed): where it did, admin is the GitHub owner (an `admin` org role, or the
+            // account of a user installation), promoted here and never demoted.
+            await promoteAdmins(sql, userId, plan);
+            if (check) {
+                await sql`
+                    update org_membership set checked_at = ${check.at}
+                    where user_id = ${userId}::uuid and org_id = any(${plan.asked}::text[])
+                `;
+            }
 
             // The materialized fact, re-synced at every sign-in: a membership of an organization
             // GitHub does not report is gone, and with it — through the joins the reads run —
             // this account's sessions' and tokens' reach into that org. Any org, not only known
             // installations: a legacy (pre-#99) org is reported by nothing, ever, so leaving it
             // out of the sweep would list the same account under both ids forever.
-            await sql`
-                delete from org_membership
-                where user_id = ${userId}
-                  and org_id <> all(${installations.map((i) => i.id)})
-            `;
+            await sql.begin(async (tx) => {
+                const gone = await tx<{ org_id: string }[]>`
+                    select org_id from org_membership
+                    where user_id = ${userId} and org_id <> all(${orgIds})
+                    for update
+                `;
+                await endMemberships(
+                    tx,
+                    userId,
+                    gone.map((row) => row.org_id),
+                    { actor: SYSTEM_ACTOR, reason: 'sign-in-sweep' }
+                );
+            });
 
-            const caller = await memberOf(userId, orgId);
+            // The org asked for, or — when that reported installation is refused (an admin's block, a confirmed
+            // non-member) — the first admitted installation that holds. An org outside the report stays an error.
+            let caller = await memberOf(userId, orgId);
+            const refused = installations.some((org) => org.id === orgId);
+            for (const id of refused ? orgIds : []) {
+                if (caller) break;
+                caller = await memberOf(userId, id);
+            }
             if (!caller) throw new Error(`sign-in resolved no membership of "${orgId}" for this account`);
             return caller;
         },
@@ -476,10 +587,13 @@ function buildSessionMethods(
     return {
         async createSession(tokenHash, userId, expiresAt, orgId) {
             await gate();
-            await sql`
-                insert into session (token_hash, user_id, expires_at, org_id)
-                values (${tokenHash}, ${userId}, ${expiresAt}, ${orgId})
-            `;
+            await sql.begin(async (tx) => {
+                await tx`
+                    insert into session (token_hash, user_id, expires_at, org_id)
+                    values (${tokenHash}, ${userId}, ${expiresAt}, ${orgId})
+                `;
+                await recordAudit(tx, { orgId, actor: userActor(userId), action: 'auth.sign_in', target: userId });
+            });
         },
 
         async findSession(tokenHash) {
@@ -487,7 +601,7 @@ function buildSessionMethods(
             const rows = await sql<CallerRow[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role,
+                       m.invited_at, m.claimed_at, m.role, m.checked_at,
                        o.id as org_id, o.name as org_name
                 from session s
                 join app_user u on u.id = s.user_id
@@ -550,13 +664,16 @@ function buildOrgMethods(
 
         async removeMember(orgId, githubUserId) {
             await gate();
-            const rows = await sql<{ user_id: string }[]>`
-                delete from org_membership
-                where org_id = ${orgId}
-                  and user_id in (select id from app_user where github_user_id = ${githubUserId})
-                returning user_id
-            `;
-            return rows.length > 0;
+            return sql.begin(async (tx) => {
+                const users = await tx<{ id: string }[]>`
+                    select id::text as id from app_user where github_user_id = ${githubUserId}
+                `;
+                const user = users[0];
+                if (!user) return false;
+                return (
+                    (await endMemberships(tx, user.id, [orgId], { actor: SYSTEM_ACTOR, reason: 'github-webhook' })) > 0
+                );
+            });
         },
 
         async localCaller(orgId) {
@@ -612,7 +729,7 @@ function buildMemberMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'listMembers'
             }));
         },
 
-        async setMemberRole(orgId, userId, role) {
+        async setMemberRole(orgId, userId, role, actorId) {
             await gate();
             // One statement, race-safe: the `locked` CTE takes row locks on every admin of the
             // org plus the target, so two admins demoting each other concurrently serialize —
@@ -621,7 +738,8 @@ function buildMemberMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'listMembers'
             // then aborts one statement whole and `guard` answers a 503 — no partial state, and
             // the retry is the caller's next click. The demotion runs only when it would not:
             // promoting, demoting a member, or demoting an admin while another one is locked.
-            const rows = await sql<{ target: boolean; changed: boolean }[]>`
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ target: boolean; changed: boolean; previous: Role | null }[]>`
                 with locked as (
                     select user_id, role from org_membership
                     where org_id = ${orgId} and (role = ${ADMIN_ROLE} or user_id = ${userId}::uuid)
@@ -636,12 +754,25 @@ function buildMemberMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'listMembers'
                     returning m.user_id
                 )
                 select exists (select 1 from locked where user_id = ${userId}::uuid) as target,
-                       exists (select 1 from demoted) as changed
+                       exists (select 1 from demoted) as changed,
+                       (select role from locked where user_id = ${userId}::uuid) as previous
             `;
-            const row = rows[0];
-            if (!row) return 'missing';
-            if (row.changed) return 'updated';
-            return row.target ? 'last-admin' : 'missing';
+                const row = rows[0];
+                if (!row) return 'missing' as const;
+                if (!row.changed) return row.target ? ('last-admin' as const) : ('missing' as const);
+                // A rewrite of the role the member already holds changes nothing, so it records nothing.
+                if (row.previous !== role) {
+                    const detail = { from: row.previous, to: role };
+                    await recordAudit(tx, {
+                        orgId,
+                        actor: userActor(actorId),
+                        action: 'member.role',
+                        target: userId,
+                        detail,
+                    });
+                }
+                return 'updated' as const;
+            });
         },
     };
 }
@@ -667,13 +798,23 @@ function buildTokenMethods(
     return {
         async createAccessToken(input) {
             await gate();
-            const rows = await sql<{ id: string }[]>`
-                insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
-                values (${input.orgId}, ${input.kind}, ${input.userId}, ${input.createdBy},
-                        ${input.label}, ${input.tokenHash})
-                returning id
-            `;
-            return { id: rows[0]!.id };
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ id: string }[]>`
+                    insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+                    values (${input.orgId}, ${input.kind}, ${input.userId}, ${input.createdBy},
+                            ${input.label}, ${input.tokenHash})
+                    returning id
+                `;
+                const id = rows[0]!.id;
+                await recordAudit(tx, {
+                    orgId: input.orgId,
+                    actor: userActor(input.createdBy),
+                    action: input.kind === 'personal' ? 'token.personal.mint' : 'token.org.mint',
+                    target: id,
+                    detail: { label: input.label },
+                });
+                return { id };
+            });
         },
 
         async findPersonalToken(tokenHash) {
@@ -692,7 +833,7 @@ function buildTokenMethods(
             const rows = await sql<(CallerRow & { token_id: string })[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role,
+                       m.invited_at, m.claimed_at, m.role, m.checked_at,
                        o.id as org_id, o.name as org_name, t.id as token_id
                 from access_token t
                 join app_user u on u.id = t.user_id
@@ -761,24 +902,32 @@ function buildTokenMethods(
 
         async revokePersonalToken(orgId, userId, id) {
             await gate();
-            const rows = await sql<{ id: string }[]>`
-                update access_token set revoked_at = now()
-                where org_id = ${orgId} and user_id = ${userId} and id = ${id}
-                  and kind = 'personal' and revoked_at is null
-                returning id
-            `;
-            return rows[0] ? 'revoked' : 'missing';
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ id: string }[]>`
+                    update access_token set revoked_at = now()
+                    where org_id = ${orgId} and user_id = ${userId} and id = ${id}
+                      and kind = 'personal' and revoked_at is null
+                    returning id
+                `;
+                if (!rows[0]) return 'missing' as const;
+                await recordAudit(tx, { orgId, actor: userActor(userId), action: 'token.personal.revoke', target: id });
+                return 'revoked' as const;
+            });
         },
 
-        async revokeOrgToken(orgId, id) {
+        async revokeOrgToken(orgId, id, actorId) {
             await gate();
-            const rows = await sql<{ id: string }[]>`
-                update access_token set revoked_at = now()
-                where org_id = ${orgId} and id = ${id}
-                  and kind = 'org' and revoked_at is null
-                returning id
-            `;
-            return rows[0] ? 'revoked' : 'missing';
+            return sql.begin(async (tx) => {
+                const rows = await tx<{ id: string }[]>`
+                    update access_token set revoked_at = now()
+                    where org_id = ${orgId} and id = ${id}
+                      and kind = 'org' and revoked_at is null
+                    returning id
+                `;
+                if (!rows[0]) return 'missing' as const;
+                await recordAudit(tx, { orgId, actor: userActor(actorId), action: 'token.org.revoke', target: id });
+                return 'revoked' as const;
+            });
         },
     };
 }
@@ -806,6 +955,12 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         ...buildSessionMethods(sql, gate),
         ...buildOrgMethods(sql, gate),
         ...buildMemberMethods(sql, gate),
+        ...buildRemovalMethods(sql, gate),
         ...buildTokenMethods(sql, gate),
+        ...buildOrgStatusMethods(sql, gate),
+        async *auditEvents(orgId, range) {
+            await gate();
+            yield* readAuditEvents(sql, orgId, range);
+        },
     };
 }

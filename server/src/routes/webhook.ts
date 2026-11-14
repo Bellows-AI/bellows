@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { AuthStore } from '../auth/store.js';
 import type { JobMergeStore } from '../db/jobs/job-store-merge.js';
+import { INSTALLATION_ACTIONS } from '../db/org-status.js';
 import type { OrgRegistry } from '../orgs.js';
 import { ERROR_CODES, JSON_CONTENT_TYPE } from '@factory-ai/core';
 
@@ -170,6 +171,26 @@ async function handleOrganizationEvent(store: AuthStore, payload: WebhookPayload
     reply.code(HTTP_OK).send({ ok: true });
 }
 
+/**
+ * An App uninstall (`deleted`) or a GitHub suspension (`suspend`) suspends the installation's org with a deletion
+ * deadline and keeps every row; `unsuspend` lifts what the installation set (`org-status.ts`). Every other action,
+ * and a delivery naming no installation, is a 200 that changes nothing. A replay changes nothing either.
+ */
+async function handleInstallationEvent(store: AuthStore, payload: WebhookPayload, reply: FastifyReply): Promise<void> {
+    const installation = payload.installation?.id;
+    const action = INSTALLATION_ACTIONS.find((known) => known === payload.action);
+    if (typeof installation === 'number' && action !== undefined) {
+        await store.setInstallationStatus(String(installation), action);
+    }
+    reply.code(HTTP_OK).send({ ok: true });
+}
+
+/** The events that move an org or its members rather than a PR wait: answered here, never folded. */
+const ORG_EVENTS = new Map<string, (store: AuthStore, payload: WebhookPayload, reply: FastifyReply) => Promise<void>>([
+    ['organization', handleOrganizationEvent],
+    ['installation', handleInstallationEvent],
+]);
+
 interface PrActivity {
     installation: number;
     repo: string;
@@ -309,9 +330,8 @@ export const webhookRoutes =
 
             const event = request.headers['x-github-event'];
 
-            if (event === 'organization') {
-                return handleOrganizationEvent(store, payload, reply);
-            }
+            const orgEvent = ORG_EVENTS.get(String(event));
+            if (orgEvent) return orgEvent(store, payload, reply);
 
             // Any delivery that can move a check or a mergeability asks the observer to re-read,
             // whatever else the delivery does below.

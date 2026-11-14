@@ -1,5 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
-import { timingSafeEqual } from 'node:crypto';
+import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AppConfig, AuthConfig } from '../config.js';
@@ -7,14 +6,16 @@ import { LOCAL_ORG_ID, UUID } from '../identifiers.js';
 import { guard } from '../routes/helpers.js';
 import { MCP_ACCESS_PREFIX, ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { boundCallerOf } from './bridge-binding.js';
+import type { DriverCredentialStore } from './driver-credentials.js';
 import { setAuthInfo } from '../mcp/auth-info.js';
 import { withCaller } from '../mcp/server.js';
 import { originPermitted } from '../mcp/origin.js';
 import { challengeFor, resourceMetadataUrl } from './oauth-challenge.js';
 import type { OAuthStore } from './oauth-store.js';
-import { SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes } from './route-class.js';
+import { OPERATOR_ROLE, SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes, roleOf } from './route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
+import { enforceWorker, secretsMatch } from './worker-auth.js';
 
 /**
  * Who is making a request.
@@ -38,9 +39,10 @@ import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
  */
 export type Principal =
     | { kind: 'user'; caller: Caller }
-    | { kind: 'worker'; orgId: string | null }
+    /** `orgs` is the driver credential's reach: null for the pool, else the only organizations it serves. */
+    | { kind: 'worker'; orgId: string | null; orgs: readonly string[] | null }
     | { kind: 'org'; token: OrgTokenIdentity }
-    | { kind: 'job'; orgId: string };
+    | { kind: 'job'; orgId: string; jobId: string };
 
 declare module 'fastify' {
     interface FastifyRequest {
@@ -59,9 +61,9 @@ const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/reclaims\/(claim|holds)$/,
     /^\/api\/reclaims\/[^/]+\/(ack|renew)$/,
     // `stop`, `follow-up`, `retry`, `done`, `reopen` and `remove` are person actions: the driver
-    // is told to stop through the heartbeat it already holds, and the board secret moving or
+    // is told to stop through the heartbeat it already holds, and a driver credential moving or
     // deleting the audit rows of jobs it never held would be the thread-read hole again.
-    // to stop through the heartbeat it already holds, and the board secret moving or deleting
+    // to stop through the heartbeat it already holds, and a driver credential moving or deleting
     // the audit rows of jobs it never held would be the thread-read hole again.
     /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|interrupt|complete|conclusion|phase-checkpoints?|gate-runs?|pr-operation|output|gates|question|requirements|review|review-read)$/,
     // Artifact uploads: the shared secret authenticates the driver, the claim sequence in the
@@ -102,6 +104,8 @@ const CONNECTOR_ROUTES: readonly RegExp[] = [
 
 export const JOB_ID_HEADER = 'x-factory-job-id';
 export const LEASE_TOKEN_HEADER = 'x-factory-job-lease-token';
+/** With `x-factory-job-id`, a runner's telemetry export credential (`job.ingest_token`). */
+export const INGEST_TOKEN_HEADER = 'x-factory-ingest-token';
 
 /**
  * What an organization token may reach, and nothing else — an allowlist, because a refusal list
@@ -176,7 +180,7 @@ const COMMERCE_ROUTES: readonly RegExp[] = [/^\/api\/commerce\/orgs\/[^/]+\/plan
  */
 const MCP_ROUTES: readonly RegExp[] = [/^\/api\/mcp$/];
 
-type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector' | 'commerce' | 'mcp';
+export type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector' | 'commerce' | 'mcp';
 
 /** Exported so the enforcement test can drive the table rather than re-deriving it. */
 /** `path` is a registered route pattern (`/api/jobs/:id/heartbeat`), not a request URL. */
@@ -221,21 +225,10 @@ const patternOf = (request: FastifyRequest): string | undefined => {
     return pattern?.startsWith('/api/') ? pattern : undefined;
 };
 
-const requirementOf = (request: FastifyRequest): Requirement => {
+export const requirementOf = (request: FastifyRequest): Requirement => {
     const pattern = patternOf(request);
     return pattern === undefined ? fallbackFor(request.url) : requirementFor(pattern);
 };
-
-/** Constant-time equality for two secrets that arrived as strings. */
-function secretsMatch(provided: string, expected: string): boolean {
-    const a = Buffer.from(provided);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-}
-
-/** A worker pattern that names its row: the job or reclaim id is the router's `:id` param. */
-const ROW_PATTERN = /^\/api\/(jobs|reclaims)\/:id\//;
 
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
@@ -262,6 +255,11 @@ export interface AuthPluginDeps {
      */
     orgOfLease?: ((jobId: string, leaseToken: string) => Promise<string | null>) | undefined;
     /**
+     * The org-less resolver for the OTLP routes' runner credential: a job id and that job's ingest
+     * token (`createOrgOfIngest`). Absent in tests that predate it, where no runner export resolves.
+     */
+    orgOfIngest?: ((jobId: string, ingestToken: string) => Promise<string | null>) | undefined;
+    /**
      * The org resolvers for the worker routes, built in main.ts from the same org-less SQL as
      * `orgOfLease`. The shared secret authenticates the DRIVER, not an org — so the org a
      * job-scoped worker call operates on comes from the row it names (`createOrgOfJob`,
@@ -270,6 +268,8 @@ export interface AuthPluginDeps {
      */
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
+    /** The per-driver credentials (`drv_`) the worker routes accept. Absent: none resolves. */
+    driverCredentials?: Pick<DriverCredentialStore, 'resolve'> | undefined;
     /** Resolves a `mat_` for the MCP endpoint; only consulted in github mode, and required there when MCP is enabled. */
     oauth?: Pick<OAuthStore, 'findAccessToken'> | undefined;
 }
@@ -352,16 +352,45 @@ export async function resolveBearer(request: FastifyRequest, reply: FastifyReply
     return true;
 }
 
-async function enforceIngest(auth: AuthConfig, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    // Optional, because the two callers are a collector on the compose network and a plugin
-    // installed on developer laptops — requiring it would break both with no migration path.
-    // Unset means these routes behave exactly as they did before accounts existed.
-    //
-    // A header, never a query parameter: a query parameter lands in every access log.
-    if (!auth.ingestToken) return;
-    const provided = request.headers['x-factory-ingest-token'];
-    if (typeof provided === 'string' && secretsMatch(provided, auth.ingestToken)) return;
-    await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid ingest token', code: ERROR_CODES.UNAUTHENTICATED });
+interface IngestAuthDeps {
+    auth: AuthConfig;
+    store: AuthStore;
+    ingestOrgOf: (jobId: string, ingestToken: string) => Promise<string | null>;
+}
+
+/**
+ * The OTLP export routes. A runner's export names the attempt it came from — the job id and that
+ * job's ingest token, rendered into its telemetry config and carried per request through the
+ * collector — and the attempt's answer IS the org; a laptop exporter presents its member's personal
+ * token. There is no deployment-wide secret: it could say an export is genuine, never whose it is.
+ *
+ * A present credential that does not resolve is a 401 with no fall-through, the branch pair's
+ * rule. A lookup that throws is not a refusal: the hook answers 503, which the collector retries.
+ */
+async function enforceIngest(deps: IngestAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const { auth, store, ingestOrgOf } = deps;
+    if (auth.mode === 'none') return;
+
+    const jobId = request.headers[JOB_ID_HEADER];
+    const ingestToken = request.headers[INGEST_TOKEN_HEADER];
+    if (typeof jobId === 'string' && jobId && typeof ingestToken === 'string' && ingestToken) {
+        // Both are uuids, and postgres refuses to cast anything else: a malformed header is the
+        // same refusal as a credential that does not resolve, answered without a round trip.
+        const orgId = UUID.test(jobId) && UUID.test(ingestToken) ? await ingestOrgOf(jobId, ingestToken) : null;
+        if (!orgId) {
+            await reply
+                .code(HTTP_UNAUTHORIZED)
+                .send({ error: 'Unknown job or ingest token', code: ERROR_CODES.UNAUTHENTICATED });
+            return;
+        }
+        request.auth = { kind: 'job', orgId, jobId };
+        return;
+    }
+
+    if (await resolveBearer(request, reply, store)) return;
+    await reply
+        .code(HTTP_UNAUTHORIZED)
+        .send({ error: 'Telemetry ingest needs a credential', code: ERROR_CODES.UNAUTHENTICATED });
 }
 
 interface BranchAuthDeps {
@@ -393,7 +422,7 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
                 .send({ error: 'Unknown job or lease', code: ERROR_CODES.UNAUTHENTICATED });
             return;
         }
-        request.auth = { kind: 'job', orgId };
+        request.auth = { kind: 'job', orgId, jobId };
         return;
     }
 
@@ -436,54 +465,6 @@ async function enforceCommerce(
             .code(HTTP_UNAUTHORIZED)
             .send({ error: 'Invalid commerce token', code: ERROR_CODES.UNAUTHENTICATED });
     }
-}
-
-interface WorkerAuthDeps {
-    auth: AuthConfig;
-    jobOrgOf: (jobId: string) => Promise<string | null>;
-    reclaimOrgOf: (reclaimId: string) => Promise<string | null>;
-}
-
-async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const { auth, jobOrgOf, reclaimOrgOf } = deps;
-    // Open in `none` mode, like every other route in it. Requiring a secret here would buy
-    // nothing — anyone who can reach this port can already queue a command that an agent runs —
-    // while breaking `npm run driver` against a local board, which is the ordinary way this is
-    // developed. The two credentials are disjoint when there ARE credentials; `none` means there
-    // are none.
-    if (auth.mode === 'none') return;
-
-    // One shared secret, the same value in the board's and the driver's environment
-    // (JOB_BOARD_TOKEN on both sides). Constant-time, and checked before any database round trip —
-    // a wrong guess costs a compare, not a query. There is no token row and no org binding: the
-    // secret is the deployment's driver credential, so the org a call operates on comes from the
-    // row it names.
-    const token = bearer(request);
-    if (!token || !secretsMatch(token, auth.jobBoardToken)) {
-        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid worker token', code: ERROR_CODES.UNAUTHENTICATED });
-        return;
-    }
-
-    // The claim routes and the reaper's lease lookup name no row — they ASK about the board as a
-    // whole — so their principal carries null and the route answers across every org's board.
-    // Every other worker route carries the job (or reclaim) id in its URL, and the org comes from
-    // that row; an id that resolves to nothing is the route's
-    // own 404, answered here to keep the store lookup from inventing a runtime for a row that does
-    // not exist. The segment is captured before any shape check, so a MALFORMED id is refused on
-    // the same terms instead of slipping through with a null org — which the route's storeOf()
-    // would turn into a 503 before its own id validation ran — and so a resolver is never handed a
-    // string postgres would refuse to cast.
-    const pattern = patternOf(request) ?? '';
-    const rowId = ROW_PATTERN.test(pattern) ? (request.params as { id?: string }).id : undefined;
-    let orgId: string | null = null;
-    if (rowId && UUID.test(rowId)) {
-        orgId = pattern.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
-    }
-    if (rowId && !orgId) {
-        await reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: ERROR_CODES.NOT_FOUND });
-        return;
-    }
-    request.auth = { kind: 'worker', orgId };
 }
 
 interface McpAuthDeps {
@@ -614,19 +595,50 @@ async function scopeAllows(
     return false;
 }
 
+/**
+ * The route-role check every user caller passes, whatever its credential: an `admin` row refuses a caller whose
+ * membership is not admin, and an `operator` row one whose GitHub account `operators` (OPERATOR_GITHUB_IDS) does not
+ * name, before the handler runs. A route with no row needs no role here — every human route has one
+ * (`auth.enforcement.test.ts`), and an unmatched path must still reach the not-found handler. Answers true when the
+ * request may continue.
+ */
+async function roleAllows(
+    caller: Caller,
+    operators: readonly number[],
+    request: FastifyRequest,
+    reply: FastifyReply
+): Promise<boolean> {
+    const pattern = patternOf(request);
+    const role = pattern === undefined ? undefined : roleOf(request.method, pattern);
+    if (role === OPERATOR_ROLE) {
+        if (operators.includes(caller.user.githubUserId)) return true;
+        await reply
+            .code(HTTP_FORBIDDEN)
+            .send({ error: 'Only the board operator can do this', code: ERROR_CODES.FORBIDDEN });
+        return false;
+    }
+    if (role !== ADMIN_ROLE || caller.role === ADMIN_ROLE) return true;
+    await reply
+        .code(HTTP_FORBIDDEN)
+        .send({ error: 'Only an organization admin can do this', code: ERROR_CODES.FORBIDDEN });
+    return false;
+}
+
 interface UserAuthDeps {
     auth: AuthConfig;
+    operators: readonly number[];
     store: AuthStore;
     resolveUser: (request: FastifyRequest) => Promise<Caller | null>;
 }
 
 async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const { auth, store, resolveUser } = deps;
+    const { auth, store, resolveUser, operators } = deps;
     // A request the MCP bridge injected carries its caller on the request class (bridge-binding.ts); a network
     // request cannot. It is THE credential: no cookie or bearer beside it is consulted.
     const bound = boundCallerOf(request.raw);
     if (bound) {
         if (!(await scopeAllows(auth, bound, request, reply))) return;
+        if (!(await roleAllows(bound, operators, request, reply))) return;
         request.auth = { kind: 'user', caller: bound };
         return;
     }
@@ -635,7 +647,13 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
     // behind a failed or foreign bearer must not be consulted — that would let a rewritten header
     // ride somebody's session in.
     if (auth.mode !== 'none') {
-        if (await resolveBearer(request, reply, store)) return;
+        if (await resolveBearer(request, reply, store)) {
+            // A personal token acts as its member, so it passes the same role check; an `oat_` reaches only its
+            // read allowlist, and a refused bearer has already been answered.
+            const tokenCaller = callerOf(request);
+            if (tokenCaller && !reply.sent) await roleAllows(tokenCaller, operators, request, reply);
+            return;
+        }
     }
 
     const caller = await resolveUser(request);
@@ -647,6 +665,7 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
         await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
         return;
     }
+    if (!(await roleAllows(caller, operators, request, reply))) return;
     request.auth = { kind: 'user', caller };
 }
 
@@ -660,27 +679,38 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
  */
 export async function registerAuth(
     app: FastifyInstance,
-    { config, store, orgOfLease, orgOfJob, orgOfReclaim, oauth }: AuthPluginDeps
+    { config, store, orgOfLease, orgOfIngest, orgOfJob, orgOfReclaim, driverCredentials, oauth }: AuthPluginDeps
 ): Promise<void> {
     const { auth } = config;
     await app.register(fastifyCookie);
 
     const resolveUser = createUserResolver({ config, store });
     const leaseOrgOf = orgOfLease ?? (async () => null);
+    const ingestOrgOf = orgOfIngest ?? (async () => null);
     const jobOrgOf = orgOfJob ?? (async () => null);
     const reclaimOrgOf = orgOfReclaim ?? (async () => null);
+    const driverCredentialOf = driverCredentials
+        ? (token: string) => driverCredentials.resolve(token)
+        : async () => null;
 
     app.decorateRequest('auth', null);
 
     type Enforcer = (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     const enforcers: Record<Exclude<Requirement, 'open'>, Enforcer> = {
-        ingest: (request, reply) => enforceIngest(auth, request, reply),
+        ingest: (request, reply) => enforceIngest({ auth, store, ingestOrgOf }, request, reply),
         connector: enforceConnector,
         commerce: (request, reply) => enforceCommerce(config.commerce, request, reply),
         mcp: (request, reply) => enforceMcp({ config, oauth, resolveUser }, request, reply),
         branch: (request, reply) => enforceBranch({ auth, store, leaseOrgOf }, request, reply),
-        worker: (request, reply) => enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply),
-        user: (request, reply) => enforceUser({ auth, store, resolveUser }, request, reply),
+        worker: (request, reply) =>
+            enforceWorker(
+                { auth, jobOrgOf, reclaimOrgOf, driverCredentialOf },
+                { pattern: patternOf(request) ?? '', token: bearer(request) },
+                request,
+                reply
+            ),
+        user: (request, reply) =>
+            enforceUser({ auth, store, resolveUser, operators: config.operatorGithubIds }, request, reply),
     };
     const enforce = (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
         const requirement = requirementOf(request);
@@ -707,7 +737,7 @@ export async function registerAuth(
     });
 }
 
-/** The signed-in user behind a request, or null when the board secret got it here. */
+/** The signed-in user behind a request, or null when a driver credential got it here. */
 export const callerOf = (request: FastifyRequest): Caller | null =>
     request.auth?.kind === 'user' ? request.auth.caller : null;
 

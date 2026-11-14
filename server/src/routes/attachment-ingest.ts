@@ -9,8 +9,10 @@ import {
 import { normalizeAttachmentName } from '../attachments/name.js';
 import { sniffAttachment } from '../attachments/sniff.js';
 import { IdempotencyKeyReusedError } from '../db/jobs/job-store-idempotency.js';
+import { PlanLimitError } from '../db/plan-limits.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad } from './helpers.js';
+import { sendPlanLimit } from './plan-limit.js';
 
 /**
  * What every route that takes an uploaded file shares: the refusals, the name and media-type headers, the size and
@@ -73,6 +75,10 @@ export async function storing<T>(
         }
         if (error instanceof AttachmentGoneError) {
             await bad(reply, ERROR_CODES.ATTACHMENT_GONE, 'The upload expired; upload the file again', HTTP_GONE);
+            return undefined;
+        }
+        if (error instanceof PlanLimitError) {
+            await sendPlanLimit(reply, error);
             return undefined;
         }
         log.error({ err: error });

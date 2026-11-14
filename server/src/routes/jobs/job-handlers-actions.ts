@@ -259,7 +259,7 @@ const liveBatchThreadRefusal = (reply: FastifyReply) =>
     });
 
 // The user's remove: the thread is gone and a worktree reclaim is queued. Person-gated like every
-// job write here, not just because the driver has no use for it — the board secret deleting the
+// job write here, not just because the driver has no use for it — a driver credential deleting the
 // audit rows of jobs it never held would be exactly the thread-read hole again.
 export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);

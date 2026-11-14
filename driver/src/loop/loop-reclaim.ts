@@ -36,6 +36,8 @@ function reclaimJob(reclaim: Reclaim): BoardJob {
         lastAttempt: true,
         claimSeq: 1,
         leaseToken: reclaim.token,
+        // No agent, so no telemetry config is rendered: there is no export to authenticate.
+        ingestToken: '',
         leaseExpiresAt: reclaim.leaseExpiresAt,
         resumeSessionId: null,
         followUp: false,

@@ -8,8 +8,20 @@ const HTTP_REQUEST_TIMEOUT = 408;
 const HTTP_TOO_EARLY = 425;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR = 500;
-/** The 4xx answers that say "later", not "never". */
-const TRANSIENT_CLIENT_STATUSES = new Set([HTTP_REQUEST_TIMEOUT, HTTP_TOO_EARLY, HTTP_TOO_MANY_REQUESTS]);
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
+/**
+ * The 4xx answers that say "later", not "never". A refused driver credential (401, 403) is one: it is no answer
+ * about the call — a rotated credential is presented anew from its file on the next try (`board-credential.ts`),
+ * and a revoked one leaves the attempt to its lease, never to a verdict.
+ */
+const TRANSIENT_CLIENT_STATUSES = new Set([
+    HTTP_UNAUTHORIZED,
+    HTTP_FORBIDDEN,
+    HTTP_REQUEST_TIMEOUT,
+    HTTP_TOO_EARLY,
+    HTTP_TOO_MANY_REQUESTS,
+]);
 
 /**
  * A board answer outside the ones a caller allowed. The status rides the error so the retry can tell
@@ -48,7 +60,8 @@ export function fenced<T>(signal: AbortSignal | undefined, call: () => Promise<T
 
 /**
  * Whether a throw is worth sending again unchanged: a transport failure or a 5xx is the board being
- * briefly down; any other 4xx is its answer to this exact body, and the same body earns it again.
+ * briefly down, a refused credential is no answer about the call; any other 4xx is its answer to this
+ * exact body, and the same body earns it again.
  */
 function retryable(e: unknown): boolean {
     if (!(e instanceof BoardHttpError)) return true;

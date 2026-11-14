@@ -18,6 +18,7 @@ import {
     userIdOf,
     viewToken,
 } from './helpers-auth-store.js';
+import { removalMethods } from './helpers-auth-store-removals.js';
 
 /**
  * The rest of memoryAuthStore's methods — access tokens, pending sign-ins, tracked repos and
@@ -322,10 +323,28 @@ export function memoryAuthStore(): MemoryAuthStore {
     const state = createAuthState();
     return {
         ...membershipMethods(state),
+        ...removalMethods(state),
         ...sessionMethods(state),
         ...accessTokenMethods(state),
         ...pendingSignInMethods(state),
         ...trackedRepoMethods(state),
         ...signInMethod(state),
+        // The offline store keeps no audit log: the export reads as empty (server/test-db/audit-log.test.ts has it).
+        async *auditEvents() {
+            yield* [];
+        },
+        // Nor any organization status: the operator surface is the database's (server/test-db/operator-routes.test.ts).
+        async listOrganizations() {
+            return [];
+        },
+        async setOrgStatus() {
+            return { outcome: 'missing' as const };
+        },
+        async setInstallationStatus() {
+            return { outcome: 'missing' as const };
+        },
+        async requestOrgDelete() {
+            return { outcome: 'missing' as const };
+        },
     };
 }

@@ -7,18 +7,21 @@ import { commitDate } from '../format.js';
  * The members table (issue 410): one row per membership of the organization, with a role control
  * per row. Presentational, like `OrgExecutorsPanel` — the section owns the roster's state and
  * the write, this owns the shape. `saving` freezes every control while a write is in flight, and
- * a sole admin's Member option renders disabled: the last-admin refusal is visible before the
- * click that would meet it.
+ * a sole admin's Member option and Remove button render disabled: the last-admin refusal is
+ * visible before the click that would meet it.
  */
 export function MembersPanel({
     members,
     saving,
     onChange,
+    onRemove,
 }: {
     members: readonly MemberView[];
     saving: boolean;
     /** The role change one row's control names; the section owns the write and the refetch. */
     onChange: (member: MemberView, role: Role) => void;
+    /** Asks to remove one member; the section confirms before it writes. */
+    onRemove: (member: MemberView) => void;
 }) {
     const soleAdmin = members.filter((m) => m.role === ADMIN_ROLE).length === 1;
     return (
@@ -26,7 +29,7 @@ export function MembersPanel({
             <h2>Members</h2>
             <p className="muted">
                 Everyone whose sign-in materialized a membership of this organization. As an admin you set each member's
-                role; an organization always keeps at least one admin.
+                role or remove them; an organization always keeps at least one admin.
             </p>
             <section className="table-wrap" aria-label="Organization members">
                 {/* `table-cards`: at ≤640px the row reflows into a labeled card, the way the
@@ -37,6 +40,9 @@ export function MembersPanel({
                             <th scope="col">Login</th>
                             <th scope="col">Role</th>
                             <th scope="col">Joined</th>
+                            <th scope="col">
+                                <span className="visually-hidden">Actions</span>
+                            </th>
                         </tr>
                     </thead>
                     <tbody>
@@ -66,6 +72,16 @@ export function MembersPanel({
                                     </select>
                                 </td>
                                 <td data-label="Joined">{commitDate(member.claimedAt)}</td>
+                                <td data-label="Actions">
+                                    <button
+                                        type="button"
+                                        aria-label={`Remove ${member.githubLogin}`}
+                                        disabled={saving || (soleAdmin && member.role === ADMIN_ROLE)}
+                                        onClick={() => onRemove(member)}
+                                    >
+                                        Remove
+                                    </button>
+                                </td>
                             </tr>
                         ))}
                     </tbody>

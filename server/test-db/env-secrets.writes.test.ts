@@ -46,9 +46,9 @@ beforeAll(() => {
 });
 
 const put = (store: EnvVarStore, scope: EnvSecretScope, vars: readonly EnvVarEntry[]) => {
-    if (scope.kind === 'org') return store.replaceOrg(vars);
+    if (scope.kind === 'org') return store.replaceOrg('env-admin', vars);
     if (scope.kind === 'workspace') return store.replaceWorkspace(scope.userId, vars);
-    return store.replaceRepo(scope.owner, scope.name, vars);
+    return store.replaceRepo('env-admin', scope.owner, scope.name, vars);
 };
 
 interface StoredRow {
@@ -133,7 +133,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
 
     it('a mixed PUT sends only the secret to the store', async () => {
         const spy = spySecrets(healthy);
-        await storeOver(spy.store).replaceOrg([
+        await storeOver(spy.store).replaceOrg('env-admin', [
             { name: 'S', value: 's-value', isSecret: true },
             { name: 'P', value: 'p-value', isSecret: false },
         ]);
@@ -152,10 +152,10 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
     it('null keeps the stored secret', async () => {
         const spy = spySecrets(healthy);
         const store = storeOver(spy.store);
-        await store.replaceOrg([{ name: 'S', value: 'kept', isSecret: true }]);
+        await store.replaceOrg('env-admin', [{ name: 'S', value: 'kept', isSecret: true }]);
         const before = (await storedRows()).S;
 
-        await store.replaceOrg([{ name: 'S', value: null, isSecret: true }]);
+        await store.replaceOrg('env-admin', [{ name: 'S', value: null, isSecret: true }]);
 
         expect((await storedRows()).S).toEqual(before);
         expect(spy.calls.creates).toHaveLength(1);
@@ -165,10 +165,10 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
 
     it('an omitted secret deletes its row and its stored secret', async () => {
         const store = storeOver(healthy);
-        await store.replaceOrg([{ name: 'S', value: 'gone', isSecret: true }]);
+        await store.replaceOrg('env-admin', [{ name: 'S', value: 'gone', isSecret: true }]);
         const ref = (await storedRows()).S?.secret_ref ?? null;
 
-        await store.replaceOrg([{ name: 'P', value: 'p', isSecret: false }]);
+        await store.replaceOrg('env-admin', [{ name: 'P', value: 'p', isSecret: false }]);
 
         expect(Object.keys(await storedRows())).toEqual(['P']);
         expect(await readState(ORG_SCOPE, 'S', ref)).toBe('not-found');
@@ -177,10 +177,10 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
     it('secret to nonsecret writes the plaintext value and deletes the stored secret', async () => {
         const spy = spySecrets(healthy);
         const store = storeOver(spy.store);
-        await store.replaceOrg([{ name: 'X', value: 'was-secret', isSecret: true }]);
+        await store.replaceOrg('env-admin', [{ name: 'X', value: 'was-secret', isSecret: true }]);
         const ref = (await storedRows()).X?.secret_ref ?? null;
 
-        await store.replaceOrg([{ name: 'X', value: 'now-plain', isSecret: false }]);
+        await store.replaceOrg('env-admin', [{ name: 'X', value: 'now-plain', isSecret: false }]);
 
         expect((await storedRows()).X).toMatchObject({
             value: 'now-plain',
@@ -194,10 +194,10 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
 
     it('nonsecret to secret encrypts', async () => {
         const store = storeOver(healthy);
-        await store.replaceOrg([{ name: 'X', value: 'was-plain', isSecret: false }]);
+        await store.replaceOrg('env-admin', [{ name: 'X', value: 'was-plain', isSecret: false }]);
         const plaintext = secretOf('now-secret');
 
-        await store.replaceOrg([{ name: 'X', value: plaintext, isSecret: true }]);
+        await store.replaceOrg('env-admin', [{ name: 'X', value: plaintext, isSecret: true }]);
 
         const row = (await storedRows()).X;
         expect(row).toMatchObject({ value: null, is_secret: true });
@@ -209,10 +209,10 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
     it('a changed value gets a new ref and the old one is gone', async () => {
         const spy = spySecrets(healthy);
         const store = storeOver(spy.store);
-        await store.replaceOrg([{ name: 'S', value: 'one', isSecret: true }]);
+        await store.replaceOrg('env-admin', [{ name: 'S', value: 'one', isSecret: true }]);
         const first = (await storedRows()).S?.secret_ref ?? null;
 
-        await store.replaceOrg([{ name: 'S', value: 'two', isSecret: true }]);
+        await store.replaceOrg('env-admin', [{ name: 'S', value: 'two', isSecret: true }]);
 
         const second = (await storedRows()).S?.secret_ref ?? null;
         expect(second).not.toBe(first);
@@ -235,10 +235,10 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
             },
         });
         const store = storeOver(faulty);
-        await store.replaceOrg([{ name: 'KEEP', value: 'k', isSecret: false }]);
+        await store.replaceOrg('env-admin', [{ name: 'KEEP', value: 'k', isSecret: false }]);
 
         const error = await rejection(
-            store.replaceOrg([
+            store.replaceOrg('env-admin', [
                 { name: 'A', value: 'a', isSecret: true },
                 { name: 'B', value: 'b', isSecret: true },
                 { name: 'C', value: 'c', isSecret: true },
@@ -259,7 +259,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
         const spy = spySecrets(healthy);
 
         const error = await rejection(
-            storeOver(spy.store).replaceOrg([
+            storeOver(spy.store).replaceOrg('env-admin', [
                 { name: 'D', value: 'd1', isSecret: true },
                 { name: 'D', value: 'd2', isSecret: true },
             ])
@@ -288,7 +288,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
         });
 
         await rejection(
-            store.replaceOrg([
+            store.replaceOrg('env-admin', [
                 { name: 'D', value: 'plain-d1', isSecret: true },
                 { name: 'D', value: 'plain-d2', isSecret: true },
             ])
@@ -318,7 +318,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
 
         const started = Date.now();
         await rejection(
-            store.replaceOrg([
+            store.replaceOrg('env-admin', [
                 { name: 'D', value: 'plain-h1', isSecret: true },
                 { name: 'D', value: 'plain-h2', isSecret: true },
             ])
@@ -359,7 +359,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
             delete: async () => ({ ok: false, error: { code: 'unavailable', reason: 'provider-unavailable' } }),
         });
 
-        await storeOver(failing, diag.log).replaceOrg([{ name: 'P', value: 'p', isSecret: false }]);
+        await storeOver(failing, diag.log).replaceOrg('env-admin', [{ name: 'P', value: 'p', isSecret: false }]);
 
         expect(Object.keys(await storedRows())).toEqual(['P']);
         expect(diag.events).toEqual([
@@ -383,7 +383,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
         });
 
         const error = await rejection(
-            storeOver(landedButSilent).replaceOrg([{ name: 'S', value: 'v', isSecret: true }])
+            storeOver(landedButSilent).replaceOrg('env-admin', [{ name: 'S', value: 'v', isSecret: true }])
         );
 
         expect(error).toMatchObject({ code: 'outcome-unknown' });
@@ -405,7 +405,9 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
             reconcileOperation: async () => ({ ok: true, status: { state: 'pending' } }),
         });
 
-        await rejection(storeOver(store, diag.log).replaceOrg([{ name: 'S', value: 'v', isSecret: true }]));
+        await rejection(
+            storeOver(store, diag.log).replaceOrg('env-admin', [{ name: 'S', value: 'v', isSecret: true }])
+        );
 
         expect(spy.calls.deletes).toEqual([]);
         const ref = spy.calls.creates[0]?.ref;
@@ -438,7 +440,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
         const diag = captureDiagnostics();
 
         const error = await rejection(
-            storeOver(observing, diag.log).replaceOrg([{ name: 'S', value: 'v', isSecret: true }])
+            storeOver(observing, diag.log).replaceOrg('env-admin', [{ name: 'S', value: 'v', isSecret: true }])
         );
 
         expect(error).toMatchObject({ code: 'invalid-configuration' });
@@ -456,7 +458,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
         const plaintext = 'x'.repeat(MAX_SECRET_BYTES + 1);
 
         const error = await rejection(
-            storeOver(spy.store, diag.log).replaceOrg([{ name: 'BIG', value: plaintext, isSecret: true }])
+            storeOver(spy.store, diag.log).replaceOrg('env-admin', [{ name: 'BIG', value: plaintext, isSecret: true }])
         );
 
         expect(error).toBeInstanceOf(EnvSecretError);
@@ -485,7 +487,7 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
         const store = storeOver(spy.store, diag.log, { writeDeadlineMs: 200, cleanupDeadlineMs: 300 });
 
         const started = Date.now();
-        const error = await rejection(store.replaceOrg([{ name: 'S', value: 'v', isSecret: true }]));
+        const error = await rejection(store.replaceOrg('env-admin', [{ name: 'S', value: 'v', isSecret: true }]));
         const elapsed = Date.now() - started;
 
         expect(elapsed).toBeLessThan(200 + 300 + 250);

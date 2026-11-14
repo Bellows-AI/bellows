@@ -43,7 +43,7 @@ const reclaimedAt = async (root: string): Promise<Date | null> => {
     return row!.worktree_reclaimed_at;
 };
 
-const db = useTestDb({ max: 8, users: [AUTHOR_USER] });
+const db = useTestDb({ max: 8, orgs: [ORG], users: [AUTHOR_USER] });
 
 beforeAll(async () => {
     if (!enabled) return;

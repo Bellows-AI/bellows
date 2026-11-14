@@ -65,6 +65,7 @@ export const job = (n: number, resumeSessionId: string | null = null): BoardJob 
     lastAttempt: false,
     claimSeq: 1,
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
+    ingestToken: '33333333-3333-4333-8333-333333333333',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
     executorRefusal: null,

@@ -1,3 +1,4 @@
+import { waitAdvisoryXactLock } from './pool.js';
 import type { Sql, TransactionSql } from 'postgres';
 import { INTEGRATION_PROVIDERS, selectedBy } from '@factory-ai/core';
 import { bindingStanding, type StandingRow } from '../integrations/credential-resolver.js';
@@ -208,22 +209,30 @@ export async function projectJiraConnectionInTx(db: Db, orgId: string, rootJobId
  * and the advisory lock tried) and a settle of the caller's own running row (then one thread, in order), which the runtime ask is too: its own
  * running row, the root row, then grant and connection. `no key` so
  * the child inserts' FK checks (KEY SHARE on the root) of a claim on another member never wait on it.
- * Returns the ids of `rootIds` that exist as roots, locked in ascending order.
+ * Returns the ids of `rootIds` that exist as roots, locked in ascending order. A root the retention pass has stamped
+ * for expiry (`thread_expiry`, `org-retention.ts`) counts as gone: follow-up, retry, reopen and every other locked
+ * write find it missing, so no member appears in a thread the pass is deleting.
  */
 export async function lockRootRowsInTx(db: Db, orgId: string, rootIds: readonly string[]): Promise<string[]> {
     const rows = await db<{ id: string }[]>`
         select id from job
         where org_id = ${orgId} and id = any(${rootIds as string[]}::uuid[]) and root_job_id = id
+          and not exists (select 1 from thread_expiry e where e.org_id = job.org_id and e.root_job_id = job.id)
         order by id for no key update
     `;
     return rows.map((row) => row.id);
 }
 
-/** The root row, then the thread's advisory lock (see `lockRootRowsInTx`). Returns false when the root is gone. */
+/**
+ * The root row, then the thread's advisory lock (see `lockRootRowsInTx`). Returns false when the root is gone or
+ * stamped for expiry. The stamp is read again once the lock is held: a row lock that waited on the retention pass's
+ * stamp keeps the snapshot its statement started with, so only a later statement sees the stamp committed.
+ */
 export async function lockThreadRootInTx(db: Db, orgId: string, rootJobId: string): Promise<boolean> {
     if ((await lockRootRowsInTx(db, orgId, [rootJobId])).length !== 1) return false;
     await lockThreadInTx(db, rootJobId);
-    return true;
+    const [stamp] = await db`select 1 from thread_expiry where org_id = ${orgId} and root_job_id = ${rootJobId}`;
+    return stamp === undefined;
 }
 
 /**
@@ -231,7 +240,7 @@ export async function lockThreadRootInTx(db: Db, orgId: string, rootJobId: strin
  * holds the root row, or the ack fallback for a thread whose root is gone.
  */
 export async function lockThreadInTx(db: Db, rootJobId: string): Promise<void> {
-    await db`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+    await waitAdvisoryXactLock(db, rootJobId);
 }
 
 /**

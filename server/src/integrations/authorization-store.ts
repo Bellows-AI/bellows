@@ -1,4 +1,5 @@
 import type { Sql, TransactionSql } from 'postgres';
+import { recordAudit, userActor } from '../db/audit-log.js';
 import { type AttachGrantConnection, attachInTx, attachRefusalOf } from '../db/connection-grants.js';
 import { type AuthorizationFailure, type CompleteFailure, INTEGRATIONS_RETURN_PATH } from './authorization-types.js';
 
@@ -295,16 +296,18 @@ export async function connectionTarget(
         : null;
 }
 
-/** The live grant of an external account, whoever owns it. */
+/** The org's live grant of an external account, whichever member owns it; another org's grant is never seen. */
 export async function grantOfAccount(
-    sql: Sql,
-    input: { provider: string; accountId: string }
-): Promise<{ id: string; orgId: string; principalUserId: string | null } | null> {
-    const rows = await sql<{ id: string; org_id: string; principal_user_id: string | null }[]>`
-        select id, org_id, principal_user_id from integration_grant
-        where provider = ${input.provider} and external_account_id = ${input.accountId} and status <> 'revoked'
+    { sql, orgId }: { sql: Sql; orgId: string },
+    provider: string,
+    accountId: string
+): Promise<{ id: string; principalUserId: string | null } | null> {
+    const rows = await sql<{ id: string; principal_user_id: string | null }[]>`
+        select id, principal_user_id from integration_grant
+        where org_id = ${orgId} and provider = ${provider} and external_account_id = ${accountId}
+          and status <> 'revoked'
     `;
-    return rows[0] ? { id: rows[0].id, orgId: rows[0].org_id, principalUserId: rows[0].principal_user_id } : null;
+    return rows[0] ? { id: rows[0].id, principalUserId: rows[0].principal_user_id } : null;
 }
 
 class Refused extends Error {
@@ -339,7 +342,8 @@ type Known = Map<string, { id: string; status: string }>;
 async function existingConnections(tx: TransactionSql, input: Activation): Promise<Known> {
     await tx`
         select id from integration_grant
-        where provider = ${input.provider} and external_account_id = ${input.facts.account} and status <> 'revoked'
+        where org_id = ${input.orgId} and provider = ${input.provider} and external_account_id = ${input.facts.account}
+          and status <> 'revoked'
         for update
     `;
     const rows = await tx<{ id: string; cloud_id: string; status: string }[]>`
@@ -363,13 +367,23 @@ async function existingConnections(tx: TransactionSql, input: Activation): Promi
  * locked, so the order stays authorization row -> grant -> connections.
  */
 async function followGrantAccess(tx: TransactionSql, input: Activation): Promise<void> {
-    await tx`
+    const changed = await tx<{ id: string }[]>`
         update connector_connection c set access = ${input.facts.access}
         from integration_grant g
         where c.grant_id = g.id and c.org_id = g.org_id and c.status = 'active' and c.access <> ${input.facts.access}
           and g.provider = ${input.provider} and g.external_account_id = ${input.facts.account}
           and g.status <> 'revoked' and g.org_id = ${input.orgId} and g.principal_user_id = ${input.userId}
+        returning c.id
     `;
+    for (const { id } of changed) {
+        await recordAudit(tx, {
+            orgId: input.orgId,
+            actor: userActor(input.userId),
+            action: 'connection.access',
+            target: id,
+            detail: { provider: input.provider, access: input.facts.access },
+        });
+    }
 }
 
 /**
@@ -429,8 +443,8 @@ async function activateInTx(tx: TransactionSql, input: Activation): Promise<Acti
     if (input.newGrant) {
         const rival = await tx<{ id: string }[]>`
             select id from integration_grant
-            where provider = ${input.provider} and external_account_id = ${input.facts.account}
-              and status <> 'revoked'
+            where org_id = ${input.orgId} and provider = ${input.provider}
+              and external_account_id = ${input.facts.account} and status <> 'revoked'
             for update
         `;
         if (rival.length > 0) throw new Refused('grant-conflict');

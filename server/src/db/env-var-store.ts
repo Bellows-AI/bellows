@@ -1,4 +1,5 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
+import { recordAudit, userActor } from './audit-log.js';
 import type { SecretDiagnostic, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
 import {
     createEnvSecrets,
@@ -34,9 +35,10 @@ export interface EnvVarStore {
     listRepo(owner: string, name: string): Promise<EnvVarRow[]>;
     /** Every repo scope's rows, grouped, for the page's per-repository editors. */
     listRepos(): Promise<{ owner: string; name: string; vars: EnvVarRow[] }[]>;
-    replaceOrg(vars: readonly EnvVarEntry[]): Promise<void>;
+    /** Each replace is audited as `actorId`'s (a workspace's actor is its owner) in the write's transaction. */
+    replaceOrg(actorId: string, vars: readonly EnvVarEntry[]): Promise<void>;
     replaceWorkspace(userId: string, vars: readonly EnvVarEntry[]): Promise<void>;
-    replaceRepo(owner: string, name: string, vars: readonly EnvVarEntry[]): Promise<void>;
+    replaceRepo(actorId: string, owner: string, name: string, vars: readonly EnvVarEntry[]): Promise<void>;
     /**
      * The merged environment one claim carries: org < workspace < repo, the more specific scope
      * winning a name collision. `userId` null contributes no workspace level (an unattributed
@@ -127,6 +129,13 @@ export function stackEnv(
  * is a case here and not a search for every query in the file.
  */
 type Scope = EnvSecretScope;
+
+/** The audit row's target: the scope a write replaced. */
+const auditTargetOf = (scope: Scope): string => {
+    if (scope.kind === 'org') return 'org';
+    if (scope.kind === 'workspace') return `workspace/${scope.userId}`;
+    return `repo/${scope.owner}/${scope.name}`;
+};
 
 /**
  * The scope's predicate, built off whichever executor (pool or transaction) will run it — a
@@ -265,7 +274,7 @@ export function createEnvVarStore({
      * after the commit. A write that does not commit deletes the records it created, but only those a
      * fresh read of this scope shows no row naming (docs/env.md).
      */
-    const replaceScoped = async (scope: Scope, vars: readonly EnvVarEntry[]): Promise<void> => {
+    const replaceScoped = async (scope: Scope, vars: readonly EnvVarEntry[], actorId: string): Promise<void> => {
         await gate();
         const referencedInScope = () =>
             sql<{ secret_ref: string | null }[]>`
@@ -300,6 +309,14 @@ export function createEnvVarStore({
                         insert into env_var ${tx(rows, 'org_id', 'user_id', 'repo_owner', 'repo_name', 'name', 'value', 'is_secret', 'secret_ref', 'secret_version')}
                     `;
                 }
+                // The names the scope now holds, never a value.
+                await recordAudit(tx, {
+                    orgId,
+                    actor: userActor(actorId),
+                    action: 'env.write',
+                    target: auditTargetOf(scope),
+                    detail: { names: vars.map((v) => v.name).sort() },
+                });
             });
         } catch (error) {
             await releaseEnvSecrets(secrets, [...created, ...retired], { ...cleanup(), referencedInScope });
@@ -366,16 +383,16 @@ export function createEnvVarStore({
             return grouped;
         },
 
-        async replaceOrg(vars) {
-            await replaceScoped({ kind: 'org' }, vars);
+        async replaceOrg(actorId, vars) {
+            await replaceScoped({ kind: 'org' }, vars, actorId);
         },
 
         async replaceWorkspace(userId, vars) {
-            await replaceScoped({ kind: 'workspace', userId }, vars);
+            await replaceScoped({ kind: 'workspace', userId }, vars, userId);
         },
 
-        async replaceRepo(owner, name, vars) {
-            await replaceScoped({ kind: 'repo', owner, name }, vars);
+        async replaceRepo(actorId, owner, name, vars) {
+            await replaceScoped({ kind: 'repo', owner, name }, vars, actorId);
         },
 
         async resolveFor({ userId, repo }, exec = sql) {

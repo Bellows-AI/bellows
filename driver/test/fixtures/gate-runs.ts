@@ -2,7 +2,6 @@ import type { BoardJob } from '../../src/board/board.js';
 import type { GateRunRecord } from '../../src/board/board-gate-runs.js';
 import { gateIdentity } from '../../src/gate-identity.js';
 import { stableGateEnvBody } from '../../src/loop/loop-gates.js';
-import { config } from './loop-stubs.js';
 
 /** The tree a recorded pass and the completion probe agree on in the reuse suites. */
 export const SAME_TREE = 'h:same';
@@ -16,7 +15,7 @@ export function gateRunRow(job: BoardJob, gate: string, over: Partial<GateRunRec
     return {
         executionId: `7777777${gate.length}-7777-4777-8777-777777777777`,
         gate,
-        identity: gateIdentity(config().boardToken, job, declared, stableGateEnvBody(job)),
+        identity: gateIdentity(job.orgKey ?? '', job, declared, stableGateEnvBody(job)),
         filtered: false,
         source: 'adhoc',
         outcome: 'passed',

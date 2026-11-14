@@ -15,7 +15,7 @@ const ORG = testOrg();
 const STALE_LEASE = randomUUID();
 const LEASE_SECONDS = 300;
 
-const db = useTestDb({ max: 4 });
+const db = useTestDb({ max: 4, orgs: [ORG] });
 
 beforeAll(async () => {
     if (!enabled) return;

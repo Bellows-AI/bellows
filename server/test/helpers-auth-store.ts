@@ -126,6 +126,8 @@ export interface AuthState {
     users: User[];
     orgs: Map<string, Org>;
     members: Member[];
+    /** An admin's removals (org_membership_removal): the block outlives the membership it ended. */
+    removals: { orgId: string; userId: string; removedBy: string; removedAt: string }[];
     sessions: Map<string, { userId: string; orgId: string; expiresAt: number }>;
     accessTokenRows: AccessTokenRow[];
     pendingRows: PendingRow[];
@@ -143,6 +145,7 @@ export function createAuthState(): AuthState {
         users: [],
         orgs: new Map(),
         members: [],
+        removals: [],
         sessions: new Map(),
         accessTokenRows: [],
         pendingRows: [],

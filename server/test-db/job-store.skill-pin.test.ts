@@ -370,7 +370,8 @@ describe.skipIf(!enabled)('the skill pin on a job row', () => {
 });
 
 describe.skipIf(!enabled)('the retention sweep and job pins (F271-4)', () => {
-    const collectorOf = () => createSkillCollector({ sql, objects, prefix: PREFIX, retentionDays: 30 });
+    const collectorOf = () =>
+        createSkillCollector({ sql, objects, prefix: PREFIX, retentionDays: 30, planDefaults: {} });
 
     const deletedLongAgo = (skillId: string) =>
         sql`update skill set deleted_at = now() - interval '40 days' where id = ${skillId}`;

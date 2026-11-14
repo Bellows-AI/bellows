@@ -1689,7 +1689,7 @@ describe.skipIf(!enabled)('batch report usage', () => {
         };
         const sessions = { a: w.marker('sa'), retry: w.marker('sr'), review: w.marker('sv'), b: w.marker('sb') };
         const point = (session: string, type: TokenType) => (value: number, time: string) =>
-            w.point({ session, field: `tokens_${type}`, value, time, attrs: { model: 'm1' } });
+            w.point({ org: ORG, session, field: `tokens_${type}`, value, time, attrs: { model: 'm1' } });
         const run = (
             job: string,
             o: { root: string; session: string; start: string; end: string } & Record<string, unknown>
@@ -1789,6 +1789,7 @@ describe.skipIf(!enabled)('batch report usage', () => {
         });
         // A dimension row: the same session, type and time again under another model and source.
         await w.point({
+            org: ORG,
             session: sessions.a,
             field: 'tokens_input',
             value: 100,

@@ -30,7 +30,8 @@ const required = {
     GITHUB_OAUTH_CLIENT_ID: env.GITHUB_OAUTH_CLIENT_ID?.trim(),
     GITHUB_OAUTH_CLIENT_SECRET: env.GITHUB_OAUTH_CLIENT_SECRET?.trim(),
     SESSION_SECRET: env.SESSION_SECRET?.trim(),
-    JOB_BOARD_TOKEN: env.JOB_BOARD_TOKEN?.trim(),
+    // The driver's own credential (`drv_…`); the chart records its SHA-256 on the dashboard.
+    DRIVER_CREDENTIAL: env.DRIVER_CREDENTIAL?.trim(),
 };
 const secretStoreRequired = {
     SECRETS_BACKEND: env.SECRETS_BACKEND?.trim(),
@@ -72,7 +73,6 @@ const values = {
     secret: {
         oauthClientSecret: required.GITHUB_OAUTH_CLIENT_SECRET,
         sessionSecret: required.SESSION_SECRET,
-        jobBoardToken: required.JOB_BOARD_TOKEN,
         githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET?.trim() ?? '',
     },
     secretStore: {
@@ -81,6 +81,13 @@ const values = {
         activeKeyId: secretStoreRequired.SECRETS_ACTIVE_KEY_ID,
         operationKey: secretStoreRequired.SECRETS_OPERATION_KEY,
         fingerprintKey: secretStoreRequired.SECRETS_FINGERPRINT_KEY,
+    },
+    // The driver's scrape is served only with its own token: DRIVER_METRICS_TOKEN from .env, else no scrape port.
+    driver: {
+        credential: { value: required.DRIVER_CREDENTIAL },
+        ...(env.DRIVER_METRICS_TOKEN?.trim()
+            ? { metricsToken: env.DRIVER_METRICS_TOKEN.trim() }
+            : { metricsPort: '' }),
     },
     // The model credential the real runner images need, into the chart's runner Secret. Optional:
     // a board env var can carry it instead, and an unset one stays the chart's empty value.

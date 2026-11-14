@@ -75,6 +75,19 @@ describe('/api/auth/me', () => {
         expect(response.json()).toMatchObject({ batches: true });
     });
 
+    it('reports the deployment mode, so the settings can explain the cloud credential rule', async () => {
+        const { app } = await setup({ config: { deploymentMode: 'cloud' } });
+        const cookie = await signIn(app);
+
+        const response = await app.inject({
+            method: 'GET',
+            url: '/api/auth/me',
+            cookies: { [SESSION_COOKIE]: cookie },
+        });
+
+        expect(response.json()).toMatchObject({ deploymentMode: 'cloud' });
+    });
+
     it('answers 503, not "not signed in", when the session store cannot be reached', async () => {
         // The two used to be one answer: an unreachable store was reported to every signed-in
         // browser as `authenticated: false`, which reads as "everybody was logged out" and left

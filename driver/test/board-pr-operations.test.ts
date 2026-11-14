@@ -30,7 +30,7 @@ function recorder(respond: () => Response) {
 }
 
 const boardOn = (fetch: typeof globalThis.fetch, token?: string) =>
-    createBoard({ url: 'http://board', leaseSeconds: 300, token, fetch });
+    createBoard({ url: 'http://board', leaseSeconds: 300, ...(token ? { credential: () => token } : {}), fetch });
 
 describe('the PR operation record (issue #983)', () => {
     const job = boardJob();

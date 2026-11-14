@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { orgSql } from './org-sql.js';
 
 /**
  * The agent's own title write (`125_job_title.sql`, docs/connections.md). The title lives on the thread
@@ -69,7 +70,7 @@ function rootAnswer(root: RootRow, title: string): AgentTitleResult | null {
 export function createAgentTitle({ sql, ready }: { sql: Sql; ready?: Promise<unknown> | undefined }): AgentTitle {
     return async ({ orgId, jobId, rootJobId, leaseToken, title }) => {
         if (ready) await ready;
-        return sql.begin(async (tx): Promise<AgentTitleResult> => {
+        return orgSql(sql, orgId).begin(async (tx): Promise<AgentTitleResult> => {
             const [own] = await tx<OwnRow[]>`
                 select claim_seq,
                        coalesce(lease_token = ${leaseToken}, false) as current,

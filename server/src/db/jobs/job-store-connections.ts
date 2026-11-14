@@ -5,7 +5,8 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
-import { requiredProviders } from '@factory-ai/core';
+import { type DeploymentMode, requiredProviders } from '@factory-ai/core';
+import { orgActiveForClaim } from '../org-status.js';
 import { skillCatalog } from '../../skills.js';
 import {
     addBindingsInTx,
@@ -203,6 +204,20 @@ export async function markRequirementAmbiguousRow(
           and r.org_id = j.org_id and r.root_job_id = root.id and r.provider = ${provider}
           and r.satisfied_at is null and r.reason = 'missing'
     `;
+}
+
+/**
+ * Whether a candidate is held back at its acquisition: its org no longer active (cloud, `org-status.ts`) — a
+ * takeover too — or a queued row's unbound requirement (`recordUnboundRequirements`), which a takeover is never asked.
+ */
+export async function rowHeld(
+    tx: TransactionSql,
+    ctx: { orgId: string; deploymentMode: DeploymentMode },
+    status: string,
+    rootJobId: string
+): Promise<boolean> {
+    if (!(await orgActiveForClaim(tx, ctx.orgId, ctx.deploymentMode))) return true;
+    return status === 'queued' && (await recordUnboundRequirements(tx, ctx.orgId, rootJobId));
 }
 
 /**

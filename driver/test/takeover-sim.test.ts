@@ -243,6 +243,41 @@ describe.each(matrix)('takeover simulation, %s', (_name, timing) => {
     });
 });
 
+// A revoked driver credential: the driver process runs on, and every board call it makes is answered 401. That is no
+// verdict on the run: the driver stops claiming, its lease lapses unrenewed, it stands down without ending the
+// runner, and the next driver's claim takes the running agent over under a new claim sequence. Kubernetes delivers
+// the rebind through the binding Secret's refresh; docker writes the binding into the group at once.
+describe.each<[string, Timing]>([
+    ['kubernetes, the binding Secret refreshed', scaled(15)],
+    ['docker, the binding written at once', { ...scaled(15), refreshMs: 0 }],
+])('takeover simulation, a revoked driver credential (%s)', (_executor, timing) => {
+    it('the revoked driver stands down and claims nothing; the next driver takes the running agent over', async () => {
+        const s = new Sim(timing);
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            s.revoked.add(a);
+            await until('the revoked driver to stand down', s, () => s.text().includes('lease lapsed'));
+            await s.start('B');
+            await until('the rebind', s, () => g.logs.some((l) => l.startsWith('supervisor: rebound to claim 2')));
+            s.agentExits(g, 0);
+            await settled(s);
+            expect(s.brief()).toBe('succeeded|1|1');
+            expect(s.text()).toContain(TOOK_OVER);
+            // The runner survived the revocation: one group, one agent run, and nothing ended it.
+            expect([s.spawned, s.agentRuns]).toEqual([1, 1]);
+            expect(s.driverKills).toEqual([]);
+            // The revoked driver claimed nothing more; the new claim moved the sequence.
+            expect(s.claimSeqs).toEqual([1, 2]);
+            expect(a.dead).toBe(false);
+        } finally {
+            await s.teardown();
+        }
+    }, 60_000);
+});
+
 // #928: the rebound binding reaches the supervisor only after the kubelet's Secret refresh. Where that is
 // longer than the supervisor's orphan bound it has stopped serving and wound down by then, so it never
 // polls the new endpoint: the earlier group is confirmed finished, and the claim must not wait the rebind bound.

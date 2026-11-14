@@ -2,6 +2,9 @@ import type { Sql } from 'postgres';
 import { chunkKey, checkStreamRef, parseChunkKey, type StreamRef } from './keys.js';
 import type { ObjectStore } from './object-store.js';
 import { sha256Hex } from './sigv4.js';
+import { fencedPut } from '../db/object-write-fence.js';
+import { overStorageAllowance } from '../db/plan-allowances.js';
+import type { PlanLimits } from '../db/plan-limits.js';
 
 /**
  * The artifact index (070) over an object store, bound to one organization like every other store
@@ -118,6 +121,11 @@ export interface ArtifactStoreOptions {
     streamMaxBytes?: number;
     /** 0 or absent: no per-org quota. */
     orgQuotaBytes?: number;
+    /**
+     * `config.planDefaults`: a chunk past the org plan's storage allowance (attachments and run logs together,
+     * `db/plan-allowances.ts`) is refused as `org_quota`. Absent, or a plan with no allowance: no such refusal.
+     */
+    planDefaults?: PlanLimits;
 }
 
 interface ChunkRow {
@@ -325,6 +333,8 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
             `;
             if (Number(org!.bytes) + length > orgQuota) return ARTIFACT_CAUSE.orgQuota;
         }
+        // Unserialized: the chunks in flight at once may pass the plan's storage allowance (docs/commerce.md).
+        if (await overStorageAllowance(sql, orgId, options.planDefaults ?? {}, length)) return ARTIFACT_CAUSE.orgQuota;
         return null;
     }
 
@@ -394,7 +404,7 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
             // call. A 412 is success only when what the store holds is the recorded body: the
             // recorded sha256 is this body's, so a held object that differs is an orphan from
             // outside the index, and the retry must not report it stored.
-            const written = await objects.put(key, body);
+            const written = await fencedPut({ sql, orgId, objects, root: ref.root }, key, body);
             if (written === 'exists') await readVerified(key, recorded);
             return { result: written === 'created' ? 'stored' : 'duplicate', key };
         },

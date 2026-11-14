@@ -14,7 +14,7 @@ describe('ConfigurationScope', () => {
         const html = renderToStaticMarkup(<ConfigurationScope scope="organization" />);
         expect(html).toContain('Organization');
         expect(html).toContain('Applies to every member\u2019s tasks in the organization.');
-        expect(html).toContain('Any member can edit.');
+        expect(html).toContain('Only an organization admin can edit.');
         expect(html).toContain('a workspace or repository value with the same name overrides this scope');
     });
 
@@ -32,7 +32,7 @@ describe('ConfigurationScope', () => {
         );
         expect(html).toContain('acme/web');
         expect(html).toContain('Applies to every task using acme/web in the organization.');
-        expect(html).toContain('Any member can edit.');
+        expect(html).toContain('Only an organization admin can edit.');
         expect(html).toContain('nothing more specific remains');
     });
 

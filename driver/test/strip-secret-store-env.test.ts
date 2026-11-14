@@ -15,10 +15,10 @@ describe('stripSecretStoreEnv', () => {
             SECRETS_GCP_LOCATION: 'europe-west3',
             SECRETS_GCP_KMS_KEY: 'k',
             SECRET_PROBE: 'kept',
-            JOB_BOARD_TOKEN: 'kept',
+            DRIVER_CREDENTIAL: 'kept',
         };
         stripSecretStoreEnv(env);
-        expect(Object.keys(env).sort()).toEqual(['JOB_BOARD_TOKEN', 'SECRET_PROBE']);
+        expect(Object.keys(env).sort()).toEqual(['DRIVER_CREDENTIAL', 'SECRET_PROBE']);
     });
 
     it('leaves a driver that was handed a key unable to forward it as RUNNER_ENV', () => {

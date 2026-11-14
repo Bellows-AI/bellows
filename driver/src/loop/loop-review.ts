@@ -147,6 +147,21 @@ async function superviseOne(
 ): Promise<void> {
     const { caller, review, stop, cause } = supervision;
     const { runner, log } = rt;
+    // A review the board refused at claim (its executor selection) launches nothing, on either executor:
+    // the row ends failed as `config` with the board's sentence, as an agent claim's refusal does.
+    if (review.executorRefusal) {
+        log(`review ${review.id}: the executor selection is not runnable, failing`);
+        const body = {
+            status: 'failed',
+            exitCode: null,
+            output: review.executorRefusal,
+            failureKind: 'config',
+        } as const;
+        await withBoardRetry(rt, `review ${review.id}: the review refusal was not accepted`, () =>
+            rt.board.complete(review, body)
+        ).catch((e: Error) => log(`review ${review.id}: the review could not be settled: ${e.message}`));
+        return;
+    }
     let over = (): void => {};
     const ended = new Promise<void>((resolve) => {
         over = resolve;

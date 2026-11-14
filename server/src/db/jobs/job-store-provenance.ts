@@ -1,4 +1,5 @@
 import type { TransactionSql } from 'postgres';
+import { setOrg } from '../org-sql.js';
 
 /**
  * Execution provenance: the durable record of a claim, written in the claim's own
@@ -12,6 +13,16 @@ import type { TransactionSql } from 'postgres';
  * infers it here, because the driver reports nothing for a resume.
  */
 export async function recordExecution(tx: TransactionSql, orgId: string, jobId: string): Promise<void> {
+    // One owner per telemetry session (147): the binding below reserves its session to the job's org when no org owns
+    // it yet, in a statement of its own so the guard after it reads any owner committed meanwhile, and never records
+    // a session another org owns.
+    // Another org's ownership is past this org's policy: the definer function reads it for the setting's org.
+    await setOrg(tx, orgId);
+    await tx`
+        insert into telemetry_session_owner (session_id, org_id)
+        select session_id, org_id from job where org_id = ${orgId} and id = ${jobId} and session_id is not null
+        on conflict (session_id) do nothing
+    `;
     await tx`
         with created as (
             insert into job_execution (
@@ -33,6 +44,7 @@ export async function recordExecution(tx: TransactionSql, orgId: string, jobId: 
         from created c
         join job j on j.org_id = c.org_id and j.id = c.job_id
         where j.session_id is not null
+          and not bellows_session_owned_elsewhere(j.session_id)
     `;
 }
 
@@ -66,6 +78,12 @@ export async function recordReportedSession(
     const { sessionId } = evidence;
     const agent = evidence.agent ?? null;
     const observed = evidence.observed === true;
+    await setOrg(tx, orgId);
+    // One owner per telemetry session (147), as in recordExecution: reserve, then record only if this org owns it.
+    await tx`
+        insert into telemetry_session_owner (session_id, org_id) values (${sessionId}, ${orgId})
+        on conflict (session_id) do nothing
+    `;
     await tx`
         with held as (
             select org_id, id, claim_seq from job where org_id = ${orgId} and id = ${jobId}
@@ -88,6 +106,7 @@ export async function recordReportedSession(
             select 1 from job_execution e
             where e.org_id = j.org_id and e.job_id = j.id and e.claim_seq = j.claim_seq
         )
+          and not bellows_session_owned_elsewhere(${sessionId})
         on conflict (org_id, job_id, claim_seq, session_id) do update set
             origin = 'reported',
             agent = coalesce(job_execution_session.agent, excluded.agent),

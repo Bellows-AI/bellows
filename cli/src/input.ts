@@ -1,3 +1,6 @@
+import { parseArgs } from 'node:util';
+import { USAGE } from './usage.js';
+
 /**
  * The one resolver for a prompt's text: create, follow-up and the edit command all read it through
  * `resolveCommandInput`, so the source rules and the bounds cannot drift apart. Every refusal is a
@@ -19,6 +22,13 @@ export function parseOrUsage<T>(parse: () => T): T {
     } catch (error) {
         throw new UsageError(error instanceof Error ? error.message : String(error));
     }
+}
+
+/** A command that takes no arguments beyond `--json`: a discovery list, `auth status`, `operator list`. */
+export function noArguments(args: readonly string[], verb: string): void {
+    const options = { json: { type: 'boolean', default: false } } as const;
+    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options }));
+    if (parsed.positionals.length > 0) throw new UsageError(`${verb} takes no arguments\n\n${USAGE}`);
 }
 
 /** The board's command bound (`core/src/limits.ts`), copied because the CLI imports nothing. */

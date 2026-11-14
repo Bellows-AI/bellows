@@ -74,7 +74,9 @@ commit message needs a force-push to fix.
 | `parseRange`, `filterTelemetryInput()`, the range selector | [docs/date-range.md](docs/date-range.md) |
 | `web/src/styles/`, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) + [lanes](docs/design-system/) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
+| `org_id` policies, `app.org_id`, the cross-org role and pool, `security_invoker` views | [docs/row-level-security.md](docs/row-level-security.md) |
 | `server/src/secrets/*`, secret storage, `AppDeps.secrets` | [docs/secrets.md](docs/secrets.md) |
+| Plan retention, `retentionDays`, `ARTIFACTS_RETENTION_DAYS`, expiring threads, objects and telemetry | [docs/retention.md](docs/retention.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | `core/src/skills.ts`, `server/src/skills/*`, `server/src/db/skill-store.ts`, `128_skills.sql`, `routes/skills*.ts`, `server/src/skill-catalog.ts`, `docker/skills/` | [docs/skills.md](docs/skills.md) |
 | `server/src/mcp/*`, `POST /api/mcp`, MCP tools, `route-class.ts` | [docs/mcp.md](docs/mcp.md) |
@@ -170,7 +172,8 @@ Operational facts behind those:
   run starts where CI's new database does.
 - `AUTH_MODE` defaults to `none` (one local org, every route open, the loopback bind is the access
   control). `docker compose` pins `github`, uncontestable by `.env`.
-- `JOB_BOARD_TOKEN` is one shared secret read by both the dashboard and the driver.
+- Each driver presents its own credential (`DRIVER_CREDENTIAL` or `DRIVER_CREDENTIAL_FILE`, `drv_…`); the dashboard
+  stores only hashes, the first recorded from `DRIVER_CREDENTIAL_SHA256` at boot ([docs/auth.md](docs/auth.md)).
 - Watch mode is tuned for low idle CPU (`isolate: false`, at most 6 forks, `**/dist/**` excluded in
   `vitest.config.ts`). Do not undo that to chase a flaky-looking failure; prefer
   `npx vitest watch core/test`. Orphaned `node (vitest N)` workers: `pkill -f 'node (vitest'`.

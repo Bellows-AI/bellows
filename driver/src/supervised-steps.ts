@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BoardJob } from './board/board.js';
 import { claimEnv, claimContinuesSession, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
+import { orgKeyOf } from './gate-identity.js';
 import { serviceRestartArgv } from './container-scripts.js';
 import { withHelperReceipt } from './helper-receipts.js';
 import {
@@ -341,8 +342,9 @@ export async function runHelperStep(
         };
     }
     const worktree = checkoutDir(job);
-    // The receipt's MAC key: with none, a receipt anyone could forge is never kept at all.
-    const key = host.config.boardToken;
+    // The receipt's MAC key, the claim's organization key: the same on the claim that adopts this one. With
+    // none, a receipt anyone could forge is never kept at all.
+    const key = orgKeyOf(job);
     const run = () => submitHelper(host, job, { plan, descriptor }, { token, signal });
     if (!descriptor.receipted || !effectId || !worktree || !key) return run();
     const ledger = supervisedStepRunner(host, job, { kind: 'helper', signal });

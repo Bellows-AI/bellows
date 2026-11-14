@@ -18,6 +18,7 @@ describe('startSkillSweep', () => {
             artifacts: { objects: {}, prefix: 'p/' } as unknown as ArtifactBackend,
             metrics: { timedPass: (_loop, fn) => (pass = fn()) },
             retentionDays: 90,
+            planDefaults: {},
             intervalMs: 3_600_000,
         });
         await vi_waitFor(() => pass);

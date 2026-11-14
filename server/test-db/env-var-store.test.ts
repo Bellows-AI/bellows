@@ -35,23 +35,23 @@ beforeAll(async () => {
 
 describe.skipIf(!enabled)('the env var store', () => {
     it('replaces a scope whole, so replaying the same body changes nothing', async () => {
-        await store.replaceOrg([{ name: 'FIRST', value: '1', isSecret: false }]);
-        await store.replaceOrg([{ name: 'SECOND', value: '2', isSecret: false }]);
-        await store.replaceOrg([{ name: 'SECOND', value: '2', isSecret: false }]);
+        await store.replaceOrg('env-admin', [{ name: 'FIRST', value: '1', isSecret: false }]);
+        await store.replaceOrg('env-admin', [{ name: 'SECOND', value: '2', isSecret: false }]);
+        await store.replaceOrg('env-admin', [{ name: 'SECOND', value: '2', isSecret: false }]);
 
         const rows = await store.listOrg();
         expect(rows.map((row) => row.name)).toEqual(['SECOND']);
     });
 
     it('keeps a secret whose incoming value is null, and deletes one whose name is omitted', async () => {
-        await store.replaceOrg([
+        await store.replaceOrg('env-admin', [
             { name: 'SECRET_A', value: 'a', isSecret: true },
             { name: 'SECRET_B', value: 'b', isSecret: true },
             { name: 'PLAIN', value: 'p', isSecret: false },
         ]);
 
         // SECRET_B is omitted entirely — deleted. SECRET_A is sent back with a null value — kept.
-        await store.replaceOrg([
+        await store.replaceOrg('env-admin', [
             { name: 'SECRET_A', value: null, isSecret: true },
             { name: 'PLAIN', value: 'p2', isSecret: false },
         ]);
@@ -61,7 +61,7 @@ describe.skipIf(!enabled)('the env var store', () => {
     });
 
     it('never echoes a secret value from list, but resolveFor returns it', async () => {
-        await store.replaceOrg([
+        await store.replaceOrg('env-admin', [
             { name: 'SECRET', value: 's3cr3t', isSecret: true },
             { name: 'PLAIN', value: 'visible', isSecret: false },
         ]);
@@ -79,12 +79,12 @@ describe.skipIf(!enabled)('the env var store', () => {
     });
 
     it('stacks org under workspace under repo, the more specific winning', async () => {
-        await store.replaceOrg([
+        await store.replaceOrg('env-admin', [
             { name: 'LEVEL', value: 'org', isSecret: false },
             { name: 'ONLY_ORG', value: 'o', isSecret: false },
         ]);
         await store.replaceWorkspace(ALICE, [{ name: 'LEVEL', value: 'workspace', isSecret: false }]);
-        await store.replaceRepo(REPO.owner, REPO.name, [
+        await store.replaceRepo('env-admin', REPO.owner, REPO.name, [
             { name: 'LEVEL', value: 'repo', isSecret: false },
             { name: 'ONLY_REPO', value: 'r', isSecret: false },
         ]);
@@ -110,9 +110,9 @@ describe.skipIf(!enabled)('the env var store', () => {
     });
 
     it('groups the repo scopes for the page', async () => {
-        await store.replaceRepo(REPO.owner, REPO.name, [{ name: 'R', value: '1', isSecret: false }]);
+        await store.replaceRepo('env-admin', REPO.owner, REPO.name, [{ name: 'R', value: '1', isSecret: false }]);
         // Created with its real value, then echoed without it — the write-only contract.
-        await store.replaceRepo('Other', 'repo', [{ name: 'S', value: 'hidden', isSecret: true }]);
+        await store.replaceRepo('env-admin', 'Other', 'repo', [{ name: 'S', value: 'hidden', isSecret: true }]);
 
         const repos = await store.listRepos();
         expect(repos).toEqual([
@@ -156,12 +156,14 @@ describe.skipIf(!enabled)('the env var store', () => {
 
 describe.skipIf(!enabled)('the GitHub reservation migration (072)', () => {
     it('deletes stored GITHUB_TOKEN and GH_TOKEN rows in every scope and keeps the rest', async () => {
-        await store.replaceOrg([
+        await store.replaceOrg('env-admin', [
             { name: 'GITHUB_TOKEN', value: 'ghp_org', isSecret: true },
             { name: 'KEEP_ORG', value: '1', isSecret: false },
         ]);
         await store.replaceWorkspace(ALICE, [{ name: 'GH_TOKEN', value: 'ghp_mine', isSecret: true }]);
-        await store.replaceRepo(REPO.owner, REPO.name, [{ name: 'GITHUB_TOKEN', value: 'ghp_repo', isSecret: true }]);
+        await store.replaceRepo('env-admin', REPO.owner, REPO.name, [
+            { name: 'GITHUB_TOKEN', value: 'ghp_repo', isSecret: true },
+        ]);
 
         await sql.unsafe(readFileSync(RESERVE_GITHUB, 'utf8'));
 
@@ -210,7 +212,7 @@ describe.skipIf(!enabled)('encrypted environment secrets (the one stored format)
     });
 
     it('resolves non-secret and encrypted rows together', async () => {
-        await store.replaceOrg([{ name: 'PLAIN', value: 'p', isSecret: false }]);
+        await store.replaceOrg('env-admin', [{ name: 'PLAIN', value: 'p', isSecret: false }]);
         await seedEncryptedRow(sql, secrets, { orgId: ORG, scope: ORG_SCOPE, name: 'NEW_SECRET' }, 'enc');
 
         expect(await store.resolveFor({ userId: null, repo: null })).toEqual({ PLAIN: 'p', NEW_SECRET: 'enc' });

@@ -54,6 +54,7 @@ const REQUIRED: Record<string, Check> = {
     attempts: isNumber,
     claimSeq: isNumber,
     leaseToken: isString,
+    ingestToken: isString,
     leaseExpiresAt: isString,
 };
 
@@ -114,6 +115,7 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
         connectionOutcomes,
         skillPin,
         skillHidden,
+        orgKey,
         ...claimed
     } = wire;
     const plan = servicePlanOf(services);
@@ -126,6 +128,7 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
         ...reviewerProfilesOf(reviewerProfiles),
         ...connectionOutcomesOf(connectionOutcomes),
         ...knownTurnContext(turnContext),
+        ...(typeof orgKey === 'string' && orgKey.length > 0 ? { orgKey } : {}),
         masterPrompt: textOrNull(claimed.masterPrompt),
         resumeSessionId: claimed.resumeSessionId ?? null,
         followUp: claimed.followUp ?? false,

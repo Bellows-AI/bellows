@@ -147,6 +147,31 @@ bellows job create --repo acme/notes-api -- npm test --watch
 | `bellows skill list` | Skills a task can select with `--skill`. |
 | `bellows connection list` | Managed connections you can select with `--connection`. |
 
+## Organizations (operator)
+
+Bellows Cloud only. These commands work for the board operator, the GitHub accounts the deployment lists in `OPERATOR_GITHUB_IDS`. Anyone else, an organization admin included, gets `403 FORBIDDEN`. Each change is written to the organization's audit log with actor `operator`.
+
+An organization whose GitHub App was uninstalled is suspended and, 30 days later, deleted the same way on its own.
+
+| Command | What it does |
+| --- | --- |
+| `bellows operator list` | List every organization with its status: `active`, `suspended` or `refused`. |
+| `bellows operator suspend <org-id>` | Stop the organization from starting new work. New tasks and batches are refused with `403 ORG_INACTIVE`, and queued tasks wait. Runs already in progress are interrupted, never failed, and resume where they left off when the organization is reactivated. |
+| `bellows operator refuse <org-id>` | Refuse the organization the same way. A suspend cannot override a refusal; only `activate` lifts it. |
+| `bellows operator activate <org-id>` | Make the organization active again. Its queued tasks become claimable. |
+| `bellows operator delete <org-id> --yes` | Delete a suspended or refused organization for good: its tasks, logs, transcripts, settings, stored files and secrets are purged in the background, and none of it can be restored. An active organization is refused with `409 ORG_ACTIVE`; suspend or refuse it first. Without `--yes` the command sends nothing. |
+
+## Driver credentials (operator)
+
+Bellows Cloud only, for the board operator. Each driver gets its own credential, for named organizations or for the pool, which reaches every organization. A driver with an organization's credential claims only that organization's tasks, and is refused with `403 FORBIDDEN` on any other organization's task. The board keeps only a hash of each token.
+
+| Command | What it does |
+| --- | --- |
+| `bellows operator credentials` | List every driver credential: its label, its organizations or `pool`, and whether it is `active`, `revoked`, or working until the time a rotation set. Tokens are never shown. |
+| `bellows operator issue-credential --label <name> --org <org-id>` | Issue a credential for one or more organizations (repeat `--org`), or pass `--pool` instead for every organization. The token is printed this once and cannot be shown again. |
+| `bellows operator revoke-credential <id>` | Revoke a credential. The driver using it is refused with `401` from its next call. Tasks it was running are not failed: another driver picks them up. |
+| `bellows operator rotate-credential <id>` | Issue a new token for the same organizations. The old token keeps working for the overlap, one hour by default (`--overlap <seconds>`, up to 7 days), so the driver can switch without downtime. A credential can be rotated once; rotate the new one next time. |
+
 ## Auth and help
 
 | Command | What it does |

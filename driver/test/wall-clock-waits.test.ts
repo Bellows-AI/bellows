@@ -36,6 +36,7 @@ const job: BoardJob = {
     lastAttempt: false,
     claimSeq: 2,
     leaseToken: '99999999-9999-4999-8999-999999999999',
+    ingestToken: '33333333-3333-4333-8333-333333333333',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
     executorRefusal: null,

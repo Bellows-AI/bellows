@@ -213,7 +213,7 @@ async function boot(
             };
         },
     };
-    const auth: AuthConfig = mode === 'github' ? githubAuth({ publicUrl }) : { mode: 'none', ingestToken: null };
+    const auth: AuthConfig = mode === 'github' ? githubAuth({ publicUrl }) : { mode: 'none' };
     const config = testConfig({
         auth,
         port,

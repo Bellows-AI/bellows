@@ -5,14 +5,16 @@ const INTERRUPTION_REASON_MAX = 500;
 
 /**
  * The flags only a release carries: a start the runner refused is a released attempt's outcome (an
- * adoption has a runner), and a claim that waits on a leftover still terminating or on a
- * connection the task asked for is a release outside the budget. `daemonLoss` (a docker class's
- * dockerd lost under a failed gate) rides beside `nodeLoss`; the store bounds a run of them.
+ * adoption has a runner), and a claim that waits on a leftover still terminating, on a
+ * connection the task asked for or on its suspended organization is a release outside the budget.
+ * `daemonLoss` (a docker class's dockerd lost under a failed gate) rides beside `nodeLoss`; the
+ * store bounds a run of them.
  */
-const RELEASE_FLAGS = ['refused', 'blocked', 'requirement', 'nodeLoss', 'daemonLoss'] as const;
+const RELEASE_FLAGS = ['refused', 'blocked', 'requirement', 'nodeLoss', 'daemonLoss', 'orgSuspended'] as const;
+
+/** The release flags a body sets: only the ones it sent `true`. */
 type ReleaseFlags = Partial<Record<(typeof RELEASE_FLAGS)[number], true>>;
 
-/** The release flags the body sets, each `true` or absent — never `false`. */
 function releaseFlagsOf(raw: Record<string, unknown>, release: boolean): ReleaseFlags | string {
     const flags: ReleaseFlags = {};
     for (const name of RELEASE_FLAGS) {
@@ -24,13 +26,9 @@ function releaseFlagsOf(raw: Record<string, unknown>, release: boolean): Release
 }
 
 /** The interruption body's fields, or the refusal message for the first bad one. */
-export function interruptionOf(raw: Record<string, unknown>):
-    | ({
-          reason: string;
-          release: boolean;
-          claimSeq: number | null;
-      } & ReleaseFlags)
-    | string {
+export function interruptionOf(
+    raw: Record<string, unknown>
+): ({ reason: string; release: boolean; claimSeq: number | null } & ReleaseFlags) | string {
     const { reason, release, claimSeq } = raw;
     if (typeof reason !== 'string' || !reason.trim() || reason.length > INTERRUPTION_REASON_MAX) {
         return `reason must be a non-empty string of at most ${INTERRUPTION_REASON_MAX} characters`;

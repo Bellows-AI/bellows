@@ -245,7 +245,11 @@ async function materializeOnboarding(
         const selected =
             pending.orgPreference && orgIds.includes(pending.orgPreference) ? pending.orgPreference : selection[0]!.id;
         caller = await ctx.store.signIn(pending.identity, selected, selection);
+        // Sign-in may refuse a chosen org (an admin's removal, a confirmed non-member): only an org it admitted
+        // has its repository selection written by this account.
+        const admitted = new Set((await ctx.store.membershipsOf(caller.user.id)).map((org) => org.id));
         for (const [orgId, names] of reposByOrg) {
+            if (!admitted.has(orgId)) continue;
             await ctx.store.replaceTrackedRepos(orgId, names);
             rewroteAllowlist.push(orgId);
         }

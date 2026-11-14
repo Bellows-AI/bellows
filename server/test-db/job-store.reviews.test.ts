@@ -22,7 +22,8 @@ const LEASE_SECONDS = 300;
 const REVIEWED = 'h:2';
 const INBAND = new URL('../migrations/077_review_inband.sql', import.meta.url);
 
-const db = useTestDb({ max: 4 });
+// The org exists as a sign-in or the AUTH_MODE=none seed makes it: an admin's turn writes its audit row there.
+const db = useTestDb({ orgs: [ORG], max: 4 });
 
 beforeAll(async () => {
     if (!enabled) return;

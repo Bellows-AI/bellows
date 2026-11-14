@@ -12,8 +12,8 @@ import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/jobs/job-store-org-resolvers.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
-import { testSecretStore } from './env-secrets-harness.js';
-import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
+import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
+import { githubAuth, testConfig, TEST_DRIVER_CREDENTIAL, testDriverCredentials } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 
@@ -56,7 +56,7 @@ beforeEach(async () => {
         tokenHash: hashToken(token),
     });
     // A task naming no executor runs on the caller's default; the org's one profile is it.
-    await createUserExecutorStore({ sql, orgId }).createOrg({
+    await createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) }).createOrg({
         name: 'main',
         type: 'claude-code',
         config: {},
@@ -89,11 +89,12 @@ beforeEach(async () => {
         orgOfLease: createOrgOfLease({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
+        driverCredentials: testDriverCredentials,
         ready,
         version: '0.0.0',
     });
     boardUrl = await app.listen({ port: 0, host: '127.0.0.1' });
-    board = createBoard({ url: boardUrl, leaseSeconds: LEASE_S, token: TEST_JOB_BOARD_TOKEN });
+    board = createBoard({ url: boardUrl, leaseSeconds: LEASE_S, credential: () => TEST_DRIVER_CREDENTIAL });
 });
 
 afterEach(async () => {
@@ -157,7 +158,7 @@ describe.skipIf(!enabled)('the driver board client against the real store', () =
     });
 
     it('the driver parses runnerClass off a real claim', async () => {
-        const executors = createUserExecutorStore({ sql: db.sql, orgId });
+        const executors = createUserExecutorStore({ sql: db.sql, orgId, ...testSecretDeps(db.sql) });
         const main = (await executors.listOrg()).find((row) => row.name === 'main')!;
         await executors.updateOrg(main.id, { runnerClass: 'gvisor' });
         const id = await enqueue();

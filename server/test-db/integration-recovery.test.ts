@@ -40,6 +40,7 @@ function runtimeOver(
 ) {
     const runtime = createIntegrationRuntime({
         sql: db.sql,
+        crossOrgSql: db.sql,
         secrets,
         providers: (provider) => (provider === 'jira' ? fake.hooks : undefined),
         clients: (provider) =>

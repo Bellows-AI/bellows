@@ -1,3 +1,4 @@
+import { waitAdvisoryXactLock } from '../pool.js';
 import type { Sql, TransactionSql } from 'postgres';
 import type { BatchIdempotency } from './batch-store-types.js';
 import { IDEMPOTENCY_RETENTION_HOURS, IdempotencyKeyReusedError } from '../jobs/job-store-idempotency.js';
@@ -41,7 +42,7 @@ export async function replayInTx(tx: TransactionSql, scope: IdempotencyScope): P
     const { orgId, idempotency } = scope;
     if (!idempotency) return null;
     const lock = [orgId, callerOf(scope), idempotency.operation, idempotency.key].join('\u001f');
-    await tx`select pg_advisory_xact_lock(hashtextextended(${lock}::text, 0))`;
+    await waitAdvisoryXactLock(tx, lock);
     await tx`
         delete from batch_idempotency
         where org_id = ${orgId} and caller = ${callerOf(scope)}

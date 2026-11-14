@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { ERROR_CODES, type ExecutorScope, ORG_SCOPE, USER_SCOPE } from '@factory-ai/core';
+import { type DeploymentMode, ERROR_CODES, type ExecutorScope, ORG_SCOPE, USER_SCOPE } from '@factory-ai/core';
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
@@ -35,7 +35,7 @@ const BODY_LIMIT = BODY_LIMIT_KIB * BYTES_PER_KIB;
  * old default flag is refused loudly rather than rewritten (issue 391): scope and ownership are
  * decided by the route, never by the body.
  */
-function parseExecutorEntry(entry: unknown): ExecutorEntry | string {
+function parseExecutorEntry(entry: unknown, deploymentMode: DeploymentMode): ExecutorEntry | string {
     const item = entry as {
         scope?: unknown;
         userId?: unknown;
@@ -51,7 +51,7 @@ function parseExecutorEntry(entry: unknown): ExecutorEntry | string {
     if (item?.isDefault !== undefined) {
         return 'isDefault is set through PUT /api/workspace/executors/default, not on the row';
     }
-    const fields = parseExecutorFields(entry);
+    const fields = parseExecutorFields(entry, deploymentMode);
     if (typeof fields === 'string') return fields;
     const classRefusal = personalRunnerClassRefusal(fields.runnerClass);
     if (classRefusal) return classRefusal;
@@ -69,7 +69,7 @@ function parseExecutorEntry(entry: unknown): ExecutorEntry | string {
  * deepening validation belongs to the day an actual consumer exists and can be wrong about the
  * fields. The route guards shape; the check constraints guard the row.
  */
-function parseExecutors(raw: unknown): ExecutorEntry[] | string {
+function parseExecutors(raw: unknown, deploymentMode: DeploymentMode): ExecutorEntry[] | string {
     const list = jsonBody(raw).executors;
     if (!Array.isArray(list)) return 'executors must be an array of { name, type, config }';
     if (list.length > MAX_EXECUTORS_PER_USER) {
@@ -77,7 +77,7 @@ function parseExecutors(raw: unknown): ExecutorEntry[] | string {
     }
     const parsed: ExecutorEntry[] = [];
     for (const entry of list) {
-        const one = parseExecutorEntry(entry);
+        const one = parseExecutorEntry(entry, deploymentMode);
         if (typeof one === 'string') return one;
         parsed.push(one);
     }
@@ -107,6 +107,7 @@ function personalRow(row: ExecutorProfile) {
 interface WorkspaceDeps {
     orgs: OrgRegistry;
     runnerClasses: readonly RunnerClassOption[];
+    deploymentMode: DeploymentMode;
 }
 
 /** The caller's org's executor store, or the reason a route cannot serve them. */
@@ -127,9 +128,10 @@ async function runtimeOf(
 
 /** `list`'s per-entry name-shape and duplicate-name checks, in one place. */
 function validateExecutorList(
-    raw: unknown
+    raw: unknown,
+    deploymentMode: DeploymentMode
 ): { ok: true; value: ExecutorEntry[] } | { ok: false; code: string; message: string; status?: number | undefined } {
-    const list = parseExecutors(raw);
+    const list = parseExecutors(raw, deploymentMode);
     if (typeof list === 'string') {
         return { ok: false, code: executorFieldRefusal(list), message: list, status: executorFieldStatus(list) };
     }
@@ -236,7 +238,7 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     if (!ctx) return reply;
     const { userId, executors } = ctx;
 
-    const parsed = validateExecutorList(request.body);
+    const parsed = validateExecutorList(request.body, deps.deploymentMode);
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message, parsed.status);
     const { value: list } = parsed;
 
@@ -359,14 +361,16 @@ async function handlePutDefaultExecutor(deps: WorkspaceDeps, request: FastifyReq
 export interface WorkspaceRoutesDeps {
     /** The per-org runtimes; the executor store is the caller's org's. */
     readonly orgs: OrgRegistry;
+    /** `config.deploymentMode`: cloud refuses a Claude subscription OAuth token in a config. */
+    readonly deploymentMode: DeploymentMode;
     /** The board's runner classes (RUNNER_CLASSES), listed for the executor dialog. */
     readonly runnerClasses: readonly RunnerClassOption[];
 }
 
 export const workspaceRoutes =
-    ({ orgs, runnerClasses }: WorkspaceRoutesDeps): FastifyPluginAsync =>
+    ({ orgs, deploymentMode, runnerClasses }: WorkspaceRoutesDeps): FastifyPluginAsync =>
     async (app) => {
-        const deps: WorkspaceDeps = { orgs, runnerClasses };
+        const deps: WorkspaceDeps = { orgs, deploymentMode, runnerClasses };
 
         app.get('/api/workspace', (request, reply) => handleGetWorkspace(deps, request, reply));
         app.get('/api/workspace/executors', (request, reply) => handleGetExecutors(deps, request, reply));

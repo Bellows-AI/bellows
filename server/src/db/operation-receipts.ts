@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { orgSql } from './org-sql.js';
 
 /**
  * The durable receipt of one runner-side write to an external provider (099; docs/connections.md). A receipt is
@@ -85,7 +86,7 @@ const receiptOf = (row: Row): Receipt => ({
 });
 
 export function createOperationReceipts({
-    sql,
+    sql: pool,
     ready,
 }: {
     sql: Sql;
@@ -95,6 +96,7 @@ export function createOperationReceipts({
         async begin(input) {
             if (ready) await ready;
             const { orgId, rootJobId, jobId, connectionId, provider, operation, key, fingerprint } = input;
+            const sql = orgSql(pool, orgId);
             const inserted = await sql<Row[]>`
                 insert into integration_operation_receipt
                     (org_id, root_job_id, connection_id, provider, operation, operation_key, fingerprint, job_id)
@@ -117,6 +119,7 @@ export function createOperationReceipts({
         },
 
         async transition({ orgId, jobId, receiptId, from, to, result }) {
+            const sql = orgSql(pool, orgId);
             if (from.length === 0 || from.some((state) => !ALLOWED[state].includes(to))) return null;
             if (ready) await ready;
             const rows = await sql<Row[]>`
@@ -137,6 +140,7 @@ export function createOperationReceipts({
 
         async read(orgId, jobId, receiptId) {
             if (ready) await ready;
+            const sql = orgSql(pool, orgId);
             const rows = await sql<Row[]>`
                 select r.id, r.status, r.result, r.dispatched_at
                 from integration_operation_receipt r
@@ -149,6 +153,7 @@ export function createOperationReceipts({
 
         async isBound(orgId, rootJobId, connectionId) {
             if (ready) await ready;
+            const sql = orgSql(pool, orgId);
             const rows = await sql<{ one: number }[]>`
                 select 1 as one
                 from job_connection_binding b

@@ -25,7 +25,7 @@ function failing(error: Error) {
 }
 
 describe('withBoardRetry: what is retried', () => {
-    it.each([400, 401, 403, 404, 413, 422])('sends a deterministic %i once and throws it', async (status) => {
+    it.each([400, 404, 413, 422])('sends a deterministic %i once and throws it', async (status) => {
         const { io: rec, logs } = io();
         const call = failing(new BoardHttpError(status, `/api/jobs/x/complete answered ${status}: no`));
 
@@ -46,6 +46,30 @@ describe('withBoardRetry: what is retried', () => {
         await expect(withBoardRetry(rec, 'x', call.call)).rejects.toThrow(`answered ${status}`);
 
         expect(call.calls()).toBe(BOARD_CALL_ATTEMPTS);
+    });
+
+    // A refused driver credential is no answer about the call: one mid-rotation is presented anew from its file on
+    // the next try, and a revoked one still leaves the attempt to its lease rather than to a verdict.
+    it.each([401, 403])('retries a refused driver credential (%i) up to the attempt bound', async (status) => {
+        const { io: rec } = io();
+        const call = failing(new BoardHttpError(status, `answered ${status}`));
+
+        await expect(withBoardRetry(rec, 'x', call.call)).rejects.toThrow(`answered ${status}`);
+
+        expect(call.calls()).toBe(BOARD_CALL_ATTEMPTS);
+    });
+
+    it('lands a call once the rotated credential is presented', async () => {
+        const { io: rec } = io();
+        let calls = 0;
+        const call = async () => {
+            calls += 1;
+            if (calls === 1) throw new BoardHttpError(401, 'answered 401');
+            return 'held' as const;
+        };
+
+        await expect(withBoardRetry(rec, 'x', call)).resolves.toBe('held');
+        expect(calls).toBe(2);
     });
 
     it('retries a transport failure that carries no status', async () => {

@@ -7,6 +7,7 @@
  */
 
 import type { Fragment, Sql, TransactionSql } from 'postgres';
+import { type PlanLimits, planLimits } from '../plan-limits.js';
 
 /** The org's queue demand the shared admission budgets read. */
 export interface JobAdmissionStore {
@@ -22,6 +23,22 @@ export interface AdmissionBudgets {
 }
 
 export type AdmissionScope = 'global' | 'org' | 'repo';
+
+/**
+ * The budgets that bind a claim of `orgId`: the deployment's, the org budget lowered to the org's plan running
+ * limit (`planLimits`). A plan read that fails throws, so this org's claim fails this poll and the scan moves on to
+ * the next org (`scanUnderBudget`); it never admits unlimited.
+ */
+export async function orgAdmission(
+    sql: Sql,
+    admission: AdmissionBudgets,
+    orgId: string,
+    planDefaults: PlanLimits
+): Promise<AdmissionBudgets> {
+    const { running } = await planLimits(sql, orgId, planDefaults);
+    if (running === undefined) return admission;
+    return { ...admission, org: Math.min(admission.org ?? running, running) };
+}
 
 /** The slot a queued row is admitted into, per scope; null where the scope is unbudgeted. */
 export type AdmissionSlots = Readonly<Record<AdmissionScope, number | null>>;
@@ -80,9 +97,10 @@ function budgetsFor(
  */
 export async function fullScope(sql: Sql, budgets: AdmissionBudgets, orgId: string): Promise<AdmissionScope | null> {
     for (const budget of budgetsFor(sql, budgets, orgId, null)) {
-        const [row] = await sql<{ n: number }[]>`
-            select count(*)::int as n from job where ${occupying(sql)} and ${budget.where}
-        `;
+        // The global count spans every org, which the org's policy hides: a definer function counts it.
+        const [row] = await (budget.scope === 'global'
+            ? sql<{ n: number }[]>`select bellows_global_running() as n`
+            : sql<{ n: number }[]>`select count(*)::int as n from job where ${occupying(sql)} and ${budget.where}`);
         if (row!.n >= budget.limit) return budget.scope;
     }
     return null;
@@ -108,6 +126,10 @@ export function repoRoom(sql: Sql, budgets: AdmissionBudgets): Fragment {
  * that committed it meanwhile is seen and one that holds it is skipped: no claimer waits on another.
  * A row that cannot be moved (its row lock is held, or it just ended) refuses this claim
  * conservatively; the next poll reads fresh.
+ *
+ * The global budget's rows belong to every org, which the claiming org's policy hides: the same algorithm runs in
+ * `bellows_global_admission_slot` (151_row_level_security.sql) as the cross-org role, in this transaction and under
+ * the same advisory keys, and answers the slot alone.
  */
 export async function admitInTx(
     tx: TransactionSql,
@@ -117,11 +139,16 @@ export async function admitInTx(
 ): Promise<AdmissionSlots | AdmissionRefusal> {
     const slots: Record<AdmissionScope, number | null> = { global: null, org: null, repo: null };
     for (const budget of budgetsFor(tx, budgets, orgId, repo)) {
-        const slot = await admitInBudget(tx, budget);
+        const slot = budget.scope === 'global' ? await admitGlobal(tx, budget.limit) : await admitInBudget(tx, budget);
         if (slot === null) return { full: budget.scope };
         slots[budget.scope] = slot;
     }
     return slots;
+}
+
+async function admitGlobal(tx: TransactionSql, limit: number): Promise<number | null> {
+    const [row] = await tx<{ slot: number | null }[]>`select bellows_global_admission_slot(${limit}) as slot`;
+    return row?.slot ?? null;
 }
 
 async function admitInBudget(tx: TransactionSql, budget: Budget): Promise<number | null> {
@@ -167,11 +194,16 @@ async function admitInBudget(tx: TransactionSql, budget: Budget): Promise<number
 /**
  * What one org's board asks of the cluster right now, read from its rows so every board replica
  * orders the cross-org claim scan the same way (`fairBoardScan`): whether a lost
- * attempt waits for its takeover, how many rows run, and when its oldest waiting row queued.
+ * attempt waits for its takeover, how many rows run against what cap, when it was last served, and when its
+ * oldest waiting row queued.
  */
 export interface OrgDemand {
     readonly takeover: boolean;
     readonly running: number;
+    /** The org's running cap (`orgAdmission`'s org budget); absent is unlimited, weighted as a cap of 1. */
+    readonly cap?: number;
+    /** When the org's newest claim started (`started_at`); null, or absent, when it was never served. */
+    readonly lastServed?: Date | null;
     readonly oldestWaiting: Date | null;
 }
 
@@ -190,7 +222,7 @@ export function awaitingTakeover(sql: Sql | TransactionSql, table: string | null
                  and coalesce((${col('interruptions')} -> -1 ->> 'claimSeq')::bigint = ${col('claim_seq')}, false))))`;
 }
 
-export async function orgDemand(sql: Sql, orgId: string): Promise<OrgDemand> {
+export async function orgDemand(sql: Sql, orgId: string, cap: number | undefined): Promise<OrgDemand> {
     const [row] = await sql<{ takeover: boolean | null; running: number; oldest_waiting: Date | null }[]>`
         select bool_or(${awaitingTakeover(sql)}) as takeover,
                (count(*) filter (where ${occupying(sql)}))::int as running,
@@ -199,7 +231,17 @@ export async function orgDemand(sql: Sql, orgId: string): Promise<OrgDemand> {
         from job
         where org_id = ${orgId} and status in ('queued', 'running')
     `;
-    return { takeover: row?.takeover ?? false, running: row?.running ?? 0, oldestWaiting: row?.oldest_waiting ?? null };
+    // Its own read, through `job_org_last_claim`: the newest claim may be on a row that has long finished.
+    const [served] = await sql<{ last_served: Date | null }[]>`
+        select max(started_at) as last_served from job where org_id = ${orgId} and review_of is null
+    `;
+    return {
+        takeover: row?.takeover ?? false,
+        running: row?.running ?? 0,
+        ...(cap === undefined ? {} : { cap }),
+        lastServed: served?.last_served ?? null,
+        oldestWaiting: row?.oldest_waiting ?? null,
+    };
 }
 
 /** How much runs now, cluster-wide: the global count and the busiest org and repo (never which). */
@@ -223,16 +265,11 @@ export async function admissionOccupancy(
     return sql.begin(async (tx) => {
         signal?.throwIfAborted();
         await tx`select set_config('statement_timeout', ${String(timeoutMs)}, true)`;
-        const [row] = await tx<{ global: number; org_max: number; repo_max: number }[]>`
-            with running as (
-                select org_id, repo from job where ${occupying(tx)}
-            )
-            select (select count(*) from running)::int as global,
-                   coalesce((select max(n) from (select count(*) n from running group by org_id) o), 0)::int as org_max,
-                   coalesce((select max(n) from (select count(*) n from running where repo is not null
-                                                 group by org_id, repo) r), 0)::int as repo_max
+        // Every org's rows, counted by a definer function: the request role reads no job row without an org.
+        const [row] = await tx<{ global_running: number; org_max: number; repo_max: number }[]>`
+            select global_running, org_max, repo_max from bellows_admission_occupancy()
         `;
-        return { global: row!.global, orgMax: row!.org_max, repoMax: row!.repo_max };
+        return { global: row!.global_running, orgMax: row!.org_max, repoMax: row!.repo_max };
     });
 }
 
