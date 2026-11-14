@@ -50,6 +50,42 @@ describe.skipIf(!enabled)('org-owned tables', () => {
         expect(ORG_TABLES.filter((table) => !keyed.has(table))).toEqual([]);
     });
 
+    it('forces row-level security on every table with an org_id, partitions included, under the org policy', async () => {
+        const rows = await db.sql<{ name: string; enabled: boolean; forced: boolean; policies: string[] }[]>`
+            select c.relname as name, c.relrowsecurity as enabled, c.relforcerowsecurity as forced,
+                   coalesce(array_agg(p.polname || ':' || p.polcmd::text || ':' || pg_get_expr(p.polqual, p.polrelid) || ':'
+                                      || pg_get_expr(p.polwithcheck, p.polrelid))
+                            filter (where p.oid is not null), '{}') as policies
+            from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            join pg_attribute a on a.attrelid = c.oid and a.attname = 'org_id' and not a.attisdropped
+            left join pg_policy p on p.polrelid = c.oid
+            where n.nspname = 'public' and c.relkind in ('r', 'p')
+            group by c.relname, c.relrowsecurity, c.relforcerowsecurity
+        `;
+        const policy = "(org_id = current_setting('app.org_id'::text, true))";
+        const unbound = rows.filter(
+            (r) =>
+                !r.enabled ||
+                !r.forced ||
+                r.policies.length !== 1 ||
+                r.policies[0] !== `org_isolation:*:${policy}:${policy}`
+        );
+        expect(unbound.map((r) => `${r.name} ${JSON.stringify(r)}`)).toEqual([]);
+        expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining([...ORG_TABLES]));
+    });
+
+    it('runs every view in the schema as its invoker, so the policies bind a read through it', async () => {
+        const rows = await db.sql<{ name: string; options: string[] | null }[]>`
+            select c.relname as name, c.reloptions as options
+            from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public' and c.relkind in ('v', 'm')
+        `;
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows.filter((r) => !(r.options ?? []).includes('security_invoker=true')).map((r) => r.name)).toEqual([]);
+    });
+
     it('deleting an organization leaves none of its rows in any registered table, and another org keeps its own', async () => {
         await craftJob({ sql: db.sql, org, author: author.id });
         const kept = await craftJob({ sql: db.sql, org: other, author: author.id });

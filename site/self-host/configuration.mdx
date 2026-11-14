@@ -16,8 +16,9 @@ Bellows is configured with environment variables only. Locally they come from `.
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | Yes | none | Postgres connection string. A fetching process refuses a database whose name ends in `_test`, `_seed`, `_synthetic`, `_demo` or `_e2e`. |
-| `DB_POOL_MAX` | | `50` | Maximum Postgres connections in each of the server's two pools, per replica. Keep replicas × 2 × this under the database's connection limit. Helm computes it from `dashboard.dbConnections` (default `100`) divided by 2 × `dashboard.replicas`. |
+| `DATABASE_URL` | Yes | none | Postgres connection string of the login that owns the schema. It runs the migrations, which create the roles `bellows_request` (requests) and `bellows_cross_org` (`BYPASSRLS`, the paths that read across organizations), and its connections take those roles. Where it may not create roles, create both first. A fetching process refuses a database whose name ends in `_test`, `_seed`, `_synthetic`, `_demo` or `_e2e`. |
+| `DATABASE_REQUEST_URL` | | none | A login of its own for requests, to the same database: a member of `bellows_request` that owns nothing. Unset, the `DATABASE_URL` login takes the role on each connection. Helm: `database.requestUrl`, or the `database-request-url` key of an existing Secret. |
+| `DB_POOL_MAX` | | `50` | Maximum Postgres connections in each of the server's three pools (requests, secrets, cross-org), per replica, beside one migration connection at boot. Keep replicas × (3 × this + 1) under the database's connection limit. Helm computes it from `dashboard.dbConnections` (default `100`) less the replicas, divided by 3 × `dashboard.replicas`. |
 | `DB_STATEMENT_TIMEOUT_MS` | | `60000` | Longest a single database statement may run before Postgres cancels it. Migrations, advisory-lock waits, the organization purge and the telemetry org backfill are exempt. Helm: `dashboard.limits.statementTimeoutMs`. |
 | `PORT` | | `8080` | Port the server listens on. |
 | `HOST` | | `127.0.0.1` | Bind address. The container image sets `0.0.0.0`. |

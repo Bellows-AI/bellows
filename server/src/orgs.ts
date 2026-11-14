@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { orgSql } from './db/org-sql.js';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import { createAttachmentRows } from './attachments/attachment-rows.js';
 import { createSkillStore, type SkillStore } from './db/skill-store.js';
@@ -386,10 +387,12 @@ function orgExportOf(sql: Sql, orgId: string, backend: ArtifactBackend | undefin
 }
 
 export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
-    const { sql, ready, config, artifacts, claimMetrics } = deps;
+    const { sql: pool, ready, config, artifacts, claimMetrics } = deps;
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
     const build = async (orgId: string): Promise<OrgRuntime | null> => {
+        // Every statement below runs as this org, so the policies bind each store built here.
+        const sql = orgSql(pool, orgId);
         await ready;
         const rows = await sql<{ id: string; name: string; installation_id: string | null }[]>`
             select id, name, installation_id::text as installation_id from organization where id = ${orgId}
@@ -488,7 +491,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
 
         async list() {
             await ready;
-            const rows = await sql<{ id: string; name: string; installation_id: string | null }[]>`
+            const rows = await pool<{ id: string; name: string; installation_id: string | null }[]>`
                 select id, name, installation_id::text as installation_id from organization order by name
             `;
             return rows.map((row) => ({ id: row.id, name: row.name, installationId: row.installation_id }));

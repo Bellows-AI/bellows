@@ -85,8 +85,9 @@ dashboard:
         requestsPerOrg: ''
         mcpStreamsPerOrg: ''
         statementTimeoutMs: ''
-    # The database connections the board may hold across every replica. Each replica runs two pools of
-    # dbConnections / (2 x replicas) apiece (DB_POOL_MAX); the render refuses fewer than 2 per pool.
+    # The database connections the board may hold across every replica. Each replica holds one migration
+    # connection at boot and runs three pools (request, secrets, cross-org) of (dbConnections - replicas) /
+    # (3 x replicas) apiece (DB_POOL_MAX); the render refuses fewer than 2 per pool.
     # Keep it under the database's max_connections, less what else connects to it.
     dbConnections: 100
     # The optional commerce service (docs/configuration.md). Off, the board opens no connection and
@@ -186,8 +187,13 @@ database:
     # REQUIRED when the chart creates the Secret — the URL carries the password, so it
     # lands there as `database-url` and reaches the pod by secretKeyRef. With
     # `secret.existingSecret`, put the `database-url` key in that Secret instead. Local clusters
-    # get one from charts/factory-local-state (values-local.yaml points here).
+    # get one from charts/factory-local-state (values-local.yaml points here). The URL's login owns the
+    # schema: it runs the migrations and takes the bellows_cross_org role for the cross-org paths.
     url: ''
+    # Optional: the request role's own login to the same database, a member of bellows_request that owns
+    # nothing (docs/row-level-security.md). Lands in the Secret as `database-request-url` (or put that key
+    # in `secret.existingSecret`). Empty, the `url` login takes bellows_request per connection.
+    requestUrl: ''
     # Runs `pg_isready -d $DATABASE_URL` in an init container before the server starts: the
     # server's migration retry gives up after ~55s and then serves every DB-backed route as a 500.
     # Any image with the postgres client tools will do.

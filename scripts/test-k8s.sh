@@ -806,17 +806,23 @@ expect_contains 'cloud mode renders the Free plan limits' "$(grep -A1 'name: PLA
 operator="$(gh_render "${CLOUD_SETS[@]}" --set-string 'dashboard.operatorGithubIds=101\,202')"
 expect_contains 'the operator GitHub ids render as a comma list' \
     "$(grep -A1 'name: OPERATOR_GITHUB_IDS$' <<<"$operator")" 'value: "101,202"'
-# The request limits and the pool: each replica's two pools split dashboard.dbConnections.
+# The request limits and the pool: each replica's three pools and migration connection split dashboard.dbConnections.
 limits="$(gh_render --set-string 'dashboard.limits.trustedProxies=10.0.0.0/8\,192.168.0.1' \
     --set dashboard.replicas=2 --set dashboard.dbConnections=80)"
 expect_contains 'the trusted proxies render as a comma list' \
     "$(grep -A1 'name: TRUSTED_PROXIES$' <<<"$limits")" 'value: "10.0.0.0/8,192.168.0.1"'
-expect_contains 'two replicas split 80 connections into pools of 20' \
-    "$(grep -A1 'name: DB_POOL_MAX$' <<<"$limits")" 'value: "20"'
-expect_contains 'one replica keeps the default pool of 50' "$(grep -A1 'name: DB_POOL_MAX$' <<<"$gh")" 'value: "50"'
+expect_contains 'two replicas split 80 connections into pools of 13' \
+    "$(grep -A1 'name: DB_POOL_MAX$' <<<"$limits")" 'value: "13"'
+expect_contains 'one replica splits the default 100 into pools of 33' "$(grep -A1 'name: DB_POOL_MAX$' <<<"$gh")" 'value: "33"'
 expect_contains 'the statement timeout reaches the dashboard as environment' "$gh" 'name: DB_STATEMENT_TIMEOUT_MS'
-refuses 'a connection budget under 4 per replica is refused' 'dashboard.dbConnections must be' \
-    "${GH_SETS[@]}" --set dashboard.replicas=2 --set dashboard.dbConnections=7
+refuses 'a connection budget under 7 per replica is refused' 'dashboard.dbConnections must be' \
+    "${GH_SETS[@]}" --set dashboard.replicas=2 --set dashboard.dbConnections=13
+# The request role's own login: an optional Secret key, absent unless set (docs/row-level-security.md).
+expect_contains 'the request login reaches the dashboard from the Secret, optionally' \
+    "$(grep -A6 'name: DATABASE_REQUEST_URL$' <<<"$gh")" 'optional: true'
+expect_not_contains 'no request login is written unless one is set' "$gh" 'database-request-url: '
+requester="$(gh_render --set database.requestUrl=postgres://app:p@db:5432/factory)"
+expect_contains 'a set request login lands in the Secret' "$requester" 'database-request-url: "postgres://app:p@db:5432/factory"'
 # The artifact store: the dashboard runs as its own ServiceAccount, which carries the IRSA
 # annotation, and the s3 backend refuses to render without a bucket.
 expect_contains 'the dashboard has its own ServiceAccount' "$gh" "serviceAccountName: $RELEASE-factory-dashboard"

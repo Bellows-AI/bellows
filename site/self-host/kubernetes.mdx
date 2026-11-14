@@ -99,6 +99,7 @@ By default the chart creates its Secrets from your values. For production, creat
     | Key | Value |
     | --- | --- |
     | `database-url` | `database.url` |
+    | `database-request-url` (optional) | `database.requestUrl` |
     | `github-app-private-key` | `github.appPrivateKey` |
     | `github-oauth-client-secret` | `secret.oauthClientSecret` |
     | `session-secret` | `secret.sessionSecret` |
@@ -314,7 +315,7 @@ Then add an executor in the app, queue a task, and confirm the runner pod lands 
 
     A task's claim binds once its first pod is scheduled. EBS volumes are zonal, so runner nodes must exist in the zone of the volume.
 
-    **Database.** Use RDS or Aurora PostgreSQL 17 through `database.url`. Do not use `charts/factory-local-state`: it is for kind only. A private-address database sits inside `isolation.blockedCidrs`, so add the database as a `/32` in `isolation.allowedCidrs` if runners must reach it.
+    **Database.** Use RDS or Aurora PostgreSQL 17 through `database.url`. Do not use `charts/factory-local-state`: it is for kind only. The URL's login owns the schema, and its first boot creates two roles and grants them to itself: `bellows_request`, which every request runs as under each organization's row-level policy, and `bellows_cross_org` (`BYPASSRLS`) for the paths that read across organizations. If that login may not create a `BYPASSRLS` role, have a role that can run `create role bellows_request nologin; create role bellows_cross_org nologin bypassrls; grant bellows_request, bellows_cross_org to <login>;` first. For requests on a login of their own, create one that is a member of `bellows_request` and owns nothing, and set `database.requestUrl`. A private-address database sits inside `isolation.blockedCidrs`, so add the database as a `/32` in `isolation.allowedCidrs` if runners must reach it.
 
     **Artifacts and secrets.** Annotate the dashboard ServiceAccount with an IRSA role, or bind it with an EKS Pod Identity association:
 

@@ -45,7 +45,8 @@ describe('the secret-store test helpers cannot become a production backend', () 
         const main = readFileSync(join(SRC, 'main.ts'), 'utf8');
         const keys = main.indexOf('loadSecretBackend(process.env)');
         expect(keys).toBeGreaterThan(main.indexOf('resolveConfig('));
-        expect(keys).toBeLessThan(main.indexOf('boardPool('));
+        expect(keys).toBeLessThan(main.indexOf('requestPools('));
+        expect(keys).toBeLessThan(main.indexOf('crossOrgPool('));
         expect(main).toMatch(/createSecretStore\(\{[^}]*\bsql\b[^}]*\bbackend\b/s);
         expect(main).toMatch(/buildApp\(\{[\s\S]*\bsecrets\b[\s\S]*\}\)/);
         expect(main).toContain("timedPass('secret_collect'");

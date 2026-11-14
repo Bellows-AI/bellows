@@ -90,6 +90,7 @@ async function rig(options: RigOptions = {}) {
     const spy = spied(options.secrets ? options.secrets(h.open()) : h.open());
     const runtime = createIntegrationRuntime({
         sql,
+        crossOrgSql: sql,
         secrets: spy.store,
         providers: (provider) => (provider === 'jira' ? fake.hooks : undefined),
         clients: () => undefined,

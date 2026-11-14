@@ -133,8 +133,17 @@ export interface AppConfig {
      * Required. The database is the only place figures come from, so there is no mode that runs
      * without one, and therefore no `null` to branch on at 30-odd call sites.
      */
+    /** The owner's login: migrations, and the cross-org pool under the cross-org role (docs/row-level-security.md). */
     readonly databaseUrl: string;
-    /** Each of the board's two pools, per replica (DB_POOL_MAX); the chart divides its budget by the replicas. */
+    /**
+     * The request role's own login (DATABASE_REQUEST_URL), to the same database; null, the owner's login takes the
+     * role at connection start instead. Never logged.
+     */
+    readonly databaseRequestUrl: string | null;
+    /**
+     * Each of the board's three pools (request, secrets, cross-org), per replica (DB_POOL_MAX), beside the one
+     * migration connection; the chart divides its budget by the replicas.
+     */
     readonly dbPoolMax: number;
     /** One statement's budget on the board's pools (DB_STATEMENT_TIMEOUT_MS); see `db/pool.ts` for what lifts it. */
     readonly dbStatementTimeoutMs: number;
@@ -253,6 +262,17 @@ function databaseName(url: string): string | null {
     } catch {
         return null;
     }
+}
+
+/** Trimmed, empty meaning unset. A second database would put requests where the migrations never ran. */
+function loadDatabaseRequestUrl(env: NodeJS.ProcessEnv, databaseUrl: string): string | null {
+    const url = env.DATABASE_REQUEST_URL?.trim() || null;
+    if (url !== null && databaseName(url) !== databaseName(databaseUrl)) {
+        throw new Error(
+            "DATABASE_REQUEST_URL must name the database DATABASE_URL names: it is the request role's login to the same database."
+        );
+    }
+    return url;
 }
 
 function int(raw: string | undefined, fallback: number, label: string): number {
@@ -693,6 +713,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         );
     }
 
+    const databaseRequestUrl = loadDatabaseRequestUrl(env, databaseUrl);
+
     // Trimmed, empty meaning unset. Unset, the installation webhook route
     // does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     const webhookSecret = env.GITHUB_WEBHOOK_SECRET?.trim() || null;
@@ -740,6 +762,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         webRoot: env.WEB_ROOT ?? null,
         telemetrySource,
         databaseUrl,
+        databaseRequestUrl,
         dbPoolMax,
         dbStatementTimeoutMs: loadStatementTimeoutMs(env),
         trustedProxies: parseTrustedProxies(env.TRUSTED_PROXIES),

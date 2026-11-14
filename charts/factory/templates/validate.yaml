@@ -151,8 +151,8 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- fail "dashboard.preStopSeconds must be a whole number from 0 below 30 s" }}
 {{- end }}
 {{- $connections := .Values.dashboard.dbConnections }}
-{{- if or (not (or (kindIs "int64" $connections) (kindIs "float64" $connections))) (lt (float64 $connections) (mul 4 (int64 $replicas) | float64)) }}
-{{- fail (printf "dashboard.dbConnections must be a whole number of at least 4 per replica: each replica runs two pools of at least 2 (dashboard.dbConnections=%v, dashboard.replicas=%v)" $connections $replicas) }}
+{{- if or (not (or (kindIs "int64" $connections) (kindIs "float64" $connections))) (lt (float64 $connections) (mul 7 (int64 $replicas) | float64)) }}
+{{- fail (printf "dashboard.dbConnections must be a whole number of at least 7 per replica: each replica runs three pools of at least 2 and one migration connection (dashboard.dbConnections=%v, dashboard.replicas=%v)" $connections $replicas) }}
 {{- end }}
 {{- if and (gt (int64 $replicas) 1) (eq .Values.artifacts.backend "filesystem") }}
 {{- fail (printf "dashboard.replicas above 1 requires artifacts.backend=s3 or gcs: the filesystem backend is one pod's /tmp (dashboard.replicas=%v, artifacts.backend=filesystem)" $replicas) }}

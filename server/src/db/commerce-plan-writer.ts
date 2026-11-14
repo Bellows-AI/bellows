@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { orgSql } from './org-sql.js';
 
 /**
  * The inbound plan push (095; docs/commerce.md). It takes the org per call, like `createAuthStore`: deciding
@@ -70,7 +71,7 @@ export function createCommercePlanWriter({ sql, ready }: { sql: Sql; ready: Prom
     return {
         async put(orgId, push) {
             await ready;
-            return sql.begin(async (tx): Promise<PlanVerdict> => {
+            return orgSql(sql, orgId).begin(async (tx): Promise<PlanVerdict> => {
                 const written = await tx`
                     insert into org_plan (org_id, plan, included_minutes, used_minutes, period_start, period_end,
                                           max_running, max_queued, max_wall_seconds, max_tokens, max_storage_bytes,

@@ -16,6 +16,7 @@ import {
     type UsageInput,
     type UserRef,
 } from '@factory-ai/core';
+import { setOrg } from '../db/org-sql.js';
 import type { CanonicalField } from './metric-map.js';
 
 export { readGlobalReconciliation } from './usage-reconciliation.js';
@@ -59,9 +60,6 @@ export interface UsageFactsOptions {
     /** Also read the edit-decision points (run activity); off by default, the stats read never needs them. */
     edits?: boolean;
 }
-
-/** The placeholder org of a session_branch row no organization claimed (005_organizations.sql): evidence for nobody. */
-export const UNCLAIMED_ORG = '__unclaimed__';
 
 const TOKEN_FIELDS = ['tokens_input', 'tokens_output', 'tokens_cacheRead', 'tokens_cacheCreation'] as const;
 const EDIT_FIELDS = ['edits_accept', 'edits_reject'] as const;
@@ -156,6 +154,8 @@ export async function readUsageFacts(
     options: UsageFactsOptions = {}
 ): Promise<UsageFacts> {
     const started = Date.now();
+    // The org every read below runs as: the policies, and the foreign-session check, answer for it alone.
+    await setOrg(tx, orgId);
     const { taskIds, edits = false } = options;
     const sessionIds = taskIds
         ? tx`select distinct s.session_id
@@ -185,12 +185,12 @@ export async function readUsageFacts(
             select distinct agent, session_id, repo from session_branch
             where org_id = ${orgId} and session_id in (${sessionIds})
         `,
+        // Another organization's evidence is past this org's policy: a definer function answers one boolean per id.
         tx<{ session_id: string }[]>`
-            select session_id from job_execution_session
-            where org_id <> ${orgId} and session_id in (${sessionIds})
-            union
-            select session_id from session_branch
-            where org_id not in (${orgId}, ${UNCLAIMED_ORG}) and session_id in (${sessionIds})
+            select f.session_id
+            from (select array(${sessionIds}) as ids) s,
+                 unnest(s.ids, bellows_sessions_foreign(s.ids)) as f(session_id, held)
+            where f.held
         `,
     ]);
 
