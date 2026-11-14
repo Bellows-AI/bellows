@@ -42,6 +42,7 @@ import {
 } from './k8s-teardown.js';
 import {
     CLAIM_ROUNDS,
+    expectCreated,
     expectOk,
     HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
@@ -666,7 +667,7 @@ export async function createSuspendedWithSecret(
             ...spec,
             spec: { ...spec.spec, suspend: true },
         });
-        expectOk(created, what.job);
+        expectCreated(created, what.job);
         // The Secret is owned by the Job's uid: collected with it, even if this driver never ends it.
         // Recorded the moment it answers: every teardown after this names that incarnation.
         const uid = uidOf(created, what.job);
@@ -676,7 +677,7 @@ export async function createSuspendedWithSecret(
             secretsPath(deps.config.k8sNamespace),
             what.secretBody({ name: spec.metadata.name, uid })
         );
-        expectOk(stored, what.secret);
+        expectCreated(stored, what.secret);
         identity.uids = { job: uid, secret: uidOf(stored, what.secret) };
     } catch (e) {
         await standDown();
