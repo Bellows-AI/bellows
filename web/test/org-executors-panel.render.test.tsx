@@ -10,6 +10,7 @@ describe('the organization executors panel', () => {
         type,
         createdAt,
         suspended: false,
+        runnerClass: null,
     });
     const noop = () => {};
     /** A member's view of one profile, nothing saving and no org default; overrides name the difference. */
@@ -29,6 +30,17 @@ describe('the organization executors panel', () => {
                 {...overrides}
             />
         );
+
+    it('shows a profile’s runner class beside its agent, and nothing for the deployment default', () => {
+        const html = renderPanel({
+            executors: [
+                { ...executor('builder', 'claude-code'), runnerClass: 'builds' },
+                executor('plain', 'opencode'),
+            ],
+        });
+        expect(html.match(/<span class="pill" title="Runner class">builds<\/span>/g)?.length).toBe(1);
+        expect(html.match(/title="Runner class"/g)?.length).toBe(1);
+    });
 
     it('renders Make default on every non-default row, and not on the row the org default names', () => {
         const html = renderPanel({

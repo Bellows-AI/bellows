@@ -369,6 +369,7 @@ describe('Settings executors page', () => {
                             type: 'claude-code',
                             createdAt: '2026-09-03T00:00:00.000Z',
                             suspended: false,
+                            runnerClass: null,
                         },
                     ],
                     defaultExecutor: { scope: 'user', name: 'main' },

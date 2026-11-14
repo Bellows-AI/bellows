@@ -242,7 +242,7 @@ describe('validateExecutorDraft', () => {
     it('saves a name and an agent alone as the inherited configuration', () => {
         expect(validateExecutorDraft(draft(), [], null)).toEqual({
             ok: true,
-            value: { name: 'Code review', type: CLAUDE_CODE, config: {}, gateFixRounds: 3 },
+            value: { name: 'Code review', type: CLAUDE_CODE, config: {}, gateFixRounds: 3, runnerClass: null },
         });
     });
 
@@ -365,7 +365,10 @@ describe('executorEditorView', () => {
 });
 
 describe('saveUnavailableReason', () => {
-    const ok = { ok: true as const, value: { name: 'x', type: CLAUDE_CODE, config: {}, gateFixRounds: 3 } };
+    const ok = {
+        ok: true as const,
+        value: { name: 'x', type: CLAUDE_CODE, config: {}, gateFixRounds: 3, runnerClass: null },
+    };
 
     it('points an invalid draft at its field, without repeating the error shown beside it', () => {
         for (const field of ['name', 'model', 'config', 'rounds'] as const) {
@@ -501,8 +504,20 @@ describe('EXECUTOR_TYPE_META', () => {
 });
 
 describe('mergeExecutors', () => {
-    const first: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'sonnet' }, gateFixRounds: 3 };
-    const second: ValidExecutor = { name: 'oc', type: 'opencode', config: { model: 'x' }, gateFixRounds: 1 };
+    const first: ValidExecutor = {
+        name: 'main',
+        type: 'claude-code',
+        config: { model: 'sonnet' },
+        gateFixRounds: 3,
+        runnerClass: null,
+    };
+    const second: ValidExecutor = {
+        name: 'oc',
+        type: 'opencode',
+        config: { model: 'x' },
+        gateFixRounds: 1,
+        runnerClass: null,
+    };
     const firstRow: ExecutorRow = { ...first };
     const secondRow: ExecutorRow = { ...second };
 
@@ -514,7 +529,13 @@ describe('mergeExecutors', () => {
     it('replaces the edited row, matched by its original name, keeping its position', () => {
         // A rename changes the name the row is saved under; the match is still against the name
         // the row had when the dialog opened.
-        const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {}, gateFixRounds: 3 };
+        const renamed: ValidExecutor = {
+            name: 'renamed',
+            type: 'claude-code',
+            config: {},
+            gateFixRounds: 3,
+            runnerClass: null,
+        };
         const result = mergeExecutors([firstRow, secondRow], 'main', renamed);
         expect(result).toEqual({ ok: true, value: [{ ...renamed }, secondRow] });
     });
@@ -525,6 +546,7 @@ describe('mergeExecutors', () => {
             type: 'claude-code',
             config: { model: 'opus' },
             gateFixRounds: 5,
+            runnerClass: null,
         };
         const result = mergeExecutors([firstRow, secondRow], 'main', changed);
         expect(result.ok && result.value[0]?.gateFixRounds).toBe(5);
@@ -536,6 +558,7 @@ describe('mergeExecutors', () => {
             type: 'claude-code',
             config: { model: 'opus' },
             gateFixRounds: 3,
+            runnerClass: null,
         };
         const result = mergeExecutors([firstRow, secondRow], 'main', changed);
         expect(result).toEqual({ ok: true, value: [{ ...changed }, secondRow] });
@@ -631,7 +654,13 @@ describe('mergeExecutors — suspension (issue 440)', () => {
         gateFixRounds: 3,
         suspended: true,
     };
-    const edited: ValidExecutor = { name: 'renamed', type: 'claude-code', config: { model: 'x' }, gateFixRounds: 3 };
+    const edited: ValidExecutor = {
+        name: 'renamed',
+        type: 'claude-code',
+        config: { model: 'x' },
+        gateFixRounds: 3,
+        runnerClass: null,
+    };
 
     it('keeps a suspended row suspended through an edit and a rename', () => {
         const result = mergeExecutors([suspendedRow], 'main', edited);

@@ -25,7 +25,9 @@ import {
     ModelField,
     modelBlockedNote,
     NameField,
+    RunnerClassField,
 } from './executor-dialog-parts.js';
+import type { RunnerClassOption } from '../api/useWorkspace.js';
 import { UnsavedChangesDialog } from './UnsavedChangesDialog.js';
 
 /**
@@ -71,12 +73,27 @@ export interface ExecutorDialogProps {
     /** Told the success sentence just before the dialog closes. */
     onSaved: (message: string) => void;
     saving: boolean;
+    /**
+     * The board's declared runner classes, given for an organization profile only: a personal
+     * profile runs in the default class, so its dialog renders no class select. An org dialog with
+     * nothing to offer — no declared class, and none on the row — renders none either.
+     */
+    runnerClasses?: readonly RunnerClassOption[];
 }
 
 /** What to do once the reader answers Discard changes. */
 type PendingDiscard = { proceed: () => void };
 
-export function ExecutorDialog({ open, existing, editing, onClose, onSave, onSaved, saving }: ExecutorDialogProps) {
+export function ExecutorDialog({
+    open,
+    existing,
+    editing,
+    onClose,
+    onSave,
+    onSaved,
+    saving,
+    runnerClasses,
+}: ExecutorDialogProps) {
     const [baseline, setBaseline] = useState<ExecutorDraft>(() => initialExecutorDraft(undefined));
     const [draft, setDraft] = useState<ExecutorDraft>(baseline);
     const [nameTouched, setNameTouched] = useState(false);
@@ -184,6 +201,12 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, onSav
                         onDefault={() => writeModel(null, false)}
                         onCustom={() => setConfig(draft.configs[type], true)}
                         onModel={(value) => writeModel(value.trim() || null, true)}
+                    />
+                    <RunnerClassField
+                        ids={ids}
+                        value={draft.runnerClass}
+                        declared={runnerClasses}
+                        onChange={(runnerClass) => setDraft({ ...draft, runnerClass })}
                     />
                     <CredentialsNote href={envHref} onFollow={followEnvLink} />
 

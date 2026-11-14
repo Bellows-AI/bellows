@@ -27,6 +27,8 @@ export interface OrgExecutor {
     type: string;
     createdAt: string;
     suspended: boolean;
+    /** The runner class the profile's tasks run in; null for the deployment's default. */
+    runnerClass: string | null;
 }
 
 /** The member's default-executor preference as the poll resolves it (issue 391). */
@@ -42,6 +44,17 @@ export interface DefaultExecutor {
 export interface WorkspaceExecutorFull extends WorkspaceExecutor {
     config: object;
 }
+
+/** A runner class the board declares (RUNNER_CLASSES): its name and whether it has a Docker daemon. */
+export interface RunnerClassOption {
+    name: string;
+    docker: boolean;
+}
+
+/** The dialog's on-demand read: the member's rows with configs, and the classes an org profile may name. */
+export type ExecutorConfigsRead =
+    | { ok: true; executors: WorkspaceExecutorFull[]; runnerClasses: RunnerClassOption[] }
+    | { ok: false; error: string };
 
 export interface WorkspacePayload {
     executors: WorkspaceExecutor[];
@@ -76,7 +89,7 @@ export interface UseWorkspace {
      * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
      * open instead.
      */
-    listExecutorConfigs: () => Promise<{ ok: true; executors: WorkspaceExecutorFull[] } | { ok: false; error: string }>;
+    listExecutorConfigs: () => Promise<ExecutorConfigsRead>;
     refresh: () => void;
 }
 
@@ -108,23 +121,36 @@ const isExecutorFull = (row: unknown): row is WorkspaceExecutorFull =>
     typeof (row as WorkspaceExecutorFull).config === 'object' &&
     (row as WorkspaceExecutorFull).config !== null;
 
+/** A declared class must name itself and say whether it has Docker: the select shows both. */
+const isRunnerClass = (row: unknown): row is RunnerClassOption =>
+    typeof row === 'object' &&
+    row !== null &&
+    typeof (row as RunnerClassOption).name === 'string' &&
+    typeof (row as RunnerClassOption).docker === 'boolean';
+
 /**
  * The one on-demand executor read — the dialog's only fetch. Module-level because it captures no
  * hook state: exported so the offline suite can pin the wire shape and its error handling, the
  * way `pollDelay` and `pollCompletedJobs` are.
  */
-export const listExecutorConfigs = async (): Promise<
-    { ok: true; executors: WorkspaceExecutorFull[] } | { ok: false; error: string }
-> => {
-    const result = await request<{ executors: WorkspaceExecutorFull[] }>('/api/workspace/executors', {
+export const listExecutorConfigs = async (): Promise<ExecutorConfigsRead> => {
+    type Body = { executors: WorkspaceExecutorFull[]; runnerClasses: RunnerClassOption[] };
+    const result = await request<Body>('/api/workspace/executors', {
         verb: 'Could not load the executors',
-        guard: (body): body is { executors: WorkspaceExecutorFull[] } => {
-            const rows = (body as { executors?: unknown } | null)?.executors;
-            return Array.isArray(rows) && rows.every(isExecutorFull);
+        guard: (body): body is Body => {
+            const { executors, runnerClasses } = (body ?? {}) as { executors?: unknown; runnerClasses?: unknown };
+            return (
+                Array.isArray(executors) &&
+                executors.every(isExecutorFull) &&
+                Array.isArray(runnerClasses) &&
+                runnerClasses.every(isRunnerClass)
+            );
         },
         malformed: 'Could not load the executors: unexpected response shape.',
     });
-    return result.ok ? { ok: true, executors: result.value.executors } : { ok: false, error: result.error };
+    return result.ok
+        ? { ok: true, executors: result.value.executors, runnerClasses: result.value.runnerClasses }
+        : { ok: false, error: result.error };
 };
 
 /**

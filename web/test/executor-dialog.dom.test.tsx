@@ -19,7 +19,11 @@ import {
     MODEL_DEFAULT_LABEL,
     NAME_HELP,
     NO_CHANGES_REASON,
+    RUNNER_CLASS_DEFAULT_LABEL,
+    RUNNER_CLASS_HELP,
+    RUNNER_CLASS_LABEL,
     RUNNER_MANAGED_NOTE,
+    runnerClassOptionLabel,
     SAVE_HINTS,
     SAVE_LABEL,
 } from '../src/workspace/executors.js';
@@ -257,5 +261,82 @@ describe('the executor dialog', () => {
         expect(button(SAVE_LABEL).disabled).toBe(true);
         await user.keyboard('{Escape}');
         await dialogGone();
+    });
+});
+
+describe('the runner class (organization profiles only)', () => {
+    const classes = [
+        { name: 'standard', docker: false },
+        { name: 'builds', docker: true },
+    ];
+    const orgDialog = () => screen.getByRole('dialog', { name: /^(Add|Edit) executor$/ });
+    const classSelect = () =>
+        within(orgDialog()).getByLabelText<HTMLSelectElement>(RUNNER_CLASS_LABEL, { exact: true });
+    const orgRow = async (name: string) =>
+        within(await screen.findByRole('region', { name: 'Organization executors' })).findByRole('row', {
+            name: new RegExp(name),
+        });
+
+    it('the dialog offers the declared classes and submits the chosen one', async () => {
+        const board = settingsBoard({ runnerClasses: classes });
+        const calls = stubFetch(boardHandler(board));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+
+        await user.click(await screen.findByRole('button', { name: 'Add organization executor' }));
+        await screen.findByRole('dialog', { name: ADD_LABEL });
+        // The deployment's default first, then every declared class, each saying whether it has docker.
+        expect([...classSelect().options].map((option) => [option.value, option.textContent])).toEqual([
+            ['', RUNNER_CLASS_DEFAULT_LABEL],
+            ['standard', runnerClassOptionLabel(classes[0]!)],
+            ['builds', runnerClassOptionLabel(classes[1]!)],
+        ]);
+        expect(runnerClassOptionLabel(classes[1]!)).toMatch(/docker/i);
+        expect(describedBy(classSelect())).toContain(RUNNER_CLASS_HELP);
+
+        await user.type(within(orgDialog()).getByLabelText('Name', { exact: true }), 'Builder');
+        await user.selectOptions(classSelect(), 'builds');
+        await user.click(within(orgDialog()).getByRole('button', { name: ADD_LABEL }));
+        await dialogGone();
+        const posts = calls.filter((call) => call.method === 'POST' && call.url === '/api/org/executors');
+        expect(posts.map((call) => (call.body as { runnerClass: unknown }).runnerClass)).toEqual(['builds']);
+
+        // The list shows the class, and an edit opens on it and sends it back unchanged: the PUT is
+        // whole-entry, so an edit that left it out would put the profile back in the default class.
+        expect((await orgRow('Builder')).textContent).toContain('builds');
+        await user.click(within(await orgRow('Builder')).getByRole('button', { name: 'Edit' }));
+        await screen.findByRole('dialog', { name: 'Edit executor' });
+        expect(classSelect().value).toBe('builds');
+        await user.type(within(orgDialog()).getByLabelText('Name', { exact: true }), ' 2');
+        await user.click(within(orgDialog()).getByRole('button', { name: SAVE_LABEL }));
+        await dialogGone();
+        const puts = calls.filter((call) => call.method === 'PUT' && call.url.startsWith('/api/org/executors/'));
+        expect(puts.map((call) => call.body)).toMatchObject([{ name: 'Builder 2', runnerClass: 'builds' }]);
+
+        // A class-only change is a change: Save turns on, and back to the default sends null.
+        await user.click(within(await orgRow('Builder 2')).getByRole('button', { name: 'Edit' }));
+        await screen.findByRole('dialog', { name: 'Edit executor' });
+        expect(within(orgDialog()).getByRole<HTMLButtonElement>('button', { name: SAVE_LABEL }).disabled).toBe(true);
+        await user.selectOptions(classSelect(), '');
+        await user.click(within(orgDialog()).getByRole('button', { name: SAVE_LABEL }));
+        await dialogGone();
+        expect(board.orgExecutors.find((row) => row.name === 'Builder 2')?.runnerClass).toBeNull();
+    });
+
+    it('offers no class on a personal profile, nor when the board declares none', async () => {
+        const board = settingsBoard({ runnerClasses: classes });
+        stubFetch(boardHandler(board));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+
+        await openAdd(user);
+        expect(within(orgDialog()).queryByLabelText(RUNNER_CLASS_LABEL)).toBeNull();
+        await user.keyboard('{Escape}');
+        await dialogGone();
+
+        board.runnerClasses = [];
+        await user.click(await screen.findByRole('button', { name: 'Add organization executor' }));
+        await screen.findByRole('dialog', { name: ADD_LABEL });
+        expect(within(orgDialog()).queryByLabelText(RUNNER_CLASS_LABEL)).toBeNull();
     });
 });
