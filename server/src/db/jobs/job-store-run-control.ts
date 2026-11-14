@@ -4,7 +4,7 @@
 
 import type { Fragment, TransactionSql } from 'postgres';
 import { stopReviewsOf, stopRows } from './job-store-rows.js';
-import { releaseOpen } from './job-store-interruption-budget.js';
+import { interruptionsSpent, releaseOpen } from './job-store-interruption-budget.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import { fingerprintOf, missedSettle, recordReceipt, settleReplayOf, type SettleKey } from './job-store-receipts.js';
 import { commitStagedForStop } from './job-store-conclusions.js';
@@ -126,6 +126,15 @@ export async function suspendJob(
  */
 export const BLOCKED_RETRY_SECONDS = 60;
 
+/**
+ * What the third consecutive dockerd loss on adds to its reason: refunded twice in a row, a daemon that keeps
+ * dying under the gates is the task's environment, so from then on the loss spends an attempt and the
+ * ordinary interruption budget. Consecutive means the row's last two entries are dockerd losses; any other
+ * interruption between them starts the count again.
+ */
+export const REPEATED_DAEMON_LOSS_NOTE =
+    ' — the third consecutive dockerd loss: it spends an attempt and the interruption budget';
+
 /** The interruption the next claim records for an attempt whose lease expired. */
 export const LEASE_EXPIRED_REASON = 'the lease expired: its driver went silent';
 
@@ -141,6 +150,7 @@ export async function interruptJob(
         blocked = false,
         requirement = false,
         nodeLoss = false,
+        daemonLoss = false,
     }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
@@ -156,11 +166,18 @@ export async function interruptJob(
         ...(blocked ? { blocked: true } : {}),
         ...(requirement ? { requirement: true } : {}),
         ...(nodeLoss ? { nodeLoss: true } : {}),
+        ...(daemonLoss ? { daemonLoss: true } : {}),
         refunded: true,
     });
+    // A dockerd loss after two in a row is recorded as an ordinary interruption, unrefunded (`REPEATED_DAEMON_LOSS_NOTE`).
+    const repeated = sql`(${release && daemonLoss} and coalesce(interruptions -> -1 ->> 'daemonLoss' = 'true'
+        and interruptions -> -2 ->> 'daemonLoss' = 'true', false))`;
+    const recordedEntry = sql`case when ${repeated} then (${entry}::jsonb - 'nodeLoss') || jsonb_build_object(
+        'refunded', false, 'reason', ${reason + REPEATED_DAEMON_LOSS_NOTE}::text) else ${entry}::jsonb end`;
     // Blocked and requirement spend no budget, so both are accepted past a spent one; a node loss spends only
-    // its own bound, accepted past a spent poison budget (see `releaseOpen`).
-    const open = releaseOpen(sql, { release, blocked, requirement, nodeLoss });
+    // its own bound, accepted past a spent poison budget (see `releaseOpen`) — a repeated dockerd loss excepted.
+    const open = sql`case when ${repeated} then not ${interruptionsSpent(sql)}
+        else ${releaseOpen(sql, { release, blocked, requirement, nodeLoss })} end`;
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
     )`;
@@ -171,7 +188,7 @@ export async function interruptJob(
         jobId: id,
         leaseToken,
         operation: 'interrupt',
-        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked, requirement, nodeLoss }),
+        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked, requirement, nodeLoss, daemonLoss }),
     };
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome: nothing hands it back instead.
@@ -189,9 +206,9 @@ export async function interruptJob(
                 claim_deferred_until = case when ${release && blocked}
                     then now() + make_interval(secs => ${BLOCKED_RETRY_SECONDS}::int) else claim_deferred_until end,
                 cancel_requested_at = case when ${release} then null else cancel_requested_at end,
-                attempts         = greatest(attempts - 1, 0),
+                attempts         = case when ${repeated} then attempts else greatest(attempts - 1, 0) end,
                 interruptions    = interruptions || jsonb_build_array(
-                    ${entry}::jsonb || jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
+                    ${recordedEntry} || jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
                 )
             where org_id = ${orgId} and id = ${id}
               and status = 'running' and lease_token = ${leaseToken}

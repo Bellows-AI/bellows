@@ -35,7 +35,8 @@ describe('a dockerd loss during the verdict gates', () => {
 
         expect(board.completed).toEqual([]);
         expect(board.interrupted).toHaveLength(1);
-        expect(board.interrupted[0]).toMatchObject({ release: true, nodeLoss: true });
+        // The board bounds consecutive daemon losses by this flag (the third spends the budget).
+        expect(board.interrupted[0]).toMatchObject({ release: true, nodeLoss: true, daemonLoss: true });
         expect(board.interrupted[0]).not.toHaveProperty('blocked');
         expect(board.interrupted[0]?.reason).toMatch(/infrastructure loss: .*dockerd.* restarted/);
         // The failed gate ran once: no rerun inside the attempt.
@@ -57,6 +58,7 @@ describe('a dockerd loss during the verdict gates', () => {
         expect(board.completed).toEqual([]);
         expect(board.interrupted).toHaveLength(1);
         expect(board.interrupted[0]).toMatchObject({ release: true, nodeLoss: true });
+        expect(board.interrupted[0]).toMatchObject({ daemonLoss: true });
         expect(board.interrupted[0]?.reason).toMatch(/infrastructure loss: .*dockerd.* not running/);
     });
 
@@ -78,6 +80,7 @@ describe('a dockerd loss during the verdict gates', () => {
         expect(board.interrupted).toHaveLength(1);
         expect(board.interrupted[0]).toMatchObject({ release: true, blocked: true });
         expect(board.interrupted[0]).not.toHaveProperty('nodeLoss');
+        expect(board.interrupted[0]).not.toHaveProperty('daemonLoss');
     });
 
     it('never questions passing gates: a restart under a green verdict is no loss', async () => {

@@ -17,4 +17,9 @@ export interface Interruption {
      * poison interruption budget, counted against the board's far looser node-loss bound.
      */
     nodeLoss?: boolean;
+    /**
+     * A docker class's dockerd lost under a failed gate, sent beside `nodeLoss`: the board refunds two in a
+     * row and records the third consecutive one on as an ordinary interruption that spends an attempt.
+     */
+    daemonLoss?: boolean;
 }

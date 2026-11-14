@@ -235,7 +235,11 @@ export const interruptDecision = (
     reason: string,
     exitCode: number | null,
     refused = false,
-    { nodeLoss = false, blocked = false }: { nodeLoss?: boolean; blocked?: boolean } = {}
+    {
+        nodeLoss = false,
+        blocked = false,
+        daemonLoss = false,
+    }: { nodeLoss?: boolean; blocked?: boolean; daemonLoss?: boolean } = {}
 ): EndDecision => ({
     kind: 'interrupt',
     reason,
@@ -243,6 +247,7 @@ export const interruptDecision = (
     ...(refused ? { refused: true as const } : {}),
     ...(nodeLoss ? { nodeLoss: true as const } : {}),
     ...(blocked ? { blocked: true as const } : {}),
+    ...(daemonLoss ? { daemonLoss: true as const } : {}),
 });
 
 /** The bound on the read that asks the executor whether a lost supervisor's group was taken away. */
@@ -256,7 +261,10 @@ export const GROUP_TAKEN_AWAY_READ_MS = 15_000;
  * licenses a negative verdict, so the hand-back spends no budget. A stand-down mid-read flags nothing.
  * A docker daemon lost under a failed gate (`DaemonLost`) carries its own: node loss on a restart, else blocked.
  */
-export async function supervisorLossFlag(ctx: AttemptCtx, e: unknown): Promise<{ nodeLoss?: true; blocked?: true }> {
+export async function supervisorLossFlag(
+    ctx: AttemptCtx,
+    e: unknown
+): Promise<{ nodeLoss?: true; blocked?: true; daemonLoss?: true }> {
     if (e instanceof DaemonLost) return e.flags;
     if (!(e instanceof StepChannelClosed)) return {};
     const { rt, job, state } = ctx;

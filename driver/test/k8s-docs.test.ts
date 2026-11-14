@@ -71,6 +71,9 @@ describe('the docker class record', () => {
             'a `dockerd` loss — its restart count moved, or it is not running at either read — is checked per verdict gate phase, not per gate'
         );
         expect(doc).toContain('refunded under the node-loss bound');
+        // A run of them is bounded on the board; any other interruption between two starts the count again.
+        expect(doc).toContain('the third consecutive dockerd loss on spends an attempt and the interruption budget');
+        expect(doc).toContain('any other interruption between two dockerd losses starts the count again');
         expect(doc).toContain('the task pod is torn down, not kept');
         expect(doc).toContain('An ad-hoc gate run gets a note only.');
     });

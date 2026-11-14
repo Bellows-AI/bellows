@@ -290,7 +290,7 @@ export interface JobActionStore {
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
      * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
      * the earlier attempt it adopted; the adopting claim's launch becomes `adopted`, linked to that
-     * claim. `refused` says the runner never started. `blocked` (a release only) says the claim waits on a leftover still terminating: it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for: no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `nodeLoss` (a release only) says the platform took the attempt away (a drained driver, an evicted runner): it spends no `INTERRUPTION_BUDGET`, is accepted past a spent one, and counts against `NODE_LOSS_BUDGET` per `NODE_LOSS_WINDOW_MS` instead. `exhausted` once `INTERRUPTION_BUDGET` (or, for a node loss, that bound) is spent: nothing
+     * claim. `refused` says the runner never started. `blocked` (a release only) says the claim waits on a leftover still terminating: it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for: no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `nodeLoss` (a release only) says the platform took the attempt away (a drained driver, an evicted runner): it spends no `INTERRUPTION_BUDGET`, is accepted past a spent one, and counts against `NODE_LOSS_BUDGET` per `NODE_LOSS_WINDOW_MS` instead. `daemonLoss` (a release only) is a dockerd lost under a failed gate: the third consecutive one on is recorded without `nodeLoss` and unrefunded, spending an attempt and `INTERRUPTION_BUDGET` (`REPEATED_DAEMON_LOSS_NOTE`). `exhausted` once `INTERRUPTION_BUDGET` (or, for a node loss, that bound) is spent: nothing
      * changed, and the caller reports or leaves the attempt as before.
      */
     interrupt(
@@ -304,6 +304,7 @@ export interface JobActionStore {
             blocked?: boolean;
             requirement?: boolean;
             nodeLoss?: boolean;
+            daemonLoss?: boolean;
         }
     ): Promise<SuspendResult | { result: 'exhausted' }>;
 }

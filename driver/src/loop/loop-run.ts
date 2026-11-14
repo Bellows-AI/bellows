@@ -570,8 +570,8 @@ async function gatesOrLoss(
     } catch (e) {
         if (!servicesLost(e) && !(e instanceof DaemonLost)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
-        const { nodeLoss = false, blocked = false } = await supervisorLossFlag(ctx, e);
-        await end(ctx, interruptDecision(reason, null, false, { nodeLoss, blocked }));
+        const { nodeLoss = false, blocked = false, daemonLoss = false } = await supervisorLossFlag(ctx, e);
+        await end(ctx, interruptDecision(reason, null, false, { nodeLoss, blocked, daemonLoss }));
         return STOOD_DOWN;
     }
 }

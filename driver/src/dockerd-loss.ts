@@ -45,7 +45,7 @@ const readWords = (read: DaemonRead): string => {
 
 /** A failed verdict gate's daemon loss: the infrastructure-loss interruption's words and flags, never a verdict. */
 export class DaemonLost extends Error {
-    readonly flags: { nodeLoss?: true; blocked?: true };
+    readonly flags: { nodeLoss?: true; blocked?: true; daemonLoss?: true };
 
     constructor(verdict: 'lost' | 'unknown', before: DaemonRead, after: DaemonRead) {
         const reads = `before: ${readWords(before)}; after: ${readWords(after)}`;
@@ -55,7 +55,8 @@ export class DaemonLost extends Error {
                 : `the docker daemon (dockerd) could not be confirmed around a failed gate (${reads})`
         );
         this.name = 'DaemonLost';
-        this.flags = verdict === 'lost' ? { nodeLoss: true } : { blocked: true };
+        // The board bounds a run of `daemonLoss` hand-backs: the third consecutive one is no longer refunded.
+        this.flags = verdict === 'lost' ? { nodeLoss: true, daemonLoss: true } : { blocked: true };
     }
 }
 
