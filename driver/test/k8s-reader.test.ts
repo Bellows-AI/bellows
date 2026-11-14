@@ -128,9 +128,15 @@ describe('the reader Job of an adopted finished group', () => {
 
     it('keeps the experimental-warning stderr line out of the pod log, and carries the container resources', async () => {
         const { deps, calls } = world();
+        const base = deps.config.runnerClasses.default!;
         const configured = {
             ...deps,
-            config: { ...deps.config, runnerResources: { ...deps.config.runnerResources, cpuRequest: '250m' } },
+            config: {
+                ...deps.config,
+                runnerClasses: {
+                    default: { ...base, runnerResources: { ...base.runnerResources, cpuRequest: '250m' } },
+                },
+            },
         };
         await readViaReaderJob(configured, job, readout);
         const created = calls.find((c) => c.method === 'POST')!.body as {

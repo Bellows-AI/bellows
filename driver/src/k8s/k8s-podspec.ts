@@ -3,11 +3,13 @@ import {
     COMMAND_MARK,
     JOB_LABEL,
     LEASE_LABEL,
+    RUNNER_CLASS_LABEL,
     SESSION_MARK,
     VOLUME_EXPORT_LABEL,
     VOLUME_EXPORT_RUN_LABEL,
 } from '../labels.js';
 import { CLAUDE_CODE } from '../executors.js';
+import { defaultClassOf, jobClassOf } from '../runner-classes.js';
 import { createHash } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
 import { executorImage, type DriverConfig } from '../config.js';
@@ -316,7 +318,7 @@ function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec):
         image: spec.image,
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
-        ...resourcesField(config),
+        ...resourcesField(jobClassOf(config, job).runnerResources),
         securityContext: {
             ...hardened,
             ...(spec.user ? { runAsNonRoot: true as const, runAsUser: spec.user.uid, runAsGroup: spec.user.gid } : {}),
@@ -367,7 +369,7 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
         image,
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
-        ...gateResourcesField(config),
+        ...gateResourcesField(jobClassOf(config, job)),
         securityContext: { ...hardened, runAsUser: GATE_UID, runAsGroup: GATE_GID },
         command: gateLoopArgv(),
         workingDir: MAILBOXES.gate.path,
@@ -393,7 +395,7 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
-        ...reviewerResourcesField(config),
+        ...reviewerResourcesField(jobClassOf(config, job)),
         securityContext: { ...hardened, runAsUser: REVIEWER_UID, runAsGroup: GATE_GID },
         command: reviewLoopArgv(),
         workingDir: MAILBOXES.review.path,
@@ -497,7 +499,7 @@ function agentPart(
             // would reach for a registry, past the image the node already holds — which is how the
             // docker runner finds it.
             imagePullPolicy: config.imagePullPolicy,
-            ...resourcesField(config),
+            ...resourcesField(jobClassOf(config, job).runnerResources),
             ...agentLaunchHardeningField(),
             env,
             args: plan.cliArgs,
@@ -541,6 +543,9 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // scrape by this exact string — a scope key that drifted from the runner's would answer
     // nothing. Asserted from the same line dockerArgs asserts it from.
     assertWorktreeResolvable(job);
+    // The claim's class decides where the group lands and what it is sized at; an undeclared one is
+    // refused here as it is before the launch (`runnerClassRefusal`), never run in the default.
+    const runnerClass = jobClassOf(config, job);
     // A node that launches no agent still gets its group — the sync, the gates' tree
     // probe and the publish are the supervisor's — but no agent container, and so no member env.
     const agentless = job.agent === false;
@@ -602,7 +607,12 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
                 metadata: {
-                    labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) },
+                    labels: {
+                        [JOB_LABEL]: job.id,
+                        [LEASE_LABEL]: job.leaseToken,
+                        ...releaseLabel(config),
+                        [RUNNER_CLASS_LABEL]: runnerClass.name,
+                    },
                     ...doNotDisruptField(config),
                 },
                 spec: {
@@ -620,7 +630,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                         fsGroupChangePolicy: 'OnRootMismatch',
                     },
                     ...pullSecretsField(config),
-                    ...schedulingField(config),
+                    ...schedulingField(runnerClass),
                     ...(servicesFields.hostAliases ? { hostAliases: servicesFields.hostAliases } : {}),
                     ...(sidecars.length > 0 ? { initContainers: sidecars } : {}),
                     containers: [
@@ -657,6 +667,7 @@ export function readerJobSpec(
     name: string,
     readout: { argv: string[]; env: Record<string, string>; timeoutMs: number }
 ) {
+    const runnerClass = jobClassOf(config, job);
     const labels = { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) };
     return {
         apiVersion: 'batch/v1',
@@ -669,7 +680,10 @@ export function readerJobSpec(
             activeDeadlineSeconds: Math.max(1, Math.ceil(readout.timeoutMs / MS_PER_SECOND)),
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels, ...doNotDisruptField(config) },
+                metadata: {
+                    labels: { ...labels, [RUNNER_CLASS_LABEL]: runnerClass.name },
+                    ...doNotDisruptField(config),
+                },
                 spec: {
                     restartPolicy: 'Never',
                     automountServiceAccountToken: false,
@@ -679,7 +693,7 @@ export function readerJobSpec(
                         fsGroupChangePolicy: 'OnRootMismatch',
                     },
                     ...pullSecretsField(config),
-                    ...schedulingField(config),
+                    ...schedulingField(runnerClass),
                     containers: [
                         {
                             name: 'readout',
@@ -694,7 +708,7 @@ export function readerJobSpec(
                                 ...Object.entries(readout.env).map(([key, value]) => ({ name: key, value })),
                             ],
                             volumeMounts: [taskMount()],
-                            ...resourcesField(config),
+                            ...resourcesField(runnerClass.runnerResources),
                         },
                     ],
                     volumes: [taskPodVolume(job)],
@@ -723,6 +737,9 @@ export function volumeExportJobSpec(
         [VOLUME_EXPORT_RUN_LABEL]: target.run,
         ...releaseLabel(config),
     };
+    // No claim names this pod's class: the export runs in the default one, whose node pools must
+    // reach the task volume's zone like every class's.
+    const runnerClass = defaultClassOf(config);
     return {
         apiVersion: 'batch/v1',
         kind: 'Job',
@@ -734,7 +751,10 @@ export function volumeExportJobSpec(
             activeDeadlineSeconds: deadlineSeconds,
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels, ...doNotDisruptField(config) },
+                metadata: {
+                    labels: { ...labels, [RUNNER_CLASS_LABEL]: runnerClass.name },
+                    ...doNotDisruptField(config),
+                },
                 spec: {
                     restartPolicy: 'Never',
                     automountServiceAccountToken: false,
@@ -744,7 +764,7 @@ export function volumeExportJobSpec(
                         fsGroupChangePolicy: 'OnRootMismatch',
                     },
                     ...pullSecretsField(config),
-                    ...schedulingField(config),
+                    ...schedulingField(runnerClass),
                     containers: [
                         {
                             name: 'exporter',
@@ -764,7 +784,7 @@ export function volumeExportJobSpec(
                                     : { name, value }
                             ),
                             volumeMounts: [taskMount()],
-                            ...resourcesField(config),
+                            ...resourcesField(runnerClass.runnerResources),
                         },
                     ],
                     volumes: [

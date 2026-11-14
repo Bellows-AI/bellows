@@ -7,6 +7,11 @@ export const JOB_LABEL = 'factory.job';
 export const LEASE_LABEL = 'factory.lease';
 export const SERVICE_LABEL = 'factory.service';
 /**
+ * Kubernetes only: the runner class a pod was specced from (`runner-classes.ts`), on every pod
+ * template the driver creates. The admission policy checks the pod's RuntimeClass against it.
+ */
+export const RUNNER_CLASS_LABEL = 'factory.runner-class';
+/**
  * Docker only: the board a group object was made for (`boardIdentity`), stable across restarts of the
  * same driver. The docker reaper scans and removes only objects carrying its own, so two boards on one
  * daemon never reap each other's groups; the kubernetes reaper is scoped by `K8S_RELEASE` instead.

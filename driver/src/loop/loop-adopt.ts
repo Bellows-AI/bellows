@@ -1,10 +1,11 @@
 import { raceStep } from './loop-attempt.js';
 import { isAgentless } from './loop-agentless.js';
-import { blockedHalt, releaseAbandonedAdoption } from './loop-fence.js';
+import { blockedHalt, faultHalt, releaseAbandonedAdoption } from './loop-fence.js';
 import { type AdoptedRecord, type AttemptCtx, type SetupConclusion, STOOD_DOWN } from './loop-types.js';
 import { AdoptionBlocked, LeftoverTerminating, type AdoptedRun, type LiveRun, type Read } from '../runner.js';
 import { awaitFirstContact, controlTokenOf } from '../supervised-steps.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../supervisor-contract.js';
+import { runnerClassRefusal } from '../runner-classes.js';
 
 /**
  * Adopts the finished runner an earlier claim left behind — before the sync, which
@@ -139,4 +140,18 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
     const reason = `took over the running agent of claim ${run.claimSeq}, whose driver was lost`;
     rt.log(`job ${job.id}: ${reason}`);
     return { record: 'interruption', reason, claimSeq: run.claimSeq };
+}
+
+/**
+ * The claim's runner class, refused before the sync creates anything: a class this driver does not
+ * declare fails the task `config`, never runs it in the default. After the adoption and never before
+ * it — unlike the claim refusals — because a group that survived a chart upgrade removing its class
+ * is adopted or taken over, never failed.
+ */
+export function runnerClassStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
+    if (ctx.adopted || ctx.takeover) return Promise.resolve(null);
+    const refusal = runnerClassRefusal(ctx.rt.config, ctx.job);
+    return Promise.resolve(
+        refusal ? faultHalt('names a runner class this driver does not declare, failing', refusal, 'config') : null
+    );
 }

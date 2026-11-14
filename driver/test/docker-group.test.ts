@@ -43,6 +43,7 @@ import {
 } from '../src/supervisor-contract.js';
 import { bindingBody, orphanBoundMs, takeoverBoundMs } from '../src/supervisor-plan.js';
 import { REBIND_DEADLINE_MS } from '../src/runner.js';
+import { oneClass } from './fixtures/runner-classes.js';
 
 /*
  * The docker twin of the runner pod: the supervisor, the agent and the exporter as one container
@@ -587,10 +588,15 @@ describe('the gate container (issue #773)', () => {
         }
     });
 
-    // Issue #507: sized by GATE_*, each unset slot the runner's; nothing configured leaves it unthrottled.
+    // Issue #507: sized by the class's gateResources, each unset slot the runner's; nothing configured leaves it unthrottled.
     it('carries the gate resources before the image, and none when unconfigured', () => {
         const sized = gateCreateArgs(
-            loadDriverConfig({ RUNNER_CPU_LIMIT: '4', GATE_MEMORY_LIMIT: '8Gi', GATE_MEMORY_REQUEST: '2Gi' }),
+            loadDriverConfig(
+                oneClass({
+                    resources: { limits: { cpu: '4' } },
+                    gateResources: { requests: { memory: '2Gi' }, limits: { memory: '8Gi' } },
+                })
+            ),
             gated,
             'node:24'
         );

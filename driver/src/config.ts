@@ -7,6 +7,7 @@
  * workspace a job belongs to, so it does not even need to know the organization.
  */
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
+import { loadRunnerClasses, type RunnerClasses } from './runner-classes.js';
 import {
     orphanConfigFault,
     SUPERVISOR_ORPHAN_MAX_MS,
@@ -246,59 +247,16 @@ export interface DriverConfig {
     /** One `GET /step` long poll a supervisor makes (DRIVER_STEP_WAIT_MS); the orphan floor outlasts it. */
     stepWaitMs: number;
     /**
-     * Resource requests and limits (RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST /
-     * RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT, kubernetes quantity strings) rendered onto every
-     * pod this driver specs — the runner and its service sidecars, every aux Job — so a
-     * runner fleet is Burstable rather than BestEffort and the autoscaler can size for it.
-     * Requests and limits are independent: limits stay off by default, because a memory limit on
-     * an agent run turns a big build into an OOM kill mid-work, while a request only reserves.
-     * Each unset slot renders nowhere; all four unset is the BestEffort pod this config always
-     * produced. Docker renders limits as `--cpus`/`--memory` and the memory request as
-     * `--memory-reservation`; it has no cpu-request analogue (a stated limit — see docker.ts).
+     * The runner classes (RUNNER_CLASSES, a JSON map by name) and the one a claim naming none runs
+     * in (RUNNER_DEFAULT_CLASS). Each class carries its RuntimeClass, scheduling and resources
+     * (`runner-classes.ts`); unset, one implicit class `default` with none of them — the BestEffort,
+     * scheduler-placed pod. Resources are requests and limits, independent: limits stay off by
+     * default, because a memory limit on an agent run turns a big build into an OOM kill mid-work.
+     * Docker renders limits as `--cpus`/`--memory` and the memory request as `--memory-reservation`;
+     * it has no cpu-request analogue, and refuses a class that sets anything but resources.
      */
-    runnerResources: RunnerResources;
-    /**
-     * The gate pods' and the docker gate container's resources (GATE_CPU_REQUEST /
-     * GATE_MEMORY_REQUEST / GATE_CPU_LIMIT / GATE_MEMORY_LIMIT): a gate runs the
-     * whole test suite where a runner mostly waits on a model, so it is sized on its own. Each
-     * unset slot falls back to the matching runnerResources slot.
-     */
-    gateResources: RunnerResources;
-    /**
-     * The nodeSelector every pod this driver specs lands with, under the kubernetes executor
-     * (RUNNER_NODE_SELECTOR, a JSON object). The chart's own pods get theirs from the top-level
-     * `nodeSelector` value; these are the runner node group's — the tainted, IMDS-hardened nodes
-     * agent-written code is meant to land on and nothing else. Null (unset) places
-     * pods wherever the task volume claim can attach, as before. Docker has no twin: the daemon
-     * decides placement, there is nothing to forward.
-     */
-    runnerNodeSelector: Record<string, string> | null;
-    /**
-     * The tolerations every pod this driver specs lands with (RUNNER_TOLERATIONS, a JSON array) —
-     * the other half of the tainted runner node group. Null forwards nothing.
-     */
-    runnerTolerations: Record<string, unknown>[] | null;
-    /**
-     * The affinity every pod this driver specs lands with (RUNNER_AFFINITY, a JSON object) —
-     * pod anti-affinity across zones is the shape an EKS runner group usually wants beside the
-     * selector. Null forwards nothing.
-     */
-    runnerAffinity: Record<string, unknown> | null;
-    /**
-     * The RuntimeClass every pod this driver specs runs under (RUNNER_RUNTIME_CLASS):
-     * `gvisor` on GKE Sandbox, so agent code never shares the node kernel. The chart's admission
-     * policy refuses a driver pod without it. Null names none: the node's default runtime. Docker
-     * has no twin here — the daemon's runtime is the host's choice.
-     */
-    runnerRuntimeClass: string | null;
-}
-
-/** The four resource slots, each null when the variable is unset. */
-export interface RunnerResources {
-    cpuRequest: string | null;
-    cpuLimit: string | null;
-    memoryRequest: string | null;
-    memoryLimit: string | null;
+    runnerClasses: RunnerClasses['runnerClasses'];
+    defaultRunnerClass: string;
 }
 
 /** The deployment image paired with one task-selected executor type. */
@@ -485,184 +443,6 @@ function optionalText(raw: string | undefined): string | null {
     return (raw ?? '').trim() || null;
 }
 
-/*
- * Kubernetes quantity strings are the vocabulary both executors share — the pod specs take them
- * verbatim, and the docker flags take them translated (docker cannot parse `500m` or `1Gi`).
- * The two grammars here are deliberately narrower than k8s's: cpu is a decimal core count with an
- * optional `m` (never a byte suffix, which for cpu would be meaningless), memory is a number of
- * bytes with one of the SI/binary suffixes (never `m`, which on memory would be absurd). The
- * apiserver rejects anything else only at job-create time — attempt-burning — so the loader
- * refuses it here instead, naming the variable (see runnerResource below).
- */
-const CPU_QUANTITY = /^(\d+(\.\d+)?)m?$/;
-const MEMORY_QUANTITY = /^(\d+(\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|[kMGTPE])?$/;
-/** Millicores per core: the `m` suffix of a cpu quantity. */
-const MILLICORES_PER_CORE = 1000;
-/** 10: the base the decimal fraction digits of a quantity are counted in, as a BigInt. */
-const DECIMAL_BASE = 10n;
-/** 1024: the base of the binary memory suffixes, multiplied out one step at a time below. */
-const BYTES_PER_KIB = 1024;
-const BYTES_PER_MIB = BYTES_PER_KIB * BYTES_PER_KIB;
-const BYTES_PER_GIB = BYTES_PER_MIB * BYTES_PER_KIB;
-const BYTES_PER_TIB = BYTES_PER_GIB * BYTES_PER_KIB;
-const BYTES_PER_PIB = BYTES_PER_TIB * BYTES_PER_KIB;
-const BYTES_PER_EIB = BYTES_PER_PIB * BYTES_PER_KIB;
-const MEMORY_SUFFIX_BYTES: Record<string, number> = {
-    k: 1000,
-    M: 1e6,
-    G: 1e9,
-    T: 1e12,
-    P: 1e15,
-    E: 1e18,
-    Ki: BYTES_PER_KIB,
-    Mi: BYTES_PER_MIB,
-    Gi: BYTES_PER_GIB,
-    Ti: BYTES_PER_TIB,
-    Pi: BYTES_PER_PIB,
-    Ei: BYTES_PER_EIB,
-};
-
-/** A cpu quantity as docker's `--cpus` wants it: decimal cores — `500m` → `0.5`, `2` → `2`. */
-export function cpuQuantityToCores(quantity: string): string {
-    const match = CPU_QUANTITY.exec(quantity);
-    if (!match) throw new Error(`"${quantity}" is not a cpu quantity (a decimal core count, optional "m" suffix)`);
-    const value = Number(match[1]);
-    return String(quantity.endsWith('m') ? value / MILLICORES_PER_CORE : value);
-}
-
-/** A memory quantity as docker's `--memory` wants it: plain bytes — `1Gi` → `1073741824`, `1G` → `1000000000`. */
-export function memoryQuantityToBytes(quantity: string): string {
-    const match = MEMORY_QUANTITY.exec(quantity);
-    if (!match)
-        throw new Error(`"${quantity}" is not a memory quantity (a byte count with an optional SI/binary suffix)`);
-    // Exact integer scaling: binary floating-point multiplication rounds — `1.001 * 1e9` is
-    // 1000999999.9999999, which would refuse the valid whole-byte quantity `1.001G`.
-    const [whole = '', fraction = ''] = match[1]!.split('.');
-    const scale = BigInt(match[3] ? MEMORY_SUFFIX_BYTES[match[3]]! : 1);
-    const denominator = DECIMAL_BASE ** BigInt(fraction.length);
-    const numerator = fraction ? BigInt(fraction) * scale : 0n;
-    if (numerator % denominator !== 0n) throw new Error(`"${quantity}" is not a whole number of bytes`);
-    return (BigInt(whole) * scale + numerator / denominator).toString();
-}
-
-/** One resource slot: validated at boot, stored verbatim — the apiserver owns the semantics. */
-function runnerResource(raw: string | undefined, label: string, kind: 'cpu' | 'memory'): string | null {
-    const value = optionalText(raw);
-    if (value === null) return null;
-    try {
-        if (kind === 'cpu') cpuQuantityToCores(value);
-        else memoryQuantityToBytes(value);
-    } catch {
-        throw new Error(
-            `${label} must be a kubernetes ${kind} quantity (e.g. ${kind === 'cpu' ? '"500m"' : '"1Gi"'}), got "${value}"`
-        );
-    }
-    return value;
-}
-
-/**
- * Kubernetes refuses a pod whose request exceeds its limit — at job-create, attempt-burning — and
- * docker refuses `--memory-reservation` above `--memory` at run time. One runnerResources block
- * feeds the runner, auxiliary and service specs on both executors, so the pair is refused here, at
- * startup, naming both variables. Equal values are valid (a Guaranteed-shaped pod, on kubernetes).
- */
-function assertRequestWithinLimit(
-    request: string | null,
-    limit: string | null,
-    labels: [string, string],
-    convert: (quantity: string) => string
-): void {
-    if (request === null || limit === null) return;
-    if (Number(convert(request)) > Number(convert(limit))) {
-        throw new Error(`${labels[0]} (${request}) exceeds ${labels[1]} (${limit})`);
-    }
-}
-
-/** How much of a rejected scheduling value rides the refusal message — a preview, not the whole value. */
-const ERROR_PREVIEW_CHARS = 64;
-
-/**
- * A JSON-encoded value (the chart forwards scheduling shapes with `toJson`), or null when unset.
- * Malformed JSON or the wrong top-level kind is fatal here, never at job-create: the API server
- * would refuse a bad pod spec per attempt, and this loader exists to move failures to startup —
- * the same posture as the EXECUTOR and pull-policy enums. Everything below the top level stays
- * the API server's job: no speculative validation of a shape kubernetes owns.
- */
-function parsedJsonValue(raw: string | undefined, label: string): unknown {
-    const value = (raw ?? '').trim();
-    if (!value) return null;
-    try {
-        return JSON.parse(value);
-    } catch {
-        throw new Error(`${label} must be JSON, got "${value.slice(0, ERROR_PREVIEW_CHARS)}"`);
-    }
-}
-
-function jsonObject(raw: string | undefined, label: string): Record<string, unknown> | null {
-    const parsed = parsedJsonValue(raw, label);
-    if (parsed === null) return null;
-    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error(`${label} must be a JSON object, got "${(raw ?? '').trim().slice(0, ERROR_PREVIEW_CHARS)}"`);
-    }
-    return parsed as Record<string, unknown>;
-}
-
-function jsonArray(raw: string | undefined, label: string): Record<string, unknown>[] | null {
-    const parsed = parsedJsonValue(raw, label);
-    if (parsed === null) return null;
-    // A list of OBJECTS (tolerations) — an array of scalars renders a pod spec the API server can
-    // only refuse per attempt, so the element kind is checked too. Deeper than that stays
-    // kubernetes's job.
-    if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'object' && entry !== null)) {
-        throw new Error(
-            `${label} must be a JSON array of objects, got "${(raw ?? '').trim().slice(0, ERROR_PREVIEW_CHARS)}"`
-        );
-    }
-    return parsed as Record<string, unknown>[];
-}
-
-/** The longest DNS-1123 subdomain, which a RuntimeClass name is. */
-const DNS_SUBDOMAIN_MAX = 253;
-
-/** A RuntimeClass name: a DNS-1123 subdomain, so a typo is a refusal at boot, never a burned attempt. */
-function runtimeClassName(raw: string | undefined, label: string): string | null {
-    const value = (raw ?? '').trim();
-    if (value === '') return null;
-    if (
-        value.length > DNS_SUBDOMAIN_MAX ||
-        !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/.test(value)
-    ) {
-        throw new Error(
-            `${label} must be a RuntimeClass name (a DNS-1123 subdomain), got "${value.slice(0, ERROR_PREVIEW_CHARS)}"`
-        );
-    }
-    return value;
-}
-
-/** A nodeSelector: kubernetes demands string values, and a YAML number (`--set foo.bar=3`) is a refusal at boot, never a burned attempt. */
-function jsonNodeSelector(raw: string | undefined, label: string): Record<string, string> | null {
-    const parsed = parsedJsonValue(raw, label);
-    if (parsed === null) return null;
-    if (
-        typeof parsed !== 'object' ||
-        Array.isArray(parsed) ||
-        !Object.values(parsed).every((value) => typeof value === 'string')
-    ) {
-        throw new Error(
-            `${label} must be a JSON object of string values, got "${(raw ?? '').trim().slice(0, ERROR_PREVIEW_CHARS)}"`
-        );
-    }
-    return parsed as Record<string, string>;
-}
-
-/** The four resource slots, each with the variable suffix the RUNNER_ and GATE_ blocks share. */
-const RESOURCE_SLOTS = [
-    ['cpuRequest', 'CPU_REQUEST', 'cpu'],
-    ['cpuLimit', 'CPU_LIMIT', 'cpu'],
-    ['memoryRequest', 'MEMORY_REQUEST', 'memory'],
-    ['memoryLimit', 'MEMORY_LIMIT', 'memory'],
-] as const;
-
 /**
  * The orphan floor and the step long poll, checked against the lease: `orphanConfigFault` refuses a pair the lease
  * cannot hold, and the lease-wide check applies only where the production floor was lowered (the chart always sets the default).
@@ -681,40 +461,9 @@ function loadOrphanBound(env: NodeJS.ProcessEnv, leaseSeconds: number): { orphan
     return { orphanMinMs, stepWaitMs };
 }
 
-/**
- * One block of four resource variables (`RUNNER_*`, or `GATE_*` over the runner's block), each
- * shape-validated by runnerResource, then the request/limit pairs validated against each other —
- * shape is per-variable, but request>limit is only visible across the two. With a `fallback`,
- * an unset slot takes the fallback's value and the pair check names the variable that set it.
- */
-function loadResources(env: NodeJS.ProcessEnv, prefix: 'RUNNER' | 'GATE', fallback?: RunnerResources): RunnerResources {
-    const resources = {} as RunnerResources;
-    const labels = {} as Record<keyof RunnerResources, string>;
-    for (const [slot, suffix, kind] of RESOURCE_SLOTS) {
-        const own = runnerResource(env[`${prefix}_${suffix}`], `${prefix}_${suffix}`, kind);
-        const inherited = own === null && fallback !== undefined;
-        resources[slot] = inherited ? fallback[slot] : own;
-        labels[slot] = inherited ? `RUNNER_${suffix}` : `${prefix}_${suffix}`;
-    }
-    assertRequestWithinLimit(
-        resources.cpuRequest,
-        resources.cpuLimit,
-        [labels.cpuRequest, labels.cpuLimit],
-        cpuQuantityToCores
-    );
-    assertRequestWithinLimit(
-        resources.memoryRequest,
-        resources.memoryLimit,
-        [labels.memoryRequest, labels.memoryLimit],
-        memoryQuantityToBytes
-    );
-    return resources;
-}
-
 export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     const boardUrl = text(env.JOB_BOARD_URL, 'JOB_BOARD_URL', DEFAULTS.boardUrl).replace(/\/+$/, '');
     assertHttpUrl(boardUrl, 'JOB_BOARD_URL');
-    const runnerResources = loadResources(env, 'RUNNER');
 
     // The branch reporter's endpoint, defaulted to the board itself — one URL, already checked
     // and already trailing-slash-stripped. An explicit RUNNER_STATS_URL is validated under its
@@ -734,6 +483,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     });
 
     const executor = resolveExecutor(env);
+    const runnerClasses = loadRunnerClasses(env, executor);
 
     // Auxiliary services run under both executors: containers in the supervisor's network
     // namespace there, sidecars of the task pod here. The RUNNER_SERVICES flag decides
@@ -843,16 +593,11 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         }),
         orphanMinMs,
         stepWaitMs,
-        // Validated here, stored verbatim: the pod specs render these strings as-is, and the
-        // docker flags take them translated by cpuQuantityToCores/memoryQuantityToBytes. A
-        // request above its limit is refused by the apiserver only per attempt, so the pair is
+        // Validated here, stored verbatim: the pod specs render the quantities as-is, and the
+        // docker flags take them translated (quantities.ts). A
+        // request above its limit is refused by the apiserver only per attempt, so each pair is
         // checked here instead (see assertRequestWithinLimit).
-        runnerResources,
-        gateResources: loadResources(env, 'GATE', runnerResources),
-        runnerNodeSelector: jsonNodeSelector(env.RUNNER_NODE_SELECTOR, 'RUNNER_NODE_SELECTOR'),
-        runnerTolerations: jsonArray(env.RUNNER_TOLERATIONS, 'RUNNER_TOLERATIONS'),
-        runnerAffinity: jsonObject(env.RUNNER_AFFINITY, 'RUNNER_AFFINITY'),
-        runnerRuntimeClass: runtimeClassName(env.RUNNER_RUNTIME_CLASS, 'RUNNER_RUNTIME_CLASS'),
+        ...runnerClasses,
     };
 }
 

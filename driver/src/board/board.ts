@@ -87,6 +87,12 @@ export interface BoardJob extends ClaimSkills {
      */
     executorRefusal: string | null;
     /**
+     * The runner class this task runs in (`runner-classes.ts`); null (or absent) is the driver's
+     * default. A name the driver does not declare fails the task `config` before anything launches,
+     * unless a surviving group is adopted or taken over.
+     */
+    runnerClass?: string | null;
+    /**
      * Why the task's selected skills cannot run: a skill the board lacks, or a
      * connection its environment does not authorize — env NAMES only, never a value. The loop
      * fails the task `config` with this sentence before any runner starts, on docker and

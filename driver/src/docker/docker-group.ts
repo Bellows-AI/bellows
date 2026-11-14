@@ -2,6 +2,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BoardJob } from '../board/board.js';
 import { executorImage, type DriverConfig } from '../config.js';
+import { jobClassOf } from '../runner-classes.js';
 import {
     GATE_GID,
     GATE_UID,
@@ -196,7 +197,7 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
         ...taskMountArgs(job),
         ...mailboxMountArgs(job, MAILBOXES.gate, 'rw'),
         ...groupNetworkArgs(job),
-        ...resourceArgs(config.gateResources),
+        ...resourceArgs(jobClassOf(config, job).gateResources),
         '--entrypoint',
         'sh',
         image,
@@ -230,7 +231,7 @@ export function reviewerCreateArgs(config: DriverConfig, job: BoardJob): string[
         ...taskMountArgs(job, { subPath: REVIEWER_TREE_DIR, target: REVIEWER_HOME }),
         ...mailboxMountArgs(job, MAILBOXES.review, 'rw'),
         ...groupNetworkArgs(job),
-        ...resourceArgs(config.runnerResources),
+        ...resourceArgs(jobClassOf(config, job).runnerResources),
         '--entrypoint',
         'sh',
         executorImage(config, job.executorType),

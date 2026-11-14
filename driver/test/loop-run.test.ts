@@ -122,6 +122,62 @@ describe('the claim refusals, decided before anything launches', () => {
         expect(outputs).toEqual(['E', 'S', 'P']);
         expect(last.board.completed[0]?.failureKind).toBe('runner_error');
     });
+
+    it('a claim naming a class this driver lacks fails config naming the class and launches nothing', async () => {
+        let launched = 0;
+        const r = await attempt({ ...job(1), runnerClass: 'sandbox' }, {}, async () => {
+            launched += 1;
+            return ok();
+        });
+
+        expect(r.board.completed).toHaveLength(1);
+        expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(r.board.completed[0]?.output).toContain('the runner class "sandbox" is not declared on this driver');
+        expect(launched).toBe(0);
+        expect(r.runner.synced).toEqual([]);
+        expect(r.board.sessions).toEqual([]);
+    });
+});
+
+// A class removed by a chart upgrade while a run is live must not fail the task whose group survived:
+// the refusal holds only for a claim that would launch, never for one that adopts or takes over.
+describe('a runner class no longer declared, on a group that survived', () => {
+    const retired = { runnerClass: 'retired' } as const;
+
+    it('an adoption of a finished runner whose class is no longer declared adopts it', async () => {
+        const r = await attempt(
+            { ...job(1), ...retired },
+            { adopt: async () => ({ outcome: ok({ output: 'the adopted run' }), claimSeq: 4 }) }
+        );
+
+        expect(r.board.completed).toHaveLength(1);
+        expect(r.board.completed[0]).toMatchObject({ status: 'succeeded', output: 'the adopted run' });
+    });
+
+    it('a takeover of a live group whose class is no longer declared adopts it', async () => {
+        const prior = { ...job(1), ...retired, leaseToken: 'lease-prior' };
+        const live = {
+            live: true as const,
+            prior,
+            claimSeq: 4,
+            session: 'ses_live',
+            startedAt: 'then',
+            forget: () => {},
+        };
+        const board = stubBoard([]).board;
+        const runner = stubRunner(async () => ok({ output: 'the live run' }), { adopt: async () => live });
+        const { gates } = stubGateStack({}, { control: true, polled: true });
+        await runJob(stubRuntime(board, runner, { gates }), {
+            ...job(1),
+            ...retired,
+            claimSeq: 5,
+            supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:1/', [SUPERVISOR_ENV.controlToken]: 'tok' },
+        });
+
+        expect(board.completed).toHaveLength(1);
+        expect(board.completed[0]).toMatchObject({ status: 'succeeded' });
+        expect(board.completed[0]?.failureKind ?? null).toBeNull();
+    });
 });
 
 describe('the checkout sync answer', () => {

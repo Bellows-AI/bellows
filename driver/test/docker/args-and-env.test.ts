@@ -20,6 +20,7 @@ import {
     entrypointAnswers,
     dockerRunner,
 } from '../fixtures/docker-suite.js';
+import { sized } from '../fixtures/runner-classes.js';
 
 describe('the docker run arguments', () => {
     // The plan itself is pinned in runner-plan.test.ts; this is docker's rendering of it: every
@@ -110,7 +111,7 @@ describe('the docker run arguments', () => {
     // relative weight, not a kubernetes request — and capping a dev runner at its request via
     // `--cpus` would throttle builds the kubernetes side leaves free.
     it('renders no cpu request flag — docker has no absolute CPU floor for a kubernetes request', () => {
-        const requested = args({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' });
+        const requested = args(sized({ requests: { cpu: '500m', memory: '1Gi' } }));
         expect(requested).not.toContain('--cpus');
         expect(requested).not.toContain('--cpu-shares');
         expect(requested).toEqual(expect.arrayContaining(['--memory-reservation', '1073741824']));
