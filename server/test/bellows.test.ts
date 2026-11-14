@@ -260,10 +260,37 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     // parser is the one the board runs at claim.
     it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
-        expect(parseBellows(text)?.gates).toEqual([
+        const gates = parseBellows(text)?.gates ?? [];
+        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:jobs']);
+        expect(gates.slice(0, 2)).toEqual([
             { name: 'test', command: 'npm test' },
             { name: 'lint', command: 'npm run lint' },
         ]);
+    });
+
+    // The gates run in the dev runner image a release publishes, pinned to one release tag: a moving
+    // tag would change the gates' tools under a commit that did not change.
+    it('runs its gates in a released dev runner image', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        expect(parseBellows(text)?.image).toMatch(/^ghcr\.io\/bellows-ai\/dev-runner:v\d+\.\d+\.\d+(-rc(-\d+)?)?$/);
+    });
+
+    // The suites that need more than `npm test`: each states its own budget, and the two database
+    // suites point at the declared `postgres` service, never at a server of their own.
+    it('declares typecheck, test:db and test:jobs, each with a timeout', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        const gates = new Map((parseBellows(text)?.gates ?? []).map((gate) => [gate.name, gate]));
+        for (const name of ['typecheck', 'test:db', 'test:jobs'])
+            expect(gates.get(name)?.timeoutMinutes, name).toBeGreaterThan(0);
+        expect(gates.get('typecheck')?.command).toBe('npm run typecheck');
+        expect(gates.get('test:db')?.command).toBe(
+            'DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db'
+        );
+        // The lane runs the executor images it tests, and the sidecar daemon starts empty: they are
+        // built from the tree first. The lane's own databases live on the declared server.
+        expect(gates.get('test:jobs')?.command).toBe(
+            'make runners && TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 npm run test:jobs'
+        );
     });
 
     // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.

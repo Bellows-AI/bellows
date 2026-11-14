@@ -7,7 +7,7 @@
 # No model credential or quota. Selected phases provision fixtures without running other phases.
 #
 # Runtime fixtures are removed; timings and process logs remain under artifacts/jobs/.
-# Needs: docker and node; board phases also need compose Postgres. See --help.
+# Needs: docker and node; board phases also need compose Postgres or TEST_JOBS_PG_URL. See --help.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,6 +74,8 @@ while [ "$#" -gt 0 ]; do
         echo '        its own test-jobs.sh run with its own board fixture, database, run-specific names and a ten-port slice from PORT;'
         echo '        core, server and driver are built once, and the summary lists every group. Default stays serial.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
+        echo 'TEST_JOBS_PG_URL (postgres://user:pass@host:port, no database) puts the run databases on that server and'
+        echo '        starts no compose Postgres; psql and pg_isready must then be on PATH.'
         echo '--watch-stalls (or LANE_WATCH_STALLS=1) dumps every job container alive past LANE_STALL_S (default 120) seconds.'
         echo 'The run ends with a slow-jobs summary of attempts past LANE_SLOW_S (default 30) seconds, beside the timings.'
         exit 0
@@ -147,7 +149,14 @@ MCP_IDP_PORT=$((PORT + 5))
 # when other groups share the daemon (--parallel).
 board_id() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 16))' "$BASE"; }
 DB="${JOBS_TEST_DB:-factory_jobs_${RUN_ID//-/_}_test}"
-DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
+# The server the run's database lives on. TEST_JOBS_PG_URL names one already running — in a gate, the
+# repository's declared `postgres` service, which holds 5432 on the pod loopback where a compose Postgres
+# publishing the same port would collide — and the lane then never starts compose's (start_postgres) and
+# runs every `compose exec -T postgres` on the host against it (compose()). A server, never a database: each
+# run still creates and drops its own disposable *_test database there.
+PG_SERVER="${TEST_JOBS_PG_URL:-postgres://factory:factory@127.0.0.1:5432}"
+PG_SERVER="${PG_SERVER%/}"
+DATABASE_URL="$PG_SERVER/$DB"
 IMAGE_BASE="factory-jobs-$RUN_ID-base"
 IMAGE_OK="factory-jobs-$RUN_ID-ok"
 IMAGE_FAIL="factory-jobs-$RUN_ID-fail"
@@ -176,6 +185,28 @@ COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
 # The file's path is fixed here (compose() and cleanup() name it); the file itself is written after the preflight.
 SECRETS_ENV_FILE_PATH="${TMPDIR:-/tmp}/factory-jobs-$RUN_ID-secrets.env"
 compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
+# pg_exec exec -T [-e NAME=value]... postgres <psql|pg_isready> [-U user] [-d db] [args...]: the same
+# command on the host against $PG_SERVER, as the URL's role, on the named database (default postgres).
+# With TEST_JOBS_PG_URL every `compose exec` goes here; every other compose call still runs the
+# definition above, renamed compose_docker.
+pg_exec() {
+    local envs=() db=postgres tool
+    shift 2
+    while [ "${1:-}" = -e ]; do
+        envs+=("$2")
+        shift 2
+    done
+    [ "${1:-}" = postgres ] || { echo "test-jobs: no TEST_JOBS_PG_URL equivalent for compose exec $1" >&2; return 1; }
+    tool="$2"
+    shift 2
+    [ "${1:-}" = -U ] && shift 2
+    [ "${1:-}" = -d ] && { db="$2"; shift 2; }
+    env ${envs[@]+"${envs[@]}"} "$tool" -d "$PG_SERVER/$db" "$@"
+}
+if [ -n "${TEST_JOBS_PG_URL:-}" ]; then
+    eval "compose_docker() $(declare -f compose | sed 1d)"
+    compose() { if [ "${1:-}" = exec ]; then pg_exec "$@"; else compose_docker "$@"; fi; }
+fi
 # The repository every task runs against: a ready selection on the board and, in the
 # driver volume, a clone whose origin is a bare repository beside it — no GitHub, no network.
 SMOKE_REPO="factory-smoke/demo"
@@ -217,6 +248,15 @@ if needs_board; then
     done
     compose version >/dev/null 2>&1 || { echo 'test-jobs: the compose plugin is required'; exit 1; }
     [[ "$DB" =~ ^[a-z_][a-z0-9_]*_test$ ]] || { echo 'test-jobs: JOBS_TEST_DB must be a SQL identifier ending _test'; exit 2; }
+    if [ -n "${TEST_JOBS_PG_URL:-}" ]; then
+        [[ "$PG_SERVER" =~ ^postgres(ql)?://[^/?]+$ ]] || {
+            echo 'test-jobs: TEST_JOBS_PG_URL names a server (postgres://user:pass@host:port), never a database: each run creates its own'
+            exit 2
+        }
+        for tool in psql pg_isready; do
+            command -v "$tool" >/dev/null || { echo "test-jobs: $tool is required with TEST_JOBS_PG_URL"; exit 1; }
+        done
+    fi
     lane_host_bind || exit 1
     export LANE_HOST
     BASE="http://$LANE_HOST:$PORT"
@@ -245,10 +285,14 @@ SECRET_STORE_ENV=(
 # run from another checkout carries another config hash, so a plain `up` would replace the container
 # mid-write. A replaced one can spend most of a minute in crash recovery, hence the wait.
 start_postgres() { # start_postgres <log>
-    compose up -d --no-recreate postgres >"$1" 2>&1 || {
-        echo 'test-jobs: could not start postgres'
-        exit 1
-    }
+    if [ -n "${TEST_JOBS_PG_URL:-}" ]; then
+        echo 'TEST_JOBS_PG_URL names the server: no compose postgres' >"$1"
+    else
+        compose up -d --no-recreate postgres >"$1" 2>&1 || {
+            echo 'test-jobs: could not start postgres'
+            exit 1
+        }
+    fi
     local ready=''
     for _ in $(seq 1 120); do
         compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && { ready=1; break; }

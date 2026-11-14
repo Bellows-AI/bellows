@@ -1,6 +1,6 @@
 #!/bin/sh
 # Re-resolves every pinned image digest to what its tag points at today, rewriting the pin in place:
-# the external `FROM` lines of the four Dockerfiles and the chart's collector and dockerd images. The weekly
+# the external `FROM` lines of the five Dockerfiles and the chart's collector and dockerd images. The weekly
 # .github/workflows/mirror-images.yml runs it and opens a pull request when it changed anything;
 # run by hand it leaves the diff for you to review. Needs a docker with buildx and registry access.
 # POSIX sh: the runner images and CI shells differ.
@@ -24,7 +24,7 @@ repin() {
     echo "pin-digests: $1: $2 -> $3"
 }
 
-for file in docker/Dockerfile docker/driver.Dockerfile docker/claude-executor/Dockerfile docker/opencode-executor/Dockerfile; do
+for file in docker/Dockerfile docker/driver.Dockerfile docker/claude-executor/Dockerfile docker/opencode-executor/Dockerfile docker/dev-runner/Dockerfile; do
     for ref in $(grep -oE '^FROM [^ ]+@sha256:[0-9a-f]{64}' "$file" | cut -d' ' -f2 | sort -u); do
         base="${ref%@*}"
         new="$(resolve "$base")"

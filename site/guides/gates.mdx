@@ -90,6 +90,37 @@ gates:
 
 The filter is up to 256 printable characters on one line. It is set for that one run only. A filtered run is never proof that the gate passed, and the end-of-run pass always runs gates without a filter. Pair a filtered `on_demand` gate with a full gate that has the same command and no filter.
 
+## Gates that need docker
+
+A gate can run `docker`, `docker compose` and `docker build` when the task runs in a docker runner class: an organization [executor profile](/guides/executors#runner-class) picks it. The daemon belongs to the task and starts empty, so the gate builds the images it needs. The gate's image brings the docker CLI. Bellows' own repository runs its suites this way:
+
+```yaml .bellows.yaml
+environment:
+    image: ghcr.io/bellows-ai/dev-runner:v0.0.17
+    setup: "npm ci"
+    gates:
+         - name: typecheck
+           command: "npm run typecheck"
+           timeout: 15
+         - name: "test:db"
+           command: "DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
+           timeout: 30
+         - name: "test:jobs"
+           command: "make runners && TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 npm run test:jobs"
+           timeout: 120
+
+services:
+    - name: postgres
+      image: postgres:17
+      ports: [5432]
+      environment:
+          POSTGRES_USER: factory
+          POSTGRES_PASSWORD: factory
+          POSTGRES_DB: factory_test
+```
+
+The `dev-runner` image carries node 24, the docker CLI with the compose and buildx plugins, `helm`, `jq`, `psql` and Playwright's chromium libraries. A container the gate starts that publishes a port shares the task's loopback with your services, so it cannot publish a port a service already uses. That is why `test:jobs` reuses the declared `postgres` here.
+
 ## Where results show
 
 Open the task and find the **Verification** panel. Each gate has a pill and, once it has run, its exit code and output. The panel shows the newest run only. A failed gate starts open, and its output has a **Copy** button.

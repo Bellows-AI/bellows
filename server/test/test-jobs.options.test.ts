@@ -72,6 +72,9 @@ esac`,
     *) exit 99 ;;
 esac`,
     npm: 'echo unexpected-npm >>"$HARNESS_TRACE"; exit 99',
+    // The client tools a lane on a declared Postgres (TEST_JOBS_PG_URL) calls in place of `compose exec`.
+    psql: 'printf \'psql %s\\n\' "$*" >>"$HARNESS_TRACE"',
+    pg_isready: 'printf \'pg_isready %s\\n\' "$*" >>"$HARNESS_TRACE"',
     timeout: `shift
 if [ "$1" = docker ] && [ "$2" = wait ]; then
     [ -z "$SUPERVISOR_WAIT_STATUS" ] || exit "$SUPERVISOR_WAIT_STATUS"
@@ -271,6 +274,35 @@ describe('test-jobs phase options', () => {
         expect(lane.log('postgres')).toContain('simulated postgres startup failure');
         expect(lane.timings()).toMatch(/^postgres\t\d+$/m);
         expect(lane.timings()).toMatch(/^cleanup\t\d+$/m);
+    });
+
+    // In a gate the repository's declared `postgres` service already holds 5432 on the pod loopback,
+    // which a compose Postgres publishing the same port would collide with.
+    it('with TEST_JOBS_PG_URL set the lane never starts or publishes the compose Postgres and its DATABASE_URL uses that server', async () => {
+        const lane = fixture();
+        const server = 'postgres://factory:factory@postgres:5432';
+        const result = await lane.run(['--phase', 'board'], { TEST_JOBS_PG_URL: server });
+        // The build fails (npm is a stub), after the database was created and before any board.
+        expect(result.status).toBe(1);
+        const trace = lane.trace();
+        expect(trace).not.toMatch(/^compose (up|exec)/m);
+        expect(trace).toContain(`pg_isready -d ${server}/postgres`);
+        const database = /create database (factory_jobs_\w+_test)/.exec(trace)?.[1];
+        expect(database).toBeTruthy();
+        expect(trace).toContain(`psql -d ${server}/postgres`);
+        // The run's own database on that server: what the boards' DATABASE_URL names.
+        expect(trace).toContain(`psql -d ${server}/${database} `);
+        expect(trace).toContain(`drop database if exists ${database}`);
+    });
+
+    it('refuses a TEST_JOBS_PG_URL that names a database: each run creates its own disposable one', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'board'], {
+            TEST_JOBS_PG_URL: 'postgres://factory:factory@postgres:5432/factory',
+        });
+        expect(result.status).toBe(2);
+        expect(result.stdout).toContain('TEST_JOBS_PG_URL');
+        expect(lane.trace()).not.toMatch(/psql|pg_isready|compose up/);
     });
 
     it('gives separate runs distinct disposable databases and image cleanup targets', async () => {
