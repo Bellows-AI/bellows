@@ -13,8 +13,8 @@ so each store's own `org_id` predicate is still the only guard.
 ## Decision
 
 - **A transaction-local setting per store call:** `sql.begin` + `set_config('app.org_id', <org>, true)`, policy `org_id = current_setting('app.org_id', true)`. The setting dies with the transaction, so a pooled connection never carries one org into the next borrower, and the connection count stays the pool's whatever the number of orgs.
-- **Rejected:** one pool per org through a startup parameter (connections grow with orgs x replicas x pools and never close, against a fixed `dbConnections`); `reserve()` with a session setting (a missed reset hands the next borrower the previous org, a wrong-org read rather than an empty one, and it costs more than the transaction).
-- **Cross-org paths run on a second pool as a `bypassrls` role**, keeping their explicit `org_id` predicates; migrations stay on the owner. A cross-org fact inside a single-org snapshot is a narrow `security definer` function owned by the cross-org role, answering only for the ids it is given.
+- **Rejected:** one pool per org through a startup parameter (connections grow with orgs x replicas x pools and never close, against a fixed `dbConnections`); `reserve()` with a session setting (a missed reset hands the next borrower the previous org, a wrong-org read rather than an empty one).
+- **Cross-org paths run on a second pool as a `bypassrls` role**, keeping their explicit `org_id` predicates; migrations stay on the owner. **Decided by the user:** each cross-org fact inside a single-org path is a small read-only `security definer` function owned by the cross-org role, returning only a count or a boolean and running inside the caller's transaction.
 
 ## Measured
 
@@ -41,8 +41,9 @@ A missing setting reads 0 rows, so each path that reads other orgs, or reads "no
 
 - Owner: migrations, the `AUTH_MODE=none` seed, the boot reaps `server/src/db/migrate.ts:84`, `:117`, `:128`, `:269`.
 - Credential to org: `server/src/db/jobs/job-store-org-resolvers.ts:42`, `:74`, `:104`, `:120`; `server/src/db/attempt-of-lease.ts:64`, `:125`; `server/src/auth/driver-credentials.ts:141` (lookup), `:221` (bootstrap); `server/src/attachments/upload-capability-store.ts:120`.
-- Sign-in and sessions: `server/src/auth/store.ts:337`, `:429`, `:461`, `:490`, `:606`, `:659`, `:838`; `server/src/auth/membership-guard.ts:110`; `server/src/auth/oauth-store.ts:319`, `:383`, `:644`.
+- Sign-in and sessions: `server/src/auth/store.ts:337`, `:429`, `:461`, `:490`, `:512` (pending sign-in), `:606`, `:659`, `:820` (personal token), `:853` (org token); `server/src/auth/membership-guard.ts:110`; `server/src/auth/oauth-store.ts:319`, `:383`, `:585` (revoke), `:606` (grant listing), `:644`, `:654` (family revoke), `:686` (access token).
 - Deletes decided by absence: `server/src/attachments/attachment-collector.ts:74`, `:90`; `server/src/skills/skill-collector.ts:27`; `server/src/db/org-purge.ts:322`; `server/src/integrations/integration-recovery.ts:150`; `server/src/telemetry/org-backfill.ts:57`.
+- Expiry deletes across orgs: `server/src/auth/oauth-store.ts:444` (`deleteUnusedClients`), `:662` (`purgeExpired`); `server/src/attachments/upload-capability-store.ts:177` (`purgeExpired`); `server/src/auth/store.ts:517` (pending sign-ins).
 - Definer function, a cross-org fact in a single-org path: global admission `server/src/db/jobs/job-store-admission.ts:79` (0 = cap unenforced) and occupancy `:251`; ingest's bound-elsewhere `server/src/telemetry/store.ts:85` (0 = another org's session accepted); the stats read's foreign sessions `server/src/telemetry/usage-facts.ts:188` (0 = counted twice).
 
 Single-org, the setting is enough: the stores `server/src/orgs.ts:388` builds, so the per-board claim and lease retirement
