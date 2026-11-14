@@ -522,7 +522,7 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
 // again on every claim with the same spec: the loop's one startup decision reads it as config, on the
 // sync and on the run alike, while an unconfirmed answer stays left to the lease.
 describe('a runner create the API server refuses, on kubernetes', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: 'example-org/example-repo' };
     const SESSION_OF = { id: SESSION, resume: false };
     const refused422 = {
         status: 422,
