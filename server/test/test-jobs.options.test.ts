@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { loadConfig } from '../src/config.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = join(ROOT, 'scripts/test-jobs.sh');
@@ -16,6 +17,9 @@ const COMMANDS = {
     docker: `printf '%s\n' "$*" >>"$HARNESS_TRACE"
 case "$1 $2" in
     'image inspect') [ "$3" != "\${MISSING_IMAGE:-}" ] || exit 1 ;;
+    # The daemon kind and the default bridge's gateway: $DOCKER_OS empty fails the read, as does an empty gateway.
+    'info --format') [ -n "\${DOCKER_OS-Docker Desktop}" ] || exit 1; printf '%s\n' "\${DOCKER_OS-Docker Desktop}" ;;
+    'network inspect') [ -n "\${BRIDGE_GATEWAY:-}" ] || exit 1; printf '%s\n' "$BRIDGE_GATEWAY" ;;
     'compose up')
         if [ "$POSTGRES_START_FAIL" = 1 ]; then
             echo 'simulated postgres startup failure' >&2
@@ -468,5 +472,98 @@ describe('test-jobs phase options', () => {
         expect(help.stdout).toContain('--phase driver,services');
         expect(help.stdout).toContain('--changed BASE');
         expect(help.stdout).toContain('the full lane');
+    });
+});
+
+// The boards and host drivers the lane's containers dial through host.docker.internal bind the
+// address that name reaches. driver/test/lane-stubs.test.ts pins that every launch site uses it.
+describe('test-jobs host bind', () => {
+    it('binds the boards and host drivers to the bridge gateway on a native Linux daemon', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'driver'], {
+            DOCKER_OS: 'Ubuntu 24.04 LTS',
+            BRIDGE_GATEWAY: '172.17.0.1',
+        });
+        expect(result.stdout).toContain('test-jobs: boards and host drivers bind 172.17.0.1');
+        expect(lane.trace()).toContain('network inspect bridge');
+    });
+
+    it('keeps them on 127.0.0.1 on Docker Desktop, without reading the bridge', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'driver'], { DOCKER_OS: 'Docker Desktop' });
+        expect(result.stdout).toContain('test-jobs: boards and host drivers bind 127.0.0.1');
+        expect(lane.trace()).not.toContain('network inspect');
+    });
+
+    it.each([
+        ['a failed docker info read', { DOCKER_OS: '' }],
+        ['a failed gateway read', { DOCKER_OS: 'Ubuntu 24.04 LTS', BRIDGE_GATEWAY: '' }],
+        ['a malformed gateway', { DOCKER_OS: 'Ubuntu 24.04 LTS', BRIDGE_GATEWAY: '<no value>' }],
+    ])('refuses the lane on %s, before any board starts, and never guesses loopback', async (_case, env) => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'driver'], env);
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('test-jobs: cannot tell which address host.docker.internal reaches');
+        expect(result.stdout).not.toContain('bind 127.0.0.1');
+        expect(lane.trace()).not.toContain('compose up');
+        expect(lane.trace()).not.toContain('unexpected-npm');
+    });
+
+    it('reads nothing for the standalone CLI phases, which start no board and no host driver', async () => {
+        const lane = fixture();
+        await lane.run(['--phase', 'cooperative-stop'], { DOCKER_OS: '' });
+        expect(lane.trace()).not.toContain('info --format');
+    });
+});
+
+// A board moved off loopback meets the server's off-loopback rules (an authenticated board needs PUBLIC_URL,
+// MCP refuses an http one). Each board launch the lane runs is evaluated by bash under both resolved hosts,
+// and the environment it would hand server/dist/offline*.js goes through the real config loader.
+describe('test-jobs board launches boot config-valid', () => {
+    // The lane in run order: each sourced phase file in place of its `. "$REPO/scripts/lanes/…"` line.
+    const lane = readFileSync(SCRIPT, 'utf8').replace(/^\. "\$REPO\/(scripts\/lanes\/[^"]+\.sh)"$/gm, (_l, file) =>
+        readFileSync(join(ROOT, file), 'utf8')
+    );
+    const lines = lane.split('\n');
+    const boards = lines.flatMap((line, i) => {
+        if (!/node server\/dist\/offline[\w-]*\.js/.test(line)) return [];
+        let start = i;
+        while (start > 0 && lines[start - 1]?.trimEnd().endsWith('\\')) start--;
+        return [lines.slice(start, i + 1).join('\n')];
+    });
+    // What the lane itself derives from LANE_HOST and the board URLs its phase files set, taken from the script.
+    const derived = lines.filter((l) =>
+        /^\s*(LANE_BOARD_BIND|\[ "\$LANE_HOST"|BASE="http)|^(AUTH_BASE|MCP_BASE|MCP_IDP)=/.test(l)
+    );
+    const token = 'a-lane-config-check-secret-32-chars';
+    const preamble = [
+        'SECRET_STORE_ENV=(LANE_CONFIG_CHECK=1) # never empty: bash 3.2 reads an empty array as unbound under -u',
+        'DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_jobs_test',
+        'PORT=8129 CAP_LIGHT_PORT=8130 MINT_PORT=8131 AUTH_PORT=8132 MCP_PORT=8133 MCP_IDP_PORT=8134',
+        `PLAN_BASE=git://127.0.0.1:9418 CAP_TOKEN=${token} MCP_TOKEN=${token} PS_TOKEN=${token}`,
+        'set -- 8130 /dev/null',
+        ...derived.map((l) => l.trim()),
+    ].join('\n');
+    const printEnv = `"${process.execPath}" -e 'process.stdout.write(JSON.stringify(process.env))'`;
+    const launchEnv = (board: string, host: string): NodeJS.ProcessEnv => {
+        const run = board.replace(/node server\/dist\/offline[\w-]*\.js.*$/, printEnv);
+        const out = execFileSync('/bin/bash', ['-c', `set -eu\nLANE_HOST=${host}\n${preamble}\n${run}\nwait`], {
+            env: { PATH: process.env.PATH },
+            encoding: 'utf8',
+        });
+        const env = JSON.parse(out) as NodeJS.ProcessEnv;
+        for (const key of ['PATH', 'PWD', 'SHLVL', '_', 'OLDPWD']) delete env[key];
+        return env;
+    };
+
+    it('finds every board the lane starts', () => {
+        expect(boards.length).toBeGreaterThanOrEqual(6);
+    });
+
+    it.each(['172.17.0.1', '127.0.0.1'])('every board launch loads under LANE_HOST=%s', (host) => {
+        for (const board of boards) {
+            const env = launchEnv(board, host);
+            expect(() => loadConfig(env, { mode: 'none' }), board).not.toThrow();
+        }
     });
 });

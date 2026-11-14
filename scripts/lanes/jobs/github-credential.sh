@@ -13,11 +13,11 @@ begin_phase github-credential
 echo
 echo '# github credential'
 
-env "${SECRET_STORE_ENV[@]}" AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$MINT_PORT" HOST=127.0.0.1 \
+env "${SECRET_STORE_ENV[@]}" AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$MINT_PORT" "${LANE_BOARD_BIND[@]}" \
     REPO_CLONE_BASE="$PLAN_BASE" \
     node server/dist/offline-mint.js >>"$work/mint-server.log" 2>&1 &
 mint_pid=$!
-mint_ready() { [ "$(status "$(BASE="http://127.0.0.1:$MINT_PORT" api GET /api/ready)")" = '200' ]; }
+mint_ready() { [ "$(status "$(BASE="http://$LANE_HOST:$MINT_PORT" api GET /api/ready)")" = '200' ]; }
 mint_up=""
 acc_until 40 mint_ready && mint_up=1
 [ -n "$mint_up" ] && ok 'the mint board comes up' || bad 'the mint board comes up' "$(tail -5 "$work/mint-server.log")"
@@ -36,6 +36,7 @@ env JOB_BOARD_URL="$BASE" RUNNER_STATS_URL="http://host.docker.internal:$MINT_PO
     CLAUDE_EXECUTOR_IMAGE="$IMAGE_GH" OPENCODE_EXECUTOR_IMAGE="$IMAGE_GH" \
     RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
     DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
+    GATE_LISTEN_HOST="$LANE_HOST" \
     node driver/dist/index.js >>"$work/driver.log" 2>&1 &
 driver_pid=$!
 

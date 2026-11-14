@@ -317,7 +317,8 @@ pinned_skills_lane() {
     kill "$server_pid" 2>/dev/null
     wait "$server_pid" 2>/dev/null
     server_pid=""
-    env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
+    # On $BASE, which off loopback an authenticated board cannot derive: PUBLIC_URL names it.
+    env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$PORT" "${LANE_BOARD_BIND[@]}" PUBLIC_URL="$BASE" \
         REPO_CLONE_BASE="$PLAN_BASE" \
         AUTH_MODE=github \
         GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
