@@ -1,7 +1,6 @@
 # The gates run in the dev runner image (docker/dev-runner), pinned to the release that published it.
-# test:jobs needs a docker daemon: run this repository's tasks under an executor profile naming a
-# docker runner class. Its executor images are built from the tree first (the class's daemon starts
-# empty), and its run databases live on the `postgres` service below.
+# No test:jobs gate: its compose networks do not resolve names in a docker class under gVisor
+# (docs/kubernetes-limits.md).
 environment:
     image: ghcr.io/bellows-ai/dev-runner:v0.0.17
     setup: "npm ci && sh scripts/gate-jq.sh"
@@ -17,9 +16,6 @@ environment:
          - name: "test:db"
            command: "DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
            timeout: 30
-         - name: "test:jobs"
-           command: "make runners && TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 npm run test:jobs"
-           timeout: 120
 
 services:
     - name: postgres

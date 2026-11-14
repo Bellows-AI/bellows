@@ -92,7 +92,11 @@ The filter is up to 256 printable characters on one line. It is set for that one
 
 ## Gates that need docker
 
-A gate can run `docker`, `docker compose` and `docker build` when the task runs in a docker runner class: an organization [executor profile](/guides/executors#runner-class) picks it. The daemon belongs to the task and starts empty, so the gate builds the images it needs. The gate's image brings the docker CLI. Bellows' own repository runs its suites this way:
+A gate can run `docker`, `docker compose` and `docker build` when the task runs in a docker runner class: an organization [executor profile](/guides/executors#runner-class) picks it. The daemon belongs to the task and starts empty, so the gate builds the images it needs. The gate's image brings the docker CLI.
+
+Under a gVisor sandbox, containers the gate starts get the default bridge and host networks only. Compose service names do not resolve, and an image build that fetches packages needs `docker build --network host`. See [Runner class](/guides/executors#runner-class).
+
+Bellows' own repository runs its suites in its `dev-runner` image:
 
 ```yaml .bellows.yaml
 environment:
@@ -105,9 +109,6 @@ environment:
          - name: "test:db"
            command: "DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
            timeout: 30
-         - name: "test:jobs"
-           command: "make runners && TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 npm run test:jobs"
-           timeout: 120
 
 services:
     - name: postgres
@@ -119,7 +120,7 @@ services:
           POSTGRES_DB: factory_test
 ```
 
-The `dev-runner` image carries node 24, the docker CLI with the compose and buildx plugins, `helm`, `jq`, `psql` and Playwright's chromium libraries. A container the gate starts that publishes a port shares the task's loopback with your services, so it cannot publish a port a service already uses. That is why `test:jobs` reuses the declared `postgres` here.
+The `dev-runner` image carries node 24, the docker CLI with the compose and buildx plugins, `helm`, `jq`, `psql` and Playwright's chromium libraries. A container the gate starts that publishes a port shares the task's loopback with your services, so it cannot publish a port a service already uses.
 
 ## Where results show
 

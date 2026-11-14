@@ -50,7 +50,7 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 
 ## What no lane covers
 
-- **`npm run test:jobs` in CI.** It runs on Docker Desktop, on a native Linux daemon and as this repository's `.bellows.yaml` gate on a docker runner class (`make runners` first, `TEST_JOBS_PG_URL` to the declared Postgres: `server/test/bellows.test.ts`), but not in CI ([ci.md](ci.md)).
+- **`npm run test:jobs` in CI or a docker class.** It runs on Docker Desktop and on a native Linux daemon (`TEST_JOBS_PG_URL` puts its databases on a running server), but not in CI ([ci.md](ci.md)) nor in a docker class under gVisor ([kubernetes-limits.md](kubernetes-limits.md)).
 - **The real collector**; **a cloud cluster** (`--cluster` refuses every non-kind context; [eks-runbook.md](eks-runbook.md));
   **kind fault injection** beyond the disruption, takeover and drain phases; **a real agent CLI honouring the master prompt's flags** and the live opencode session and resume fallbacks (stubs run no image: `driver/test/claude-bridge.test.ts`, `executor-images.test.ts`); **allowlisted block helpers under `--cluster`**.
 - **The cloud metadata endpoint (169.254.169.254) is not probed.** Nothing answers on it in kind, so a probe could only

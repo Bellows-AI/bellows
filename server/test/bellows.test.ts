@@ -261,7 +261,7 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = parseBellows(text)?.gates ?? [];
-        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:jobs']);
+        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db']);
         expect(gates.slice(0, 2)).toEqual([
             { name: 'test', command: 'npm test' },
             { name: 'lint', command: 'npm run lint' },
@@ -275,22 +275,18 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         expect(parseBellows(text)?.image).toMatch(/^ghcr\.io\/bellows-ai\/dev-runner:v\d+\.\d+\.\d+(-rc(-\d+)?)?$/);
     });
 
-    // The suites that need more than `npm test`: each states its own budget, and the two database
-    // suites point at the declared `postgres` service, never at a server of their own.
-    it('declares typecheck, test:db and test:jobs, each with a timeout', async () => {
+    // The suites that need more than `npm test`: each states its own budget, and test:db points at
+    // the declared `postgres` service, never at a server of its own. No test:jobs gate: the lane's
+    // compose networks do not resolve names in a docker class under gVisor (docs/kubernetes-limits.md).
+    it('declares typecheck and test:db, each with a timeout, and no test:jobs gate', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = new Map((parseBellows(text)?.gates ?? []).map((gate) => [gate.name, gate]));
-        for (const name of ['typecheck', 'test:db', 'test:jobs'])
-            expect(gates.get(name)?.timeoutMinutes, name).toBeGreaterThan(0);
+        for (const name of ['typecheck', 'test:db']) expect(gates.get(name)?.timeoutMinutes, name).toBeGreaterThan(0);
         expect(gates.get('typecheck')?.command).toBe('npm run typecheck');
         expect(gates.get('test:db')?.command).toBe(
             'DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db'
         );
-        // The lane runs the executor images it tests, and the sidecar daemon starts empty: they are
-        // built from the tree first. The lane's own databases live on the declared server.
-        expect(gates.get('test:jobs')?.command).toBe(
-            'make runners && TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 npm run test:jobs'
-        );
+        expect(gates.has('test:jobs')).toBe(false);
     });
 
     // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.

@@ -206,6 +206,8 @@ runner:
 
 A Docker class runs its daemon as root with the task volume mounted, so task code in it has root over that volume. Run it only under a sandbox RuntimeClass. See [Security model](/self-host/security).
 
+Under gVisor the daemon runs with iptables off: gVisor rejects Docker's MASQUERADE rule and has no nftables. Nested containers get the default bridge and host networks only. Compose service names do not resolve, user-defined networks have no container-name or external DNS, and large downloads from a bridge-network container can hang. An image build that fetches packages needs `docker build --network host`.
+
 Every class's node pools must cover the zones your task volumes live in, the default class's too. A runner placed in a zone its task volume cannot reach stays Pending.
 
 `blockedCidrs` blocks your VPC too, so a database on a private address is unreachable from a runner unless you allow it.
