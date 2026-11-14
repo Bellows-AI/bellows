@@ -1,5 +1,7 @@
 import { AGENT_LAUNCH_CAPS } from '../claim.js';
-import { cpuQuantityToCores, type DriverConfig, memoryQuantityToBytes } from '../config.js';
+import type { DriverConfig } from '../config.js';
+import { cpuQuantityToCores, memoryQuantityToBytes } from '../quantities.js';
+import type { RunnerClass, RunnerResources } from '../runner-classes.js';
 import type { BoardJob } from '../board/board.js';
 import { type Mailbox, mailboxesOf, SUPERVISOR_BINDING } from '../supervisor-contract.js';
 import { TASK_MOUNT, TASK_VOLUME, taskPodVolume } from '../task-volume.js';
@@ -27,16 +29,15 @@ export interface PodResources {
 }
 
 /**
- * The configured resource requests and limits (RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST /
- * RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT) on a pod spec. Absent entirely when none are
+ * A runner class's resource requests and limits on a pod spec. Absent entirely when none are
  * configured, so the BestEffort pod a cluster saw before this existed is unchanged. Requests and
  * limits are independent slots: requests make the pod Burstable and are what Karpenter and the
  * Cluster Autoscaler size for; limits render only when set, because a memory limit on an agent
  * run turns a big build into an OOM kill mid-work — the requests-only posture the dashboard pod
  * keeps deliberately. The values travel verbatim; the config validated their shape at boot.
- * The block is the runner's everywhere but the gate Job, which passes `config.gateResources`.
+ * The block is the class's runner block everywhere but the gate, which passes its `gateResources`.
  */
-export function resourcesField(config: DriverConfig, block = config.runnerResources): { resources?: PodResources } {
+export function resourcesField(block: RunnerResources): { resources?: PodResources } {
     const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = block;
     const requests: ResourceList = {
         ...(cpuRequest ? { cpu: cpuRequest } : {}),
@@ -63,11 +64,11 @@ const smaller = (a: string, b: string | null, toNumber: (q: string) => string): 
 /**
  * The gate container's requests at one phase: `idle` while the agent runs — the idle
  * loop's figures, never above what the gate is configured to request or limited to — and `verify`,
- * the configured gate requests (GATE_*, over RUNNER_*) for the setup and the gates. A slot with no
- * configured request keeps its idle figure at verify: a resize cannot take a request away.
+ * the class's gate requests (its `gateResources`, over its runner block) for the setup and the gates. A
+ * slot with no configured request keeps its idle figure at verify: a resize cannot take a request away.
  */
-export function gateRequests(config: DriverConfig, phase: 'idle' | 'verify'): { cpu: string; memory: string } {
-    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = config.gateResources;
+export function gateRequests(runnerClass: RunnerClass, phase: 'idle' | 'verify'): { cpu: string; memory: string } {
+    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = runnerClass.gateResources;
     const idle = {
         cpu: smaller(GATE_IDLE_REQUESTS.cpu, cpuRequest ?? cpuLimit, cpuQuantityToCores),
         memory: smaller(GATE_IDLE_REQUESTS.memory, memoryRequest ?? memoryLimit, memoryQuantityToBytes),
@@ -80,9 +81,9 @@ export function gateRequests(config: DriverConfig, phase: 'idle' | 'verify'): { 
  * The gate container's resources at its creation: the idle requests, and the gate limits from the
  * start — only requests are ever resized, so no memory limit is ever lowered under a running suite.
  */
-export function gateResourcesField(config: DriverConfig): { resources: PodResources } {
-    const limits = resourcesField(config, config.gateResources).resources?.limits;
-    return { resources: { requests: gateRequests(config, 'idle'), ...(limits ? { limits } : {}) } };
+export function gateResourcesField(runnerClass: RunnerClass): { resources: PodResources } {
+    const limits = resourcesField(runnerClass.gateResources).resources?.limits;
+    return { resources: { requests: gateRequests(runnerClass, 'idle'), ...(limits ? { limits } : {}) } };
 }
 
 /** What the reviewer container asks for while no review runs: a sleeping loop, no more. */
@@ -90,11 +91,11 @@ const REVIEWER_IDLE_REQUESTS = { cpu: '50m', memory: '64Mi' } as const;
 
 /**
  * The reviewer container's requests at one phase: `idle` while no review runs, `run`
- * the runner's own requests (RUNNER_*) for the review — a reviewer is an agent. A slot with no
+ * the class's runner requests for the review — a reviewer is an agent. A slot with no
  * configured request keeps its idle figure at run: a resize cannot take a request away.
  */
-export function reviewerRequests(config: DriverConfig, phase: 'idle' | 'run'): { cpu: string; memory: string } {
-    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = config.runnerResources;
+export function reviewerRequests(runnerClass: RunnerClass, phase: 'idle' | 'run'): { cpu: string; memory: string } {
+    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = runnerClass.runnerResources;
     const idle = {
         cpu: smaller(REVIEWER_IDLE_REQUESTS.cpu, cpuRequest ?? cpuLimit, cpuQuantityToCores),
         memory: smaller(REVIEWER_IDLE_REQUESTS.memory, memoryRequest ?? memoryLimit, memoryQuantityToBytes),
@@ -104,14 +105,14 @@ export function reviewerRequests(config: DriverConfig, phase: 'idle' | 'run'): {
 }
 
 /** The reviewer container's resources at its creation: the idle requests, the runner's limits from the start. */
-export function reviewerResourcesField(config: DriverConfig): { resources: PodResources } {
-    const limits = resourcesField(config).resources?.limits;
-    return { resources: { requests: reviewerRequests(config, 'idle'), ...(limits ? { limits } : {}) } };
+export function reviewerResourcesField(runnerClass: RunnerClass): { resources: PodResources } {
+    const limits = resourcesField(runnerClass.runnerResources).resources?.limits;
+    return { resources: { requests: reviewerRequests(runnerClass, 'idle'), ...(limits ? { limits } : {}) } };
 }
 
 /**
- * The runner group's scheduling knobs (RUNNER_NODE_SELECTOR / RUNNER_TOLERATIONS / RUNNER_AFFINITY,
- * issue #361) and its RuntimeClass (RUNNER_RUNTIME_CLASS) on a pod spec: the tainted node group agent-written code lands on and nothing else
+ * A runner class's scheduling knobs (nodeSelector / tolerations / affinity, issue #361) and its
+ * RuntimeClass on a pod spec: the tainted node group agent-written code lands on and nothing else
  * schedules onto. Absent field by field when unset, so the spec an untainted cluster sees is
  * unchanged. Docker has no twin — the daemon decides placement, there is nothing to forward.
  */
@@ -122,12 +123,12 @@ export interface SchedulingField {
     runtimeClassName?: string;
 }
 
-export function schedulingField(config: DriverConfig): SchedulingField {
+export function schedulingField(runnerClass: RunnerClass): SchedulingField {
     const field: SchedulingField = {};
-    if (config.runnerNodeSelector) field.nodeSelector = config.runnerNodeSelector;
-    if (config.runnerTolerations) field.tolerations = config.runnerTolerations;
-    if (config.runnerAffinity) field.affinity = config.runnerAffinity;
-    if (config.runnerRuntimeClass) field.runtimeClassName = config.runnerRuntimeClass;
+    if (runnerClass.nodeSelector) field.nodeSelector = runnerClass.nodeSelector;
+    if (runnerClass.tolerations) field.tolerations = runnerClass.tolerations;
+    if (runnerClass.affinity) field.affinity = runnerClass.affinity;
+    if (runnerClass.runtimeClassName) field.runtimeClassName = runnerClass.runtimeClassName;
     return field;
 }
 

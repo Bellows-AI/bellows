@@ -21,8 +21,7 @@ global:
     # database.waitImage is NOT prefixed — it is a full reference an operator sets whole.
     imageRegistry: ''
 # Scheduling for the chart's own pods (dashboard, driver, collector). Runner pods take theirs from
-# `runner.nodeSelector` / `runner.tolerations` / `runner.affinity` below — the driver forwards them
-# onto every pod it specs.
+# their runner class (`runner.classes` below) — the driver forwards it onto every pod it specs.
 nodeSelector: {}
 tolerations: []
 affinity: {}
@@ -471,54 +470,74 @@ isolation:
     allowedCidrs: []
 
 runner:
-    # Where agent-written code lands: the driver forwards these to every pod it specs —
-    # runner, gate, sync, reclaim, publish, helper, service — as JSON (RUNNER_NODE_SELECTOR /
-    # RUNNER_TOLERATIONS / RUNNER_AFFINITY). The standard cloud shape is a tainted, IMDS-hardened
-    # runner node group that nothing else schedules onto, so the App key's node never runs agent
-    # code; on EKS it is also what keeps a zonal EBS task volume within the node group's AZs. Forwarded
-    # verbatim — the API server validates the shapes, and admission never constrains these fields,
-    # only `nodeName`.
-    #   nodeSelector: { dedicated: factory-runners }
-    #   tolerations:
-    #     - { key: dedicated, operator: Equal, value: factory-runners, effect: NoSchedule }
-    #   affinity: { podAntiAffinity: … }   # spread runners across zones beside the selector
-    nodeSelector: {}
-    tolerations: []
-    affinity: {}
-    # The RuntimeClass every pod the driver specs runs under (RUNNER_RUNTIME_CLASS):
-    # `gvisor` on a GKE Sandbox node pool, so agent code never shares the node kernel. Set, the
-    # admission policy refuses any driver pod that names another RuntimeClass or none. Empty: pods
-    # run on the node's default runtime and the rule is not rendered.
-    runtimeClassName: ''
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.
     env: CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY
-    # Requests and limits on every pod the driver specs but the gates — the runner, the sync, the
-    # reclaim, the publish steps, the block helpers and the declared services — forwarded as
-    # RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST / RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT
-    # (kubernetes quantities: "500m", "1Gi"). Requests keep a runner fleet Burstable rather than
-    # BestEffort so the autoscaler (Karpenter, Cluster Autoscaler) can size for it — a zero-request
-    # pod schedules onto any free pod slot and provisions nothing. Limits bound a
-    # runaway or hostile run so it cannot starve the node, the board, the driver or sibling tasks;
-    # they are generous because a memory limit turns a big build into an OOM kill mid-work — raise
-    # them on a cloud install with big builds. In override files, use requests: null / limits: null
-    # to remove the defaults; {} retains them through Helm's map merge.
-    resources:
-        requests:
-            cpu: 500m
-            memory: 1Gi
-        limits:
-            cpu: '4'
-            memory: 8Gi
-    # The gate Jobs' own requests and limits, forwarded as GATE_CPU_REQUEST /
-    # GATE_MEMORY_REQUEST / GATE_CPU_LIMIT / GATE_MEMORY_LIMIT. A gate runs the whole test suite
-    # while the runner mostly waits on a model, and a 500m floor starves vitest's workers into
-    # RPC timeouts on a busy node. Each unset slot falls back to `resources` above — the limits
-    # here are the runner's. null / empty behave as they do there. Runner limits below these
-    # requests refuse the driver's boot, naming both variables: lower these, or set gate limits.
-    gateResources:
-        requests:
-            cpu: '2'
-            memory: 2Gi
+    # Runner classes (RUNNER_CLASSES, one JSON env): where agent-written code lands and what it may
+    # use. A claim names its class; one naming none runs in `defaultClass`, which must be declared.
+    # Each class carries its own RuntimeClass, scheduling and resources, so two node pools or
+    # RuntimeClasses coexist on one driver. Class names are DNS-1123 labels; the driver stamps the
+    # pod-template label `factory.runner-class: <name>` on every Job it specs, and the admission
+    # policy refuses a pod whose RuntimeClass is not its class's, or whose label names no class here.
+    # The driver refuses at boot a class with an unknown key, and the chart refuses a bad name.
+    #
+    # Helm merges maps: a class added in an override file (`sandbox:` below) sits beside `standard`
+    # and inherits NONE of its fields; set `standard: null` to drop it (and move `defaultClass`).
+    #   classes:
+    #     sandbox:
+    #       runtimeClassName: gvisor          # GKE Sandbox: agent code never shares the node kernel
+    #       nodeSelector: { pool: sandbox }
+    #       tolerations:
+    #         - { key: pool, operator: Equal, value: sandbox, effect: NoSchedule }
+    #       resources: { requests: { cpu: '1', memory: 2Gi }, limits: { cpu: '4', memory: 8Gi } }
+    defaultClass: standard
+    classes:
+        standard:
+            # The RuntimeClass every pod of this class runs under. Empty: the node's default
+            # runtime, and admission requires the pod to name none.
+            runtimeClassName: ''
+            # Forwarded verbatim onto every pod of the class — runner, gate, sync, reclaim,
+            # publish, helper, service; the volume export Job takes the default class's. The
+            # standard cloud shape is a tainted, IMDS-hardened runner node group that nothing else
+            # schedules onto, so the App key's node never runs agent code. Every class's node pools
+            # must reach the task volume's zones: a pod respecced after a node loss lands only
+            # where its class allows, and a zonal EBS volume attaches only in its AZ. The API
+            # server validates the shapes; admission never constrains these fields, only `nodeName`.
+            #   nodeSelector: { dedicated: factory-runners }
+            #   tolerations:
+            #     - { key: dedicated, operator: Equal, value: factory-runners, effect: NoSchedule }
+            #   affinity: { podAntiAffinity: … }   # spread runners across zones beside the selector
+            nodeSelector: {}
+            tolerations: []
+            affinity: {}
+            # Requests and limits on every pod of the class but its gates (kubernetes quantities:
+            # "500m", "1Gi"). Requests keep a runner fleet Burstable rather than BestEffort so the
+            # autoscaler (Karpenter, Cluster Autoscaler) can size for it — a zero-request pod
+            # schedules onto any free pod slot and provisions nothing. Limits bound a runaway or
+            # hostile run so it cannot starve the node, the board, the driver or sibling tasks;
+            # they are generous because a memory limit turns a big build into an OOM kill mid-work
+            # — raise them on a cloud install with big builds. In override files, use
+            # requests: null / limits: null to remove the defaults; {} retains them through Helm's
+            # map merge.
+            resources:
+                requests:
+                    cpu: 500m
+                    memory: 1Gi
+                limits:
+                    cpu: '4'
+                    memory: 8Gi
+            # The class's gate Jobs' own requests and limits. A gate runs the whole test suite
+            # while the runner mostly waits on a model, and a 500m floor starves vitest's workers
+            # into RPC timeouts on a busy node. Each unset slot falls back to `resources` above —
+            # the limits here are the runner's. null / empty behave as they do there. Runner limits
+            # below these requests refuse the driver's boot, naming both values: lower these, or
+            # set gate limits.
+            gateResources:
+                requests:
+                    cpu: '2'
+                    memory: 2Gi
+            # Whether the class's groups get a Docker daemon. True requires a runtimeClassName (a
+            # sandbox), which the chart checks at render time.
+            docker: false
     # Created by this chart when secret.create is true, with one key per `env` name, valued from
     # `credentials` (empty when absent). Referencing the Secret by name is the whole point: the
     # credential never appears in the pod spec, which anyone who can `get pods` can read.

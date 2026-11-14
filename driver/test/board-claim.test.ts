@@ -53,6 +53,19 @@ describe('parseClaim', () => {
     it('names every offending field', () => {
         expect(malformedOf({ ...WIRE, id: 1, env: 2 })).toEqual(['id', 'env']);
     });
+
+    // A class name off the wire picks where agent code runs: a value of the wrong type is the board
+    // breaking its contract, left to the lease, never read as "the default class".
+    it('a non-string runnerClass is a malformed claim', () => {
+        expect(malformedOf({ ...WIRE, runnerClass: 5 })).toEqual(['runnerClass']);
+        expect(malformedOf({ ...WIRE, runnerClass: { name: 'sandbox' } })).toEqual(['runnerClass']);
+        const named = parseClaim({ ...WIRE, runnerClass: 'sandbox' });
+        expect('claim' in named && named.claim.runnerClass).toBe('sandbox');
+        for (const wire of [WIRE, { ...WIRE, runnerClass: null }]) {
+            const parsed = parseClaim(wire);
+            expect('claim' in parsed && parsed.claim.runnerClass).toBeNull();
+        }
+    });
 });
 
 describe('the board client on a malformed claim', () => {

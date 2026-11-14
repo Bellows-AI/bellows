@@ -30,6 +30,7 @@ import {
     everyPodSpec,
     namespace,
 } from '../fixtures/k8s-suite.js';
+import { sized } from '../fixtures/runner-classes.js';
 
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
 const WINDDOWN_S =
@@ -520,12 +521,8 @@ describe('the runner job spec', () => {
      */
     it('renders the configured requests and limits, so the pod is Burstable and the autoscaler can size for it', () => {
         expect(
-            spec({
-                RUNNER_CPU_REQUEST: '500m',
-                RUNNER_MEMORY_REQUEST: '1Gi',
-                RUNNER_CPU_LIMIT: '2',
-                RUNNER_MEMORY_LIMIT: '4Gi',
-            }).spec.template.spec.containers[0]!.resources
+            spec(sized({ requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } })).spec.template
+                .spec.containers[0]!.resources
         ).toEqual({
             requests: { cpu: '500m', memory: '1Gi' },
             limits: { cpu: '2', memory: '4Gi' },
@@ -535,8 +532,7 @@ describe('the runner job spec', () => {
     // Limits off by default, the dashboard pod's own posture: a request only reserves, while a
     // memory limit on an agent run turns a big build into an OOM kill mid-work.
     it('renders requests only when limits are unset — the dashboard posture', () => {
-        const container = spec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' }).spec.template.spec
-            .containers[0]!;
+        const container = spec(sized({ requests: { cpu: '500m', memory: '1Gi' } })).spec.template.spec.containers[0]!;
         expect(container.resources).toEqual({ requests: { cpu: '500m', memory: '1Gi' } });
         expect(container.resources?.limits).toBeUndefined();
     });
@@ -572,7 +568,7 @@ describe('no pod but the task pod mounts the task volume', () => {
 describe('resources on every pod the driver specs', () => {
     // Issue #360: the autoscaler sizes the whole runner fleet, not just the runner pod — an
     // unschedulable sync or gate on a right-sized node strands the run. One config, every
-    // builder: the requests render on each container from the same four variables. The one Pod
+    // builder: the requests render on each container from the same class's four slots. The one Pod
     // (not Job) in the fleet, a declared service under the attempt's headless Service, is sized
     // like everything else, or it lands wherever a pod slot is free.
     const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
@@ -581,31 +577,30 @@ describe('resources on every pod the driver specs', () => {
     // The runner's pod is sized by its agent: the supervisor and the exporter beside it are small
     // scripts, and a request on each would multiply the pod's reservation by three.
     const SIDECARS: readonly PodName[] = ['the task supervisor', 'the transcript exporter'];
-    // The gate sidecar is sized by GATE_* and resized in place: its own pins below.
+    // The gate sidecar is sized by the class's gateResources and resized in place: its own pins below.
     const SIZED_POD_NAMES = POD_NAMES.filter((name) => !SIDECARS.includes(name) && name !== 'the gate sidecar');
 
     it.each(SIDECARS)('leaves %s unsized: the pod is sized by its agent', (name) => {
-        const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
+        const { pod } = everyPodSpec(sized(REQUESTS))[name]();
         expect(pod.containers[0]!.resources).toBeUndefined();
     });
 
     it.each(SIZED_POD_NAMES)('carries the same requests on %s', (name) => {
-        const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
+        const { pod } = everyPodSpec(sized(REQUESTS))[name]();
         expect(pod.containers[0]!.resources).toEqual(REQUESTS);
     });
 
-    // Issue #507 and #773 (D6): a gate runs the whole suite, so it is limited by GATE_* from the
-    // start, and requests the idle loop's figures while the agent runs — resized up for verify, so
-    // no memory limit is ever lowered under a running suite. An unset GATE_ slot is the runner's.
-    it('sizes the gate sidecar idle under the GATE_* limits while the agent keeps the runner resources', () => {
+    // Issue #507 and #773 (D6): a gate runs the whole suite, so it is limited by its class's
+    // gateResources from the start, and requests the idle loop's figures while the agent runs — resized
+    // up for verify, so no memory limit is ever lowered under a running suite. An unset gate slot is the runner's.
+    it('sizes the gate sidecar idle under the gate limits while the agent keeps the runner resources', () => {
         const config = loadDriverConfig({
             EXECUTOR: 'kubernetes',
             K8S_NAMESPACE: namespace,
-            RUNNER_CPU_REQUEST: '500m',
-            RUNNER_MEMORY_REQUEST: '1Gi',
-            RUNNER_CPU_LIMIT: '4',
-            GATE_CPU_REQUEST: '2',
-            GATE_MEMORY_REQUEST: '2Gi',
+            ...sized(
+                { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '4' } },
+                { requests: { cpu: '2', memory: '2Gi' } }
+            ),
         });
         expect(gateView(config, job).pod.containers[0]!.resources).toEqual({
             requests: { cpu: '100m', memory: '128Mi' },
@@ -628,8 +623,7 @@ describe('resources on every pod the driver specs', () => {
         const config = loadDriverConfig({
             EXECUTOR: 'kubernetes',
             K8S_NAMESPACE: namespace,
-            GATE_CPU_LIMIT: '50m',
-            GATE_MEMORY_LIMIT: '64Mi',
+            ...sized({}, { limits: { cpu: '50m', memory: '64Mi' } }),
         });
         expect(gateView(config, job).pod.containers[0]!.resources).toEqual({
             requests: { cpu: '50m', memory: '64Mi' },

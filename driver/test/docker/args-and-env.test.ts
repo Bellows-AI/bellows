@@ -20,6 +20,8 @@ import {
     entrypointAnswers,
     dockerRunner,
 } from '../fixtures/docker-suite.js';
+import { sized } from '../fixtures/runner-classes.js';
+import { StartupRefused } from '../../src/startup-cause.js';
 
 describe('the docker run arguments', () => {
     // The plan itself is pinned in runner-plan.test.ts; this is docker's rendering of it: every
@@ -106,11 +108,28 @@ describe('the docker run arguments', () => {
         expect(args()).not.toContain('--cpu-shares');
     });
 
+    it('refuses an agent container whose runner class is no longer declared as transient, never sized by another', () => {
+        const refused = (() => {
+            try {
+                return dockerArgs(
+                    loadDriverConfig({}),
+                    { ...job, runnerClass: 'retired' },
+                    { id: SESSION, resume: false },
+                    { envFile: '/tmp/env-file' }
+                );
+            } catch (e) {
+                return e;
+            }
+        })();
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect(refused).toMatchObject({ startupCause: 'transient' });
+    });
+
     // Stated limit, not an oversight: docker has no absolute CPU floor — `--cpu-shares` is a
     // relative weight, not a kubernetes request — and capping a dev runner at its request via
     // `--cpus` would throttle builds the kubernetes side leaves free.
     it('renders no cpu request flag — docker has no absolute CPU floor for a kubernetes request', () => {
-        const requested = args({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' });
+        const requested = args(sized({ requests: { cpu: '500m', memory: '1Gi' } }));
         expect(requested).not.toContain('--cpus');
         expect(requested).not.toContain('--cpu-shares');
         expect(requested).toEqual(expect.arrayContaining(['--memory-reservation', '1073741824']));

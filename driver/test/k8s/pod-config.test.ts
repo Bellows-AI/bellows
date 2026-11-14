@@ -1,24 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
-import { SUPERVISOR_CONTAINER, type StepRequest } from '../../src/supervisor-contract.js';
+import { loadDriverConfig } from '../../src/config.js';
+import {
+    AGENT_CONTAINER,
+    GATE_CONTAINER,
+    SUPERVISOR_CONTAINER,
+    type StepRequest,
+} from '../../src/supervisor-contract.js';
 import { StepChannelClosed } from '../../src/step-control.js';
 import { lookupHelper } from '../../src/helpers.js';
 import { REVIEW_REPLY_PROBE_ID } from '../../src/review/review-helpers.js';
 import { receiptedAnswer, receiptOrder } from '../fixtures/helper-receipt-steps.js';
 import type { HelperPlan } from '../../src/helpers.js';
-import { jobsPath, runnerJobName, type runnerJobSpec } from '../../src/k8s/k8s-podspec.js';
+import { gateRequests } from '../../src/k8s/k8s-podfields.js';
+import { jobsPath, runnerJobName, runnerJobSpec } from '../../src/k8s/k8s-podspec.js';
 import { TASK_MOUNT } from '../../src/task-volume.js';
 import {
     CONTROL_TOKEN,
     job,
     POD_NAMES,
     everyPodSpec,
+    gatedOf,
     namespace,
+    SESSION,
     fakeRequest,
     stepOk,
     fakeSteps,
     runner,
 } from '../fixtures/k8s-suite.js';
+import { oneClass } from '../fixtures/runner-classes.js';
 
 describe('the block-helper transport (issue #207)', () => {
     const NOOP_DESCRIPTOR = lookupHelper('noop')!;
@@ -206,10 +216,64 @@ describe('RUNNER_IMAGE_PULL_SECRETS', () => {
     });
 });
 
-// every pod the driver specs runs under the configured RuntimeClass, or none of them names one.
-describe('RUNNER_RUNTIME_CLASS', () => {
+// Two classes on one driver: a claim names one, or none for the default. Everything about where a
+// run lands and what it is sized at is that class's, and the pod says which class it is.
+describe('RUNNER_CLASSES', () => {
+    const SANDBOX = {
+        runtimeClassName: 'gvisor',
+        nodeSelector: { pool: 'sandbox' },
+        tolerations: [{ key: 'pool', operator: 'Equal', value: 'sandbox', effect: 'NoSchedule' }],
+        resources: { requests: { cpu: '1', memory: '2Gi' }, limits: { cpu: '4', memory: '8Gi' } },
+        gateResources: { requests: { cpu: '3', memory: '4Gi' } },
+        docker: true,
+    };
+    const classes = loadDriverConfig({
+        EXECUTOR: 'kubernetes',
+        RUNNER_CLASSES: JSON.stringify({
+            standard: { resources: { requests: { cpu: '500m', memory: '1Gi' } } },
+            sandbox: SANDBOX,
+        }),
+        RUNNER_DEFAULT_CLASS: 'standard',
+    });
+    const podOf = (runnerClass: string | null) =>
+        runnerJobSpec(classes, { ...gatedOf(job), runnerClass }, { id: SESSION, resume: false }).spec.template;
+
+    it('a job naming the sandbox class runs under its RuntimeClass and node pool; one naming none runs in the default', () => {
+        const sandbox = podOf('sandbox');
+        expect(sandbox.metadata.labels['factory.runner-class']).toBe('sandbox');
+        expect(sandbox.spec.runtimeClassName).toBe('gvisor');
+        expect(sandbox.spec.nodeSelector).toEqual({ pool: 'sandbox' });
+        expect(sandbox.spec.tolerations).toEqual(SANDBOX.tolerations);
+        expect(sandbox.spec.containers.find((c) => c.name === AGENT_CONTAINER)?.resources).toEqual(SANDBOX.resources);
+        // The gate starts idle, under the class's limits, and is resized to the class's gate requests.
+        expect(sandbox.spec.initContainers?.find((c) => c.name === GATE_CONTAINER)?.resources).toEqual({
+            requests: { cpu: '100m', memory: '128Mi' },
+            limits: SANDBOX.resources.limits,
+        });
+        const sandboxClass = classes.runnerClasses.sandbox!;
+        expect(gateRequests(sandboxClass, 'idle')).toEqual({ cpu: '100m', memory: '128Mi' });
+        expect(gateRequests(sandboxClass, 'verify')).toEqual({ cpu: '3', memory: '4Gi' });
+
+        const standard = podOf(null);
+        expect(standard.metadata.labels['factory.runner-class']).toBe('standard');
+        expect(standard.spec).not.toHaveProperty('runtimeClassName');
+        expect(standard.spec).not.toHaveProperty('nodeSelector');
+        expect(standard.spec).not.toHaveProperty('tolerations');
+        expect(standard.spec.containers.find((c) => c.name === AGENT_CONTAINER)?.resources).toEqual({
+            requests: { cpu: '500m', memory: '1Gi' },
+        });
+        expect(gateRequests(classes.runnerClasses.standard!, 'verify')).toEqual({ cpu: '500m', memory: '1Gi' });
+    });
+
+    it.each(POD_NAMES)('labels %s with its runner class', (name) => {
+        expect(everyPodSpec()[name]().meta.labels).toMatchObject({ 'factory.runner-class': 'default' });
+    });
+});
+
+// every pod the driver specs runs under its class's RuntimeClass, or none of them names one.
+describe('a runner class runtimeClassName', () => {
     it.each(POD_NAMES)('runs %s under the configured RuntimeClass', (name) => {
-        expect(everyPodSpec({ RUNNER_RUNTIME_CLASS: 'gvisor' })[name]().pod.runtimeClassName).toBe('gvisor');
+        expect(everyPodSpec(oneClass({ runtimeClassName: 'gvisor' }))[name]().pod.runtimeClassName).toBe('gvisor');
     });
 
     it.each(POD_NAMES)('leaves runtimeClassName off %s when unset', (name) => {
@@ -221,13 +285,24 @@ describe('RUNNER_RUNTIME_CLASS', () => {
 // group's — the tainted node group agent-written code is meant to land on and nothing else. Every
 // pod the driver specs carries them: the runner, each aux Job and each service pod, exactly as
 // RUNNER_IMAGE_PULL_SECRETS above does.
-describe('RUNNER NODE SELECTOR / TOLERATIONS / AFFINITY', () => {
-    const scheduled = {
-        RUNNER_NODE_SELECTOR: '{"dedicated":"factory-runners"}',
-        RUNNER_TOLERATIONS: '[{"key":"dedicated","operator":"Equal","value":"factory-runners","effect":"NoSchedule"}]',
-        RUNNER_AFFINITY:
-            '{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":1,"podAffinityTerm":{"topologyKey":"topology.kubernetes.io/zone","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"factory"}}}}]}}',
-    };
+describe('a runner class nodeSelector / tolerations / affinity', () => {
+    const scheduled = oneClass({
+        nodeSelector: { dedicated: 'factory-runners' },
+        tolerations: [{ key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' }],
+        affinity: {
+            podAntiAffinity: {
+                preferredDuringSchedulingIgnoredDuringExecution: [
+                    {
+                        weight: 1,
+                        podAffinityTerm: {
+                            topologyKey: 'topology.kubernetes.io/zone',
+                            labelSelector: { matchLabels: { 'app.kubernetes.io/name': 'factory' } },
+                        },
+                    },
+                ],
+            },
+        },
+    });
 
     it.each(POD_NAMES)('schedules %s onto the configured node group', (name) => {
         const { pod } = everyPodSpec(scheduled)[name]();

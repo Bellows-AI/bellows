@@ -43,6 +43,7 @@ import {
 } from '../src/supervisor-contract.js';
 import { bindingBody, orphanBoundMs, takeoverBoundMs } from '../src/supervisor-plan.js';
 import { REBIND_DEADLINE_MS } from '../src/runner.js';
+import { oneClass } from './fixtures/runner-classes.js';
 
 /*
  * The docker twin of the runner pod: the supervisor, the agent and the exporter as one container
@@ -318,6 +319,17 @@ describe('creating and starting the group', () => {
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
     });
 
+    it('creates nothing for a group whose runner class is no longer declared: a transient refusal naming it', async () => {
+        const { calls, deps } = recorder();
+        const refused = await createGroup(deps, { ...gated, runnerClass: 'retired' }, SESSION).catch((e: unknown) => e);
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect(refused).toMatchObject({
+            startupCause: 'transient',
+            message: 'the runner class "retired" is not declared on this driver',
+        });
+        expect(calls).toEqual([]);
+    });
+
     it('creates no container when the task volume is gone: a transient refusal, never an empty volume made by a mount', async () => {
         const { calls, deps } = recorder(() => false, true);
         const refused = await createGroup(deps, job, SESSION).catch((e: unknown) => e);
@@ -587,10 +599,15 @@ describe('the gate container (issue #773)', () => {
         }
     });
 
-    // Issue #507: sized by GATE_*, each unset slot the runner's; nothing configured leaves it unthrottled.
+    // Issue #507: sized by the class's gateResources, each unset slot the runner's; nothing configured leaves it unthrottled.
     it('carries the gate resources before the image, and none when unconfigured', () => {
         const sized = gateCreateArgs(
-            loadDriverConfig({ RUNNER_CPU_LIMIT: '4', GATE_MEMORY_LIMIT: '8Gi', GATE_MEMORY_REQUEST: '2Gi' }),
+            loadDriverConfig(
+                oneClass({
+                    resources: { limits: { cpu: '4' } },
+                    gateResources: { requests: { memory: '2Gi' }, limits: { memory: '8Gi' } },
+                })
+            ),
             gated,
             'node:24'
         );

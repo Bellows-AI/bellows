@@ -5,7 +5,7 @@ import { claimContinuesSession, repoCacheProblem } from '../claim.js';
 import { pickSession } from '../runner-plan.js';
 import { evidencePolicyActive, type GatesOutcome } from '../evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from '../runner.js';
-import { adoptStep, recordAdopted } from './loop-adopt.js';
+import { adoptStep, recordAdopted, runnerClassStep } from './loop-adopt.js';
 import { askGithubToken } from './loop-github.js';
 import { preHelperStep } from './loop-helpers.js';
 import { probeTreeNow, type GateFailure, type GateSession } from './loop-gates.js';
@@ -223,6 +223,7 @@ type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | AdoptedRecord | 
 const setupSteps: readonly SetupStep[] = [
     waitReclaimBarrier,
     adoptStep,
+    runnerClassStep,
     syncCheckoutStep,
     checkPlanStep,
     // An adopted or taken-over run's pre-helpers ran before it did, and its services are already up.

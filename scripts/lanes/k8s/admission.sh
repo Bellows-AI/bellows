@@ -15,6 +15,10 @@ HARD_C='securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: 
 # securityContext — a BadRequest that never reaches admission, so every probe fails with the same
 # unrelated message and none of them tests anything.
 HARD_POD='{seccompProfile: {type: RuntimeDefault}}'
+# The runner class label every pod template carries: admission pins the pod's RuntimeClass to its
+# class's. The kind install declares the one `standard` class, which names no RuntimeClass. Set it
+# empty before a probe_pod call to send a template without the label.
+CLASS_LABEL='factory.runner-class: standard'
 
 # The driver creates pods only through Jobs: the Role grants no pod create and the
 # policy matches Jobs alone, so each probe is a Job whose pod template carries the spec lines.
@@ -27,7 +31,7 @@ metadata:
     labels: {factory.job: admission-probe}
 spec:
     template:
-        metadata: {labels: {factory.job: admission-probe${3:+, $3}}}
+        metadata: {labels: {factory.job: admission-probe${CLASS_LABEL:+, $CLASS_LABEL}${3:+, $3}}}
         spec:
             automountServiceAccountToken: false
             restartPolicy: Never
@@ -170,7 +174,7 @@ metadata:
     labels: {factory.job: admission-probe}
 spec:
     template:
-        metadata: {labels: {factory.job: admission-probe}}
+        metadata: {labels: {factory.job: admission-probe, $CLASS_LABEL}}
         spec:
             automountServiceAccountToken: false
             restartPolicy: Never
@@ -210,6 +214,19 @@ opted_out="$(probe_pod optout \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
     'factory.unhardened: "true"' | as_driver)"
 expect_contains 'the policy refuses the retired unhardened label its capabilities' "$opted_out" 'must drop ALL capabilities'
+
+# Runner classes: a pod runs under its class's RuntimeClass — none for `standard` — and carries the
+# label of a class the chart declares. A mismatch, an unknown class and a missing label are refused.
+classless="$(CLASS_LABEL='' probe_pod classless "    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a pod without a runner class label' "$classless" 'label of a declared runner class'
+unknown_class="$(CLASS_LABEL='factory.runner-class: nope' probe_pod unknownclass \
+    "    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a pod naming an undeclared runner class' "$unknown_class" \
+    'label of a declared runner class'
+mismatched="$(probe_pod mismatch "    runtimeClassName: gvisor
+    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
+expect_contains 'the policy refuses a RuntimeClass its runner class does not name' "$mismatched" \
+    'its runner class RuntimeClass'
 
 # The task pod's shape: its declared services are `svc-` sidecars named on its
 # loopback. The driver's own shape is the runner Job's dry run above; these refuse each way out.

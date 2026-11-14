@@ -200,15 +200,23 @@ The driver reads only the environment. It has no database access and talks to th
 | `GATE_ADVERTISE_URL` | | `http://host.docker.internal:<port>` | URL runners use to reach the gate server. The bound port is appended if the URL has none. |
 | `DRIVER_METRICS_PORT` | | unset (off) | Port for a Prometheus scrape at `GET /metrics`, protected by the board token. Needs `JOB_BOARD_TOKEN` when `GATE_LISTEN_HOST` is not loopback. |
 
-### Resources
+### Runner classes
 
-Values are Kubernetes quantities: CPU as cores or millicores (`2`, `500m`), memory with an optional suffix (`1Gi`). A request above its limit is fatal. All unset means no requests or limits. On Docker, memory request becomes `--memory-reservation`, limits become `--memory` and `--cpus`, and there is no CPU request.
+A runner class names where a task's runners run and what they may use. A task runs in the default class unless it names another.
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
-| `RUNNER_CPU_REQUEST`, `RUNNER_MEMORY_REQUEST` | | unset | Requests for runner pods and containers, and services. |
-| `RUNNER_CPU_LIMIT`, `RUNNER_MEMORY_LIMIT` | | unset | Limits. Off by default: a memory limit can OOM-kill a large build. |
-| `GATE_CPU_REQUEST`, `GATE_MEMORY_REQUEST`, `GATE_CPU_LIMIT`, `GATE_MEMORY_LIMIT` | | the `RUNNER_` twin | Sizing for gate runs. |
+| `RUNNER_CLASSES` | | one class, `default`, with no fields | JSON object of classes by name (lowercase letters, digits and `-`). Each class may set `resources` and `gateResources` (`requests` and `limits`, each with `cpu` and `memory`), and on Kubernetes `runtimeClassName`, `nodeSelector`, `tolerations` and `affinity`. Unknown keys are fatal. |
+| `RUNNER_DEFAULT_CLASS` | | `default` | The class a task runs in when it names none. It must be a class `RUNNER_CLASSES` declares. |
+
+Resources are Kubernetes quantities: CPU as cores or millicores (`2`, `500m`), memory with an optional suffix (`1Gi`). A request above its limit is fatal. No resources means no requests or limits; a memory limit can OOM-kill a large build. `resources` size the runner, services and helpers; `gateResources` size gate runs, and an unset slot falls back to `resources`.
+
+On Docker, memory request becomes `--memory-reservation`, limits become `--memory` and `--cpus`, and there is no CPU request. A class that sets `runtimeClassName`, `nodeSelector`, `tolerations` or `affinity` is fatal on Docker.
+
+```bash
+RUNNER_CLASSES='{"standard":{"resources":{"limits":{"memory":"8Gi"}}},"sandbox":{"runtimeClassName":"gvisor","nodeSelector":{"pool":"sandbox"}}}'
+RUNNER_DEFAULT_CLASS=standard
+```
 
 ### Kubernetes executor
 
@@ -225,11 +233,7 @@ Used only with `EXECUTOR=kubernetes`. The Helm chart sets them. See [Kubernetes]
 | `RUNNER_IMAGE_PULL_POLICY` | | `IfNotPresent` | `Always`, `IfNotPresent` or `Never`. |
 | `RUNNER_IMAGE_PULL_SECRETS` | | none | Comma-separated image pull Secret names for every pod. |
 | `RUNNER_DO_NOT_DISRUPT` | | off | Marks pods so Karpenter and cluster-autoscaler do not evict them. Spot interruptions and manual drains still do. |
-| `RUNNER_NODE_SELECTOR` | | none | JSON object of string values. |
-| `RUNNER_TOLERATIONS` | | none | JSON array of objects. |
-| `RUNNER_AFFINITY` | | none | JSON object. |
-| `RUNNER_RUNTIME_CLASS` | | none | RuntimeClass name every driver pod runs under, such as `gvisor`. |
 
 ## Retired variables
 
-These are fatal if set, so a stale value cannot change what a deployment reads: `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPOS`, `ORG_REPOS`, `ORG_ID`, `ORG_NAME`, `GITHUB_APP_INSTALLATION_ID`, `AUTH_AUTO_JOIN_GITHUB_ORG`, `AUTH_BOOTSTRAP_ADMIN`, `DATA_SOURCE`, `SYNC_TTL_SECONDS`, `CACHE_TTL_SECONDS`, `BASE_BRANCH` and `BOTS`. Organizations are now the GitHub App's installations, and the repository list comes from the App.
+These are fatal if set, so a stale value cannot change what a deployment reads: `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPOS`, `ORG_REPOS`, `ORG_ID`, `ORG_NAME`, `GITHUB_APP_INSTALLATION_ID`, `AUTH_AUTO_JOIN_GITHUB_ORG`, `AUTH_BOOTSTRAP_ADMIN`, `DATA_SOURCE`, `SYNC_TTL_SECONDS`, `CACHE_TTL_SECONDS`, `BASE_BRANCH`, `BOTS`, and the runner variables a class now carries: `RUNNER_RUNTIME_CLASS`, `RUNNER_NODE_SELECTOR`, `RUNNER_TOLERATIONS`, `RUNNER_AFFINITY`, and the `RUNNER_` and `GATE_` `CPU_REQUEST`, `CPU_LIMIT`, `MEMORY_REQUEST` and `MEMORY_LIMIT`. Organizations are now the GitHub App's installations, and the repository list comes from the App.

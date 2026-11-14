@@ -159,7 +159,7 @@ Runners are Jobs in the release namespace. The chart sets up these guardrails:
 | --- | --- |
 | Driver Role (namespaced) | Jobs: create, get, delete, list, patch. Secrets: create, delete, patch. ConfigMaps: create, get, delete. Pods: delete, list. PersistentVolumeClaims: create, get, list, delete, patch. `pods/log`: get. `pods/resize`: patch. `metrics.k8s.io` pods: get. It never reads a Secret back. |
 | Runner pods | `automountServiceAccountToken: false`. They run as the default ServiceAccount and hold no cluster credential. |
-| ValidatingAdmissionPolicy (`isolation.admissionPolicy`, default on) | Bound to the driver's ServiceAccount. Admits only pods that mount a task volume, `emptyDir` and the driver's own per-attempt Secrets, with no host access, `RuntimeDefault` seccomp, all capabilities dropped and no privilege escalation. Without it, "can create pods" would mean "can read every Secret". |
+| ValidatingAdmissionPolicy (`isolation.admissionPolicy`, default on) | Bound to the driver's ServiceAccount. Admits only pods that mount a task volume, `emptyDir` and the driver's own per-attempt Secrets, with no host access, in their runner class's RuntimeClass, `RuntimeDefault` seccomp, all capabilities dropped and no privilege escalation. Without it, "can create pods" would mean "can read every Secret". |
 | NetworkPolicy (`isolation.networkPolicy`, default on) | No ingress. Egress to DNS, the dashboard, the collector, the driver, other runner pods, and the internet outside `isolation.blockedCidrs`. |
 | LimitRange (`limitRange.enabled`, default on) | A pod without limits inherits 4 CPU and 8Gi memory (requests 100m and 128Mi). |
 
@@ -167,13 +167,32 @@ Tune the runners:
 
 | Value | Default | Notes |
 | --- | --- | --- |
-| `runner.nodeSelector`, `runner.tolerations`, `runner.affinity` | empty | Where agent code runs. Use a tainted node group so it never shares a node with the dashboard. |
-| `runner.runtimeClassName` | empty | RuntimeClass every driver pod runs under, such as `gvisor` on a GKE Sandbox node pool. Set, the admission policy refuses a driver pod without it. |
-| `runner.resources` | requests `500m` / `1Gi`, limits `4` / `8Gi` | Applies to the runner, services and helpers. |
-| `runner.gateResources` | requests `2` / `2Gi` | Gate pods. Unset slots fall back to `runner.resources`. |
+| `runner.classes` | one class, `standard` | Runner classes by name (lowercase letters, digits and `-`). Each sets where its runners run and what they may use: `runtimeClassName`, `nodeSelector`, `tolerations`, `affinity`, `resources`, `gateResources`. Add a class to run some tasks on another node pool or RuntimeClass. |
+| `runner.defaultClass` | `standard` | The class a task runs in when it names none. It must be one of `runner.classes`. The volume export after a task ends runs here too. |
+| `runner.classes.<name>.runtimeClassName` | empty | RuntimeClass the class's pods run under, such as `gvisor` on a GKE Sandbox node pool. The admission policy refuses a pod that runs outside its class's RuntimeClass. |
+| `runner.classes.<name>.nodeSelector`, `.tolerations`, `.affinity` | empty | Where the class's agent code runs. Use a tainted node group so it never shares a node with the dashboard. |
+| `runner.classes.standard.resources` | requests `500m` / `1Gi`, limits `4` / `8Gi` | Applies to the runner, services and helpers. A new class starts with no resources: it inherits nothing from `standard`. |
+| `runner.classes.standard.gateResources` | requests `2` / `2Gi` | Gate pods. Unset slots fall back to the class's `resources`. |
 | `isolation.blockedCidrs` | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16` | Blocked for runners, including the cloud metadata address. |
 | `isolation.allowedCidrs` | `[]` | Add a private host a runner must reach, as a `/32`. |
 | `isolation.dnsCidrs` | `169.254.20.10/32` | Extra resolver addresses allowed on port 53. List your resolver if your DNS pods are labelled neither `k8s-app: kube-dns` nor `k8s-app: node-local-dns`. |
+
+A second class, for example a gVisor node pool beside the default one:
+
+```yaml values.yaml
+runner:
+  defaultClass: standard
+  classes:
+    standard:
+      nodeSelector: { pool: runners }
+    sandbox:
+      runtimeClassName: gvisor
+      nodeSelector: { pool: sandbox }
+      resources:
+        requests: { cpu: 500m, memory: 1Gi }
+```
+
+Every class's node pools must cover the zones your task volumes live in, the default class's too. A runner placed in a zone its task volume cannot reach stays Pending.
 
 `blockedCidrs` blocks your VPC too, so a database on a private address is unreachable from a runner unless you allow it.
 
@@ -284,7 +303,7 @@ Then add an executor in the app, queue a task, and confirm the runner pod lands 
     - VPC CNI add-on with `enableNetworkPolicy: true` in its configuration values. Without it the NetworkPolicy is inert.
     - On the runner node group, set the instance metadata hop limit to 1 (`HttpPutResponseHopLimit: 1`) or disable IMDS. This keeps agent code from reaching node credentials.
     - Install the metrics-server add-on, or a running task's resource readings stay empty.
-    - A tainted runner node group, matched by `runner.nodeSelector` and `runner.tolerations`, so agent code never shares a node with the dashboard that holds the App key.
+    - A tainted runner node group, matched by each runner class's `nodeSelector` and `tolerations` (`runner.classes.<name>`), so agent code never shares a node with the dashboard that holds the App key.
 
     **Task volumes.** Install the EBS CSI driver add-on, create this StorageClass, and set `taskVolume.storageClass: ebs-gp3`:
 

@@ -17,6 +17,8 @@ service sidecars, every aux Job — because `create jobs` would otherwise be `re
     (`.factory/reviewer`).
   - no ServiceAccount token, no other ServiceAccount, no host namespaces, nothing privileged, no
     added capabilities.
+  - the runner class (runner.classes): the pod template's `factory.runner-class` label names a
+    declared class, and the pod's RuntimeClass is that class's — none when the class names none.
   - the executor hardening is REQUIRED, not merely permitted (#382): the RuntimeDefault seccomp
     profile on the pod, `allowPrivilegeEscalation: false` and `capabilities.drop: [ALL]` on every
     container. Forbidding `privileged` and requiring the drop are different controls; a client
@@ -86,6 +88,15 @@ spec:
               has(variables.spec.volumes) ? variables.spec.volumes.filter(v,
                 has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName.matches({{ squote $taskClaim }})
               ).map(v, v.name) : []
+        # Each runner class's RuntimeClass by name ('' for none), and the class the pod template's
+        # label names ('' when it carries none, which no class is).
+        - name: runnerClasses
+          expression: {{ include "factory.runnerRuntimeClasses" . | quote }}
+        - name: runnerClass
+          expression: >-
+              has(object.spec.template.metadata) && has(object.spec.template.metadata.labels) &&
+              'factory.runner-class' in object.spec.template.metadata.labels ?
+              object.spec.template.metadata.labels['factory.runner-class'] : ''
     validations:
         - expression: "has(variables.spec.automountServiceAccountToken) && variables.spec.automountServiceAccountToken == false"
           message: 'a driver-specced pod must set automountServiceAccountToken: false'
@@ -93,10 +104,12 @@ spec:
           message: 'a driver-specced pod runs as the default ServiceAccount'
         - expression: "!has(variables.spec.nodeName) || variables.spec.nodeName == ''"
           message: 'a driver-specced pod is placed by the scheduler, never pinned to a node'
-        {{- with .Values.runner.runtimeClassName }}
-        - expression: "has(variables.spec.runtimeClassName) && variables.spec.runtimeClassName == '{{ . }}'"
-          message: 'runner pods must run under the {{ . }} RuntimeClass (runner.runtimeClassName)'
-        {{- end }}
+        - expression: "variables.runnerClass in variables.runnerClasses"
+          message: 'a driver-specced pod must carry the factory.runner-class label of a declared runner class (runner.classes)'
+        - expression: >-
+              !(variables.runnerClass in variables.runnerClasses) ||
+              (has(variables.spec.runtimeClassName) ? variables.spec.runtimeClassName : '') == variables.runnerClasses[variables.runnerClass]
+          message: 'a driver-specced pod must run under its runner class RuntimeClass, and under none when the class names none'
         - expression: >-
               variables.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))
           message: 'a driver-specced container may not bind a host port'

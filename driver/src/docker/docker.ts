@@ -1,13 +1,9 @@
 import { CLAIM_SEQ_MARK, COMMAND_MARK, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL, SESSION_MARK } from '../labels.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-    type DriverConfig,
-    type RunnerResources,
-    cpuQuantityToCores,
-    executorImage,
-    memoryQuantityToBytes,
-} from '../config.js';
+import { type DriverConfig, executorImage } from '../config.js';
+import { cpuQuantityToCores, memoryQuantityToBytes } from '../quantities.js';
+import { jobClassOf, type RunnerResources } from '../runner-classes.js';
 import type { BoardJob } from '../board/board.js';
 import {
     UUID,
@@ -345,7 +341,7 @@ export function dockerArgs(
 
     // Issue #360 on this side too: the configured requests/limits as resource flags, before the
     // credentials. Nothing configured renders nothing — the argv is exactly what it always was.
-    args.push(...resourceArgs(config.runnerResources));
+    args.push(...resourceArgs(jobClassOf(config, job).runnerResources));
 
     pushRunnerCredentialArgs(args, config, job, envFile);
 

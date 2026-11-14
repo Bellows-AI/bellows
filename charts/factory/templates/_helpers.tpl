@@ -88,6 +88,26 @@ out of every `kubectl get pods -o yaml` — so only this name is wired through.
 {{- end -}}
 
 {{/*
+The runner classes (runner.classes), whole, as the one JSON the driver reads (RUNNER_CLASSES) and
+validates at boot.
+*/}}
+{{- define "factory.runnerClasses" -}}
+{{- toJson .Values.runner.classes -}}
+{{- end -}}
+
+{{/*
+Each runner class's RuntimeClass by name, '' for none: the CEL map the admission policy pins a pod's
+RuntimeClass against, keyed by the pod template's `factory.runner-class` label.
+*/}}
+{{- define "factory.runnerRuntimeClasses" -}}
+{{- $runtimeClasses := dict }}
+{{- range $name, $class := .Values.runner.classes }}
+{{- $_ := set $runtimeClasses $name (dig "runtimeClassName" "" ($class | default dict)) }}
+{{- end }}
+{{- toJson $runtimeClasses -}}
+{{- end -}}
+
+{{/*
 A rolling restart whenever the chart-created Secret changes: env read by secretKeyRef is resolved
 once, at container start, so without this a rotated credential waits for the next unrelated roll.
 */}}

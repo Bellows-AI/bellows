@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { readerJobSpec, runnerJobSpec, secretName } from '../src/k8s/k8s-podspec.js';
+import { readerJobSpec, runnerJobSpec, secretName, volumeExportJobSpec } from '../src/k8s/k8s-podspec.js';
+import { RUNNER_CLASS_LABEL } from '../src/labels.js';
 import { SERVICE_ADDRESS } from '../src/services.js';
 import {
     AGENT_CONTAINER,
@@ -103,8 +104,8 @@ describe('the admission policy task volume claim pattern', () => {
 });
 
 /*
- * Issue #361: the scheduling knobs the driver forwards onto every pod it specs
- * (RUNNER_NODE_SELECTOR / RUNNER_TOLERATIONS / RUNNER_AFFINITY) must be ADMISSION-NEUTRAL — the
+ * Issue #361: the scheduling knobs the driver forwards onto every pod it specs (each runner class's
+ * nodeSelector / tolerations / affinity, RUNNER_CLASSES) must be ADMISSION-NEUTRAL — the
  * policy pins placement to the scheduler by refusing `nodeName` and stays silent about everything
  * else scheduling-shaped, which is what makes a tainted runner node group addable in values alone.
  * A future policy edit that reaches for these fields would silently break that, so the absence is
@@ -209,16 +210,68 @@ describe('the admission policy requires the pod hardening (#382)', () => {
  * the runner Job's pod, reached on its loopback through `hostAliases`. The policy fences that shape
  * — template pins paired with the driver's own output, as above.
  */
-// with runner.runtimeClassName set, the API server refuses a driver Job whose pod names any
-// other RuntimeClass, or none; unset, the rule is not rendered and an install without one is unchanged.
-describe('the admission policy requires the runner RuntimeClass when one is set', () => {
+/*
+ * Runner classes: each class (runner.classes) carries its own RuntimeClass, so admission pins the
+ * RuntimeClass per class. A pod template must carry the class label naming a declared class, and
+ * its runtimeClassName must equal that class's — absent iff the class names none. The CEL map of
+ * class → RuntimeClass is rendered from the chart values by one helper. The real apiserver's
+ * refusals (a mismatch, an unknown class, a missing label) are the --cluster admission phase
+ * (scripts/lanes/k8s/admission.sh); here the rule is pinned against the template, and every Job
+ * the driver specs is shown to satisfy it.
+ */
+describe('the admission policy pins each pod to its runner class RuntimeClass', () => {
     const pods = policy('pods');
-    const rule = /\{\{- with \.Values\.runner\.runtimeClassName \}\}\n([\s\S]*?)\{\{- end \}\}/.exec(pods)?.[1] ?? '';
+    const helpers = readFileSync(join(ROOT, 'charts/factory/templates/_helpers.tpl'), 'utf8');
+    const sandbox = { runtimeClassName: 'gvisor', nodeSelector: { pool: 'sandbox' }, docker: true };
+    const config = loadDriverConfig({
+        EXECUTOR: 'kubernetes',
+        K8S_NAMESPACE: 'factory',
+        RUNNER_CLASSES: JSON.stringify({ standard: {}, sandbox }),
+        RUNNER_DEFAULT_CLASS: 'standard',
+    });
+    /** The class → RuntimeClass map the chart renders for these classes ('' for none). */
+    const runtimeClasses: Record<string, string> = { standard: '', sandbox: 'gvisor' };
+    const promptedJob: BoardJob = { ...job, masterPrompt: 'Factory execution contract' };
 
-    it('compares the pod RuntimeClass with the value, rendered only when it is set', () => {
-        expect(rule).toContain('has(variables.spec.runtimeClassName)');
-        expect(rule).toMatch(/variables\.spec\.runtimeClassName == '\{\{ \. \}\}'/);
-        expect(rule).toMatch(/message: .*runner pods must run under the \{\{ \. \}\} RuntimeClass/);
+    it('admits a pod whose runtimeClassName matches its class label; refuses a mismatch, an unknown class label and a missing label', () => {
+        expect(pods).toContain('include "factory.runnerRuntimeClasses"');
+        expect(helpers).toContain('define "factory.runnerRuntimeClasses"');
+        // The label, read whole: a pod template without it reads as no class, which no map holds.
+        expect(pods).toContain(`'${RUNNER_CLASS_LABEL}' in object.spec.template.metadata.labels`);
+        expect(pods).toContain('expression: "variables.runnerClass in variables.runnerClasses"');
+        expect(pods).toContain(
+            "(has(variables.spec.runtimeClassName) ? variables.spec.runtimeClassName : '') == variables.runnerClasses[variables.runnerClass]"
+        );
+        // The driver-wide value is gone with its variable.
+        expect(template).not.toContain('.Values.runner.runtimeClassName');
+    });
+
+    it('is satisfied by every Job the driver specs, in each class', () => {
+        const templates = [
+            runnerJobSpec(config, { ...promptedJob, runnerClass: 'sandbox' }, { id: SESSION, resume: false }).spec
+                .template,
+            runnerJobSpec(config, { ...promptedJob, runnerClass: null }, { id: SESSION, resume: false }).spec.template,
+            readerJobSpec(config, { ...promptedJob, runnerClass: 'sandbox' }, 'factory-read-0', {
+                argv: ['node'],
+                env: {},
+                timeoutMs: 1_000,
+            }).spec.template,
+            volumeExportJobSpec(config, { name: 'factory-export-0', root: SESSION, generation: 1, run: 'r' }, [], 60)
+                .spec.template,
+        ];
+        expect(templates.map((pod) => pod.metadata.labels[RUNNER_CLASS_LABEL])).toEqual([
+            'sandbox',
+            'standard',
+            'sandbox',
+            'standard',
+        ]);
+        for (const pod of templates) {
+            const name = pod.metadata.labels[RUNNER_CLASS_LABEL] ?? '';
+            expect(Object.hasOwn(runtimeClasses, name), name).toBe(true);
+            expect(('runtimeClassName' in pod.spec && pod.spec.runtimeClassName) || '', name).toBe(
+                runtimeClasses[name]
+            );
+        }
     });
 });
 

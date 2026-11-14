@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
-import { cpuQuantityToCores, gateAdvertiseUrlFor, loadDriverConfig, memoryQuantityToBytes } from '../src/config.js';
+import { gateAdvertiseUrlFor, loadDriverConfig } from '../src/config.js';
+import { cpuQuantityToCores, memoryQuantityToBytes } from '../src/quantities.js';
 import { dockerArgs } from '../src/docker/docker.js';
 import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
 import {
@@ -9,6 +10,7 @@ import {
     SUPERVISOR_STEP_WAIT_MS,
 } from '../src/supervisor-contract.js';
 import { orphanBoundMs, supervisorLiterals, takeoverBoundMs } from '../src/supervisor-plan.js';
+import { oneClass, sized } from './fixtures/runner-classes.js';
 
 describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
@@ -160,28 +162,110 @@ describe('the driver config: executor and endpoints', () => {
         expect(loadDriverConfig({}).heartbeatFile).toBeNull();
         expect(loadDriverConfig({ DRIVER_HEARTBEAT_FILE: '/tmp/heartbeat' }).heartbeatFile).toBe('/tmp/heartbeat');
     });
+});
 
-    // Issue #361: the scheduling knobs every driver-specced pod lands with. The chart forwards
-    // them as JSON (`toJson`), so this loader parses JSON — and refuses anything else, because the
-    // API server would reject a bad shape only at job-create time, which is attempt-burning: this
-    // loader exists to move failures to startup, same as the EXECUTOR enum.
-    it('reads RUNNER_NODE_SELECTOR / RUNNER_TOLERATIONS / RUNNER_AFFINITY as JSON, null unless set', () => {
-        expect(loadDriverConfig({}).runnerNodeSelector).toBeNull();
-        expect(loadDriverConfig({}).runnerTolerations).toBeNull();
-        expect(loadDriverConfig({}).runnerAffinity).toBeNull();
-        const configured = loadDriverConfig({
-            EXECUTOR: 'kubernetes',
-            RUNNER_NODE_SELECTOR: '{"dedicated":"factory-runners"}',
-            RUNNER_TOLERATIONS:
-                '[{"key":"dedicated","operator":"Equal","value":"factory-runners","effect":"NoSchedule"}]',
-            RUNNER_AFFINITY:
-                '{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"dedicated","operator":"In","values":["factory-runners"]}]}]}}}',
+describe('the driver config: runner classes', () => {
+    const STANDARD = {
+        runtimeClassName: '',
+        nodeSelector: {},
+        tolerations: [],
+        affinity: {},
+        resources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '4', memory: '8Gi' } },
+        gateResources: { requests: { cpu: '2', memory: '2Gi' } },
+        docker: false,
+    };
+    const SANDBOX = { runtimeClassName: 'gvisor', nodeSelector: { pool: 'sandbox' }, docker: true };
+    const classesEnv = (
+        classes: Record<string, unknown> = { standard: STANDARD, sandbox: SANDBOX },
+        name = 'standard'
+    ) => ({
+        EXECUTOR: 'kubernetes',
+        RUNNER_CLASSES: JSON.stringify(classes),
+        RUNNER_DEFAULT_CLASS: name,
+    });
+    const UNSIZED = { cpuRequest: null, cpuLimit: null, memoryRequest: null, memoryLimit: null };
+
+    it('loads two runner classes and a default from RUNNER_CLASSES', () => {
+        const config = loadDriverConfig(classesEnv());
+
+        expect(config.defaultRunnerClass).toBe('standard');
+        expect(config.runnerClasses).toEqual({
+            standard: {
+                name: 'standard',
+                runtimeClassName: null,
+                nodeSelector: null,
+                tolerations: null,
+                affinity: null,
+                runnerResources: { cpuRequest: '500m', cpuLimit: '4', memoryRequest: '1Gi', memoryLimit: '8Gi' },
+                // Each unset gate slot falls back to the class's own runner slot.
+                gateResources: { cpuRequest: '2', cpuLimit: '4', memoryRequest: '2Gi', memoryLimit: '8Gi' },
+                docker: false,
+            },
+            sandbox: {
+                name: 'sandbox',
+                runtimeClassName: 'gvisor',
+                nodeSelector: { pool: 'sandbox' },
+                tolerations: null,
+                affinity: null,
+                runnerResources: UNSIZED,
+                gateResources: UNSIZED,
+                docker: true,
+            },
         });
-        expect(configured.runnerNodeSelector).toEqual({ dedicated: 'factory-runners' });
-        expect(configured.runnerTolerations).toEqual([
-            { key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' },
-        ]);
-        expect(configured.runnerAffinity).toEqual({
+    });
+
+    it('refuses at boot a non-DNS class name, an unknown key, an undeclared default and RUNNER_RUNTIME_CLASS set at all', () => {
+        expect(() => loadDriverConfig(classesEnv({ Sandbox: SANDBOX }, 'Sandbox'))).toThrow(
+            /RUNNER_CLASSES.*"Sandbox"/
+        );
+        expect(() => loadDriverConfig(classesEnv({ standard: { ...STANDARD, runtime: 'gvisor' } }))).toThrow(
+            /RUNNER_CLASSES\.standard.*"runtime"/
+        );
+        expect(() => loadDriverConfig(classesEnv(undefined, 'large'))).toThrow(/RUNNER_DEFAULT_CLASS.*"large"/);
+        expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_RUNTIME_CLASS: 'gvisor' })).toThrow(
+            /RUNNER_RUNTIME_CLASS/
+        );
+        expect(() => loadDriverConfig({ RUNNER_RUNTIME_CLASS: '' })).toThrow(/RUNNER_RUNTIME_CLASS/);
+    });
+
+    it('refuses every variable the classes replaced, set at all', () => {
+        for (const name of [
+            'RUNNER_NODE_SELECTOR',
+            'RUNNER_TOLERATIONS',
+            'RUNNER_AFFINITY',
+            'RUNNER_CPU_REQUEST',
+            'RUNNER_MEMORY_LIMIT',
+            'GATE_CPU_REQUEST',
+            'GATE_MEMORY_LIMIT',
+        ]) {
+            expect(() => loadDriverConfig({ [name]: '1' })).toThrow(new RegExp(`${name} is no longer read`));
+        }
+    });
+
+    it('runs one implicit class named default, unplaced and unsized, when RUNNER_CLASSES is unset', () => {
+        const config = loadDriverConfig({});
+        expect(config.defaultRunnerClass).toBe('default');
+        expect(config.runnerClasses).toEqual({
+            default: {
+                name: 'default',
+                runtimeClassName: null,
+                nodeSelector: null,
+                tolerations: null,
+                affinity: null,
+                runnerResources: UNSIZED,
+                gateResources: UNSIZED,
+                docker: false,
+            },
+        });
+        expect(() => loadDriverConfig({ RUNNER_DEFAULT_CLASS: 'standard' })).toThrow(/RUNNER_DEFAULT_CLASS "standard"/);
+    });
+
+    // Issue #361: a class's scheduling knobs. The chart forwards them as JSON (`toJson`), so this
+    // loader parses JSON — and refuses anything else, because the API server would reject a bad shape
+    // only at job-create time, which is attempt-burning: this loader exists to move failures to startup.
+    it('reads a class nodeSelector / tolerations / affinity, null when unset or empty', () => {
+        const toleration = { key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' };
+        const affinity = {
             nodeAffinity: {
                 requiredDuringSchedulingIgnoredDuringExecution: {
                     nodeSelectorTerms: [
@@ -189,29 +273,72 @@ describe('the driver config: executor and endpoints', () => {
                     ],
                 },
             },
-        });
+        };
+        const configured = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            ...oneClass({ nodeSelector: { dedicated: 'factory-runners' }, tolerations: [toleration], affinity }),
+        }).runnerClasses.default!;
+        expect(configured.nodeSelector).toEqual({ dedicated: 'factory-runners' });
+        expect(configured.tolerations).toEqual([toleration]);
+        expect(configured.affinity).toEqual(affinity);
+        const empty = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            ...oneClass({ nodeSelector: {}, tolerations: [], affinity: {} }),
+        }).runnerClasses.default!;
+        expect([empty.nodeSelector, empty.tolerations, empty.affinity]).toEqual([null, null, null]);
     });
 
-    it('refuses malformed or wrong-typed runner scheduling rather than falling back', () => {
-        expect(() => loadDriverConfig({ RUNNER_NODE_SELECTOR: 'not json' })).toThrow(/RUNNER_NODE_SELECTOR/);
-        expect(() => loadDriverConfig({ RUNNER_NODE_SELECTOR: '[]' })).toThrow(/RUNNER_NODE_SELECTOR/);
-        expect(() => loadDriverConfig({ RUNNER_NODE_SELECTOR: '{"rack":3}' })).toThrow(/RUNNER_NODE_SELECTOR/);
-        expect(() => loadDriverConfig({ RUNNER_TOLERATIONS: '{}' })).toThrow(/RUNNER_TOLERATIONS/);
-        expect(() => loadDriverConfig({ RUNNER_TOLERATIONS: '["NoSchedule"]' })).toThrow(/RUNNER_TOLERATIONS/);
-        expect(() => loadDriverConfig({ RUNNER_AFFINITY: '[]' })).toThrow(/RUNNER_AFFINITY/);
-        // Empty is unset, as it is for every other variable here.
-        expect(loadDriverConfig({ RUNNER_NODE_SELECTOR: '' }).runnerNodeSelector).toBeNull();
+    it('refuses malformed or wrong-typed classes rather than falling back', () => {
+        const refused = (fields: Record<string, unknown>) => () =>
+            loadDriverConfig({ EXECUTOR: 'kubernetes', ...oneClass(fields) });
+        expect(() => loadDriverConfig({ RUNNER_CLASSES: 'not json' })).toThrow(/RUNNER_CLASSES must be JSON/);
+        expect(() => loadDriverConfig({ RUNNER_CLASSES: '[]' })).toThrow(/RUNNER_CLASSES must be a JSON object/);
+        expect(() => loadDriverConfig({ RUNNER_CLASSES: '{"default":"gvisor"}' })).toThrow(/RUNNER_CLASSES\.default/);
+        expect(refused({ nodeSelector: [] })).toThrow(/RUNNER_CLASSES\.default\.nodeSelector/);
+        expect(refused({ nodeSelector: { rack: 3 } })).toThrow(/RUNNER_CLASSES\.default\.nodeSelector/);
+        expect(refused({ tolerations: {} })).toThrow(/RUNNER_CLASSES\.default\.tolerations/);
+        expect(refused({ tolerations: ['NoSchedule'] })).toThrow(/RUNNER_CLASSES\.default\.tolerations/);
+        expect(refused({ affinity: [] })).toThrow(/RUNNER_CLASSES\.default\.affinity/);
+        expect(refused({ docker: 'yes' })).toThrow(/RUNNER_CLASSES\.default\.docker/);
+        expect(refused({ resources: { request: { cpu: '1' } } })).toThrow(
+            /RUNNER_CLASSES\.default\.resources.*"request"/
+        );
+        expect(refused({ resources: { limits: { gpu: '1' } } })).toThrow(/resources\.limits.*"gpu"/);
     });
 
-    // the RuntimeClass every driver pod runs under (gvisor on GKE Sandbox). A name the API
-    // server would refuse fails at boot, never as a burned attempt.
-    it('reads RUNNER_RUNTIME_CLASS as a RuntimeClass name, null unless set', () => {
-        expect(loadDriverConfig({}).runnerRuntimeClass).toBeNull();
-        expect(loadDriverConfig({ RUNNER_RUNTIME_CLASS: '' }).runnerRuntimeClass).toBeNull();
-        expect(loadDriverConfig({ RUNNER_RUNTIME_CLASS: 'gvisor' }).runnerRuntimeClass).toBe('gvisor');
-        expect(loadDriverConfig({ RUNNER_RUNTIME_CLASS: 'kata.fc' }).runnerRuntimeClass).toBe('kata.fc');
-        expect(() => loadDriverConfig({ RUNNER_RUNTIME_CLASS: 'gVisor' })).toThrow(/RUNNER_RUNTIME_CLASS/);
-        expect(() => loadDriverConfig({ RUNNER_RUNTIME_CLASS: "gvisor' || true" })).toThrow(/RUNNER_RUNTIME_CLASS/);
+    // The RuntimeClass a class's pods run under (gvisor on GKE Sandbox). A name the API server would
+    // refuse fails at boot, never as a burned attempt.
+    it('reads a class runtimeClassName as a RuntimeClass name, empty as none', () => {
+        const runtimeOf = (runtimeClassName: unknown) =>
+            loadDriverConfig({ EXECUTOR: 'kubernetes', ...oneClass({ runtimeClassName }) }).runnerClasses.default!
+                .runtimeClassName;
+        expect(runtimeOf('')).toBeNull();
+        expect(runtimeOf('gvisor')).toBe('gvisor');
+        expect(runtimeOf('kata.fc')).toBe('kata.fc');
+        expect(() => runtimeOf('gVisor')).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
+        expect(() => runtimeOf("gvisor' || true")).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
+        expect(() => runtimeOf(5)).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
+    });
+
+    // The docker daemon decides placement and runtime: a class carrying either, or a daemon of its
+    // own, is refused at boot there, naming the stated limit — never silently run without it.
+    it('refuses on docker a class that sets scheduling, a RuntimeClass or docker, naming the limit', () => {
+        for (const fields of [
+            { runtimeClassName: 'gvisor' },
+            { nodeSelector: { pool: 'sandbox' } },
+            { tolerations: [{ key: 'pool' }] },
+            { affinity: { nodeAffinity: {} } },
+            { docker: true },
+        ]) {
+            expect(() => loadDriverConfig(oneClass(fields))).toThrow(
+                /RUNNER_CLASSES\.default sets .*docker executor cannot honor.*docs\/kubernetes-limits\.md/
+            );
+        }
+        const chartDefault = { runtimeClassName: '', nodeSelector: {}, tolerations: [], affinity: {}, docker: false };
+        expect(() => loadDriverConfig(oneClass(chartDefault))).not.toThrow();
+        expect(loadDriverConfig(sized({ limits: { cpu: '2' } })).runnerClasses.default!.runnerResources.cpuLimit).toBe(
+            '2'
+        );
     });
 });
 
@@ -297,49 +424,52 @@ describe('the driver config: runner resources', () => {
     };
     const SESSION = '33333333-3333-4333-8333-333333333333';
 
+    const resourcesOf = (env: NodeJS.ProcessEnv) => loadDriverConfig(env).runnerClasses.default!;
+    const R = 'RUNNER_CLASSES.default.resources';
+    const G = 'RUNNER_CLASSES.default.gateResources';
+
     // Issue #360: every pod the driver specs used to carry no resources at all — BestEffort,
-    // first evicted under node pressure, and invisible to the autoscaler. The four variables are
+    // first evicted under node pressure, and invisible to the autoscaler. The four slots are
     // kubernetes quantities rendered verbatim into the pod specs (and translated for the docker
     // flags); any unset slot renders nowhere, and all four unset is the pre-issue pod.
-    it('leaves the four runner resource variables unset unless set', () => {
-        expect(loadDriverConfig({}).runnerResources).toEqual({
+    it('leaves the four runner resource slots unset unless set', () => {
+        expect(resourcesOf({}).runnerResources).toEqual({
             cpuRequest: null,
             cpuLimit: null,
             memoryRequest: null,
             memoryLimit: null,
         });
         expect(
-            loadDriverConfig({
-                RUNNER_CPU_REQUEST: '500m',
-                RUNNER_MEMORY_REQUEST: '1Gi',
-                RUNNER_CPU_LIMIT: '2',
-                RUNNER_MEMORY_LIMIT: '4Gi',
-            }).runnerResources
+            resourcesOf(sized({ requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } }))
+                .runnerResources
         ).toEqual({
             cpuRequest: '500m',
             cpuLimit: '2',
             memoryRequest: '1Gi',
             memoryLimit: '4Gi',
         });
+        // A YAML number is a quantity too.
+        expect(resourcesOf(oneClass({ resources: { limits: { cpu: 4 } } })).runnerResources.cpuLimit).toBe('4');
     });
 
     // The apiserver would reject a bad quantity only at job-create time, which is attempt-burning
     // — this loader exists to move failures to startup, the same reasoning as PULL_POLICIES.
-    it('refuses a quantity kubernetes would reject only at job-create time, naming the variable', () => {
-        expect(() => loadDriverConfig({ RUNNER_CPU_REQUEST: 'half a core' })).toThrow(/RUNNER_CPU_REQUEST/);
-        expect(() => loadDriverConfig({ RUNNER_MEMORY_REQUEST: 'lots' })).toThrow(/RUNNER_MEMORY_REQUEST/);
+    it('refuses a quantity kubernetes would reject only at job-create time, naming the slot', () => {
+        expect(() => resourcesOf(sized({ requests: { cpu: 'half a core' } }))).toThrow(`${R}.requests.cpu`);
+        expect(() => resourcesOf(sized({ requests: { memory: 'lots' } }))).toThrow(`${R}.requests.memory`);
+        expect(() => resourcesOf(oneClass({ resources: { requests: { cpu: true } } }))).toThrow(`${R}.requests.cpu`);
     });
 
     it('refuses cpu in byte suffixes and memory in millicores', () => {
-        expect(() => loadDriverConfig({ RUNNER_CPU_REQUEST: '1Gi' })).toThrow(/RUNNER_CPU_REQUEST/);
-        expect(() => loadDriverConfig({ RUNNER_MEMORY_REQUEST: '500m' })).toThrow(/RUNNER_MEMORY_REQUEST/);
+        expect(() => resourcesOf(sized({ requests: { cpu: '1Gi' } }))).toThrow(`${R}.requests.cpu`);
+        expect(() => resourcesOf(sized({ requests: { memory: '500m' } }))).toThrow(`${R}.requests.memory`);
     });
 
     // Docker cannot take a fractional byte: a quantity whose byte value is not a whole number is
     // refused outright rather than silently floored.
     it('refuses a memory quantity that is not a whole number of bytes', () => {
-        expect(() => loadDriverConfig({ RUNNER_MEMORY_LIMIT: '1.5Ki' })).not.toThrow();
-        expect(() => loadDriverConfig({ RUNNER_MEMORY_LIMIT: '0.1Ki' })).toThrow(/RUNNER_MEMORY_LIMIT/);
+        expect(() => resourcesOf(sized({ limits: { memory: '1.5Ki' } }))).not.toThrow();
+        expect(() => resourcesOf(sized({ limits: { memory: '0.1Ki' } }))).toThrow(`${R}.limits.memory`);
     });
 
     // `1.001G` is exactly 1001000000 whole bytes, but binary floating-point multiplication rounds
@@ -347,7 +477,7 @@ describe('the driver config: runner resources', () => {
     // prevents driver startup.
     it('accepts a decimal quantity whose whole bytes floating-point multiplication would round away', () => {
         expect(memoryQuantityToBytes('1.001G')).toBe('1001000000');
-        expect(() => loadDriverConfig({ RUNNER_MEMORY_LIMIT: '1.001G' })).not.toThrow();
+        expect(() => resourcesOf(sized({ limits: { memory: '1.001G' } }))).not.toThrow();
     });
 
     it('still refuses a quantity genuinely fractional after exact scaling', () => {
@@ -355,52 +485,49 @@ describe('the driver config: runner resources', () => {
     });
 
     // The apiserver refuses a pod whose request exceeds its limit — at job-create, attempt-burning
-    // — and docker refuses `--memory-reservation` above `--memory`; one runnerResources block
-    // feeds the runner, auxiliary and service specs, so the pair is refused at startup instead,
-    // naming both variables. Equal values are a valid (Guaranteed-shaped) configuration.
-    it('refuses a request above its limit, naming both variables, and allows equal values', () => {
-        expect(() => loadDriverConfig({ RUNNER_MEMORY_REQUEST: '2Gi', RUNNER_MEMORY_LIMIT: '1Gi' })).toThrow(
-            /RUNNER_MEMORY_REQUEST.*RUNNER_MEMORY_LIMIT/
+    // — and docker refuses `--memory-reservation` above `--memory`; one class's resources feed the
+    // runner, auxiliary and service specs, so the pair is refused at startup instead, naming both
+    // slots. Equal values are a valid (Guaranteed-shaped) configuration.
+    it('refuses a request above its limit, naming both slots, and allows equal values', () => {
+        expect(() => resourcesOf(sized({ requests: { memory: '2Gi' }, limits: { memory: '1Gi' } }))).toThrow(
+            `${R}.requests.memory (2Gi) exceeds ${R}.limits.memory (1Gi)`
         );
-        expect(() => loadDriverConfig({ RUNNER_CPU_REQUEST: '2', RUNNER_CPU_LIMIT: '500m' })).toThrow(
-            /RUNNER_CPU_REQUEST.*RUNNER_CPU_LIMIT/
+        expect(() => resourcesOf(sized({ requests: { cpu: '2' }, limits: { cpu: '500m' } }))).toThrow(
+            `${R}.requests.cpu (2) exceeds ${R}.limits.cpu (500m)`
         );
         expect(() =>
-            loadDriverConfig({
-                RUNNER_CPU_REQUEST: '500m',
-                RUNNER_CPU_LIMIT: '500m',
-                RUNNER_MEMORY_REQUEST: '1Gi',
-                RUNNER_MEMORY_LIMIT: '1Gi',
-            })
+            resourcesOf(sized({ requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '500m', memory: '1Gi' } }))
         ).not.toThrow();
     });
 
     // Issue #507: a gate runs the whole test suite where a runner mostly waits on a model, so a
-    // gate is sized on its own (GATE_*). Each unset slot falls back to the runner's, slot by slot.
-    it('falls back to the runner resources slot by slot when a GATE_ variable is unset', () => {
-        const runner = { RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi', RUNNER_CPU_LIMIT: '4' };
-        expect(loadDriverConfig(runner).gateResources).toEqual(loadDriverConfig(runner).runnerResources);
-        expect(loadDriverConfig({ ...runner, GATE_CPU_REQUEST: '2', GATE_MEMORY_LIMIT: '8Gi' }).gateResources).toEqual({
-            cpuRequest: '2',
-            cpuLimit: '4',
-            memoryRequest: '1Gi',
-            memoryLimit: '8Gi',
-        });
+    // gate is sized on its own (`gateResources`). Each unset slot falls back to the runner's, slot by slot.
+    it('falls back to the runner resources slot by slot when a gateResources slot is unset', () => {
+        const runner = { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '4' } };
+        expect(resourcesOf(sized(runner)).gateResources).toEqual(resourcesOf(sized(runner)).runnerResources);
+        expect(resourcesOf(sized(runner, { requests: { cpu: '2' }, limits: { memory: '8Gi' } })).gateResources).toEqual(
+            {
+                cpuRequest: '2',
+                cpuLimit: '4',
+                memoryRequest: '1Gi',
+                memoryLimit: '8Gi',
+            }
+        );
     });
 
-    it('refuses a bad GATE_ quantity, naming the variable', () => {
-        expect(() => loadDriverConfig({ GATE_CPU_REQUEST: 'two cores' })).toThrow(/GATE_CPU_REQUEST/);
-        expect(() => loadDriverConfig({ GATE_MEMORY_LIMIT: '500m' })).toThrow(/GATE_MEMORY_LIMIT/);
+    it('refuses a bad gateResources quantity, naming the slot', () => {
+        expect(() => resourcesOf(sized({}, { requests: { cpu: 'two cores' } }))).toThrow(`${G}.requests.cpu`);
+        expect(() => resourcesOf(sized({}, { limits: { memory: '500m' } }))).toThrow(`${G}.limits.memory`);
     });
 
     // The pair is checked as the gate pod will carry it — a gate request against an inherited
-    // runner limit names both variables actually in play.
-    it('refuses a gate request above the effective limit, naming both variables', () => {
-        expect(() => loadDriverConfig({ GATE_CPU_REQUEST: '8', RUNNER_CPU_LIMIT: '4' })).toThrow(
-            /GATE_CPU_REQUEST.*RUNNER_CPU_LIMIT/
+    // runner limit names both slots actually in play.
+    it('refuses a gate request above the effective limit, naming both slots', () => {
+        expect(() => resourcesOf(sized({ limits: { cpu: '4' } }, { requests: { cpu: '8' } }))).toThrow(
+            `${G}.requests.cpu (8) exceeds ${R}.limits.cpu (4)`
         );
-        expect(() => loadDriverConfig({ GATE_MEMORY_REQUEST: '4Gi', GATE_MEMORY_LIMIT: '2Gi' })).toThrow(
-            /GATE_MEMORY_REQUEST.*GATE_MEMORY_LIMIT/
+        expect(() => resourcesOf(sized({}, { requests: { memory: '4Gi' }, limits: { memory: '2Gi' } }))).toThrow(
+            `${G}.requests.memory (4Gi) exceeds ${G}.limits.memory (2Gi)`
         );
     });
 
@@ -423,9 +550,7 @@ describe('the driver config: runner resources', () => {
     it('renders the same numbers on both executors from the same value', () => {
         const config = loadDriverConfig({
             EXECUTOR: 'kubernetes',
-            RUNNER_CPU_LIMIT: '2',
-            RUNNER_MEMORY_LIMIT: '4Gi',
-            RUNNER_MEMORY_REQUEST: '1Gi',
+            ...sized({ requests: { memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } }),
         });
         expect(
             runnerJobSpec(config, job, { id: SESSION, resume: false }).spec.template.spec.containers[0]!.resources
