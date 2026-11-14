@@ -66,6 +66,43 @@ iso_check 'a tool reaches the run-control proxy, which forwards to the superviso
         sleep 1; FACTORY_CTL_OUT=/tmp/relay node /usr/local/bin/control-proxy.cjs &
         sleep 1; '"$TOOL_SHELL"' -c "$T"'
 
+# reviewer [docker args...] -- <command...>: the command as the review sidecar's uid, behind
+# factory-launch --reviewer, with the HOME the driver gives it.
+reviewer() {
+    local args=()
+    while [ "$1" != -- ]; do args+=("$1"); shift; done
+    shift
+    docker run --rm "${AGENT_FLAGS[@]}" --tmpfs /home/reviewer:uid=1002,gid=1000,mode=2775 -e HOME=/home/reviewer \
+        "${args[@]}" --entrypoint /usr/local/bin/factory-launch "$IMAGE" --reviewer "$@"
+}
+
+iso_check 'the reviewer runs as 1002 in node'"'"'s group and the broker'"'"'s, with no capability' \
+    "uid=1002 gid=1000(node) groups=1000(node),1002(factory-agent) $CAPS_NONE" \
+    reviewer -e T="$ID" -- sh -c 'eval "$T"'
+# The review's CLI holds the attempt lease and the telemetry credential; its tools hold neither.
+iso_check 'a reviewer tool runs as the tool uid and sees no lease token and no OTLP header' \
+    'cli set set set 1001 unset unset unset' \
+    reviewer -e RUNNER_LEASE_TOKEN=probe -e OTEL_EXPORTER_OTLP_HEADERS=x-factory-ingest-token=probe \
+    -e OTEL_EXPORTER_OTLP_LOGS_HEADERS=x=y \
+    -e T='printf "%s " "$(id -u)"
+        echo "${RUNNER_LEASE_TOKEN-unset}" "${OTEL_EXPORTER_OTLP_HEADERS-unset}" "${OTEL_EXPORTER_OTLP_LOGS_HEADERS-unset}"' -- \
+    sh -c 'echo cli ${RUNNER_LEASE_TOKEN:+set} ${OTEL_EXPORTER_OTLP_HEADERS:+set} ${OTEL_EXPORTER_OTLP_LOGS_HEADERS:+set}
+        '"$TOOL_SHELL"' -c "$T"'
+iso_check 'a reviewer tool reaches neither the reviewer'"'"'s private config nor its environment' 'closed closed' \
+    reviewer -e T='ls "/home/reviewer/.private" >/dev/null 2>&1 || echo closed
+        cat "/proc/$R/environ" >/dev/null 2>&1 || echo closed' -- \
+    sh -c 'mkdir -m 700 "$HOME/.private" && R=$$ '"$TOOL_SHELL"' -c "$T"'
+# What a review's tool left past its own group — a setsid child — the sweep after the review ends; the
+# reviewer, another uid, is untouched. A killed child the container's pid 1 never reaped reads Z.
+iso_check 'the sweep ends what a reviewer tool left behind, and leaves the reviewer running' 'left swept reviewer-alive' \
+    reviewer -e T='setsid sleep 60 </dev/null >/dev/null 2>&1 & echo $! > "$TMPDIR/left"' -- \
+    sh -c "$TOOL_SHELL"' -c "$T"; pid=$(cat /tmp/factory-tmp/left)
+        state() { sed -n "s/^State:[[:space:]]*\(.\).*/\1/p" "/proc/$pid/status" 2>/dev/null; }
+        [ "$(state)" = S ] && echo left
+        /usr/local/bin/node /usr/local/lib/factory-tool/factory-tool.cjs sweep
+        case "$(state)" in "" | Z) echo swept ;; esac
+        echo reviewer-alive'
+
 # The broker is root with two capabilities: it starts under an empty environment, so a run's own
 # variables never reach it. Read from outside, as root, since no uid inside may read its environ.
 broker_env() {
