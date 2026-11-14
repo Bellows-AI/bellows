@@ -33,6 +33,26 @@ describe('the database is required', () => {
     });
 });
 
+describe("the request role's own login", () => {
+    it('is optional: unset, the owner login takes the role', () => {
+        expect(loadConfig({ DATABASE_URL: DEV }, NONE).databaseRequestUrl).toBeNull();
+        expect(loadConfig({ DATABASE_URL: DEV, DATABASE_REQUEST_URL: '  ' }, NONE).databaseRequestUrl).toBeNull();
+    });
+
+    it('is read when it names the same database', () => {
+        const request = 'postgres://bellows_app:secret@127.0.0.1:5432/factory_dev';
+        expect(loadConfig({ DATABASE_URL: DEV, DATABASE_REQUEST_URL: request }, NONE).databaseRequestUrl).toBe(request);
+    });
+
+    it('is refused on another database, without echoing the URL', () => {
+        const other = 'postgres://bellows_app:secret@127.0.0.1:5432/elsewhere';
+        expect(() => loadConfig({ DATABASE_URL: DEV, DATABASE_REQUEST_URL: other }, NONE)).toThrow(
+            /DATABASE_REQUEST_URL must name the database DATABASE_URL names/
+        );
+        expect(() => loadConfig({ DATABASE_URL: DEV, DATABASE_REQUEST_URL: other }, NONE)).not.toThrow(/secret/);
+    });
+});
+
 describe('a fetching process refuses a disposable database', () => {
     /*
      * The pairing that has to stay impossible. A disposable database is one `npm run test:db`

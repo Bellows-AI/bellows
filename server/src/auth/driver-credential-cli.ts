@@ -1,5 +1,6 @@
 import postgres from 'postgres';
 import { resolveConfig } from '../config.js';
+import { CROSS_ORG_ROLE } from '../db/org-sql.js';
 import { runDriverCredentialCommand } from './driver-credential-command.js';
 import { createDriverCredentialStore } from './driver-credentials.js';
 
@@ -16,7 +17,8 @@ async function main(): Promise<number> {
         console.error((e as Error).message);
         return 2;
     }
-    const sql = postgres(databaseUrl, { max: 1 });
+    // A credential serves several orgs and the commands list across them: the cross-org role, as on the board.
+    const sql = postgres(databaseUrl, { max: 1, connection: { role: CROSS_ORG_ROLE } });
     try {
         return await runDriverCredentialCommand(process.argv.slice(2), createDriverCredentialStore({ sql }), {
             out: (line) => console.log(line),

@@ -1,58 +1,51 @@
 # Row-level security
 
-How the organization reaches PostgreSQL once policies bind the org-owned tables: decided and measured, not yet enforced,
-so each store's own `org_id` predicate is still the only guard.
+How the organization reaches PostgreSQL: every org-owned table carries the policy `org_id = current_setting('app.org_id', true)`, so a statement without the setting reads no org row and writes none.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Tables a policy will cover: every registered `org_id` table | `server/src/db/org-tables.ts` | `server/test-db/org-tables.test.ts` |
-| The board's pools, one statement timeout each; the cross-org pool joins them | `server/src/db/pool.ts`, `server/src/main.ts` | `server/test-db/statement-timeout.test.ts` |
-| Views that must run as the requester, dropped and recreated every boot | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts` |
-| Connection budget split across replicas and pools | `charts/factory/values.yaml` (`dbConnections`), `charts/factory/templates/validate.yaml` | `scripts/test-k8s.sh` |
+| Roles, grants, `enable` (not `force`) and the policy on every `org_id` table and partition; the owner stays exempt | `server/migrations/151_row_level_security.sql`, `server/src/db/org-tables.ts` | `server/test-db/org-tables.test.ts`, `server/test-db/row-level-security.test.ts` |
+| The legacy point repair trigger runs as `bellows_cross_org`, so evidence the request role writes still repairs org-less points | `server/migrations/151_row_level_security.sql` | `server/test-db/metric-point-repair.rls.test.ts` |
+| A store's statement runs in a transaction that sets its org first (`orgSql`); the org stores get it | `server/src/db/org-sql.ts`, `server/src/orgs.ts` | `server/test-db/org-sql.test.ts` |
+| Views run as their invoker, recreated with their grants each boot | `server/migrations/002_views.repeatable.sql` | `server/test-db/row-level-security.test.ts`, `server/test-db/org-tables.test.ts` |
+| The cross-org facts of single-org paths: `security definer` functions owned by `bellows_cross_org` | `server/migrations/151_row_level_security.sql`, `server/src/db/jobs/job-store-admission.ts`, `server/src/telemetry/store.ts`, `server/src/telemetry/usage-facts.ts` | `server/test-db/cross-org-functions.test.ts` |
+| The pools: owner (migrations), request, secrets, cross-org; `DATABASE_REQUEST_URL` | `server/src/main.ts`, `server/src/db/pool.ts`, `server/src/config.ts` | `server/test/cross-org-pool.test.ts`, `server/test-db/org-sql.test.ts` |
+| Connection budget split across replicas and pools; the optional request login | `charts/factory/values.yaml`, `charts/factory/templates/validate.yaml`, `charts/factory/templates/secret.yaml` | `scripts/test-k8s.sh` |
 
-## Decision
+## Roles
 
-- **A transaction-local setting per store call:** `sql.begin` + `set_config('app.org_id', <org>, true)`, policy `org_id = current_setting('app.org_id', true)`. The setting dies with the transaction, so a pooled connection never carries one org into the next borrower, and the connection count stays the pool's whatever the number of orgs.
-- **Rejected:** one pool per org through a startup parameter (connections grow with orgs x replicas x pools and never close, against a fixed `dbConnections`); `reserve()` with a session setting (a missed reset hands the next borrower the previous org, a wrong-org read rather than an empty one).
-- **Cross-org paths run on a second pool as a `bypassrls` role**, keeping their explicit `org_id` predicates; migrations stay on the owner. **Decided by the user:** each cross-org fact inside a single-org path is a small read-only `security definer` function owned by the cross-org role, returning only a count or a boolean and running inside the caller's transaction.
+- **`bellows_request`** owns nothing and does not bypass RLS: the request and secrets pools take it at connection start, on `DATABASE_REQUEST_URL` (a login that is its member) or else the owner's login.
+- **`bellows_cross_org`** has `BYPASSRLS` and owns the definer functions: the cross-org pool is the owner's login taking it. The migration creates both and grants them to the migrating login. A login that may not create a `BYPASSRLS` role needs both created and granted to it first; the migration then only checks them.
+- **The owner** is exempt from the policies (enabled, not forced), so a pod of the previous release, which runs as the owner with no setting, keeps reading through a rollout. This release runs only its migrations on it, a one-connection pool closed after boot; its seed and boot reaps already take `bellows_cross_org` (`server/src/db/migrate.ts`).
+
+## Cross-org paths
+
+Each call `main.ts` hands the cross-org pool, pinned by `server/test/cross-org-pool.test.ts`:
+
+- Sign-in and credentials: `createAuthStore`, `membershipGuardFor`, `mcpStores` (OAuth store, upload capabilities, their expiry sweeps), `bootstrappedDriverCredentials`, and `server/src/auth/driver-credential-cli.ts`.
+- A worker credential to its org: `createOrgOfLease`, `createOrgOfIngest`, `createOrgOfJob`, `createOrgOfReclaim`, and through `runnerCredentialDeps` the lease checks `createAttemptOfLease` and `createPairMatches`.
+- Deletes decided by what no org references: `startCollectors` with `startAttachmentSweep`, `startSkillSweep` and `startOrgPurge`; the integration recovery (`createIntegrationRuntime`); `startMetricPointOrgBackfill`.
+
+Definer functions, inside the caller's transaction, answering a count, a slot or one boolean per id passed:
+
+- `bellows_global_running` and `bellows_global_admission_slot`: the claim's global budget, under the claim's advisory keys.
+- `bellows_admission_occupancy`: the metrics scrape's counts.
+- `bellows_sessions_refused` (ingest), `bellows_sessions_foreign` (the stats read) and `bellows_session_owned_elsewhere` (a claim's or report's session evidence, `server/src/db/jobs/job-store-provenance.ts`): the org asked about is the caller's setting, never an argument, and no setting raises.
+
+Everything else is single-org: the stores `orgs.ts` builds (the claim, lease retirement, outbox, batch and delivery loops, export), ingest's writes, the plan writer, operation receipts, agent titles and the runner connection list (`orgSql` per call).
 
 ## Measured
 
-Measured 2026-11-14 on one macOS laptop (4-core Intel, 16 GB), PostgreSQL 17.11 in Docker, postgres.js 3.4.9, the real
-`readUsageFacts` plus run rows (`fetchRollups`) over 8 orgs x 400 sessions, 51,200 `metric_point` rows, 3,200 jobs; two
-replicas = two pools (`DB_POOL_MAX` 50) driven at once; "small" is `health()`'s one statement. One host's sample, not a
-bound. Milliseconds p50/p99, connections loaded/serial:
-
-| Run | Stats, 2 in flight per replica | Small, 16 in flight per replica | Small, serial | Connections, 8 orgs |
-| --- | --- | --- | --- | --- |
-| Today, no RLS | 459 / 629 | 7.9 / 55 | 1.8 / 3.2 | 32 / 2 |
-| (a) transaction setting, RLS | 443 / 503 | 17.0 / 68 | 4.9 / 8.2 | 32 / 2 |
-| (b) pool per org, RLS | 439 / 483 | 7.5 / 61 | 1.8 / 3.4 | 83 / 16 |
-| (c) `reserve()`, RLS | 443 / 524 | 14.2 / 58 | 3.7 / 7.7 | 46 / 2 |
-| Views `security_invoker`, no policies | 442 / 521 | 7.2 / 44 | 1.9 / 3.8 | 32 / 2 |
-
-The stats read is unchanged by mechanism, policies and `security_invoker`: it is one transaction already and its cost is
-the query. As a non-owner role with policies forced, a view owned by a bypassing role returned 12,800 rows of 8 orgs with
-no setting; with `security_invoker = true` it returned 0, and 1,600 rows of one org with the setting.
-
-## Cross-org paths (the `bypassrls` role)
-
-A missing setting reads 0 rows, so each path that reads other orgs, or reads "none" as a fact, runs cross-org:
-
-- Owner: migrations, the `AUTH_MODE=none` seed, the boot reaps `server/src/db/migrate.ts:84`, `:117`, `:128`, `:269`.
-- Credential to org: `server/src/db/jobs/job-store-org-resolvers.ts:42`, `:74`, `:104`, `:120`; `server/src/db/attempt-of-lease.ts:64`, `:125`; `server/src/auth/driver-credentials.ts:141` (lookup), `:221` (bootstrap); `server/src/attachments/upload-capability-store.ts:120`.
-- Sign-in and sessions: `server/src/auth/store.ts:337`, `:429`, `:461`, `:490`, `:512` (pending sign-in), `:606`, `:659`, `:820` (personal token), `:853` (org token); `server/src/auth/membership-guard.ts:110`; `server/src/auth/oauth-store.ts:319`, `:383`, `:585` (revoke), `:606` (grant listing), `:644`, `:654` (family revoke), `:686` (access token).
-- Deletes decided by absence: `server/src/attachments/attachment-collector.ts:74`, `:90`; `server/src/skills/skill-collector.ts:27`; `server/src/db/org-purge.ts:322`; `server/src/integrations/integration-recovery.ts:150`; `server/src/telemetry/org-backfill.ts:57`.
-- Expiry deletes across orgs: `server/src/auth/oauth-store.ts:444` (`deleteUnusedClients`), `:662` (`purgeExpired`); `server/src/attachments/upload-capability-store.ts:177` (`purgeExpired`); `server/src/auth/store.ts:517` (pending sign-ins).
-- Definer function, a cross-org fact in a single-org path: global admission `server/src/db/jobs/job-store-admission.ts:79` (0 = cap unenforced) and occupancy `:251`; ingest's bound-elsewhere `server/src/telemetry/store.ts:85` (0 = another org's session accepted); the stats read's foreign sessions `server/src/telemetry/usage-facts.ts:188` (0 = counted twice).
-
-Single-org, the setting is enough: the stores `server/src/orgs.ts:388` builds, so the per-board claim and lease retirement
-`server/src/db/jobs/job-store-claim.ts:610`, the outbox loops `server/src/commerce/commerce-loop.ts:59` and
-`server/src/notifications/delivery-loop.ts:88`, the batch loops, ingest's write, export and the plan writer. `organization`,
-`app_user`, the secret tables and `driver_credential` hold no `org_id` and get no policy.
+The spike (2026-11-14, one laptop, PostgreSQL 17.11, two pools of 50, 8 orgs x 400 sessions): the stats read p50/p99 459/629 ms without RLS against 443/503 ms with the transaction setting; a one-statement read 1.8/3.2 ms serial without against 4.9/8.2 ms with. One host's sample, not a bound.
 
 ## Invariants
 
-- **Every view is `security_invoker` and the request role's grants are issued in the repeatable file**: each boot drops and recreates the views, so an `alter view` or a grant made elsewhere is lost.
-- **The cross-org pool comes out of `dbConnections`**, which the chart divides today by two pools per replica.
-- **A path is cross-org only with a line above**; a sweep that reads absence never runs on the request role.
+- **`force row level security` is a contract step for a later release**, once no pod of a release before 151 can run: until then the owner must read every row. `server/test-db/row-level-security.test.ts` pins the exemption.
+- **Nothing but the migrations runs as the owner**: `server/test/cross-org-pool.test.ts` pins where `main.ts` hands the owner pool, `server/test-db/org-sql.test.ts` the role each pool runs as.
+- **A trigger that reads another org's rows, or org-less ones, is `security definer` as `bellows_cross_org`**: of the triggers before 151 only the metric point repair does; the fill trigger runs only for an org-less insert, which no request makes.
+
+- **Every view is `security_invoker` and granted in the repeatable file**: each boot drops and recreates the views. `server/test-db/org-tables.test.ts` fails on a view without it.
+- **A new `org_id` table gets the policy in its own migration**: 151 covered the tables that existed. `server/test-db/org-tables.test.ts` fails on a table without it.
+- **A sweep that reads absence never runs on the request role**: under it a missing setting reads 0 rows. It joins the list above and `server/test/cross-org-pool.test.ts`.
+- **A definer function returns no row of another org**: a count, a slot, or booleans aligned to the caller's ids.
+- **The request login is never logged or forwarded**: `config.ts` reads it, `main.ts` opens the pools with it.

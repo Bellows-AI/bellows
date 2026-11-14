@@ -249,6 +249,16 @@ async function applyLocked(
                   on conflict (version) do nothing`;
     }
 
+    // The seed and the reaps write and delete org rows of every org: as the cross-org role, so the forced policies
+    // (151_row_level_security.sql) read nothing as absent when the owner itself does not bypass RLS. A directory
+    // without that migration (a test's own) granted the role nothing and stays the owner.
+    const [role] = await sql<{ exists: boolean }[]>`
+        select case when exists (select 1 from pg_roles where rolname = 'bellows_cross_org')
+                         and to_regclass('session') is not null
+                    then has_table_privilege('bellows_cross_org', 'session', 'DELETE') else false end as exists
+    `;
+    if (role?.exists) await sql`set local role bellows_cross_org`;
+
     if (options.localUser) {
         // After the files, so the columns and defaults exist. Inside the retry loop, so a
         // database that was not up for the first attempt still gets them on a later one.

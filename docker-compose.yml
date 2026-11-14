@@ -67,6 +67,8 @@ services:
             # host: a factory_dev on the host is a different database from this one, and pointing
             # the container at it would silently split history across two.
             DATABASE_URL: postgres://factory:factory@postgres:5432/factory_dev
+            # No DATABASE_REQUEST_URL: requests take the bellows_request role on this login per connection
+            # (docs/row-level-security.md); a login of its own is a production hardening.
             # A literal, and the one place in this file .env is deliberately NOT allowed to win.
             # `none` is still a supported mode and still the default everywhere else — `npm run
             # seed`, `verify:ui` and `scripts/test-jobs.sh` need it, and a clone with no OAuth app

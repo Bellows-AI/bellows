@@ -9,6 +9,10 @@
 -- Dropped before being recreated, not just `create or replace`d: replacing a view cannot
 -- change a column's type, so a fix that widens or narrows one would fail on every existing
 -- database while passing on a fresh one. Dropped in reverse dependency order.
+--
+-- Every view is `security_invoker`: it reads its tables as the role that queries it, so the org policies
+-- (151_row_level_security.sql) bind a read through a view exactly as a read of the table. Set here, and the grants
+-- at the end, because each boot drops and recreates the views.
 drop view if exists metric_point_suppressed;
 drop view if exists session_summary;
 drop view if exists branch_field_total;
@@ -28,7 +32,7 @@ drop view if exists session_source;
 -- through each grouping, join and output, so two organizations' points on one (agent, session id)
 -- never meet. A point whose org is null (stored before the column and not yet, or never, matched to
 -- one organization: 145_metric_point_org.sql) is in no view.
-create or replace view session_source as
+create or replace view session_source with (security_invoker = true) as
 select
     org_id,
     agent,
@@ -45,7 +49,7 @@ group by org_id, agent, session_id;
 -- together), so those rows are kept, not lost to `null = null`. Two branches rather than one
 -- `is not distinct from` join, which Postgres cannot hash. session_summary and the branch views
 -- leave them out: they have no session to attach to.
-create or replace view metric_point_used as
+create or replace view metric_point_used with (security_invoker = true) as
 select mp.*
 from metric_point mp
 join session_source ss
@@ -65,7 +69,7 @@ where mp.session_id is null;
 
 -- The rows source selection set aside (a transcript copy of a session OTEL owns). Diagnostics
 -- only, never added to anything: the same usage is already in metric_point_used.
-create or replace view metric_point_suppressed as
+create or replace view metric_point_suppressed with (security_invoker = true) as
 select mp.*
 from metric_point mp
 join session_source ss
@@ -83,7 +87,7 @@ where ss.source <> mp.source;
 -- org_id is in the window partition, not merely projected. Without it the clamp would run across
 -- organizations: one org's slice would be truncated by the start of another's, silently dropping
 -- datapoints from the interval that used to contain them.
-create or replace view session_branch_slice as
+create or replace view session_branch_slice with (security_invoker = true) as
 select
     org_id,
     agent,
@@ -131,7 +135,7 @@ from session_branch;
  *
  * Do not "simplify" this to a plain SUM.
  */
-create or replace view session_field_total as
+create or replace view session_field_total with (security_invoker = true) as
 with deltas as (
     select org_id, agent, session_id, field, sum(value) as value
     from metric_point_used
@@ -172,7 +176,7 @@ group by org_id, agent, session_id, field;
 --
 -- A point joins only its own organization's slices: another org's branch report on the same
 -- session key never claims it.
-create or replace view branch_field_total as
+create or replace view branch_field_total with (security_invoker = true) as
 select
     mp.org_id,
     mp.agent,
@@ -192,7 +196,7 @@ where mp.field is not null
 group by mp.org_id, mp.agent, mp.session_id, slice.branch, mp.field;
 
 -- One row per organization's session: its window, its repo, and whether it can be divided at all.
-create or replace view session_summary as
+create or replace view session_summary with (security_invoker = true) as
 with observed as (
     select org_id, agent, session_id, min(time) as first_seen, max(time) as last_seen,
            bool_or(temporality = 'cumulative') as any_cumulative,
@@ -223,3 +227,6 @@ select
     o.any_cumulative
 from observed o
 left join branches b on b.org_id = o.org_id and b.agent = o.agent and b.session_id = o.session_id;
+
+grant select on session_source, metric_point_used, metric_point_suppressed, session_branch_slice,
+    session_field_total, branch_field_total, session_summary to bellows_request, bellows_cross_org;

@@ -1,7 +1,7 @@
 import type { Sql } from 'postgres';
 import { type InsertedPoint, recordTokenUsage } from '../db/plan-allowances.js';
+import { orgSql } from '../db/org-sql.js';
 import type { MetricRow } from './otlp.js';
-import { UNCLAIMED_ORG } from './usage-facts.js';
 
 export interface SessionBranchReport {
     agent: string;
@@ -45,9 +45,10 @@ export interface TelemetryStore {
  * the runner's credential, the membership's org for the laptop plugin's personal bearer; each
  * `metric_point` row stores it, and `claimSessions` keeps a credential off a session it does not hold.
  */
-export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
+export function createPostgresStore({ sql: pool }: { sql: Sql }): TelemetryStore {
     return {
         async insertMetrics(rows, orgId) {
+            const sql = orgSql(pool, orgId);
             if (!rows.length) return 0;
 
             const payload = rows.map((row) => ({
@@ -81,33 +82,21 @@ export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
         async claimSessions({ orgId, jobId }, sessionIds) {
             const ids = [...new Set(sessionIds)];
             if (!ids.length) return new Set();
-            // Bound to this attempt wins; otherwise any binding to another attempt (another org's included) or another
-            // organization's branch report refuses. A personal claimant has no attempt, so only another org binds.
-            const rows = await sql<{ session_id: string }[]>`
-                select a.session_id
-                from unnest(${sql.array(ids)}::text[]) as a(session_id)
-                cross join lateral (
-                    select
-                        exists (
-                            select 1 from job_execution_session s
-                            where s.session_id = a.session_id and s.org_id = ${orgId} and s.job_id = ${jobId}::uuid
-                        ) as mine,
-                        exists (
-                            select 1 from job_execution_session s
-                            where s.session_id = a.session_id
-                              and (s.org_id <> ${orgId} or (${jobId}::uuid is not null and s.job_id <> ${jobId}::uuid))
-                        ) as bound_elsewhere,
-                        exists (
-                            select 1 from session_branch b
-                            where b.session_id = a.session_id and b.org_id not in (${orgId}, ${UNCLAIMED_ORG})
-                        ) as branched_elsewhere
-                ) f
-                where not f.mine and (f.bound_elsewhere or f.branched_elsewhere)
-            `;
-            const refused = new Set(rows.map((row) => row.session_id));
+            const sql = orgSql(pool, orgId);
+            // Bound to this attempt wins; otherwise any binding to another attempt (another org's included), another
+            // organization's branch report or another organization's ownership refuses. A personal claimant has no
+            // attempt, so only another org binds. The other orgs' rows are past this org's policy: a definer function
+            // answers one boolean per id (151_row_level_security.sql).
+            const refusedOf = async (asked: string[]): Promise<string[]> => {
+                const [row] = await sql<{ refused: boolean[] }[]>`
+                    select bellows_sessions_refused(${jobId}::uuid, ${sql.array(asked)}::text[]) as refused
+                `;
+                return asked.filter((_, i) => row!.refused[i] === true);
+            };
+            const refused = new Set(await refusedOf(ids));
             // The rest are this org's to write only if it owns them: the first org to write a session reserves it,
             // and the primary key makes that one org even when two write at once (the loser's insert waits on the
-            // winner's row, then does nothing, and the read below sees the winner). Sorted, so two claims lock in
+            // winner's row, then does nothing, and the check below sees the winner). Sorted, so two claims lock in
             // one order.
             const candidates = ids.filter((id) => !refused.has(id)).sort();
             if (!candidates.length) return refused;
@@ -117,15 +106,12 @@ export function createPostgresStore({ sql }: { sql: Sql }): TelemetryStore {
                 order by session_id
                 on conflict (session_id) do nothing
             `;
-            const owned = await sql<{ session_id: string }[]>`
-                select session_id from telemetry_session_owner
-                where session_id = any(${sql.array(candidates)}::text[]) and org_id <> ${orgId}
-            `;
-            for (const row of owned) refused.add(row.session_id);
+            for (const id of await refusedOf(candidates)) refused.add(id);
             return refused;
         },
 
         async recordBranch(report, orgId) {
+            const sql = orgSql(pool, orgId);
             const { agent, sessionId, repo, branch, headSha, at } = report;
             const when = new Date(at);
             // Widen the interval rather than overwrite it: each report is one sample of a

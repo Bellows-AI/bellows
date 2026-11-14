@@ -335,6 +335,7 @@ describe.skipIf(!enabled)('jira authorization', () => {
         );
         const noClient = createIntegrationRuntime({
             sql: db.sql,
+            crossOrgSql: db.sql,
             secrets: lineageHarness(db.sql).open(),
             providers: registration.providers,
             clients: () => undefined,

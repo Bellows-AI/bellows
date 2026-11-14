@@ -141,9 +141,10 @@ spec:
                         value: {{ .Values.dashboard.limits.mcpStreamsPerOrg | quote }}
                       - name: DB_STATEMENT_TIMEOUT_MS
                         value: {{ .Values.dashboard.limits.statementTimeoutMs | quote }}
-                      # Each replica's two pools share dashboard.dbConnections (templates/validate.yaml).
+                      # Each replica's three pools and its migration connection share dashboard.dbConnections
+                      # (templates/validate.yaml).
                       - name: DB_POOL_MAX
-                        value: {{ div (int64 .Values.dashboard.dbConnections) (mul 2 (int64 .Values.dashboard.replicas)) | quote }}
+                        value: {{ div (sub (int64 .Values.dashboard.dbConnections) (int64 .Values.dashboard.replicas)) (mul 3 (int64 .Values.dashboard.replicas)) | quote }}
                       # The optional commerce service (docs/configuration.md); off, the other two are ignored.
                       - name: COMMERCE_ENABLED
                         value: {{ .Values.dashboard.commerce.enabled | quote }}
@@ -178,6 +179,13 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: database-url
+                      # The request role's own login (docs/row-level-security.md); absent, the owner's takes the role.
+                      - name: DATABASE_REQUEST_URL
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: database-request-url
+                                optional: true
                       # Where task artifacts go (server/src/config-artifacts.ts).
                       - name: ARTIFACTS_BACKEND
                         value: {{ .Values.artifacts.backend | quote }}

@@ -39,6 +39,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         // Never connected to: the harness injects a telemetry stub directly. It is a literal here
         // because AppConfig requires one, not because anything opens it.
         databaseUrl: 'postgres://factory:factory@127.0.0.1:5432/factory_test',
+        databaseRequestUrl: null,
         dbPoolMax: DEFAULT_DB_POOL_MAX,
         dbStatementTimeoutMs: DEFAULT_STATEMENT_TIMEOUT_MS,
         // loadConfig's defaults: no proxy trusted, the production request limits.
