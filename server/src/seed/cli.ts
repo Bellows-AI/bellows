@@ -103,8 +103,8 @@ try {
     // Seeding is an AUTH_MODE=none affair: one local organization, no GitHub anything. The
     // browser check's github-mode board signs in against the stub IdP and materializes its own
     // installation org, so nothing to plant here for it either — unless SEED_ORGS names
-    // those orgs: the auth-project server then needs one stored session_branch row per stub
-    // org so the stored fallback (stored-repos.ts, org-scoped) offers the seeded repository to
+    // those orgs: the auth-project server then needs the org row and one stored session_branch
+    // row per stub org so the stored fallback (stored-repos.ts, org-scoped) offers the seeded repository to
     // the signed-in member. Only the branch side channel is planted — no metric points and no
     // jobs — so those orgs' dashboards still truthfully read empty.
     console.log(`[seed] organization ${LOCAL_ORG_ID} (local)`);
@@ -198,6 +198,9 @@ try {
     }
 
     for (const org of seedOrgs) {
+        // No sign-in has materialized the org yet and every org-owned row references it (the
+        // org foreign keys), so the bare row is planted first; the sign-in's upsert fills it in.
+        await sql`insert into organization (id, name) values (${org}, ${org}) on conflict do nothing`;
         await sql`
             insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
             values (${org}, ${CLAUDE_CODE}, ${`seed-${org}`}, ${repo}, 'main', null,
