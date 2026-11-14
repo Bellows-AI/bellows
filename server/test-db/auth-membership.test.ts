@@ -410,4 +410,23 @@ describe.runIf(enabled)('an admin’s removals, through the auth store', () => {
         expect(await board.base.listRemovedMembers(board.install.id)).toEqual([]);
         expect((await board.signIn(alice)).org.id).toBe(board.install.id);
     });
+
+    it('blockedOrgs names the orgs an admin blocked an account from, and forgets a restored one', async () => {
+        const board = rig();
+        const owner = person('owner');
+        const alice = person('alice');
+        board.set(owner, 'admin');
+        board.set(alice, 'member');
+        const admin = await board.signIn(owner);
+        const caller = await board.signIn(alice);
+        expect(await board.base.blockedOrgs(alice.githubUserId)).toEqual([]);
+
+        expect(await board.base.blockMember(board.install.id, caller.user.id, admin.user.id)).toBe('removed');
+        expect(await board.base.blockedOrgs(alice.githubUserId)).toEqual([board.install.id]);
+        expect(await board.base.blockedOrgs(owner.githubUserId)).toEqual([]);
+
+        expect(await board.base.restoreMember(board.install.id, caller.user.id, admin.user.id)).toBe('restored');
+        expect(await board.base.blockedOrgs(alice.githubUserId)).toEqual([]);
+        expect(await board.base.blockedOrgs(randomGithubId())).toEqual([]);
+    });
 });

@@ -221,7 +221,8 @@ async function handleInvitations(
     );
     if (!loaded.ok) return reply;
     // The org rides the sign-in as a preference and `reselect` opens the selection screen (routes/auth.ts), so an
-    // account that already tracks other organizations can tick this one. GitHub still decides who gets in.
+    // account that already tracks other organizations finds this one pre-ticked when GitHub reports it and no
+    // admin removal blocks it (routes/auth-onboarding.ts). GitHub and the block still decide who gets in.
     const query = new URLSearchParams({ org: caller.org.id, reselect: '1' });
     const signInUrl = publicUrl ? `${publicUrl}/api/auth/github?${query}` : null;
     return reply.code(HTTP_OK).send({ signInUrl, github: loaded.value });
