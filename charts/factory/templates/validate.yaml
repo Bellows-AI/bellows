@@ -8,6 +8,14 @@ those at boot, which is why every such key is `optional` in the pod spec: a miss
 the server's own message, never as an opaque CreateContainerConfigError.
 */}}
 {{- /* Runner classes: the driver's own boot checks (driver/src/runner-classes.ts), at render time. */}}
+{{- /* The retired driver-wide runner values, refused if present at all: rendered silently, a kept
+runner.runtimeClassName or nodeSelector would leave the default class without it and move agent
+code out of its sandbox and node pool. Each names its runner class twin. */}}
+{{- range $retired := list "runtimeClassName" "nodeSelector" "tolerations" "affinity" "resources" "gateResources" }}
+{{- if hasKey $.Values.runner $retired }}
+{{- fail (printf "runner.%s is retired: set runner.classes.<name>.%s on each runner class instead (runner.classes, runner.defaultClass)" $retired $retired) }}
+{{- end }}
+{{- end }}
 {{- if not (hasKey (.Values.runner.classes | default dict) (toString .Values.runner.defaultClass)) }}
 {{- fail (printf "runner.defaultClass %q is not a class runner.classes declares" (toString .Values.runner.defaultClass)) }}
 {{- end }}

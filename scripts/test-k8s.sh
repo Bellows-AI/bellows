@@ -1227,6 +1227,17 @@ refuses 'a class RuntimeClass that is no DNS name is refused' \
 refuses 'a docker class without a RuntimeClass is refused' \
     'runner.classes.standard.docker requires a runtimeClassName' \
     "${GH_SETS[@]}" --set runner.classes.standard.docker=true
+# A retired driver-wide runner value is refused, never dropped: a kept runner.runtimeClassName would
+# otherwise render a default class without it and move agent code out of its sandbox and node pool.
+for retired in 'runtimeClassName=gvisor' 'nodeSelector.pool=sandbox' 'tolerations[0].key=pool' \
+    'affinity.podAntiAffinity.x=1' 'resources.requests.cpu=1' 'gateResources.requests.cpu=2'; do
+    key="${retired%%[.=[]*}"
+    refuses "a retired runner.$key is refused, naming its class twin" \
+        "runner.$key is retired: set runner.classes.<name>.$key" "${GH_SETS[@]}" --set "runner.$retired"
+done
+printf '%s\n' 'runner:' '    nodeSelector: {}' >"$work/retired-empty.yaml"
+refuses 'an empty retired runner value is refused too' 'runner.nodeSelector is retired' \
+    "${GH_SETS[@]}" -f "$work/retired-empty.yaml"
 
 # Dashboard Service annotations: a load balancer's per-Service knobs (a GKE BackendConfig for Cloud
 # Armor, NEG settings). None by default.
