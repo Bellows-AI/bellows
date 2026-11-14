@@ -86,7 +86,7 @@ export const RULES = [
     [/^scripts\/lane-skills\.mjs$/, ['pinned-skills'], 'the pinned-skills phase publisher'],
     [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
-    [/^driver\/src\/(loop\/loop-gates|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
+    [/^driver\/src\/(loop\/loop-gates|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
     [/^driver\/src\/scripts\/gate-(loop|shell|github)\.sh$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', 'pinned-skills', ...RECOVERY], 'task volume'],
     [/^driver\/src\/(docker\/docker-close-read|close-read|docker\/docker-teardown|loop\/loop-conclusion|loop\/loop-post-run)\.ts$/, ['driver', ...RECOVERY], 'task conclusion'],
@@ -96,6 +96,8 @@ export const RULES = [
     [/^driver\/src\/(board\/board|board\/board-[a-z-]+|poll|artifact-calls|artifact-upload|driver-metrics|metrics-server|prometheus)\.ts$/, ['board', 'driver'], 'board client'],
     // The kubernetes executor: scripts/test-k8s.sh covers it, the docker lane never loads it.
     [/^driver\/src\/k8s\/k8s-[a-z-]+\.ts$/, NONE, 'kubernetes executor, covered by test:k8s'],
+    // A docker class's daemon sidecar: kubernetes only, the docker executor refuses a docker class at boot.
+    [/^driver\/src\/scripts\/dockerd-start\.sh$/, NONE, 'the dockerd sidecar start script, kubernetes only'],
 
     // --- runner images ------------------------------------------------------------------------------
     [/^docker\/executor-common\/(github-credential|credential-broker)\.cjs$/, ['github-credential', 'cooperative-stop', 'tool-isolation', 'image-checks'], 'GitHub credential, built into both images'],

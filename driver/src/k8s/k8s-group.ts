@@ -152,12 +152,13 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
  */
 async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): Promise<void> {
     const image = executorImage(deps.config, job.executorType);
-    const seen: { last: PodStartState; unproven: string | null; affinity: string | null; pod: boolean } = {
-        last: 'unread',
-        pod: false,
-        unproven: null,
-        affinity: null,
-    };
+    const seen: {
+        last: PodStartState;
+        unproven: string | null;
+        affinity: string | null;
+        looping: string | null;
+        pod: boolean;
+    } = { last: 'unread', pod: false, unproven: null, affinity: null, looping: null };
     const contacted = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
         signal: ledgerOf(deps).signal(job),
@@ -177,14 +178,19 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
                 );
             if (pull.podState === 'starting' || pull.podState === 'started') seen.pod = true;
             if (pull.blocked) seen.unproven = heldUnpullable(image, pull, pull.blocked);
-            if (pull.podState !== 'unread') seen.last = pull.podState;
-            // The latest word only: a pod that got scheduled after all has nothing to say about its volume.
-            if (pull.podState !== 'unread') seen.affinity = pull.volumeAffinity;
+            if (pull.podState !== 'unread') {
+                seen.last = pull.podState;
+                // The latest word only: a pod that got scheduled after all has nothing to say about its volume.
+                seen.affinity = pull.volumeAffinity;
+                // A sidecar crash-looping (a docker class's dockerd) holds the start: the bound names it.
+                seen.looping = pull.crashLooping;
+            }
         },
     });
     if (contacted) return;
     if (seen.unproven) throw new Error(seen.unproven);
-    const why = `the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms`;
+    const looping = seen.looping ? `: ${seen.looping}` : '';
+    const why = `the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms${looping}`;
     if (seen.affinity) {
         // An infrastructure loss, never a run failure: the volume sits in a zone no node can take. It is
         // marked so no claim adopts it again; the next one restores the thread into a new generation.

@@ -34,6 +34,7 @@ import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.
 import { podsOf, pollRunnerJobUntilTerminal, readJobStatus, readRunnerVerdict, readTyped } from './k8s-poll.js';
 import {
     deadServices,
+    dockerdRestarts,
     forgetServices,
     restartServiceFleet,
     sidecarStatuses,
@@ -644,5 +645,6 @@ export function createKubernetesRunner(
                       withSignal(boundedBy(deps, Date.now() + GROUP_TAKEN_AWAY_READ_MS), signal),
                       runnerName(job)
                   ).catch((): GroupTakenAway => 'unknown'),
+        dockerdRestarts: (job: BoardJob, signal: AbortSignal) => dockerdRestarts(deps, job, signal),
     });
 }

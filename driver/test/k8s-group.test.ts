@@ -483,6 +483,40 @@ describe('the task group of one attempt', () => {
             expect(reads).toBeGreaterThan(100);
         });
 
+        // A daemon sidecar that never starts holds the main containers: the refusal at the bound names it.
+        it('names a sidecar crash-looping through the whole wait, a transient refusal and no node loss', async () => {
+            const looping = {
+                metadata: { name: 'pod-1' },
+                status: {
+                    phase: 'Pending',
+                    initContainerStatuses: [
+                        {
+                            name: 'dockerd',
+                            image: 'docker:27-dind',
+                            restartCount: 5,
+                            state: {
+                                waiting: {
+                                    reason: 'CrashLoopBackOff',
+                                    message: 'back-off 5m0s restarting failed container=dockerd',
+                                },
+                            },
+                        },
+                    ],
+                },
+            };
+
+            const { thrown } = await lostSync(() => [looping]);
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).toMatchObject({
+                startupCause: 'transient',
+                message: expect.stringMatching(
+                    /never came up.*the dockerd container is crash-looping.*CrashLoopBackOff/
+                ),
+            });
+            expect(thrown).not.toHaveProperty('nodeLoss');
+        });
+
         it('counts no unconfirmed read: a list that did not answer is not a pod gone', async () => {
             const { thrown, reads } = await lostSync((read) => (read < 3 ? [starting] : 500));
 

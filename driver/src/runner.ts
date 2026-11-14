@@ -479,6 +479,12 @@ export interface Runner {
      */
     groupTakenAway(job: BoardJob, signal: AbortSignal): Promise<GroupTakenAway>;
     /**
+     * The restart count of the attempt's docker daemon (`dockerd`) as its task pod reports it now:
+     * `absent` for a class that runs none, `inconclusive` for any read that proves nothing. Never
+     * throws. Optional: the docker executor refuses a docker class at boot, so no docker path exists.
+     */
+    dockerdRestarts?(job: BoardJob, signal: AbortSignal): Promise<Read<number>>;
+    /**
      * Runs one declared block-helper step: an allowlisted, board-owned script an
      * expanded workflow `block` node names to run before or after its agent turn. `call.token` is a
      * fresh GitHub installation token, minted by the loop immediately before a github-writing
@@ -579,6 +585,7 @@ const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
     reclaimWorktree: 'attempt',
     releaseFence: 'group',
     groupTakenAway: 'group',
+    dockerdRestarts: 'group',
     runHelper: 'group',
     runGate: 'group',
     resizeGate: 'group',

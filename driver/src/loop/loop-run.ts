@@ -15,7 +15,7 @@ import {
     mintGateCredentials,
     openRunControl,
     probeDeadServices,
-    runDeclaredGates,
+    runVerdictGates,
     sizeGateForVerify,
 } from './loop-gates.js';
 import { armLeaseClock } from './loop-lease.js';
@@ -59,6 +59,7 @@ import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { stepLost } from '../step-control.js';
 import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from '../services.js';
+import { DaemonLost } from '../dockerd-loss.js';
 
 /** How the attempt's log line names the session it runs under. */
 const sessionNote = (session: RunSession | null): string =>
@@ -567,7 +568,7 @@ async function gatesOrLoss(
     try {
         return await runGatesPhase(ctx, gateSession, outcome);
     } catch (e) {
-        if (!servicesLost(e)) throw e;
+        if (!servicesLost(e) && !(e instanceof DaemonLost)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
         const { nodeLoss = false, blocked = false } = await supervisorLossFlag(ctx, e);
         await end(ctx, interruptDecision(reason, null, false, { nodeLoss, blocked }));
@@ -613,7 +614,7 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         }
         recoveredServices = deadBefore;
     }
-    const failure = await runDeclaredGates(rt, job, gateSession, { state, treeAfter: ctx.treeAfter ?? null });
+    const failure = await runVerdictGates(rt, job, gateSession, { state, treeAfter: ctx.treeAfter ?? null });
     // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
     const deadAfter = failure ? await probeDeadServices(rt, job) : [];
     return {

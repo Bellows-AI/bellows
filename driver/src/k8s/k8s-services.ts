@@ -2,6 +2,8 @@ import type { BoardJob, ServiceStatus } from '../board/board.js';
 import { jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { groupsOf, stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
+import { DOCKERD_CONTAINER } from './k8s-dockerd.js';
+import { classOf } from '../runner-classes.js';
 import { asServicePod } from './k8s-pod-shapes.js';
 import { podsOf } from './k8s-poll.js';
 import { boundedBy, boundOf, HTTP_ERROR_STATUS, livePodOfItems, waitOf, withSignal } from './k8s-transport.js';
@@ -9,6 +11,7 @@ import type { K8sContainerStatus, K8sDeps, K8sPod } from './k8s-transport.js';
 import {
     type DeadService,
     Inconclusive,
+    type Read,
     type RunOutcome,
     SERVICE_LOG_TAIL_LINES,
     SERVICE_READY_POLL_MS,
@@ -101,6 +104,26 @@ async function taskPod(deps: K8sDeps, job: BoardJob): Promise<K8sPod> {
 /** The attempt's service sidecars as its task pod reports them now; throws `Inconclusive` on a read that proves nothing. */
 export async function readSidecars(deps: K8sDeps, job: BoardJob): Promise<SidecarStatus[]> {
     return sidecarStatuses(await taskPod(deps, job), groupServices(deps.config, job));
+}
+
+/** The bound on one daemon read around a gate: a read past it proves nothing. */
+export const DOCKERD_READ_MS = 15_000;
+
+/**
+ * `Runner.dockerdRestarts`: the `dockerd` sidecar's restart count as the task pod lists it now, in
+ * one read bounded by `DOCKERD_READ_MS` and the attempt's signal. A class with no daemon reads
+ * nothing (`absent`); a pod `taskPod` cannot confirm, or one that lists no dockerd count, is `inconclusive`.
+ */
+export async function dockerdRestarts(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<Read<number>> {
+    if (!classOf(deps.config, job)?.docker) return { kind: 'absent' };
+    try {
+        const pod = await taskPod(withSignal(boundedBy(deps, Date.now() + DOCKERD_READ_MS), signal), job);
+        const count = pod.status?.initContainerStatuses?.find((s) => s.name === DOCKERD_CONTAINER)?.restartCount;
+        if (typeof count !== 'number') return { kind: 'inconclusive', reason: 'the task pod lists no dockerd count' };
+        return { kind: 'value', value: count };
+    } catch (e) {
+        return { kind: 'inconclusive', reason: (e as Error).message };
+    }
 }
 
 /** The restart counts each attempt's sidecars stood at once the driver last saw them ready (D8): growth past one is a death. */

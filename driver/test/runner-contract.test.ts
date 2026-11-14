@@ -47,6 +47,8 @@ const IMPLEMENTED_BY: Record<keyof Runner, 'both' | 'kubernetes'> = {
     abandon: 'both',
     groupTakenAway: 'both',
     releaseFence: 'kubernetes',
+    // The docker executor refuses a docker class at boot: no daemon of its own to read.
+    dockerdRestarts: 'kubernetes',
 };
 
 const membersFor = (executor: 'docker' | 'kubernetes'): string[] =>
@@ -63,7 +65,7 @@ const kubernetes = createKubernetesRunner(
 
 describe('the Runner contract', () => {
     it('leaves optional only what one executor lacks', () => {
-        expectTypeOf<OptionalKeys<Runner>>().toEqualTypeOf<'releaseFence'>();
+        expectTypeOf<OptionalKeys<Runner>>().toEqualTypeOf<'releaseFence' | 'dockerdRestarts'>();
     });
 
     it.each([
