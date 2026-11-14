@@ -42,6 +42,8 @@ On Kubernetes, the admission policy requires these on every pod the driver creat
 
 One exception exists. The `agent` container starts as root with only `SETUID` and `SETGID` added, so it can start commands as another user. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
 
+A Docker class has a second exception. Its `dockerd` sidecar runs as root and adds `NET_ADMIN`, `SYS_ADMIN` and `NET_RAW`, without dropping the rest. The policy admits that only on the `dockerd` container of a pod in a Docker class, under that class's RuntimeClass.
+
 Pod Security `restricted` cannot admit the agent container. `baseline` can.
 
 Under gVisor (GKE Sandbox) the policy keeps every rule above. GKE admits and starts these pods, but seccomp and No New Privileges have no effect inside the sandbox: a runner reads `Seccomp: 0`. The gVisor kernel is the boundary there. The rules stay so that one policy fits installs with and without a RuntimeClass.
@@ -165,6 +167,8 @@ Attachment type is decided from the file's bytes, not its declared type. SVG, HT
 ## Known limits
 
 - Kernel isolation needs a RuntimeClass. A runner class without `runtimeClassName` shares the node kernel. With it, the admission policy refuses any pod of that class outside that RuntimeClass, even from a compromised driver; a pod without the label of a declared class is refused too. The chart does not provision the runtime: install gVisor, Kata Containers or Firecracker on the runner nodes, or use a GKE Sandbox node pool.
+- A Docker class gives task code root over the task volume. Its daemon runs as root with the task volume mounted, and the tool user can reach its socket, so the separate tool user does not hold in that class. The class's RuntimeClass is the boundary there.
+- The admission policy trusts a Docker class's RuntimeClass by name, not by what it runs. Point that RuntimeClass at a sandbox such as gVisor or Kata Containers.
 - The network controls do nothing without an enforcing CNI.
 - A taken-over run's gate requests keep the lost driver's endpoint, and a node that goes NotReady is noticed only when the cluster acts on it (about 300 seconds by default).
 - A task volume is a thread boundary. A volume's size is a request, and a cap only where the provisioner enforces it.

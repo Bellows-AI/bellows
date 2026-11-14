@@ -1,6 +1,7 @@
 name: Mirror images
 
-# The postgres, the moto AWS emulator and the Vault every CI job service runs, copied into GHCR. A job service is pulled by the runner
+# The postgres, the moto AWS emulator and the Vault every CI job service runs, and the chart's pinned
+# dockerd image, copied into GHCR. A job service is pulled by the runner
 # before any step, so it can neither log in nor retry, and ECR Public's per-IP data limit fails it on
 # a shared runner IP however often it is re-run. That limit refuses this copy too, so the source is
 # Google's Docker Hub cache, which serves the same official image. Weekly picks up 17.x patches.
@@ -120,7 +121,50 @@ jobs:
                   done
                   exit 1
 
-    # The base images and the chart's collector are pinned by digest, and a pin nobody refreshes is a
+    # A docker class's dockerd sidecar (runner.docker.image). global.imageRegistry prefixes it like
+    # every image the chart renders, so the registry must hold the exact digest the chart pins, under
+    # its tag: copied by digest from the chart's values, then checked against them.
+    dind:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            packages: write
+        steps:
+            - uses: actions/checkout@v4
+            - name: docker login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            - name: docker buildx imagetools create docker
+              env:
+                  OWNER: ${{ github.repository_owner }}
+              run: |
+                  # GHCR paths are lowercase even where the org's login is not.
+                  REGISTRY="ghcr.io/$(printf '%s' "$OWNER" | tr 'A-Z' 'a-z')"
+                  PIN=$(awk '$1 == "repository:" && $2 == "docker" { repo = $2 }
+                      repo && $1 == "tag:" { tag = $2 }
+                      repo && $1 == "digest:" { print tag, $2; exit }' charts/factory/values.yaml | tr -d "'")
+                  tag=${PIN% *}
+                  digest=${PIN#* }
+                  test -n "$PIN" && test "$tag" != "$PIN" || { echo 'the chart no longer pins runner.docker.image by tag and digest'; exit 1; }
+                  # Retried only on a throttle; anything else is a real failure and fails now.
+                  # imagetools copies the manifest list, so both arches come along.
+                  for attempt in 1 2 3; do
+                      [ "$attempt" -eq 1 ] || sleep $((attempt * 30))
+                      if docker buildx imagetools create -t "$REGISTRY/docker:$tag" "mirror.gcr.io/library/docker@$digest" 2>/tmp/err; then
+                          cat /tmp/err >&2
+                          mirrored=$(docker buildx imagetools inspect "$REGISTRY/docker:$tag" --format '{{.Manifest.Digest}}')
+                          test "$mirrored" = "$digest" || { echo "mirror holds $mirrored, the chart pins $digest"; exit 1; }
+                          exit 0
+                      fi
+                      cat /tmp/err >&2
+                      grep -q toomanyrequests /tmp/err || exit 1
+                  done
+                  exit 1
+
+    # The base images and the chart's collector and dockerd images are pinned by digest, and a pin nobody refreshes is a
     # stale image: the weekly run re-resolves them and opens a pull request for a person to merge.
     # The only job with write access. The branch is pushed with the run token, which does not
     # trigger CI on the pull request it opens; a maintainer's re-push or close-and-reopen does.

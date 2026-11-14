@@ -28,7 +28,7 @@ See [Writing good tasks](/guides/writing-good-tasks) and [Task lifecycle](/guide
 | Limit | Value | When exceeded |
 | --- | --- | --- |
 | Interruptions not proven to be node loss | 5 per trailing hour, per task | The task ends dead |
-| Node loss (a drained driver, an evicted or removed runner, a lost supervisor confirmed taken away, a driver that went silent and its lease expiring) | 100 per trailing 6 hours, per task | The task ends dead |
+| Node loss (a drained driver, an evicted or removed runner, a lost supervisor confirmed taken away, a driver that went silent and its lease expiring, a Docker daemon that restarted under a failed gate) | 100 per trailing 6 hours, per task | The task ends dead |
 
 An interruption is retried for you and does not count as a failed attempt. See [Task lifecycle](/guides/task-lifecycle).
 
@@ -109,6 +109,7 @@ See [Policy and reviewers](/guides/policy-and-reviewers).
 | Organization executors | 10 per organization | Refused: `TOO_MANY_EXECUTORS` |
 | Configuration JSON | A JSON object up to 32 KiB | The editor refuses to save |
 | Gate repair rounds | 0 to 10, default 3 | Refused |
+| Docker storage in a class with Docker (images, layers, containers) | Set by the operator per class (`dockerStorage`). It is held in memory and counts against the task pod's memory | The daemon runs out of space, or the task pod is evicted |
 
 See [Executors](/guides/executors).
 

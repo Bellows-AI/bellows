@@ -42,6 +42,7 @@ On kubernetes every control is **required by admission** (`charts/factory/templa
 | No escalation | `allowPrivilegeEscalation: false` | `--security-opt no-new-privileges` |
 | Seccomp | `seccompProfile: RuntimeDefault` | the daemon's default profile |
 | Agent launch, the `agent` container alone | `runAsUser: 0`, `capabilities.add: [SETUID, SETGID]`, admitted on a Job's `agent` only | `--user 0:0 --cap-add SETUID --cap-add SETGID` |
+| Docker daemon, a docker class's `dockerd` alone | root, `capabilities.add: [NET_ADMIN, SYS_ADMIN, NET_RAW]` with no `drop`, admitted under its class's RuntimeClass only | none: the docker executor refuses a docker class |
 
 There is **no opt-out for a declared service or a GATE image**: one needing root at boot declares `user: "uid:gid"`
 (numeric, uid never 0). `server/src/workspace/bellows-services.ts`, `driver/test/k8s-admission.test.ts`.
@@ -51,6 +52,7 @@ There is **no opt-out for a declared service or a GATE image**: one needing root
 - **This is not kernel isolation and it is not VM isolation.** Every runner, gate, helper and service shares one host kernel; a kernel boundary means gVisor/Kata/Firecracker on a node group the chart does not provision.
 - **The network controls are inert without an enforcing CNI** ([kubernetes-limits.md](kubernetes-limits.md)), and a NetworkPolicy cannot restrict HTTP routes.
 - **The tool uid guards the CLI against accidents, not a hostile tool**: it still writes config the CLI later executes (`.git/config`, `.claude`, `.mcp.json`) and can exhaust memory, CPU or pids; hooks and MCP servers run as the CLI's uid.
+- **A docker class gives task code root over the task volume**, so tool-uid isolation does not hold there; its boundary is the class's RuntimeClass ([kubernetes-limits.md](kubernetes-limits.md)).
 - **Pod Security `restricted` cannot admit the agent container** (`CAP_SETUID`/`CAP_SETGID`); `baseline` can.
 - **A task volume is a thread boundary** ([workspace.md](workspace.md)); **membership is not a sandbox** ([auth.md](auth.md)).
 - **`attrs.series` is an unsalted one-way digest** (`server/src/telemetry/otlp.ts`): a dictionary guess can confirm a value.
