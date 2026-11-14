@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
-import {
-    claimEnv,
-    GATE_GID,
-    RESERVED_ENV_NAMES,
-    REVIEWER_HOME,
-    REVIEWER_TREE_DIR,
-    REVIEWER_UID,
-} from '../src/claim.js';
+import { claimEnv, RESERVED_ENV_NAMES, REVIEWER_HOME, REVIEWER_TREE_DIR } from '../src/claim.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
 import { dockerArgs } from '../src/docker/docker.js';
 import {
@@ -192,8 +185,11 @@ describe('the reviewer container', () => {
     const argv = reviewerCreateArgs(config, reviewing);
     const pairs = (flag: string): string[] => argv.filter((_arg, i) => argv[i - 1] === flag);
 
-    it('runs as its own uid in the gate group, in its supervisor’s network namespace', () => {
-        expect(pairs('--user')).toEqual([`${REVIEWER_UID}:${GATE_GID}`]);
+    // Root with the launch pair, as the agent starts: factory-launch --reviewer starts the tool broker
+    // and drops to REVIEWER_UID (executor-images.test.ts), so the review's tools run as the tool uid.
+    it('starts as the agent does, in its supervisor’s network namespace', () => {
+        expect(pairs('--user')).toEqual(['0:0']);
+        expect(pairs('--cap-add')).toEqual(['SETUID', 'SETGID']);
         expect(pairs('--network')).toEqual([`container:${supervisorName(reviewing)}`]);
         expect(pairs('--name')).toEqual([reviewerName(reviewing)]);
         expect(reviewerName(reviewing)).toBe(`factory-reviewer-${reviewing.id}-${reviewing.leaseToken}`);
@@ -202,11 +198,11 @@ describe('the reviewer container', () => {
         expect(argv).toEqual(expect.arrayContaining(['--label', `factory.lease=${reviewing.leaseToken}`]));
     });
 
-    it('runs the review loop in the executor image', () => {
+    it('runs the review loop in the executor image, through factory-launch --reviewer', () => {
         const [image, ...command] = argv.slice(argv.indexOf('--entrypoint') + 2);
-        expect(argv[argv.indexOf('--entrypoint') + 1]).toBe('sh');
+        expect(argv[argv.indexOf('--entrypoint') + 1]).toBe('/usr/local/bin/factory-launch');
         expect(image).toBe(executorImage(config, reviewing.executorType));
-        expect(command).toEqual(reviewLoopArgv().slice(1));
+        expect(command).toEqual(['--reviewer', ...reviewLoopArgv()]);
     });
 
     it('mounts the member tree read-only, its home read-write and the review mailbox, no other mailbox', () => {

@@ -199,11 +199,12 @@ describe('the admission policy requires the pod hardening (#382)', () => {
     });
 
     // Issue #814: the agent's launch pair is the one capability add the policy admits, named in it as
-    // the driver states it, on the container the driver names.
-    it('admits the agent launch pair on the agent container alone', () => {
-        expect(template).toContain(`c.name == '${AGENT_CONTAINER}'`);
+    // the driver states it, on the two containers that start through factory-launch.
+    it('admits the agent launch pair on the agent and the reviewer containers alone', () => {
+        expect(template).toContain(
+            `request.kind.kind == 'Job' && (c.name == '${AGENT_CONTAINER}' || c.name == '${REVIEWER_CONTAINER}') &&`
+        );
         expect(template).toContain(`a in [${AGENT_LAUNCH_CAPS.map((cap) => `'${cap}'`).join(', ')}]`);
-        expect(template).toContain("request.kind.kind == 'Job' && c.name ==");
     });
 });
 
@@ -322,11 +323,13 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         expect(resize).toContain('a driver resize changes the gate or the reviewer container alone');
     });
 
-    it('refuses a reviewer that runs as the tool or the gate uid, or mounts anything but its own', () => {
+    it('refuses a reviewer that does not launch through factory-launch --reviewer, or mounts anything but its own', () => {
         const pods = policy('pods');
         expect(pods).toContain(`c.name != '${REVIEWER_CONTAINER}'`);
-        expect(pods).toContain(`c.securityContext.runAsUser == ${REVIEWER_UID}`);
-        expect(pods).toContain('a driver-specced reviewer runs as its own uid');
+        // Root, so the launcher starts the tool broker and drops to REVIEWER_UID itself.
+        expect(pods).toContain('c.securityContext.runAsUser == 0');
+        expect(pods).toContain("c.command[0] == '/usr/local/bin/factory-launch' && c.command[1] == '--reviewer'");
+        expect(pods).toContain('a driver-specced reviewer launches through factory-launch --reviewer');
         expect(pods).toContain(
             'a driver-specced reviewer mounts the task volume read-only but for its home, its review mailbox and its telemetry config'
         );
@@ -452,6 +455,44 @@ describe('the pod policy admits every runner Job the driver builds', () => {
         expect(refusedOf(spec)).toEqual([
             'a driver-specced reviewer mounts the task volume read-only but for its home, its review mailbox and its telemetry config',
         ]);
+    });
+
+    type Launched = {
+        name: string;
+        command?: string[];
+        securityContext?: { runAsUser?: number; capabilities?: { add?: string[] } };
+    };
+    const reviewerSpec = () => {
+        const spec = asSent(runnerJobSpec(config, reviewing('claude-code'), session));
+        const init = spec.spec.template.spec.initContainers as Launched[];
+        return { spec, init, reviewer: init.find((c) => c.name === REVIEWER_CONTAINER)! };
+    };
+    const LAUNCH = 'a driver-specced reviewer launches through factory-launch --reviewer';
+    const CAPS = 'a driver-specced container may not be privileged or add capabilities, but for the launch pair';
+
+    it('refuses a reviewer that adds the launch pair without factory-launch --reviewer', () => {
+        const { spec, reviewer } = reviewerSpec();
+        reviewer.command = reviewer.command!.filter((word) => word !== '--reviewer');
+        expect(refusedOf(spec)).toEqual([LAUNCH]);
+    });
+
+    it('refuses a reviewer that skips the launcher’s drop by starting as another uid', () => {
+        const { spec, reviewer } = reviewerSpec();
+        reviewer.securityContext!.runAsUser = 1000;
+        expect(refusedOf(spec)).toEqual([LAUNCH]);
+    });
+
+    it('refuses SETUID on any init container but the reviewer', () => {
+        const { spec, init } = reviewerSpec();
+        const gate = init.find((c) => c.name === 'gate')!;
+        gate.securityContext!.capabilities!.add = ['SETUID'];
+        expect(refusedOf(spec)).toEqual([CAPS]);
+    });
+
+    it('refuses a reviewer that adds any other capability', () => {
+        const { spec, reviewer } = reviewerSpec();
+        reviewer.securityContext!.capabilities!.add = ['SETUID', 'SETGID', 'SYS_PTRACE'];
+        expect(refusedOf(spec)).toEqual([CAPS]);
     });
 
     it('refuses a telemetry-config volume that projects any other key of the attempt Secret', () => {

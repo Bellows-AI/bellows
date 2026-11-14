@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reviewLoopArgv, reviewLoopScript } from '../src/container-scripts.js';
+import { reviewerLaunchArgv, reviewLoopArgv, reviewLoopScript } from '../src/container-scripts.js';
 import { MAILBOXES, REVIEW_FILES } from '../src/supervisor-contract.js';
 
 /*
@@ -18,6 +18,8 @@ const code = reviewLoopScript
 describe('the review loop script', () => {
     it('is the container command', () => {
         expect(reviewLoopArgv()).toEqual(['sh', '-c', reviewLoopScript, 'review-loop']);
+        // Behind the launcher, which starts the tool broker and drops to the reviewer uid.
+        expect(reviewerLaunchArgv()).toEqual(['/usr/local/bin/factory-launch', '--reviewer', ...reviewLoopArgv()]);
     });
 
     it('serves the review mailbox the contract names, by the file names the contract spells', () => {
@@ -34,6 +36,20 @@ describe('the review loop script', () => {
         const exitWrite = code.indexOf('/exit.tmp');
         expect(exitWrite).toBeGreaterThan(-1);
         expect(code.lastIndexOf(kill, exitWrite)).toBeGreaterThan(code.indexOf('wait "$pid"'));
+    });
+
+    // The loop's `kill -1` reaches its own uid alone; what a review's tools left — the tool uid's,
+    // `setsid` children past their group included — the broker's sweep ends, exited or cancelled.
+    it('sweeps the tool uid after every request and on a cancel, before the exit is written', () => {
+        const sweep = '/usr/local/bin/node /usr/local/lib/factory-tool/factory-tool.cjs sweep >/dev/null 2>&1';
+        expect(code.split(sweep).length - 1).toBe(1);
+        const at = code.indexOf(sweep);
+        expect(at).toBeGreaterThan(code.lastIndexOf('kill -KILL -1'));
+        expect(at).toBeGreaterThan(code.indexOf('wait "$pid"'));
+        expect(at).toBeLessThan(code.indexOf('/exit.tmp'));
+        // The cancel branch leaves the wait loop by `break`, so it reaches the same line.
+        const cancelBranch = code.slice(code.indexOf('/cancel" ]; then'));
+        expect(cancelBranch.slice(0, cancelBranch.indexOf('fi'))).toContain('break');
     });
 
     it('applies a request’s env inside its own subshell, and drops the env file before the command', () => {

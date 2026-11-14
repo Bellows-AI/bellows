@@ -13,8 +13,10 @@
 # A request's env is its credential volume: exported inside its own subshell alone, so it never
 # reaches the loop's own commands or the next request, and the env file is gone before the command
 # starts. The loop's own commands are builtins or absolute paths. After every request and on a
-# cancel the loop kills every process its uid can signal, which spares the loop itself: nothing a
-# review left behind outlives it into the answer or the next request. NEVER run this outside its
+# cancel the loop kills every process its uid can signal, which spares the loop itself, and has the
+# tool broker sweep the tool uid its review's commands ran as (factory-launch --reviewer started it):
+# nothing a review or its tools left behind outlives it into the answer or the next request. The
+# sweep's status is never read: a failed one changes no answer. NEVER run this outside its
 # container: that kill reaches every process of the user that runs it
 # (driver/test/scripts-review-loop.test.ts pins the bytes instead).
 # What a review writes into its home on the task volume is group-writable, so the supervisor's uid
@@ -59,6 +61,7 @@ serve() {
     done
     wait "$pid" 2>/dev/null
     kill -KILL -1 2>/dev/null
+    /usr/local/bin/node /usr/local/lib/factory-tool/factory-tool.cjs sweep >/dev/null 2>&1
     code=137
     [ -e "$1/code" ] && IFS= read -r code < "$1/code"
     echo "$code" > "$1/exit.tmp" && /bin/mv -f "$1/exit.tmp" "$1/exit"
