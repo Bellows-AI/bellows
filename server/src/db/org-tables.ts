@@ -6,6 +6,7 @@
  */
 export const ORG_TABLES = [
     'access_token',
+    'agent_default',
     'artifact_chunk',
     'artifact_manifest',
     'attachment_upload',

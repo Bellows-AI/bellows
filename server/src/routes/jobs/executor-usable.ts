@@ -35,6 +35,8 @@ export async function readExecutorType(
         if (name === null) {
             const fallback = await executors.resolvedDefault(userId);
             if (fallback === null) return { state: 'unconfirmed', error: noExecutorMessage };
+            // An agent default names the agent itself: there is no profile row to read.
+            if (fallback.kind === 'agent') return executorTypeOf(fallback.agentType);
             ({ name, scope: at } = fallback);
         }
         const row = await executors.configFor(userId, name, at);
@@ -101,7 +103,9 @@ export async function defaultExecutorOf(
         () => executors.resolvedDefault(createdBy)
     );
     if (!resolved.ok) return 'refused';
-    if (resolved.value !== null) return resolved.value;
+    // commit (b): an agent default that wins is stamped on the job as agent_type/agent_model; until create and batch
+    // launch carry those columns it reads as "no profile" and takes the NO_EXECUTOR refusal below.
+    if (resolved.value?.kind === 'profile') return { scope: resolved.value.scope, name: resolved.value.name };
     bad(reply, ERROR_CODES.NO_EXECUTOR, noExecutorMessage, HTTP_CONFLICT);
     return 'refused';
 }

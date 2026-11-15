@@ -178,6 +178,19 @@ async function executorCheck(
                 type: { state: 'unconfirmed', error: noExecutorMessage },
             };
         }
+        if (fallback.value.kind === 'agent') {
+            const { agentType, model, from } = fallback.value;
+            const whose = from === 'personal' ? 'your agent default' : "the organization's agent default";
+            return {
+                check: {
+                    subject: 'executor',
+                    name: null,
+                    status: 'ok',
+                    detail: `none selected: the task runs on ${whose}, ${agentType} with model ${model}`,
+                },
+                type: executorTypeOf(agentType),
+            };
+        }
         ({ name, scope: at } = fallback.value);
     }
     const row = await attempt(log, 'executor profile', () => store.configFor(userId, name, at));

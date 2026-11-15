@@ -385,6 +385,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ...[
         '/api/tokens/org/:id/revoke',
         '/api/workflows/:id',
+        '/api/agent-default',
+        '/api/agent-default/org',
+        '/api/agent-default/personal',
         '/api/env/org',
         '/api/env/repo',
         '/api/env/org/vars',

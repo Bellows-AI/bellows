@@ -535,7 +535,7 @@ describe('launch checks: validate and start', () => {
                     : null;
             },
             async resolvedDefault() {
-                return { scope: 'org', name: 'Main' };
+                return { kind: 'profile', scope: 'org', name: 'Main' };
             },
         } as unknown as UserExecutorStore;
         const { call, create } = await setup({ userExecutors });

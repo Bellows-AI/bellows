@@ -83,7 +83,15 @@ Bellows Cloud does not accept a Claude subscription OAuth token. A configuration
 
 In the **New task** composer, the **Executor** chip next to **Repository** lists every profile you can use. Suspended profiles are not listed.
 
-If you don't pick one, the task uses your default. If you have no usable profile, Bellows refuses the task and links to **Add an executor in Settings**.
+If you don't pick one, Bellows uses the first of these that exists:
+
+1. Your default profile, while it is usable.
+2. Your agent default: an agent and a model, with no profile.
+3. Your organization's agent default, which an admin sets.
+4. Your first usable personal profile.
+5. Your organization's first usable profile.
+
+With none of these, Bellows refuses the task and links to **Add an executor in Settings**. A task on an agent default keeps that agent and model: changing the default later doesn't change a queued task, its retry or its follow-up.
 
 ## Defaults and suspending
 

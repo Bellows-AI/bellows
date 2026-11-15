@@ -186,6 +186,7 @@ async function withDefaultExecutor(
 ): Promise<ResolvedBatchPlan | null> {
     const tasks = plan.stages.flatMap((stage) => stage.tasks);
     if (tasks.every((task) => task.executor !== null)) return plan;
+    // commit (b): stamp agentType/agentModel on the plan tasks when an agent default wins (defaultExecutorOf refuses it).
     const fallback = await defaultExecutorOf(request, reply, {
         executors: ctx.runtime.userExecutors,
         createdBy: ctx.createdBy,
