@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createKillLedger } from '../src/kill-ledger.js';
+import { ownGroup } from '../src/runner.js';
 import type { KillRecord } from '../src/termination.js';
 import { boardJob } from './fixtures/board-job.js';
 
@@ -98,5 +99,37 @@ describe('the kill ledger', () => {
         expect(first.aborted).toBe(true);
         expect(next.aborted).toBe(false);
         expect(next).not.toBe(first);
+    });
+
+    describe('an attempt that took a group over', () => {
+        const first = job({ id: 'j', leaseToken: 'L1' });
+        const taken = ownGroup({ ...job({ id: 'j', leaseToken: 'L2' }), groupLease: 'L1' });
+
+        it('abandoning an attempt never abandons a later attempt that took its group over', () => {
+            const ledger = createKillLedger(fakeStore());
+            ledger.abandon(first);
+            expect(ledger.abandoned(first).aborted).toBe(true);
+            expect(ledger.abandoned(taken).aborted).toBe(false);
+        });
+
+        it('an attempt that took a group over abandons only itself', () => {
+            const askedFirst = createKillLedger(fakeStore());
+            const signal = askedFirst.abandoned(taken);
+            askedFirst.abandon(taken);
+            expect(signal.aborted).toBe(true);
+            expect(askedFirst.abandoned(first).aborted).toBe(false);
+
+            const abandonedFirst = createKillLedger(fakeStore());
+            abandonedFirst.abandon(taken);
+            expect(abandonedFirst.abandoned(taken).aborted).toBe(true);
+            expect(abandonedFirst.abandoned(first).aborted).toBe(false);
+        });
+
+        it('a kill still reaches every attempt in its group', () => {
+            const ledger = createKillLedger(fakeStore());
+            ledger.note(first, 'hard');
+            expect(ledger.was(taken).hard).toBe(true);
+            expect(ledger.signal(taken).aborted).toBe(true);
+        });
     });
 });

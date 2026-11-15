@@ -44,7 +44,7 @@ export interface LoopRuntime {
         result: Parameters<Board['complete']>[1],
         options?: { after?: Promise<void>; leaseLapsed?: AbortSignal }
     ) => Promise<LeaseState>;
-    /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`). */
+    /** The attempts in flight, by lease token (one per claim) — what a drain hands over (`Loop.handover`). */
     live?: Map<string, LiveAttempt>;
     /** Set once a drain's handover began: an attempt that registers on `live` after it is handed over too. */
     handoverReason?: string;

@@ -17,9 +17,14 @@ export interface KillLedger {
     /**
      * Aborts `abandoned(job)`: the attempt left its group to the next holder. No kill, so
      * `was`/`signal` are untouched — the group is not this driver's to end, only its timers and polls are.
+     * Keyed by the attempt (its claim, `claimHolder ?? leaseToken`), never the group: a newer claim that
+     * took the group over, in this same process, is not abandoned with it.
      */
     abandon(job: BoardJob): void;
-    /** Aborts when this process abandons the attempt; every in-process timer or poll of the run ends on it. */
+    /**
+     * Aborts when this process abandons the attempt (its claim, never the group a newer claim took
+     * over); every in-process timer or poll of the run ends on it.
+     */
     abandoned(job: BoardJob): AbortSignal;
     record(job: BoardJob, kill: KillRecord): Promise<void>;
 }
@@ -33,12 +38,14 @@ export function createKillLedger({ write }: KillPrimitives): KillLedger {
     const stopped = new Set<BoardJob['leaseToken']>();
     const hard = new Set<BoardJob['leaseToken']>();
     const controllers = new Map<BoardJob['leaseToken'], AbortController>();
+    /** By the attempt's own lease: a taken-over job (`ownGroup`) carries it as `claimHolder`. */
     const left = new Map<BoardJob['leaseToken'], AbortController>();
+    const attemptOf = (job: BoardJob): BoardJob['leaseToken'] => job.claimHolder ?? job.leaseToken;
     const leftOf = (job: BoardJob): AbortController => {
-        const known = left.get(job.leaseToken);
+        const known = left.get(attemptOf(job));
         if (known) return known;
         const fresh = new AbortController();
-        left.set(job.leaseToken, fresh);
+        left.set(attemptOf(job), fresh);
         return fresh;
     };
     const controllerOf = (job: BoardJob): AbortController => {
@@ -59,7 +66,7 @@ export function createKillLedger({ write }: KillPrimitives): KillLedger {
             stopped.delete(job.leaseToken);
             hard.delete(job.leaseToken);
             controllers.delete(job.leaseToken);
-            left.delete(job.leaseToken);
+            left.delete(attemptOf(job));
         },
         signal: (job) => controllerOf(job).signal,
         abandon: (job) => leftOf(job).abort(),
