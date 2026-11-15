@@ -143,7 +143,10 @@ export async function attachJira(
 /** A root thread row authored by `userId`. */
 export async function newRoot(sql: Sql, orgId: string, userId: string): Promise<string> {
     const id = randomUUID();
-    await sql`insert into job (org_id, id, command, root_job_id, created_by) values (${orgId}, ${id}, 'work', ${id}, ${userId})`;
+    await sql`
+        insert into job (org_id, id, command, root_job_id, created_by, execution_user_id)
+        values (${orgId}, ${id}, 'work', ${id}, ${userId}, ${userId})
+    `;
     return id;
 }
 

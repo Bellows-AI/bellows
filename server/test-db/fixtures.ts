@@ -221,16 +221,18 @@ export const craftJob = async (
     const id = randomUUID();
     const author = shape.author === undefined ? ctx.author : shape.author;
     const done = shape.at?.done !== undefined || shape.doneMinutesAgo !== undefined;
+    const root = shape.root ?? shape.parent ?? id;
     await sql`
-        insert into job (org_id, id, command, status, parent_job_id, root_job_id, created_by, repo, stopped_by,
-                         lease_expires_at, created_at, started_at, finished_at, wall_clock_ms, summary,
+        insert into job (org_id, id, command, status, parent_job_id, root_job_id, created_by, execution_user_id, repo,
+                         stopped_by, lease_expires_at, created_at, started_at, finished_at, wall_clock_ms, summary,
                          done_at, done_by, runtime)
         values (
             ${ctx.org}, ${id}, ${shape.command ?? 'crafted'},
             ${shape.status ?? 'queued'},
             ${shape.parent ?? null},
-            ${shape.root ?? shape.parent ?? id},
+            ${root},
             ${author},
+            ${root === id ? author : null},
             ${shape.repo === undefined ? 'acme/widgets' : shape.repo},
             ${shape.stoppedBy === true ? author : null},
             ${shape.lease === 'live' ? sql`now() + interval '5 minutes'` : sql`now() - interval '1 second'`},
@@ -282,9 +284,9 @@ export const legacyConnection = async (
     const email = options.email ?? `legacy-${randomUUID()}@example.com`;
     const [row] = await sql<{ id: string }[]>`
         insert into connector_connection
-            (org_id, owner_user_id, kind, site, cloud_id, email, api_token, access, provider, credential,
+            (org_id, owner_user_id, site, cloud_id, email, api_token, access, provider, credential,
              principal_user_id, external_account_id, status)
-        values (${orgId}, ${ownerUserId}, 'jira', 'example.atlassian.net', ${`cloud-${randomUUID()}`}, ${email},
+        values (${orgId}, ${ownerUserId}, 'example.atlassian.net', ${`cloud-${randomUUID()}`}, ${email},
                 'legacy-secret-token', 'read', 'jira', 'legacy_api_token', ${ownerUserId}, ${email},
                 ${options.status ?? 'active'})
         returning id

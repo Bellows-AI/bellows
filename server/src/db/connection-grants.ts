@@ -240,8 +240,7 @@ export function attachRefusalOf(error: unknown): AttachRefusal | null {
 
 /**
  * Upserts the org's grant by `(provider, externalAccountId)` and adds an active connection under it, inside the caller's
- * transaction. A unique violation propagates: `attachRefusalOf` names it. The `kind` column is the 054 rollout
- * column (`'jira'` only); the contract release drops it, so every connection carries it until then.
+ * transaction. A unique violation propagates: `attachRefusalOf` names it. The connection's provider is `provider`.
  */
 export async function attachInTx(
     tx: TransactionSql,
@@ -274,9 +273,9 @@ export async function attachInTx(
     }
     const [connection] = await tx<{ id: string }[]>`
         insert into connector_connection
-            (org_id, owner_user_id, kind, site, cloud_id, email, api_token, access, provider,
+            (org_id, owner_user_id, site, cloud_id, email, api_token, access, provider,
              credential, principal_user_id, external_account_id, grant_id)
-        values (${orgId}, ${userId}, 'jira', ${input.resource.label}, ${input.resource.id},
+        values (${orgId}, ${userId}, ${input.resource.label}, ${input.resource.id},
                 ${input.email ?? input.externalAccountId}, null, ${input.access},
                 ${input.provider}, 'oauth_grant', ${userId}, ${input.externalAccountId}, ${grant.id})
         returning id

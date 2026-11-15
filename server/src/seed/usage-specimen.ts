@@ -143,9 +143,10 @@ async function plantExecution(p: Plant, e: Execution, author: string): Promise<v
     if (e.board) {
         await sql`
             insert into job (org_id, id, root_job_id, parent_job_id, command, status, created_by, session_id, repo,
-                             created_at, started_at, finished_at, agent_turns)
+                             created_at, started_at, finished_at, agent_turns, execution_user_id)
             values (${orgId}, ${e.job}, ${e.root}, ${e.parent ?? null}, 'specimen task', 'succeeded', ${author},
-                    ${e.sessions[0] as string}, ${repo}, ${at(e.start)}, ${at(e.start)}, ${at(e.end)}, 3)
+                    ${e.sessions[0] as string}, ${repo}, ${at(e.start)}, ${at(e.start)}, ${at(e.end)}, 3,
+                    ${e.job === e.root ? author : null})
             on conflict (org_id, id) do nothing
         `;
     }

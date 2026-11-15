@@ -16,7 +16,7 @@ import { createOrgRegistry } from '../src/orgs.js';
 import type { GithubMint, GithubRevoke } from '../src/routes/github-credential.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
-import { craftJob, expireLease, testOrg, testUser } from './fixtures.js';
+import { craftJob, expireLease, testOrg, testUser, withoutTransitionGuard } from './fixtures.js';
 
 /**
  * The runner GitHub credential (docs/connections.md) on a real database: the per-call check's
@@ -219,8 +219,9 @@ describe.skipIf(!enabled)('attempt of lease — whose membership decides', () =>
 
     it('refuses a thread root with no execution user', async () => {
         const attempt = await running();
-        // Deleting the account nulls the column through its foreign key; the trigger allows that one change.
-        await sql`update job set execution_user_id = null where id = ${attempt.id}`;
+        // Only deleting the account nulls the column (its foreign key); the trigger refuses a direct null, so the
+        // setup writes the state that leaves without firing it.
+        await withoutTransitionGuard(sql, (tx) => tx`update job set execution_user_id = null where id = ${attempt.id}`);
         expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(REFUSED);
     });
 });
