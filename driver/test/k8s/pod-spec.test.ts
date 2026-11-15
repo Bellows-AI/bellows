@@ -838,7 +838,7 @@ describe('a docker class', () => {
         expect(named(pod, DOCKERD_CONTAINER).command).toEqual(dockerdStartArgv());
     });
 
-    it('adds the dockerd sidecar: restartable, before the gate, privileged only by its three caps', () => {
+    it('adds the dockerd sidecar: restartable, before the gate, privileged with no caps and no escalation field', () => {
         const pod = podOf('sandbox');
         const init = (pod.initContainers ?? []).map((c) => c.name);
         expect(init.indexOf(DOCKERD_CONTAINER)).toBe(0);
@@ -846,10 +846,9 @@ describe('a docker class', () => {
         const dockerd = named(pod, DOCKERD_CONTAINER);
         expect(dockerd.image).toBe(DOCKER_IMAGE);
         expect(dockerd.restartPolicy).toBe('Always');
-        expect(dockerd.securityContext).toEqual({
-            allowPrivilegeEscalation: false,
-            capabilities: { add: ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW'] },
-        });
+        // Privileged inside the class's microVM: the apiserver refuses `allowPrivilegeEscalation:
+        // false` beside `privileged: true`, and privileged holds every capability, so none is added.
+        expect(dockerd.securityContext).toEqual({ privileged: true });
         expect(dockerd.command).toEqual(dockerdStartArgv());
         expect(dockerd.resources).toEqual({
             requests: { cpu: '500m', memory: '1Gi' },
@@ -886,8 +885,8 @@ describe('a docker class', () => {
 
     // A microVM RuntimeClass sizes the VM by its containers' limits: a container without one is
     // memory the VM never had. The class's own limits cover the agent, the gate, the services, the
-    // reviewer and the daemon; the supervisor takes the class's runner limits, and the two small
-    // helpers a fixed pair.
+    // reviewer and the daemon. The supervisor and the two small helpers take fixed pairs: the VM is
+    // the SUM of the limits, so the supervisor never repeats the runner's.
     it('every container and init container of a docker-class runner pod and its readout Job carries cpu and memory limits', () => {
         const reviewing: BoardJob = {
             ...gatedOf(job),
@@ -916,7 +915,10 @@ describe('a docker class', () => {
                 memory: expect.any(String),
             });
         }
-        expect(named(pod, SUPERVISOR_CONTAINER).resources?.limits).toEqual({ cpu: '4', memory: '8Gi' });
+        expect(named(pod, SUPERVISOR_CONTAINER).resources).toEqual({
+            requests: { cpu: '50m', memory: '64Mi' },
+            limits: { cpu: '1', memory: '1Gi' },
+        });
         const reader = readerJobSpec(config, reviewing, 'reader', { argv: ['true'], env: {}, timeoutMs: 1000 });
         const readerPod = reader.spec.template.spec;
         for (const container of readerPod.containers) {

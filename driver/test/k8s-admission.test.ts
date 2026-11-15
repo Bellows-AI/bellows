@@ -5,7 +5,7 @@ import { parse as parseYaml } from 'yaml';
 import type { BoardJob } from '../src/board/board.js';
 import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { DOCKER_SOCK_VOLUME, DOCKERD_CAPS, DOCKERD_CONTAINER } from '../src/k8s/k8s-dockerd.js';
+import { DOCKER_SOCK_VOLUME, DOCKERD_CONTAINER } from '../src/k8s/k8s-dockerd.js';
 import { readerJobSpec, runnerJobSpec, secretName, volumeExportJobSpec } from '../src/k8s/k8s-podspec.js';
 import { RUNNER_CLASS_LABEL } from '../src/labels.js';
 import { SERVICE_ADDRESS } from '../src/services.js';
@@ -39,6 +39,32 @@ const policy = (suffix: string): string =>
     template
         .split('\n---\n')
         .find((doc) => doc.includes(`kind: ValidatingAdmissionPolicy\n`) && doc.includes(`-${suffix}\n`)) ?? '';
+
+/** The runner credentials Secret the rendered pod policy admits. */
+const RENDERED_CREDENTIALS = 'factory-runner-credentials';
+
+/**
+ * The pod policy as helm renders it for these runner classes (name → RuntimeClass, '' for none)
+ * and these docker classes: every template expression replaced by its value, ready for the
+ * evaluated CEL subset.
+ */
+function renderedPods(runtimeClasses: Record<string, string>, dockerClasses: string[]): CelPolicy {
+    const value = (variable: string) => new RegExp(`\\$${variable} := "([^"]+)"`).exec(template)![1]!;
+    const rendered = policy('pods')
+        .replace(/[ \t]*\{\{\/\*[\s\S]*?\*\/\}\}\n?/g, '')
+        .replace(/[ \t]*\{\{- with \.Values\.runner\.runtimeClassName \}\}[\s\S]*?\{\{- end \}\}\n?/, '')
+        .replace(/\{\{ squote \$(\w+) \}\}/g, (_, variable: string) => `'${value(variable)}'`)
+        .replace('{{ toJson $allowed | quote }}', JSON.stringify(JSON.stringify([RENDERED_CREDENTIALS])))
+        .replace('{{ toJson .Values.imagePullSecrets | quote }}', JSON.stringify('[]'))
+        .replace(
+            '{{ include "factory.runnerRuntimeClasses" . | quote }}',
+            JSON.stringify(JSON.stringify(runtimeClasses))
+        )
+        .replace('{{ include "factory.runnerDockerClasses" . | quote }}', JSON.stringify(JSON.stringify(dockerClasses)))
+        .replace(/^[ \t]*\{\{[^\n]*\}\}[ \t]*\n/gm, '')
+        .replace(/\{\{[^\n]*?\}\}/g, 'x');
+    return (parseYaml(rendered) as { spec: CelPolicy }).spec;
+}
 
 const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
@@ -287,40 +313,64 @@ describe('the admission policy pins each pod to its runner class RuntimeClass', 
 });
 
 /*
- * A docker class's task pod runs a `dockerd` native sidecar that adds NET_ADMIN, SYS_ADMIN
- * and NET_RAW and keeps no `drop: ALL`. Admission allows exactly that container that shape, and only
+ * A docker class's task pod runs a `dockerd` native sidecar, privileged inside the class's microVM
+ * (the VM is the boundary): no added capability, no `allowPrivilegeEscalation` (the apiserver
+ * refuses `false` beside privileged). Admission allows exactly that container that shape, and only
  * in a pod whose class label names a docker class and whose RuntimeClass is that class's own,
- * non-empty one; every other rule (pod RuntimeDefault, no escalation, nothing privileged) still holds
- * for it. The socket volume is mounted by the agent, the gate and `dockerd` alone. No CEL
- * evaluator runs offline: the template is pinned here and the real apiserver's admissions and
- * refusals are the --cluster admission phase (scripts/lanes/k8s/admission.sh).
+ * non-empty one; every other rule (pod RuntimeDefault, no escalation, nothing privileged) still
+ * holds for every other container. The socket volume is mounted by the agent, the gate and `dockerd`
+ * alone. The policy is evaluated here over a render with a docker class (`fixtures/cel-subset.ts`);
+ * the real apiserver's verdicts are the --cluster admission phase (scripts/lanes/k8s/admission.sh).
  */
-describe('the admission policy admits the dockerd sidecar of a docker class', () => {
+describe('the admission policy admits the privileged dockerd sidecar of a docker class', () => {
     const pods = policy('pods');
     const helpers = readFileSync(join(ROOT, 'charts/factory/templates/_helpers.tpl'), 'utf8');
-    const caps = `[${DOCKERD_CAPS.map((cap) => `'${cap}'`).join(', ')}]`;
+    const policyOf = renderedPods({ standard: '', sandbox: 'kata' }, ['sandbox']);
     const config = loadDriverConfig({
         EXECUTOR: 'kubernetes',
         K8S_NAMESPACE: 'factory',
+        RUNNER_CREDENTIALS_SECRET: RENDERED_CREDENTIALS,
         RUNNER_CLASSES: JSON.stringify({
             standard: {},
-            sandbox: { ...DOCKER_CLASS_SIZING, runtimeClassName: 'gvisor', docker: true },
+            sandbox: { ...DOCKER_CLASS_SIZING, runtimeClassName: 'kata', docker: true },
         }),
         RUNNER_DEFAULT_CLASS: 'standard',
         RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
     });
-    const pod = runnerJobSpec(
-        config,
-        {
-            ...job,
-            masterPrompt: 'Factory execution contract',
-            runnerClass: 'sandbox',
-            repo: 'Bellows-AI/bellows',
-            gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
-            services: [{ name: 'db', image: 'postgres:17', environment: [], user: { uid: 999, gid: 999 } }],
-        },
-        { id: SESSION, resume: false }
-    ).spec.template.spec;
+    const build = () =>
+        runnerJobSpec(
+            config,
+            {
+                ...job,
+                masterPrompt: 'Factory execution contract',
+                runnerClass: 'sandbox',
+                repo: 'Bellows-AI/bellows',
+                gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+                services: [{ name: 'db', image: 'postgres:17', environment: [], user: { uid: 999, gid: 999 } }],
+            },
+            { id: SESSION, resume: false }
+        );
+    type Container = { name: string; restartPolicy?: string; securityContext?: Record<string, unknown> };
+    type Sent = {
+        spec: {
+            template: {
+                metadata: { labels: Record<string, string> };
+                spec: { runtimeClassName?: string; containers: Container[]; initContainers: Container[] };
+            };
+        };
+    };
+    /** The Job as the apiserver receives it, changed by `edit`. */
+    const sent = (edit: (pod: Sent['spec']['template']) => void = () => {}): Sent => {
+        const spec = JSON.parse(JSON.stringify(build())) as Sent;
+        edit(spec.spec.template);
+        return spec;
+    };
+    const refusedOf = (spec: Sent) => refusals(policyOf, spec, { kind: { kind: 'Job' } });
+    const daemonOf = (pod: Sent['spec']['template']) =>
+        pod.spec.initContainers.find((c) => c.name === DOCKERD_CONTAINER)!;
+    const PRIVILEGED =
+        "a driver-specced container may not be privileged or add capabilities, but for the agent launch pair and a docker class's dockerd";
+    const pod = build().spec.template.spec;
     const containers = [...pod.containers, ...(pod.initContainers ?? [])];
 
     it('reads the docker classes from the chart values, by one helper', () => {
@@ -328,64 +378,70 @@ describe('the admission policy admits the dockerd sidecar of a docker class', ()
         expect(pods).toContain('include "factory.runnerDockerClasses"');
     });
 
-    it('allows the three caps and no drop-ALL on dockerd of a docker class under its RuntimeClass', () => {
-        // The pod is a docker class's, under that class's own RuntimeClass, which is never empty.
-        expect(pods).toContain('variables.runnerClass in variables.dockerClasses');
-        expect(pods).toContain("variables.runnerClasses[variables.runnerClass] != ''");
-        expect(pods).toContain('variables.spec.runtimeClassName == variables.runnerClasses[variables.runnerClass]');
-        // dockerd is a restartable init container, never a main one.
-        expect(pods).toContain(
-            `variables.spec.initContainers.exists(c, c.name == '${DOCKERD_CONTAINER}' && has(c.restartPolicy) && c.restartPolicy == 'Always')`
-        );
-        expect(pods).toContain(`variables.spec.containers.all(c, c.name != '${DOCKERD_CONTAINER}')`);
-        // The add rule admits exactly the daemon's three, on dockerd alone, under that condition.
-        expect(pods).toContain(
-            `(c.name == '${DOCKERD_CONTAINER}' && variables.dockerd &&\n                    c.securityContext.capabilities.add.all(a, a in ${caps}))`
-        );
-        // The drop-ALL rule is waived for that container under the same condition, and no other.
-        expect(pods).toContain(`(c.name == '${DOCKERD_CONTAINER}' && variables.dockerd) ||`);
-        expect(pods).toContain(`|| c.name == '${DOCKERD_CONTAINER}'))`);
+    it('admits the driver docker-class pod: dockerd privileged, under the class RuntimeClass', () => {
+        expect(refusedOf(sent())).toEqual([]);
     });
 
-    it('refuses them on any other container, on dockerd in a non-docker class, under another RuntimeClass, or as a main container', () => {
-        // The waiver is a conjunction of the name and the pod-wide condition: no other name, and a
-        // dockerd fails it whenever the class, the RuntimeClass or the container's place is wrong.
-        const dockerd = /- name: dockerd\n\s+expression: >-\n([\s\S]*?)\n\s+validations:/.exec(pods)?.[1] ?? '';
-        expect(dockerd).toContain('variables.dockerPod &&');
-        const dockerPod = /- name: dockerPod\n\s+expression: >-\n([\s\S]*?)\n\s+- name: /.exec(pods)?.[1] ?? '';
-        for (const clause of [
-            'variables.runnerClass in variables.dockerClasses',
-            "variables.runnerClasses[variables.runnerClass] != ''",
-            'has(variables.spec.runtimeClassName)',
-        ]) {
-            expect(dockerPod).toContain(clause);
-        }
-        expect(pods).toContain(
-            "a driver-specced container may not be privileged or add capabilities, but for the agent launch pair and the docker daemon's three"
+    it('refuses privileged on any other container, on a non-docker class, under a mismatched RuntimeClass, and as a main container', () => {
+        const gatePrivileged = sent((t) => {
+            t.spec.initContainers.find((c) => c.name === GATE_CONTAINER)!.securityContext = { privileged: true };
+        });
+        expect(refusedOf(gatePrivileged)).toContain(PRIVILEGED);
+        const standard = sent((t) => {
+            t.metadata.labels[RUNNER_CLASS_LABEL] = 'standard';
+            delete t.spec.runtimeClassName;
+        });
+        expect(refusedOf(standard)).toContain(PRIVILEGED);
+        const mismatched = sent((t) => {
+            t.spec.runtimeClassName = 'other-sandbox';
+        });
+        expect(refusedOf(mismatched)).toContain(PRIVILEGED);
+        expect(refusedOf(mismatched)).toContain(
+            'a driver-specced pod must run under its runner class RuntimeClass, and under none when the class names none'
         );
+        const main = sent((t) => {
+            const daemon = daemonOf(t);
+            t.spec.initContainers = t.spec.initContainers.filter((c) => c !== daemon);
+            delete daemon.restartPolicy;
+            t.spec.containers.push(daemon);
+        });
+        expect(refusedOf(main)).toContain(PRIVILEGED);
     });
 
-    it('still requires drop ALL, no-escalation and RuntimeDefault everywhere else', () => {
+    it('refuses a capability added to the privileged dockerd', () => {
+        const capped = sent((t) => {
+            daemonOf(t).securityContext = { privileged: true, capabilities: { add: ['NET_ADMIN'] } };
+        });
+        expect(refusedOf(capped)).toEqual([PRIVILEGED]);
+    });
+
+    it('still requires no escalation, drop ALL and RuntimeDefault everywhere else', () => {
+        const escalating = sent((t) => {
+            delete t.spec.initContainers.find((c) => c.name === GATE_CONTAINER)!.securityContext!
+                .allowPrivilegeEscalation;
+        });
+        expect(refusedOf(escalating)).toEqual(['a driver-specced container must set allowPrivilegeEscalation: false']);
+        const seccomp = sent((t) => {
+            delete (t.spec as { securityContext?: unknown }).securityContext;
+        });
+        expect(refusedOf(seccomp)).toEqual(['a driver-specced pod must run under the RuntimeDefault seccomp profile']);
         expect(pods).toContain("'ALL' in c.securityContext.capabilities.drop");
-        expect(pods).toContain('c.securityContext.allowPrivilegeEscalation == false');
-        expect(pods).toContain("variables.spec.securityContext.seccompProfile.type == 'RuntimeDefault'");
-        // The driver's own docker-class pod: dockerd adds exactly the three and drops nothing; every
-        // other container drops ALL and adds nothing past the agent's launch pair.
+        // The driver's own docker-class pod: dockerd privileged and nothing else; every other
+        // container drops ALL, never escalates and adds nothing past the agent's launch pair.
         expect(pod.securityContext?.seccompProfile?.type).toBe('RuntimeDefault');
-        expect(pod.runtimeClassName).toBe('gvisor');
+        expect(pod.runtimeClassName).toBe('kata');
         expect(pod.containers.some((c) => c.name === DOCKERD_CONTAINER)).toBe(false);
-        const daemon = pod.initContainers?.find((c) => c.name === DOCKERD_CONTAINER);
-        expect(daemon?.restartPolicy).toBe('Always');
+        expect(pod.initContainers?.find((c) => c.name === DOCKERD_CONTAINER)?.restartPolicy).toBe('Always');
         for (const container of containers) {
             const context = container.securityContext;
-            expect(context?.allowPrivilegeEscalation, container.name).toBe(false);
-            expect((context as { privileged?: boolean } | undefined)?.privileged, container.name).toBeUndefined();
-            const added = (context?.capabilities as { add?: string[] } | undefined)?.add ?? [];
             if (container.name === DOCKERD_CONTAINER) {
-                expect(added).toEqual([...DOCKERD_CAPS]);
+                expect(context).toEqual({ privileged: true });
                 continue;
             }
-            expect(context?.capabilities?.drop, container.name).toContain('ALL');
+            expect(context.allowPrivilegeEscalation, container.name).toBe(false);
+            expect('privileged' in context, container.name).toBe(false);
+            expect(context.capabilities?.drop, container.name).toContain('ALL');
+            const added = context.capabilities?.add ?? [];
             if (container.name !== AGENT_CONTAINER) expect(added, container.name).toEqual([]);
         }
     });
@@ -561,23 +617,9 @@ describe('the admission policy admits the holder binding (#829)', () => {
  * or env reference the policy refuses fails offline instead of as a 422 on a real apiserver.
  */
 describe('the pod policy admits every runner Job the driver builds', () => {
-    const CREDENTIALS = 'factory-runner-credentials';
-    const value = (variable: string) => new RegExp(`\\$${variable} := "([^"]+)"`).exec(template)![1]!;
-    const rendered = policy('pods')
-        .replace(/[ \t]*\{\{\/\*[\s\S]*?\*\/\}\}\n?/g, '')
-        .replace(/[ \t]*\{\{- with \.Values\.runner\.runtimeClassName \}\}[\s\S]*?\{\{- end \}\}\n?/, '')
-        .replace(/\{\{ squote \$(\w+) \}\}/g, (_, variable: string) => `'${value(variable)}'`)
-        .replace('{{ toJson $allowed | quote }}', JSON.stringify(JSON.stringify([CREDENTIALS])))
-        .replace('{{ toJson .Values.imagePullSecrets | quote }}', JSON.stringify('[]'))
-        // The default install's one runner class: `standard`, under no RuntimeClass, with no Docker daemon.
-        .replace(
-            '{{ include "factory.runnerRuntimeClasses" . | quote }}',
-            JSON.stringify(JSON.stringify({ standard: '' }))
-        )
-        .replace('{{ include "factory.runnerDockerClasses" . | quote }}', JSON.stringify('[]'))
-        .replace(/^[ \t]*\{\{[^\n]*\}\}[ \t]*\n/gm, '')
-        .replace(/\{\{[^\n]*?\}\}/g, 'x');
-    const pods = (parseYaml(rendered) as { spec: CelPolicy }).spec;
+    const CREDENTIALS = RENDERED_CREDENTIALS;
+    // The default install's one runner class: `standard`, under no RuntimeClass, with no Docker daemon.
+    const pods = renderedPods({ standard: '' }, []);
     const config = loadDriverConfig({
         EXECUTOR: 'kubernetes',
         K8S_NAMESPACE: 'factory',

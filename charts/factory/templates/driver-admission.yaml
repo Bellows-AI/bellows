@@ -15,14 +15,15 @@ service sidecars, every aux Job — because `create jobs` would otherwise be `re
     and such Secrets — no hostPath, no other claim, no projected ServiceAccount token, no CSI driver.
   - a mount of a task volume carries no subPathExpr and no subPath but the reviewer's home
     (`.factory/reviewer`).
-  - no ServiceAccount token, no other ServiceAccount, no host namespaces, nothing privileged, no
-    added capabilities but the agent's launch pair and, in a docker class under its RuntimeClass,
-    the `dockerd` sidecar's three — the one container that also keeps no `drop: ALL`.
+  - no ServiceAccount token, no other ServiceAccount, no host namespaces, no added capabilities
+    but the agent's launch pair, and nothing privileged but, in a docker class under its
+    RuntimeClass (a microVM: the driver refuses to boot unless its handler is Kata), the `dockerd`
+    sidecar — the one container that also keeps no `drop: ALL` and sets no escalation field.
   - the runner class (runner.classes): the pod template's `factory.runner-class` label names a
     declared class, and the pod's RuntimeClass is that class's — none when the class names none.
   - the executor hardening is REQUIRED, not merely permitted (#382): the RuntimeDefault seccomp
     profile on the pod, `allowPrivilegeEscalation: false` and `capabilities.drop: [ALL]` on every
-    container. Forbidding `privileged` and requiring the drop are different controls; a client
+    container but that `dockerd`. Forbidding `privileged` and requiring the drop are different controls; a client
     that sets neither satisfies only the first.
   - the task pod's shape (#773): `hostAliases` map only to 127.0.0.1 (a declared service's name),
     and a `svc-` container is only a restartable init container — the restartable ones are the
@@ -47,8 +48,11 @@ namespace. Admission sees no job, so a task volume is fenced by shape, not by ow
 compromised driver can still mount another thread's volume by name. A mutating sidecar injector (a service mesh) adds volumes and containers this policy refuses on
 runner pods; exclude the namespace from injection. Seccomp is required here (#382); AppArmor and sysctls
 are still left to Pod Security Admission — label the namespace
-`pod-security.kubernetes.io/enforce: baseline` for those. None of this is kernel or VM isolation:
-it is a smaller share of one shared kernel, not a different one (docs/security.md).
+`pod-security.kubernetes.io/enforce: baseline` for those, or `privileged` when a class sets
+`docker: true`: baseline refuses the privileged `dockerd`, and this policy is then what holds
+privileged to that one container under its class's RuntimeClass. None of this is kernel or VM
+isolation for a class without a daemon: it is a smaller share of one shared kernel, not a
+different one (docs/security.md); a docker class's boundary is its microVM.
 */}}
 {{- $fullname := include "factory.fullname" . }}
 {{- $name := printf "%s-%s-driver" .Release.Namespace $fullname | trunc 240 | trimSuffix "-" }}
@@ -174,19 +178,22 @@ spec:
         runs. Container names are unique across a pod's containers and initContainers, so no other
         container can carry them.
         The docker daemon of a docker class (`dockerd`, a restartable init container of a
-        pod under its docker class's RuntimeClass, variables.dockerd) adds NET_ADMIN, SYS_ADMIN and
-        NET_RAW, and only these. It is never privileged, like every other container.
+        pod under its docker class's RuntimeClass, variables.dockerd) is the one container that may
+        be privileged, and it adds no capability (privileged holds them all): a measured capability
+        set cannot run the dind entrypoint, the daemon's networks or kind. The class's microVM is
+        its boundary; the driver refuses to boot unless that RuntimeClass's handler is Kata.
         */}}
         - expression: >-
-              variables.containers.all(c, !has(c.securityContext) || (
-                !(has(c.securityContext.privileged) && c.securityContext.privileged) &&
-                (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
-                  size(c.securityContext.capabilities.add) == 0 ||
-                  (request.kind.kind == 'Job' && c.name == 'agent' &&
-                    c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])) ||
-                  (c.name == 'dockerd' && variables.dockerd &&
-                    c.securityContext.capabilities.add.all(a, a in ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW'])))))
-          message: "a driver-specced container may not be privileged or add capabilities, but for the agent launch pair and the docker daemon's three"
+              variables.containers.all(c, !has(c.securityContext) ||
+                (c.name == 'dockerd' && variables.dockerd &&
+                  (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
+                    size(c.securityContext.capabilities.add) == 0)) ||
+                (!(has(c.securityContext.privileged) && c.securityContext.privileged) &&
+                  (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
+                    size(c.securityContext.capabilities.add) == 0 ||
+                    (request.kind.kind == 'Job' && c.name == 'agent' &&
+                      c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])))))
+          message: "a driver-specced container may not be privileged or add capabilities, but for the agent launch pair and a docker class's dockerd"
         {{/*
         Issue #382. Everything above FORBIDS a dangerous shape; these three REQUIRE the safe one,
         which is a different control: a driver that silently stopped setting `capabilities.drop`
@@ -210,14 +217,18 @@ spec:
               variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.seccompProfile) ||
                 c.securityContext.seccompProfile.type == 'RuntimeDefault')
           message: 'a driver-specced container may not override the pod seccomp profile'
+        {{/*
+        The no-escalation rule's one waiver is that privileged `dockerd` (variables.dockerd): the
+        apiserver refuses `allowPrivilegeEscalation: false` beside `privileged: true`.
+        */}}
         - expression: >-
-              variables.containers.all(c, has(c.securityContext) &&
-                has(c.securityContext.allowPrivilegeEscalation) &&
-                c.securityContext.allowPrivilegeEscalation == false)
+              variables.containers.all(c, (c.name == 'dockerd' && variables.dockerd) ||
+                (has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation) &&
+                c.securityContext.allowPrivilegeEscalation == false))
           message: 'a driver-specced container must set allowPrivilegeEscalation: false'
         {{/*
-        The one waiver, the docker daemon under variables.dockerd — `drop: ALL` breaks it.
-        Every other container drops ALL, and the daemon still keeps the pod profile and no escalation.
+        The drop-ALL rule's one waiver, the same privileged docker daemon under variables.dockerd.
+        Every other container drops ALL; the daemon still keeps the pod's RuntimeDefault profile.
         */}}
         - expression: >-
               variables.containers.all(c, (c.name == 'dockerd' && variables.dockerd) ||

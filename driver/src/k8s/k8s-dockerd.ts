@@ -1,7 +1,7 @@
 import { DOCKER_HOST_ENV, type RunnerClass } from '../runner-classes.js';
 import { GROUP_UP_WAIT_MS } from '../supervised-steps.js';
 import { MS_PER_SECOND } from './k8s-transport.js';
-import type { RunnerMount, RunnerVolume } from './k8s-podfields.js';
+import type { PrivilegedSecurityContext, RunnerMount, RunnerVolume } from './k8s-podfields.js';
 
 /**
  * The docker daemon of a docker-class task group (`RunnerClass.docker`): its names, paths and the
@@ -94,5 +94,25 @@ export const DOCKER_CLASS_HELPER_RESOURCES = {
     limits: { cpu: '500m', memory: '512Mi' },
 } as const;
 
-/** The capabilities the daemon adds over the runtime default set, and the only ones: no `drop: ALL`, which breaks it. */
-export const DOCKERD_CAPS = ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW'] as const;
+/**
+ * A docker class's supervisor: node running the supervisor script plus the git of its steps (the
+ * sync's fetch and checkout, the publish's push, the reclaim). A microVM RuntimeClass sizes the VM
+ * by the SUM of its containers' limits, so the supervisor never repeats the runner's: a fixed pair,
+ * idle requests and a limit that holds node's heap beside one `git index-pack` of a large fetch
+ * (git's own pack windows are bounded well under it). A repository whose fetch needs more is a
+ * stated sizing limit, not the runner's memory counted twice.
+ */
+export const DOCKER_CLASS_SUPERVISOR_RESOURCES = {
+    requests: { cpu: '50m', memory: '64Mi' },
+    limits: { cpu: '1', memory: '1Gi' },
+} as const;
+
+/**
+ * The daemon's security context: privileged inside the class's microVM, which is the boundary (a
+ * Kata RuntimeClass: its own guest kernel, the driver checks the handler at boot). A capability set
+ * was measured and is not enough — the dind entrypoint needs a writable cgroup tree, the daemon a
+ * writable `/proc/sys`, and kind's privileged node containers only what the daemon holds. No added
+ * capability (privileged holds them all) and no `allowPrivilegeEscalation`, which the apiserver
+ * refuses beside privileged.
+ */
+export const DOCKERD_SECURITY_CONTEXT: Readonly<PrivilegedSecurityContext> = { privileged: true };
