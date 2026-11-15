@@ -21,7 +21,7 @@ export const prNumberFromUrl = (url: string): number | null => {
  * The branch the claim bases its checkout and PR on, or null for the remote default: a value no
  * git branch can have is dropped here, before it becomes a sync env literal or a `gh --base`.
  */
-export function baseBranchOf(job: BoardJob): string | null {
+export function baseBranchOf(job: Pick<BoardJob, 'baseBranch'>): string | null {
     return typeof job.baseBranch === 'string' && isBranchName(job.baseBranch) ? job.baseBranch : null;
 }
 /** What the PR summary script answered — either half is optional; nulls mean "fall back". */

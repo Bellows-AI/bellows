@@ -617,6 +617,18 @@ describe('the gate container (issue #773)', () => {
         );
     });
 
+    // A gate that measures the change (the jobs lane's mapping wrapper) compares against the claim's
+    // base, not the remote default; a value no branch can have is dropped. Never as BASE_BRANCH: the
+    // task scripts read that name, and a gate's suites and boards inherit the gate env.
+    it('names the claim’s base branch, and drops a malformed one', () => {
+        const named = literals(gateCreateArgs(config, { ...gated, baseBranch: 'release/2' }, 'node:24'));
+        expect(named).toContain('BELLOWS_BASE_BRANCH=release/2');
+        expect(named).not.toContain('BASE_BRANCH=release/2');
+        expect(
+            literals(gateCreateArgs(config, { ...gated, baseBranch: 'bad..name' }, 'node:24')).join(' ')
+        ).not.toContain('BELLOWS_BASE_BRANCH');
+    });
+
     // Issue #773: the gate reaches the declared services on loopback by name, and the registry a
     // setup installs from, through the namespace its group's supervisor holds.
     it('is hardened, labelled for the fence and the reaper, and joins its supervisor’s network namespace', () => {
