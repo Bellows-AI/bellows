@@ -190,11 +190,36 @@ const forbidden = async (run: Run, res: FetchResponseLike, credential: Credentia
     return refuse({ outcome: 'forbidden', reason: 'provider-denied' });
 };
 
+/** The definition's verdict on an answer: null leaves it to the status. A classifier that throws is a malformed answer. */
+const classified = (run: Run, json: unknown, status: number): Fail | null => {
+    try {
+        const outcome = run.def.classifyAnswer?.(json, run.op, status) ?? null;
+        return outcome === null ? null : refuse(outcome);
+    } catch {
+        return afterDispatch(run, 'malformed-response');
+    }
+};
+
+/** A 4xx the definition names from its body (a GraphQL error document); its status outcome otherwise. */
+const namedRefusal = async (run: Run, res: FetchResponseLike): Promise<Fail> => {
+    let json: unknown = null;
+    try {
+        json = parseJson(await readBody(res, run.cap, run.aborted));
+    } catch {
+        json = null;
+    }
+    return classified(run, json, res.status) ?? unavailable('unexpected-status');
+};
+
 /** A non-2xx answer as its closed outcome; null for a 2xx. */
 const refusalFor = async (run: Run, res: FetchResponseLike, credential: Credential): Promise<Fail | null> => {
     const { status } = res;
     if (status >= STATUS.ok && status < STATUS.redirect) return null;
     if (status === STATUS.forbidden) return forbidden(run, res, credential);
+    const answered = status >= STATUS.badRequest && status < STATUS.server;
+    if (answered && status !== STATUS.unauthorized && status !== STATUS.tooMany && run.def.classifyAnswer) {
+        return namedRefusal(run, res);
+    }
     await dropBody(res);
     if (status === STATUS.tooMany) {
         const wait = retryAfterMs(res.headers.get('retry-after'));
@@ -237,7 +262,7 @@ const fetchPage = async (
     run: Run,
     credential: Credential,
     request: OperationRequest
-): Promise<{ json: unknown } | Fail> => {
+): Promise<{ json: unknown; status: number } | Fail> => {
     const url = destination(run.def, run.ctx.handle, request.path);
     if (!url) return refuse({ outcome: 'forbidden', reason: 'destination-refused' });
     let res: FetchResponseLike;
@@ -246,7 +271,10 @@ const fetchPage = async (
     } catch {
         return afterDispatch(run, stopReason(run));
     }
-    return (await refusalFor(run, res, credential)) ?? readJson(run, res);
+    const refused = await refusalFor(run, res, credential);
+    if (refused) return refused;
+    const read = await readJson(run, res);
+    return 'json' in read ? { json: read.json, status: res.status } : read;
 };
 
 /** Fold one page into the collected items; the next page's request, or null when collection is done. */
@@ -261,16 +289,6 @@ const collect = (
         : pagination.next(read.json, read.request);
 };
 
-/** The definition's verdict on a 2xx answer: null when it is a value. A classifier that throws is a malformed answer. */
-const classified = (run: Run, json: unknown): Fail | null => {
-    try {
-        const outcome = run.def.classifyAnswer?.(json, run.op) ?? null;
-        return outcome === null ? null : refuse(outcome);
-    } catch {
-        return afterDispatch(run, 'malformed-response');
-    }
-};
-
 const execute = async <R>(run: Run, credential: Credential, input: never): Promise<OperationResult<R>> => {
     const pagination = run.op.paginate;
     const collected: unknown[] = [];
@@ -278,7 +296,7 @@ const execute = async <R>(run: Run, credential: Credential, input: never): Promi
     for (let page = 1; request !== null; page += 1) {
         const got = await fetchPage(run, credential, request);
         if ('ok' in got) return got;
-        const refused = classified(run, got.json);
+        const refused = classified(run, got.json, got.status);
         if (refused) return refused;
         if (!pagination) return { ok: true, value: got.json as R };
         try {

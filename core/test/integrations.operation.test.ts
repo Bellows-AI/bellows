@@ -366,6 +366,65 @@ describe('runOperation', () => {
         });
     });
 
+    describe('a definition classifier names a 4xx answer it recognises; otherwise the status decides', () => {
+        const seen: number[] = [];
+        const judged = defineIntegration({
+            ...def,
+            classifyAnswer: (json, _op, status) => {
+                seen.push(status);
+                return (json as { limited?: boolean } | null)?.limited === true ? { outcome: 'rate_limited' } : null;
+            },
+        });
+        const runJudged = (op: IntegrationOperation<string>, f: FetchLike) =>
+            runOperation(judged, op, { handle: handle(), credentials: source(), fetch: f, deadlineMs: 2000 }, '/api/x');
+        const unexpected = { outcome: 'unavailable', reason: 'unexpected-status', retryable: true };
+
+        it('a 400 the classifier names is its outcome, with the status handed over', async () => {
+            seen.length = 0;
+            expect(
+                await runJudged(
+                    read,
+                    fetcher(() => respond(400, { limited: true }))
+                )
+            ).toEqual({
+                ok: false,
+                outcome: { outcome: 'rate_limited' },
+            });
+            expect(seen).toEqual([400]);
+        });
+
+        it('a 4xx the classifier leaves alone, or whose body is not JSON, keeps its status outcome', async () => {
+            expect(
+                await runJudged(
+                    read,
+                    fetcher(() => respond(404, { limited: false }))
+                )
+            ).toEqual({
+                ok: false,
+                outcome: unexpected,
+            });
+            expect(
+                await runJudged(
+                    write,
+                    fetcher(() => bytes(400, enc.encode('<html>')))
+                )
+            ).toEqual({
+                ok: false,
+                outcome: unexpected,
+            });
+        });
+
+        it('a 401, 403, 429 or 5xx never reaches the classifier', async () => {
+            seen.length = 0;
+            for (const status of [401, 403, 429, 503])
+                await runJudged(
+                    read,
+                    fetcher(() => respond(status, { limited: true }))
+                );
+            expect(seen).toEqual([]);
+        });
+    });
+
     it('pagination stops at maxPages', async () => {
         const paged: IntegrationOperation<string> = {
             ...read,

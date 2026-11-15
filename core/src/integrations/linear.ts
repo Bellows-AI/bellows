@@ -25,6 +25,8 @@ export const LINEAR_ISSUE_KEY = /^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]*$/;
 export const LINEAR_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const DEFAULT_API_ORIGIN = 'https://api.linear.app';
+const HTTP_OK = 200;
+const HTTP_REDIRECT = 300;
 const PATH_PREFIX = '/graphql';
 const SEARCH_PAGE_SIZE = 50;
 const SEARCH_MAX_PAGE_SIZE = 100;
@@ -193,9 +195,14 @@ const ERROR_KINDS: readonly { match: RegExp; outcome: IntegrationOutcome }[] = [
     { match: /notfound/, outcome: { outcome: 'unavailable', reason: 'unexpected-status', retryable: true } },
 ];
 
+/** Linear names a missing entity only in the message (`Entity not found: Issue`, code `INPUT_ERROR`). */
+const ENTITY_NOT_FOUND = /^Entity not found\b/;
+
 const errorText = (error: unknown): string => {
     const ext = record(record(error)?.extensions);
-    return [ext?.code, ext?.type]
+    const message = record(error)?.message;
+    const missing = typeof message === 'string' && ENTITY_NOT_FOUND.test(message) ? 'not found' : undefined;
+    return [ext?.code, ext?.type, missing]
         .filter((v): v is string => typeof v === 'string')
         .join(' ')
         .toLowerCase()
@@ -204,15 +211,18 @@ const errorText = (error: unknown): string => {
 };
 
 /**
- * A Linear GraphQL answer's verdict: null when it carries `data` and no `errors`. `extensions.code`/`type`
- * decide the outcome; an unknown error or a missing `data` is a failure, `outcome_unknown` for a write.
+ * A Linear GraphQL answer's verdict. `extensions.code`/`type` (and an `Entity not found` message) name the outcome,
+ * the same one the matching HTTP status gets. A 2xx is a value only with `data` and no `errors`; an unknown error or
+ * a missing `data` is a failure, `outcome_unknown` for a write. A 4xx it cannot name is null: its status decides.
  */
 export function classifyLinearAnswer(
     json: unknown,
-    op: Pick<IntegrationOperation, 'name' | 'effect'>
+    op: Pick<IntegrationOperation, 'name' | 'effect'>,
+    status: number
 ): IntegrationOutcome | null {
     const answer = record(json);
     const errors = answer?.errors;
+    const twoHundred = status >= HTTP_OK && status < HTTP_REDIRECT;
     const failed = (reason: 'upstream-error' | 'malformed-response'): IntegrationOutcome =>
         op.effect === 'write'
             ? { outcome: 'outcome_unknown', operation: op.name }
@@ -220,7 +230,8 @@ export function classifyLinearAnswer(
     if (Array.isArray(errors) && errors.length > 0) {
         const texts = errors.map(errorText);
         const kind = ERROR_KINDS.find((k) => texts.some((text) => k.match.test(text)));
-        return kind ? { ...kind.outcome } : failed('upstream-error');
+        if (kind) return { ...kind.outcome };
+        return twoHundred ? failed('upstream-error') : null;
     }
-    return record(answer?.data) === null ? failed('malformed-response') : null;
+    return twoHundred && record(answer?.data) === null ? failed('malformed-response') : null;
 }

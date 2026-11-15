@@ -274,12 +274,55 @@ describe('linear GraphQL answers through runOperation', () => {
         const answer = {
             errors: [{ extensions: { code: 'INVALID_INPUT' } }, { extensions: { type: 'authentication error' } }],
         };
-        expect(classifyLinearAnswer(answer, { name: 'getIssue', effect: 'read' })).toEqual({
+        expect(classifyLinearAnswer(answer, { name: 'getIssue', effect: 'read' }, 200)).toEqual({
             outcome: 'unavailable',
             reason: 'credential-rejected',
             retryable: true,
         });
-        expect(classifyLinearAnswer({ data: { viewer: null } }, { name: 'viewer', effect: 'read' })).toBeNull();
+        expect(classifyLinearAnswer({ data: { viewer: null } }, { name: 'viewer', effect: 'read' }, 200)).toBeNull();
+    });
+
+    // The shapes api.linear.app sends: a missing entity and a rate limit are HTTP 400 GraphQL error documents.
+    const NOT_FOUND = {
+        errors: [
+            {
+                message: 'Entity not found: Issue',
+                extensions: { type: 'invalid input', code: 'INPUT_ERROR', statusCode: 400 },
+            },
+        ],
+        data: null,
+    };
+    const unexpected = { outcome: 'unavailable', reason: 'unexpected-status', retryable: true };
+
+    it.each([
+        ['RATELIMITED', errors({ code: 'RATELIMITED', statusCode: 400 }), { outcome: 'rate_limited' }],
+        ['an entity not found', NOT_FOUND, unexpected],
+        [
+            'AUTHENTICATION_ERROR',
+            errors({ code: 'AUTHENTICATION_ERROR', statusCode: 401 }),
+            { outcome: 'unavailable', reason: 'credential-rejected', retryable: true },
+        ],
+        [
+            'FORBIDDEN',
+            errors({ code: 'FORBIDDEN', type: 'forbidden' }),
+            { outcome: 'forbidden', reason: 'provider-denied' },
+        ],
+        ['any other GraphQL error', errors({ code: 'INPUT_ERROR', type: 'invalid input' }), unexpected],
+        ['a body that is no GraphQL document', { message: 'bad request' }, unexpected],
+    ])('a 400 with %s is the outcome its status twin gets', async (_name, answer, outcome) => {
+        for (const op of ['read', 'write'] as const) {
+            const f = fetcher(() => respond(400, answer));
+            const r =
+                op === 'read'
+                    ? await run(LINEAR_OPERATIONS.getIssue, { key: 'ENG-1' }, f)
+                    : await run(LINEAR_OPERATIONS.addComment, { key: 'ENG-1', body: 'x', receiptId: RECEIPT }, f);
+            expect(r).toEqual({ ok: false, outcome });
+        }
+    });
+
+    it('a 200 with an entity not found reads like a 404', async () => {
+        const f = fetcher(() => respond(200, NOT_FOUND));
+        expect(await run(LINEAR_OPERATIONS.getIssue, { key: 'ENG-1' }, f)).toEqual({ ok: false, outcome: unexpected });
     });
 
     it('a second page with errors ends the search with its outcome', async () => {

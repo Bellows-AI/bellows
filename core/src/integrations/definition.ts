@@ -49,10 +49,15 @@ export interface IntegrationDefinition {
     /** Whether a 403 means "a scope is missing" rather than "denied". */
     isScopeError?(status: number, json: unknown): boolean;
     /**
-     * A 2xx answer's verdict before it counts as a value (every page of a paginated one): null accepts it, an
-     * outcome refuses it. A GraphQL failure is a 200 with `errors`. Absent: every 2xx JSON answer is a value.
+     * An answer's verdict from its JSON body: a 2xx (every page of a paginated one) before it counts as a value, and
+     * a 4xx other than 401/403/429. An outcome refuses the answer; null leaves it to the status (a 2xx is a value, a
+     * 4xx its status outcome). A GraphQL failure is a 200 or a 400 with `errors`. Absent: the status alone decides.
      */
-    classifyAnswer?(json: unknown, op: Pick<IntegrationOperation, 'name' | 'effect'>): IntegrationOutcome | null;
+    classifyAnswer?(
+        json: unknown,
+        op: Pick<IntegrationOperation, 'name' | 'effect'>,
+        status: number
+    ): IntegrationOutcome | null;
 }
 
 export const defineIntegration = (def: IntegrationDefinition): IntegrationDefinition => {
