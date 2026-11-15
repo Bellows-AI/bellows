@@ -113,6 +113,7 @@ function session(board: SettingsBoard): Session {
         user: { id: 'u1', login: 'e2e-member', name: 'E2E Member', githubUserId: 1, avatarUrl: null },
         role: board.role,
         membership: { invitedAt: null, claimedAt: AT },
+        setup: { completed: true, done: [], skipped: [] },
         account: { createdAt: AT, lastLoginAt: AT },
         organization: { id: 'org1', name: 'Bellows-AI' },
         organizations: [{ id: 'org1', name: 'Bellows-AI' }],

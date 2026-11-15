@@ -146,6 +146,9 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['POST', '/api/jobs/:id/wait/cancel', 'write', MEMBER_ROLE],
     ['POST', '/api/jobs/:id/wait/poke', 'write', MEMBER_ROLE],
     ['POST', '/api/jobs/preflight', 'read', MEMBER_ROLE],
+    // The member's own onboarding progress: a browser act, never a scoped grant's.
+    ['POST', '/api/onboarding/setup', 'none', MEMBER_ROLE],
+    ['POST', '/api/onboarding/setup/complete', 'none', MEMBER_ROLE],
     ['POST', '/api/org/executors', 'none', ADMIN_ROLE],
     ['POST', '/api/org/executors/:id/scope', 'none', ADMIN_ROLE],
     ['POST', '/api/org/executors/:id/suspension', 'none', ADMIN_ROLE],
