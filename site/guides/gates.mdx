@@ -56,6 +56,8 @@ A gate that fails because the environment broke is not the agent's fault. Bellow
 
 You can declare up to 16 gates. Values may be bare, `'single'` or `"double"` quoted. There are no escape sequences. If a command needs real quoting, put it in a script in your repo and call the script.
 
+When the task names a base branch, its gates see it as `$BELLOWS_BASE_BRANCH`. A gate can diff against `origin/$BELLOWS_BASE_BRANCH` to check only what the change touches. A task without a base branch leaves the variable unset, so fall back to your default branch: `origin/${BELLOWS_BASE_BRANCH:-main}`.
+
 ## On-demand gates
 
 Use `on_demand: true` for checks that are too slow or too specific to run on every task, such as an end-to-end suite. The agent runs it only when its change touches what the gate checks, and a failure never fails the task.
