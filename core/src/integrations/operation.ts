@@ -191,6 +191,15 @@ const forbidden = async (run: Run, res: FetchResponseLike, credential: Credentia
 };
 
 /** The definition's verdict on an answer: null leaves it to the status. A classifier that throws is a malformed answer. */
+/** Whether the operation's shape check (when it has one) accepts the answer; a throwing check accepts nothing. */
+const shaped = (run: Run, json: unknown, request: OperationRequest): boolean => {
+    try {
+        return run.op.accepts?.(json, request) ?? true;
+    } catch {
+        return false;
+    }
+};
+
 const classified = (run: Run, json: unknown, status: number): Fail | null => {
     try {
         const outcome = run.def.classifyAnswer?.(json, run.op, status) ?? null;
@@ -298,6 +307,7 @@ const execute = async <R>(run: Run, credential: Credential, input: never): Promi
         if ('ok' in got) return got;
         const refused = classified(run, got.json, got.status);
         if (refused) return refused;
+        if (!shaped(run, got.json, request)) return afterDispatch(run, 'malformed-response');
         if (!pagination) return { ok: true, value: got.json as R };
         try {
             request = collect(pagination, collected, { json: got.json, page, request });

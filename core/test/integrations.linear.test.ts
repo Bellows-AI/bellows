@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
     classifyLinearAnswer,
@@ -84,11 +85,19 @@ const connection = (nodes: unknown[], next: string | null) => ({
     pageInfo: { hasNextPage: next !== null, endCursor: next },
 });
 
+type Fixture = { label: string; json: unknown };
+const ANSWERS = JSON.parse(readFileSync(new URL('./fixtures/linear-answers.json', import.meta.url), 'utf8')) as Record<
+    string,
+    { input: unknown; accept: Fixture[]; reject: Fixture[] }
+>;
+
 describe('linear operations', () => {
     it('getIssue posts the issue query with the key as id', async () => {
-        const f = fetcher(() => respond(200, { data: { issue: { identifier: 'ENG-1' } } }));
+        const valid = ANSWERS.getIssue?.accept[0]?.json as { data: { issue: Record<string, unknown> } };
+        const issue = { ...valid.data.issue, identifier: 'ENG-1' };
+        const f = fetcher(() => respond(200, { data: { issue } }));
         const r = await run(LINEAR_OPERATIONS.getIssue, { key: 'ENG-1' }, f);
-        expect(r).toEqual({ ok: true, value: { data: { issue: { identifier: 'ENG-1' } } } });
+        expect(r).toEqual({ ok: true, value: { data: { issue } } });
         expect(f.calls[0]?.url).toBe(URL_);
         expect(f.calls[0]?.method).toBe('POST');
         expect(f.calls[0]?.body.variables).toEqual({ id: 'ENG-1' });
@@ -195,7 +204,9 @@ describe('linear operations', () => {
     });
 
     it('listComments stops at maxPages', async () => {
-        const f = fetcher((n) => respond(200, { data: { issue: { comments: connection([{ id: n }], `cur${n}`) } } }));
+        const f = fetcher((n) =>
+            respond(200, { data: { issue: { comments: connection([{ id: `c${n}` }], `cur${n}`) } } })
+        );
         const r = await run(LINEAR_OPERATIONS.listComments, { key: 'ENG-7' }, f);
         expect(f.calls).toHaveLength(10);
         expect(r.ok && (r.value as unknown[]).length).toBe(10);
@@ -380,4 +391,37 @@ describe('linear scopes and definition', () => {
         expect(linearApiBase(`${ORIGIN}/`)).toBe(URL_);
         expect(createLinearIntegration().api.origin({ id: 'org-1', label: 'x' })).toBe('https://api.linear.app');
     });
+});
+
+/**
+ * Every operation's answer has one shape (`linearAnswerShape`), checked before any success: an answer that fails it
+ * is `malformed-response` (`outcome_unknown` for the comment), never a value, an empty list or not-found. The same
+ * fixtures pin the runner helper (server/test/linear-helper-parity.test.ts, driver/test/linear-helper.test.ts).
+ */
+describe('linear answer shapes through runOperation', () => {
+    for (const [name, table] of Object.entries(ANSWERS)) {
+        const op = LINEAR_OPERATIONS[name as keyof typeof LINEAR_OPERATIONS];
+        it.each(table.accept.map((f) => [f.label, f.json]))(`${name} accepts %s`, async (_label, json) => {
+            const r = await run(
+                op,
+                table.input,
+                fetcher(() => respond(200, json))
+            );
+            expect(r.ok).toBe(true);
+        });
+        it.each(table.reject.map((f) => [f.label, f.json]))(`${name} refuses %s as malformed`, async (_label, json) => {
+            const r = await run(
+                op,
+                table.input,
+                fetcher(() => respond(200, json))
+            );
+            expect(r).toMatchObject({
+                ok: false,
+                outcome:
+                    op.effect === 'write'
+                        ? { outcome: 'outcome_unknown', operation: name }
+                        : { outcome: 'unavailable', reason: 'malformed-response' },
+            });
+        });
+    }
 });

@@ -33,6 +33,8 @@ export interface IntegrationOperation<I = unknown> {
     request(input: I, resource: IntegrationResource): OperationRequest;
     /** Absent: the parsed body is the value. With `paginate`: the value is the collected items. */
     paginate?: Pagination;
+    /** The answer's shape: a 2xx answer (every page) it refuses is `malformed-response`, never a value. */
+    accepts?(json: unknown, request: OperationRequest): boolean;
 }
 
 export interface IntegrationDefinition {

@@ -48,6 +48,8 @@ const REQUIRED_SCOPES = {
     listComments: ['read'],
     addComment: ['write'],
     viewer: ['read'],
+    /** The reconcile read, helper-only. */
+    comment: ['read'],
 };
 const PAGES = {
     searchIssues: { path: ['issues'], field: 'issues', maxPages: 10, maxItems: 200 },
@@ -160,6 +162,64 @@ function nextRequest(op, json, previous) {
     return { ...previous, body: { ...previous.body, variables: { ...previous.body.variables, after: cursor } } };
 }
 
+// ---- Answer shapes: core's linearAnswerShape, restated (the parity test runs both on the same fixtures) ----
+
+const text = (value) => typeof value === 'string' && value !== '';
+const objectOrNull = (value) => value === null || record(value) !== null;
+const ISSUE_OBJECTS = ['state', 'assignee', 'team', 'project', 'labels'];
+
+function issueShape(value) {
+    const issue = record(value);
+    return (
+        issue !== null &&
+        text(issue.id) &&
+        text(issue.identifier) &&
+        typeof issue.title === 'string' &&
+        ISSUE_OBJECTS.every((field) => field in issue && objectOrNull(issue[field])) &&
+        (issue.description === null || typeof issue.description === 'string')
+    );
+}
+
+function pageShape(value) {
+    const page = record(value);
+    const info = record(page?.pageInfo);
+    const nodes = page?.nodes;
+    return (
+        Array.isArray(nodes) &&
+        nodes.every((node) => text(record(node)?.id)) &&
+        (info?.hasNextPage === false || (info?.hasNextPage === true && text(info.endCursor)))
+    );
+}
+
+const SHAPES = {
+    getIssue: (data) => issueShape(data.issue),
+    searchIssues: (data) => pageShape(data.issues),
+    listComments: (data) => pageShape(record(data.issue)?.comments),
+    addComment: (data, request) => {
+        const created = record(data.commentCreate);
+        const id = record(created?.comment)?.id;
+        const sent = record(record(request.body?.variables)?.input)?.id;
+        return created?.success === true && text(id) && id === sent;
+    },
+    viewer: (data) => {
+        const viewer = record(data.viewer);
+        const org = record(viewer?.organization);
+        return text(viewer?.id) && text(org?.id) && text(org?.urlKey);
+    },
+    // Helper-only: the reconcile read's comment, which reconcile then matches to the receipt and the issue.
+    comment: (data) => text(record(data.comment)?.id),
+};
+
+/** Whether a 2xx answer is well-formed for `op`: core's `linearAnswerShape`. Anything else confirms nothing. */
+function answerShape(op, json, request) {
+    const answer = record(json);
+    if (answer === null) return false;
+    if (answer.errors !== undefined && !(Array.isArray(answer.errors) && answer.errors.length === 0)) return false;
+    const data = record(answer.data);
+    const shape = SHAPES[op];
+    return data !== null && shape !== undefined && shape(data, request);
+}
+
 // ---- Reading a GraphQL answer: the core classifier, restated ----
 
 /** The error kinds, most decisive first: the first kind any error carries is the answer's outcome. */
@@ -198,6 +258,9 @@ function classify(json, op, status) {
     const twoHundred = status >= HTTP_OK && status < HTTP_REDIRECT;
     const failed = (reason) =>
         op.effect === 'write' ? { outcome: 'outcome_unknown', operation: op.name } : { outcome: 'unavailable', reason, retryable: true };
+    if (errors !== undefined && (!Array.isArray(errors) || errors.some((error) => record(error) === null))) {
+        return twoHundred ? failed('malformed-response') : null;
+    }
     if (Array.isArray(errors) && errors.length > 0) {
         const kind = errorKind(json);
         if (kind) return { ...kind.outcome };
@@ -493,9 +556,14 @@ async function linearSend(ctx, conn, op, request, options = {}) {
             } else if (verdict !== null) {
                 // unavailable: a named not-found, or an error/missing data the core names for a read.
                 if (errorKind(res.json)?.kind === 'notfound') return { kind: 'refused', reason: 'not-found', json: res.json };
-                return { kind: 'refused', reason: verdict.reason, unavailable: true };
+                const reason = verdict.reason === 'malformed-response' ? 'malformed' : verdict.reason;
+                return { kind: 'refused', reason, unavailable: true };
             } else if (res.status >= 400) {
                 return { kind: 'refused', reason: 'bad-request' };
+            } else if (!answerShape(op, res.json, request)) {
+                // A 2xx of the wrong shape confirms nothing: a write may have run, a read is unreadable.
+                if (write) return { kind: 'ambiguous' };
+                return { kind: 'refused', reason: 'malformed', unavailable: true };
             } else {
                 return { kind: 'ok', json: res.json };
             }
@@ -518,6 +586,9 @@ async function readLinear(ctx, conn, op, request) {
     }
     if (answer.reason === 'not-found') {
         throw new Stop(EXIT_FAILED, 'refused', 'not-found', 'linear: Linear says the issue does not exist or this connection cannot see it. Report it.');
+    }
+    if (answer.reason === 'malformed') {
+        throw new Stop(EXIT_FAILED, 'unavailable', 'malformed', 'linear: Linear answered in a shape this helper cannot read; nothing is concluded from it. Retry the step shortly, then report it.');
     }
     throw new Stop(
         EXIT_FAILED,
@@ -562,7 +633,7 @@ const COMMENT_NOT_FOUND = /^Entity not found: Comment\b/;
  */
 async function reconcile(ctx, conn, issue, receiptId) {
     try {
-        const answer = await linearSend(ctx, conn, 'getIssue', graphql(COMMENT_BY_ID, { id: receiptId }), { once: true });
+        const answer = await linearSend(ctx, conn, 'comment', graphql(COMMENT_BY_ID, { id: receiptId }), { once: true });
         if (answer.kind === 'refused' && answer.reason === 'not-found') {
             const errors = record(answer.json)?.errors ?? [];
             return errors.some((e) => typeof e?.message === 'string' && COMMENT_NOT_FOUND.test(e.message)) ? 'absent' : null;
@@ -715,10 +786,8 @@ async function execute(ctx, argv) {
     const conn = await connectionFor(ctx, flags.workspace);
     if (command === 'issue') {
         const json = await readLinear(ctx, conn, 'getIssue', requestFor('getIssue', { key: target }));
-        const issue = record(record(json?.data)?.issue);
-        // Only Linear's explicit "Entity not found" is not-found; a null or missing issue confirms nothing.
-        if (issue === null) throw new Stop(EXIT_FAILED, 'unavailable', 'malformed', 'linear: Linear answered without the issue; this helper cannot read it. Retry the step shortly.');
-        ctx.deps.stdout(`${JSON.stringify(issue)}\n`);
+        // The shape check already held: data.issue is a well-formed issue.
+        ctx.deps.stdout(`${JSON.stringify(json.data.issue)}\n`);
     } else if (command === 'search') {
         const { items, truncated } = await collect(ctx, conn, 'searchIssues', search);
         ctx.deps.stdout(`${JSON.stringify({ issues: items, truncated })}\n`);
@@ -775,4 +844,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { run, requestFor, nextRequest, classify, defaultDeps, REQUIRED_SCOPES };
+module.exports = { run, requestFor, nextRequest, classify, answerShape, defaultDeps, REQUIRED_SCOPES };

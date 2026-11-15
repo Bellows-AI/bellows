@@ -1,0 +1,1316 @@
+{
+    "getIssue": {
+        "input": {
+            "key": "ABC-1"
+        },
+        "accept": [
+            {
+                "label": "the well-formed answer",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "an empty errors array",
+                "json": {
+                    "errors": [],
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            }
+        ],
+        "reject": [
+            {
+                "label": "an empty object",
+                "json": {}
+            },
+            {
+                "label": "null",
+                "json": null
+            },
+            {
+                "label": "text",
+                "json": "text"
+            },
+            {
+                "label": "a null data",
+                "json": {
+                    "data": null
+                }
+            },
+            {
+                "label": "data an array",
+                "json": {
+                    "data": []
+                }
+            },
+            {
+                "label": "an empty data",
+                "json": {
+                    "data": {}
+                }
+            },
+            {
+                "label": "errors a string beside data",
+                "json": {
+                    "errors": "x",
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors an object beside data",
+                "json": {
+                    "errors": {},
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding a number",
+                "json": {
+                    "errors": [1],
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding null",
+                "json": {
+                    "errors": [null],
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null issue",
+                "json": {
+                    "data": {
+                        "issue": null
+                    }
+                }
+            },
+            {
+                "label": "an empty issue",
+                "json": {
+                    "data": {
+                        "issue": {}
+                    }
+                }
+            },
+            {
+                "label": "a numeric id",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "id": 1,
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "no identifier",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a state that is a string",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "state": "x",
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "no state key",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": null,
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a description that is an object",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "id": "i1",
+                            "identifier": "ABC-1",
+                            "title": "T",
+                            "url": "https://linear.example/ABC-1",
+                            "description": {},
+                            "state": {
+                                "name": "Todo",
+                                "type": "unstarted"
+                            },
+                            "assignee": null,
+                            "team": {
+                                "key": "ABC",
+                                "name": "A"
+                            },
+                            "project": null,
+                            "labels": {
+                                "nodes": []
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "an issue that is an array",
+                "json": {
+                    "data": {
+                        "issue": []
+                    }
+                }
+            }
+        ]
+    },
+    "searchIssues": {
+        "input": {
+            "team": "ENG"
+        },
+        "accept": [
+            {
+                "label": "the well-formed answer",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1",
+                                    "identifier": "A-1"
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false,
+                                "endCursor": null
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "an empty errors array",
+                "json": {
+                    "errors": [],
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1",
+                                    "identifier": "A-1"
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false,
+                                "endCursor": null
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a next page",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1"
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": true,
+                                "endCursor": "c1"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "no nodes",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [],
+                            "pageInfo": {
+                                "hasNextPage": false
+                            }
+                        }
+                    }
+                }
+            }
+        ],
+        "reject": [
+            {
+                "label": "an empty object",
+                "json": {}
+            },
+            {
+                "label": "null",
+                "json": null
+            },
+            {
+                "label": "text",
+                "json": "text"
+            },
+            {
+                "label": "a null data",
+                "json": {
+                    "data": null
+                }
+            },
+            {
+                "label": "data an array",
+                "json": {
+                    "data": []
+                }
+            },
+            {
+                "label": "an empty data",
+                "json": {
+                    "data": {}
+                }
+            },
+            {
+                "label": "errors a string beside data",
+                "json": {
+                    "errors": "x",
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1",
+                                    "identifier": "A-1"
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false,
+                                "endCursor": null
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors an object beside data",
+                "json": {
+                    "errors": {},
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1",
+                                    "identifier": "A-1"
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false,
+                                "endCursor": null
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding a number",
+                "json": {
+                    "errors": [1],
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1",
+                                    "identifier": "A-1"
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false,
+                                "endCursor": null
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding null",
+                "json": {
+                    "errors": [null],
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1",
+                                    "identifier": "A-1"
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false,
+                                "endCursor": null
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "an empty connection",
+                "json": {
+                    "data": {
+                        "issues": {}
+                    }
+                }
+            },
+            {
+                "label": "nodes not an array",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": {},
+                            "pageInfo": {
+                                "hasNextPage": false
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a node that is a number",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [1],
+                            "pageInfo": {
+                                "hasNextPage": false
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a node without an id",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [{}],
+                            "pageInfo": {
+                                "hasNextPage": false
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a node with a numeric id",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": 2
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": false
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null node",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [null],
+                            "pageInfo": {
+                                "hasNextPage": false
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "no pageInfo",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1"
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            {
+                "label": "hasNextPage without endCursor",
+                "json": {
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "i1"
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": true
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null connection",
+                "json": {
+                    "data": {
+                        "issues": null
+                    }
+                }
+            }
+        ]
+    },
+    "listComments": {
+        "input": {
+            "key": "ABC-1"
+        },
+        "accept": [
+            {
+                "label": "the well-formed answer",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "id": "c1",
+                                        "body": "b"
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": false,
+                                    "endCursor": null
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "an empty errors array",
+                "json": {
+                    "errors": [],
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "id": "c1",
+                                        "body": "b"
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": false,
+                                    "endCursor": null
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ],
+        "reject": [
+            {
+                "label": "an empty object",
+                "json": {}
+            },
+            {
+                "label": "null",
+                "json": null
+            },
+            {
+                "label": "text",
+                "json": "text"
+            },
+            {
+                "label": "a null data",
+                "json": {
+                    "data": null
+                }
+            },
+            {
+                "label": "data an array",
+                "json": {
+                    "data": []
+                }
+            },
+            {
+                "label": "an empty data",
+                "json": {
+                    "data": {}
+                }
+            },
+            {
+                "label": "errors a string beside data",
+                "json": {
+                    "errors": "x",
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "id": "c1",
+                                        "body": "b"
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": false,
+                                    "endCursor": null
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors an object beside data",
+                "json": {
+                    "errors": {},
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "id": "c1",
+                                        "body": "b"
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": false,
+                                    "endCursor": null
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding a number",
+                "json": {
+                    "errors": [1],
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "id": "c1",
+                                        "body": "b"
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": false,
+                                    "endCursor": null
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding null",
+                "json": {
+                    "errors": [null],
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "id": "c1",
+                                        "body": "b"
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": false,
+                                    "endCursor": null
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null issue",
+                "json": {
+                    "data": {
+                        "issue": null
+                    }
+                }
+            },
+            {
+                "label": "an issue without comments",
+                "json": {
+                    "data": {
+                        "issue": {}
+                    }
+                }
+            },
+            {
+                "label": "nodes not an array",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": "x",
+                                "pageInfo": {
+                                    "hasNextPage": false
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a node without an id",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "body": "b"
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": false
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null node",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [null],
+                                "pageInfo": {
+                                    "hasNextPage": false
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null pageInfo",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "id": "c1"
+                                    }
+                                ],
+                                "pageInfo": null
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "hasNextPage a string",
+                "json": {
+                    "data": {
+                        "issue": {
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "id": "c1"
+                                    }
+                                ],
+                                "pageInfo": {
+                                    "hasNextPage": "yes",
+                                    "endCursor": "c"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "addComment": {
+        "input": {
+            "key": "ABC-1",
+            "body": "b",
+            "receiptId": "55555555-5555-4555-8555-000000000001"
+        },
+        "accept": [
+            {
+                "label": "the well-formed answer",
+                "json": {
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000001"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "an empty errors array",
+                "json": {
+                    "errors": [],
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000001"
+                            }
+                        }
+                    }
+                }
+            }
+        ],
+        "reject": [
+            {
+                "label": "an empty object",
+                "json": {}
+            },
+            {
+                "label": "null",
+                "json": null
+            },
+            {
+                "label": "text",
+                "json": "text"
+            },
+            {
+                "label": "a null data",
+                "json": {
+                    "data": null
+                }
+            },
+            {
+                "label": "data an array",
+                "json": {
+                    "data": []
+                }
+            },
+            {
+                "label": "an empty data",
+                "json": {
+                    "data": {}
+                }
+            },
+            {
+                "label": "errors a string beside data",
+                "json": {
+                    "errors": "x",
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000001"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors an object beside data",
+                "json": {
+                    "errors": {},
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000001"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding a number",
+                "json": {
+                    "errors": [1],
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000001"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding null",
+                "json": {
+                    "errors": [null],
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000001"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null commentCreate",
+                "json": {
+                    "data": {
+                        "commentCreate": null
+                    }
+                }
+            },
+            {
+                "label": "an empty commentCreate",
+                "json": {
+                    "data": {
+                        "commentCreate": {}
+                    }
+                }
+            },
+            {
+                "label": "success false",
+                "json": {
+                    "data": {
+                        "commentCreate": {
+                            "success": false,
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000001"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "success a string",
+                "json": {
+                    "data": {
+                        "commentCreate": {
+                            "success": "true",
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000001"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null comment",
+                "json": {
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": null
+                        }
+                    }
+                }
+            },
+            {
+                "label": "another comment id",
+                "json": {
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": {
+                                "id": "55555555-5555-4555-8555-000000000002"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "no comment id",
+                "json": {
+                    "data": {
+                        "commentCreate": {
+                            "success": true,
+                            "comment": {}
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "viewer": {
+        "input": {},
+        "accept": [
+            {
+                "label": "the well-formed answer",
+                "json": {
+                    "data": {
+                        "viewer": {
+                            "id": "u1",
+                            "organization": {
+                                "id": "o1",
+                                "urlKey": "lane-workspace"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "an empty errors array",
+                "json": {
+                    "errors": [],
+                    "data": {
+                        "viewer": {
+                            "id": "u1",
+                            "organization": {
+                                "id": "o1",
+                                "urlKey": "lane-workspace"
+                            }
+                        }
+                    }
+                }
+            }
+        ],
+        "reject": [
+            {
+                "label": "an empty object",
+                "json": {}
+            },
+            {
+                "label": "null",
+                "json": null
+            },
+            {
+                "label": "text",
+                "json": "text"
+            },
+            {
+                "label": "a null data",
+                "json": {
+                    "data": null
+                }
+            },
+            {
+                "label": "data an array",
+                "json": {
+                    "data": []
+                }
+            },
+            {
+                "label": "an empty data",
+                "json": {
+                    "data": {}
+                }
+            },
+            {
+                "label": "errors a string beside data",
+                "json": {
+                    "errors": "x",
+                    "data": {
+                        "viewer": {
+                            "id": "u1",
+                            "organization": {
+                                "id": "o1",
+                                "urlKey": "lane-workspace"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors an object beside data",
+                "json": {
+                    "errors": {},
+                    "data": {
+                        "viewer": {
+                            "id": "u1",
+                            "organization": {
+                                "id": "o1",
+                                "urlKey": "lane-workspace"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding a number",
+                "json": {
+                    "errors": [1],
+                    "data": {
+                        "viewer": {
+                            "id": "u1",
+                            "organization": {
+                                "id": "o1",
+                                "urlKey": "lane-workspace"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "errors holding null",
+                "json": {
+                    "errors": [null],
+                    "data": {
+                        "viewer": {
+                            "id": "u1",
+                            "organization": {
+                                "id": "o1",
+                                "urlKey": "lane-workspace"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a null viewer",
+                "json": {
+                    "data": {
+                        "viewer": null
+                    }
+                }
+            },
+            {
+                "label": "an empty viewer",
+                "json": {
+                    "data": {
+                        "viewer": {}
+                    }
+                }
+            },
+            {
+                "label": "no organization",
+                "json": {
+                    "data": {
+                        "viewer": {
+                            "id": "u1"
+                        }
+                    }
+                }
+            },
+            {
+                "label": "a numeric urlKey",
+                "json": {
+                    "data": {
+                        "viewer": {
+                            "id": "u1",
+                            "organization": {
+                                "id": "o1",
+                                "urlKey": 7
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "label": "no organization id",
+                "json": {
+                    "data": {
+                        "viewer": {
+                            "id": "u1",
+                            "organization": {
+                                "urlKey": "w"
+                            }
+                        }
+                    }
+                }
+            }
+        ]
+    }
+}

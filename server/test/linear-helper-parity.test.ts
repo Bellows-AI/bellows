@@ -1,7 +1,8 @@
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classifyLinearAnswer, LINEAR_OPERATIONS } from '@factory-ai/core';
+import { readFileSync } from 'node:fs';
+import { classifyLinearAnswer, LINEAR_OPERATIONS, linearAnswerShape } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -29,6 +30,7 @@ const helper = createRequire(import.meta.url)(HELPER) as {
     requestFor: (op: string, input: unknown) => Request;
     nextRequest: (op: string, json: unknown, previous: Request) => Request | null;
     classify: (json: unknown, op: { name: string; effect: string }, status: number) => unknown;
+    answerShape: (op: string, json: unknown, request: Request) => boolean;
     REQUIRED_SCOPES: Record<string, string[]>;
 };
 
@@ -150,5 +152,33 @@ describe('the Linear helper reads a GraphQL answer like the core classifier', ()
                 expect(helper.classify(json, op, status)).toEqual(classifyLinearAnswer(json, op as never, status));
             });
         }
+    }
+});
+
+/** The answer-shape fixtures core's own suite runs (core/test/fixtures/linear-answers.json): one verdict on both sides. */
+type Fixture = { label: string; json: unknown };
+const SHAPES = JSON.parse(
+    readFileSync(new URL('../../core/test/fixtures/linear-answers.json', import.meta.url), 'utf8')
+) as Record<string, { input: unknown; accept: Fixture[]; reject: Fixture[] }>;
+
+describe('the Linear helper accepts and refuses the same answer shapes as core', () => {
+    for (const [name, table] of Object.entries(SHAPES)) {
+        const op = LINEAR_OPERATIONS[name as keyof typeof LINEAR_OPERATIONS] as Op;
+        const request = (op.request as (i: unknown, r: unknown) => Request)(table.input, {});
+        const verdict = (json: unknown) => ({
+            classified: classifyLinearAnswer(json, op, 200),
+            shaped: linearAnswerShape(name, json, request as never),
+        });
+        it.each(table.accept.map((f) => [f.label, f.json]))(`${name} accepts %s`, (_label, json) => {
+            expect(verdict(json)).toEqual({ classified: null, shaped: true });
+            expect(helper.classify(json, op, 200)).toBeNull();
+            expect(helper.answerShape(name, json, request)).toBe(true);
+        });
+        it.each(table.reject.map((f) => [f.label, f.json]))(`${name} refuses %s`, (_label, json) => {
+            const core = verdict(json);
+            expect(core.classified !== null || !core.shaped).toBe(true);
+            expect(helper.classify(json, op, 200)).toEqual(core.classified);
+            expect(helper.answerShape(name, json, request)).toBe(core.shaped);
+        });
     }
 });

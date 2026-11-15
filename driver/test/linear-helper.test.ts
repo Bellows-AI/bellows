@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -51,6 +52,20 @@ const notFound = (what: string) => ({
     errors: [{ message: `Entity not found: ${what}`, extensions: { code: 'INPUT_ERROR' } }],
 });
 
+/** A well-formed issue as Linear answers GetIssue (every field the query names, nullable ones null). */
+const issueOf = (identifier: string) => ({
+    id: `issue-${identifier}`,
+    identifier,
+    title: 'S',
+    url: `https://linear.example/${identifier}`,
+    description: null,
+    state: { name: 'Todo', type: 'unstarted' },
+    assignee: null,
+    team: { key: identifier.split('-')[0], name: 'T' },
+    project: null,
+    labels: { nodes: [] },
+});
+
 type PostMode = 'ok' | 'drop-after-create' | 'drop-before-create' | 'forbidden' | 'missing-issue';
 
 /** A fake Linear GraphQL endpoint: per-call records, a comment store keyed by the client id, scripted faults. */
@@ -96,7 +111,7 @@ function fakeLinear() {
         if (op === 'GetIssue') {
             return variables.id === 'ABC-404'
                 ? send(res, 400, notFound('Issue'))
-                : send(res, 200, { data: { issue: { identifier: variables.id, title: 'S' } } });
+                : send(res, 200, { data: { issue: issueOf(String(variables.id)) } });
         }
         if (op === 'SearchIssues') {
             const index = variables.after === undefined ? 0 : Number(variables.after);
@@ -249,7 +264,7 @@ describe('reading', () => {
         const s = await scenario();
         const { code, out, err } = await s.run(['issue', 'ABC-1']);
         expect(code).toBe(0);
-        expect(JSON.parse(out)).toEqual({ identifier: 'ABC-1', title: 'S' });
+        expect(JSON.parse(out)).toEqual(issueOf('ABC-1'));
         expect(s.linear.calls).toMatchObject([{ op: 'GetIssue', variables: { id: 'ABC-1' }, auth: `Bearer ${TOKEN}` }]);
         expect(out + err).not.toContain(TOKEN);
     });
@@ -264,9 +279,9 @@ describe('reading', () => {
     it('search maps the flags onto the structured filter and follows endCursor', async () => {
         const s = await scenario();
         s.linear.searchPages = [
-            { nodes: [{ identifier: 'A-1' }], next: '1' },
-            { nodes: [{ identifier: 'A-2' }], next: '2' },
-            { nodes: [{ identifier: 'A-3' }] },
+            { nodes: [{ id: 'i1', identifier: 'A-1' }], next: '1' },
+            { nodes: [{ id: 'i2', identifier: 'A-2' }], next: '2' },
+            { nodes: [{ id: 'i3', identifier: 'A-3' }] },
         ];
         const found = await s.run([
             'search',
@@ -281,7 +296,11 @@ describe('reading', () => {
         ]);
         expect(found.code).toBe(0);
         expect(JSON.parse(found.out)).toEqual({
-            issues: [{ identifier: 'A-1' }, { identifier: 'A-2' }, { identifier: 'A-3' }],
+            issues: [
+                { id: 'i1', identifier: 'A-1' },
+                { id: 'i2', identifier: 'A-2' },
+                { id: 'i3', identifier: 'A-3' },
+            ],
             truncated: false,
         });
         expect(s.linear.calls.map((c) => c.variables.after)).toEqual([undefined, '1', '2']);
@@ -296,7 +315,10 @@ describe('reading', () => {
     it('search stops at its bound and says truncated', async () => {
         const s = await scenario();
         s.linear.searchPages = Array.from({ length: 12 }, (_, i) => ({
-            nodes: Array.from({ length: 30 }, (_x, j) => ({ identifier: `A-${i * 30 + j + 1}` })),
+            nodes: Array.from({ length: 30 }, (_x, j) => ({
+                id: `i${i * 30 + j + 1}`,
+                identifier: `A-${i * 30 + j + 1}`,
+            })),
             next: String(i + 1),
         }));
         const found = await s.run(['search', '--label', 'Bug']);
@@ -420,6 +442,45 @@ describe('Linear answers and the deadline', () => {
     });
 });
 
+/** The answer-shape fixtures core runs too (core/test/fixtures/linear-answers.json). */
+type Fixture = { label: string; json: unknown };
+const SHAPES = JSON.parse(readFileSync(join(ROOT, 'core/test/fixtures/linear-answers.json'), 'utf8')) as Record<
+    string,
+    { input: Record<string, string>; accept: Fixture[]; reject: Fixture[] }
+>;
+const READS: [string, string, string[]][] = [
+    ['getIssue', 'GetIssue', ['issue', 'ABC-1']],
+    ['searchIssues', 'SearchIssues', ['search', '--team', 'ENG']],
+    ['listComments', 'ListComments', ['comments', 'ABC-1']],
+];
+
+describe('every answer shape the core refuses', () => {
+    for (const [name, op, argv] of READS) {
+        it.each((SHAPES[name]?.reject ?? []).map((f) => [f.label, f.json]))(
+            `${argv[0]}: %s is exit 1 unavailable/malformed`,
+            async (_label, json) => {
+                const s = await scenario();
+                s.linear.answers[op] = json;
+                const { code, out } = await s.run(argv);
+                expect(code).toBe(1);
+                expect(last(out)).toMatchObject({ outcome: 'unavailable', reason: 'malformed' });
+            }
+        );
+    }
+
+    it.each((SHAPES.addComment?.reject ?? []).map((f) => [f.label, f.json]))(
+        'comment: %s is never posted-and-done: the receipt stays unknown, exit 4',
+        async (_label, json) => {
+            const s = await scenario();
+            s.linear.answers.AddComment = json;
+            const { code, out } = await s.run(['comment', 'ABC-1', '--body', 'b']);
+            expect(code).toBe(4);
+            expect(last(out)).toMatchObject({ outcome: 'outcome_unknown' });
+            expect(s.receipts()[0]?.status).toBe('unknown');
+        }
+    );
+});
+
 // A null, empty or malformed answer is inconclusive: never not-found, never a complete list.
 describe('answers that confirm nothing', () => {
     it.each([
@@ -435,9 +496,12 @@ describe('answers that confirm nothing', () => {
     });
 
     it.each([
-        ['no pageInfo', { nodes: [{ identifier: 'A-1' }] }],
-        ['a null pageInfo', { nodes: [{ identifier: 'A-1' }], pageInfo: null }],
-        ['hasNextPage without endCursor', { nodes: [{ identifier: 'A-1' }], pageInfo: { hasNextPage: true } }],
+        ['no pageInfo', { nodes: [{ id: 'i1', identifier: 'A-1' }] }],
+        ['a null pageInfo', { nodes: [{ id: 'i1', identifier: 'A-1' }], pageInfo: null }],
+        [
+            'hasNextPage without endCursor',
+            { nodes: [{ id: 'i1', identifier: 'A-1' }], pageInfo: { hasNextPage: true } },
+        ],
         ['hasNextPage not a boolean', { nodes: [], pageInfo: { endCursor: 'c' } }],
     ])('search and comments: a page with %s is exit 1 malformed, never a complete list', async (_label, page) => {
         const s = await scenario();

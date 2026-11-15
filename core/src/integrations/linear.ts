@@ -115,11 +115,79 @@ const cursorPages = (path: readonly string[], maxPages: number, maxItems: number
     },
 });
 
+// ---- Answer shapes: one per operation, checked before any success ----
+
+const text = (value: unknown): value is string => typeof value === 'string' && value !== '';
+const objectOrNull = (value: unknown): boolean => value === null || record(value) !== null;
+/** The issue's nested objects the helper prints: each present, and an object or null. */
+const ISSUE_OBJECTS = ['state', 'assignee', 'team', 'project', 'labels'] as const;
+
+const issueShape = (value: unknown): boolean => {
+    const issue = record(value);
+    return (
+        issue !== null &&
+        text(issue.id) &&
+        text(issue.identifier) &&
+        typeof issue.title === 'string' &&
+        ISSUE_OBJECTS.every((field) => field in issue && objectOrNull(issue[field])) &&
+        (issue.description === null || typeof issue.description === 'string')
+    );
+};
+
+/** A relay page: every node an object with a string id; only `hasNextPage: false` or a next cursor. */
+const pageShape = (value: unknown): boolean => {
+    const page = record(value);
+    const info = record(page?.pageInfo);
+    const nodes = page?.nodes;
+    return (
+        Array.isArray(nodes) &&
+        nodes.every((node) => text(record(node)?.id)) &&
+        (info?.hasNextPage === false || (info?.hasNextPage === true && text(info.endCursor)))
+    );
+};
+
+const SHAPES: Record<string, (data: Record<string, unknown>, request: OperationRequest) => boolean> = {
+    getIssue: (data) => issueShape(data.issue),
+    searchIssues: (data) => pageShape(data.issues),
+    listComments: (data) => pageShape(record(data.issue)?.comments),
+    addComment: (data, request) => {
+        const created = record(data.commentCreate);
+        const id = record(created?.comment)?.id;
+        const sent = record(record((request.body as GraphqlBody | undefined)?.variables)?.input)?.id;
+        return created?.success === true && text(id) && id === sent;
+    },
+    viewer: (data) => {
+        const viewer = record(data.viewer);
+        const org = record(viewer?.organization);
+        return text(viewer?.id) && text(org?.id) && text(org?.urlKey);
+    },
+};
+
+/**
+ * Whether a 2xx answer to `operation` is well-formed: an object whose `errors` is absent or empty (a non-empty array
+ * is `classifyLinearAnswer`'s), whose `data` is an object, and whose root field has the operation's shape. Anything
+ * else confirms nothing: malformed, never a value, an empty list, not-found or "not posted".
+ */
+export function linearAnswerShape(operation: string, json: unknown, request: OperationRequest): boolean {
+    const answer = record(json);
+    if (answer === null) return false;
+    if (answer.errors !== undefined && !(Array.isArray(answer.errors) && answer.errors.length === 0)) return false;
+    const data = record(answer.data);
+    const shape = SHAPES[operation];
+    return data !== null && shape !== undefined && shape(data, request);
+}
+
+const accepts =
+    (operation: string) =>
+    (json: unknown, request: OperationRequest): boolean =>
+        linearAnswerShape(operation, json, request);
+
 const getIssue: IntegrationOperation<{ key: string }> = {
     name: 'getIssue',
     effect: 'read',
     requiredScopes: ['read'],
     request: (input) => graphql(GET_ISSUE, { id: issueRef(input.key) }),
+    accepts: accepts('getIssue'),
 };
 
 export interface LinearSearchInput {
@@ -161,6 +229,7 @@ const searchIssues: IntegrationOperation<LinearSearchInput> = {
         return graphql(SEARCH_ISSUES, { filter: issueFilter(input), first });
     },
     paginate: cursorPages(['issues'], SEARCH_MAX_PAGES, SEARCH_MAX_ITEMS),
+    accepts: accepts('searchIssues'),
 };
 
 const listComments: IntegrationOperation<{ key: string }> = {
@@ -169,6 +238,7 @@ const listComments: IntegrationOperation<{ key: string }> = {
     requiredScopes: ['read'],
     request: (input) => graphql(LIST_COMMENTS, { id: issueRef(input.key), first: COMMENT_PAGE_SIZE }),
     paginate: cursorPages(['issue', 'comments'], COMMENT_MAX_PAGES, COMMENT_MAX_ITEMS),
+    accepts: accepts('listComments'),
 };
 
 /** The comment's own id is the receipt's id (a client UUID v4), so a retried post is reconciled by `comment(id:)`. */
@@ -181,6 +251,7 @@ const addComment: IntegrationOperation<{ key: string; body: string; receiptId: s
         if (!LINEAR_UUID.test(input.receiptId)) throw new Error('a Linear comment id must be a UUID');
         return graphql(ADD_COMMENT, { input: { id: input.receiptId, issueId: issueRef(input.key), body: input.body } });
     },
+    accepts: accepts('addComment'),
 };
 
 const viewer: IntegrationOperation<Record<string, never>> = {
@@ -188,6 +259,7 @@ const viewer: IntegrationOperation<Record<string, never>> = {
     effect: 'read',
     requiredScopes: ['read'],
     request: () => graphql(VIEWER, {}),
+    accepts: accepts('viewer'),
 };
 
 export const LINEAR_OPERATIONS = { getIssue, searchIssues, listComments, addComment, viewer } as const;
@@ -233,6 +305,10 @@ export function classifyLinearAnswer(
         op.effect === 'write'
             ? { outcome: 'outcome_unknown', operation: op.name }
             : { outcome: 'unavailable', reason, retryable: true };
+    // `errors` is absent or an array of objects; anything else is an answer this cannot read.
+    if (errors !== undefined && (!Array.isArray(errors) || errors.some((error) => record(error) === null))) {
+        return twoHundred ? failed('malformed-response') : null;
+    }
     if (Array.isArray(errors) && errors.length > 0) {
         const texts = errors.map(errorText);
         const kind = ERROR_KINDS.find((k) => texts.some((text) => k.match.test(text)));
