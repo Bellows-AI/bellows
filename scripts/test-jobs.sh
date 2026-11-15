@@ -143,6 +143,9 @@ MINT_PORT=$((PORT + 2))
 AUTH_PORT=$((PORT + 3))
 MCP_PORT=$((PORT + 4))
 MCP_IDP_PORT=$((PORT + 5))
+# The smoke origin's loopback port (PLAN_BASE). Fixed, not ephemeral: native Linux docker re-allocates an ephemeral
+# published port on every network connect or disconnect, which the compose-driver phase does to the origin.
+ORIGIN_PORT=$((PORT + 6))
 # BASE, the main board's URL, is set once lane_host_bind has resolved LANE_HOST (below).
 # The identity the host drivers of this run stamp on what they create (driver/src/task-volume.ts
 # boardIdentity: a digest of JOB_BOARD_URL), so a check can look at its own board's objects only
@@ -1096,7 +1099,7 @@ docker volume create "$ORIGIN_VOLUME" >/dev/null &&
         git init -q -b main /tmp/seed
         git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m init
         git -C /tmp/seed push -q "/origins/$1.git" main' sh "$SMOKE_REPO" &&
-    docker run -d --name "$ORIGIN_NAME" --network "$NETWORK" -p 127.0.0.1::9418 -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
+    docker run -d --name "$ORIGIN_NAME" --network "$NETWORK" -p "127.0.0.1:$ORIGIN_PORT:9418" -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
         git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack \
         --listen=0.0.0.0 --port=9418 /origins >/dev/null || {
     echo 'test-jobs: could not serve the smoke origin'

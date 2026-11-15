@@ -21,7 +21,11 @@ describe('the test-jobs harness', () => {
     // published to loopback before any board boots, and every offline board is handed the base.
     it('boots every offline board against the loopback-published origin', () => {
         const origin = SCRIPT.indexOf('docker run -d --name "$ORIGIN_NAME"');
-        expect(SCRIPT.slice(origin, origin + 120)).toContain('-p 127.0.0.1::9418');
+        // A fixed host port: native Linux docker re-allocates an ephemeral one on every network connect or
+        // disconnect (the compose-driver phase does both), leaving the boards' PLAN_BASE on a dead port.
+        expect(SCRIPT).toContain('ORIGIN_PORT=$((PORT + 6))');
+        expect(SCRIPT.slice(origin, origin + 120)).toContain('-p "127.0.0.1:$ORIGIN_PORT:9418"');
+        expect(SCRIPT).not.toContain('127.0.0.1::9418');
         expect(SCRIPT).toContain('docker port "$ORIGIN_NAME" 9418/tcp');
         expect(origin).toBeLessThan(SCRIPT.indexOf('\nstart_open_board\n'));
         expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(6);
