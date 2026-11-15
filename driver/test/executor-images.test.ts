@@ -1284,6 +1284,19 @@ describe('the shared executor skills', () => {
         expect(existsSync(join(ROOT, `${SKILLS}/factory-jira/jira.cjs`))).toBe(true);
     });
 
+    it('the linear skill names the helper at its fixed path, triggers on linear.app issue URLs, and asks on a bare key bound twice', () => {
+        const text = read(`${SKILLS}/factory-linear/SKILL.md`);
+        expect(text).toContain('node /usr/local/share/factory-skills/factory-linear/linear.cjs');
+        expect(text).toMatch(/requires-connections: linear/);
+        expect(text).toMatch(/^description: .*linear\.app\/<workspace>\/issue\//m);
+        expect(text).not.toMatch(/\bcurl\b|LINEAR_API|RUNNER_LEASE_TOKEN|lin_api_/);
+        expect(existsSync(join(ROOT, `${SKILLS}/factory-linear/linear.cjs`))).toBe(true);
+        // a bare ABC-123 belongs to whichever tracker is bound; with both, the user is asked (both skills say it).
+        for (const skill of ['factory-jira', 'factory-linear']) {
+            expect(read(`${SKILLS}/${skill}/SKILL.md`)).toMatch(/both Jira and Linear are bound, ask the user/);
+        }
+    });
+
     // after a successful issue read the jira skill hands the issue's subject to the title helper, only on
     // exit 0, never renaming the Jira issue; the title skill states the same rule without naming a provider.
     it('the jira skill sets the task title only after a successful issue read, and the title skill stays provider-neutral', () => {
@@ -1293,6 +1306,12 @@ describe('the shared executor skills', () => {
         expect(jira).toMatch(/Only after `issue <KEY>` exited 0/);
         expect(jira).toMatch(/never invent a subject/);
         expect(jira).toMatch(/never rename the Jira issue/);
+        const linear = read(`${SKILLS}/factory-linear/SKILL.md`);
+        expect(linear).toContain('node /usr/local/share/factory-skills/factory-task-title/task-title.cjs');
+        expect(linear).toMatch(/## Naming the task after a ticket/);
+        expect(linear).toMatch(/Only after `issue <KEY>` exited 0/);
+        expect(linear).toMatch(/never invent a subject/);
+        expect(linear).toMatch(/never rename the Linear issue/);
         const title = read(`${SKILLS}/factory-task-title/SKILL.md`);
         expect(title).toMatch(/## After an issue read/);
         expect(title).toMatch(/Only when the read succeeded/);

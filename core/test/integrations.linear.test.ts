@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
     classifyLinearAnswer,
@@ -6,6 +7,7 @@ import {
     LINEAR_OPERATIONS,
     LINEAR_SCOPES,
     linearApiBase,
+    linearNotFound,
     linearScopesFor,
 } from '../src/integrations/linear.js';
 import type {
@@ -84,11 +86,19 @@ const connection = (nodes: unknown[], next: string | null) => ({
     pageInfo: { hasNextPage: next !== null, endCursor: next },
 });
 
+type Fixture = { label: string; json: unknown };
+const ANSWERS = JSON.parse(readFileSync(new URL('./fixtures/linear-answers.json', import.meta.url), 'utf8')) as Record<
+    string,
+    { input: unknown; accept: Fixture[]; reject: Fixture[] }
+>;
+
 describe('linear operations', () => {
     it('getIssue posts the issue query with the key as id', async () => {
-        const f = fetcher(() => respond(200, { data: { issue: { identifier: 'ENG-1' } } }));
+        const valid = ANSWERS.getIssue?.accept[0]?.json as { data: { issue: Record<string, unknown> } };
+        const issue = { ...valid.data.issue, identifier: 'ENG-1' };
+        const f = fetcher(() => respond(200, { data: { issue } }));
         const r = await run(LINEAR_OPERATIONS.getIssue, { key: 'ENG-1' }, f);
-        expect(r).toEqual({ ok: true, value: { data: { issue: { identifier: 'ENG-1' } } } });
+        expect(r).toEqual({ ok: true, value: { data: { issue } } });
         expect(f.calls[0]?.url).toBe(URL_);
         expect(f.calls[0]?.method).toBe('POST');
         expect(f.calls[0]?.body.variables).toEqual({ id: 'ENG-1' });
@@ -170,8 +180,34 @@ describe('linear operations', () => {
         expect(new Set(f.calls.map((c) => c.body.query)).size).toBe(1);
     });
 
+    // An enumeration is complete only when Linear says so (`hasNextPage: false`): missing or odd page metadata is
+    // an unconfirmed answer, never "that was everything".
+    it.each([
+        ['no pageInfo', { nodes: [{ id: 'a' }] }],
+        ['a null pageInfo', { nodes: [{ id: 'a' }], pageInfo: null }],
+        ['hasNextPage without endCursor', { nodes: [{ id: 'a' }], pageInfo: { hasNextPage: true } }],
+        [
+            'hasNextPage with an empty endCursor',
+            { nodes: [{ id: 'a' }], pageInfo: { hasNextPage: true, endCursor: '' } },
+        ],
+        ['hasNextPage not a boolean', { nodes: [{ id: 'a' }], pageInfo: { hasNextPage: 'no', endCursor: null } }],
+    ])('a page with %s is malformed, not a complete list', async (_label, page) => {
+        const search = fetcher(() => respond(200, { data: { issues: page } }));
+        expect(await run(LINEAR_OPERATIONS.searchIssues, { team: 'ENG' }, search)).toMatchObject({
+            ok: false,
+            outcome: { outcome: 'unavailable', reason: 'malformed-response' },
+        });
+        const comments = fetcher(() => respond(200, { data: { issue: { comments: page } } }));
+        expect(await run(LINEAR_OPERATIONS.listComments, { key: 'ENG-7' }, comments)).toMatchObject({
+            ok: false,
+            outcome: { outcome: 'unavailable', reason: 'malformed-response' },
+        });
+    });
+
     it('listComments stops at maxPages', async () => {
-        const f = fetcher((n) => respond(200, { data: { issue: { comments: connection([{ id: n }], `cur${n}`) } } }));
+        const f = fetcher((n) =>
+            respond(200, { data: { issue: { comments: connection([{ id: `c${n}` }], `cur${n}`) } } })
+        );
         const r = await run(LINEAR_OPERATIONS.listComments, { key: 'ENG-7' }, f);
         expect(f.calls).toHaveLength(10);
         expect(r.ok && (r.value as unknown[]).length).toBe(10);
@@ -244,9 +280,18 @@ describe('linear GraphQL answers through runOperation', () => {
             { outcome: 'forbidden', reason: 'provider-denied' },
         ],
         [
-            'not found',
-            errors({ code: 'ENTITY_NOT_FOUND', type: 'invalid input' }),
+            'not found for the issue',
+            {
+                errors: [{ message: 'Entity not found: Issue', path: ['issue'], extensions: { code: 'INPUT_ERROR' } }],
+                data: null,
+            },
             { outcome: 'unavailable', reason: 'unexpected-status', retryable: true },
+        ],
+        // A not-found code that names no entity is not the issue's absence (linearNotFound).
+        [
+            'a not-found code that names no entity',
+            errors({ code: 'ENTITY_NOT_FOUND', type: 'invalid input' }),
+            { outcome: 'unavailable', reason: 'upstream-error', retryable: true },
         ],
         ['ratelimited', errors({ code: 'RATELIMITED', type: 'ratelimited' }), { outcome: 'rate_limited' }],
         [
@@ -272,7 +317,10 @@ describe('linear GraphQL answers through runOperation', () => {
 
     it('the most decisive error wins when several arrive', () => {
         const answer = {
-            errors: [{ extensions: { code: 'INVALID_INPUT' } }, { extensions: { type: 'authentication error' } }],
+            errors: [
+                { message: 'bad input', extensions: { code: 'INVALID_INPUT' } },
+                { message: 'not you', extensions: { type: 'authentication error' } },
+            ],
         };
         expect(classifyLinearAnswer(answer, { name: 'getIssue', effect: 'read' }, 200)).toEqual({
             outcome: 'unavailable',
@@ -355,5 +403,75 @@ describe('linear scopes and definition', () => {
         expect(def.skills).toEqual(['factory-linear']);
         expect(linearApiBase(`${ORIGIN}/`)).toBe(URL_);
         expect(createLinearIntegration().api.origin({ id: 'org-1', label: 'x' })).toBe('https://api.linear.app');
+    });
+});
+
+/**
+ * Every operation's answer has one shape (`linearAnswerShape`), checked before any success: an answer that fails it
+ * is `malformed-response` (`outcome_unknown` for the comment), never a value, an empty list or not-found. The same
+ * fixtures pin the runner helper (server/test/linear-helper-parity.test.ts, driver/test/linear-helper.test.ts).
+ */
+describe('linear answer shapes through runOperation', () => {
+    for (const [name, table] of Object.entries(ANSWERS).filter(([name]) => name in LINEAR_OPERATIONS)) {
+        const op = LINEAR_OPERATIONS[name as keyof typeof LINEAR_OPERATIONS];
+        it.each(table.accept.map((f) => [f.label, f.json]))(`${name} accepts %s`, async (_label, json) => {
+            const r = await run(
+                op,
+                table.input,
+                fetcher(() => respond(200, json))
+            );
+            expect(r.ok).toBe(true);
+        });
+        it.each(table.reject.map((f) => [f.label, f.json]))(`${name} refuses %s as malformed`, async (_label, json) => {
+            const r = await run(
+                op,
+                table.input,
+                fetcher(() => respond(200, json))
+            );
+            expect(r).toMatchObject({
+                ok: false,
+                outcome:
+                    op.effect === 'write'
+                        ? { outcome: 'outcome_unknown', operation: name }
+                        : { outcome: 'unavailable', reason: 'malformed-response' },
+            });
+        });
+    }
+});
+
+type NotFoundFixture = { label: string; op: string; json: unknown; notFound: boolean };
+const NOT_FOUND = (ANSWERS as unknown as { notFound: NotFoundFixture[] }).notFound;
+
+/** A not-found names the operation's own root entity (and, when Linear gives a path, that root field). */
+describe('linear not-found is about the operation root only', () => {
+    it.each(NOT_FOUND.map((f) => [f.op, f.label, f]))('%s: %s', (_op, _label, fixture) => {
+        const { op, json, notFound } = fixture as NotFoundFixture;
+        expect(linearNotFound(op, json)).toBe(notFound);
+        const operation = LINEAR_OPERATIONS[op as keyof typeof LINEAR_OPERATIONS];
+        const outcome = classifyLinearAnswer(json, operation, 200);
+        // At 200 a root not-found reads like Jira's 404; any other entity's is an upstream error (or unknown for a write).
+        if (notFound) expect(outcome).toEqual({ outcome: 'unavailable', reason: 'unexpected-status', retryable: true });
+        else expect(outcome).not.toMatchObject({ reason: 'unexpected-status' });
+    });
+});
+
+const PARTIAL = (ANSWERS as unknown as { partial: { label: string; op: string; json: unknown }[] }).partial;
+const DEFINITIVE = ['credential-rejected', 'provider-denied', 'unexpected-status'];
+
+/** Errors beside root data, or deeper than the root, never make a definitive verdict: partial data wins. */
+describe('linear errors with partial data', () => {
+    it.each(PARTIAL.map((f) => [f.op, f.label, f]))('%s: %s', (_op, _label, fixture) => {
+        const { op, json } = fixture as { op: string; json: unknown };
+        const operation = LINEAR_OPERATIONS[op as keyof typeof LINEAR_OPERATIONS];
+        expect(linearNotFound(op, json)).toBe(false);
+        for (const status of [200, 400]) {
+            const outcome = classifyLinearAnswer(json, operation, status) as {
+                outcome?: string;
+                reason?: string;
+            } | null;
+            expect(outcome?.outcome).not.toBe('rate_limited');
+            expect(outcome?.outcome).not.toBe('forbidden');
+            expect(DEFINITIVE).not.toContain(outcome?.reason);
+        }
     });
 });

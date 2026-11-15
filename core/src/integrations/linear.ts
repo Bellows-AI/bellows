@@ -95,25 +95,99 @@ const connectionAt = (json: unknown, path: readonly string[]): { nodes: unknown[
     return { nodes, pageInfo: record(at)?.pageInfo };
 };
 
-/** Relay pagination: the same query with `variables.after` set to the page's `endCursor`. */
+/**
+ * Relay pagination: the same query with `variables.after` set to the page's `endCursor`. Only `hasNextPage: false`
+ * ends the list; missing or odd page metadata throws (malformed), never reads as "that was everything".
+ */
 const cursorPages = (path: readonly string[], maxPages: number, maxItems: number): Pagination => ({
     maxPages,
     maxItems,
     items: (json) => connectionAt(json, path).nodes,
     next: (json, previous) => {
         const info = record(connectionAt(json, path).pageInfo);
+        if (info?.hasNextPage === false) return null;
         const cursor = info?.endCursor;
-        if (info?.hasNextPage !== true || typeof cursor !== 'string' || cursor === '') return null;
+        if (info?.hasNextPage !== true || typeof cursor !== 'string' || cursor === '') {
+            throw new Error(`malformed ${path.join('.')} pageInfo`);
+        }
         const body = previous.body as GraphqlBody;
         return { ...previous, body: { ...body, variables: { ...body.variables, after: cursor } } };
     },
 });
+
+// ---- Answer shapes: one per operation, checked before any success ----
+
+const text = (value: unknown): value is string => typeof value === 'string' && value !== '';
+const objectOrNull = (value: unknown): boolean => value === null || record(value) !== null;
+/** The issue's nested objects the helper prints: each present, and an object or null. */
+const ISSUE_OBJECTS = ['state', 'assignee', 'team', 'project', 'labels'] as const;
+
+const issueShape = (value: unknown): boolean => {
+    const issue = record(value);
+    return (
+        issue !== null &&
+        text(issue.id) &&
+        text(issue.identifier) &&
+        typeof issue.title === 'string' &&
+        ISSUE_OBJECTS.every((field) => field in issue && objectOrNull(issue[field])) &&
+        (issue.description === null || typeof issue.description === 'string')
+    );
+};
+
+/** A relay page: every node an object with a string id; only `hasNextPage: false` or a next cursor. */
+const pageShape = (value: unknown): boolean => {
+    const page = record(value);
+    const info = record(page?.pageInfo);
+    const nodes = page?.nodes;
+    return (
+        Array.isArray(nodes) &&
+        nodes.every((node) => text(record(node)?.id)) &&
+        (info?.hasNextPage === false || (info?.hasNextPage === true && text(info.endCursor)))
+    );
+};
+
+const SHAPES: Record<string, (data: Record<string, unknown>, request: OperationRequest) => boolean> = {
+    getIssue: (data) => issueShape(data.issue),
+    searchIssues: (data) => pageShape(data.issues),
+    listComments: (data) => pageShape(record(data.issue)?.comments),
+    addComment: (data, request) => {
+        const created = record(data.commentCreate);
+        const id = record(created?.comment)?.id;
+        const sent = record(record((request.body as GraphqlBody | undefined)?.variables)?.input)?.id;
+        return created?.success === true && text(id) && id === sent;
+    },
+    viewer: (data) => {
+        const viewer = record(data.viewer);
+        const org = record(viewer?.organization);
+        return text(viewer?.id) && text(org?.id) && text(org?.urlKey);
+    },
+};
+
+/**
+ * Whether a 2xx answer to `operation` is well-formed: an object whose `errors` is absent or empty (a non-empty array
+ * is `classifyLinearAnswer`'s), whose `data` is an object, and whose root field has the operation's shape. Anything
+ * else confirms nothing: malformed, never a value, an empty list, not-found or "not posted".
+ */
+export function linearAnswerShape(operation: string, json: unknown, request: OperationRequest): boolean {
+    const answer = record(json);
+    if (answer === null) return false;
+    if (answer.errors !== undefined && !(Array.isArray(answer.errors) && answer.errors.length === 0)) return false;
+    const data = record(answer.data);
+    const shape = SHAPES[operation];
+    return data !== null && shape !== undefined && shape(data, request);
+}
+
+const accepts =
+    (operation: string) =>
+    (json: unknown, request: OperationRequest): boolean =>
+        linearAnswerShape(operation, json, request);
 
 const getIssue: IntegrationOperation<{ key: string }> = {
     name: 'getIssue',
     effect: 'read',
     requiredScopes: ['read'],
     request: (input) => graphql(GET_ISSUE, { id: issueRef(input.key) }),
+    accepts: accepts('getIssue'),
 };
 
 export interface LinearSearchInput {
@@ -155,6 +229,7 @@ const searchIssues: IntegrationOperation<LinearSearchInput> = {
         return graphql(SEARCH_ISSUES, { filter: issueFilter(input), first });
     },
     paginate: cursorPages(['issues'], SEARCH_MAX_PAGES, SEARCH_MAX_ITEMS),
+    accepts: accepts('searchIssues'),
 };
 
 const listComments: IntegrationOperation<{ key: string }> = {
@@ -163,6 +238,7 @@ const listComments: IntegrationOperation<{ key: string }> = {
     requiredScopes: ['read'],
     request: (input) => graphql(LIST_COMMENTS, { id: issueRef(input.key), first: COMMENT_PAGE_SIZE }),
     paginate: cursorPages(['issue', 'comments'], COMMENT_MAX_PAGES, COMMENT_MAX_ITEMS),
+    accepts: accepts('listComments'),
 };
 
 /** The comment's own id is the receipt's id (a client UUID v4), so a retried post is reconciled by `comment(id:)`. */
@@ -175,6 +251,7 @@ const addComment: IntegrationOperation<{ key: string; body: string; receiptId: s
         if (!LINEAR_UUID.test(input.receiptId)) throw new Error('a Linear comment id must be a UUID');
         return graphql(ADD_COMMENT, { input: { id: input.receiptId, issueId: issueRef(input.key), body: input.body } });
     },
+    accepts: accepts('addComment'),
 };
 
 const viewer: IntegrationOperation<Record<string, never>> = {
@@ -182,6 +259,7 @@ const viewer: IntegrationOperation<Record<string, never>> = {
     effect: 'read',
     requiredScopes: ['read'],
     request: () => graphql(VIEWER, {}),
+    accepts: accepts('viewer'),
 };
 
 export const LINEAR_OPERATIONS = { getIssue, searchIssues, listComments, addComment, viewer } as const;
@@ -191,23 +269,80 @@ const ERROR_KINDS: readonly { match: RegExp; outcome: IntegrationOutcome }[] = [
     { match: /authentication/, outcome: { outcome: 'unavailable', reason: 'credential-rejected', retryable: true } },
     { match: /forbidden/, outcome: { outcome: 'forbidden', reason: 'provider-denied' } },
     { match: /ratelimit/, outcome: { outcome: 'rate_limited' } },
-    // There is no not-found outcome: a missing entity reads like Jira's 404, an unexpected status.
-    { match: /notfound/, outcome: { outcome: 'unavailable', reason: 'unexpected-status', retryable: true } },
 ];
+/** There is no not-found outcome: a missing root entity reads like Jira's 404, an unexpected status. */
+const NOT_FOUND_OUTCOME: IntegrationOutcome = { outcome: 'unavailable', reason: 'unexpected-status', retryable: true };
 
-/** Linear names a missing entity only in the message (`Entity not found: Issue`, code `INPUT_ERROR`). */
-const ENTITY_NOT_FOUND = /^Entity not found\b/;
+/** Each operation's root field: the one `data` field its answer carries. */
+const ROOT_FIELDS: Record<string, string> = {
+    getIssue: 'issue',
+    searchIssues: 'issues',
+    listComments: 'issue',
+    addComment: 'commentCreate',
+    viewer: 'viewer',
+};
+/** The entity a not-found must name to be the operation's own root's absence (search and viewer have none). */
+const NOT_FOUND_ENTITIES: Record<string, string> = { getIssue: 'Issue', listComments: 'Issue', addComment: 'Issue' };
+
+const wellFormedErrors = (errors: unknown): errors is Record<string, unknown>[] =>
+    Array.isArray(errors) && errors.every((error) => typeof record(error)?.message === 'string');
 
 const errorText = (error: unknown): string => {
     const ext = record(record(error)?.extensions);
-    const message = record(error)?.message;
-    const missing = typeof message === 'string' && ENTITY_NOT_FOUND.test(message) ? 'not found' : undefined;
-    return [ext?.code, ext?.type, missing]
+    return [ext?.code, ext?.type]
         .filter((v): v is string => typeof v === 'string')
         .join(' ')
         .toLowerCase()
         .replace(/[^a-z ]/g, '')
         .replace(/ (?=found|limit)/g, '');
+};
+
+/**
+ * Whether a well-formed error answer is about the operation as a whole: `data` is absent or null, or carries no root
+ * field (absent or null), and every error's `path` is absent or exactly the root field. Only such an answer can carry
+ * a definitive verdict (credential rejected, denied, rate limited, not found); partial data or an error deeper than
+ * the root wins over it.
+ */
+export function linearWholeAnswerError(operation: string, json: unknown): boolean {
+    const field = ROOT_FIELDS[operation];
+    const answer = record(json);
+    const errors = answer?.errors;
+    if (field === undefined || !wellFormedErrors(errors) || errors.length === 0) return false;
+    if (answer?.data !== undefined && answer.data !== null) {
+        const data = record(answer.data);
+        if (data === null || (data[field] !== undefined && data[field] !== null)) return false;
+    }
+    return errors.every(
+        (error) =>
+            error.path === undefined ||
+            (Array.isArray(error.path) && error.path.length === 1 && error.path[0] === field)
+    );
+}
+
+/**
+ * Whether a whole-answer error (`linearWholeAnswerError`) says the operation's own root entity does not exist: Linear
+ * names a missing entity only in the message (`Entity not found: Issue`, code `INPUT_ERROR`). Another entity's
+ * not-found (a User, a Team in a filter, ...), malformed `errors` or partial data is not.
+ */
+export function linearNotFound(operation: string, json: unknown): boolean {
+    const entity = NOT_FOUND_ENTITIES[operation];
+    if (entity === undefined || !linearWholeAnswerError(operation, json)) return false;
+    const pattern = new RegExp(`^Entity not found: ${entity}(?![A-Za-z])`);
+    const errors = record(json)?.errors;
+    return wellFormedErrors(errors) && errors.some((error) => pattern.test(String(error.message)));
+}
+
+/** A whole-answer error's definitive outcome (a named kind, then the root's not-found); null beside partial data. */
+const definitiveOutcome = (
+    operation: string,
+    json: unknown,
+    errors: readonly Record<string, unknown>[]
+): IntegrationOutcome | null => {
+    if (!linearWholeAnswerError(operation, json)) return null;
+    const texts = errors.map(errorText);
+    const kind = ERROR_KINDS.find((k) => texts.some((text) => k.match.test(text)));
+    if (kind) return { ...kind.outcome };
+    return linearNotFound(operation, json) ? { ...NOT_FOUND_OUTCOME } : null;
 };
 
 /**
@@ -227,10 +362,12 @@ export function classifyLinearAnswer(
         op.effect === 'write'
             ? { outcome: 'outcome_unknown', operation: op.name }
             : { outcome: 'unavailable', reason, retryable: true };
+    // `errors` is absent or an array of objects each with a string message; anything else is an answer this cannot
+    // read, and that verdict is final: no error text in it is matched.
+    if (errors !== undefined && !wellFormedErrors(errors)) return twoHundred ? failed('malformed-response') : null;
     if (Array.isArray(errors) && errors.length > 0) {
-        const texts = errors.map(errorText);
-        const kind = ERROR_KINDS.find((k) => texts.some((text) => k.match.test(text)));
-        if (kind) return { ...kind.outcome };
+        const named = definitiveOutcome(op.name, json, errors);
+        if (named) return named;
         return twoHundred ? failed('upstream-error') : null;
     }
     return twoHundred && record(answer?.data) === null ? failed('malformed-response') : null;

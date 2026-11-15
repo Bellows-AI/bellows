@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { fakeBoard, type Json, listen, type Receipt, readBody, send } from './fixtures/helper-board.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
@@ -19,7 +19,6 @@ const HELPER = join(ROOT, 'docker/skills/factory-jira/jira.cjs');
 const BROKER = join(ROOT, 'docker/executor-common/credential-broker.cjs');
 const require_ = createRequire(import.meta.url);
 
-type Json = Record<string, unknown>;
 interface Result {
     ok: boolean;
     token?: string;
@@ -60,23 +59,6 @@ const TOKEN = 'tok-SECRET-value';
 const WRITE_SCOPES = ['read:jira-work', 'read:jira-user', 'write:jira-work'];
 const READ_SCOPES = ['read:jira-work', 'read:jira-user'];
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
-
-const readBody = (req: IncomingMessage): Promise<string> =>
-    new Promise((resolve) => {
-        let text = '';
-        req.on('data', (chunk) => {
-            text += chunk;
-        });
-        req.on('end', () => resolve(text));
-    });
-const send = (res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) => {
-    res.writeHead(status, { 'content-type': 'application/json', ...headers });
-    res.end(JSON.stringify(body));
-};
-const listen = (server: Server): Promise<string> =>
-    new Promise((resolve) => {
-        server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`));
-    });
 
 type PostMode = 'ok' | 'drop-after-create' | 'drop-before-create' | 'forbidden' | 'bad-request';
 
@@ -157,103 +139,6 @@ function fakeJira() {
     return { state, server };
 }
 
-type Status = 'started' | 'dispatched' | 'succeeded' | 'failed' | 'unknown';
-interface Receipt {
-    id: string;
-    status: Status;
-    result: { commentId: string } | null;
-    dispatchedAt: string | null;
-    key: string;
-    fingerprint: string;
-    connectionId: string;
-}
-const ALLOWED: Record<string, Status[]> = {
-    started: ['dispatched', 'failed'],
-    dispatched: ['succeeded', 'failed', 'unknown'],
-    unknown: ['succeeded'],
-};
-
-/** A fake board: connection list, operation receipts with the slice-3 transition rules, scripted faults. */
-function fakeBoard(getConnections: () => unknown) {
-    const state = {
-        receipts: new Map<string, Receipt>(),
-        listFailures: 0,
-        listAlwaysFails: false,
-        /** The pair one claim back: answered 503 LEASE_PENDING, as a takeover window does. */
-        supersededLease: null as string | null,
-        beginAlwaysFails: false,
-        conflictOnDispatch: false,
-        moves: [] as { from: Status[]; to: Status }[],
-        brokerAsks: 0,
-        issued: 0,
-        brokerBase: Date.now(),
-    };
-    const publicOf = ({ id, status, result, dispatchedAt }: Receipt) => ({ id, status, result, dispatchedAt });
-    const server = createServer(async (req, res) => {
-        const raw = await readBody(req);
-        const path = new URL(req.url ?? '', 'http://x').pathname;
-        if (state.supersededLease && req.headers['x-factory-job-lease-token'] === state.supersededLease) {
-            return send(res, 503, { error: 'moved', code: 'LEASE_PENDING', retryable: true });
-        }
-        if (req.headers['x-factory-job-id'] !== JOB || req.headers['x-factory-job-lease-token'] !== LEASE) {
-            return send(res, 401, { error: 'pair' });
-        }
-        if (req.method === 'GET' && path === `/api/jobs/${JOB}/credentials/connections`) {
-            if (state.listAlwaysFails || state.listFailures > 0) {
-                state.listFailures--;
-                return send(res, 503, { error: 'later' });
-            }
-            return send(res, 200, { connections: getConnections() });
-        }
-        if (req.method === 'POST' && path.startsWith(`/api/jobs/${JOB}/credentials/connections/`)) {
-            state.brokerAsks++;
-            return send(res, 200, {
-                token: TOKEN,
-                expiresAt: new Date(state.brokerBase + 3600_000).toISOString(),
-                scopes: WRITE_SCOPES,
-                resource: CLOUD,
-            });
-        }
-        if (req.method === 'POST' && path === `/api/jobs/${JOB}/operations`) {
-            if (state.beginAlwaysFails) return send(res, 503, { error: 'later' });
-            const body = JSON.parse(raw) as { connectionId: string; key: string; fingerprint: string };
-            const existing = state.receipts.get(body.key);
-            if (existing) {
-                if (existing.fingerprint !== body.fingerprint || existing.connectionId !== body.connectionId) {
-                    return send(res, 409, { code: 'OPERATION_KEY_REUSED' });
-                }
-                return send(res, 200, { receipt: publicOf(existing), created: false });
-            }
-            const made: Receipt = {
-                id: `55555555-5555-4555-8555-${String(state.issued++).padStart(12, '0')}`,
-                status: 'started',
-                result: null,
-                dispatchedAt: null,
-                ...body,
-            };
-            state.receipts.set(body.key, made);
-            return send(res, 200, { receipt: publicOf(made), created: true });
-        }
-        const move = /\/operations\/([0-9a-f-]+)$/.exec(path);
-        if (req.method === 'PUT' && move) {
-            const body = JSON.parse(raw) as { from: Status[]; to: Status; result?: { commentId: string } };
-            state.moves.push({ from: body.from, to: body.to });
-            const receipt = [...state.receipts.values()].find((r) => r.id === move[1]);
-            if (!receipt) return send(res, 404, { error: 'none' });
-            const refuse = state.conflictOnDispatch && body.to === 'dispatched';
-            if (refuse || !body.from.includes(receipt.status) || !ALLOWED[receipt.status]?.includes(body.to)) {
-                return send(res, 409, { code: 'OPERATION_CONFLICT', receipt: publicOf(receipt) });
-            }
-            receipt.status = body.to;
-            if (body.to === 'dispatched') receipt.dispatchedAt = new Date().toISOString();
-            if (body.result) receipt.result = body.result;
-            return send(res, 200, { receipt: publicOf(receipt) });
-        }
-        return send(res, 404, { error: 'unknown' });
-    });
-    return { state, server };
-}
-
 interface Scenario {
     jira: ReturnType<typeof fakeJira>['state'];
     board: ReturnType<typeof fakeBoard>['state'];
@@ -278,7 +163,7 @@ afterEach(() => {
 async function scenario(
     options: {
         scopes?: string[];
-        connections?: 'one' | 'two' | 'none' | 'other-provider' | 'bound-after-ask';
+        connections?: 'one' | 'two' | 'none' | 'other-provider' | 'bound-after-ask' | 'with-linear';
         deadlineMs?: number;
         /** What each runtime ask answers, in order; the last repeats. No proxy (`absent`) when empty. */
         asked?: Asked[];
@@ -309,8 +194,23 @@ async function scenario(
               ? [entry(CONN_A, CLOUD, 'a.example.net'), entry(CONN_B, CLOUD_B, 'b.example.net')]
               : shape === 'other-provider'
                 ? [entry(CONN_A, CLOUD, 'a.example.net', 'github')]
-                : [entry(CONN_A, CLOUD, 'a.example.net')];
-    const board = fakeBoard(connections);
+                : shape === 'with-linear'
+                  ? [
+                        entry(CONN_A, CLOUD, 'a.example.net'),
+                        { ...entry(CONN_B, 'org-b', 'b-workspace', 'linear'), apiBase: `${jiraUrl}/graphql` },
+                    ]
+                  : [entry(CONN_A, CLOUD, 'a.example.net')];
+    const brokerBase = Date.now();
+    const board = fakeBoard(connections, {
+        job: JOB,
+        lease: LEASE,
+        issue: () => ({
+            token: TOKEN,
+            expiresAt: new Date(brokerBase + 3600_000).toISOString(),
+            scopes: WRITE_SCOPES,
+            resource: CLOUD,
+        }),
+    });
     const boardUrl = await listen(board.server);
     servers.push(jira.server, board.server);
     const ask = { count: 0, scopes: options.scopes ?? WRITE_SCOPES, erased: 0 };
@@ -454,6 +354,14 @@ describe('finding the connection', () => {
         });
         expect(result.code).toBe(0);
         expect(reads).toBeGreaterThan(1);
+    });
+
+    it('skips a bound Linear connection: one Jira beside it is the one used, never "several"', async () => {
+        const s = await scenario({ connections: 'with-linear' });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(0);
+        expect(s.jira.calls.map((c) => c.url)).toEqual([jiraPath('/issue/ABC-1')]);
+        expect(s.asks).toEqual([]);
     });
 
     it('63: two bindings without --site is exit 1 naming --site; --site picks one', async () => {
