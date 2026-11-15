@@ -501,6 +501,22 @@ atl_status=$?
 render | grep 'atlassian-client-secret: ""' >/dev/null &&
     ok 'the generated Secret renders the Atlassian key empty by default' ||
     bad 'the generated Secret renders the Atlassian key empty by default' 'no atlassian-client-secret key'
+render --set-string integrations.linear.clientId=lin-client | grep -A1 'name: LINEAR_CLIENT_ID$' |
+    grep 'value: "lin-client"' >/dev/null && ok 'the Linear client id renders' ||
+    bad 'the Linear client id renders' "$(render --set-string integrations.linear.clientId=lin-client | grep -A1 LINEAR_CLIENT_ID)"
+render | grep -A5 'name: LINEAR_CLIENT_SECRET$' | grep 'key: linear-client-secret' >/dev/null &&
+    render | grep -A5 'name: LINEAR_CLIENT_SECRET$' | grep 'optional: true' >/dev/null &&
+    ok 'the Linear client secret is an optional Secret reference' ||
+    bad 'the Linear client secret is an optional Secret reference' "$(render | grep -A5 LINEAR_CLIENT_SECRET)"
+lin_render="$(render --set-string secret.linearClientSecret=lin-secret-value 2>&1)"
+lin_status=$?
+[ "$lin_status" -eq 0 ] && grep -q 'linear-client-secret: "lin-secret-value"' <<<"$lin_render" &&
+    ok 'the generated Secret renders the Linear client secret key' ||
+    bad 'the generated Secret renders the Linear client secret key' \
+        "helm exit $lin_status; $(grep -n 'linear-client-secret\|Error' <<<"$lin_render" | sed -n '1,3p')"
+render | grep 'linear-client-secret: ""' >/dev/null &&
+    ok 'the generated Secret renders the Linear key empty by default' ||
+    bad 'the generated Secret renders the Linear key empty by default' 'no linear-client-secret key'
 
 # Runner pod resources: requests by default so Karpenter and the Cluster Autoscaler
 # can size for the runner fleet — a zero-request pod schedules onto any free pod slot and
@@ -788,6 +804,8 @@ expect_contains 'the collector forwards the attempt credential with a managed Se
 expect_not_contains 'no deployment-wide ingest secret is wired' "$byo" 'INGEST_TOKEN'
 expect_contains 'a managed Secret is read for the Atlassian client secret' "$byo" 'key: atlassian-client-secret'
 expect_not_contains 'a managed Secret is not generated alongside' "$byo" 'atlassian-client-secret: '
+expect_contains 'a managed Secret is read for the Linear client secret' "$byo" 'key: linear-client-secret'
+expect_not_contains 'a managed Secret generates no Linear key alongside' "$byo" 'linear-client-secret: '
 # Every dashboard key but database-url is optional, so a missing one reads as the server's own boot
 # message: 6 of them. The driver's credential is in its own Secret, never the dashboard's, and never optional.
 [ "$(grep -c 'optional: true' <<<"$byo")" -ge 6 ] && ok 'managed-Secret keys are optional' ||

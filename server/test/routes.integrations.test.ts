@@ -9,6 +9,7 @@ import type {
 } from '../src/integrations/authorization-flow.js';
 import { combineRegistrations, type ProviderRegistration } from '../src/integrations/provider-registry.js';
 import { jiraProvider } from '../src/integrations/providers/jira.js';
+import { linearProvider } from '../src/integrations/providers/linear.js';
 import { isTrustedContext, type TrustedIntegrationContext } from '../src/integrations/trusted-context.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import {
@@ -124,6 +125,18 @@ describe('POST /api/integrations/:provider/authorizations', () => {
         expect(response.json().error).toContain('ATLASSIAN_CLIENT_SECRET');
         const noClient = await boot({ start: () => ({ ok: false, reason: 'not-configured' }) });
         expect((await post(noClient, {})).statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+    });
+
+    it('an unconfigured Linear start is 503 with the LINEAR sentence', async () => {
+        const ctx = await boot({
+            start: () => ({ ok: false, reason: 'unknown-provider' }),
+            extra: [linearProvider(null, null)],
+        });
+        const response = await post(ctx, {}, 'linear');
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(response.json().code).toBe('INTEGRATION_NOT_CONFIGURED');
+        expect(response.json().error).toContain('LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET');
+        expect(response.json().error).not.toContain('ATLASSIAN');
     });
 
     it('a not-configured second provider is refused with its own sentence', async () => {
@@ -280,6 +293,27 @@ describe('GET /api/integrations', () => {
             integrations: [
                 { provider: 'jira', configured: false },
                 { provider: 'fake', configured: true },
+            ],
+        });
+    });
+
+    it('lists Linear configured when its client and the callback origin are set', async () => {
+        const linear = linearProvider(
+            {
+                clientId: 'lid',
+                clientSecret: 'ls',
+                authorizeUrl: 'https://l.example.test/a',
+                apiOrigin: 'https://l.example.test',
+            },
+            'https://board.example.test'
+        );
+        const response = await list(
+            await boot({ configured: combineRegistrations([linear]).configured, extra: [linear] })
+        );
+        expect(response.json()).toEqual({
+            integrations: [
+                { provider: 'jira', configured: false },
+                { provider: 'linear', configured: true },
             ],
         });
     });

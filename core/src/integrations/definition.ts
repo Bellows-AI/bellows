@@ -1,3 +1,5 @@
+import type { IntegrationOutcome } from './outcomes.js';
+
 export interface IntegrationResource {
     id: string;
     label: string;
@@ -14,8 +16,12 @@ export interface Pagination {
     maxPages: number;
     maxItems: number;
     items(json: unknown): readonly unknown[];
-    /** The next page's path (given the path just read), or null when this was the last. Validated like any other path. */
-    next(json: unknown, previousPath: string): string | null;
+    /**
+     * The next page's complete request (given the request just sent), or null when this was the last. Its path is
+     * validated like any other; a POST keeps its body only when `next` returns one (a GraphQL page carries the same
+     * query with a new cursor).
+     */
+    next(json: unknown, previous: OperationRequest): OperationRequest | null;
 }
 
 export interface IntegrationOperation<I = unknown> {
@@ -42,6 +48,16 @@ export interface IntegrationDefinition {
     skills: readonly string[];
     /** Whether a 403 means "a scope is missing" rather than "denied". */
     isScopeError?(status: number, json: unknown): boolean;
+    /**
+     * An answer's verdict from its JSON body: a 2xx (every page of a paginated one) before it counts as a value, and
+     * a 4xx other than 401/403/429. An outcome refuses the answer; null leaves it to the status (a 2xx is a value, a
+     * 4xx its status outcome). A GraphQL failure is a 200 or a 400 with `errors`. Absent: the status alone decides.
+     */
+    classifyAnswer?(
+        json: unknown,
+        op: Pick<IntegrationOperation, 'name' | 'effect'>,
+        status: number
+    ): IntegrationOutcome | null;
 }
 
 export const defineIntegration = (def: IntegrationDefinition): IntegrationDefinition => {

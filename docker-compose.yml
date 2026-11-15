@@ -83,6 +83,8 @@ services:
             PUBLIC_URL: ${PUBLIC_URL:-}
             ATLASSIAN_CLIENT_ID: ${ATLASSIAN_CLIENT_ID:-}
             ATLASSIAN_CLIENT_SECRET: ${ATLASSIAN_CLIENT_SECRET:-}
+            LINEAR_CLIENT_ID: ${LINEAR_CLIENT_ID:-}
+            LINEAR_CLIENT_SECRET: ${LINEAR_CLIENT_SECRET:-}
             COOKIE_SECURE: ${COOKIE_SECURE:-}
             GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
             # The request limits (docs/limits.md); empty takes the default. The published port has no

@@ -38,6 +38,7 @@ export const RUNNER_TOOLS = ['acli', 'curl', 'gh', 'git'] as const;
 export const SKILL_CONNECTIONS = {
     github: [],
     jira: [],
+    linear: [],
 } as const satisfies Record<string, readonly string[]>;
 
 /**
@@ -48,6 +49,7 @@ export const SKILL_CONNECTIONS = {
 export const INTEGRATION_PROVIDERS = {
     github: { kind: 'legacy-repository-capability', label: 'GitHub' },
     jira: { kind: 'connection', label: 'Jira' },
+    linear: { kind: 'connection', label: 'Linear' },
 } as const satisfies Record<
     keyof typeof SKILL_CONNECTIONS,
     { kind: 'connection' | 'legacy-repository-capability'; label: string }
