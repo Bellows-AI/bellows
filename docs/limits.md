@@ -54,7 +54,7 @@ Capabilities deliberately absent, and figures that are narrower than they look. 
   replica. The per-thread checkout's sync step (`driver/src/supervised-steps.ts`) costs 0.35 to 1.5 s mean at 1 to 16
   concurrent threads on local-path storage, with no trend; the shared-worktree alternative is unmeasured and its code is
   gone.
-- A docker class under gVisor, measured 2026-11-13 and 2026-11-14 on one GKE gVisor node (4 vCPU / 16 GB) with the Docker 27 sidecar, one run each: `make runners` took 93 s with host-network builds (on the bridge network its `npm install` hangs); `npm test` took 482 s; the pod's memory peaked at about 3.2 GB with about 1.8 GB of images in the data root. The full `test:jobs` lane does not pass there ([kubernetes-limits.md](kubernetes-limits.md)). A sample, not a bound.
+- A docker class under a microVM (Kata) RuntimeClass, reported 2026-11-14 from one nested-virtualization spot node (8 vCPU) with the Docker 27 sidecar privileged, one run each: `make runners` took 86 s, `npm ci` 23 s, `kind create cluster` 38 s; the `test:jobs` phases that ran clean took 176 s (image-checks), 45 s (tool-isolation), 70 s (capacity) and 69 s (driver). The full lane does not pass there ([executor-testing.md](executor-testing.md)). A sample, not a bound.
 - Request limits (`server/src/config-limits.ts`) are per replica and derived, not load-tested: 600/min per credential is
   six tabs at the SPA's fastest polls (2 to 3 s, about 100/min a tab, `web/src/api/useJobs.ts`). The org rate, 16 MCP
   streams per org and the 60 s statement timeout are ceilings; no production timing was read to set them.
