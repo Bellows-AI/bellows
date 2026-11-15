@@ -353,6 +353,54 @@
                         "issue": []
                     }
                 }
+            },
+            {
+                "label": "a null error beside Entity not found",
+                "json": {
+                    "errors": [
+                        null,
+                        {
+                            "message": "Entity not found: Issue",
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "label": "an error with a numeric message beside Entity not found",
+                "json": {
+                    "errors": [
+                        {
+                            "message": 7
+                        },
+                        {
+                            "message": "Entity not found: Issue",
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "label": "an error without a message beside Entity not found",
+                "json": {
+                    "errors": [
+                        {
+                            "extensions": {
+                                "code": "X"
+                            }
+                        },
+                        {
+                            "message": "Entity not found: Issue",
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                }
             }
         ]
     },
@@ -1130,6 +1178,58 @@
                             "comment": {}
                         }
                     }
+                }
+            }
+        ],
+        "reconcileReject": [
+            {
+                "label": "a null error beside Entity not found: Comment",
+                "json": {
+                    "errors": [
+                        null,
+                        {
+                            "message": "Entity not found: Comment",
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "label": "an error with a numeric message beside Entity not found: Comment",
+                "json": {
+                    "errors": [
+                        {
+                            "message": 7
+                        },
+                        {
+                            "message": "Entity not found: Comment",
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "label": "an error without a message beside Entity not found: Comment",
+                "json": {
+                    "errors": [
+                        {},
+                        {
+                            "message": "Entity not found: Comment",
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "label": "errors a string",
+                "json": {
+                    "errors": "Entity not found: Comment"
                 }
             }
         ]

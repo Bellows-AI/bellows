@@ -243,10 +243,17 @@ function errorText(error) {
         .replace(/ (?=found|limit)/g, '');
 }
 
-/** The named kind of an answer's errors (ERROR_KINDS), or null when it has none the core names. */
+/** A well-formed `errors`: an array whose every element is an object with a string message (the core's rule). */
+const wellFormedErrors = (errors) =>
+    Array.isArray(errors) && errors.every((error) => typeof record(error)?.message === 'string');
+
+/**
+ * The named kind of an answer's errors (ERROR_KINDS), or null when it has none the core names. Error text is read only
+ * from a well-formed `errors`: a malformed one is final and names nothing.
+ */
 function errorKind(json) {
     const errors = record(json)?.errors;
-    if (!Array.isArray(errors) || errors.length === 0) return null;
+    if (!wellFormedErrors(errors) || errors.length === 0) return null;
     const texts = errors.map(errorText);
     return ERROR_KINDS.find((k) => texts.some((text) => k.match.test(text))) ?? null;
 }
@@ -258,9 +265,7 @@ function classify(json, op, status) {
     const twoHundred = status >= HTTP_OK && status < HTTP_REDIRECT;
     const failed = (reason) =>
         op.effect === 'write' ? { outcome: 'outcome_unknown', operation: op.name } : { outcome: 'unavailable', reason, retryable: true };
-    if (errors !== undefined && (!Array.isArray(errors) || errors.some((error) => record(error) === null))) {
-        return twoHundred ? failed('malformed-response') : null;
-    }
+    if (errors !== undefined && !wellFormedErrors(errors)) return twoHundred ? failed('malformed-response') : null;
     if (Array.isArray(errors) && errors.length > 0) {
         const kind = errorKind(json);
         if (kind) return { ...kind.outcome };
@@ -554,10 +559,11 @@ async function linearSend(ctx, conn, op, request, options = {}) {
             } else if (verdict?.outcome === 'outcome_unknown') {
                 return { kind: 'ambiguous' };
             } else if (verdict !== null) {
-                // unavailable: a named not-found, or an error/missing data the core names for a read.
+                // A malformed verdict is final: no error text in that answer is read.
+                if (verdict.reason === 'malformed-response') return { kind: 'refused', reason: 'malformed', unavailable: true };
+                // unavailable: a named not-found, or an error the core names for a read.
                 if (errorKind(res.json)?.kind === 'notfound') return { kind: 'refused', reason: 'not-found', json: res.json };
-                const reason = verdict.reason === 'malformed-response' ? 'malformed' : verdict.reason;
-                return { kind: 'refused', reason, unavailable: true };
+                return { kind: 'refused', reason: verdict.reason, unavailable: true };
             } else if (res.status >= 400) {
                 return { kind: 'refused', reason: 'bad-request' };
             } else if (!answerShape(op, res.json, request)) {
@@ -635,8 +641,8 @@ async function reconcile(ctx, conn, issue, receiptId) {
     try {
         const answer = await linearSend(ctx, conn, 'comment', graphql(COMMENT_BY_ID, { id: receiptId }), { once: true });
         if (answer.kind === 'refused' && answer.reason === 'not-found') {
-            const errors = record(answer.json)?.errors ?? [];
-            return errors.some((e) => typeof e?.message === 'string' && COMMENT_NOT_FOUND.test(e.message)) ? 'absent' : null;
+            const errors = record(answer.json)?.errors;
+            return wellFormedErrors(errors) && errors.some((e) => COMMENT_NOT_FOUND.test(e.message)) ? 'absent' : null;
         }
         if (answer.kind !== 'ok') return null;
         const found = record(record(answer.json?.data)?.comment);

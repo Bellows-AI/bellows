@@ -446,7 +446,7 @@ describe('Linear answers and the deadline', () => {
 type Fixture = { label: string; json: unknown };
 const SHAPES = JSON.parse(readFileSync(join(ROOT, 'core/test/fixtures/linear-answers.json'), 'utf8')) as Record<
     string,
-    { input: Record<string, string>; accept: Fixture[]; reject: Fixture[] }
+    { input: Record<string, string>; accept: Fixture[]; reject: Fixture[]; reconcileReject?: Fixture[] }
 >;
 const READS: [string, string, string[]][] = [
     ['getIssue', 'GetIssue', ['issue', 'ABC-1']],
@@ -477,6 +477,23 @@ describe('every answer shape the core refuses', () => {
             expect(code).toBe(4);
             expect(last(out)).toMatchObject({ outcome: 'outcome_unknown' });
             expect(s.receipts()[0]?.status).toBe('unknown');
+        }
+    );
+});
+
+// A malformed answer to the reconcile read is final: no error text in it licenses a re-send.
+describe('a reconcile answer of the wrong shape', () => {
+    it.each((SHAPES.addComment?.reconcileReject ?? []).map((f) => [f.label, f.json]))(
+        '%s leaves the receipt unknown, exit 4, with no new create',
+        async (_label, json) => {
+            const s = await scenario();
+            s.linear.postMode = 'drop-before-create';
+            s.linear.answers.Comment = json;
+            const { code, out } = await s.run(comment());
+            expect(code).toBe(4);
+            expect(last(out)).toMatchObject({ outcome: 'outcome_unknown' });
+            expect(s.receipts()[0]?.status).toBe('unknown');
+            expect(s.linear.posts).toBe(1);
         }
     );
 });

@@ -276,6 +276,9 @@ const ERROR_KINDS: readonly { match: RegExp; outcome: IntegrationOutcome }[] = [
 /** Linear names a missing entity only in the message (`Entity not found: Issue`, code `INPUT_ERROR`). */
 const ENTITY_NOT_FOUND = /^Entity not found\b/;
 
+const wellFormedErrors = (errors: unknown): errors is Record<string, unknown>[] =>
+    Array.isArray(errors) && errors.every((error) => typeof record(error)?.message === 'string');
+
 const errorText = (error: unknown): string => {
     const ext = record(record(error)?.extensions);
     const message = record(error)?.message;
@@ -305,10 +308,9 @@ export function classifyLinearAnswer(
         op.effect === 'write'
             ? { outcome: 'outcome_unknown', operation: op.name }
             : { outcome: 'unavailable', reason, retryable: true };
-    // `errors` is absent or an array of objects; anything else is an answer this cannot read.
-    if (errors !== undefined && (!Array.isArray(errors) || errors.some((error) => record(error) === null))) {
-        return twoHundred ? failed('malformed-response') : null;
-    }
+    // `errors` is absent or an array of objects each with a string message; anything else is an answer this cannot
+    // read, and that verdict is final: no error text in it is matched.
+    if (errors !== undefined && !wellFormedErrors(errors)) return twoHundred ? failed('malformed-response') : null;
     if (Array.isArray(errors) && errors.length > 0) {
         const texts = errors.map(errorText);
         const kind = ERROR_KINDS.find((k) => texts.some((text) => k.match.test(text)));

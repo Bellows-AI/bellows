@@ -307,7 +307,10 @@ describe('linear GraphQL answers through runOperation', () => {
 
     it('the most decisive error wins when several arrive', () => {
         const answer = {
-            errors: [{ extensions: { code: 'INVALID_INPUT' } }, { extensions: { type: 'authentication error' } }],
+            errors: [
+                { message: 'bad input', extensions: { code: 'INVALID_INPUT' } },
+                { message: 'not you', extensions: { type: 'authentication error' } },
+            ],
         };
         expect(classifyLinearAnswer(answer, { name: 'getIssue', effect: 'read' }, 200)).toEqual({
             outcome: 'unavailable',
