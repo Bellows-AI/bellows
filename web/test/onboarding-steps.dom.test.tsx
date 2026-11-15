@@ -144,7 +144,12 @@ describe('the placeholder steps', () => {
     it('a refused skip stays on the step and says so', async () => {
         board(
             () => open(),
-            (call) => (call.method === 'POST' ? { status: 500 } : undefined)
+            (call) => {
+                if (call.method === 'POST') return { status: 500 };
+                // The step's own reads answer, so the one alert is the refused save's.
+                if (call.url === '/api/integrations') return { integrations: [] };
+                return call.url === '/api/connections' ? { connections: [] } : undefined;
+            }
         );
         const user = userEvent.setup();
         const { router } = renderApp('/onboarding/tools?returnTo=%2F');

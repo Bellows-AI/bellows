@@ -1,3 +1,4 @@
+import { INTEGRATION_CATALOG, type IntegrationProvider } from '@factory-ai/core';
 import { useEffect, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { integrationNotice, type IntegrationNotice } from './integration-providers.js';
@@ -15,20 +16,24 @@ const disconnectedNotice = (state: unknown): IntegrationNotice | null => {
  * router state. It is kept as state and taken off the URL and the history entry, so a reload or a bookmark does not
  * bring it back. `clear` drops the sentence when the member acts again.
  */
-export function useIntegrationNotice(): { notice: IntegrationNotice | null; clear: () => void } {
+export function useIntegrationNotice(catalog: readonly IntegrationProvider[] = INTEGRATION_CATALOG): {
+    notice: IntegrationNotice | null;
+    clear: () => void;
+} {
     const [notice, setNotice] = useState<IntegrationNotice | null>(null);
     const [params, setParams] = useSearchParams();
     const { state } = useLocation();
 
     useEffect(() => {
-        const found = disconnectedNotice(state) ?? integrationNotice(params.get('integration'), params.get('result'));
+        const found =
+            disconnectedNotice(state) ?? integrationNotice(params.get('integration'), params.get('result'), catalog);
         if (!found) return;
         setNotice(found);
         const next = new URLSearchParams(params);
         next.delete('integration');
         next.delete('result');
         setParams(next, { replace: true, state: null });
-    }, [params, setParams, state]);
+    }, [params, setParams, state, catalog]);
 
     return { notice, clear: () => setNotice(null) };
 }

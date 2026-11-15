@@ -480,6 +480,73 @@
         margin-right: auto;
     }
 
+    /* The issue-tracker step: one soft card per tracker (mark, name, purpose, its state and
+       choice), Connect at the end; a connected card takes the ok border. */
+    .setup-tools {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .setup-tool {
+        align-items: flex-start;
+        background: var(--surface-soft);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        display: flex;
+        gap: var(--space-3);
+        padding: var(--space-4);
+    }
+
+    .setup-tool[data-connected] {
+        border-color: var(--ok-border);
+    }
+
+    .setup-tool-body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        gap: var(--space-1);
+        min-width: 0;
+    }
+
+    .setup-tool-name {
+        font-weight: 600;
+    }
+
+    .setup-tool-purpose,
+    .setup-tools-more {
+        color: var(--ink-muted);
+        font-size: var(--text-sm);
+    }
+
+    .setup-tool-connection {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+        justify-content: space-between;
+    }
+
+    .setup-tool-state {
+        color: var(--lamp-run);
+        font-size: var(--text-xs);
+        overflow-wrap: anywhere;
+    }
+
+    .setup-tools-more {
+        margin: 0;
+    }
+
+    .setup-tools-retry {
+        align-items: center;
+        display: flex;
+        gap: var(--space-3);
+    }
+
     @media (max-width: 640px) {
         /* Narrow: the choice reads top to bottom — checkbox and name on one row, mode radios and
            checklists stacked under them, every control a 44px target, nothing sideways (issue 187). */
@@ -543,6 +610,7 @@
         .login-button,
         .onboarding-actions button,
         .setup-actions button,
+        .setup-tool > button,
         .setup-back,
         .setup-steps a,
         .token-create input,

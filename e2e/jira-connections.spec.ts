@@ -127,6 +127,20 @@ test('reconnecting as another account is refused and the row keeps the first acc
     await page.screenshot({ path: `${SHOTS}/settings-jira-connections-mismatch.png`, fullPage: true });
 });
 
+test('connecting Jira from the setup step returns to the step, shown connected', async ({ page }) => {
+    await page.goto('/onboarding/tools');
+    const card = page.getByRole('listitem', { name: 'Jira' });
+    await expect(page.getByRole('button', { name: 'Skip for now' })).toBeVisible();
+    await card.getByRole('button', { name: 'Connect Jira' }).click();
+
+    await expect(page).toHaveURL(/\/onboarding\/tools/);
+    await expect(page.getByText('Jira connected.')).toBeVisible();
+    await expect(page).not.toHaveURL(/result=/);
+    await expect(card).toContainText(`Connected as ${ACCOUNT_A} · ${SITE}`);
+    await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/onboarding-tools-connected.png`, fullPage: true });
+});
+
 test('a denied consent says so and leaves no connection', async ({ page }) => {
     await consentAs(page, 'a', true);
     await connect(page);

@@ -1,3 +1,4 @@
+import { INTEGRATION_CATALOG, type IntegrationProvider } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type {
@@ -34,9 +35,10 @@ interface Boot {
     start?: (input: StartAuthorizationInput) => StartAuthorizationResult | Promise<StartAuthorizationResult>;
     complete?: (input: CompleteAuthorizationInput) => CompleteAuthorizationResult;
     configured?: readonly string[];
+    catalog?: readonly IntegrationProvider[];
 }
 
-async function boot({ start, complete, configured }: Boot = {}) {
+async function boot({ start, complete, configured, catalog }: Boot = {}) {
     const lines: string[] = [];
     const started: { ctx: TrustedIntegrationContext; input: StartAuthorizationInput }[] = [];
     const completed: (CompleteAuthorizationInput & { signal?: AbortSignal | undefined })[] = [];
@@ -73,6 +75,7 @@ async function boot({ start, complete, configured }: Boot = {}) {
             }),
             flowOf: () => flow,
             configured,
+            catalog,
         },
         logger: { level: 'trace', stream: { write: (line: string) => lines.push(line) } },
     });
@@ -240,6 +243,24 @@ describe('GET /api/integrations', () => {
         expect(configured.headers['cache-control']).toBe('no-store');
         const absent = await list(await boot());
         expect(absent.json()).toEqual({ integrations: [{ provider: 'jira', configured: false }] });
+    });
+
+    it('answers one row per oauth provider of the catalog, so a new one shows without a route change', async () => {
+        const acme: IntegrationProvider = {
+            id: 'acme',
+            label: 'Acme Tracker',
+            category: 'Issue tracking',
+            availability: 'oauth',
+            description: 'Let tasks read Acme issues.',
+        };
+        const response = await list(await boot({ configured: ['acme'], catalog: [...INTEGRATION_CATALOG, acme] }));
+        // GitHub (organization) and the planned providers have no Connect, so no row.
+        expect(response.json()).toEqual({
+            integrations: [
+                { provider: 'jira', configured: false },
+                { provider: 'acme', configured: true },
+            ],
+        });
     });
 
     it('answers only provider and configured: no client id, origin or secret', async () => {

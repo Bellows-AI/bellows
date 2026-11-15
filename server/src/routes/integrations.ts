@@ -1,4 +1,4 @@
-import { ERROR_CODES, selectedBy } from '@factory-ai/core';
+import { canConnect, ERROR_CODES, INTEGRATION_CATALOG, type IntegrationProvider, selectedBy } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { safeReturnPath } from '../auth/session.js';
@@ -28,13 +28,12 @@ const NOT_CONFIGURED =
 /** Only the path, query and fragment of a redirect are ever used; the host is a placeholder for the URL parser. */
 const REDIRECT_BASE = 'http://board.invalid';
 
-/** The providers the catalog asks about; each is answered with whether this deployment can connect it. */
-const CATALOG_PROVIDERS = ['jira'] as const;
-
 export interface IntegrationRoutesDeps {
     flowOf: (orgId: string) => AuthorizationFlow;
     /** The provider ids this deployment registered an OAuth client for. */
     configured?: readonly string[] | undefined;
+    /** The providers `GET /api/integrations` answers for: each `oauth` one, with whether this deployment can connect it. */
+    catalog?: readonly IntegrationProvider[] | undefined;
 }
 
 /** The start body's fields, or the sentence it is refused with: every key known, every value a string. */
@@ -64,7 +63,13 @@ function redirectTo(returnTo: string, provider: string, result: string): string 
 const signInRequired = (reply: FastifyReply) =>
     reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
 
-export function integrationRoutes({ flowOf, configured = [] }: IntegrationRoutesDeps): FastifyPluginAsync {
+export function integrationRoutes({
+    flowOf,
+    configured = [],
+    catalog = INTEGRATION_CATALOG,
+}: IntegrationRoutesDeps): FastifyPluginAsync {
+    const connectable = catalog.filter(canConnect).map((provider) => provider.id);
+
     const start = async (request: FastifyRequest, reply: FastifyReply) => {
         const caller = callerOf(request);
         if (!caller) return signInRequired(reply);
@@ -127,7 +132,7 @@ export function integrationRoutes({ flowOf, configured = [] }: IntegrationRoutes
     const list = async (request: FastifyRequest, reply: FastifyReply) => {
         if (!callerOf(request)) return signInRequired(reply);
         return reply.header('cache-control', 'no-store').send({
-            integrations: CATALOG_PROVIDERS.map((provider) => ({
+            integrations: connectable.map((provider) => ({
                 provider,
                 configured: configured.includes(provider),
             })),
