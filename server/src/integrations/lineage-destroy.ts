@@ -64,7 +64,11 @@ async function confirmedVersion(ctx: LineageCtx, claim: LineageClaim): Promise<S
 }
 
 async function destroyUnderClaim(ctx: LineageCtx, claim: LineageClaim): Promise<DestroyResult> {
-    if (!(await revokeAtProvider(ctx, claim))) return { ok: false, reason: 'unconfirmed' };
+    if (!(await revokeAtProvider(ctx, claim))) {
+        // Nothing revoked, nothing deleted: the claim ends like any unconfirmed step, so the next pass starts over.
+        await endClaim(ctx, claim, { operation: true });
+        return { ok: false, reason: 'unconfirmed' };
+    }
     let step = await deleteOnce(ctx, claim, claim.secretVersion as SecretVersion);
     if (step === 'stale') {
         const version = await confirmedVersion(ctx, claim);

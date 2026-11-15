@@ -242,14 +242,18 @@ describe.skipIf(!enabled)('linear authorization', () => {
         expect(await grantsOf(tag)).toMatchObject([{ status: 'revoked', secret_version: null }]);
     });
 
-    it('a revoke is never attempted on an unconfirmed secret read, and the secret is kept', async () => {
+    it('a revoke is never attempted on an unconfirmed secret read: the secret is kept and the claim released for the next pass', async () => {
         const { tag, linear, runtime, secrets, connection, grantId } = await connected();
         await createConnectionStore({ sql: db.sql, orgId: ORG }).disconnect(connection.id, { userId: ALICE.id });
         secrets.gate.failReads = true;
         expect(await runtime.destroyRevokedSecret(ORG, grantId)).toEqual({ ok: false, reason: 'unconfirmed' });
         expect(linear.seen.revoked).toEqual([]);
         const [grant] = await grantsOf(tag);
-        expect(grant).toMatchObject({ status: 'revoked' });
+        expect(grant).toMatchObject({ status: 'revoked', lineage_claim: null });
         expect(grant!.secret_version).not.toBeNull();
+        secrets.gate.failReads = false;
+        expect(await runtime.destroyRevokedSecret(ORG, grantId)).toEqual({ ok: true });
+        expect(linear.seen.revoked).toEqual([`${tag}-refresh-1`]);
+        expect(await grantsOf(tag)).toMatchObject([{ status: 'revoked', secret_version: null, lineage_claim: null }]);
     });
 });
