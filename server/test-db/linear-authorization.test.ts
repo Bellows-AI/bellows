@@ -131,8 +131,8 @@ async function begin(runtime: IntegrationRuntime, input: { access?: 'read' | 'wr
 }
 
 const connectionsOf = (tag: string) =>
-    db.sql<{ id: string; kind: string; access: string; site: string; cloud_id: string; grant_id: string }[]>`
-        select id, kind, access, site, cloud_id, grant_id from connector_connection
+    db.sql<{ id: string; provider: string; access: string; site: string; cloud_id: string; grant_id: string }[]>`
+        select id, provider, access, site, cloud_id, grant_id from connector_connection
         where external_account_id = ${viewerOf(tag)}
     `;
 
@@ -164,7 +164,7 @@ async function connected(scope: Script['scope'] = 'read') {
 describe.skipIf(!enabled)('linear authorization', () => {
     it('connect makes a linear grant and a linear connection for the workspace, keyed by the organization id', async () => {
         const { tag, connection } = await connected();
-        expect(connection).toMatchObject({ kind: 'linear', site: WORKSPACE, cloud_id: orgOf(tag), access: 'read' });
+        expect(connection).toMatchObject({ provider: 'linear', site: WORKSPACE, cloud_id: orgOf(tag), access: 'read' });
         const [grant] = await grantsOf(tag);
         expect(grant).toMatchObject({ provider: 'linear', status: 'active', authority: { scopes: ['read'] } });
     });

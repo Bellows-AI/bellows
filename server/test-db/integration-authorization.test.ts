@@ -372,7 +372,7 @@ describe.skipIf(!enabled)('a second provider beside Jira', () => {
         return { fake, flow };
     }
 
-    it('completes authorization end to end: the connection carries provider and kind linear', async () => {
+    it('completes authorization end to end: the connection carries provider linear', async () => {
         const { fake, flow } = secondProvider();
         const account = acctId();
         fake.identity = {
@@ -385,10 +385,10 @@ describe.skipIf(!enabled)('a second provider beside Jira', () => {
         if (!started.ok) throw new Error(`start refused: ${started.reason}`);
         const done = await flow.completeAuthorization(asAlice(), { state: stateOf(started.authorizeUrl), code: CODE });
         expect(done).toMatchObject({ ok: true });
-        const rows = await db.sql<{ provider: string; kind: string; site: string; cloud_id: string }[]>`
-            select provider, kind, site, cloud_id from connector_connection where external_account_id = ${account}
+        const rows = await db.sql<{ provider: string; site: string; cloud_id: string }[]>`
+            select provider, site, cloud_id from connector_connection where external_account_id = ${account}
         `;
-        expect(rows).toEqual([{ provider: 'linear', kind: 'linear', site: 'lane-workspace', cloud_id: 'ws-1' }]);
+        expect(rows).toEqual([{ provider: 'linear', site: 'lane-workspace', cloud_id: 'ws-1' }]);
     });
 
     it('a site sent to a provider without a site normalizer is bad-input', async () => {
