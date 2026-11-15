@@ -18,7 +18,14 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
 import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
-import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
+import {
+    EnvScopeRefusal,
+    type EnvVarEntry,
+    type EnvVarRow,
+    type EnvVarStore,
+    type ScopeWrite,
+} from '../db/env-var-store.js';
+import type { EnvSecretScope } from '../db/env-secrets.js';
 import { MAX_SECRET_BYTES } from '../secrets/secret-input.js';
 import type { AppConfig, Repo } from '../config.js';
 import type { OrgRegistry, OrgRuntime } from '../orgs.js';
@@ -92,22 +99,15 @@ function parseVarEntry(entry: unknown): EnvVarEntry | string {
     return { name: item.name, value: item.value, isSecret: item.isSecret };
 }
 
+const TOO_MANY = `at most ${MAX_ENV_VARS_PER_SCOPE} variables can be configured per scope`;
+
 /**
- * Structural validation for a vars list; the client's copy is UX only. Returns the list or the
- * reason it was refused — the workspace route's parseExecutors shape.
+ * The rules on a whole scope list — the cap, the cloud credential checks, unique names — or the reason it is
+ * refused. The whole-list PUT runs it on its body; a single-name or multi-name write runs it inside the store's
+ * transaction on the list the scope would hold, read under the scope lock.
  */
-function parseVars(raw: unknown, deploymentMode: DeploymentMode): EnvVarEntry[] | string {
-    const list = jsonBody(raw).vars;
-    if (!Array.isArray(list)) return 'vars must be an array of { name, value, isSecret }';
-    if (list.length > MAX_ENV_VARS_PER_SCOPE) {
-        return `at most ${MAX_ENV_VARS_PER_SCOPE} variables can be configured per scope`;
-    }
-    const parsed: EnvVarEntry[] = [];
-    for (const entry of list) {
-        const one = parseVarEntry(entry);
-        if (typeof one === 'string') return one;
-        parsed.push(one);
-    }
+export function validateScopeList(parsed: readonly EnvVarEntry[], deploymentMode: DeploymentMode): string | null {
+    if (parsed.length > MAX_ENV_VARS_PER_SCOPE) return TOO_MANY;
     // Cloud refuses a Claude subscription OAuth token by NAME; the message never carries a value.
     if (
         deploymentMode === CLOUD &&
@@ -126,7 +126,58 @@ function parseVars(raw: unknown, deploymentMode: DeploymentMode): EnvVarEntry[] 
     if (redirect !== null) return credentialRedirectMessage(redirect);
     const names = new Set(parsed.map((entry) => entry.name));
     if (names.size !== parsed.length) return 'variable names must be unique within one scope';
+    return null;
+}
+
+/**
+ * Structural validation for a vars list; the client's copy is UX only. Returns the list or the
+ * reason it was refused — the workspace route's parseExecutors shape.
+ */
+function parseVars(raw: unknown, deploymentMode: DeploymentMode): EnvVarEntry[] | string {
+    const list = jsonBody(raw).vars;
+    if (!Array.isArray(list)) return 'vars must be an array of { name, value, isSecret }';
+    if (list.length > MAX_ENV_VARS_PER_SCOPE) return TOO_MANY;
+    const parsed: EnvVarEntry[] = [];
+    for (const entry of list) {
+        const one = parseVarEntry(entry);
+        if (typeof one === 'string') return one;
+        parsed.push(one);
+    }
+    return validateScopeList(parsed, deploymentMode) ?? parsed;
+}
+
+const NAMED_SHAPE = 'each write must be { value: string, secret: boolean } for a name';
+
+/** One name's write, `{ value, secret }`: a value is always sent — there is no stored value to keep. */
+function parseNamedEntry(name: unknown, raw: unknown): EnvVarEntry | string {
+    const item = raw as { value?: unknown; secret?: unknown } | null;
+    if (typeof name !== 'string' || typeof item?.value !== 'string' || typeof item?.secret !== 'boolean') {
+        return NAMED_SHAPE;
+    }
+    return parseVarEntry({ name, value: item.value, isSecret: item.secret });
+}
+
+/** The multi-name body, `{ entries: [{ name, value, secret }] }`; the list-level rules run on the resulting scope. */
+function parseEntries(raw: unknown): EnvVarEntry[] | string {
+    const list = jsonBody(raw).entries;
+    if (!Array.isArray(list)) return 'entries must be an array of { name, value, secret }';
+    if (list.length > MAX_ENV_VARS_PER_SCOPE) return TOO_MANY;
+    const parsed: EnvVarEntry[] = [];
+    for (const entry of list) {
+        const one = parseNamedEntry((entry as { name?: unknown } | null)?.name, entry);
+        if (typeof one === 'string') return one;
+        parsed.push(one);
+    }
     return parsed;
+}
+
+/** A DELETE's name: only a legal one can be stored, so anything else is refused rather than silently absent. */
+function parseRemovedName(name: string): ScopeWrite | string {
+    if (name.length > ENV_NAME_LIMIT) {
+        return `name "${name.slice(0, NAME_PREVIEW_LIMIT)}…" exceeds ${ENV_NAME_LIMIT} characters`;
+    }
+    if (!ENV_NAME.test(name)) return `"${name}" is not a legal environment variable name`;
+    return { upsert: [], remove: [name] };
 }
 
 function parseRepo(raw: unknown): Repo | string {
@@ -178,6 +229,61 @@ async function validatePutRepoRequest(
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_UNAVAILABLE = 503;
+
+/** The two scopes a single-name write addresses: the scope it locks and the list it answers with. */
+interface NamedScope {
+    readonly path: string;
+    readonly scopeOf: (caller: Caller) => EnvSecretScope;
+    readonly list: (store: EnvVarStore, caller: Caller) => Promise<EnvVarRow[]>;
+}
+
+const NAMED_SCOPES: readonly NamedScope[] = [
+    { path: 'org', scopeOf: () => ({ kind: 'org' }), list: (store) => store.listOrg() },
+    {
+        path: 'workspace',
+        scopeOf: (caller) => ({ kind: 'workspace', userId: caller.user.id }),
+        list: (store, caller) => store.listWorkspace(caller.user.id),
+    },
+];
+
+/**
+ * A write of only the names a request carries: the scope's list-level rules run inside the store's transaction on
+ * the list the scope would hold, and a refusal there answers like the whole-list PUT's.
+ */
+async function writeNames(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    env: {
+        runtimeOf: (request: FastifyRequest) => Promise<{ envVars: EnvVarStore } | null>;
+        deploymentMode: DeploymentMode;
+    },
+    op: NamedScope & { write: ScopeWrite | string }
+) {
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+    const rt = await env.runtimeOf(request);
+    if (!rt) return noEnvStore(reply);
+    const { write } = op;
+    if (typeof write === 'string') return bad(reply, varsCode(write), write);
+
+    const validate = (resulting: readonly EnvVarEntry[]) => validateScopeList(resulting, env.deploymentMode);
+    const saved = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        async (): Promise<{ refused: string } | { vars: EnvVarRow[] }> => {
+            try {
+                await rt.envVars.writeScoped(op.scopeOf(caller), write, caller.user.id, { validate });
+            } catch (error) {
+                if (error instanceof EnvScopeRefusal) return { refused: error.reason };
+                throw error;
+            }
+            return { vars: await op.list(rt.envVars, caller) };
+        }
+    );
+    if (!saved.ok) return reply;
+    if ('refused' in saved.value) return bad(reply, varsCode(saved.value.refused), saved.value.refused);
+    return reply.code(HTTP_OK).send(saved.value);
+}
 
 export interface EnvRoutesDeps {
     readonly config: AppConfig;
@@ -266,6 +372,25 @@ export const envRoutes =
                 return store.listWorkspace(caller.user.id);
             });
         });
+
+        // One name, several names or one removal in the org or the caller's workspace scope, the rest kept as
+        // stored. The org paths are `admin` rows like the whole-list PUT; the workspace paths any member's.
+        const env = { runtimeOf, deploymentMode: config.deploymentMode };
+        for (const target of NAMED_SCOPES) {
+            app.put<{ Params: { name: string } }>(`/api/env/${target.path}/vars/:name`, async (request, reply) => {
+                const entry = parseNamedEntry(request.params.name, request.body);
+                const write = typeof entry === 'string' ? entry : { upsert: [entry], remove: [] };
+                return writeNames(request, reply, env, { ...target, write });
+            });
+            app.delete<{ Params: { name: string } }>(`/api/env/${target.path}/vars/:name`, async (request, reply) =>
+                writeNames(request, reply, env, { ...target, write: parseRemovedName(request.params.name) })
+            );
+            app.put(`/api/env/${target.path}/vars`, { bodyLimit: BODY_LIMIT }, async (request, reply) => {
+                const entries = parseEntries(request.body);
+                const write = typeof entries === 'string' ? entries : { upsert: entries, remove: [] };
+                return writeNames(request, reply, env, { ...target, write });
+            });
+        }
 
         // Org-wide per-repository scope: one configuration per repository, applied to every
         // member's runs in it — the GitHub Actions precedent. An `admin` row, like the org scope.

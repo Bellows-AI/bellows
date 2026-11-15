@@ -12,6 +12,17 @@ import {
     type EnvSecretScope,
     type RetiredEnvSecret,
 } from './env-secrets.js';
+import {
+    deleteNames,
+    EnvScopeRefusal,
+    lockScope,
+    resultingList,
+    scopeKeyOf,
+    type ScopeWrite,
+    type WriteScopedOptions,
+} from './env-var-write.js';
+
+export { EnvScopeRefusal, type ScopeValidator, type ScopeWrite, type WriteScopedOptions } from './env-var-write.js';
 
 /**
  * One entry in a PUT body. `value: null` is legal ONLY for a secret, and means "keep whatever is
@@ -39,6 +50,12 @@ export interface EnvVarStore {
     replaceOrg(actorId: string, vars: readonly EnvVarEntry[]): Promise<void>;
     replaceWorkspace(userId: string, vars: readonly EnvVarEntry[]): Promise<void>;
     replaceRepo(actorId: string, owner: string, name: string, vars: readonly EnvVarEntry[]): Promise<void>;
+    /**
+     * Writes or deletes only the names `write` carries, leaving the rest of the scope as stored, under the same
+     * scope lock as the replaces. `validate` judges the list the scope would hold (a reason throws
+     * `EnvScopeRefusal`); `alsoInTx` runs in the same transaction. An upsert with a null value is ignored.
+     */
+    writeScoped(scope: EnvSecretScope, write: ScopeWrite, actorId: string, options?: WriteScopedOptions): Promise<void>;
     /**
      * The merged environment one claim carries: org < workspace < repo, the more specific scope
      * winning a name collision. `userId` null contributes no workspace level (an unattributed
@@ -130,13 +147,6 @@ export function stackEnv(
  */
 type Scope = EnvSecretScope;
 
-/** The audit row's target: the scope a write replaced. */
-const auditTargetOf = (scope: Scope): string => {
-    if (scope.kind === 'org') return 'org';
-    if (scope.kind === 'workspace') return `workspace/${scope.userId}`;
-    return `repo/${scope.owner}/${scope.name}`;
-};
-
 /**
  * The scope's predicate, built off whichever executor (pool or transaction) will run it — a
  * fragment is bound to nothing, but building it from the transaction's own tag keeps every
@@ -187,6 +197,13 @@ const retiredOf = (orgId: string, scope: Scope, deleted: readonly DeletedRow[]):
               ]
     );
 
+const insertRows = async (tx: TransactionSql, rows: ReturnType<typeof rowsToInsert>) => {
+    if (!rows.length) return;
+    await tx`
+        insert into env_var ${tx(rows, 'org_id', 'user_id', 'repo_owner', 'repo_name', 'name', 'value', 'is_secret', 'secret_ref', 'secret_version')}
+    `;
+};
+
 /**
  * The rows a PUT inserts. The scope columns ride on every row: null for the scopes a row is not in, the scope
  * check enforcing exactly one set. A secret carries its reference and no value; a non-secret its value and no
@@ -215,6 +232,64 @@ const rowsToInsert = (
             };
         });
 
+/** One write's transaction, under the scope lock: it pushes onto `retired` the references its deletes dropped. */
+type TxBody = (
+    tx: TransactionSql,
+    created: ReadonlyMap<string, { ref: SecretRef; version: SecretVersion }>,
+    retired: RetiredEnvSecret[]
+) => Promise<void>;
+
+/**
+ * The whole-list replace, a delete-then-insert (the user-executor-store shape). The keep set: a secret whose incoming
+ * entry carries `value: null` survives the delete and is NOT re-inserted, so a client never re-sends values it can
+ * never read. Omitted names delete; non-secret rows never survive.
+ */
+const replaceBody =
+    (orgId: string, scope: Scope, vars: readonly EnvVarEntry[], actorId: string): TxBody =>
+    async (tx, created, retired) => {
+        const keep = vars.filter((v) => v.isSecret && v.value === null).map((v) => v.name);
+        retired.push(...retiredOf(orgId, scope, await deleteScope(tx, orgId, scope, keep)));
+        await insertRows(tx, rowsToInsert(orgId, scope, vars, created));
+        // The names the scope now holds, never a value.
+        await recordAudit(tx, {
+            orgId,
+            actor: userActor(actorId),
+            action: 'env.write',
+            target: scopeKeyOf(scope),
+            detail: { names: vars.map((v) => v.name).sort() },
+        });
+    };
+
+/**
+ * Only the touched names: the resulting list is read under the lock and judged before anything is deleted, so a
+ * refusal or a failed read leaves the scope as it was and releases what this write created.
+ */
+const namesBody =
+    (
+        orgId: string,
+        scope: Scope,
+        actorId: string,
+        { write, options }: { write: ScopeWrite; options: WriteScopedOptions }
+    ): TxBody =>
+    async (tx, created, retired) => {
+        const resulting = await resultingList(tx, orgId, scopeWhere(tx, scope), write);
+        const reason = options.validate?.(resulting) ?? null;
+        if (reason !== null) throw new EnvScopeRefusal(reason);
+        const touched = [...new Set([...write.remove, ...write.upsert.map((v) => v.name)])];
+        if (touched.length) {
+            retired.push(...retiredOf(orgId, scope, await deleteNames(tx, orgId, scopeWhere(tx, scope), touched)));
+        }
+        await insertRows(tx, rowsToInsert(orgId, scope, write.upsert, created));
+        await recordAudit(tx, {
+            orgId,
+            actor: userActor(actorId),
+            action: 'env.write',
+            target: scopeKeyOf(scope),
+            detail: { names: resulting.map((v) => v.name).sort() },
+        });
+        await options.alsoInTx?.(tx);
+    };
+
 /**
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
@@ -231,6 +306,7 @@ export function createEnvVarStore({
     secretLog,
     writeDeadlineMs = 30_000,
     cleanupDeadlineMs = 10_000,
+    lockTimeoutMs = 10_000,
 }: {
     sql: Sql;
     orgId: string;
@@ -242,6 +318,8 @@ export function createEnvVarStore({
     /** Bounds a PUT's creates; compensation runs under its own `cleanupDeadlineMs`. */
     writeDeadlineMs?: number;
     cleanupDeadlineMs?: number;
+    /** Bounds the wait for the scope lock another write holds; past it the write fails (55P03). */
+    lockTimeoutMs?: number;
 }): EnvVarStore {
     const gate = async () => {
         if (ready) await ready;
@@ -265,16 +343,13 @@ export function createEnvVarStore({
     };
 
     /**
-     * The one replace, parameterised by scope. Every secret with a value is written to the store first,
-     * under no transaction; then one delete-then-insert transaction (the user-executor-store shape)
-     * stores only its reference and version. Non-secrets never reach the store: plaintext value, null
-     * reference. The keep set: a secret whose incoming entry carries `value: null` survives the delete
-     * and is NOT re-inserted, so a client never re-sends values it can never read. Omitted names delete;
-     * non-secret rows never survive. A changed value gets a new reference and the old one is deleted
-     * after the commit. A write that does not commit deletes the records it created, but only those a
-     * fresh read of this scope shows no row naming (docs/env.md).
+     * Every write's frame, parameterised by scope. Every secret with a value is written to the store first, under no
+     * transaction; then one transaction takes the scope lock and runs `body`, which stores only references and
+     * versions and pushes onto `retired` the references its deletes dropped. Non-secrets never reach the store. A
+     * changed value gets a new reference and the old one is deleted after the commit. A write that does not commit
+     * deletes the records it created, but only those a fresh read of this scope shows no row naming (docs/env.md).
      */
-    const replaceScoped = async (scope: Scope, vars: readonly EnvVarEntry[], actorId: string): Promise<void> => {
+    const writeWithSecrets = async (scope: Scope, vars: readonly EnvVarEntry[], body: TxBody): Promise<void> => {
         await gate();
         const referencedInScope = () =>
             sql<{ secret_ref: string | null }[]>`
@@ -298,31 +373,34 @@ export function createEnvVarStore({
         }
         const createdByName = new Map(created.map((c) => [c.name, c]));
 
-        let retired: RetiredEnvSecret[] = [];
+        const retired: RetiredEnvSecret[] = [];
         try {
             await sql.begin(async (tx) => {
-                const keep = vars.filter((v) => v.isSecret && v.value === null).map((v) => v.name);
-                retired = retiredOf(orgId, scope, await deleteScope(tx, orgId, scope, keep));
-                const rows = rowsToInsert(orgId, scope, vars, createdByName);
-                if (rows.length) {
-                    await tx`
-                        insert into env_var ${tx(rows, 'org_id', 'user_id', 'repo_owner', 'repo_name', 'name', 'value', 'is_secret', 'secret_ref', 'secret_version')}
-                    `;
-                }
-                // The names the scope now holds, never a value.
-                await recordAudit(tx, {
-                    orgId,
-                    actor: userActor(actorId),
-                    action: 'env.write',
-                    target: auditTargetOf(scope),
-                    detail: { names: vars.map((v) => v.name).sort() },
-                });
+                await lockScope(tx, orgId, scope, lockTimeoutMs);
+                await body(tx, createdByName, retired);
             });
         } catch (error) {
             await releaseEnvSecrets(secrets, [...created, ...retired], { ...cleanup(), referencedInScope });
             throw error;
         }
         await retireEnvSecrets(secrets, retired, cleanup());
+    };
+
+    const replaceScoped = (scope: Scope, vars: readonly EnvVarEntry[], actorId: string): Promise<void> =>
+        writeWithSecrets(scope, vars, replaceBody(orgId, scope, vars, actorId));
+
+    const writeScoped = (
+        scope: Scope,
+        write: ScopeWrite,
+        actorId: string,
+        options: WriteScopedOptions = {}
+    ): Promise<void> => {
+        const upsert = write.upsert.filter((v) => v.value !== null);
+        return writeWithSecrets(
+            scope,
+            upsert,
+            namesBody(orgId, scope, actorId, { write: { upsert, remove: write.remove }, options })
+        );
     };
 
     /**
@@ -394,6 +472,8 @@ export function createEnvVarStore({
         async replaceRepo(actorId, owner, name, vars) {
             await replaceScoped({ kind: 'repo', owner, name }, vars, actorId);
         },
+
+        writeScoped,
 
         async resolveFor({ userId, repo }, exec = sql) {
             await gate();
