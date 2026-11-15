@@ -73,7 +73,7 @@ describe('the cross-org pool', () => {
     });
 
     it('leaves the owner to the migrations: main.ts hands the owner pool to nothing else', () => {
-        // The policies exempt the owner until a later release forces them, so a request on it would bypass them.
+        // The owner is bound by the forced policies; it runs only migrations, and a superuser owner would bypass them.
         const callees = calleesOf('main.ts', read('main.ts'), 'ownerSql');
         expect([...new Set(callees)].sort()).toEqual(['createClose', 'migrateAsOwner']);
     });
