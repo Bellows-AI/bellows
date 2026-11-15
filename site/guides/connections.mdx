@@ -9,6 +9,7 @@ description: "What Bellows connects to, what each connection lets tasks do, and 
 | --- | --- | --- |
 | GitHub | Cloning, branches, pull requests | Your organization, through the GitHub App |
 | Jira | Tasks look up and comment on your Jira issues | You, with your own Atlassian account |
+| Linear | Tasks look up and comment on your Linear issues | You, with your own Linear account |
 | Discord | Notifications about task events | You or an admin, through a webhook |
 
 Open **Settings → Integrations** to see what you have connected. **Browse integrations** lists everything available.
@@ -59,6 +60,30 @@ Mention the ticket in the task, for example "Fix PROJ-123". When the task needs 
 
 The task stays queued, or pauses, until you choose. With Jira connected, the agent reads the ticket and sets the task title from the ticket's subject.
 
+## Linear
+
+Connect Linear so that a task can read an issue. Tasks can look issues up, search them and read their comments. If you allow it, they can also add comments. A connection belongs to you only. Admins cannot use it.
+
+<Steps>
+  <Step title="Open Integrations">
+    Go to **Settings → Integrations**, then **Browse integrations**, and choose **Linear**.
+  </Step>
+  <Step title="Connect">
+    Click **Connect**. In the **Connect Linear** dialog you can turn on **Allow adding comments**. Without it tasks can only look Linear up.
+  </Step>
+  <Step title="Approve in Linear">
+    Click **Continue to Linear**, pick the workspace and approve. You return to Bellows with a "Linear connected." notice and a card for that workspace.
+  </Step>
+</Steps>
+
+A connection reaches the one workspace you picked. Each connection has its own page, with **Reconnect** and **Disconnect**. Reconnect with the same Linear account and workspace. If you turn on comments later, tasks already started with read-only access are refused until you start them again.
+
+### Using Linear on a task
+
+Mention the issue in the task, for example "Fix PROJ-123", or paste its `linear.app` link. When the task needs Linear and you have not connected it, the task page shows a block that says the task needs a Linear connection, with the same choices as for Jira: **Connect Linear**, **Use selected connection** or **Continue without it**.
+
+If a task is bound to both Jira and Linear, a bare key such as `PROJ-123` could belong to either, so the agent asks you which one before it reads or comments. With Linear connected, the agent reads the issue and sets the task title from its subject. Creating, assigning or moving Linear issues is not supported.
+
 ## Discord notifications
 
 Discord sends task events to a channel you choose. It uses a webhook, not an account login.
@@ -88,4 +113,4 @@ Slack, GitLab and MCP servers are not connectable yet.
 
 **Worked example:** [Fix a bug from a Jira ticket](/use-cases/fix-jira-bug).
 
-Self-hosting? Set up the [GitHub App](/self-host/github-app) and the [Jira app](/self-host/jira-app) first.
+Self-hosting? Set up the [GitHub App](/self-host/github-app), the [Jira app](/self-host/jira-app) and the [Linear app](/self-host/linear-app) first.

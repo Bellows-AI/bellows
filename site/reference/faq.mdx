@@ -30,8 +30,8 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
   <Accordion title="How do I stop a run?">
     Click **Stop** on the task, run `bellows job stop <id>`, or call the `stop_task` MCP tool. The task shows <span className="status status-stopping">Stopping</span>, then **Stopped · Needs review**. See [Task lifecycle](/guides/task-lifecycle).
   </Accordion>
-  <Accordion title="Can the agent read my Jira tickets?">
-    Yes, once you connect Jira under **Settings → Integrations**. Mention the ticket key in the task. Comments need **Allow adding comments**. See [Connections](/guides/connections#jira).
+  <Accordion title="Can the agent read my Jira or Linear issues?">
+    Yes, once you connect Jira or Linear under **Settings → Integrations**. Mention the issue key in the task. Comments need **Allow adding comments**. See [Connections](/guides/connections#jira) and [Linear](/guides/connections#linear).
   </Accordion>
   <Accordion title="Can my tests use a database?">
     Yes. Declare a service such as Postgres in `.bellows.yaml` and it starts next to the agent. See [Services](/guides/services).
@@ -70,9 +70,9 @@ Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecyc
     **Cause.** You have no usable executor, or the profile is suspended. Suspended profiles are not listed in the task picker and cannot be a default.
     **Fix.** Under **Settings → Executors**, **Resume** the profile or add one with **Add executor**. Organization profiles are managed by admins. See [Executors](/guides/executors#defaults-and-suspending).
   </Accordion>
-  <Accordion title="The task says it needs a Jira connection">
-    **Cause.** The task mentions a ticket, but you have not connected Jira, or the connection needs reconnecting.
-    **Fix.** Choose **Connect Jira**, **Use selected connection** or **Continue without it** on the task page. If you turned on comments after the task started, start a new task. See [Connections](/guides/connections#using-jira-on-a-task).
+  <Accordion title="The task says it needs a Jira or Linear connection">
+    **Cause.** The task mentions a ticket, but you have not connected Jira or Linear, or the connection needs reconnecting.
+    **Fix.** Choose **Connect Jira** (or **Connect Linear**), **Use selected connection** or **Continue without it** on the task page. If you turned on comments after the task started, start a new task. See [Connections](/guides/connections#using-jira-on-a-task).
   </Accordion>
   <Accordion title="MCP returns 401 or 404">
     **Cause.** `401` means the client has no valid token, or you disconnected it. `404` on `/api/mcp` means MCP is switched off on that self-hosted server. Old HTTP+SSE clients and plain `http` are refused.

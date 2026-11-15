@@ -118,7 +118,8 @@
                         "group": "Integrations",
                         "pages": [
                             "self-host/github-app",
-                            "self-host/jira-app"
+                            "self-host/jira-app",
+                            "self-host/linear-app"
                         ]
                     },
                     {
