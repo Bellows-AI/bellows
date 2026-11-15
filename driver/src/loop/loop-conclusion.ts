@@ -37,7 +37,7 @@ export function attemptQuiesce(
         (quiescing ??= (async () => {
             transition(state, 'ended');
             // In flight for a drain's handover (`loop.ts`) until here.
-            rt.live?.delete(job.id);
+            rt.live?.delete(job.leaseToken);
             if (state.graceTimer) clearTimeout(state.graceTimer);
             state.wake();
             state.leaseExpiry.stop();

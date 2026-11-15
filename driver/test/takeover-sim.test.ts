@@ -30,8 +30,16 @@ afterAll(() => expect(liveSupervisors()).toBe(0));
 
 const released = (s: Sim) => [...s.groups.values()].find((g) => s.released(g));
 const firstGroup = (s: Sim) => [...s.groups.values()][0]!;
-const settled = (s: Sim) =>
-    until('the job to settle', s, () => s.row.status === 'succeeded', 25_000 + takeoverBoundMs(s.config));
+/** Until a verdict lands; it must be a success (the board records the reported status, a failure included). */
+const settled = async (s: Sim) => {
+    await until(
+        'the job to settle',
+        s,
+        () => s.row.status !== 'queued' && s.row.status !== 'running',
+        25_000 + takeoverBoundMs(s.config)
+    );
+    expect(s.row.status, `${s.brief()}\n${s.text()}`).toBe('succeeded');
+};
 
 /** `GET /attempt` on a group's agent relay: the status and lease the supervisor answers. */
 const attemptOf = (g: Group) =>
@@ -272,6 +280,46 @@ describe.each<[string, Timing]>([
             // The revoked driver claimed nothing more; the new claim moved the sequence.
             expect(s.claimSeqs).toEqual([1, 2]);
             expect(a.dead).toBe(false);
+        } finally {
+            await s.teardown();
+        }
+    }, 60_000);
+});
+
+// The same process re-claims: its credential is restored after its lease lapsed, and it takes over the agent it
+// abandoned under the earlier claim. That abandonment is the earlier attempt's alone; the takeover follows the run
+// to its own report and never tears the group down under it.
+describe.each<[string, Timing, 'kubernetes' | 'docker']>([
+    ['kubernetes, the binding Secret refreshed', scaled(15), 'kubernetes'],
+    ['docker, the binding written at once', { ...scaled(15), refreshMs: 0 }, 'docker'],
+])('takeover simulation, a revoked driver credential restored (%s)', (_name, timing, executor) => {
+    it('the revoked driver, its credential restored, takes its own running agent over and the task succeeds', async () => {
+        const s = new Sim(timing, { executor });
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            s.revoked.add(a);
+            await until('the revoked driver to stand down', s, () => s.text().includes('lease lapsed'));
+            s.revoked.delete(a);
+            await until('the rebind', s, () => g.logs.some((l) => l.startsWith('supervisor: rebound to claim 2')));
+            // The agent runs on past the takeover's launch: the claim follows it, it does not read a finished run.
+            await until('the takeover launched', s, () =>
+                s.text().includes('"claimSeq":2,"from":"setup","to":"launched"')
+            );
+            await nap(200);
+            s.agentExits(g, 0);
+            await settled(s);
+            expect(s.brief()).toBe('succeeded|1|1');
+            expect(s.row.exitCode).toBe(0);
+            expect(s.text()).toContain(TOOK_OVER);
+            expect([s.spawned, s.agentRuns]).toEqual([1, 1]);
+            expect(s.driverKills).toEqual([]);
+            // The group was never ended under its running agent: only once the agent's own exit was in.
+            expect(s.finished.filter((f) => f.agentRunning)).toEqual([]);
+            expect(s.claimSeqs).toEqual([1, 2]);
+            expect(s.drivers).toEqual([a]);
         } finally {
             await s.teardown();
         }

@@ -479,6 +479,72 @@ describe('the worktree sync', () => {
         await expect(sync(repoJob, fakeSteps(), request)).rejects.toThrow(/answered 400/);
     });
 
+    // A create the API server refused with a 422 `Status` (an admission policy's denial) is a
+    // confirmed spec refusal: the same spec is refused on every claim, so the sync fails as config
+    // instead of being left to the lease, and the checkout is still handed over once.
+    const admissionDenial = 'a runner may not add capabilities';
+    const refused422 = {
+        status: 422,
+        body: JSON.stringify({
+            kind: 'Status',
+            apiVersion: 'v1',
+            status: 'Failure',
+            reason: 'Invalid',
+            code: 422,
+            message: `jobs.batch "factory-run-x" is forbidden: ValidatingAdmissionPolicy 'factory-driver-jobs' with binding 'factory-driver-jobs' denied request: ${admissionDenial}`,
+        }),
+    };
+    const claimDeletes = (calls: Call[]) =>
+        calls.filter((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id)).length;
+
+    it('fails the sync as config when the group POST answers an admission 422, its claim given back', async () => {
+        const { request, calls } = fakeRequest({ create: refused422 });
+        const thrown = await sync(repoJob, fakeSteps(), request).then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(thrown).toBeInstanceOf(StartupRefused);
+        expect((thrown as StartupRefused).startupCause).toBe('config');
+        expect((thrown as Error).message).toContain('creating the runner job was refused (422 Invalid)');
+        expect((thrown as Error).message).toContain(admissionDenial);
+        expect(claimDeletes(calls)).toBe(1);
+    });
+
+    it('fails the sync as config when the attempt’s Secret POST answers 422, the suspended Job deleted', async () => {
+        const { request, calls } = fakeRequest({ secretCreate: refused422 });
+        const thrown = await sync(repoJob, fakeSteps(), request).then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(thrown).toBeInstanceOf(StartupRefused);
+        expect((thrown as StartupRefused).startupCause).toBe('config');
+        expect((thrown as Error).message).toContain('creating the runner secret was refused');
+        expect(calls.some((call) => call.method === 'DELETE' && call.path.includes(runnerJobName(repoJob)))).toBe(true);
+        expect(claimDeletes(calls)).toBe(1);
+    });
+
+    // What the API server did not confirm stays inconclusive: left to the lease, never a verdict.
+    it.each([
+        ['a 500 Status', { status: 500, body: '{"kind":"Status","reason":"InternalError","message":"etcd timeout"}' }],
+        ['a 503', { status: 503, body: 'service unavailable' }],
+        ['a 429', { status: 429, body: '{"kind":"Status","reason":"TooManyRequests","message":"slow down"}' }],
+        ['a 422 that is not a Status', { status: 422, body: 'unprocessable' }],
+        ['a transport rejection', null],
+    ])('leaves to the lease what the API server did not confirm: %s', async (_what, create) => {
+        const base = fakeRequest(create ? { create } : {});
+        const request: K8sRequest = (method, path, body) =>
+            !create && method === 'POST' && path === jobsPath(namespace)
+                ? Promise.reject(new Error('the API server did not answer within 30000ms'))
+                : base.request(method, path, body);
+        const thrown = await sync(repoJob, fakeSteps(), request).then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(thrown).toBeInstanceOf(Error);
+        expect(thrown).not.toBeInstanceOf(StartupRefused);
+        expect(claimDeletes(base.calls)).toBe(1);
+    });
+
     /*
      * Issue #302: an executor image the node cannot pull holds the group's pod in ImagePullBackOff
      * and no supervisor ever comes up. The wait names the image the moment the pod does, not after

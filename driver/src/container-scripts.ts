@@ -76,6 +76,13 @@ export const dockerdStartScript = script('dockerd-start.sh');
 /** The `dockerd` sidecar's command. */
 export const dockerdStartArgv = (): string[] => ['sh', '-c', dockerdStartScript, 'dockerd-start'];
 
+/**
+ * The reviewer container's start on both executors: the loop behind factory-launch --reviewer, which
+ * starts the tool broker as root and drops to REVIEWER_UID, so a review's tool commands run as the
+ * tool uid with no attempt lease and no telemetry credential (docker/executor-common/factory-launch.sh).
+ */
+export const reviewerLaunchArgv = (): string[] => ['/usr/local/bin/factory-launch', '--reviewer', ...reviewLoopArgv()];
+
 /** A declared service sidecar's liveness probe (kubernetes): see scripts/service-generation-probe.sh. */
 export const serviceGenerationProbeScript = script('service-generation-probe.sh');
 

@@ -40,11 +40,11 @@ On Kubernetes, the admission policy requires these on every pod the driver creat
 | Limited Secret reads | Only the pod's own per-attempt Secrets and the runner credentials |
 | Runner class | A `factory.runner-class` label naming a class in `runner.classes`, and a `runtimeClassName` equal to that class's (none when the class sets none) |
 
-One exception exists. The `agent` container starts as root with only `SETUID` and `SETGID` added, so it can start commands as another user. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
+One exception exists, for two containers. The `agent` container and the `reviewer` sidecar start as root with only `SETUID` and `SETGID` added, so they can start commands as another user. Each then drops to its own user before the agent program or the review runs. Admission requires the reviewer to start through the launcher that makes that drop. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
 
 A Docker class has a second exception. Its `dockerd` sidecar runs privileged. The policy admits that only on the `dockerd` container of a pod in a Docker class, under that class's RuntimeClass, and with no added capability. A privileged container always runs seccomp Unconfined, so the pod's `RuntimeDefault` profile does not filter the daemon. The class's microVM is the boundary: task code can hold root over the task volume and the VM's guest kernel, never the node's. Under a RuntimeClass that runs plain containers, a privileged daemon would be root of the node, so the driver checks each Docker class's RuntimeClass at startup and refuses to start unless its handler is `kata` or `kata-<variant>`. A RuntimeClass it cannot read refuses too.
 
-Pod Security `restricted` cannot admit the agent container. `baseline` can, unless the namespace hosts a Docker class: `baseline` refuses the privileged daemon, so that namespace must enforce `privileged`. The admission policy then enforces the `baseline` controls on every runner pod itself: host namespaces, ports and paths, capabilities, seccomp, AppArmor, SELinux, the `/proc` mount, sysctls and Windows HostProcess.
+Pod Security `restricted` cannot admit the agent or the reviewer container. `baseline` can, unless the namespace hosts a Docker class: `baseline` refuses the privileged daemon, so that namespace must enforce `privileged`. The admission policy then enforces the `baseline` controls on every runner pod itself: host namespaces, ports and paths, capabilities, seccomp, AppArmor, SELinux, the `/proc` mount, sysctls and Windows HostProcess.
 
 ### Separate users
 
@@ -53,8 +53,9 @@ Pod Security `restricted` cannot admit the agent container. `baseline` can, unle
 | CLI (the agent program) | 1000 |
 | Tool commands the agent runs | 1001, started through a root broker |
 | Reviewer sidecar | 1002 |
+| Tool commands a review runs | 1001, started through a root broker |
 
-Commands the agent runs execute as the tool user. The CLI's configuration, credentials and mailboxes stay closed to that user. The control channel to the supervisor is reached only through a proxy in the CLI's user. No tool environment holds a control token.
+Commands the agent runs execute as the tool user. The CLI's configuration, credentials and mailboxes stay closed to that user. A review's commands also run as the tool user. They do not see the review's attempt lease or its telemetry credential, and nothing they start outlives the review. The control channel to the supervisor is reached only through a proxy in the CLI's user. No tool environment holds a control token.
 
 <Warning>
 The tool user protects the CLI against accidents, not against a hostile tool. A tool can still write files the CLI later reads (`.git/config`, `.claude`, `.mcp.json`) and can exhaust memory, CPU or process slots. Hooks and MCP servers run as the CLI's user. Treat what an agent can do inside its container as unconstrained.
@@ -125,7 +126,7 @@ Sign-in uses the OAuth App with the `read:org` scope and reads no repository dat
 
 A GitHub organization owner is an admin, and so is the account a user installation belongs to. An installation that has not yet accepted the Members permission keeps the older rule: the first member to sign in is the admin. Bellows never demotes an admin on GitHub's word, and demoting the last admin is refused.
 
-An admin removes a member under **Settings → Organization**, section **Members**. Their sessions end and their personal tokens are revoked at once. The removal sticks: signing in again does not bring the membership back until an admin restores it from **Removed members** on the same page.
+An admin removes a member under **Settings → Organization**, section **Members**. Their sessions end and their personal tokens are revoked at once. The removal sticks: signing in again does not bring the membership back until an admin restores it from **Removed members** on the same page. The **Invite members** link opens the selection screen with the organization already ticked, so a restored member follows it and presses **Continue**.
 
 Only an admin can mint, list or revoke organization access tokens, save organization or repository variables and secrets, change member roles, remove or restore members, manage organization executors, skills and notifications, read the [audit log](/guides/audit-log) or download the [organization export](/guides/export). A member's session or personal access token gets `403` there. Every member manages their own personal tokens, workspace variables, executors, skills and notifications.
 

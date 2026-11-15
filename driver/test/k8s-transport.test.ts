@@ -13,10 +13,12 @@ import {
     isRecord,
     readAnswer,
     refusalDiagnosis,
+    specRefusalOf,
 } from '../src/k8s/k8s-transport.js';
 import { asNamed, asPod } from '../src/k8s/k8s-pod-shapes.js';
 import { asJob, readTypedList } from '../src/k8s/k8s-poll.js';
 import { withSignal, type K8sDeps, type K8sRequest } from '../src/k8s/k8s-transport.js';
+import { StartupRefused } from '../src/startup-cause.js';
 
 const METRICS_PATH = '/apis/metrics.k8s.io/v1beta1/namespaces/factory/pods/runner-1';
 const LOG_PATH = '/api/v1/namespaces/factory/pods/runner-1/log?tailLines=1000';
@@ -311,6 +313,43 @@ describe('the malformed-request classifier', () => {
         expect(isMalformedRequest400(503, 'unavailable')).toBe(false);
         expect(isMalformedRequest400(400, 'container "sync" in pod "x" has not started')).toBe(false);
         expect(isMalformedRequest400(200, '400 Bad Request')).toBe(false);
+    });
+});
+
+describe('specRefusalOf', () => {
+    const WHAT = 'creating the runner job';
+    const statusOf = (code: number, message: string, reason?: string) =>
+        JSON.stringify({ kind: 'Status', status: 'Failure', message, reason, code });
+
+    it('reads a 422 Status as a config refusal, its reason and message named', () => {
+        const refused = specRefusalOf(
+            { status: 422, body: statusOf(422, 'denied request: no capabilities', 'Invalid') },
+            WHAT
+        );
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect(refused?.startupCause).toBe('config');
+        expect(refused?.message).toBe(`${WHAT} was refused (422 Invalid): denied request: no capabilities`);
+    });
+
+    it('drops the parenthesised reason when the Status names none', () => {
+        expect(specRefusalOf({ status: 422, body: statusOf(422, 'denied') }, WHAT)?.message).toBe(
+            `${WHAT} was refused (422): denied`
+        );
+    });
+
+    it('cuts a long Status message to the diagnosis length', () => {
+        const long = 'x'.repeat(DIAGNOSIS_BODY_CHARS + 100);
+        expect(specRefusalOf({ status: 422, body: statusOf(422, long, 'Invalid') }, WHAT)?.message).toBe(
+            `${WHAT} was refused (422 Invalid): ${long.slice(0, DIAGNOSIS_BODY_CHARS)}`
+        );
+    });
+
+    it('confirms nothing from a 422 that is not a Status, or from any other status', () => {
+        expect(specRefusalOf({ status: 422, body: 'unprocessable' }, WHAT)).toBeNull();
+        expect(specRefusalOf({ status: 422, body: '{"kind":"Status","reason":"Invalid"}' }, WHAT)).toBeNull();
+        for (const code of [200, 201, 400, 403, 409, 500]) {
+            expect(specRefusalOf({ status: code, body: statusOf(code, 'refused', 'Invalid') }, WHAT)).toBeNull();
+        }
     });
 });
 

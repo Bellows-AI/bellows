@@ -193,9 +193,9 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
     it('a reviewer row gets no bindings (pin)', async () => {
         const id = randomUUID();
         await sql`
-            insert into job (org_id, id, command, root_job_id, created_by, review_of, review_key, review_profile,
-                             review_spec, review_revision, review_ref)
-            values (${ORG}, ${id}, 'review', ${id}, ${ALICE.id}, ${randomUUID()}, 'k', 'security',
+            insert into job (org_id, id, command, root_job_id, created_by, execution_user_id, review_of, review_key,
+                             review_profile, review_spec, review_revision, review_ref)
+            values (${ORG}, ${id}, 'review', ${id}, ${ALICE.id}, ${ALICE.id}, ${randomUUID()}, 'k', 'security',
                     ${sql.json({ name: 'security' })}, 'abc', 'refs/factory/review/x')`;
         expect(await bindingsOf(sql, ORG, id)).toEqual([]);
     });
@@ -358,104 +358,5 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
         expect(result).toEqual({ ok: true, revision });
         expect(await requirementsOf(sql, ORG, root)).toEqual([]);
         expect((await claimNext())?.id).toBe(root);
-    });
-
-    describe('jira_connection_id projection for old pods (dropped with the column)', () => {
-        const projection = async (id: string): Promise<string | null> =>
-            (await sql<{ c: string | null }[]>`select jira_connection_id as c from job where id = ${id}`)[0]!.c;
-
-        it('create with one explicit jira binding projects it, with exactly one binding', async () => {
-            const mine = await connect(ALICE.id);
-            const root = await create(ALICE.id, { connectionIds: [mine] });
-            expect(await projection(root)).toBe(mine);
-            expect((await bindingsOf(sql, ORG, root)).map((b) => b.connectionId)).toEqual([mine]);
-        });
-
-        it('the default bind projects the lone personal connection', async () => {
-            const mine = await connect(ALICE.id);
-            const root = await create(ALICE.id);
-            expect(await projection(root)).toBe(mine);
-            expect(await bindingsOf(sql, ORG, root)).toHaveLength(1);
-        });
-
-        it('two live jira bindings project null (ambiguous fails closed); none project null', async () => {
-            const one = await connect(ALICE.id);
-            const two = await connect(ALICE.id);
-            expect(await projection(await create(ALICE.id, { connectionIds: [one, two] }))).toBeNull();
-            expect(await projection(await create(BOB.id))).toBeNull();
-        });
-
-        const disconnect = async (id: string) => (await connections.disconnect(id, { userId: ALICE.id })).disconnected;
-
-        it('disconnecting one of two bindings projects the survivor; disconnecting the only one projects null', async () => {
-            const one = await connect(ALICE.id);
-            const two = await connect(ALICE.id);
-            const pair = await create(ALICE.id, { connectionIds: [one, two] });
-            expect(await projection(pair)).toBeNull();
-            expect(await disconnect(one)).toBe(true);
-            expect(await projection(pair)).toBe(two);
-            expect(await disconnect(two)).toBe(true);
-            expect(await projection(pair)).toBeNull();
-        });
-
-        it('a bind in flight on another thread is waited for, then recomputed: no stale projection, no deadlock', async () => {
-            const one = await connect(ALICE.id);
-            const two = await connect(ALICE.id);
-            const first = await create(ALICE.id, { connectionIds: [one, two] });
-            const other = await create(ALICE.id);
-            const revision = (await jobRow(other)).rev;
-            let release!: () => void;
-            const held = new Promise<void>((resolve) => {
-                release = resolve;
-            });
-            let bound!: () => void;
-            const boundDone = new Promise<void>((resolve) => {
-                bound = resolve;
-            });
-            // The other thread's bind holds its thread lock and a share lock on `one`, uncommitted.
-            const binding = sql.begin(async (tx) => {
-                const result = await addBindingsInTx(tx, {
-                    orgId: ORG,
-                    rootJobId: other,
-                    expectedRevision: revision,
-                    connectionIds: [one],
-                    actor: { userId: ALICE.id },
-                    source: 'follow_up',
-                });
-                bound();
-                await held;
-                return result;
-            });
-            await boundDone;
-            let settled = false;
-            const disconnected = disconnect(one).then((r) => {
-                settled = true;
-                return r;
-            });
-            const state = await waitForLockWaiters(sql, 1, () => settled);
-            release();
-            expect(await binding).toMatchObject({ ok: true });
-            expect(await disconnected).toBe(true);
-            expect(state).toBe('blocked');
-            expect(await projection(first)).toBe(two);
-            expect(await projection(other)).toBeNull();
-        });
-
-        it('a follow-up adding the first jira binding projects it, a second one makes it null', async () => {
-            const root = await create(ALICE.id);
-            const claim = (await claimNext())!;
-            await finish(claim);
-            expect(await projection(root)).toBeNull();
-            const one = await connect(ALICE.id);
-            const followUp = await store.createFollowUp(root, 'add one', ALICE.id, undefined, [one]);
-            if (typeof followUp === 'string') throw new Error(followUp);
-            expect(await projection(root)).toBe(one);
-            const claimed = (await claimNext())!;
-            await finish(claimed);
-            const two = await connect(ALICE.id);
-            const second = await store.createFollowUp(root, 'add two', ALICE.id, undefined, [two]);
-            if (typeof second === 'string') throw new Error(second);
-            expect(await projection(root)).toBeNull();
-        });
     });
 });

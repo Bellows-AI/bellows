@@ -125,9 +125,10 @@ const job = async (row: {
     const id = randomUUID();
     const root = row.root ?? id;
     await sql`
-        insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
+        insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, execution_user_id,
+                         session_id, created_at)
         values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${root}, ${row.parent ?? null},
-                ${row.createdBy ?? null}, ${row.session ?? null}, now())
+                ${row.createdBy ?? null}, ${root === id ? (row.createdBy ?? null) : null}, ${row.session ?? null}, now())
     `;
     if (row.session) {
         await claim({

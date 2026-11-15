@@ -220,13 +220,13 @@ async function insertReview(
             org_id, command, created_by, repo, executor, executor_scope, id, root_job_id, mode,
             review_of, review_key, review_profile, review_spec, review_revision, review_ref,
             status, claimed_by, lease_token, lease_expires_at, attempts, claim_seq, started_at,
-            review_caller_seq, skill_pin, skill_hidden
+            review_caller_seq, skill_pin, skill_hidden, execution_user_id
         )
         select ${orgId}, ${command}, ${caller.owner_id}, ${caller.repo}, ${caller.executor},
                ${caller.executor_scope ?? USER_SCOPE}, x, x, ${OBJECTIVE_MODE},
                ${caller.id}, ${request.key}, ${spec.name}, ${tx.json(spec as never)}, ${request.revision}, ${request.ref},
                'running', ${caller.claimed_by}, gen_random_uuid(), ${caller.lease_expires_at}, 1, 1, now(),
-               ${caller.claim_seq}, '[]'::jsonb, ${tx.json(hidden as never)}
+               ${caller.claim_seq}, '[]'::jsonb, ${tx.json(hidden as never)}, ${caller.owner_id}
         from (select gen_random_uuid() as x) s
     `;
     return (await reviewByKey(tx, orgId, caller.id, request.key))!;

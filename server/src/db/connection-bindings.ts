@@ -183,24 +183,6 @@ async function insertBindings(
 }
 
 /**
- * Rollout projection, dropped with `job.jira_connection_id` by the contract release: an old pod reads the root's
- * column, so new code keeps it equal to the connection of the root's ONE live jira binding, and null when there
- * are none or several (fail closed). An UPDATE, so the `job_binding_mirror_rollout_094` insert trigger never
- * mirrors it into a second `migrated` binding.
- */
-export async function projectJiraConnectionInTx(db: Db, orgId: string, rootJobId: string): Promise<void> {
-    await db`
-        update job set jira_connection_id = (
-            select case when count(*) = 1 then (array_agg(b.connection_id))[1] end
-            from job_connection_binding b
-            join connector_connection c on c.id = b.connection_id and c.org_id = b.org_id and c.status = 'active'
-            where b.org_id = ${orgId} and b.root_job_id = ${rootJobId} and b.provider = 'jira'
-        )
-        where org_id = ${orgId} and id = ${rootJobId}
-    `;
-}
-
-/**
  * The lock order of every thread writer: batch row -> thread root rows (`for no key update`,
  * ascending ids) -> the PR lock -> the advisory lock of each held root (re-entrant) -> member rows -> grant ->
  * connection -> child inserts. A blocking wait on a thread's advisory lock is only made by a transaction that already
@@ -255,7 +237,6 @@ export async function applyResolutionInTx(
     if (resolution.bindings.length > 0) {
         await insertBindings(db, { orgId, rootJobId, revision: 1, addedBy, bindings: resolution.bindings });
         await db`update job set binding_revision = 1 where org_id = ${orgId} and id = ${rootJobId}`;
-        await projectJiraConnectionInTx(db, orgId, rootJobId);
     }
     for (const r of resolution.requirements) {
         await db`
@@ -333,7 +314,6 @@ export async function addBindingsInTx(db: Db, input: AddBindingsInput): Promise<
         bindings: connectionIds.map((id) => ({ ...toResolved(byId.get(id)!, 'default'), source })),
     });
     await db`update job set binding_revision = ${revision} where org_id = ${orgId} and id = ${rootJobId}`;
-    await projectJiraConnectionInTx(db, orgId, rootJobId);
     await satisfyRequirements(db, { orgId, rootJobId, chosen, revision, actor: actor.userId });
     return { ok: true, revision };
 }

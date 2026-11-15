@@ -10,7 +10,7 @@ import {
     type IdempotentOperation,
 } from '../src/db/jobs/job-store-idempotency.js';
 import { useTestDb } from './harness.js';
-import { randomGithubId, testOrg } from './fixtures.js';
+import { randomGithubId, testOrg, withoutTransitionGuard } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -274,9 +274,12 @@ describe.runIf(enabled)('mutation idempotency (#589)', () => {
             await finish(parent.id);
             const input = idem('follow-up', freshKey());
             await store.createFollowUp(parent.id, 'again', owner, input);
-            // The thread's owner is its root's frozen execution user; the one change the column allows is to null,
-            // which is what deleting the account does.
-            await sql`update job set execution_user_id = null where id = ${parent.id}`;
+            // The thread's owner is its root's frozen execution user; only deleting the account nulls it, so the
+            // setup writes that state without firing the trigger that refuses a direct null.
+            await withoutTransitionGuard(
+                sql,
+                (tx) => tx`update job set execution_user_id = null where id = ${parent.id}`
+            );
 
             expect(await store.createFollowUp(parent.id, 'again', owner, input)).toBe('forbidden');
         });

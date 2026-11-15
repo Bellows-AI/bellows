@@ -1566,8 +1566,8 @@ expect_contains 'the admission policy keeps svc- containers out of the main cont
     "variables.spec.containers.all(c, !c.name.startsWith('svc-'))"
 expect_contains 'the admission policy restarts only the gate, reviewer, svc- and dockerd sidecars' "$admission" \
     "(c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-') || c.name == 'dockerd'))"
-expect_contains 'the admission policy pins the reviewer to its own uid' "$admission" \
-    "c.securityContext.runAsUser == 1002"
+expect_contains 'the admission policy launches the reviewer through factory-launch --reviewer' "$admission" \
+    "c.command[0] == '/usr/local/bin/factory-launch' && c.command[1] == '--reviewer'"
 expect_contains 'the admission policy lets the reviewer write only its home on the volume' "$admission" \
     "(m.name == 'task' && has(m.subPath) && m.subPath == '.factory/reviewer')"
 expect_contains 'the admission policy admits a task volume only whole or at the reviewer home' "$admission" \
@@ -1576,9 +1576,9 @@ expect_contains 'the admission policy names a task volume claim for its thread r
     "'factory-task-' + variables.target.metadata.labels['factory.task-root']"
 expect_contains 'the admission policy refuses a ReadWriteMany task volume claim' "$admission" \
     "a in ['ReadWriteOnce', 'ReadWriteOncePod']"
-# Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
-expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
-    "request.kind.kind == 'Job' && c.name == 'agent' &&"
+# Issue #814: the one capability add admitted, the launch pair, on a runner Job's agent and reviewer alone.
+expect_contains 'the admission policy admits the launch pair on a runner Job agent and reviewer alone' "$admission" \
+    "request.kind.kind == 'Job' && (c.name == 'agent' || c.name == 'reviewer') &&"
 expect_contains 'the admission policy admits no capability past the launch pair' "$admission" \
     "c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])"
 # Privileged, on `dockerd` alone, a restartable init container of a pod whose class is a docker
