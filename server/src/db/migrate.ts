@@ -249,9 +249,10 @@ async function applyLocked(
                   on conflict (version) do nothing`;
     }
 
-    // The seed and the reaps write and delete org rows of every org: as the cross-org role, so the forced policies
-    // (151_row_level_security.sql) read nothing as absent when the owner itself does not bypass RLS. A directory
-    // without that migration (a test's own) granted the role nothing and stays the owner.
+    // The seed and the reaps write and delete org rows of every org: as the cross-org role, so the org policies
+    // (151_row_level_security.sql, forced by 154_force_row_level_security.sql) read nothing as absent when the owner
+    // itself does not bypass RLS. A directory without that migration (a test's own) granted the role nothing and
+    // stays the owner.
     const [role] = await sql<{ exists: boolean }[]>`
         select case when exists (select 1 from pg_roles where rolname = 'bellows_cross_org')
                          and to_regclass('session') is not null
