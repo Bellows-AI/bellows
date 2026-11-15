@@ -97,7 +97,8 @@ export function ToolsStep({ catalog = INTEGRATION_CATALOG }: { catalog?: readonl
             {!(failed || ready) ? <StateNote state="loading">Checking issue trackers…</StateNote> : null}
             {ready ? (
                 <p className="setup-tools-more">
-                    More in <Link to="/settings/integrations">Settings → Integrations</Link>
+                    {/* Text, not a link: an unfinished member following it would be redirected back here and lose returnTo. */}
+                    More in Settings → Integrations, once setup is done.
                 </p>
             ) : null}
             <SetupActions

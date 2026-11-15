@@ -80,9 +80,8 @@ describe('the issue-tracker step', () => {
         expect(jira.getByText('Let tasks look up and comment on your Jira issues.')).toBeTruthy();
         expect(jira.getByRole('button', { name: 'Connect Jira' })).toBeTruthy();
         expect(jira.getByRole('checkbox', { name: ALLOW_COMMENTS_LABEL })).toBeTruthy();
-        expect(screen.getByRole('link', { name: 'Settings → Integrations' }).getAttribute('href')).toBe(
-            '/settings/integrations'
-        );
+        expect(screen.getByText('More in Settings → Integrations, once setup is done.')).toBeTruthy();
+        expect(screen.queryByRole('link', { name: /Settings → Integrations/ })).toBeNull();
         expect(screen.getByRole('button', { name: 'Skip for now' }).className).toBe('primary');
     });
 
