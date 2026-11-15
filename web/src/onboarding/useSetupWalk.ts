@@ -20,6 +20,7 @@ export interface SetupWalk {
     busy: boolean;
     error: string | null;
     skip: (step: RecordedStep) => void;
+    done: (step: RecordedStep) => void;
     complete: () => void;
 }
 
@@ -56,6 +57,7 @@ export function useSetupWalk(): SetupWalk {
         busy,
         error,
         skip: (step) => void advance('/api/onboarding/setup', { step, action: 'skip' }),
+        done: (step) => void advance('/api/onboarding/setup', { step, action: 'done' }),
         complete: () => void advance('/api/onboarding/setup/complete'),
     };
 }

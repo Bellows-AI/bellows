@@ -1,3 +1,4 @@
+import type { IntegrationProvider } from '@factory-ai/core';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { DriverCredentialStore } from './auth/driver-credentials.js';
@@ -139,6 +140,8 @@ export interface AppDeps {
               Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>> & {
                   /** The provider ids with an OAuth client registered here; `GET /api/integrations` reports it as booleans. */
                   configured?: readonly string[] | undefined;
+                  /** The catalog `GET /api/integrations` answers for; the tests' seam for a provider not shipped. */
+                  catalog?: readonly IntegrationProvider[] | undefined;
               })
         | undefined;
     githubMint?: GithubMint | undefined;
@@ -302,7 +305,13 @@ async function registerRunnerCredentialRoutes(
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
     if (integrations?.flowOf)
-        await app.register(integrationRoutes({ flowOf: integrations.flowOf, configured: integrations.configured }));
+        await app.register(
+            integrationRoutes({
+                flowOf: integrations.flowOf,
+                configured: integrations.configured,
+                catalog: integrations.catalog,
+            })
+        );
 }
 
 async function registerCommerce(

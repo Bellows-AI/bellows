@@ -4,6 +4,7 @@ import {
     LISTED_PROVIDERS,
     canConnect,
     integrationProvider,
+    type IntegrationProvider,
 } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import type { ConnectionView } from '../src/api/connections.js';
@@ -79,6 +80,31 @@ describe('integrationNotice', () => {
     it('keeps the Jira sentences', () => {
         expect(integrationNotice('jira', 'connected')).toEqual({ message: 'Jira connected.', tone: 'info' });
         expect(integrationNotice('jira', 'exchange-failed')?.message).toContain('exchange-failed');
+    });
+
+    it('words every result from the catalog name, so a provider added to the catalog needs no sentence of its own', () => {
+        const acme: IntegrationProvider = {
+            id: 'acme',
+            label: 'Acme Tracker',
+            category: 'Issue tracking',
+            availability: 'oauth',
+            description: 'Let tasks read Acme issues.',
+        };
+        const catalog = [...INTEGRATION_CATALOG, acme];
+        expect(integrationNotice('acme', 'connected', catalog)).toEqual({
+            message: 'Acme Tracker connected.',
+            tone: 'info',
+        });
+        for (const result of ['cancelled', 'denied', 'error', 'identity-mismatch', 'site-mismatch']) {
+            const notice = integrationNotice('acme', result, catalog);
+            expect(notice?.message).toContain('Acme Tracker');
+            expect(notice?.message).not.toMatch(/Jira|Atlassian/);
+            expect(notice?.tone).not.toBe('info');
+        }
+        expect(integrationNotice('acme', 'denied', catalog)?.tone).toBe('warn');
+        expect(integrationNotice('acme', 'error', catalog)?.message).toBe('Acme Tracker connection failed (error).');
+        // Unknown to the shipped catalog: no callback of ours sent it.
+        expect(integrationNotice('acme', 'connected')).toBeNull();
     });
 
     it('is null for another provider, or with nothing to say', () => {
