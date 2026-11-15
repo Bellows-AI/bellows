@@ -1232,6 +1232,179 @@
                     "errors": "Entity not found: Comment"
                 }
             }
+        ],
+        "answers": [
+            {
+                "label": "a non-JSON 400",
+                "status": 400,
+                "raw": "<html>bad request</html>",
+                "posted": "unknown"
+            },
+            {
+                "label": "a non-JSON 200",
+                "status": 200,
+                "raw": "oops",
+                "posted": "unknown"
+            },
+            {
+                "label": "an empty 400",
+                "status": 400,
+                "raw": "",
+                "posted": "unknown"
+            },
+            {
+                "label": "a 400 without errors",
+                "status": 400,
+                "json": {},
+                "posted": "unknown"
+            },
+            {
+                "label": "a 400 with malformed errors",
+                "status": 400,
+                "json": {
+                    "errors": [
+                        {
+                            "code": 1
+                        }
+                    ]
+                },
+                "posted": "unknown"
+            },
+            {
+                "label": "a 400 with an unnamed error",
+                "status": 400,
+                "json": {
+                    "errors": [
+                        {
+                            "message": "x",
+                            "extensions": {
+                                "code": "INTERNAL"
+                            }
+                        }
+                    ]
+                },
+                "posted": "unknown"
+            },
+            {
+                "label": "a 400 Entity not found: Comment",
+                "status": 400,
+                "json": {
+                    "errors": [
+                        {
+                            "message": "Entity not found: Comment",
+                            "path": ["commentCreate"],
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                },
+                "posted": "unknown"
+            },
+            {
+                "label": "a 400 Entity not found: User",
+                "status": 400,
+                "json": {
+                    "errors": [
+                        {
+                            "message": "Entity not found: User",
+                            "path": ["commentCreate"],
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                },
+                "posted": "failed"
+            },
+            {
+                "label": "a 500",
+                "status": 500,
+                "json": {},
+                "posted": "unknown"
+            },
+            {
+                "label": "a 200 with an unnamed error",
+                "status": 200,
+                "json": {
+                    "errors": [
+                        {
+                            "message": "x",
+                            "extensions": {
+                                "code": "INTERNAL"
+                            }
+                        }
+                    ]
+                },
+                "posted": "unknown"
+            },
+            {
+                "label": "a 400 INPUT_ERROR",
+                "status": 400,
+                "json": {
+                    "errors": [
+                        {
+                            "message": "body too long",
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                },
+                "posted": "failed"
+            },
+            {
+                "label": "a 200 INPUT_ERROR",
+                "status": 200,
+                "json": {
+                    "errors": [
+                        {
+                            "message": "body too long",
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                },
+                "posted": "failed"
+            },
+            {
+                "label": "a 400 Entity not found: Issue",
+                "status": 400,
+                "json": {
+                    "errors": [
+                        {
+                            "message": "Entity not found: Issue",
+                            "path": ["commentCreate"],
+                            "extensions": {
+                                "code": "INPUT_ERROR"
+                            }
+                        }
+                    ]
+                },
+                "posted": "failed"
+            },
+            {
+                "label": "a 200 FORBIDDEN",
+                "status": 200,
+                "json": {
+                    "errors": [
+                        {
+                            "message": "x",
+                            "extensions": {
+                                "code": "FORBIDDEN"
+                            }
+                        }
+                    ]
+                },
+                "posted": "failed"
+            },
+            {
+                "label": "a non-JSON 403",
+                "status": 403,
+                "raw": "denied",
+                "posted": "failed"
+            }
         ]
     },
     "viewer": {
@@ -1412,5 +1585,210 @@
                 }
             }
         ]
-    }
+    },
+    "notFound": [
+        {
+            "label": "Issue at the issue root",
+            "op": "getIssue",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Issue",
+                        "path": ["issue"],
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": true
+        },
+        {
+            "label": "Issue without a path",
+            "op": "getIssue",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Issue",
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": true
+        },
+        {
+            "label": "User",
+            "op": "getIssue",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: User",
+                        "path": ["issue"],
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        },
+        {
+            "label": "Issue at another path",
+            "op": "getIssue",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Issue",
+                        "path": ["viewer"],
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        },
+        {
+            "label": "Issue with a path that is not an array",
+            "op": "getIssue",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Issue",
+                        "path": "issue",
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        },
+        {
+            "label": "Issues (another entity name)",
+            "op": "getIssue",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Issues",
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        },
+        {
+            "label": "Issue at the comments root",
+            "op": "listComments",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Issue",
+                        "path": ["issue"],
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": true
+        },
+        {
+            "label": "Comment on a comments read",
+            "op": "listComments",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Comment",
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        },
+        {
+            "label": "Team in a search filter",
+            "op": "searchIssues",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Team",
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        },
+        {
+            "label": "Issue in a search",
+            "op": "searchIssues",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Issue",
+                        "path": ["issues"],
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        },
+        {
+            "label": "Issue on commentCreate",
+            "op": "addComment",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Issue",
+                        "path": ["commentCreate"],
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": true
+        },
+        {
+            "label": "Comment on commentCreate",
+            "op": "addComment",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Comment",
+                        "path": ["commentCreate"],
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        },
+        {
+            "label": "Organization on viewer",
+            "op": "viewer",
+            "json": {
+                "errors": [
+                    {
+                        "message": "Entity not found: Organization",
+                        "extensions": {
+                            "code": "INPUT_ERROR"
+                        }
+                    }
+                ]
+            },
+            "notFound": false
+        }
+    ]
 }

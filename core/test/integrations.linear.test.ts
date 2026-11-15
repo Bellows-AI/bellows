@@ -7,6 +7,7 @@ import {
     LINEAR_OPERATIONS,
     LINEAR_SCOPES,
     linearApiBase,
+    linearNotFound,
     linearScopesFor,
 } from '../src/integrations/linear.js';
 import type {
@@ -279,9 +280,18 @@ describe('linear GraphQL answers through runOperation', () => {
             { outcome: 'forbidden', reason: 'provider-denied' },
         ],
         [
-            'not found',
-            errors({ code: 'ENTITY_NOT_FOUND', type: 'invalid input' }),
+            'not found for the issue',
+            {
+                errors: [{ message: 'Entity not found: Issue', path: ['issue'], extensions: { code: 'INPUT_ERROR' } }],
+                data: null,
+            },
             { outcome: 'unavailable', reason: 'unexpected-status', retryable: true },
+        ],
+        // A not-found code that names no entity is not the issue's absence (linearNotFound).
+        [
+            'a not-found code that names no entity',
+            errors({ code: 'ENTITY_NOT_FOUND', type: 'invalid input' }),
+            { outcome: 'unavailable', reason: 'upstream-error', retryable: true },
         ],
         ['ratelimited', errors({ code: 'RATELIMITED', type: 'ratelimited' }), { outcome: 'rate_limited' }],
         [
@@ -402,7 +412,7 @@ describe('linear scopes and definition', () => {
  * fixtures pin the runner helper (server/test/linear-helper-parity.test.ts, driver/test/linear-helper.test.ts).
  */
 describe('linear answer shapes through runOperation', () => {
-    for (const [name, table] of Object.entries(ANSWERS)) {
+    for (const [name, table] of Object.entries(ANSWERS).filter(([name]) => name in LINEAR_OPERATIONS)) {
         const op = LINEAR_OPERATIONS[name as keyof typeof LINEAR_OPERATIONS];
         it.each(table.accept.map((f) => [f.label, f.json]))(`${name} accepts %s`, async (_label, json) => {
             const r = await run(
@@ -427,4 +437,20 @@ describe('linear answer shapes through runOperation', () => {
             });
         });
     }
+});
+
+type NotFoundFixture = { label: string; op: string; json: unknown; notFound: boolean };
+const NOT_FOUND = (ANSWERS as unknown as { notFound: NotFoundFixture[] }).notFound;
+
+/** A not-found names the operation's own root entity (and, when Linear gives a path, that root field). */
+describe('linear not-found is about the operation root only', () => {
+    it.each(NOT_FOUND.map((f) => [f.op, f.label, f]))('%s: %s', (_op, _label, fixture) => {
+        const { op, json, notFound } = fixture as NotFoundFixture;
+        expect(linearNotFound(op, json)).toBe(notFound);
+        const operation = LINEAR_OPERATIONS[op as keyof typeof LINEAR_OPERATIONS];
+        const outcome = classifyLinearAnswer(json, operation, 200);
+        // At 200 a root not-found reads like Jira's 404; any other entity's is an upstream error (or unknown for a write).
+        if (notFound) expect(outcome).toEqual({ outcome: 'unavailable', reason: 'unexpected-status', retryable: true });
+        else expect(outcome).not.toMatchObject({ reason: 'unexpected-status' });
+    });
 });

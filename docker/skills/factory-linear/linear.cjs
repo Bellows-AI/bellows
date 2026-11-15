@@ -227,15 +227,21 @@ const ERROR_KINDS = [
     { kind: 'authentication', match: /authentication/, outcome: { outcome: 'unavailable', reason: 'credential-rejected', retryable: true } },
     { kind: 'forbidden', match: /forbidden/, outcome: { outcome: 'forbidden', reason: 'provider-denied' } },
     { kind: 'ratelimit', match: /ratelimit/, outcome: { outcome: 'rate_limited' } },
-    { kind: 'notfound', match: /notfound/, outcome: { outcome: 'unavailable', reason: 'unexpected-status', retryable: true } },
 ];
-const ENTITY_NOT_FOUND = /^Entity not found\b/;
+const NOT_FOUND_OUTCOME = { outcome: 'unavailable', reason: 'unexpected-status', retryable: true };
+/** Each operation's own root: the entity a not-found must name, and the field its error `path` must start at. */
+const NOT_FOUND_ROOTS = {
+    getIssue: { entity: 'Issue', field: 'issue' },
+    listComments: { entity: 'Issue', field: 'issue' },
+    addComment: { entity: 'Issue', field: 'commentCreate' },
+    // Helper-only: the reconcile read's own comment.
+    comment: { entity: 'Comment', field: 'comment' },
+};
+const entityNotFound = (entity, message) => new RegExp(`^Entity not found: ${entity}(?![A-Za-z])`).test(String(message));
 
 function errorText(error) {
     const ext = record(record(error)?.extensions);
-    const message = record(error)?.message;
-    const missing = typeof message === 'string' && ENTITY_NOT_FOUND.test(message) ? 'not found' : undefined;
-    return [ext?.code, ext?.type, missing]
+    return [ext?.code, ext?.type]
         .filter((v) => typeof v === 'string')
         .join(' ')
         .toLowerCase()
@@ -246,6 +252,30 @@ function errorText(error) {
 /** A well-formed `errors`: an array whose every element is an object with a string message (the core's rule). */
 const wellFormedErrors = (errors) =>
     Array.isArray(errors) && errors.every((error) => typeof record(error)?.message === 'string');
+
+/**
+ * Core's `linearNotFound`: a well-formed error answer saying the operation's own root entity does not exist (the
+ * message names it and any `path` starts at its field). Another entity's not-found or malformed `errors` is not.
+ */
+function notFound(op, json) {
+    const root = NOT_FOUND_ROOTS[op];
+    const errors = record(json)?.errors;
+    if (root === undefined || !wellFormedErrors(errors)) return false;
+    return errors.some(
+        (error) => entityNotFound(root.entity, error.message) && (error.path === undefined || (Array.isArray(error.path) && error.path[0] === root.field))
+    );
+}
+
+/**
+ * Whether a well-formed error answer to commentCreate refused its input before applying it: an INPUT_ERROR that is
+ * not about the comment itself. The only GraphQL answer besides auth, forbidden and rate limits that says "not posted".
+ */
+function inputRefused(json) {
+    const errors = record(json)?.errors;
+    if (!wellFormedErrors(errors) || errors.length === 0) return false;
+    if (errors.some((error) => entityNotFound('Comment', error.message))) return false;
+    return errors.some((error) => record(error.extensions)?.code === 'INPUT_ERROR');
+}
 
 /**
  * The named kind of an answer's errors (ERROR_KINDS), or null when it has none the core names. Error text is read only
@@ -269,6 +299,7 @@ function classify(json, op, status) {
     if (Array.isArray(errors) && errors.length > 0) {
         const kind = errorKind(json);
         if (kind) return { ...kind.outcome };
+        if (notFound(op.name, json)) return { ...NOT_FOUND_OUTCOME };
         return twoHundred ? failed('upstream-error') : null;
     }
     return twoHundred && record(answer?.data) === null ? failed('malformed-response') : null;
@@ -551,24 +582,32 @@ async function linearSend(ctx, conn, op, request, options = {}) {
                 wait = retryAfterMs(res.headers) ?? backoff;
             } else if (res.status === HTTP_FORBIDDEN || verdict?.outcome === 'forbidden') {
                 return { kind: 'refused', reason: 'provider-denied' };
+            } else if (write) {
+                // "Nothing was posted" only on a definite refusal before applying (auth, forbidden, rate limit above, or an
+                // input error); a 5xx, an unreadable body, malformed errors or an unexpected shape may have posted it.
+                if (!res.malformed && res.status < HTTP_SERVER_ERROR && inputRefused(res.json)) {
+                    return { kind: 'refused', reason: notFound(op, res.json) ? 'not-found' : 'bad-request' };
+                }
+                const answered = res.status < 400 && !res.malformed && verdict === null && answerShape(op, res.json, request);
+                return answered ? { kind: 'ok', json: res.json } : { kind: 'ambiguous' };
             } else if (res.status >= HTTP_SERVER_ERROR || (res.malformed && res.status < 400)) {
-                // No trustworthy answer: a write may have run; a read tries again.
-                if (write) return { kind: 'ambiguous' };
+                // No trustworthy answer: a read tries again.
             } else if (res.malformed) {
-                return { kind: 'refused', reason: 'bad-request' };
-            } else if (verdict?.outcome === 'outcome_unknown') {
-                return { kind: 'ambiguous' };
-            } else if (verdict !== null) {
+                return { kind: 'refused', reason: 'malformed', unavailable: true };
+            } else if (verdict?.reason === 'malformed-response') {
                 // A malformed verdict is final: no error text in that answer is read.
-                if (verdict.reason === 'malformed-response') return { kind: 'refused', reason: 'malformed', unavailable: true };
-                // unavailable: a named not-found, or an error the core names for a read.
-                if (errorKind(res.json)?.kind === 'notfound') return { kind: 'refused', reason: 'not-found', json: res.json };
+                return { kind: 'refused', reason: 'malformed', unavailable: true };
+            } else if (notFound(op, res.json)) {
+                return { kind: 'refused', reason: 'not-found', json: res.json };
+            } else if (verdict !== null) {
                 return { kind: 'refused', reason: verdict.reason, unavailable: true };
             } else if (res.status >= 400) {
-                return { kind: 'refused', reason: 'bad-request' };
+                const errors = record(res.json)?.errors;
+                if (errors !== undefined && !wellFormedErrors(errors)) return { kind: 'refused', reason: 'malformed', unavailable: true };
+                // A 4xx no rule names (another entity's not-found among them) is core's status outcome, never a verdict.
+                return { kind: 'refused', reason: 'unexpected-status', unavailable: true };
             } else if (!answerShape(op, res.json, request)) {
-                // A 2xx of the wrong shape confirms nothing: a write may have run, a read is unreadable.
-                if (write) return { kind: 'ambiguous' };
+                // A 2xx of the wrong shape confirms nothing.
                 return { kind: 'refused', reason: 'malformed', unavailable: true };
             } else {
                 return { kind: 'ok', json: res.json };
@@ -629,8 +668,6 @@ async function collect(ctx, conn, op, input) {
 
 const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 
-const COMMENT_NOT_FOUND = /^Entity not found: Comment\b/;
-
 /**
  * Whether the comment with the receipt's id exists, by the read-only `comment(id:)` query. 'found': the comment with
  * that id, on that issue. 'absent' (licenses one re-send with the same id) only on Linear's explicit
@@ -640,10 +677,8 @@ const COMMENT_NOT_FOUND = /^Entity not found: Comment\b/;
 async function reconcile(ctx, conn, issue, receiptId) {
     try {
         const answer = await linearSend(ctx, conn, 'comment', graphql(COMMENT_BY_ID, { id: receiptId }), { once: true });
-        if (answer.kind === 'refused' && answer.reason === 'not-found') {
-            const errors = record(answer.json)?.errors;
-            return wellFormedErrors(errors) && errors.some((e) => COMMENT_NOT_FOUND.test(e.message)) ? 'absent' : null;
-        }
+        // `not-found` for the `comment` read is only ever about the comment itself (NOT_FOUND_ROOTS.comment).
+        if (answer.kind === 'refused' && answer.reason === 'not-found') return 'absent';
         if (answer.kind !== 'ok') return null;
         const found = record(record(answer.json?.data)?.comment);
         if (found?.id !== receiptId) return null;
@@ -713,11 +748,13 @@ async function addComment(ctx, bound, issue, body, explicitKey) {
     const { conn } = await credentialFor(ctx, bound, REQUIRED_SCOPES.addComment);
     const operationKey = explicitKey ?? sha256(`${conn.id}|${issue}|${body}`);
     const receipt = await beginReceipt(ctx, conn, operationKey, sha256(`${issue}|${body}`));
-    if (receipt.status === 'succeeded') {
-        if (!receipt.result) throw new Stop(EXIT_FAILED, 'unavailable', 'malformed', 'linear: the board holds a succeeded receipt without a comment id.');
-        done(ctx, receipt.result.commentId);
+    // A stored success confirms the comment only when its result is the receipt's own id (the comment's id); any other
+    // succeeded receipt is checked against Linear, never printed from the board alone.
+    if (receipt.status === 'succeeded' && receipt.result?.commentId === receipt.id) {
+        done(ctx, receipt.id);
         return EXIT_OK;
     }
+    if (receipt.status === 'succeeded') return settle(ctx, conn, receipt, issue, body);
     if (receipt.status === 'failed') {
         throw new Stop(EXIT_FAILED, 'refused', 'failed_before', 'linear: this comment was refused earlier and nothing was posted; fix the cause and pass another --key to try again.');
     }
@@ -850,4 +887,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { run, requestFor, nextRequest, classify, answerShape, defaultDeps, REQUIRED_SCOPES };
+module.exports = { run, requestFor, nextRequest, classify, answerShape, notFound, defaultDeps, REQUIRED_SCOPES };

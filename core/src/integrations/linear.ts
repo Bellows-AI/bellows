@@ -269,27 +269,45 @@ const ERROR_KINDS: readonly { match: RegExp; outcome: IntegrationOutcome }[] = [
     { match: /authentication/, outcome: { outcome: 'unavailable', reason: 'credential-rejected', retryable: true } },
     { match: /forbidden/, outcome: { outcome: 'forbidden', reason: 'provider-denied' } },
     { match: /ratelimit/, outcome: { outcome: 'rate_limited' } },
-    // There is no not-found outcome: a missing entity reads like Jira's 404, an unexpected status.
-    { match: /notfound/, outcome: { outcome: 'unavailable', reason: 'unexpected-status', retryable: true } },
 ];
+/** There is no not-found outcome: a missing root entity reads like Jira's 404, an unexpected status. */
+const NOT_FOUND_OUTCOME: IntegrationOutcome = { outcome: 'unavailable', reason: 'unexpected-status', retryable: true };
 
-/** Linear names a missing entity only in the message (`Entity not found: Issue`, code `INPUT_ERROR`). */
-const ENTITY_NOT_FOUND = /^Entity not found\b/;
+/** Each operation's own root: the entity a not-found must name, and the field its error `path` must start at. */
+const NOT_FOUND_ROOTS: Record<string, { entity: string; field: string }> = {
+    getIssue: { entity: 'Issue', field: 'issue' },
+    listComments: { entity: 'Issue', field: 'issue' },
+    addComment: { entity: 'Issue', field: 'commentCreate' },
+};
 
 const wellFormedErrors = (errors: unknown): errors is Record<string, unknown>[] =>
     Array.isArray(errors) && errors.every((error) => typeof record(error)?.message === 'string');
 
 const errorText = (error: unknown): string => {
     const ext = record(record(error)?.extensions);
-    const message = record(error)?.message;
-    const missing = typeof message === 'string' && ENTITY_NOT_FOUND.test(message) ? 'not found' : undefined;
-    return [ext?.code, ext?.type, missing]
+    return [ext?.code, ext?.type]
         .filter((v): v is string => typeof v === 'string')
         .join(' ')
         .toLowerCase()
         .replace(/[^a-z ]/g, '')
         .replace(/ (?=found|limit)/g, '');
 };
+
+/**
+ * Whether a well-formed error answer says the operation's own root entity does not exist: Linear names a missing entity
+ * only in the message (`Entity not found: Issue`, code `INPUT_ERROR`), and where it gives a `path`, that path starts at
+ * the root field. Another entity's not-found (a User, a Team in a filter, ...) or a malformed `errors` is not.
+ */
+export function linearNotFound(operation: string, json: unknown): boolean {
+    const root = NOT_FOUND_ROOTS[operation];
+    const errors = record(json)?.errors;
+    if (root === undefined || !wellFormedErrors(errors)) return false;
+    return errors.some(
+        (error) =>
+            new RegExp(`^Entity not found: ${root.entity}(?![A-Za-z])`).test(String(error.message)) &&
+            (error.path === undefined || (Array.isArray(error.path) && error.path[0] === root.field))
+    );
+}
 
 /**
  * A Linear GraphQL answer's verdict. `extensions.code`/`type` (and an `Entity not found` message) name the outcome,
@@ -315,6 +333,7 @@ export function classifyLinearAnswer(
         const texts = errors.map(errorText);
         const kind = ERROR_KINDS.find((k) => texts.some((text) => k.match.test(text)));
         if (kind) return { ...kind.outcome };
+        if (linearNotFound(op.name, json)) return { ...NOT_FOUND_OUTCOME };
         return twoHundred ? failed('upstream-error') : null;
     }
     return twoHundred && record(answer?.data) === null ? failed('malformed-response') : null;

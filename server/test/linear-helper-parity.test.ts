@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
-import { classifyLinearAnswer, LINEAR_OPERATIONS, linearAnswerShape } from '@factory-ai/core';
+import { classifyLinearAnswer, LINEAR_OPERATIONS, linearAnswerShape, linearNotFound } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -31,6 +31,7 @@ const helper = createRequire(import.meta.url)(HELPER) as {
     nextRequest: (op: string, json: unknown, previous: Request) => Request | null;
     classify: (json: unknown, op: { name: string; effect: string }, status: number) => unknown;
     answerShape: (op: string, json: unknown, request: Request) => boolean;
+    notFound: (op: string, json: unknown) => boolean;
     REQUIRED_SCOPES: Record<string, string[]>;
 };
 
@@ -162,7 +163,7 @@ const SHAPES = JSON.parse(
 ) as Record<string, { input: unknown; accept: Fixture[]; reject: Fixture[] }>;
 
 describe('the Linear helper accepts and refuses the same answer shapes as core', () => {
-    for (const [name, table] of Object.entries(SHAPES)) {
+    for (const [name, table] of Object.entries(SHAPES).filter(([name]) => name in LINEAR_OPERATIONS)) {
         const op = LINEAR_OPERATIONS[name as keyof typeof LINEAR_OPERATIONS] as Op;
         const request = (op.request as (i: unknown, r: unknown) => Request)(table.input, {});
         const verdict = (json: unknown) => ({
@@ -181,4 +182,18 @@ describe('the Linear helper accepts and refuses the same answer shapes as core',
             expect(helper.answerShape(name, json, request)).toBe(core.shaped);
         });
     }
+});
+
+describe('the Linear helper names a not-found exactly as core does', () => {
+    const table = (SHAPES as unknown as { notFound: { label: string; op: string; json: unknown; notFound: boolean }[] })
+        .notFound;
+    it.each(table.map((f) => [f.op, f.label, f]))('%s: %s', (_op, _label, fixture) => {
+        const { op, json, notFound } = fixture as { op: string; json: unknown; notFound: boolean };
+        expect(linearNotFound(op, json)).toBe(notFound);
+        expect(helper.notFound(op, json)).toBe(notFound);
+        const operation = LINEAR_OPERATIONS[op as keyof typeof LINEAR_OPERATIONS] as Op;
+        for (const status of [200, 400]) {
+            expect(helper.classify(json, operation, status)).toEqual(classifyLinearAnswer(json, operation, status));
+        }
+    });
 });

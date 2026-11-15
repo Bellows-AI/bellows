@@ -79,6 +79,8 @@ function fakeLinear() {
         commentRead: 'store' as 'store' | 'error' | 'null' | 'empty' | 'elsewhere' | 'issue-missing',
         /** A 200 answer that stands in for an operation's real one, by operation name. */
         answers: {} as Record<string, unknown>,
+        /** A reply of any status and body (raw text, or JSON) that stands in for an operation's real one. */
+        replies: {} as Record<string, { status: number; raw?: string; json?: unknown }>,
         rejectTokens: new Set<string>(),
         rateLimited: 0,
         stall: false,
@@ -106,6 +108,13 @@ function fakeLinear() {
         if (state.rateLimited > 0) {
             state.rateLimited--;
             return send(res, 400, { errors: [{ message: 'slow down', extensions: { code: 'RATELIMITED' } }] });
+        }
+        const reply = state.replies[op];
+        if (reply) {
+            if (op === 'AddComment') state.posts++;
+            if (reply.raw === undefined) return send(res, reply.status, reply.json);
+            res.writeHead(reply.status, { 'content-type': 'text/html' });
+            return void res.end(reply.raw);
         }
         if (op in state.answers) return send(res, 200, state.answers[op]);
         if (op === 'GetIssue') {
@@ -446,8 +455,16 @@ describe('Linear answers and the deadline', () => {
 type Fixture = { label: string; json: unknown };
 const SHAPES = JSON.parse(readFileSync(join(ROOT, 'core/test/fixtures/linear-answers.json'), 'utf8')) as Record<
     string,
-    { input: Record<string, string>; accept: Fixture[]; reject: Fixture[]; reconcileReject?: Fixture[] }
+    {
+        input: Record<string, string>;
+        accept: Fixture[];
+        reject: Fixture[];
+        reconcileReject?: Fixture[];
+        answers?: { label: string; status: number; raw?: string; json?: unknown; posted: 'failed' | 'unknown' }[];
+    }
 >;
+const NOT_FOUND = (SHAPES as unknown as { notFound: { label: string; op: string; json: unknown; notFound: boolean }[] })
+    .notFound;
 const READS: [string, string, string[]][] = [
     ['getIssue', 'GetIssue', ['issue', 'ABC-1']],
     ['searchIssues', 'SearchIssues', ['search', '--team', 'ENG']],
@@ -479,6 +496,68 @@ describe('every answer shape the core refuses', () => {
             expect(s.receipts()[0]?.status).toBe('unknown');
         }
     );
+});
+
+// Not-found is only ever about the read's own root entity; any other entity's is unavailable.
+describe('a not-found about another entity', () => {
+    const ARGV: Record<string, [string, string[]]> = {
+        getIssue: ['GetIssue', ['issue', 'ABC-1']],
+        listComments: ['ListComments', ['comments', 'ABC-1']],
+        searchIssues: ['SearchIssues', ['search', '--team', 'ENG']],
+    };
+    it.each(NOT_FOUND.filter((f) => f.op in ARGV).map((f) => [f.op, f.label, f]))('%s: %s', async (_op, _label, f) => {
+        const { op, json, notFound } = f as { op: string; json: unknown; notFound: boolean };
+        const [name, argv] = ARGV[op] as [string, string[]];
+        const s = await scenario();
+        s.linear.replies[name] = { status: 400, json };
+        const { code, out } = await s.run(argv);
+        expect(code).toBe(1);
+        if (notFound) expect(last(out)).toMatchObject({ reason: 'not-found' });
+        else expect(last(out)).toMatchObject({ outcome: 'unavailable' });
+        if (!notFound) expect(last(out).reason).not.toBe('not-found');
+    });
+});
+
+// A comment is "nothing was posted" only on a definite refusal before applying; everything else is reconciled.
+describe('what a commentCreate answer licenses', () => {
+    it.each((SHAPES.addComment?.answers ?? []).map((f) => [f.label, f]))('%s', async (_label, f) => {
+        const { status, raw, json, posted } = f as { status: number; raw?: string; json?: unknown; posted: string };
+        const s = await scenario({ deadlineMs: 1500 });
+        s.linear.replies.AddComment = raw === undefined ? { status, json } : { status, raw };
+        const { code, out } = await s.run(comment());
+        if (posted === 'failed') {
+            expect(code).toBe(1);
+            expect(s.receipts()[0]?.status).toBe('failed');
+            expect(s.linear.posts).toBe(1);
+            expect(s.linear.calls.some((c) => c.op === 'Comment')).toBe(false);
+        } else {
+            expect(code).toBe(4);
+            expect(last(out)).toMatchObject({ outcome: 'outcome_unknown' });
+            expect(s.receipts()[0]?.status).toBe('unknown');
+            expect(s.linear.calls.some((c) => c.op === 'Comment')).toBe(true);
+        }
+    });
+});
+
+// A stored receipt confirms a comment only when its result is its own id (the comment's id is the receipt's).
+describe('a succeeded receipt whose comment id is not its own', () => {
+    it('is reconciled against Linear, never printed from the receipt alone', async () => {
+        const s = await scenario();
+        expect((await s.run(comment())).code).toBe(0);
+        const receipt = s.receipts()[0] as { id: string; result: { commentId: string } | null };
+        receipt.result = { commentId: '55555555-5555-4555-8555-999999999999' };
+        s.linear.calls.length = 0;
+        s.linear.commentRead = 'error';
+        const unconfirmed = await s.run(comment());
+        expect(unconfirmed.code).toBe(4);
+        expect(unconfirmed.out).not.toContain('999999999999"}');
+        s.linear.commentRead = 'store';
+        const confirmed = await s.run(comment());
+        expect(confirmed.code).toBe(0);
+        expect(JSON.parse(confirmed.out)).toEqual({ commentId: receipt.id });
+        expect(s.linear.calls.filter((c) => c.op === 'Comment').length).toBeGreaterThan(0);
+        expect(s.linear.posts).toBe(1);
+    });
 });
 
 // A malformed answer to the reconcile read is final: no error text in it licenses a re-send.
