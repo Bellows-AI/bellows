@@ -44,8 +44,8 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
   `--netpol` owns its own Calico cluster, and why it runs an **honest-probe control on every denial target**: each
   must answer `reachable` before the policy and `denied` after.
 - **Platform-parity cases are not duplicates.** A contract in both docker argv and Kubernetes specs keeps both pins; consolidate only when setup, branch and expected failure are identical.
-- **The focused coverage gate excludes `driver/src/index.ts`, `driver/src/scripts/` and the Postgres telemetry
-  store** (`vitest.executors.config.ts`); the script suites and `test:db` cover them.
+- **The focused coverage gate excludes `driver/src/index.ts`, `driver/src/scripts/` and the Postgres telemetry store** (`vitest.executors.config.ts`); the script suites and `test:db` cover them.
+- **`test:jobs --changed` runs the full lane for the board's boot and wiring, the job, claim and workflow path, `core/src`, migrations and any unmapped path.** A board area no phase calls (org settings, commerce, batches, dashboard-only routes, `site/`) selects nothing, and a lane call added to one moves its rule (`scripts/test-jobs-changed.mjs`).
 - **Job fixtures are per run; the host is shared.** Image tags, database, volumes and compose projects are run-named; Postgres is shared, so worktrees set `COMPOSE_PROJECT_NAME` to the development stack, and never recreate Postgres or prune images mid-lane. Board phases use `PORT` through `PORT + 5` (default 8129–8134) and the smoke origin `PORT + 6`, fixed because native Linux docker moves an ephemeral published port on network connect: keep `test:jobs` invocations serial on one daemon (shared ports, one `dist`). `--parallel` builds once and gives each group a ten-port slice, its own database and names; each driver's reaper scans only its board's containers (`factory.board`, `driver/test/docker-reaper-boards.test.ts`). Logs stay under `artifacts/jobs/` (`server/test/test-jobs.options.test.ts`).
 
 ## What no lane covers
