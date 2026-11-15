@@ -215,7 +215,7 @@ export function NotificationSubscriptionDialog({
 }
 
 /**
- * The confirmation before a subscription is deleted, in the `JiraWriteConsentDialog` shape. Deleting
+ * The confirmation before a subscription is deleted, in the `WriteConsentDialog` shape. Deleting
  * also retires the stored webhook, so it is not undoable. Presentational — the section deletes.
  */
 export function DeleteSubscriptionDialog({
