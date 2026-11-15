@@ -34,7 +34,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Batches (`/api/batches`; reads carry `standing`; [batches.md](batches.md)) | `server/src/routes/batches/batches.ts`, `server/src/routes/batches/batch-handlers.ts` | `server/test/routes.batches.test.ts`, `server/test/routes.batches.standing.test.ts` |
 | Repo picker (`/api/repos`) | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Branch list and prefix search (`GET /api/repos/:owner/:name/branches?q=&cursor=`; `400 BAD_BRANCH_QUERY`/`BAD_BRANCH_CURSOR`, `503 BRANCHES_UNAVAILABLE` on any unconfirmed read) | `server/src/routes/repos.ts`, `server/src/github/app-client.ts` | `server/test/routes.repos.test.ts`, `server/test/github.app-client.test.ts` |
-| Runner env in three scopes | `server/src/routes/env.ts` | `server/test/routes.env.test.ts` |
+| Runner env in three scopes; a single-name or multi-name write and a delete keep the rest of the scope (`/api/env/{org,workspace}/vars[/:name]`) | `server/src/routes/env.ts` | `server/test/routes.env.test.ts` |
 | Workspace payload, personal executors | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
 | Organization executor profiles, member roster, an admin's member remove, restore and invitations | `server/src/routes/org-executors.ts`, `server/src/routes/org-members.ts` | `server/test/routes.org-executors.test.ts`, `server/test/routes.org-members.test.ts`, `server/test/routes.org-member-access.test.ts` |
 | Workflow definitions and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |

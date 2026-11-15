@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createEnvVarStore, stackEnv, type EnvVarStore } from '../src/db/env-var-store.js';
+import { createEnvVarStore, EnvScopeRefusal, stackEnv, type EnvVarStore } from '../src/db/env-var-store.js';
 import { EnvSecretError } from '../src/db/env-secrets.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
@@ -23,7 +23,8 @@ const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
 
 const RESERVE_GITHUB = new URL('../migrations/072_github_env_reserved.sql', import.meta.url);
 
-const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE_USER] });
+// Two racing writers, the barrier that holds them and the poll that watches them each need a connection.
+const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE_USER], max: 6 });
 
 beforeAll(async () => {
     if (!enabled) return;
@@ -320,5 +321,216 @@ describe.skipIf(!enabled)('encrypted environment secrets (the one stored format)
             });
         expect(error).toMatchObject({ envName: 'BAD', code: 'malformed-row' });
         expect(error?.message).not.toContain('leak');
+    });
+});
+
+const POLL_MS = 10;
+const BARRIER_WAIT_MS = 5000;
+
+/**
+ * Starts both writers while a third connection holds `env_var` against every write, waits until both are parked on
+ * a lock, then lets them go together: without a scope lock both reach the table at once.
+ */
+async function race(a: () => Promise<void>, b: () => Promise<void>): Promise<unknown[]> {
+    const blocker = await sql.reserve();
+    await blocker`begin`;
+    await blocker`lock table env_var in exclusive mode`;
+    const runs = [a(), b()].map((run) =>
+        run.then(
+            () => null,
+            (error: unknown) => error
+        )
+    );
+    try {
+        const deadline = Date.now() + BARRIER_WAIT_MS;
+        for (;;) {
+            const [row] = await sql<{ n: number }[]>`
+                select count(*)::int as n from pg_stat_activity
+                where datname = current_database() and wait_event_type = 'Lock'
+            `;
+            if ((row?.n ?? 0) >= 2) break;
+            if (Date.now() > deadline) throw new Error('the two writers never both waited');
+            await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        }
+    } finally {
+        await blocker`commit`;
+        blocker.release();
+    }
+    return Promise.all(runs);
+}
+
+const orgNames = async () => (await store.listOrg()).map((row) => row.name).sort();
+
+describe.skipIf(!enabled)('concurrent writes to one scope', () => {
+    it('two whole-list replaces serialize: the scope ends as one of them, never a union', async () => {
+        await store.replaceOrg('env-admin', [{ name: 'SEED', value: 's', isSecret: false }]);
+
+        const errors = await race(
+            () => store.replaceOrg('env-admin', [{ name: 'FROM_A', value: 'a', isSecret: false }]),
+            () => store.replaceOrg('env-admin', [{ name: 'FROM_B', value: 'b', isSecret: false }])
+        );
+
+        expect(errors).toEqual([null, null]);
+        expect([['FROM_A'], ['FROM_B']]).toContainEqual(await orgNames());
+    });
+
+    it('a whole-list replace and a single-name upsert both succeed and end in one serial order', async () => {
+        await store.replaceOrg('env-admin', [{ name: 'SEED', value: 's', isSecret: false }]);
+
+        const errors = await race(
+            () => store.replaceOrg('env-admin', [{ name: 'WHOLE', value: 'w', isSecret: false }]),
+            () =>
+                store.writeScoped(
+                    { kind: 'org' },
+                    { upsert: [{ name: 'ONE', value: '1', isSecret: true }], remove: [] },
+                    'env-admin'
+                )
+        );
+
+        expect(errors).toEqual([null, null]);
+        // Replace then upsert keeps both; upsert then replace leaves the replace's list alone.
+        expect([['ONE', 'WHOLE'], ['WHOLE']]).toContainEqual(await orgNames());
+    });
+
+    it('a write that cannot take the scope lock in time fails rather than hangs, replace and single-name alike', async () => {
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let entered: () => void = () => {};
+        const holding = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const holder = store.writeScoped(
+            { kind: 'org' },
+            { upsert: [{ name: 'HOLDER', value: 'h', isSecret: false }], remove: [] },
+            'env-admin',
+            {
+                alsoInTx: async () => {
+                    entered();
+                    await held;
+                },
+            }
+        );
+        await holding;
+        const impatient = createEnvVarStore({ sql, orgId: ORG, secrets, secretLog: () => {}, lockTimeoutMs: 200 });
+
+        const single = await impatient
+            .writeScoped(
+                { kind: 'org' },
+                { upsert: [{ name: 'LATE', value: 'l', isSecret: false }], remove: [] },
+                'env-admin'
+            )
+            .then(
+                () => null,
+                (error: unknown) => error
+            );
+        const whole = await impatient.replaceOrg('env-admin', [{ name: 'LATE', value: 'l', isSecret: false }]).then(
+            () => null,
+            (error: unknown) => error
+        );
+        release();
+        await holder;
+
+        expect(single).toMatchObject({ code: '55P03' });
+        expect(whole).toMatchObject({ code: '55P03' });
+        expect(await orgNames()).toEqual(['HOLDER']);
+    });
+
+    it('locks one scope only: another scope writes while it is held', async () => {
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let entered: () => void = () => {};
+        const holding = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const holder = store.writeScoped({ kind: 'org' }, { upsert: [], remove: [] }, 'env-admin', {
+            alsoInTx: async () => {
+                entered();
+                await held;
+            },
+        });
+        await holding;
+        const impatient = createEnvVarStore({ sql, orgId: ORG, secrets, secretLog: () => {}, lockTimeoutMs: 200 });
+
+        await impatient.replaceWorkspace(ALICE, [{ name: 'MINE', value: 'm', isSecret: false }]);
+        release();
+        await holder;
+
+        expect((await store.listWorkspace(ALICE)).map((row) => row.name)).toEqual(['MINE']);
+    });
+});
+
+describe.skipIf(!enabled)('a single-name write', () => {
+    it('upserts and removes only the names it touches', async () => {
+        await store.replaceOrg('env-admin', [
+            { name: 'KEEP_SECRET', value: 'ks', isSecret: true },
+            { name: 'KEEP_PLAIN', value: 'kp', isSecret: false },
+            { name: 'CHANGE', value: 'old', isSecret: false },
+            { name: 'DROP', value: 'd', isSecret: true },
+        ]);
+
+        await store.writeScoped(
+            { kind: 'org' },
+            { upsert: [{ name: 'CHANGE', value: 'new', isSecret: true }], remove: ['DROP'] },
+            'env-admin'
+        );
+
+        expect(await store.resolveFor({ userId: null, repo: null })).toEqual({
+            KEEP_SECRET: 'ks',
+            KEEP_PLAIN: 'kp',
+            CHANGE: 'new',
+        });
+    });
+
+    it('hands the validator the list the scope would hold, read under the lock, and stores nothing on a refusal', async () => {
+        await store.replaceOrg('env-admin', [
+            { name: 'STORED_SECRET', value: 's', isSecret: true },
+            { name: 'STORED_PLAIN', value: 'p', isSecret: false },
+        ]);
+        const seen: unknown[] = [];
+
+        const error = await store
+            .writeScoped(
+                { kind: 'org' },
+                { upsert: [{ name: 'NEW', value: 'n', isSecret: false }], remove: ['STORED_PLAIN'] },
+                'env-admin',
+                {
+                    validate: (resulting) => {
+                        seen.push(resulting);
+                        return 'refused for the test';
+                    },
+                }
+            )
+            .then(
+                () => null,
+                (e: unknown) => e
+            );
+
+        expect(error).toBeInstanceOf(EnvScopeRefusal);
+        expect((error as EnvScopeRefusal).reason).toBe('refused for the test');
+        expect(seen).toEqual([
+            [
+                { name: 'STORED_SECRET', value: null, isSecret: true },
+                { name: 'NEW', value: 'n', isSecret: false },
+            ],
+        ]);
+        expect(await orgNames()).toEqual(['STORED_PLAIN', 'STORED_SECRET']);
+    });
+
+    it('audits env.write with the names the scope holds, never a value', async () => {
+        await store.writeScoped(
+            { kind: 'workspace', userId: ALICE },
+            { upsert: [{ name: 'API_KEY', value: 'audit-must-not-hold-this', isSecret: true }], remove: [] },
+            ALICE
+        );
+
+        const rows = await sql<{ actor_id: string; target: string; detail: unknown }[]>`
+            select actor_id, target, detail from audit_event where org_id = ${ORG} and action = 'env.write'
+        `;
+        expect(rows).toEqual([{ actor_id: ALICE, target: `workspace/${ALICE}`, detail: { names: ['API_KEY'] } }]);
+        expect(JSON.stringify(rows)).not.toContain('audit-must-not-hold-this');
     });
 });

@@ -448,3 +448,143 @@ describe('a secret larger than the store accepts', () => {
         expect(response.body).not.toContain('hunter2-value');
     });
 });
+
+describe('PUT and DELETE /api/env/{scope}/vars/:name', () => {
+    const putOne = (app: Awaited<ReturnType<typeof boot>>['app'], cookie: string, url: string, payload: unknown) =>
+        app.inject({ method: 'PUT', url, headers: { cookie }, payload: payload as Record<string, unknown> });
+
+    it('writes one name and leaves every other secret and variable in the scope as stored', async () => {
+        const { app, member, memberCookie, envVars } = await boot();
+        await envVars.replaceWorkspace(member.user.id, [
+            { name: 'KEEP_SECRET', value: 'kept-secret', isSecret: true },
+            { name: 'KEEP_PLAIN', value: 'kept-plain', isSecret: false },
+            { name: 'FOO', value: 'old', isSecret: false },
+        ]);
+
+        const response = await putOne(app, memberCookie, '/api/env/workspace/vars/FOO', {
+            value: 'new-secret',
+            secret: true,
+        });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.body).not.toContain('new-secret');
+        expect(response.json().vars.map((v: { name: string }) => v.name)).toEqual(['FOO', 'KEEP_PLAIN', 'KEEP_SECRET']);
+        expect(await envVars.resolveFor({ userId: member.user.id, repo: null })).toEqual({
+            FOO: 'new-secret',
+            KEEP_PLAIN: 'kept-plain',
+            KEEP_SECRET: 'kept-secret',
+        });
+        expect(envVars.rows().find((r) => r.name === 'FOO')?.isSecret).toBe(true);
+    });
+
+    it('DELETE removes one name and keeps the rest', async () => {
+        const { app, member, memberCookie, envVars } = await boot();
+        await envVars.replaceWorkspace(member.user.id, [
+            { name: 'GONE', value: 'g', isSecret: true },
+            { name: 'STAYS', value: 's', isSecret: true },
+        ]);
+
+        const response = await app.inject({
+            method: 'DELETE',
+            url: '/api/env/workspace/vars/GONE',
+            headers: { cookie: memberCookie },
+        });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(await envVars.resolveFor({ userId: member.user.id, repo: null })).toEqual({ STAYS: 's' });
+    });
+
+    it('refuses the 101st name: the cap is on the list the scope would hold', async () => {
+        const { app, member, memberCookie, envVars } = await boot();
+        const hundred = Array.from({ length: 100 }, (_, i) => ({ name: `V_${i}`, value: '1', isSecret: false }));
+        await envVars.replaceWorkspace(member.user.id, hundred);
+
+        const refused = await putOne(app, memberCookie, '/api/env/workspace/vars/ONE_MORE', {
+            value: '1',
+            secret: false,
+        });
+        expect(refused.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(refused.json().code).toBe('TOO_MANY_ENV_VARS');
+        expect(envVars.rows()).toHaveLength(100);
+
+        const replaced = await putOne(app, memberCookie, '/api/env/workspace/vars/V_0', { value: '2', secret: false });
+        expect(replaced.statusCode).toBe(HTTP_OK);
+    });
+
+    it.each([
+        ['a bad name', 'not-a-name', { value: '1', secret: false }, 'BAD_ENV_NAME'],
+        ['a reserved name', 'WORKDIR', { value: '/etc', secret: false }, 'RESERVED_ENV_NAME'],
+        ['a newline', 'FOO', { value: 'a\nb', secret: false }, 'BAD_ENV_VALUE'],
+        ['an oversized value', 'FOO', { value: 'x'.repeat(65_537), secret: false }, 'BAD_ENV_VALUE'],
+        ['a secret past the store limit', 'FOO', { value: 'é'.repeat(16_385), secret: true }, 'BAD_ENV_VALUE'],
+        ['a missing value', 'FOO', { secret: false }, 'BAD_BODY'],
+        ['a missing secret flag', 'FOO', { value: '1' }, 'BAD_BODY'],
+    ])('refuses %s like the list PUT', async (_label, name, payload, code) => {
+        const { app, memberCookie, envVars } = await boot();
+        const response = await putOne(app, memberCookie, `/api/env/workspace/vars/${name}`, payload);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe(code);
+        expect(envVars.rows()).toEqual([]);
+    });
+
+    it('refuses a member on the org scope, single-name, multi-name and delete alike', async () => {
+        const { app, memberCookie, adminCookie, envVars } = await boot();
+        const single = await putOne(app, memberCookie, '/api/env/org/vars/X', { value: '1', secret: false });
+        expect(single.statusCode).toBe(HTTP_FORBIDDEN);
+        const multi = await putOne(app, memberCookie, '/api/env/org/vars', {
+            entries: [{ name: 'X', value: '1', secret: false }],
+        });
+        expect(multi.statusCode).toBe(HTTP_FORBIDDEN);
+        const removed = await app.inject({
+            method: 'DELETE',
+            url: '/api/env/org/vars/X',
+            headers: { cookie: memberCookie },
+        });
+        expect(removed.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(envVars.rows()).toEqual([]);
+
+        expect((await putOne(app, adminCookie, '/api/env/org/vars/X', { value: '1', secret: false })).statusCode).toBe(
+            HTTP_OK
+        );
+        expect(await envVars.resolveFor({ userId: null, repo: null })).toEqual({ X: '1' });
+    });
+
+    it('a multi-name PUT writes several names in one call and keeps the rest', async () => {
+        const { app, member, memberCookie, envVars } = await boot();
+        await envVars.replaceWorkspace(member.user.id, [{ name: 'KEEP', value: 'k', isSecret: true }]);
+
+        const response = await putOne(app, memberCookie, '/api/env/workspace/vars', {
+            entries: [
+                { name: 'A', value: 'a', secret: true },
+                { name: 'B', value: 'b', secret: false },
+            ],
+        });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(await envVars.resolveFor({ userId: member.user.id, repo: null })).toEqual({ A: 'a', B: 'b', KEEP: 'k' });
+    });
+
+    it('a multi-name PUT refuses a repeated name and a body that is not an entries array', async () => {
+        const { app, memberCookie, envVars } = await boot();
+        const repeated = await putOne(app, memberCookie, '/api/env/workspace/vars', {
+            entries: [
+                { name: 'A', value: '1', secret: false },
+                { name: 'A', value: '2', secret: false },
+            ],
+        });
+        expect(repeated.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(repeated.json().code).toBe('ENV_NAME_CONFLICT');
+        const notArray = await putOne(app, memberCookie, '/api/env/workspace/vars', { entries: 'nope' });
+        expect(notArray.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(notArray.json().code).toBe('BAD_BODY');
+        expect(envVars.rows()).toEqual([]);
+    });
+
+    it('answers 503 through guard when the store is unreachable', async () => {
+        const broken = memoryEnvVarStore();
+        broken.broken = true;
+        const { app, memberCookie } = await boot({ envVars: broken });
+        const response = await putOne(app, memberCookie, '/api/env/workspace/vars/X', { value: '1', secret: false });
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+    });
+});

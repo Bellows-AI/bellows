@@ -8,8 +8,8 @@ list live in `core/src/env.ts`; the driver keeps a deliberately narrower copy in
 | --- | --- | --- |
 | Scopes, scope check, `stackEnv`, write-only secret echo | `server/src/db/env-var-store.ts`, `server/migrations/017_env_vars.sql` | `server/test-db/env-var-store.test.ts` |
 | A secret's value in the store: reference, identity, batched fail-closed read | `server/src/db/env-secrets.ts`, `server/migrations/093_env_var_secret_ref.sql`, `server/migrations/113_env_var_secret_form.sql` | `server/test-db/migration.093-env-secret-ref.test.ts`, `server/test-db/migration.113-env-secret-form.test.ts`, `server/test-db/env-secrets.claim.test.ts` |
-| PUT write path and compensation | `server/src/db/env-var-store.ts`, `server/src/db/env-secrets.ts` | `server/test-db/env-secrets.writes.test.ts` |
-| Whole-list PUT, validation codes, reserved names | `server/src/routes/env.ts`, `core/src/env.ts` | `server/test/routes.env.test.ts` |
+| PUT write path, the (org, scope) lock and compensation | `server/src/db/env-var-store.ts`, `server/src/db/env-var-write.ts`, `server/src/db/env-secrets.ts` | `server/test-db/env-secrets.writes.test.ts`, `server/test-db/env-var-store.test.ts` |
+| Whole-list PUT; single-name write and delete, multi-name write (`/vars/:name`, `/vars`); validation codes, reserved names | `server/src/routes/env.ts`, `core/src/env.ts` | `server/test/routes.env.test.ts` |
 | Claim-time resolution (`withoutGithubToken`) | `server/src/db/jobs/job-store-claim.ts`, `server/src/db/jobs/job-store-claim-executor.ts` | `server/test/job-store.env.test.ts`, `server/test-db/job-store.attribution.test.ts` |
 | `claimEnv`: the driver's filter and synthesized executor names | `driver/src/claim.ts` | `driver/test/docker/`, `driver/test/k8s/` |
 | Docker: 0600 `--env-file` around the run | `driver/src/docker/docker.ts` | `driver/test/docker/` |
@@ -28,6 +28,7 @@ list live in `core/src/env.ts`; the driver keeps a deliberately narrower copy in
 - **A secret's value lives in the secret store, not in `env_var`**: the row keeps `secret_ref` and `secret_version` with `value` null; a non-secret keeps its plaintext `value` with both null, in every scope. `env_var_secret_form_ck` admits only those two shapes. An inconclusive or failed read, a foreign version or non-UTF-8 bytes roll the claim back; a secret is never dropped. `server/test-db/env-var-store.test.ts`, `server/test-db/env-secrets.claim.test.ts`.
 - **A PUT that does not commit deletes only what a fresh read of its own scope shows unreferenced**; an inconclusive read deletes nothing and reports `cleanup-failed`. `server/test-db/env-secrets.writes.test.ts`.
 - **Migration 113 refuses while a plaintext secret row remains**; its message names the previous release's conversion command. `server/test-db/migration.113-env-secret-form.test.ts`.
+- **Every write to a scope holds one transaction lock on (org, scope)**, bounded by `lock_timeout`: a whole-list PUT and a single-name write serialize, never interleave. A single-name write's list rules (cap, cloud checks) run on the list the scope would hold, read under the lock; a failed read refuses the write. `server/test-db/env-var-store.test.ts`.
 - **A secret entry with `value: null` on a whole-list PUT survives untouched**; an omitted name deletes. `server/test/routes.env.test.ts`.
 - **Precedence is org < workspace < repo** (`stackEnv`); against the driver's own `RUNNER_ENV` the claim wins.
 - **No GitHub token rides the claim env**: refused at PUT, dropped at claim. `server/test/job-store.env.test.ts`.
