@@ -490,7 +490,7 @@ async function acquireCandidate(
             -- stopped, and is never claimed again.
             returning id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
                       (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
-                      session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
+                      session_id, repo, parent_job_id, executor, executor_scope, agent_type, agent_model, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
                       ${exhausted} as last_attempt,
                       extract(epoch from clock_timestamp() - ${locked.queued_since}::timestamptz)::float8 as queue_age,

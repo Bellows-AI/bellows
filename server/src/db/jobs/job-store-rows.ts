@@ -8,6 +8,7 @@ import {
     USER_SCOPE,
     WORKFLOW_MODE,
     type ExecutorScope,
+    type ExecutorType,
     type JobMode,
     type TaskTitleOrigin,
     type UserRef,
@@ -71,6 +72,8 @@ export interface JobRow {
     executor: string | null;
     /** Null on rows stamped before 047; reads as 'user' — the pre-391 meaning. */
     executor_scope: string | null;
+    agent_type: string | null;
+    agent_model: string | null;
     parent_job_id: string | null;
     root_job_id: string;
     /** The row's graph position (027); null on workflow-less rows and user follow-ups. */
@@ -231,6 +234,8 @@ export function toJob(orgId: string, row: JobRow): Job {
         repo: row.repo,
         executor: row.executor,
         executorScope: (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
+        agentType: row.agent_type as ExecutorType | null,
+        agentModel: row.agent_model,
         followUpTo: row.parent_job_id,
         rootJobId: row.root_job_id,
         workflowNode: row.workflow_node ?? null,
@@ -317,6 +322,9 @@ export interface WorkflowSuccessorInput {
     repo: string | null;
     executor: string | null;
     executorScope: ExecutorScope;
+    /** The agent default frozen on the thread (BEL-412), copied from the completed run; absent is none. */
+    agentType?: string | null;
+    agentModel?: string | null;
     parentJobId: string;
     sessionId: string | null;
     rootJobId: string;
@@ -327,9 +335,10 @@ export interface WorkflowSuccessorInput {
 
 export async function insertWorkflowSuccessor(tx: TransactionSql, input: WorkflowSuccessorInput): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-        insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode, skill_pin, skill_hidden)
+        insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_type, agent_model, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode, skill_pin, skill_hidden)
         select ${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
-               ${input.executor}, ${input.executorScope}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
+               ${input.executor}, ${input.executorScope}, ${input.agentType ?? null}, ${input.agentModel ?? null},
+               ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode}, ${WORKFLOW_MODE},
                -- The predecessor's pin: a successor continues the same run with the same skill versions.
                coalesce((select p.skill_pin from job p where p.org_id = ${input.orgId} and p.id = ${input.parentJobId}), '[]'::jsonb),

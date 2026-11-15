@@ -20,7 +20,7 @@ import type {
     SuspendResult,
 } from './job-store-types.js';
 import type { ParamValues, WorkflowDefinition } from '../workflows/workflow-schema.js';
-import type { ExecutorScope } from '@factory-ai/core';
+import type { ExecutorScope, ExecutorType } from '@factory-ai/core';
 
 /** The job and thread transitions the board writes: create, follow up, retry, edit, done, stop, remove, waits, reopen, and the worker-initiated suspend and interrupt. */
 export interface JobActionStore {
@@ -49,6 +49,12 @@ export interface JobActionStore {
              * refuses anything outside the pair, and the store stamps the resolved value.
              */
             executorScope?: ExecutorScope;
+            /**
+             * The agent default frozen on a task naming no profile (BEL-412): the agent the claim runs and the model
+             * its config carries. Absent is none. Copied wherever `executor` is; never re-resolved after create.
+             */
+            agentType?: ExecutorType | null;
+            agentModel?: string | null;
             /**
              * The skills the task selects, names the route validated against the
              * catalog. Stored on the root row only; a follow-up, retry or successor reads the

@@ -100,7 +100,7 @@ export async function resolveClaimExecutor(
          */
         grant?: readonly string[];
     },
-    row: { run_as: string | null; repo: string | null; executor: string | null; executor_scope: string | null }
+    row: ClaimExecutorRow
 ): Promise<ResolvedClaimExecutor> {
     const { env, executorConfig, deploymentMode, grant } = deps;
     const resolvedEnv = withoutGithubToken(
@@ -134,6 +134,12 @@ export async function resolveClaimExecutor(
             profileConfig = configured?.config;
         }
     }
+    const agent = frozenAgentOf(row);
+    if (agent !== null) {
+        executorType = agent.type;
+        claimEnv = mergeExecutorConfigEnv(claimEnv, agent);
+        profileConfig = agent.config;
+    }
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
@@ -141,6 +147,31 @@ export async function resolveClaimExecutor(
     const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
     if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal };
     return { claimEnv, executorType, executorRefusal };
+}
+
+/** The agent default frozen on a job row (BEL-412). */
+export interface FrozenAgentColumns {
+    agent_type: string | null;
+    agent_model: string | null;
+}
+
+/** The job row columns the claim's executor resolution reads. */
+export interface ClaimExecutorRow extends FrozenAgentColumns {
+    run_as: string | null;
+    repo: string | null;
+    executor: string | null;
+    executor_scope: string | null;
+}
+
+/**
+ * The agent default frozen on a task naming no profile (BEL-412): its agent is the runner type and its model the whole
+ * config, merged exactly as a profile's would be. Read off the row only — the agent default as it reads now is never
+ * consulted, so a retry, a follow-up or a takeover runs what the task was created with. Null for a profile task.
+ */
+function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Record<string, unknown> } | null {
+    if (row.executor !== null || row.agent_type === null) return null;
+    if (!EXECUTOR_TYPES.includes(row.agent_type as ExecutorType)) return null;
+    return { type: row.agent_type as ExecutorType, config: row.agent_model === null ? {} : { model: row.agent_model } };
 }
 
 /** The sentence cloud mode refuses an effective env with, or null. Names keys only, never a value. */

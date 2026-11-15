@@ -263,7 +263,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         scope: simple.executorScope,
     });
     if (!selection) return reply;
-    const { executor, scope: executorScope, type: executorType } = selection;
+    const { executor, scope: executorScope, type: executorType, agent } = selection;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;
     if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch, executorType }))
@@ -296,6 +296,8 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 repo,
                 executor,
                 executorScope,
+                // The agent default that won, frozen on the task: the claim runs it, never a later default (BEL-412).
+                ...(agent ? { agentType: agent.agentType, agentModel: agent.model } : {}),
                 skills,
                 baseBranch,
                 title,

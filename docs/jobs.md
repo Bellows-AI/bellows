@@ -97,8 +97,8 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
   5xx and never rewritten — `driver/test/loop/`, `board-retry.test.ts`.
 - **A null `masterPrompt` on the wire is refused before setup**, and the render never reads command,
   output or env values — `driver/test/master-prompt.test.ts`, `server/test/master-prompt.test.ts`.
-- **The executor label resolves at claim in the task's stamped scope**; a missing profile fails the
-  task rather than defaulting — `server/test-db/job-store.executor-scope.test.ts`.
+- **The executor label resolves at claim in the task's stamped scope**; a missing profile fails the task rather than
+  defaulting. A task frozen with an agent default (`agent_type`/`agent_model`, `server/src/routes/jobs/executor-usable.ts`) runs that agent and model on both executors; retry, follow-up, takeover, reviewer and successor copy them, never re-resolved — `server/test-db/job-store.executor-scope.test.ts`.
 - **A runner group whose driver is lost ends inside its lease** (`orphanBoundMs`, `driver/src/supervisor-plan.ts`) and
   is adopted; lost before `go` it exits `SUPERVISOR_EXIT.lost` and is redone; a released group waits `takeoverBoundMs`
   for a newer holder — `driver/test/supervisor.test.ts`, `driver/test/k8s/`.

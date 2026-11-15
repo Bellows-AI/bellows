@@ -7,7 +7,7 @@ import {
     noExecutorMessage,
 } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { ExecutorDefault, UserExecutorStore } from '../../db/user-executor-store.js';
+import type { AgentDefault, ResolvedDefault, UserExecutorStore } from '../../db/user-executor-store.js';
 import type { ExecutorTypeRead } from '../../skill-catalog.js';
 import { bad, guard } from '../helpers.js';
 import { HTTP_CONFLICT, HTTP_NOT_FOUND } from './job-limits.js';
@@ -85,16 +85,18 @@ export async function refusedAsUnusable(
 }
 
 /**
- * The profile a selection naming no executor runs on: the caller's resolved default (their stored preference, else the
- * first active personal profile, else the first active org one). The claim resolves only the stamped label, so a task
- * queued with none would fail there. Null when there is nothing to resolve against (no executor store, no caller);
- * `refused` once the refusal is on `reply`: 409 `NO_EXECUTOR` for a caller with no usable profile, or a failed read.
+ * What a selection naming no executor runs on: the caller's resolved default (their stored preference, else their own
+ * agent default, else the organization's, else the first active personal profile, else the first active org one). A
+ * profile is stamped as the label; an agent default is frozen on the task as its agent and model (BEL-412). The claim
+ * reads only what was stamped, so a task queued with neither would fail there. Null when there is nothing to resolve
+ * against (no executor store, no caller); `refused` once the refusal is on `reply`: 409 `NO_EXECUTOR` for a caller with
+ * nothing resolved, or a failed read.
  */
 export async function defaultExecutorOf(
     request: FastifyRequest,
     reply: FastifyReply,
     opts: { executors: Pick<UserExecutorStore, 'resolvedDefault'> | null | undefined; createdBy: string | null }
-): Promise<ExecutorDefault | null | 'refused'> {
+): Promise<ResolvedDefault | null | 'refused'> {
     const { executors, createdBy } = opts;
     if (!executors || !createdBy) return null;
     const resolved = await guard(
@@ -103,17 +105,16 @@ export async function defaultExecutorOf(
         () => executors.resolvedDefault(createdBy)
     );
     if (!resolved.ok) return 'refused';
-    // commit (b): an agent default that wins is stamped on the job as agent_type/agent_model; until create and batch
-    // launch carry those columns it reads as "no profile" and takes the NO_EXECUTOR refusal below.
-    if (resolved.value?.kind === 'profile') return { scope: resolved.value.scope, name: resolved.value.name };
+    if (resolved.value !== null) return resolved.value;
     bad(reply, ERROR_CODES.NO_EXECUTOR, noExecutorMessage, HTTP_CONFLICT);
     return 'refused';
 }
 
 /**
  * What `POST /api/jobs` runs on: the named profile, or the caller's default when none is named, checked usable either
- * way, with the executor type its CLI runs. Null once a refusal is on `reply`. A board with no executor store or no
- * caller keeps a null executor and a `known` null type.
+ * way, with the executor type its CLI runs. An agent default that wins leaves `executor` null and comes back as `agent`,
+ * frozen on the task at create. Null once a refusal is on `reply`. A board with no executor store or no caller keeps a
+ * null executor and a `known` null type.
  */
 export async function usableSelection(
     request: FastifyRequest,
@@ -124,14 +125,23 @@ export async function usableSelection(
         executor: string | null;
         scope: ExecutorScope;
     }
-): Promise<{ executor: string | null; scope: ExecutorScope; type: ExecutorTypeRead } | null> {
+): Promise<{
+    executor: string | null;
+    scope: ExecutorScope;
+    type: ExecutorTypeRead;
+    agent: AgentDefault | null;
+} | null> {
     let { executor, scope } = opts;
     if (executor === null) {
         const fallback = await defaultExecutorOf(request, reply, opts);
         if (fallback === 'refused') return null;
+        if (fallback?.kind === 'agent') {
+            const agent = { agentType: fallback.agentType, model: fallback.model };
+            return { executor: null, scope, type: executorTypeOf(agent.agentType), agent };
+        }
         if (fallback !== null) ({ name: executor, scope } = fallback);
     }
     const type = await refusedAsUnusable(request, reply, { ...opts, executor, scope });
     if (type === 'refused') return null;
-    return { executor, scope, type };
+    return { executor, scope, type, agent: null };
 }

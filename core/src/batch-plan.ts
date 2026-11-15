@@ -8,7 +8,7 @@
  */
 
 import { BATCH_BRANCH_LIMIT, isBranchName } from './branch-name.js';
-import { EXECUTOR_SCOPES, type ExecutorScope, USER_SCOPE } from './executors.js';
+import { EXECUTOR_SCOPES, type ExecutorScope, type ExecutorType, USER_SCOPE } from './executors.js';
 
 export const BATCH_PLAN_VERSION = 1;
 
@@ -105,6 +105,12 @@ export interface ResolvedBatchPlan extends Omit<BatchPlan, 'targets' | 'stages'>
             target: string;
             executor: string | null;
             executorScope: ExecutorScope;
+            /**
+             * The starter's agent default, frozen at launch on a task naming no executor (BEL-412): the agent its
+             * root job runs and that agent's model. Never authored in a plan; absent beside an executor.
+             */
+            agentType?: ExecutorType;
+            agentModel?: string;
         })[];
     })[];
 }

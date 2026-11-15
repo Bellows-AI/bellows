@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
-import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
+import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { mustCreate, testOrg, testUser } from './fixtures.js';
+import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
 import { testSecretDeps } from './env-secrets-harness.js';
 
 /**
@@ -228,5 +229,134 @@ describe.skipIf(!enabled)('the scope rides the thread (issue 391)', () => {
             executorScope: 'org',
             rootJobId: (await store.get(head))?.rootJobId,
         });
+    });
+});
+
+/**
+ * The agent default (BEL-412): a task naming no profile is frozen at create with the agent and model that won, and the
+ * claim runs exactly that — never the agent default as it reads at claim time. Kubernetes is the primary executor and
+ * docker the development one; both consume this same claim payload (`executorType` + the config env), so each agent
+ * type is pinned once here and the driver needs nothing new.
+ */
+describe.skipIf(!enabled)('a task frozen with an agent default (BEL-412)', () => {
+    const CONFIG_ENV = { 'claude-code': 'CLAUDE_CODE_CONFIG_CONTENT', opencode: 'OPENCODE_CONFIG_CONTENT' } as const;
+    const executors = () => createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+
+    /** What create stamps: the agent default that wins for Alice right now, read through the chain. */
+    const frozenTask = async (agentType: 'claude-code' | 'opencode', model: string, repo: string | null = null) => {
+        await executors().setAgentDefault(ALICE, { agentType, model });
+        const won = await executors().resolvedDefault(ALICE);
+        if (won?.kind !== 'agent') throw new Error('the agent default did not win');
+        return mustCreate(
+            store.create('drive me', ALICE, {
+                repo,
+                executor: null,
+                agentType: won.agentType,
+                agentModel: won.model,
+            })
+        );
+    };
+    /** The agent default moves on after create; nothing frozen may follow it. */
+    const changeDefault = () => executors().setAgentDefault(ALICE, { agentType: 'opencode', model: 'moved-on' });
+    const expectFrozen = (claim: Claim | null, type: 'claude-code' | 'opencode', model: string) => {
+        expect(claim?.executorType).toBe(type);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(JSON.parse(claim?.env?.[CONFIG_ENV[type]] ?? 'null')).toEqual({ model });
+    };
+
+    for (const agentType of ['claude-code', 'opencode'] as const) {
+        it(`claims a null-executor task as its frozen ${agentType}, the model in that CLI's config env`, async () => {
+            const { id } = await mustCreate(
+                store.create('echo hi', ALICE, { repo: null, executor: null, agentType, agentModel: 'm-1' })
+            );
+
+            const claim = await store.claim('w1', LEASE_SECONDS);
+
+            expect(claim?.id).toBe(id);
+            expectFrozen(claim, agentType, 'm-1');
+            expect(await store.get(id)).toMatchObject({ executor: null, agentType, agentModel: 'm-1' });
+        });
+    }
+
+    it('the queued task keeps its values after the agent default changes', async () => {
+        const { id } = await frozenTask('claude-code', 'frozen');
+        await changeDefault();
+
+        const claim = await store.claim('w1', LEASE_SECONDS);
+
+        expect(claim?.id).toBe(id);
+        expectFrozen(claim, 'claude-code', 'frozen');
+    });
+
+    it('a takeover re-claim after a lost lease keeps them', async () => {
+        const { id } = await frozenTask('claude-code', 'frozen');
+        await store.claim('w1', LEASE_SECONDS);
+        await changeDefault();
+        await expireLease(sql, id);
+
+        const takeover = await store.claim('w2', LEASE_SECONDS);
+
+        expect(takeover?.id).toBe(id);
+        expectFrozen(takeover, 'claude-code', 'frozen');
+    });
+
+    it('a retry copies them from the thread head', async () => {
+        const { id } = await frozenTask('claude-code', 'frozen');
+        const first = await store.claim('w1', LEASE_SECONDS);
+        await store.complete(id, first!.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
+        await changeDefault();
+
+        const retry = await store.createRetry(id, ALICE);
+        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
+
+        expect(await store.get(retry.id)).toMatchObject({ agentType: 'claude-code', agentModel: 'frozen' });
+        expectFrozen(await store.claim('w2', LEASE_SECONDS), 'claude-code', 'frozen');
+    });
+
+    it('a follow-up copies them from its parent', async () => {
+        const { id } = await frozenTask('claude-code', 'frozen');
+        const first = await store.claim('w1', LEASE_SECONDS);
+        await store.session(id, first!.leaseToken, FOLLOW_UP_SESSION);
+        await store.complete(id, first!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        await changeDefault();
+
+        const followUp = await store.createFollowUp(id, 'adjust', ALICE);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+
+        expect(await store.get(followUp.id)).toMatchObject({ agentType: 'claude-code', agentModel: 'frozen' });
+        expectFrozen(await store.claim('w2', LEASE_SECONDS), 'claude-code', 'frozen');
+    });
+
+    it('a reviewer inserted for the task runs them too', async () => {
+        const reviewer: ReviewerSpec = { name: 'sec', instructions: 'Look.', timeoutMinutes: 7, connections: [] };
+        const reviewing = createJobStore({
+            sql,
+            orgId: ORG,
+            executorConfig: executors(),
+            githubApp: true,
+            plan: {
+                readFor: async () => ({
+                    config: null,
+                    error: null,
+                    services: [],
+                    revision: null,
+                    reviewers: [reviewer],
+                }),
+            },
+        });
+        // A review is asked for a task on a repo: its profile list is that repo's plan.
+        await frozenTask('claude-code', 'frozen', 'acme/api');
+        const caller = await reviewing.claim('w1', LEASE_SECONDS);
+        await changeDefault();
+
+        const review = await reviewing.requestReview(caller!.id, caller!.leaseToken, {
+            key: 'sec-1',
+            profile: 'sec',
+            revision: 'h:1',
+            ref: reviewRefOf(caller!.id, 'sec-1'),
+        });
+
+        expect(review.result).toBe('created');
+        expectFrozen('claim' in review ? review.claim : null, 'claude-code', 'frozen');
     });
 });
