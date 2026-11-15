@@ -97,11 +97,11 @@ export function restoreMembership(
     });
 }
 
-/** The auth store's half: an admin's removal, its list and its restore, and the invitation read's basis. */
+/** The auth store's half: an admin's removal, its list, its restore, an account's blocks, and the invitation basis. */
 export function buildRemovalMethods(
     sql: Sql,
     gate: () => Promise<void>
-): Pick<AuthStore, 'blockMember' | 'restoreMember' | 'listRemovedMembers' | 'invitationBasis'> {
+): Pick<AuthStore, 'blockMember' | 'restoreMember' | 'listRemovedMembers' | 'blockedOrgs' | 'invitationBasis'> {
     return {
         async blockMember(orgId, userId, removedBy) {
             await gate();
@@ -131,6 +131,17 @@ export function buildRemovalMethods(
                 removedAt: row.removed_at.toISOString(),
                 removedBy: row.removed_by,
             }));
+        },
+
+        async blockedOrgs(githubUserId) {
+            await gate();
+            const rows = await sql<{ org_id: string }[]>`
+                select r.org_id from org_membership_removal r
+                join app_user u on u.id = r.user_id
+                where u.github_user_id = ${githubUserId}
+                order by r.org_id
+            `;
+            return rows.map((row) => row.org_id);
         },
 
         async invitationBasis(orgId) {

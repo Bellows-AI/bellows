@@ -125,7 +125,7 @@ Sign-in uses the OAuth App with the `read:org` scope and reads no repository dat
 
 A GitHub organization owner is an admin, and so is the account a user installation belongs to. An installation that has not yet accepted the Members permission keeps the older rule: the first member to sign in is the admin. Bellows never demotes an admin on GitHub's word, and demoting the last admin is refused.
 
-An admin removes a member under **Settings → Organization**, section **Members**. Their sessions end and their personal tokens are revoked at once. The removal sticks: signing in again does not bring the membership back until an admin restores it from **Removed members** on the same page.
+An admin removes a member under **Settings → Organization**, section **Members**. Their sessions end and their personal tokens are revoked at once. The removal sticks: signing in again does not bring the membership back until an admin restores it from **Removed members** on the same page. The **Invite members** link opens the selection screen with the organization already ticked, so a restored member follows it and presses **Continue**.
 
 Only an admin can mint, list or revoke organization access tokens, save organization or repository variables and secrets, change member roles, remove or restore members, manage organization executors, skills and notifications, read the [audit log](/guides/audit-log) or download the [organization export](/guides/export). A member's session or personal access token gets `403` there. Every member manages their own personal tokens, workspace variables, executors, skills and notifications.
 
