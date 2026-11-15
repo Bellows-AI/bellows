@@ -18,6 +18,7 @@ import postgres from 'postgres';
 import { LOCAL_ORG_ID } from '../identifiers.js';
 import { resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
+import { CROSS_ORG_ROLE } from '../db/org-sql.js';
 import {
     generate,
     SYNTHETIC_MEMBERS,
@@ -98,7 +99,11 @@ const repo = process.env.SEED_REPO?.trim() || 'Bellows-AI/bellows.ai';
 const now = new Date();
 const data = generate({ repo, now });
 
-const sql = postgres(config.databaseUrl, { max: 4 });
+// The migrations run as the owner; every write after them as the cross-org role, because the forced policies
+// (154_force_row_level_security.sql) bind an owner without BYPASSRLS, as on a managed database. The role's pool
+// connects lazily, so it opens only once the migrations have created the role.
+const owner = postgres(config.databaseUrl, { max: 1 });
+const sql = postgres(config.databaseUrl, { max: 4, connection: { role: CROSS_ORG_ROLE } });
 try {
     // Seeding is an AUTH_MODE=none affair: one local organization, no GitHub anything. The
     // browser check's github-mode board signs in against the stub IdP and materializes its own
@@ -112,7 +117,7 @@ try {
         .split(',')
         .map((id) => id.trim())
         .filter((id) => /^[\w-]+$/.test(id));
-    await migrate(sql, {
+    await migrate(owner, {
         localUser: true,
         attempts: 5,
         log: (m) => console.log(`[migrate] ${m}`),
@@ -282,7 +287,7 @@ try {
     console.log(`  sessions        ${data.sessions.length}`);
     console.log(`  board rows      ${data.jobs.length} (${SYNTHETIC_MEMBERS.length} synthetic members)`);
 } finally {
-    await sql.end();
+    await Promise.all([owner.end(), sql.end()]);
 }
 
 /**

@@ -90,6 +90,7 @@ describe('the cross-org pool', () => {
             'db/org-sql.ts',
             'db/pool.ts',
             'main.ts',
+            'seed/cli.ts',
         ]);
     });
 
