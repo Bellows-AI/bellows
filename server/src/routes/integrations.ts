@@ -1,4 +1,4 @@
-import { ERROR_CODES, selectedBy } from '@factory-ai/core';
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { safeReturnPath } from '../auth/session.js';
@@ -90,7 +90,10 @@ export function integrationRoutes({
                 .header('cache-control', 'no-store')
                 .send({ authorizationId, authorizeUrl, expiresAt });
         }
-        if (result.reason === 'not-configured' || (result.reason === 'unknown-provider' && selectedBy(provider))) {
+        if (
+            result.reason === 'not-configured' ||
+            (result.reason === 'unknown-provider' && providers.includes(provider))
+        ) {
             return bad(reply, ERROR_CODES.INTEGRATION_NOT_CONFIGURED, notConfiguredOf(provider), HTTP_UNAVAILABLE);
         }
         if (result.reason === 'unknown-provider' || result.reason === 'not-found') {

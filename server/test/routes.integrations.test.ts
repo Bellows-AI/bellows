@@ -133,6 +133,14 @@ describe('POST /api/integrations/:provider/authorizations', () => {
         expect(response.json().code).toBe('INTEGRATION_NOT_CONFIGURED');
         expect(response.json().error).toBe(FAKE_NOT_CONFIGURED);
         expect(response.json().error).not.toContain('ATLASSIAN');
+        // A registered provider with no hooks (no client) is the flow's unknown-provider: still its own 503.
+        const noHooks = await boot({
+            start: () => ({ ok: false, reason: 'unknown-provider' }),
+            extra: [fakeRegistration],
+        });
+        const refused = await post(noHooks, {}, 'fake');
+        expect(refused.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(refused.json().error).toBe(FAKE_NOT_CONFIGURED);
     });
 
     it('answers 201 with the authorize URL, no-store, and passes the whole body to the flow as the caller', async () => {
