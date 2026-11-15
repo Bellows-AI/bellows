@@ -47,7 +47,7 @@ describe('the provider registry', () => {
         const byCategory = (category: string) =>
             INTEGRATION_CATALOG.filter((provider) => provider.category === category).map((provider) => provider.id);
         expect(INTEGRATION_CATEGORIES).toEqual(['Issue tracking', 'Communication', 'Agent tools', 'CI / DevOps']);
-        expect(byCategory('Issue tracking')).toEqual(['jira']);
+        expect(byCategory('Issue tracking')).toEqual(['jira', 'linear']);
         expect(byCategory('Communication')).toEqual(['slack', 'discord']);
         expect(byCategory('Agent tools')).toEqual(['mcp']);
         expect(byCategory('CI / DevOps')).toEqual(['github', 'gitlab']);
@@ -61,12 +61,13 @@ describe('the provider registry', () => {
             expect(canConnect(provider)).toBe(provider.availability === 'oauth');
         }
         expect(canConnect(integrationProvider('jira')!)).toBe(true);
+        expect(canConnect(integrationProvider('linear')!)).toBe(true);
         expect(canConnect(integrationProvider('slack')!)).toBe(false);
         expect(canConnect(integrationProvider('github')!)).toBe(false);
     });
 
     it('lists every provider but the planned ones', () => {
-        expect(LISTED_PROVIDERS.map((provider) => provider.id)).toEqual(['jira', 'github']);
+        expect(LISTED_PROVIDERS.map((provider) => provider.id)).toEqual(['jira', 'linear', 'github']);
     });
 
     it('looks a provider up by id, and answers undefined for a stranger', () => {
@@ -79,6 +80,25 @@ describe('integrationNotice', () => {
     it('keeps the Jira sentences', () => {
         expect(integrationNotice('jira', 'connected')).toEqual({ message: 'Jira connected.', tone: 'info' });
         expect(integrationNotice('jira', 'exchange-failed')?.message).toContain('exchange-failed');
+    });
+
+    it('says the Linear results in Linear words', () => {
+        expect(integrationNotice('linear', 'connected')).toEqual({ message: 'Linear connected.', tone: 'info' });
+        expect(integrationNotice('linear', 'denied')).toEqual({
+            message: 'Linear consent was denied; nothing was connected.',
+            tone: 'warn',
+        });
+        expect(integrationNotice('linear', 'identity-mismatch')?.message).toMatch(
+            /^That Linear account is not the one this connection was made with/
+        );
+        expect(integrationNotice('linear', 'identity-mismatch')?.tone).toBe('bad');
+        expect(integrationNotice('linear', 'site-mismatch')?.message).toMatch(
+            /^That Linear account cannot reach that workspace/
+        );
+        expect(integrationNotice('linear', 'site-mismatch')?.tone).toBe('bad');
+        expect(integrationNotice('linear', 'exchange-failed')?.message).toBe(
+            'Linear connection failed (exchange-failed).'
+        );
     });
 
     it('is null for another provider, or with nothing to say', () => {

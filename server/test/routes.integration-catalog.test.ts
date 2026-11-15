@@ -106,6 +106,24 @@ describe('GET /api/integrations/catalog states', () => {
         expect(entry(body.providers, 'jira')?.capabilities?.write).toContain('write:jira-work');
     });
 
+    it('lists Linear as an issue tracker with its own configuration and capabilities', async () => {
+        const both = await catalog(await boot({ configured: ['jira', 'linear'] }));
+        expect(entry(both.body.providers, 'linear')).toMatchObject({
+            name: 'Linear',
+            category: 'Issue tracking',
+            state: 'connectable',
+            connections: 0,
+            connect: { path: '/settings/integrations/available' },
+            capabilities: { read: ['read'], write: ['write'] },
+        });
+        const jiraOnly = await catalog(await boot());
+        expect(entry(jiraOnly.body.providers, 'linear')).toMatchObject({
+            state: 'unavailable',
+            reason: 'not_configured',
+        });
+        expect(entry(jiraOnly.body.providers, 'jira')?.state).toBe('connectable');
+    });
+
     it('an oauth provider this deployment has no client for is unavailable, with no connect action', async () => {
         const { body } = await catalog(await boot({ configured: [] }));
         const jira = entry(body.providers, 'jira');
@@ -197,7 +215,7 @@ describe('GET /api/integrations/catalog reads', () => {
             seen.push(...body.providers.map((p) => p.provider));
             cursor = body.cursor;
         } while (cursor);
-        expect(seen).toEqual(['discord', 'github', 'gitlab', 'jira', 'mcp', 'slack']);
+        expect(seen).toEqual(['discord', 'github', 'gitlab', 'jira', 'linear', 'mcp', 'slack']);
     });
 
     it('refuses an unknown category, a bad limit and a cursor it did not issue', async () => {

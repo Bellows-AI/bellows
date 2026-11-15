@@ -39,6 +39,20 @@ const RESULT_NOTICES: Record<string, Record<string, IntegrationNotice>> = {
             tone: 'bad',
         },
     },
+    linear: {
+        connected: { message: 'Linear connected.', tone: 'info' },
+        denied: { message: 'Linear consent was denied; nothing was connected.', tone: 'warn' },
+        'identity-mismatch': {
+            message:
+                'That Linear account is not the one this connection was made with. Reconnect with the original account, or disconnect and connect again.',
+            tone: 'bad',
+        },
+        'site-mismatch': {
+            message:
+                'That Linear account cannot reach that workspace, so nothing was connected. Reconnect choosing the original workspace, or connect it as a new connection.',
+            tone: 'bad',
+        },
+    },
 };
 
 /**

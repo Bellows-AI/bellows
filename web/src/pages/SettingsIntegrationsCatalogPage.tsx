@@ -10,6 +10,7 @@ import { useAuthorizationStart } from '../api/useAuthorizationStart.js';
 import { useConnections, type UseConnections } from '../api/useConnections.js';
 import { useIntegrationConfig, type UseIntegrationConfig } from '../api/useIntegrationConfig.js';
 import { JiraConnectionDialog } from '../components/JiraConnectionDialog.js';
+import { LinearConnectionDialog } from '../components/LinearConnectionDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { ProviderMark } from '../components/ProviderMark.js';
 import { connectionState } from '../settings/integration-providers.js';
@@ -23,7 +24,10 @@ type Config = UseIntegrationConfig & { retry: () => void };
 type ConnectDialogProps = ComponentProps<typeof JiraConnectionDialog>;
 
 /** The connect dialog of each oauth provider; an oauth provider without one offers no Connect. */
-const CONNECT_DIALOGS: Record<string, ComponentType<ConnectDialogProps>> = { jira: JiraConnectionDialog };
+const CONNECT_DIALOGS: Record<string, ComponentType<ConnectDialogProps>> = {
+    jira: JiraConnectionDialog,
+    linear: LinearConnectionDialog,
+};
 
 /** What an oauth card says and offers, from two independent reads: the deployment's configuration and the member's rows. */
 function OAuthCardState({
