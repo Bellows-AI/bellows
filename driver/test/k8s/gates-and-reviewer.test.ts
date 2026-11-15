@@ -168,6 +168,15 @@ describe('the gate sidecar', () => {
         );
     });
 
+    // The docker executor's counterpart (docker-group.test.ts): the gate compares against the claim's base.
+    it('names the claim’s base branch, and drops a malformed one', () => {
+        expect(gateOf({ ...gated, baseBranch: 'release/2' }).env).toContainEqual({
+            name: 'BELLOWS_BASE_BRANCH',
+            value: 'release/2',
+        });
+        expect(JSON.stringify(gateOf({ ...gated, baseBranch: 'bad..name' }).env)).not.toContain('BELLOWS_BASE_BRANCH');
+    });
+
     // Issue #734: the gate and the agent name the same cache path, inside the one member mount.
     it('points each declared cache name into the repo cache, the same path the agent gets', () => {
         const cacheJob: BoardJob = {

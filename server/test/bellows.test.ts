@@ -261,7 +261,7 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = parseBellows(text)?.gates ?? [];
-        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db']);
+        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:jobs']);
         expect(gates.slice(0, 2)).toEqual([
             { name: 'test', command: 'npm test' },
             { name: 'lint', command: 'npm run lint' },
@@ -276,9 +276,8 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     });
 
     // The suites that need more than `npm test`: each states its own budget, and test:db points at
-    // the declared `postgres` service, never at a server of its own. No test:jobs gate yet: the lane
-    // does not yet pass inside a docker class's Kata microVM.
-    it('declares typecheck and test:db, each with a timeout, and no test:jobs gate', async () => {
+    // the declared `postgres` service, never at a server of its own.
+    it('declares typecheck and test:db, each with a timeout', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = new Map((parseBellows(text)?.gates ?? []).map((gate) => [gate.name, gate]));
         for (const name of ['typecheck', 'test:db']) expect(gates.get(name)?.timeoutMinutes, name).toBeGreaterThan(0);
@@ -286,7 +285,19 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         expect(gates.get('test:db')?.command).toBe(
             'DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db'
         );
-        expect(gates.has('test:jobs')).toBe(false);
+    });
+
+    // The jobs lane is a required gate: it runs the phases the change maps to (an empty map passes
+    // before the runner images are built), on run databases on the declared `postgres` service, within
+    // a budget sized for the full lane in a docker class's microVM.
+    it('declares a required test:jobs gate through the mapping wrapper', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        const gate = (parseBellows(text)?.gates ?? []).find((g) => g.name === 'test:jobs');
+        expect(gate).toEqual({
+            name: 'test:jobs',
+            command: 'TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 sh scripts/gate-test-jobs.sh',
+            timeoutMinutes: 45,
+        });
     });
 
     // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.
