@@ -80,9 +80,15 @@ const chunked = (
 };
 
 const fetcher = (answer: (url: string, n: number) => FetchResponseLike | Promise<FetchResponseLike>) => {
-    const calls: { url: string; headers: Record<string, string>; redirect: string }[] = [];
+    const calls: {
+        url: string;
+        method: string;
+        body?: string | undefined;
+        headers: Record<string, string>;
+        redirect: string;
+    }[] = [];
     const fn: FetchLike = async (url, init) => {
-        calls.push({ url, headers: init.headers, redirect: init.redirect });
+        calls.push({ url, method: init.method, body: init.body, headers: init.headers, redirect: init.redirect });
         return answer(url, calls.length);
     };
     return Object.assign(fn, { calls });
@@ -265,14 +271,15 @@ describe('runOperation', () => {
         expect(f.calls[0]?.url).toBe('https://acme.example.test/api/acme/k1');
     });
 
-    it('next receives the previous page path', async () => {
+    it('next receives the previous request', async () => {
         const op: IntegrationOperation<string> = {
             ...read,
             paginate: {
                 maxPages: 3,
                 maxItems: 100,
                 items: (j) => (j as { items: unknown[] }).items,
-                next: (_json, previousPath) => (previousPath.includes('&p=') ? null : `${previousPath}&p=2`),
+                next: (_json, previous) =>
+                    previous.path.includes('&p=') ? null : { ...previous, path: `${previous.path}&p=2` },
             },
         };
         const f = fetcher((_u, n) => respond(200, { items: [n] }));
@@ -283,6 +290,82 @@ describe('runOperation', () => {
         ]);
     });
 
+    it('a later page is the complete request next returns: method and body survive page one', async () => {
+        const op: IntegrationOperation<string> = {
+            ...read,
+            request: (path) => ({ method: 'POST', path, body: { query: 'q', variables: { first: 2 } } }),
+            paginate: {
+                maxPages: 3,
+                maxItems: 100,
+                items: (j) => (j as { items: unknown[] }).items,
+                next: (json, previous) => {
+                    const cursor = (json as { cursor?: string }).cursor;
+                    const body = previous.body as { query: string; variables: Record<string, unknown> };
+                    return cursor
+                        ? { ...previous, body: { ...body, variables: { ...body.variables, after: cursor } } }
+                        : null;
+                },
+            },
+        };
+        const f = fetcher((_u, n) => respond(200, n === 1 ? { items: [1], cursor: 'c1' } : { items: [2] }));
+        expect(await run(op, '/api/graphql', f)).toEqual({ ok: true, value: [1, 2] });
+        expect(f.calls.map((c) => [c.method, c.url, c.body && JSON.parse(c.body)])).toEqual([
+            ['POST', 'https://acme.example.test/api/graphql', { query: 'q', variables: { first: 2 } }],
+            ['POST', 'https://acme.example.test/api/graphql', { query: 'q', variables: { first: 2, after: 'c1' } }],
+        ]);
+        expect(f.calls[1]?.headers['content-type']).toBe('application/json');
+    });
+
+    describe('a definition classifier judges a 2xx answer before it counts as a value', () => {
+        const judged = defineIntegration({
+            ...def,
+            classifyAnswer: (json, op) =>
+                (json as { errors?: unknown } | null)?.errors === undefined
+                    ? null
+                    : op.effect === 'write'
+                      ? { outcome: 'outcome_unknown', operation: op.name }
+                      : { outcome: 'unavailable', reason: 'upstream-error', retryable: true },
+        });
+        const runJudged = (op: IntegrationOperation<string>, f: FetchLike) =>
+            runOperation(judged, op, { handle: handle(), credentials: source(), fetch: f, deadlineMs: 2000 }, '/api/x');
+
+        it('a 200 the classifier refuses is its outcome, never ok', async () => {
+            const f = fetcher(() => respond(200, { errors: [{ message: 'no' }] }));
+            expect(await runJudged(read, f)).toEqual({
+                ok: false,
+                outcome: { outcome: 'unavailable', reason: 'upstream-error', retryable: true },
+            });
+            expect(await runJudged(write, f)).toEqual({
+                ok: false,
+                outcome: { outcome: 'outcome_unknown', operation: 'putItem' },
+            });
+        });
+
+        it('a refused page ends pagination with the outcome, dropping what was collected', async () => {
+            const op: IntegrationOperation<string> = {
+                ...read,
+                paginate: {
+                    maxPages: 3,
+                    maxItems: 9,
+                    items: (j) => (j as { items: unknown[] }).items,
+                    next: (_j, p) => p,
+                },
+            };
+            const f = fetcher((_u, n) => respond(200, n === 1 ? { items: [1] } : { errors: [{}] }));
+            const r = await runJudged(op, f);
+            expect(r).toEqual({
+                ok: false,
+                outcome: { outcome: 'unavailable', reason: 'upstream-error', retryable: true },
+            });
+            expect(f.calls).toHaveLength(2);
+        });
+
+        it('a classifier that accepts leaves the value alone', async () => {
+            const f = fetcher(() => respond(200, { data: 1 }));
+            expect(await runJudged(read, f)).toEqual({ ok: true, value: { data: 1 } });
+        });
+    });
+
     it('pagination stops at maxPages', async () => {
         const paged: IntegrationOperation<string> = {
             ...read,
@@ -290,7 +373,7 @@ describe('runOperation', () => {
                 maxPages: 3,
                 maxItems: 100,
                 items: (j) => (j as { items: unknown[] }).items,
-                next: () => '/api/next',
+                next: () => ({ method: 'GET', path: '/api/next' }),
             },
         };
         const f = fetcher((_u, n) => respond(200, { items: [n] }));
@@ -306,7 +389,7 @@ describe('runOperation', () => {
                 maxPages: 9,
                 maxItems: 2,
                 items: (j) => (j as { items: unknown[] }).items,
-                next: () => '/api/next',
+                next: () => ({ method: 'GET', path: '/api/next' }),
             },
         };
         const f = fetcher(() => respond(200, { items: ['a', 'b', 'c'] }));
@@ -314,7 +397,12 @@ describe('runOperation', () => {
         expect(f.calls).toHaveLength(1);
         const evil: IntegrationOperation<string> = {
             ...paged,
-            paginate: { maxPages: 9, maxItems: 99, items: () => [], next: () => 'https://evil.test/x' },
+            paginate: {
+                maxPages: 9,
+                maxItems: 99,
+                items: () => [],
+                next: () => ({ method: 'GET', path: 'https://evil.test/x' }),
+            },
         };
         const g = fetcher(() => respond(200, {}));
         expect(await run(evil, '/api/first', g)).toEqual({

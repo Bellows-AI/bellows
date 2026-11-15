@@ -195,6 +195,19 @@ describe('integration providers', () => {
         expect(selectedBy('nope')).toBeNull();
     });
 
+    it('linear is a managed connection selected by connections, and a skill may require it', () => {
+        expect(INTEGRATION_PROVIDERS.linear).toEqual({ kind: 'connection', label: 'Linear' });
+        expect(SKILL_CONNECTIONS.linear).toEqual([]);
+        expect(selectedBy('linear')).toBe('connections');
+        expect(parseSkillRequirements(head('metadata:\n  requires-connections: linear\n'))).toEqual({
+            requires: { tools: [], connections: ['linear'] },
+        });
+        expect(requiredProviders([...catalog, skill('linear', ['linear'])], ['jira', 'linear'])).toEqual([
+            'jira',
+            'linear',
+        ]);
+    });
+
     it('requiredProviders lists the bindable providers the selected skills need, github never', () => {
         expect(requiredProviders(catalog, ['jira', 'github', 'gates'])).toEqual(['jira']);
         expect(requiredProviders(catalog, ['github', 'gates'])).toEqual([]);

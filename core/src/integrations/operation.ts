@@ -249,30 +249,40 @@ const fetchPage = async (
     return (await refusalFor(run, res, credential)) ?? readJson(run, res);
 };
 
-/** Fold one page into the collected items; the next page's path, or null when collection is done. */
+/** Fold one page into the collected items; the next page's request, or null when collection is done. */
 const collect = (
     pagination: Pagination,
     collected: unknown[],
-    read: { json: unknown; page: number; path: string }
-): string | null => {
+    read: { json: unknown; page: number; request: OperationRequest }
+): OperationRequest | null => {
     collected.push(...pagination.items(read.json).slice(0, pagination.maxItems - collected.length));
     return collected.length >= pagination.maxItems || read.page >= pagination.maxPages
         ? null
-        : pagination.next(read.json, read.path);
+        : pagination.next(read.json, read.request);
+};
+
+/** The definition's verdict on a 2xx answer: null when it is a value. A classifier that throws is a malformed answer. */
+const classified = (run: Run, json: unknown): Fail | null => {
+    try {
+        const outcome = run.def.classifyAnswer?.(json, run.op) ?? null;
+        return outcome === null ? null : refuse(outcome);
+    } catch {
+        return afterDispatch(run, 'malformed-response');
+    }
 };
 
 const execute = async <R>(run: Run, credential: Credential, input: never): Promise<OperationResult<R>> => {
-    const request = run.op.request(input, run.ctx.handle.resource);
     const pagination = run.op.paginate;
     const collected: unknown[] = [];
-    let path: string | null = request.path;
-    for (let page = 1; path !== null; page += 1) {
-        // A body rides the first request only; later pages are plain reads of the provider's next link.
-        const got = await fetchPage(run, credential, page === 1 ? request : { method: request.method, path });
+    let request: OperationRequest | null = run.op.request(input, run.ctx.handle.resource);
+    for (let page = 1; request !== null; page += 1) {
+        const got = await fetchPage(run, credential, request);
         if ('ok' in got) return got;
+        const refused = classified(run, got.json);
+        if (refused) return refused;
         if (!pagination) return { ok: true, value: got.json as R };
         try {
-            path = collect(pagination, collected, { json: got.json, page, path });
+            request = collect(pagination, collected, { json: got.json, page, request });
         } catch {
             return afterDispatch(run, 'malformed-response');
         }
