@@ -62,7 +62,7 @@ A failed run shows a red pill with the reason. Open the run to read the output, 
     The agent finished, but a gate in `.bellows.yaml` failed. Open the run and read the gate output. Follow up with the failing command's error, or fix a flaky gate in the repo. See [Configure a repo](/guides/configure-repo).
   </Accordion>
   <Accordion title="config error">
-    Bellows could not start the run because of its configuration, for example an executor or `.bellows.yaml` problem. Fix the setting, then retry. A retry without a fix fails the same way.
+    Bellows could not start the run because of its configuration, for example an executor or `.bellows.yaml` problem, or a runner Job the cluster's admission refuses (422). Fix the setting, then retry. A retry without a fix fails the same way.
   </Accordion>
   <Accordion title="service failed">
     A service declared in `.bellows.yaml` (a database, for example) died during the run. Check the service image and settings, then retry.
