@@ -19,7 +19,7 @@ export function handOver(state: JobState, reason: string): void {
 /** Registers the attempt as in flight for a drain's handover; answers what to call once `runJob` is over. */
 export function registerLive(rt: LoopRuntime, job: BoardJob, state: JobState): () => void {
     let over: () => void = () => {};
-    rt.live?.set(job.id, {
+    rt.live?.set(job.leaseToken, {
         job,
         state,
         over: new Promise<void>((resolve) => {

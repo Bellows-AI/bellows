@@ -667,3 +667,28 @@ describe('a drain never hands over an attempt whose end already started (#828)',
         expect(state.ending).toBeNull();
     });
 });
+
+describe('a drain and two claims of one task in one process', () => {
+    // The process re-claimed a task whose earlier claim it still held in memory (its lease lapsed
+    // locally): each claim is its own attempt, and the earlier one ending touches only its own entry.
+    it("a stale attempt's end never drops a newer claim of the same task from the drain", async () => {
+        const { handoverOf } = await import('../src/loop/loop.js');
+        const { newJobState } = await import('../src/loop/loop-attempt.js');
+        const { registerLive } = await import('../src/loop/loop-handover.js');
+        const { attemptQuiesce } = await import('../src/loop/loop-conclusion.js');
+        const rt = { log: () => {} } as never;
+        const handoff = handoverOf(rt);
+        const first: BoardJob = { ...gatedJob(1), leaseToken: randomUUID(), claimSeq: 1 };
+        const second: BoardJob = { ...first, leaseToken: randomUUID(), claimSeq: 2 };
+        const [s1, s2] = [newJobState(), newJobState()];
+        registerLive(rt, first, s1);
+        const over2 = registerLive(rt, second, s2);
+
+        await attemptQuiesce(rt, first, s1, Promise.resolve())();
+        const draining = handoff.run('drain');
+
+        expect(s2.ending?.kind).toBe('handover');
+        over2();
+        await draining;
+    });
+});

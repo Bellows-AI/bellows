@@ -53,6 +53,12 @@ describe('the EKS prerequisites record', () => {
         expect(prose(kubernetesDocs)).toContain('a driver started with no `K8S_RELEASE` is unscoped');
     });
 
+    // A runner create the API server refuses with a 422 `Status` fails the task as config on
+    // kubernetes; the docker CLI prints no status, so its counterpart is a stated limit.
+    it('states that a docker create refusal is typed only by its words', () => {
+        expect(prose(kubernetesDocs)).toContain('a docker create the daemon refuses is typed only by its words');
+    });
+
     it('states the VPC-endpoint answer for the blocked private ranges', () => {
         expect(kubernetesDocs).toContain('VPC endpoint');
         expect(kubernetesDocs).toContain('allowedCidrs');

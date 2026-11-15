@@ -518,6 +518,47 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
     });
 });
 
+// A runner Job the API server refuses with a 422 `Status` (an admission policy's denial) is refused
+// again on every claim with the same spec: the loop's one startup decision reads it as config, on the
+// sync and on the run alike, while an unconfirmed answer stays left to the lease.
+describe('a runner create the API server refuses, on kubernetes', () => {
+    const repoJob: BoardJob = { ...job, repo: 'example-org/example-repo' };
+    const SESSION_OF = { id: SESSION, resume: false };
+    const refused422 = {
+        status: 422,
+        body: JSON.stringify({
+            kind: 'Status',
+            status: 'Failure',
+            reason: 'Invalid',
+            code: 422,
+            message: 'jobs.batch "factory-run-x" is forbidden: a runner may not add capabilities',
+        }),
+    };
+    const thrownBy = (attempt: Promise<unknown>): Promise<unknown> =>
+        attempt.then(
+            () => null,
+            (e: unknown) => e
+        );
+
+    it('the run that creates the group takes the same decision', async () => {
+        const r = runner(fakeRequest({ create: refused422 }).request, {}, undefined, fakeSteps().sink);
+        expect(startupDecisionOf(await thrownBy(r.run(job, SESSION_OF)))).toBe('config');
+    });
+
+    it('a 422 on the sync maps to config through the loop’s one decision', async () => {
+        const sync = (create: K8sResponse) =>
+            thrownBy(
+                runner(fakeRequest({ create }).request, {}, undefined, fakeSteps().sink).syncCheckout(
+                    repoJob,
+                    undefined,
+                    SESSION_OF
+                )
+            );
+        expect(startupDecisionOf(await sync(refused422))).toBe('config');
+        expect(startupDecisionOf(await sync({ status: 503, body: 'service unavailable' }))).toBe('unclassified');
+    });
+});
+
 describe('the holder binding a supervisor reads, on kubernetes (#829)', () => {
     const BINDING = {
         claimSeq: 4,
