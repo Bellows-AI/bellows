@@ -11,8 +11,10 @@ import {
 import { CLAUDE_CODE } from '../executors.js';
 import { defaultClassOf, jobClassOf, type RunnerClass } from '../runner-classes.js';
 import {
+    DOCKER_CLASS_HELPER_RESOURCES,
     DOCKERD_CAPS,
     DOCKERD_CONTAINER,
+    DOCKERD_ENV,
     dockerClientEnv,
     dockerClientMounts,
     dockerdMounts,
@@ -279,10 +281,14 @@ function supervisorContainer(
         services: readonly ServiceSpec[];
     }
 ): RunnerPodContainer {
+    const runnerClass = jobClassOf(config, job);
     return {
         name: SUPERVISOR_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        // In a docker class (a microVM sized by its containers' limits) it is sized like the idle
+        // reviewer: idle requests, the class's runner limits, since its git steps work the task tree.
+        ...(runnerClass.docker ? reviewerResourcesField(runnerClass) : {}),
         ...containerHardeningField(),
         command: ['node', '-e', supervisorScript],
         env: [
@@ -396,10 +402,11 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string, docker:
 /**
  * A docker class's daemon: the digest-pinned dind image as a native sidecar, first of the init
  * containers so the gate after it starts only once its startupProbe answers on the shared socket.
- * Root in the sandbox with NET_ADMIN, SYS_ADMIN and NET_RAW over the runtime default set — `drop:
- * ALL` breaks it — and still no escalation, under the pod's RuntimeDefault seccomp profile. It mounts
- * the task volume and the shared temp dir at the clients' own paths, so their bind mounts resolve,
- * its memory-backed data root and the socket. Sized by the class's `dockerResources`.
+ * Root in the class's microVM with NET_ADMIN, SYS_ADMIN and NET_RAW over the runtime default set —
+ * `drop: ALL` breaks it — and still no escalation, under the pod's RuntimeDefault seccomp profile. It
+ * mounts the task volume and the shared temp dir at the clients' own paths, so their bind mounts
+ * resolve, its memory-backed data root and the socket. Sized by the class's `dockerResources`, whose
+ * limits a docker class must set; an empty DOCKER_TLS_CERTDIR keeps the entrypoint off TCP.
  */
 function dockerdSidecar(config: DriverConfig, runnerClass: RunnerClass): RunnerPodContainer {
     if (!config.runnerDockerImage)
@@ -413,10 +420,12 @@ function dockerdSidecar(config: DriverConfig, runnerClass: RunnerClass): RunnerP
         securityContext: { allowPrivilegeEscalation: false, capabilities: { add: [...DOCKERD_CAPS] } },
         command: dockerdStartArgv(),
         // The registry mirrors, a parameter of the script it turns into `--registry-mirror` flags.
-        env:
-            config.runnerDockerMirrors.length > 0
+        env: [
+            ...DOCKERD_ENV,
+            ...(config.runnerDockerMirrors.length > 0
                 ? [{ name: 'DOCKERD_MIRRORS', value: config.runnerDockerMirrors.join(' ') }]
-                : [],
+                : []),
+        ],
         startupProbe: dockerdStartupProbe(),
         volumeMounts: [taskMount(), ...dockerdMounts()],
     };
@@ -461,6 +470,13 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
     };
 }
 
+/** A docker class's fixed pair for `task-init` and the exporter (`DOCKER_CLASS_HELPER_RESOURCES`); unsized elsewhere. */
+function dockerClassHelperResourcesField(config: DriverConfig, job: BoardJob): { resources?: PodResources } {
+    if (!jobClassOf(config, job).docker) return {};
+    const { requests, limits } = DOCKER_CLASS_HELPER_RESOURCES;
+    return { resources: { requests: { ...requests }, limits: { ...limits } } };
+}
+
 /**
  * The init container that makes the reviewer's home on a fresh task volume (`scripts/task-init.sh`)
  * before the reviewer's subPath mount names it: the kubelet would create it root-owned, which the
@@ -472,6 +488,7 @@ function taskInitContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
         name: 'task-init',
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        ...dockerClassHelperResourcesField(config, job),
         ...containerHardeningField(),
         env: [],
         command: ['sh', '-c', taskInitScript, 'init', REVIEWER_TREE_PATH],
@@ -492,6 +509,7 @@ function exporterContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
         name: EXPORTER_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        ...dockerClassHelperResourcesField(config, job),
         ...containerHardeningField(),
         command: ['node', '-e', claudeExportScript],
         env: exportEnv(config, job).map(([name, value]) => ({ name, value })),

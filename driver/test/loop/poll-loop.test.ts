@@ -19,6 +19,7 @@ import {
     stubRunner,
     USER,
 } from '../fixtures/loop-stubs.js';
+import { DOCKER_CLASS_SIZING } from '../fixtures/runner-classes.js';
 
 /** A queue row's acquisition token, never its id. */
 const ROW_TOKEN = '77777777-7777-4777-8777-777777777777';
@@ -29,7 +30,10 @@ const ROW_TOKEN = '77777777-7777-4777-8777-777777777777';
 describe('a docker class claim', () => {
     const DOCKER_ENV = {
         EXECUTOR: 'kubernetes',
-        RUNNER_CLASSES: JSON.stringify({ standard: {}, sandbox: { runtimeClassName: 'gvisor', docker: true } }),
+        RUNNER_CLASSES: JSON.stringify({
+            standard: {},
+            sandbox: { ...DOCKER_CLASS_SIZING, runtimeClassName: 'gvisor', docker: true },
+        }),
         RUNNER_DEFAULT_CLASS: 'standard',
         RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
     };

@@ -20,6 +20,7 @@ import {
 import { TASK_UNSCHEDULABLE_LABEL, taskVolumeName } from '../src/task-volume.js';
 import { type CelPolicy, refusals } from './fixtures/cel-subset.js';
 import { SUPERVISED } from './fixtures/k8s-suite.js';
+import { DOCKER_CLASS_SIZING } from './fixtures/runner-classes.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
@@ -226,7 +227,12 @@ describe('the admission policy requires the pod hardening (#382)', () => {
 describe('the admission policy pins each pod to its runner class RuntimeClass', () => {
     const pods = policy('pods');
     const helpers = readFileSync(join(ROOT, 'charts/factory/templates/_helpers.tpl'), 'utf8');
-    const sandbox = { runtimeClassName: 'gvisor', nodeSelector: { pool: 'sandbox' }, docker: true };
+    const sandbox = {
+        ...DOCKER_CLASS_SIZING,
+        runtimeClassName: 'gvisor',
+        nodeSelector: { pool: 'sandbox' },
+        docker: true,
+    };
     const config = loadDriverConfig({
         EXECUTOR: 'kubernetes',
         K8S_NAMESPACE: 'factory',
@@ -296,7 +302,10 @@ describe('the admission policy admits the dockerd sidecar of a docker class', ()
     const config = loadDriverConfig({
         EXECUTOR: 'kubernetes',
         K8S_NAMESPACE: 'factory',
-        RUNNER_CLASSES: JSON.stringify({ standard: {}, sandbox: { runtimeClassName: 'gvisor', docker: true } }),
+        RUNNER_CLASSES: JSON.stringify({
+            standard: {},
+            sandbox: { ...DOCKER_CLASS_SIZING, runtimeClassName: 'gvisor', docker: true },
+        }),
         RUNNER_DEFAULT_CLASS: 'standard',
         RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
     });

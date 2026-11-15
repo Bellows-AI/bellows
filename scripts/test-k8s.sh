@@ -1274,8 +1274,9 @@ printf '%s\n' 'runner:' '    classes:' '        sandbox:' '            runtimeCl
     '            nodeSelector: {pool: sandbox}' \
     '            tolerations: [{key: pool, operator: Equal, value: sandbox, effect: NoSchedule}]' \
     '            affinity: {podAntiAffinity: {preferredDuringSchedulingIgnoredDuringExecution: [{weight: 1}]}}' \
+    '            resources: {limits: {cpu: "4", memory: 8Gi}}' \
     '            docker: true' '            dockerStorage: 8Gi' \
-    '            dockerResources: {requests: {cpu: "1", memory: 2Gi}, limits: {memory: 10Gi}}' >"$work/two-classes.yaml"
+    '            dockerResources: {requests: {cpu: "1", memory: 2Gi}, limits: {cpu: "2", memory: 10Gi}}' >"$work/two-classes.yaml"
 two_classes="$(gh_render -f "$work/two-classes.yaml")"
 two_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$two_classes")"
 [ "$(grep -c -- '- name: RUNNER_CLASSES$' <<<"$two_driver")" = 1 ] &&
@@ -1336,7 +1337,22 @@ refuses 'a docker class without a RuntimeClass is refused' \
 # to boot a docker class without it, and refuses an image no digest pins.
 expect_class 'the driver is handed the class daemon storage' "$two_classes" 'c.sandbox.dockerStorage' '"8Gi"'
 expect_class 'the driver is handed the class daemon resources' "$two_classes" 'c.sandbox.dockerResources' \
-    '{"limits":{"memory":"10Gi"},"requests":{"cpu":"1","memory":"2Gi"}}'
+    '{"limits":{"cpu":"2","memory":"10Gi"},"requests":{"cpu":"1","memory":"2Gi"}}'
+# A docker class runs under a microVM RuntimeClass, which sizes the VM by its containers' limits:
+# the chart refuses, as the driver does at boot, a missing limit or a data root outside the daemon's memory.
+for slot in resources.limits.cpu resources.limits.memory dockerResources.limits.cpu dockerResources.limits.memory dockerStorage; do
+    refuses "a docker class without $slot is refused" "runner.classes.sandbox.$slot is required" \
+        "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set "runner.classes.sandbox.$slot=null"
+done
+refuses 'a docker class whose data root exceeds the daemon memory limit is refused' \
+    'runner.classes.sandbox.dockerStorage (11Gi) exceeds runner.classes.sandbox.dockerResources.limits.memory (10Gi)' \
+    "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set runner.classes.sandbox.dockerStorage=11Gi
+refuses 'a docker class whose data root is no memory quantity is refused' \
+    'runner.classes.sandbox.dockerStorage must be a memory quantity' \
+    "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set runner.classes.sandbox.dockerStorage=lots
+gh_render -f "$work/two-classes.yaml" --set runner.classes.sandbox.dockerStorage=10240Mi >/dev/null &&
+    ok 'a docker class whose data root equals the daemon memory limit renders' ||
+    bad 'a docker class whose data root equals the daemon memory limit renders' 'helm template failed'
 two_docker_image="$(grep -A1 -- '- name: RUNNER_DOCKER_IMAGE$' <<<"$two_driver" | sed -n 's/^ *value: //p' | tr -d '"')"
 [[ "$two_docker_image" =~ ^docker:27-dind@sha256:[0-9a-f]{64}$ ]] &&
     ok 'a docker class hands the driver the digest-pinned daemon image' ||
@@ -2199,6 +2215,9 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${RE
     --set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))" --set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS" \
     --set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))" \
     --set runner.classes.dind.runtimeClassName=factory-probe-sandbox --set runner.classes.dind.docker=true \
+    --set-string runner.classes.dind.resources.limits.cpu=1 --set runner.classes.dind.resources.limits.memory=1Gi \
+    --set-string runner.classes.dind.dockerResources.limits.cpu=1 \
+    --set runner.classes.dind.dockerResources.limits.memory=1Gi --set runner.classes.dind.dockerStorage=512Mi \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1

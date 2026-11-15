@@ -179,9 +179,10 @@ describe('the driver config: runner classes', () => {
     const SANDBOX = {
         runtimeClassName: 'gvisor',
         nodeSelector: { pool: 'sandbox' },
+        resources: { limits: { cpu: '2', memory: '4Gi' } },
         docker: true,
         dockerStorage: '6Gi',
-        dockerResources: { requests: { cpu: '500m' }, limits: { memory: '8Gi' } },
+        dockerResources: { requests: { cpu: '500m' }, limits: { cpu: '2', memory: '8Gi' } },
     };
     const DOCKER_IMAGE = `docker:27-dind@sha256:${'0'.repeat(64)}`;
     const classesEnv = (
@@ -219,11 +220,11 @@ describe('the driver config: runner classes', () => {
                 nodeSelector: { pool: 'sandbox' },
                 tolerations: null,
                 affinity: null,
-                runnerResources: UNSIZED,
-                gateResources: UNSIZED,
+                runnerResources: { cpuRequest: null, cpuLimit: '2', memoryRequest: null, memoryLimit: '4Gi' },
+                gateResources: { cpuRequest: null, cpuLimit: '2', memoryRequest: null, memoryLimit: '4Gi' },
                 docker: true,
                 dockerStorage: '6Gi',
-                dockerResources: { cpuRequest: '500m', cpuLimit: null, memoryRequest: null, memoryLimit: '8Gi' },
+                dockerResources: { cpuRequest: '500m', cpuLimit: '2', memoryRequest: null, memoryLimit: '8Gi' },
             },
         });
         expect(config.runnerDockerImage).toBe(DOCKER_IMAGE);
@@ -284,6 +285,41 @@ describe('the driver config: runner classes', () => {
                 JSON.stringify(fields)
             ).toThrow(/RUNNER_CLASSES\.sandbox\.docker(Storage|Resources)/);
         }
+    });
+
+    // A docker class runs under a microVM (Kata) RuntimeClass, which sizes the VM by its containers'
+    // limits: a slot left unset is a VM that cannot hold what runs in it, refused at boot by name.
+    it('a docker class without limits refuses boot naming the field', () => {
+        for (const [fields, field] of [
+            [{ resources: undefined }, 'resources.limits.cpu'],
+            [{ resources: { limits: { memory: '4Gi' } } }, 'resources.limits.cpu'],
+            [{ resources: { requests: { cpu: '1' }, limits: { cpu: '2' } } }, 'resources.limits.memory'],
+            [{ dockerResources: { limits: { memory: '8Gi' } } }, 'dockerResources.limits.cpu'],
+            [
+                { dockerResources: { requests: { memory: '1Gi' }, limits: { cpu: '2' } } },
+                'dockerResources.limits.memory',
+            ],
+        ] as const) {
+            expect(
+                () => loadDriverConfig(classesEnv({ standard: STANDARD, sandbox: { ...SANDBOX, ...fields } })),
+                field
+            ).toThrow(new RegExp(`^RUNNER_CLASSES\\.sandbox\\.${field.replaceAll('.', '\\.')} is required: .*microVM`));
+        }
+        // A class without a daemon keeps every slot optional.
+        expect(() => loadDriverConfig(classesEnv({ standard: {} }))).not.toThrow();
+    });
+
+    // The data root is a memory-backed emptyDir inside the daemon's memory: unbounded, or larger than
+    // the daemon's own limit, it is an OOM kill of the daemon rather than a full disk.
+    it('dockerStorage unset or above the dockerd memory limit refuses boot', () => {
+        const withStorage = (dockerStorage: string | undefined) =>
+            loadDriverConfig(classesEnv({ standard: STANDARD, sandbox: { ...SANDBOX, dockerStorage } }));
+        expect(() => withStorage(undefined)).toThrow(/^RUNNER_CLASSES\.sandbox\.dockerStorage is required: /);
+        expect(() => withStorage('9Gi')).toThrow(
+            /^RUNNER_CLASSES\.sandbox\.dockerStorage \(9Gi\) exceeds RUNNER_CLASSES\.sandbox\.dockerResources\.limits\.memory \(8Gi\)/
+        );
+        expect(withStorage('8Gi').runnerClasses.sandbox!.dockerStorage).toBe('8Gi');
+        expect(withStorage('8192Mi').runnerClasses.sandbox!.dockerStorage).toBe('8192Mi');
     });
 
     it('refuses at boot a non-DNS class name, an unknown key, an undeclared default and RUNNER_RUNTIME_CLASS set at all', () => {

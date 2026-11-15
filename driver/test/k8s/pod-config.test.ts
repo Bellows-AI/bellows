@@ -28,7 +28,7 @@ import {
     fakeSteps,
     runner,
 } from '../fixtures/k8s-suite.js';
-import { oneClass } from '../fixtures/runner-classes.js';
+import { DOCKER_CLASS_SIZING, oneClass } from '../fixtures/runner-classes.js';
 
 describe('the block-helper transport (issue #207)', () => {
     const NOOP_DESCRIPTOR = lookupHelper('noop')!;
@@ -226,6 +226,8 @@ describe('RUNNER_CLASSES', () => {
         resources: { requests: { cpu: '1', memory: '2Gi' }, limits: { cpu: '4', memory: '8Gi' } },
         gateResources: { requests: { cpu: '3', memory: '4Gi' } },
         docker: true,
+        dockerStorage: DOCKER_CLASS_SIZING.dockerStorage,
+        dockerResources: DOCKER_CLASS_SIZING.dockerResources,
     };
     const classes = loadDriverConfig({
         EXECUTOR: 'kubernetes',

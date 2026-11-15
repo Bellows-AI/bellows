@@ -26,7 +26,10 @@ export const DOCKER_SOCK_GID = 1000;
 export const DOCKER_TMP_VOLUME = 'docker-tmp';
 export const DOCKER_TMP_DIR = '/run/factory-tmp';
 
-/** The daemon's data root: memory-backed, since overlayfs cannot stack on the sandbox's overlay. */
+/**
+ * The daemon's data root: memory-backed, since a plain emptyDir is virtiofs in the microVM's guest
+ * and overlay2 cannot sit on it (the daemon falls back to vfs, a full copy per layer).
+ */
 export const DOCKER_DATA_VOLUME = 'docker-data';
 export const DOCKER_DATA_ROOT = '/var/lib/docker';
 
@@ -73,6 +76,23 @@ export const dockerVolumes = (runnerClass: RunnerClass): RunnerVolume[] => [
     { name: DOCKER_TMP_VOLUME, emptyDir: {} },
     { name: DOCKER_SOCK_VOLUME, emptyDir: {} },
 ];
+
+/**
+ * The daemon's env beside its mirrors: an empty cert dir, so the image's entrypoint generates no
+ * TLS certificates and adds no TCP listener — the daemon is reached on its unix sockets alone.
+ */
+export const DOCKERD_ENV = [{ name: 'DOCKER_TLS_CERTDIR', value: '' }] as const;
+
+/**
+ * A docker class's two small helpers, `task-init` (one `mkdir`/`chgrp`/`chmod`) and the transcript
+ * `exporter` (node reading 4 MiB windows, a record held whole up to its 64 MiB cut): a microVM
+ * RuntimeClass sizes the VM by its containers' limits, so neither runs unbounded. The requests are
+ * the idle figures; the limits leave the exporter room for a cut record and node's own heap.
+ */
+export const DOCKER_CLASS_HELPER_RESOURCES = {
+    requests: { cpu: '50m', memory: '64Mi' },
+    limits: { cpu: '500m', memory: '512Mi' },
+} as const;
 
 /** The capabilities the daemon adds over the runtime default set, and the only ones: no `drop: ALL`, which breaks it. */
 export const DOCKERD_CAPS = ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW'] as const;

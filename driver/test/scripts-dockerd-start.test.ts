@@ -4,8 +4,8 @@ import { DOCKER_DATA_ROOT, DOCKER_SOCKET, DOCKER_SOCK_GID, DOCKER_TMP_DIR } from
 
 /*
  * The `dockerd` sidecar's start script (`scripts/dockerd-start.sh`), pinned by its bytes ONLY: it
- * writes kernel settings and the pod's NAT table, which no test process may touch. What it does in
- * a sandbox is the GKE run's to show.
+ * makes device nodes and starts a daemon, which no test process may do. What it does in a microVM
+ * is the GKE run's to show.
  */
 
 /** The script without its comment lines: what the shell runs. */
@@ -15,7 +15,7 @@ const code = dockerdStartScript
     .join('\n');
 
 /** The one `exec dockerd …` line, continuations joined. */
-const dockerdLine = code.replace(/\\\n\s*/g, ' ').match(/^\s*exec dockerd .*$/m)?.[0] ?? '';
+const dockerdLine = code.replace(/\\\n\s*/g, ' ').match(/^\s*exec dockerd-entrypoint\.sh dockerd .*$/m)?.[0] ?? '';
 
 describe('the dockerd start script', () => {
     it('is the container command, by content', () => {
@@ -28,18 +28,33 @@ describe('the dockerd start script', () => {
         expect(code).toMatch(/^set -eu$/m);
     });
 
-    it('raises the key quota, then turns forwarding on, before it starts the daemon', () => {
-        const maxkeys = code.indexOf('/proc/sys/kernel/keys/maxkeys');
-        const forward = code.indexOf('/proc/sys/net/ipv4/ip_forward');
-        const exec = code.indexOf('exec dockerd');
-        expect(maxkeys).toBeGreaterThan(-1);
-        expect(forward).toBeGreaterThan(-1);
-        expect(maxkeys).toBeLessThan(exec);
-        expect(forward).toBeLessThan(exec);
+    // The image's own entrypoint, first argument `dockerd`: it adds no --host and no TLS (those
+    // defaults apply only to no argument or a leading flag), deletes a stale pid file and wraps the
+    // daemon in docker-init and the `dind` script, which delegates cgroup v2 to nested kind nodes.
+    it("starts the daemon through the image's dind entrypoint", () => {
+        expect(code).toMatch(/^exec dockerd-entrypoint\.sh dockerd /m);
+        expect(code.match(/^\s*exec /gm)).toHaveLength(1);
+        expect(dockerdLine).not.toBe('');
     });
 
-    it('SNATs the bridge traffic out of eth0 to the pod address, and reads the eth0 MTU', () => {
-        expect(code).toMatch(/-t nat -A POSTROUTING -o eth0 .*-j SNAT --to-source "\$addr"/);
+    // Inside a microVM the daemon owns the guest's network stack: its own iptables NAT the bridge,
+    // and the guest kernel's key quota and forwarding are the daemon's to set.
+    it("keeps docker's own iptables: no --iptables=false, maxkeys, ip_forward or SNAT", () => {
+        expect(code).not.toMatch(/--iptables=false|--ip6tables=false/);
+        expect(code).not.toContain('maxkeys');
+        expect(code).not.toContain('ip_forward');
+        expect(code).not.toContain('SNAT');
+        expect(code).not.toContain('POSTROUTING');
+    });
+
+    // kind's node containers read /dev/kmsg (the kubelet's OOM watcher), which the guest's /dev
+    // may not hold; created only when absent, before the daemon starts.
+    it('creates /dev/kmsg before the daemon when absent', () => {
+        expect(code).toMatch(/^\[ -e \/dev\/kmsg \] \|\| mknod \/dev\/kmsg c 1 11$/m);
+        expect(code.indexOf('mknod /dev/kmsg')).toBeLessThan(code.indexOf('exec dockerd-entrypoint.sh'));
+    });
+
+    it('reads the eth0 MTU', () => {
         expect(code).toContain('/sys/class/net/eth0/mtu');
     });
 
@@ -47,8 +62,8 @@ describe('the dockerd start script', () => {
         expect(code).toContain(`chmod 1777 ${DOCKER_TMP_DIR}`);
     });
 
-    it('starts dockerd without its own iptables, at the pod MTU, on two unix sockets for group 1000 and no TCP', () => {
-        expect(dockerdLine).toContain('--iptables=false --ip6tables=false --mtu "$mtu"');
+    it('starts dockerd at the pod MTU, on two unix sockets for group 1000 and no TCP', () => {
+        expect(dockerdLine).toContain('--mtu "$mtu"');
         expect(dockerdLine).toContain(`--data-root ${DOCKER_DATA_ROOT}`);
         expect(dockerdLine).toContain(`-H unix://${DOCKER_SOCKET}`);
         expect(dockerdLine).toContain('-H unix:///var/run/docker.sock');

@@ -3,7 +3,7 @@ import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { jobPodsPath } from '../../src/k8s/k8s-auxspec.js';
 import { runnerName } from '../../src/k8s/k8s-podspec.js';
 import { DOCKERD_CONTAINER } from '../../src/k8s/k8s-dockerd.js';
-import { oneClass } from '../fixtures/runner-classes.js';
+import { DOCKER_CLASS_SIZING, oneClass } from '../fixtures/runner-classes.js';
 import { job, namespace, podName, routed, runner } from '../fixtures/k8s-suite.js';
 
 /**
@@ -13,7 +13,7 @@ import { job, namespace, podName, routed, runner } from '../fixtures/k8s-suite.j
  * status, a count that is not one — is `inconclusive`, never a count.
  */
 const DOCKER_CLASS = {
-    ...oneClass({ docker: true, runtimeClassName: 'gvisor' }),
+    ...oneClass({ ...DOCKER_CLASS_SIZING, docker: true, runtimeClassName: 'gvisor' }),
     RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
 };
 const podsPath = jobPodsPath(namespace, runnerName(job));

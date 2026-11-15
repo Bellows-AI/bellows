@@ -69,7 +69,11 @@ describe('the docker class record', () => {
         );
         expect(prose(kubernetesDocs)).toContain('compose service names do not resolve');
         expect(prose(kubernetesDocs)).toContain('`docker build --network host`');
-        expect(readFileSync(join(ROOT, 'driver/src/scripts/dockerd-start.sh'), 'utf8')).toContain('--iptables=false');
+        // The microVM daemon keeps its own iptables; until the docs say so, the script's side is
+        // pinned the other way round (no --iptables=false).
+        expect(readFileSync(join(ROOT, 'driver/src/scripts/dockerd-start.sh'), 'utf8')).not.toContain(
+            '--iptables=false'
+        );
         const site = (path: string) => prose(readFileSync(join(ROOT, 'site', path), 'utf8'));
         for (const page of ['guides/executors.mdx', 'self-host/kubernetes.mdx']) {
             expect(site(page), page).toContain('Compose service names do not resolve');
