@@ -1,5 +1,6 @@
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, jiraApiBase, jiraScopesFor } from '@factory-ai/core';
 import type { DiscoveredIdentity, ExchangeResult, IssuedTokens, OAuthProviderHooks } from '../oauth-provider.js';
+import { combineRegistrations, type ProviderRegistration, type ProviderRegistry } from '../provider-registry.js';
 
 /** Atlassian 3LO hooks for the outbound OAuth runtime (docs/connections.md). Client credentials come from config only. */
 export interface JiraHooksConfig {
@@ -131,17 +132,25 @@ async function getJson(fetchFn: FetchFn, url: string, accessToken: string, signa
     return JSON.parse(text);
 }
 
-/** What main.ts registers with the runtime: the hooks and the OAuth client for Jira, or nothing when unconfigured. */
-export function jiraRegistration(cfg: JiraHooksConfig | null, callbackOrigin: string | null) {
-    const hooks = cfg ? createJiraHooks(cfg) : undefined;
+const NOT_CONFIGURED =
+    'Jira OAuth is not configured on this deployment: the operator sets ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET (docs/jira-app-runbook.md)';
+
+/** What main.ts registers for Jira: the hooks and the OAuth client, or neither when unconfigured. */
+export function jiraProvider(cfg: JiraHooksConfig | null, callbackOrigin: string | null): ProviderRegistration {
     return {
-        /** The provider ids this registration can connect: Jira when configured AND the board has a callback origin. */
-        configured: cfg && callbackOrigin !== null ? ['jira'] : [],
-        providers: (provider: string) => (provider === 'jira' ? hooks : undefined),
-        clients: (provider: string) =>
-            provider === 'jira' && cfg ? { clientId: cfg.clientId, scopesFor: jiraScopesFor } : undefined,
+        id: 'jira',
+        // Without a callback origin every start refuses, so Connect must not be offered.
+        configured: cfg !== null && callbackOrigin !== null,
+        hooks: cfg ? createJiraHooks(cfg) : undefined,
+        client: cfg ? { clientId: cfg.clientId, scopesFor: jiraScopesFor } : undefined,
+        apiBaseOf: (resource) => (cfg ? jiraApiBase(cfg.apiOrigin, resource) : null),
+        notConfigured: NOT_CONFIGURED,
     };
 }
+
+/** Jira alone as a registry: the lookups a runtime over Jira only takes. */
+export const jiraRegistration = (cfg: JiraHooksConfig | null, callbackOrigin: string | null): ProviderRegistry =>
+    combineRegistrations([jiraProvider(cfg, callbackOrigin)]);
 
 /** A token endpoint answer: tokens, a refusal the provider meant, or unconfirmed. */
 function answerOf(res: Response, text: string): ExchangeResult {
@@ -183,6 +192,7 @@ export function createJiraHooks(cfg: JiraHooksConfig, fetchFn: FetchFn = fetch):
     return {
         id: 'jira',
         supportsPkce: false,
+        siteOf: jiraSiteHost,
         rotatesRefreshToken: true,
         revokeScope: 'none',
         authorizeUrl: ({ clientId, redirectUri, scopes, state }) => {

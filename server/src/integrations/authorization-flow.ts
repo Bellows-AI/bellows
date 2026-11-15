@@ -3,7 +3,6 @@ import { PATH_CHECK_ORIGIN, safeReturnPath } from '../auth/session.js';
 import { hashState, recoverAuthorization as recover, requireTrusted } from './authorization-complete.js';
 import { completeAndBind } from './authorization-bind.js';
 import { connectionTarget, insertAuthorization } from './authorization-store.js';
-import { jiraSiteHost } from './providers/jira.js';
 import {
     type AuthorizationFlowDeps,
     type CompleteAuthorizationInput,
@@ -15,6 +14,7 @@ import {
     type StartAuthorizationInput,
     type StartAuthorizationResult,
 } from './authorization-types.js';
+import type { OAuthProviderHooks } from './oauth-provider.js';
 import type { TrustedIntegrationContext } from './trusted-context.js';
 
 /**
@@ -60,13 +60,17 @@ export interface AuthorizationFlow {
 }
 
 /** The consent and the named site a start asks for, or null when any input is malformed. */
-function askedOf(input: StartAuthorizationInput): { access: 'read' | 'write'; site: string | null } | null {
+function askedOf(
+    input: StartAuthorizationInput,
+    hooks: OAuthProviderHooks
+): { access: 'read' | 'write'; site: string | null } | null {
     if (input.interactionId !== undefined && !UUID.test(input.interactionId)) return null;
     if (input.jobId !== undefined && !UUID.test(input.jobId)) return null;
     const access = input.access ?? 'read';
     if (access !== 'read' && access !== 'write') return null;
     if (input.site === undefined) return { access, site: null };
-    const site = jiraSiteHost(input.site);
+    // A provider that names no site form has none to ask for.
+    const site = hooks.siteOf ? hooks.siteOf(input.site) : null;
     return site === null ? null : { access, site };
 }
 
@@ -83,7 +87,7 @@ async function start(
     const client = fc.clients(input.provider);
     const redirectUri = redirectUriOf(fc, input.provider);
     if (!client || !redirectUri) return refuse('not-configured');
-    const asked = askedOf(input);
+    const asked = askedOf(input, hooks);
     if (!asked) return refuse('bad-input');
     const { access, site } = asked;
 
