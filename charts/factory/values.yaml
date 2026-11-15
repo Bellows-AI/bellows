@@ -177,10 +177,14 @@ github:
     # The PEM (or its base64) lands in the chart's Secret, never in the pod spec or a command line.
     appPrivateKey: ''
 
-# Jira Cloud OAuth (docs/connections.md). Both empty, Jira is unconfigured and starting a connection says so.
+# Jira Cloud and Linear OAuth (docs/connections.md). Both halves empty, the provider is unconfigured and starting a
+# connection says so.
 integrations:
     jira:
         # Not a secret: an OAuth app's client id is public by design. The client secret is `secret.atlassianClientSecret`.
+        clientId: ''
+    linear:
+        # Not a secret, like Jira's. The client secret is `secret.linearClientSecret`.
         clientId: ''
 
 telemetry:
@@ -295,6 +299,8 @@ secret:
     commerceToken: ''
     # The Atlassian OAuth app's client secret (ATLASSIAN_CLIENT_SECRET); set together with `integrations.jira.clientId`.
     atlassianClientSecret: ''
+    # The Linear OAuth application's client secret (LINEAR_CLIENT_SECRET); set together with `integrations.linear.clientId`.
+    linearClientSecret: ''
 
 # The secret store (docs/secrets.md). REQUIRED on every boot, `dashboard.offline` included, and wired into the
 # dashboard container only: no driver, collector or runner pod ever references the Secret this renders or

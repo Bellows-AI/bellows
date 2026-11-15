@@ -76,7 +76,8 @@ anything you could not do.
 
 - Reach for `gh` for GitHub (pull requests, reviews, checks) rather than raw API calls.
 - Reach for the jira helper, `node /usr/local/share/factory-skills/factory-jira/jira.cjs`, for Jira work items, as the `factory-jira` skill spells it; not `acli`.
-- Both start unauthenticated; they read credentials from the environment or config the caller
+- Reach for the linear helper, `node /usr/local/share/factory-skills/factory-linear/linear.cjs`, for Linear issues, as the `factory-linear` skill spells it; not a Linear MCP server or API key.
+- All of them start unauthenticated; they read credentials from the environment or config the caller
   provides. If a credential is missing, say so instead of working around it.
 
 ## Context discipline

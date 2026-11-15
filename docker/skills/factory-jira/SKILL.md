@@ -16,6 +16,9 @@ connection — do not use either.
 Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key and read it through
 the helper rather than fetching the page.
 
+A bare key like `ABC-123` names no tracker: use the tracker whose connection this task is bound to. If
+both Jira and Linear are bound, ask the user which one before you read or comment.
+
 ## Commands
 
 Every call is one self-contained command that prints JSON on stdout and guidance on stderr; shell

@@ -307,6 +307,12 @@ describe('test-jobs --changed path-to-phase map', () => {
         }
     });
 
+    it('runs the connection round trip for a tracker helper or skill change', () => {
+        for (const file of ['docker/skills/factory-linear/linear.cjs', 'docker/skills/factory-jira/SKILL.md']) {
+            expect(classify([file]).selected).toContain('question-round-trip');
+        }
+    });
+
     it('maps every file outside the lane inputs that a phase executes to that phase', () => {
         expect(classify(['e2e/stub-idp.mjs']).selected).toEqual(['mcp']);
         expect(classify(['scripts/mcp-phase-client.mjs']).selected).toEqual(['mcp']);

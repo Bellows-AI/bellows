@@ -345,6 +345,63 @@ describe.skipIf(!enabled)('start: the trusted context binds the transaction', ()
     });
 });
 
+describe.skipIf(!enabled)('a second provider beside Jira', () => {
+    /** A flow with one non-Jira provider registered under `linear`: PKCE, and no site normalizer. */
+    function secondProvider() {
+        const fake = createFakeOAuth();
+        const hooks: OAuthProviderHooks = { ...fake.hooks, id: 'linear' };
+        const secrets = lineageHarness(db.sql).open();
+        const providers = (provider: string) => (provider === 'linear' ? hooks : undefined);
+        const lineage = createGrantLineage({
+            sql: db.sql,
+            orgId: ORG,
+            secrets,
+            providers,
+            timing: { retryDelayMs: 0 },
+        });
+        const flow = createAuthorizationFlow({
+            sql: db.sql,
+            orgId: ORG,
+            secrets,
+            lineage,
+            providers,
+            clients: (provider) =>
+                provider === 'linear' ? { clientId: 'client-2', scopesFor: () => ['fake:read'] } : undefined,
+            callbackOrigin: 'https://board.example.test',
+        });
+        return { fake, flow };
+    }
+
+    it('completes authorization end to end: the connection carries provider linear', async () => {
+        const { fake, flow } = secondProvider();
+        const account = acctId();
+        fake.identity = {
+            externalAccountId: account,
+            label: `${account}@example.test`,
+            resources: [{ id: 'ws-1', label: 'lane-workspace' }],
+            authority: { scopes: ['fake:read'] },
+        };
+        const started = await flow.startAuthorization(asAlice(), { provider: 'linear' });
+        if (!started.ok) throw new Error(`start refused: ${started.reason}`);
+        const done = await flow.completeAuthorization(asAlice(), { state: stateOf(started.authorizeUrl), code: CODE });
+        expect(done).toMatchObject({ ok: true });
+        const rows = await db.sql<{ provider: string; site: string; cloud_id: string }[]>`
+            select provider, site, cloud_id from connector_connection where external_account_id = ${account}
+        `;
+        expect(rows).toEqual([{ provider: 'linear', site: 'lane-workspace', cloud_id: 'ws-1' }]);
+    });
+
+    it('a site sent to a provider without a site normalizer is bad-input', async () => {
+        const { flow } = secondProvider();
+        // A Jira site form, so only the provider's own normalizer (none) can refuse it.
+        const site = 'acme-example.atlassian.net';
+        expect(await flow.startAuthorization(asAlice(), { provider: 'linear', site })).toEqual({
+            ok: false,
+            reason: 'bad-input',
+        });
+    });
+});
+
 describe.skipIf(!enabled)('complete: callback validation', () => {
     it('an unknown or missing state is state-mismatch back to the integrations page and no exchange', async () => {
         const r = rig();

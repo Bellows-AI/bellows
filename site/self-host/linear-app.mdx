@@ -1,0 +1,92 @@
+---
+title: "Set up Linear"
+description: "Register a Linear OAuth application so people on your Bellows install can connect Linear."
+---
+
+Linear connections use one Linear OAuth application per Bellows deployment. Until you register it and set its client id and secret, starting a Linear connection fails with `503 INTEGRATION_NOT_CONFIGURED`.
+
+You need your dashboard's public URL first. This page writes it as `https://bellows.example.com`.
+
+## 1. Register the app
+
+<Steps>
+  <Step title="Create the application">
+    In the Linear workspace that will own the app, open **Settings**, then **API**, then **OAuth applications**, and create a new application. Name it after your deployment.
+  </Step>
+  <Step title="Set the callback URL">
+    Set the callback URL to:
+
+    ```text
+    https://bellows.example.com/api/integrations/linear/callback
+    ```
+
+    The origin is your `PUBLIC_URL` (Helm `auth.publicUrl`). It must match exactly, or Linear refuses the consent screen before Bellows sees anything.
+  </Step>
+  <Step title="Keep refresh tokens on">
+    Refresh tokens must be enabled for the app. Linear has moved OAuth applications to refresh tokens, and Bellows renews each connection with one. Without it, the access token expires after a day and the connection needs reconnecting.
+
+    Bellows does not use client credentials tokens or webhooks. Leave them off.
+  </Step>
+  <Step title="Copy the credentials">
+    Copy the **Client ID** and the **Client secret**.
+  </Step>
+</Steps>
+
+There are no scopes to configure in Linear. Bellows asks for them when a member connects:
+
+| Scope | Used for |
+| --- | --- |
+| `read` | Tasks look up and search issues and read comments. |
+| `write` | Adding comments. Requested only when a member turns on **Allow adding comments**. |
+
+Bellows acts as the member who connected, not as the application, and Linear shows its consent screen on every connect.
+
+## 2. Choose who can connect
+
+| Situation | What to do |
+| --- | --- |
+| Everyone who connects is a member of the workspace that owns the app | Leave the app private. |
+| People connect other Linear workspaces | Make the app public in its settings, so other workspaces can authorize it. |
+
+Bellows keeps no per-workspace list.
+
+## 3. Give the values to Bellows
+
+| Value | Environment variable | Helm value |
+| --- | --- | --- |
+| Client ID | `LINEAR_CLIENT_ID` | `integrations.linear.clientId` |
+| Client secret | `LINEAR_CLIENT_SECRET` | `secret.linearClientSecret`, or key `linear-client-secret` in `secret.existingSecret` |
+
+Set both or neither. One alone makes the server refuse to boot and name the missing one. Restart the dashboard after setting them. With Helm, run `helm upgrade` (see [Kubernetes and Helm](/self-host/kubernetes)).
+
+The client id is public by design. The secret is not. Keep it in a Secret rather than in a values file.
+
+<Warning>
+Never set `LINEAR_AUTHORIZE_URL` or `LINEAR_API_URL` on a real deployment. They exist for the end-to-end test stand-in only.
+</Warning>
+
+## 4. Check it
+
+<Steps>
+  <Step title="Connect">
+    Sign in, open **Settings → Integrations**, then **Browse integrations**, choose **Linear** and click **Connect**. Click **Continue to Linear**.
+  </Step>
+  <Step title="Approve">
+    Pick the workspace and approve the consent screen. You return to Integrations with "Linear connected." and a card for that workspace.
+  </Step>
+  <Step title="Comments">
+    On the connection's page, turn on **Allow adding comments**. Linear asks again, this time with `write`, and the connection then shows `write`.
+  </Step>
+</Steps>
+
+A refusal comes back as one sentence on the page where the consent started.
+
+## How people connect
+
+Each person connects their own Linear account. The connection belongs to that person only, and admins cannot use it. The steps for members are in [Connections](/guides/connections#linear).
+
+## Limits
+
+- A connection reaches the one Linear workspace chosen on the consent screen.
+- Inside one Bellows organization a Linear account belongs to the member who connected it; another member who connects it is refused with `grant-conflict`.
+- **Disconnect** asks Linear to revoke the token and destroys Bellows' copy either way. If the revoke did not go through, remove the authorization in your Linear settings.

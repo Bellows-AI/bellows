@@ -197,6 +197,15 @@ spec:
                                 name: {{ include "factory.secretName" . }}
                                 key: atlassian-client-secret
                                 optional: true
+                      # Linear OAuth (docs/connections.md); both empty, Linear is unconfigured.
+                      - name: LINEAR_CLIENT_ID
+                        value: {{ .Values.integrations.linear.clientId | quote }}
+                      - name: LINEAR_CLIENT_SECRET
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: linear-client-secret
+                                optional: true
                       {{- if and .Values.dashboard.offline .Values.driver.repoCloneBase }}
                       # The offline entry reads each repo's .bellows.yaml from this origin.
                       - name: REPO_CLONE_BASE

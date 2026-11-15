@@ -20,6 +20,7 @@ import { agentTitleRoutes } from './routes/agent-title.js';
 import { errorHandler } from './routes/error-handler.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
+import { combineRegistrations } from './integrations/provider-registry.js';
 import { batchRoutes } from './routes/batches/batches.js';
 import type { UploadCapabilityStore } from './attachments/upload-capability-store.js';
 import { attachmentRoutes } from './routes/attachments.js';
@@ -139,6 +140,10 @@ export interface AppDeps {
               Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>> & {
                   /** The provider ids with an OAuth client registered here; `GET /api/integrations` reports it as booleans. */
                   configured?: readonly string[] | undefined;
+                  /** Every registered provider id, configured or not: the list `GET /api/integrations` answers. */
+                  ids?: readonly string[] | undefined;
+                  /** The refusal sentence of an unconfigured provider's start. */
+                  notConfiguredOf?: ((provider: string) => string) | undefined;
               })
         | undefined;
     githubMint?: GithubMint | undefined;
@@ -301,8 +306,18 @@ async function registerRunnerCredentialRoutes(
         if (agentTitle) await app.register(agentTitleRoutes({ attemptOfLease, agentTitle }));
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
-    if (integrations?.flowOf)
-        await app.register(integrationRoutes({ flowOf: integrations.flowOf, configured: integrations.configured }));
+    if (integrations?.flowOf) {
+        // Absent, no provider is registered: the list is empty and a refusal names the provider alone.
+        const none = combineRegistrations([]);
+        await app.register(
+            integrationRoutes({
+                flowOf: integrations.flowOf,
+                configured: integrations.configured,
+                providers: integrations.ids ?? none.ids,
+                notConfiguredOf: integrations.notConfiguredOf ?? none.notConfiguredOf,
+            })
+        );
+    }
 }
 
 async function registerCommerce(

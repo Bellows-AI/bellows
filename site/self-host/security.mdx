@@ -80,7 +80,7 @@ Gates run in a separate `gate` sidecar, and declared services run as `svc-<name>
 | Other runner pods | No | Runner pods accept no ingress |
 | The Kubernetes API | No | No ServiceAccount token |
 | Other tasks' files | No | Each thread has its own volume |
-| Connection tokens (Jira) | By brokered call | A task you allowed can use the connection. Tokens are not printed by any command |
+| Connection tokens (Jira, Linear) | By brokered call | A task you allowed can use the connection. Tokens are not printed by any command |
 
 Declared services resolve by name to `127.0.0.1` inside the pod, not through DNS.
 
@@ -93,7 +93,7 @@ The agent never holds a standing GitHub credential.
 3. The helper caches it in memory only (`emptyDir` with `medium: Memory`) and renews it before expiry.
 4. At the end of the attempt the token is revoked.
 
-The token is not in the runner's environment, not in a Secret, and not in git config. Connection credentials such as Jira use the same broker.
+The token is not in the runner's environment, not in a Secret, and not in git config. Connection credentials such as Jira and Linear use the same broker.
 
 Publishing a pull request is a supervised step: the supervisor runs it in its own container with its own copy of the token, over an authenticated channel. The supervisor's three per-attempt tokens each open a different door, and any other route answers 403.
 

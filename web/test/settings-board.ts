@@ -26,6 +26,8 @@ export interface SettingsBoard {
     connectorKinds: string[];
     /** Whether `GET /api/integrations` reports Jira as configured on this deployment. */
     jiraConfigured: boolean;
+    /** Whether `GET /api/integrations` reports Linear as configured on this deployment. */
+    linearConfigured: boolean;
     /** `/api/auth/me`'s deployment mode. */
     deploymentMode: DeploymentMode;
 }
@@ -45,6 +47,7 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         subscriptions: { org: [], workspace: [] },
         connectorKinds: ['discord'],
         jiraConfigured: true,
+        linearConfigured: true,
         deploymentMode: 'self-hosted',
         ...overrides,
     };
@@ -215,7 +218,12 @@ function routes(board: SettingsBoard, { method, url, body }: FetchCall): FetchRe
         return { status: 204 };
     }
     if (method === 'GET' && path === '/api/integrations') {
-        return { integrations: [{ provider: 'jira', configured: board.jiraConfigured }] };
+        return {
+            integrations: [
+                { provider: 'jira', configured: board.jiraConfigured },
+                { provider: 'linear', configured: board.linearConfigured },
+            ],
+        };
     }
     if (method === 'GET' && path === '/api/connections') return { connections: board.connections };
     if (method === 'DELETE' && path.startsWith('/api/connections/')) {

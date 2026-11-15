@@ -245,6 +245,14 @@ describe('PUT /api/jobs/:id/operations/:receiptId', () => {
         expect(calls.attempts).toBe(0);
     });
 
+    it('records a UUID commentId (a Linear comment carries the receipt id as its own)', async () => {
+        const { app, calls } = await boot();
+        const commentId = '55555555-5555-4555-8555-000000000001';
+        const res = await put(app, { from: ['dispatched'], to: 'succeeded', result: { commentId } });
+        expect(res.statusCode).toBe(HTTP_OK);
+        expect(calls.transition).toMatchObject([{ to: 'succeeded', result: { commentId } }]);
+    });
+
     it('answers 503 LEASE_PENDING to the pair one claim back, and moves nothing', async () => {
         const { app, calls } = await boot({ pair: 'prior' });
         const res = await put(app, { from: ['started'], to: 'dispatched' });
@@ -280,6 +288,10 @@ describe('PUT /api/jobs/:id/operations/:receiptId', () => {
         ['an unknown status', { from: ['started'], to: 'done' }],
         ['an empty from', { from: [], to: 'dispatched' }],
         ['a commentId that is not digits', { from: ['dispatched'], to: 'succeeded', result: { commentId: 'abc' } }],
+        [
+            'a commentId that is neither digits nor a UUID',
+            { from: ['dispatched'], to: 'succeeded', result: { commentId: '55555555-5555-4555-8555-00000000000x' } },
+        ],
         ['a result with another key', { from: ['dispatched'], to: 'succeeded', result: { commentId: '1', body: 'x' } }],
     ])('rejects %s as BAD_BODY', async (_name, payload) => {
         const { app, calls } = await boot();

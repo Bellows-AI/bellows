@@ -2,6 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ALLOW_COMMENTS_LABEL, SITE_HELP } from '../src/components/JiraConnectionDialog.js';
+import { LINEAR_WORKSPACE_HELP } from '../src/components/LinearConnectionDialog.js';
 import { SettingsIntegrationsCatalogPage } from '../src/pages/SettingsIntegrationsCatalogPage.js';
 import { renderApp, renderAt, stubFetch, type FetchHandler } from './dom.js';
 import { boardHandler, connection, settingsBoard } from './settings-board.js';
@@ -19,6 +20,9 @@ const spyNavigation = () => {
     return assign;
 };
 
+/** Either oauth provider's authorization start. */
+const START = /^\/api\/integrations\/(jira|linear)\/authorizations$/;
+
 /** The board with `GET /api/integrations` and/or `GET /api/connections` answered by hand. */
 const board = (replies: { config?: unknown; connections?: unknown; start?: unknown } = {}): FetchHandler =>
     boardHandler(settingsBoard(), ({ method, url }) => {
@@ -26,7 +30,7 @@ const board = (replies: { config?: unknown; connections?: unknown; start?: unkno
         if (method === 'GET' && url === '/api/connections' && replies.connections !== undefined) {
             return replies.connections as never;
         }
-        if (method === 'POST' && url === '/api/integrations/jira/authorizations' && replies.start !== undefined) {
+        if (method === 'POST' && START.test(url) && replies.start !== undefined) {
             return replies.start as never;
         }
     });
@@ -76,6 +80,7 @@ describe('the integrations catalog', () => {
         const list = within(screen.getByRole('list', { name: 'Available integrations' }));
         expect(list.getAllByRole('listitem').map((item) => item.getAttribute('aria-label'))).toEqual([
             'Jira',
+            'Linear',
             'GitHub',
         ]);
         expect(screen.queryByText('Planned')).toBeNull();
@@ -170,6 +175,40 @@ describe('the integrations catalog', () => {
         expect(filterNames()).toEqual(['All', 'Issue tracking']);
     });
 
+    it('a second oauth provider gets its own state: its own configuration entry and only its own rows', async () => {
+        const { INTEGRATION_CATALOG } = await import('@factory-ai/core');
+        const jira = INTEGRATION_CATALOG.find((p) => p.id === 'jira')!;
+        const fake = {
+            id: 'fake',
+            label: 'Fake Tracker',
+            category: jira.category,
+            availability: jira.availability,
+            description: 'A stand-in.',
+        };
+        stubFetch(
+            board({
+                config: {
+                    integrations: [
+                        { provider: 'jira', configured: false },
+                        { provider: 'fake', configured: true },
+                    ],
+                },
+                connections: { connections: [connection('acme-example.atlassian.net')] },
+            })
+        );
+        renderAt(<SettingsIntegrationsCatalogPage providers={[jira, fake]} />, PATH);
+
+        const jiraCard = await card('Jira');
+        expect(await jiraCard.findByText('Connected')).toBeTruthy();
+        expect(await jiraCard.findByText('Not configured on this deployment')).toBeTruthy();
+        const fakeCard = await card('Fake Tracker');
+        expect(fakeCard.queryByText('Connected')).toBeNull();
+        expect(fakeCard.queryByText('Not configured on this deployment')).toBeNull();
+        expect(fakeCard.queryByText(/Could not check/)).toBeNull();
+        // No connect dialog is registered for it, so it offers no Connect.
+        expect(fakeCard.queryByRole('button', { name: /Connect/ })).toBeNull();
+    });
+
     it('lists GitHub as an organization integration linking to Repositories, never connectable or Connected', async () => {
         stubFetch(boardHandler(settingsBoard({ connections: [connection('acme-example.atlassian.net')] })));
         renderApp(PATH);
@@ -218,5 +257,78 @@ describe('the integrations catalog', () => {
         expect(
             (within(dialog).getByRole('button', { name: 'Continue to Atlassian' }) as HTMLButtonElement).disabled
         ).toBe(false);
+    });
+
+    it('Connect on a configured Linear opens its own dialog, with no site field, and posts no site', async () => {
+        const user = userEvent.setup();
+        const assign = spyNavigation();
+        const calls = stubFetch(board({ start: { status: 201, body: { authorizeUrl: CONSENT_URL } } }));
+        renderApp(PATH);
+
+        const linear = await card('Linear');
+        expect(linear.getByText('Let tasks look up and comment on your Linear issues.')).toBeTruthy();
+        await user.click(linear.getByRole('button', { name: 'Connect' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Connect Linear' });
+        expect(within(dialog).queryByRole('textbox')).toBeNull();
+        expect(dialog.textContent).toContain(LINEAR_WORKSPACE_HELP);
+        await user.click(within(dialog).getByRole('checkbox', { name: ALLOW_COMMENTS_LABEL }));
+        await user.click(within(dialog).getByRole('button', { name: 'Continue to Linear' }));
+
+        await waitFor(() => expect(assign).toHaveBeenCalledWith(CONSENT_URL));
+        const post = calls.find((call) => call.method === 'POST');
+        expect(post?.url).toBe('/api/integrations/linear/authorizations');
+        expect(post?.body).toEqual({ access: 'write', returnTo: '/settings/integrations' });
+    });
+
+    it('Linear asks for read access by default, and Cancel closes the dialog having sent nothing', async () => {
+        const user = userEvent.setup();
+        const calls = stubFetch(board());
+        renderApp(PATH);
+
+        await user.click((await card('Linear')).getByRole('button', { name: 'Connect' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Connect Linear' });
+        expect((within(dialog).getByRole('checkbox', { name: ALLOW_COMMENTS_LABEL }) as HTMLInputElement).checked).toBe(
+            false
+        );
+        await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Connect Linear' })).toBeNull());
+        expect(calls.some((call) => call.method === 'POST')).toBe(false);
+    });
+
+    it('says Not configured for an unconfigured Linear while Jira keeps its own Connect', async () => {
+        stubFetch(boardHandler(settingsBoard({ linearConfigured: false })));
+        renderApp(PATH);
+
+        const linear = await card('Linear');
+        expect(await linear.findByText('Not configured on this deployment')).toBeTruthy();
+        expect(linear.queryByRole('button', { name: /Connect/ })).toBeNull();
+        const jira = await card('Jira');
+        expect(await jira.findByRole('button', { name: 'Connect' })).toBeTruthy();
+        expect(jira.queryByText('Not configured on this deployment')).toBeNull();
+    });
+
+    it('an answer with no Linear entry is could-not-check for Linear only, never Not configured', async () => {
+        stubFetch(board({ config: { integrations: [{ provider: 'jira', configured: true }] } }));
+        renderApp(PATH);
+
+        const linear = await card('Linear');
+        expect(await linear.findByText('Could not check whether Linear is available')).toBeTruthy();
+        expect(linear.queryByText('Not configured on this deployment')).toBeNull();
+        expect(linear.queryByRole('button', { name: /Connect/ })).toBeNull();
+        expect(await (await card('Jira')).findByRole('button', { name: 'Connect' })).toBeTruthy();
+    });
+
+    it('shows a Linear start refusal inside its dialog', async () => {
+        const user = userEvent.setup();
+        spyNavigation();
+        stubFetch(
+            board({ start: { status: 503, body: { error: 'Linear OAuth is not configured on this deployment' } } })
+        );
+        renderApp(PATH);
+
+        await user.click((await card('Linear')).getByRole('button', { name: 'Connect' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Connect Linear' });
+        await user.click(within(dialog).getByRole('button', { name: 'Continue to Linear' }));
+        expect((await within(dialog).findByRole('alert')).textContent).toContain('not configured on this deployment');
     });
 });

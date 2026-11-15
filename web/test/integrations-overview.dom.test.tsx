@@ -32,6 +32,26 @@ describe('the Integrations overview', () => {
         expect(within(two).getByText('Connected')).toBeTruthy();
     });
 
+    it('lists a Linear connection beside a Jira one, each linking to its own provider page', async () => {
+        const jira = connection('acme-example.atlassian.net', { account: 'dev@acme-example.test' });
+        const linear = connection('acme', { provider: 'linear', account: 'dev@acme-example.test' });
+        stubFetch(withConnections({ connections: [jira, linear] }));
+        renderApp(PATH);
+
+        const jiraLink = await screen.findByRole('link', { name: /Jira.*acme-example\.atlassian\.net/ });
+        const linearLink = await screen.findByRole('link', { name: /Linear.*acme.*dev@acme-example\.test/ });
+        expect(jiraLink.getAttribute('href')).toBe(`/settings/integrations/jira/${jira.id}`);
+        expect(linearLink.getAttribute('href')).toBe(`/settings/integrations/linear/${linear.id}`);
+        expect(within(linearLink).getByText('Connected')).toBeTruthy();
+    });
+
+    it('shows the Linear connected sentence for its callback', async () => {
+        stubFetch(withConnections({ connections: [] }));
+        renderApp(`${PATH}?integration=linear&result=connected`);
+
+        expect(await screen.findByText('Linear connected.')).toBeTruthy();
+    });
+
     it('says Needs reconnect for a connection whose grant needs reconnecting', async () => {
         stubFetch(
             withConnections({ connections: [connection('acme-example.atlassian.net', { needsReconnect: true })] })

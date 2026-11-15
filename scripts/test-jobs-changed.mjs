@@ -148,6 +148,7 @@ export const RULES = [
     [/^docker\/executor-common\//, [...REAL, 'image-checks'], 'files both executor images copy in'],
     [/^docker\/tool-isolation-checks\.sh$/, ['tool-isolation'], 'tool isolation'],
     [/^docker\/skills\/factory-task-title\//, ['tool-isolation', 'question-round-trip'], 'task title helper and skill'],
+    [/^docker\/skills\/factory-(jira|linear)\//, ['tool-isolation', 'question-round-trip'], 'tracker helpers the connection round trip runs'],
     [/^docker\/skills\//, ['tool-isolation'], 'skill helper scripts'],
     [/^docker\/(Dockerfile|driver\.Dockerfile)$/, ['compose-driver'], 'the deployed and compose images'],
     [/^docker\/skills\/factory-review\//, ['review'], 'reviewer prompt'],

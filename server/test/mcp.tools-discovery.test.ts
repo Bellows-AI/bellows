@@ -452,6 +452,15 @@ describe('list_available_integrations', () => {
             state: 'connectable',
             connect: { path: '/settings/integrations/available' },
         });
+        expect(by('linear')).toMatchObject({ name: 'Linear', state: 'unavailable', reason: 'not_configured' });
+        const both = await call(await boot({ configured: ['jira', 'linear'] }), 'alice', 'list_available_integrations');
+        expect(both.data.providers.find((p: { provider: string }) => p.provider === 'linear')).toMatchObject({
+            name: 'Linear',
+            category: 'Issue tracking',
+            state: 'connectable',
+            connect: { path: '/settings/integrations/available' },
+            capabilities: { read: ['read'], write: ['write'] },
+        });
         expect(by('slack')).toMatchObject({ state: 'planned' });
         expect(by('slack').connect).toBeUndefined();
         expect(by('github')).toMatchObject({ state: 'unavailable', reason: 'organization_managed' });
@@ -475,7 +484,7 @@ describe('list_available_integrations', () => {
         expect(first.data.providers).toHaveLength(4);
         const second = await call(url, 'alice', 'list_available_integrations', { limit: 4, cursor: first.data.cursor });
         expect(second.data).toMatchObject({ cursor: null });
-        expect(second.data.providers).toHaveLength(2);
+        expect(second.data.providers).toHaveLength(3);
         const filtered = await call(url, 'alice', 'list_available_integrations', { category: 'Communication' });
         expect(filtered.data.providers.map((p: { provider: string }) => p.provider)).toEqual(['discord', 'slack']);
         const bad = await call(url, 'alice', 'list_available_integrations', { category: 'Nope' });
