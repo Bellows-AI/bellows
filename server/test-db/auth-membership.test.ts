@@ -430,3 +430,47 @@ describe.runIf(enabled)('an admin’s removals, through the auth store', () => {
         expect(await board.base.blockedOrgs(randomGithubId())).toEqual([]);
     });
 });
+
+describe.runIf(enabled)('setup state per membership (onboarding)', () => {
+    it('records a skip, moves it to done, completes, and leaves another member untouched', async () => {
+        const board = rig();
+        const owner = person('owner');
+        const alice = person('alice');
+        board.set(owner, 'admin');
+        board.set(alice, 'member');
+        const other = await board.signIn(owner);
+        const caller = await board.signIn(alice);
+        const creds = await board.credentials(caller);
+        const fresh = { completedAt: null, done: [], skipped: [] };
+        // Sign-in reads the membership the same way every credential does: a new member has done nothing yet.
+        expect(caller.membership.setup).toEqual(fresh);
+
+        await board.base.recordSetupStep(board.install.id, caller.user.id, 'model', 'skip');
+        // A second skip from another tab never duplicates the step.
+        await board.base.recordSetupStep(board.install.id, caller.user.id, 'model', 'skip');
+        expect((await board.base.findSession(creds.session))?.membership.setup).toEqual({
+            completedAt: null,
+            done: [],
+            skipped: ['model'],
+        });
+
+        await board.base.recordSetupStep(board.install.id, caller.user.id, 'model', 'done');
+        await board.base.recordSetupStep(board.install.id, caller.user.id, 'model', 'done');
+        // The fat_ path reads the same columns.
+        expect((await board.base.findPersonalToken(creds.token))?.membership.setup).toEqual({
+            completedAt: null,
+            done: ['model'],
+            skipped: [],
+        });
+
+        await board.base.completeSetup(board.install.id, caller.user.id);
+        const completed = (await board.base.findSession(creds.session))?.membership.setup;
+        expect(completed?.completedAt).toEqual(expect.any(String));
+        // Completing again keeps the first timestamp.
+        await board.base.completeSetup(board.install.id, caller.user.id);
+        expect((await board.base.findSession(creds.session))?.membership.setup).toEqual(completed);
+
+        const untouched = await board.credentials(other);
+        expect((await board.base.findSession(untouched.session))?.membership.setup).toEqual(fresh);
+    });
+});

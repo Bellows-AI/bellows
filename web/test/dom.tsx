@@ -111,6 +111,7 @@ export const OPEN_BOARD_SESSION: Session = {
     user: { ...LOCAL_AUTHOR, githubUserId: 0 },
     role: ADMIN_ROLE,
     membership: { invitedAt: null, claimedAt: null },
+    setup: { completed: true, done: [], skipped: [] },
     account: { createdAt: null, lastLoginAt: null },
     organization: { id: 'local', name: 'Local' },
     organizations: [],

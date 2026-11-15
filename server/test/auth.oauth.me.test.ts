@@ -125,6 +125,47 @@ describe('/api/auth/me', () => {
         expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({ authenticated: false });
     });
+
+    it('reports the membership’s setup state: fresh until completed, through a session and a fat_ token alike', async () => {
+        const { app, auth } = await setup();
+        const cookie = await signIn(app);
+        const me = () => app.inject({ method: 'GET', url: '/api/auth/me', cookies: { [SESSION_COOKIE]: cookie } });
+
+        const fresh = (await me()).json();
+        expect(fresh.setup).toEqual({ completed: false, done: [], skipped: [] });
+        // The setup rides the top level; the membership keeps its two timestamps.
+        expect(Object.keys(fresh.membership).sort()).toEqual(['claimedAt', 'invitedAt']);
+
+        await auth.recordSetupStep(ORG, fresh.user.id, 'model', 'done');
+        await auth.recordSetupStep(ORG, fresh.user.id, 'tools', 'skip');
+        await auth.completeSetup(ORG, fresh.user.id);
+        expect((await me()).json().setup).toEqual({ completed: true, done: ['model'], skipped: ['tools'] });
+
+        const minted = await app.inject({
+            method: 'POST',
+            url: '/api/tokens',
+            cookies: { [SESSION_COOKIE]: cookie },
+            payload: { label: 'cli' },
+        });
+        const viaToken = await app.inject({
+            method: 'GET',
+            url: '/api/auth/me',
+            headers: { authorization: `Bearer ${minted.json().token}` },
+        });
+        expect(viaToken.json().setup).toEqual({ completed: true, done: ['model'], skipped: ['tools'] });
+    });
+
+    it('reports setup completed under AUTH_MODE=none, whatever the stand-in membership holds', async () => {
+        const { app } = await setup({
+            config: { auth: { mode: 'none' } },
+            seed: (store) => store.seedLocalUser('default'),
+        });
+
+        const response = await app.inject({ method: 'GET', url: '/api/auth/me' });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toMatchObject({ mode: 'none', setup: { completed: true, done: [], skipped: [] } });
+    });
 });
 
 describe('POST /api/auth/org', () => {

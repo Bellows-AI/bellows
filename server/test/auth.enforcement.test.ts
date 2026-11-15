@@ -369,6 +369,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/tokens', 'user'],
     ['/api/tokens/org', 'user'],
     ['/api/tokens/:id/revoke', 'user'],
+    // The member's own onboarding progress: a person's act, session cookie or personal bearer.
+    ['/api/onboarding/setup', 'user'],
+    ['/api/onboarding/setup/complete', 'user'],
     // Batches are a person's: no batch path is a worker route or on the organization-token allowlist.
     ...BATCH_PATHS.map(
         ([, path]) => [path.replace(JOB_ID, ':id').replace('/tasks/a/', '/tasks/:key/'), 'user'] as [string, string]

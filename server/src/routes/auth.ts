@@ -26,6 +26,7 @@ import type { AuthStore, Caller, InstallationRef } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
 import type { OrgRegistry } from '../orgs.js';
 import { registerOnboardingRoutes } from './auth-onboarding.js';
+import { onboardingSetupRoutes } from './onboarding-setup.js';
 import {
     HTTP_BAD_REQUEST,
     HTTP_FORBIDDEN,
@@ -337,6 +338,8 @@ export const authRoutes =
     async (app) => {
         const { auth } = config;
         const resolveUser = createUserResolver({ config, store });
+        // The member's setup progress, which `/me.setup` reports back (both auth modes, like `/me`).
+        await app.register(onboardingSetupRoutes({ store }));
 
         // The onboarding screen's repo read. Not injected means built from the config —
         // the App arm — or absent, which the screen renders as "repo tracking unavailable".
@@ -388,7 +391,14 @@ export const authRoutes =
                 role: caller.role,
                 // What the credential may do: `'all'` for a session or a `fat_`, the granted scopes for the MCP bridge.
                 scopes: caller.scopes,
-                membership: caller.membership,
+                membership: { invitedAt: caller.membership.invitedAt, claimedAt: caller.membership.claimedAt },
+                // Where the member stands in onboarding; the web sends an unfinished one there. AUTH_MODE=none has
+                // no onboarding at all, so its stand-in account is always done.
+                setup: {
+                    completed: auth.mode === 'none' || caller.membership.setup.completedAt !== null,
+                    done: caller.membership.setup.done,
+                    skipped: caller.membership.setup.skipped,
+                },
                 account: {
                     createdAt: caller.user.createdAt,
                     lastLoginAt: caller.user.lastLoginAt,
