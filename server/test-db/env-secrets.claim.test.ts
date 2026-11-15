@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { EnvSecretError } from '../src/db/env-secrets.js';
@@ -30,6 +30,33 @@ beforeAll(async () => {
 
 afterAll(async () => {
     if (enabled) await claimPool.end({ timeout: 5 });
+});
+
+/**
+ * The store's transactions on the claim pool. A store read the deadline gave up on still runs once the claim's
+ * rollback frees the connection; left running, it holds locks the next test's truncate waits on.
+ */
+const pendingStoreTx = new Set<Promise<unknown>>();
+
+function trackedBegin(pool: Sql): Sql {
+    return new Proxy(pool, {
+        get(target, prop) {
+            const member = Reflect.get(target, prop);
+            if (prop === 'begin') {
+                return (...args: unknown[]) => {
+                    const tx = Reflect.apply(member, target, args) as Promise<unknown>;
+                    pendingStoreTx.add(tx);
+                    tx.catch(() => {}).finally(() => pendingStoreTx.delete(tx));
+                    return tx;
+                };
+            }
+            return typeof member === 'function' ? member.bind(target) : member;
+        },
+    });
+}
+
+afterEach(() => {
+    expect(pendingStoreTx.size, 'no store transaction outlives its test').toBe(0);
 });
 
 const org = { orgId: ORG, scope: { kind: 'org' } } as const;
@@ -67,13 +94,14 @@ describe.skipIf(!enabled)('environment secrets resolved inside a claim', () => {
             env: createEnvVarStore({
                 sql: claimPool,
                 orgId: ORG,
-                secrets: testSecretStore(claimPool, keys),
+                secrets: testSecretStore(trackedBegin(claimPool), keys),
                 secretLog: () => {},
             }),
         });
         await mustCreate(jobs.create('echo hi', null, { repo: null, executor: null }));
 
         await expect(jobs.claim('driver-1', LEASE_SECONDS)).rejects.toBeInstanceOf(EnvSecretError);
+        await Promise.allSettled([...pendingStoreTx]);
     });
 
     it('an undecryptable secret rolls a review claim back: no review row is left', async () => {
