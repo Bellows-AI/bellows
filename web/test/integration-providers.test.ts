@@ -86,4 +86,28 @@ describe('integrationNotice', () => {
         expect(integrationNotice(null, null)).toBeNull();
         expect(integrationNotice('jira', null)).toBeNull();
     });
+
+    it('words an oauth provider with no texts of its own from its label', () => {
+        const catalog = [
+            ...INTEGRATION_CATALOG,
+            {
+                id: 'fake',
+                label: 'Fake Tracker',
+                category: 'Issue tracking' as const,
+                availability: 'oauth' as const,
+                description: 'A stand-in.',
+            },
+        ];
+        expect(integrationNotice('fake', 'connected', catalog)).toEqual({
+            message: 'Fake Tracker connected.',
+            tone: 'info',
+        });
+        expect(integrationNotice('fake', 'denied', catalog)).toEqual({
+            message: 'Fake Tracker connection failed (denied).',
+            tone: 'bad',
+        });
+        expect(integrationNotice('jira', 'denied', catalog)?.message).toBe(
+            'Atlassian consent was denied; nothing was connected.'
+        );
+    });
 });

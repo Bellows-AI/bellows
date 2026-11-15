@@ -170,6 +170,40 @@ describe('the integrations catalog', () => {
         expect(filterNames()).toEqual(['All', 'Issue tracking']);
     });
 
+    it('a second oauth provider gets its own state: its own configuration entry and only its own rows', async () => {
+        const { INTEGRATION_CATALOG } = await import('@factory-ai/core');
+        const jira = INTEGRATION_CATALOG.find((p) => p.id === 'jira')!;
+        const fake = {
+            id: 'fake',
+            label: 'Fake Tracker',
+            category: jira.category,
+            availability: jira.availability,
+            description: 'A stand-in.',
+        };
+        stubFetch(
+            board({
+                config: {
+                    integrations: [
+                        { provider: 'jira', configured: false },
+                        { provider: 'fake', configured: true },
+                    ],
+                },
+                connections: { connections: [connection('acme-example.atlassian.net')] },
+            })
+        );
+        renderAt(<SettingsIntegrationsCatalogPage providers={[jira, fake]} />, PATH);
+
+        const jiraCard = await card('Jira');
+        expect(await jiraCard.findByText('Connected')).toBeTruthy();
+        expect(await jiraCard.findByText('Not configured on this deployment')).toBeTruthy();
+        const fakeCard = await card('Fake Tracker');
+        expect(fakeCard.queryByText('Connected')).toBeNull();
+        expect(fakeCard.queryByText('Not configured on this deployment')).toBeNull();
+        expect(fakeCard.queryByText(/Could not check/)).toBeNull();
+        // No connect dialog is registered for it, so it offers no Connect.
+        expect(fakeCard.queryByRole('button', { name: /Connect/ })).toBeNull();
+    });
+
     it('lists GitHub as an organization integration linking to Repositories, never connectable or Connected', async () => {
         stubFetch(boardHandler(settingsBoard({ connections: [connection('acme-example.atlassian.net')] })));
         renderApp(PATH);

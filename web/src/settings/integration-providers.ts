@@ -1,3 +1,4 @@
+import { canConnect, INTEGRATION_CATALOG, type IntegrationProvider } from '@factory-ai/core';
 import type { ConnectionView } from '../api/connections.js';
 
 /**
@@ -23,22 +24,37 @@ export interface IntegrationNotice {
     tone: 'info' | 'warn' | 'bad';
 }
 
-const RESULT_NOTICE: Record<string, IntegrationNotice> = {
-    connected: { message: 'Jira connected.', tone: 'info' },
-    denied: { message: 'Atlassian consent was denied; nothing was connected.', tone: 'warn' },
-    'identity-mismatch': {
-        message:
-            'That Atlassian account is not the account this connection was made with. Reconnect with the original account, or disconnect and connect again.',
-        tone: 'bad',
-    },
-    'site-mismatch': {
-        message: 'The Atlassian account cannot reach that site, so nothing was connected.',
-        tone: 'bad',
+/** Each provider's own callback sentences; a result it has none for is worded from its label. */
+const RESULT_NOTICES: Record<string, Record<string, IntegrationNotice>> = {
+    jira: {
+        connected: { message: 'Jira connected.', tone: 'info' },
+        denied: { message: 'Atlassian consent was denied; nothing was connected.', tone: 'warn' },
+        'identity-mismatch': {
+            message:
+                'That Atlassian account is not the account this connection was made with. Reconnect with the original account, or disconnect and connect again.',
+            tone: 'bad',
+        },
+        'site-mismatch': {
+            message: 'The Atlassian account cannot reach that site, so nothing was connected.',
+            tone: 'bad',
+        },
     },
 };
 
-/** The notice for the `?integration=…&result=…` the callback redirected back with, or null when there is none to show. */
-export const integrationNotice = (integration: string | null, result: string | null): IntegrationNotice | null => {
-    if (integration !== 'jira' || !result) return null;
-    return RESULT_NOTICE[result] ?? { message: `Jira connection failed (${result}).`, tone: 'bad' };
+/**
+ * The notice for the `?integration=…&result=…` the callback redirected back with, or null when there is none to show:
+ * only an oauth provider of the catalog has a callback.
+ */
+export const integrationNotice = (
+    integration: string | null,
+    result: string | null,
+    catalog: readonly IntegrationProvider[] = INTEGRATION_CATALOG
+): IntegrationNotice | null => {
+    const provider = catalog.find((entry) => entry.id === integration);
+    if (!provider || !canConnect(provider) || !result) return null;
+    const own = RESULT_NOTICES[provider.id]?.[result];
+    if (own) return own;
+    return result === 'connected'
+        ? { message: `${provider.label} connected.`, tone: 'info' }
+        : { message: `${provider.label} connection failed (${result}).`, tone: 'bad' };
 };
