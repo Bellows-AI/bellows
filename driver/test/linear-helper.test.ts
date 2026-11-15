@@ -61,7 +61,9 @@ function fakeLinear() {
         comments: new Map<string, { issue: string; body: string }>(),
         postMode: 'ok' as PostMode,
         /** How the reconcile read `comment(id:)` answers: the store, an error, or `null` data. */
-        commentRead: 'store' as 'store' | 'error' | 'null',
+        commentRead: 'store' as 'store' | 'error' | 'null' | 'empty' | 'elsewhere' | 'issue-missing',
+        /** A 200 answer that stands in for an operation's real one, by operation name. */
+        answers: {} as Record<string, unknown>,
         rejectTokens: new Set<string>(),
         rateLimited: 0,
         stall: false,
@@ -90,6 +92,7 @@ function fakeLinear() {
             state.rateLimited--;
             return send(res, 400, { errors: [{ message: 'slow down', extensions: { code: 'RATELIMITED' } }] });
         }
+        if (op in state.answers) return send(res, 200, state.answers[op]);
         if (op === 'GetIssue') {
             return variables.id === 'ABC-404'
                 ? send(res, 400, notFound('Issue'))
@@ -125,6 +128,13 @@ function fakeLinear() {
         if (op === 'Comment') {
             if (state.commentRead === 'error') return send(res, 500, { errors: [{ message: 'down' }] });
             if (state.commentRead === 'null') return send(res, 200, { data: { comment: null } });
+            if (state.commentRead === 'empty') return send(res, 200, { data: {} });
+            if (state.commentRead === 'issue-missing') return send(res, 400, notFound('Issue'));
+            if (state.commentRead === 'elsewhere') {
+                return send(res, 200, {
+                    data: { comment: { id: variables.id, issue: { id: 'j', identifier: 'ZZZ-9' } } },
+                });
+            }
             const found = state.comments.get(String(variables.id));
             return found
                 ? send(res, 200, {
@@ -410,6 +420,58 @@ describe('Linear answers and the deadline', () => {
     });
 });
 
+// A null, empty or malformed answer is inconclusive: never not-found, never a complete list.
+describe('answers that confirm nothing', () => {
+    it.each([
+        ['a null issue', { data: { issue: null } }],
+        ['no issue field', { data: {} }],
+        ['an issue that is not an object', { data: { issue: 'x' } }],
+    ])('issue: %s is exit 1 unavailable, never not-found', async (_label, answer) => {
+        const s = await scenario();
+        s.linear.answers.GetIssue = answer;
+        const { code, out } = await s.run(['issue', 'ABC-1']);
+        expect(code).toBe(1);
+        expect(last(out)).toMatchObject({ outcome: 'unavailable', reason: 'malformed' });
+    });
+
+    it.each([
+        ['no pageInfo', { nodes: [{ identifier: 'A-1' }] }],
+        ['a null pageInfo', { nodes: [{ identifier: 'A-1' }], pageInfo: null }],
+        ['hasNextPage without endCursor', { nodes: [{ identifier: 'A-1' }], pageInfo: { hasNextPage: true } }],
+        ['hasNextPage not a boolean', { nodes: [], pageInfo: { endCursor: 'c' } }],
+    ])('search and comments: a page with %s is exit 1 malformed, never a complete list', async (_label, page) => {
+        const s = await scenario();
+        s.linear.answers.SearchIssues = { data: { issues: page } };
+        s.linear.answers.ListComments = { data: { issue: { comments: page } } };
+        for (const argv of [
+            ['search', '--team', 'ENG'],
+            ['comments', 'ABC-1'],
+        ]) {
+            const { code, out } = await s.run(argv);
+            expect(code).toBe(1);
+            expect(last(out)).toMatchObject({ outcome: 'unavailable', reason: 'malformed' });
+        }
+    });
+
+    it('a credential without a scopes list is exit 1 malformed, never insufficient_scopes', async () => {
+        const s = await scenario();
+        const { code, out } = await s.run(['issue', 'ABC-1'], {
+            credential: async () => ({ ok: true, token: TOKEN, expiresAt: null }),
+        });
+        expect(code).toBe(1);
+        expect(last(out)).toMatchObject({ outcome: 'unavailable', reason: 'malformed' });
+        expect(s.asks).toEqual([]);
+    });
+
+    it('comments on a null issue is exit 1 malformed, never an empty thread', async () => {
+        const s = await scenario();
+        s.linear.answers.ListComments = { data: { issue: null } };
+        const { code, out } = await s.run(['comments', 'ABC-1']);
+        expect(code).toBe(1);
+        expect(last(out)).toMatchObject({ outcome: 'unavailable', reason: 'malformed' });
+    });
+});
+
 describe('add-comment', () => {
     it('no write scope is exit 3 insufficient_scopes, no receipt, no create', async () => {
         const s = await scenario({ scopes: ['read'] });
@@ -484,7 +546,7 @@ describe('add-comment', () => {
     });
 
     it('an unconfirmed reconcile exits 4 with the receipt unknown, and never posts again', async () => {
-        for (const read of ['error', 'null'] as const) {
+        for (const read of ['error', 'null', 'empty', 'elsewhere', 'issue-missing'] as const) {
             const s = await scenario({ deadlineMs: 1500 });
             s.linear.postMode = 'drop-before-create';
             s.linear.commentRead = read;

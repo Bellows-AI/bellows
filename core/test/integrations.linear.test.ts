@@ -170,6 +170,30 @@ describe('linear operations', () => {
         expect(new Set(f.calls.map((c) => c.body.query)).size).toBe(1);
     });
 
+    // An enumeration is complete only when Linear says so (`hasNextPage: false`): missing or odd page metadata is
+    // an unconfirmed answer, never "that was everything".
+    it.each([
+        ['no pageInfo', { nodes: [{ id: 'a' }] }],
+        ['a null pageInfo', { nodes: [{ id: 'a' }], pageInfo: null }],
+        ['hasNextPage without endCursor', { nodes: [{ id: 'a' }], pageInfo: { hasNextPage: true } }],
+        [
+            'hasNextPage with an empty endCursor',
+            { nodes: [{ id: 'a' }], pageInfo: { hasNextPage: true, endCursor: '' } },
+        ],
+        ['hasNextPage not a boolean', { nodes: [{ id: 'a' }], pageInfo: { hasNextPage: 'no', endCursor: null } }],
+    ])('a page with %s is malformed, not a complete list', async (_label, page) => {
+        const search = fetcher(() => respond(200, { data: { issues: page } }));
+        expect(await run(LINEAR_OPERATIONS.searchIssues, { team: 'ENG' }, search)).toMatchObject({
+            ok: false,
+            outcome: { outcome: 'unavailable', reason: 'malformed-response' },
+        });
+        const comments = fetcher(() => respond(200, { data: { issue: { comments: page } } }));
+        expect(await run(LINEAR_OPERATIONS.listComments, { key: 'ENG-7' }, comments)).toMatchObject({
+            ok: false,
+            outcome: { outcome: 'unavailable', reason: 'malformed-response' },
+        });
+    });
+
     it('listComments stops at maxPages', async () => {
         const f = fetcher((n) => respond(200, { data: { issue: { comments: connection([{ id: n }], `cur${n}`) } } }));
         const r = await run(LINEAR_OPERATIONS.listComments, { key: 'ENG-7' }, f);

@@ -95,15 +95,21 @@ const connectionAt = (json: unknown, path: readonly string[]): { nodes: unknown[
     return { nodes, pageInfo: record(at)?.pageInfo };
 };
 
-/** Relay pagination: the same query with `variables.after` set to the page's `endCursor`. */
+/**
+ * Relay pagination: the same query with `variables.after` set to the page's `endCursor`. Only `hasNextPage: false`
+ * ends the list; missing or odd page metadata throws (malformed), never reads as "that was everything".
+ */
 const cursorPages = (path: readonly string[], maxPages: number, maxItems: number): Pagination => ({
     maxPages,
     maxItems,
     items: (json) => connectionAt(json, path).nodes,
     next: (json, previous) => {
         const info = record(connectionAt(json, path).pageInfo);
+        if (info?.hasNextPage === false) return null;
         const cursor = info?.endCursor;
-        if (info?.hasNextPage !== true || typeof cursor !== 'string' || cursor === '') return null;
+        if (info?.hasNextPage !== true || typeof cursor !== 'string' || cursor === '') {
+            throw new Error(`malformed ${path.join('.')} pageInfo`);
+        }
         const body = previous.body as GraphqlBody;
         return { ...previous, body: { ...body, variables: { ...body.variables, after: cursor } } };
     },

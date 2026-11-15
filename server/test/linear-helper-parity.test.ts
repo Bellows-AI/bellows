@@ -85,9 +85,8 @@ describe('the Linear helper requests equal the core operations', () => {
         const infos = [
             { hasNextPage: true, endCursor: 'c1' },
             { hasNextPage: false, endCursor: 'c1' },
-            { hasNextPage: true, endCursor: '' },
-            { hasNextPage: true },
-            null,
+            { hasNextPage: false, endCursor: null },
+            { hasNextPage: false },
         ];
         for (const [name, path, input] of [
             ['searchIssues', ['issues'], { team: 'ENG' }],
@@ -100,6 +99,16 @@ describe('the Linear helper requests equal the core operations', () => {
                 expect(helper.nextRequest(name, json, previous)).toEqual(
                     op.paginate?.next(json, previous as never) ?? null
                 );
+            }
+            for (const info of [
+                { hasNextPage: true, endCursor: '' },
+                { hasNextPage: true },
+                { endCursor: 'c' },
+                null,
+            ]) {
+                const json = page([...path], info);
+                expect(() => op.paginate?.next(json, previous as never)).toThrow();
+                expect(() => helper.nextRequest(name, json, previous)).toThrow();
             }
             const following = { ...previous, body: { ...(previous.body as object), variables: { after: 'zz' } } };
             const json = page([...path], infos[0]);

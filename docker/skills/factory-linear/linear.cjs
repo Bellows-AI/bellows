@@ -147,11 +147,16 @@ function connectionAt(json, path) {
     return { nodes, pageInfo: record(at)?.pageInfo };
 }
 
-/** The request for the page after the one just read, or null (the core's relay pagination, restated). */
+/**
+ * The request for the page after the one just read, or null (the core's relay pagination, restated). Only
+ * `hasNextPage: false` ends the list; missing or odd page metadata throws (malformed), never "complete".
+ */
 function nextRequest(op, json, previous) {
-    const info = record(connectionAt(json, PAGES[op].path).pageInfo);
+    const { path } = PAGES[op];
+    const info = record(connectionAt(json, path).pageInfo);
+    if (info?.hasNextPage === false) return null;
     const cursor = info?.endCursor;
-    if (info?.hasNextPage !== true || typeof cursor !== 'string' || cursor === '') return null;
+    if (info?.hasNextPage !== true || typeof cursor !== 'string' || cursor === '') throw new Error(`malformed ${path.join('.')} pageInfo`);
     return { ...previous, body: { ...previous.body, variables: { ...previous.body.variables, after: cursor } } };
 }
 
@@ -420,7 +425,11 @@ async function credentialFor(ctx, first, required) {
         }
         throw new Stop(EXIT_FAILED, 'unavailable', result.reason ?? 'credential', 'linear: the board did not issue a credential for this connection.');
     }
-    const missing = required.filter((scope) => !(result.scopes ?? []).includes(scope));
+    // A credential that names no scopes confirms nothing about them: never read it as "lacks the scope".
+    if (!Array.isArray(result.scopes)) {
+        throw new Stop(EXIT_FAILED, 'unavailable', 'malformed', 'linear: the board issued a credential without its scopes; report it.');
+    }
+    const missing = required.filter((scope) => !result.scopes.includes(scope));
     if (missing.length > 0) {
         throw new Stop(
             EXIT_INTEGRATION_REQUIRED,
@@ -483,7 +492,7 @@ async function linearSend(ctx, conn, op, request, options = {}) {
                 return { kind: 'ambiguous' };
             } else if (verdict !== null) {
                 // unavailable: a named not-found, or an error/missing data the core names for a read.
-                if (errorKind(res.json)?.kind === 'notfound') return { kind: 'refused', reason: 'not-found' };
+                if (errorKind(res.json)?.kind === 'notfound') return { kind: 'refused', reason: 'not-found', json: res.json };
                 return { kind: 'refused', reason: verdict.reason, unavailable: true };
             } else if (res.status >= 400) {
                 return { kind: 'refused', reason: 'bad-request' };
@@ -543,14 +552,21 @@ async function collect(ctx, conn, op, input) {
 
 const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 
+const COMMENT_NOT_FOUND = /^Entity not found: Comment\b/;
+
 /**
- * Whether the comment with the receipt's id exists, by the read-only `comment(id:)` query: 'found' on that issue,
- * 'absent' only on Linear's explicit "Entity not found", and null for everything else (a failed, null or odd read).
+ * Whether the comment with the receipt's id exists, by the read-only `comment(id:)` query. 'found': the comment with
+ * that id, on that issue. 'absent' (licenses one re-send with the same id) only on Linear's explicit
+ * "Entity not found: Comment" error. Everything else is null, inconclusive: a failed or timed-out read, `comment: null`
+ * without an error, a missing `data`, another entity's not-found, or the id on another issue.
  */
 async function reconcile(ctx, conn, issue, receiptId) {
     try {
         const answer = await linearSend(ctx, conn, 'getIssue', graphql(COMMENT_BY_ID, { id: receiptId }), { once: true });
-        if (answer.kind === 'refused' && answer.reason === 'not-found') return 'absent';
+        if (answer.kind === 'refused' && answer.reason === 'not-found') {
+            const errors = record(answer.json)?.errors ?? [];
+            return errors.some((e) => typeof e?.message === 'string' && COMMENT_NOT_FOUND.test(e.message)) ? 'absent' : null;
+        }
         if (answer.kind !== 'ok') return null;
         const found = record(record(answer.json?.data)?.comment);
         if (found?.id !== receiptId) return null;
@@ -700,7 +716,8 @@ async function execute(ctx, argv) {
     if (command === 'issue') {
         const json = await readLinear(ctx, conn, 'getIssue', requestFor('getIssue', { key: target }));
         const issue = record(record(json?.data)?.issue);
-        if (issue === null) throw new Stop(EXIT_FAILED, 'refused', 'not-found', 'linear: Linear says the issue does not exist or this connection cannot see it. Report it.');
+        // Only Linear's explicit "Entity not found" is not-found; a null or missing issue confirms nothing.
+        if (issue === null) throw new Stop(EXIT_FAILED, 'unavailable', 'malformed', 'linear: Linear answered without the issue; this helper cannot read it. Retry the step shortly.');
         ctx.deps.stdout(`${JSON.stringify(issue)}\n`);
     } else if (command === 'search') {
         const { items, truncated } = await collect(ctx, conn, 'searchIssues', search);
