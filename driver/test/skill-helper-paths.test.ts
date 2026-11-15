@@ -32,6 +32,7 @@ describe('skill helper scripts reach the tool uid', () => {
     it('there is at least one helper to check', () => {
         expect(helpers()).toContain('factory-pr-land/pr-status.sh');
         expect(helpers()).toContain('factory-jira/jira.cjs');
+        expect(helpers()).toContain('factory-linear/linear.cjs');
     });
 
     it.each(['docker/claude-executor/Dockerfile', 'docker/opencode-executor/Dockerfile'])(

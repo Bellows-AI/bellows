@@ -34,6 +34,7 @@ describe('readSkillCatalog', () => {
             'factory-gates',
             'factory-github',
             'factory-jira',
+            'factory-linear',
             'factory-pr-land',
             'factory-review',
             'factory-task-title',
@@ -41,6 +42,7 @@ describe('readSkillCatalog', () => {
         expect(byName['factory-task-title']?.requires).toEqual({ tools: [], connections: [] });
         expect(byName['factory-pr-land']?.requires).toEqual({ tools: ['gh'], connections: ['github'] });
         expect(byName['factory-jira']?.requires).toEqual({ tools: [], connections: ['jira'] });
+        expect(byName['factory-linear']?.requires).toEqual({ tools: [], connections: ['linear'] });
         // The gates skill calls the image's factory-gate wrapper, not curl.
         expect(byName['factory-gates']?.requires).toEqual({ tools: [], connections: [] });
         expect(skillCatalog()).toEqual(readSkillCatalog());
