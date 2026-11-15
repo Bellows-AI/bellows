@@ -197,3 +197,15 @@ describe('the Linear helper names a not-found exactly as core does', () => {
         }
     });
 });
+
+describe('the Linear helper reads errors beside partial data as core does', () => {
+    const table = (SHAPES as unknown as { partial: { label: string; op: string; json: unknown }[] }).partial;
+    it.each(table.map((f) => [f.op, f.label, f]))('%s: %s', (_op, _label, fixture) => {
+        const { op, json } = fixture as { op: string; json: unknown };
+        const operation = LINEAR_OPERATIONS[op as keyof typeof LINEAR_OPERATIONS] as Op;
+        expect(helper.notFound(op, json)).toBe(linearNotFound(op, json));
+        for (const status of [200, 400]) {
+            expect(helper.classify(json, operation, status)).toEqual(classifyLinearAnswer(json, operation, status));
+        }
+    });
+});

@@ -229,14 +229,10 @@ const ERROR_KINDS = [
     { kind: 'ratelimit', match: /ratelimit/, outcome: { outcome: 'rate_limited' } },
 ];
 const NOT_FOUND_OUTCOME = { outcome: 'unavailable', reason: 'unexpected-status', retryable: true };
-/** Each operation's own root: the entity a not-found must name, and the field its error `path` must start at. */
-const NOT_FOUND_ROOTS = {
-    getIssue: { entity: 'Issue', field: 'issue' },
-    listComments: { entity: 'Issue', field: 'issue' },
-    addComment: { entity: 'Issue', field: 'commentCreate' },
-    // Helper-only: the reconcile read's own comment.
-    comment: { entity: 'Comment', field: 'comment' },
-};
+/** Each operation's root field: the one `data` field its answer carries (core's ROOT_FIELDS, plus the reconcile read). */
+const ROOT_FIELDS = { getIssue: 'issue', searchIssues: 'issues', listComments: 'issue', addComment: 'commentCreate', viewer: 'viewer', comment: 'comment' };
+/** The entity a not-found must name to be the root's absence (core's NOT_FOUND_ENTITIES, plus the reconcile read). */
+const NOT_FOUND_ENTITIES = { getIssue: 'Issue', listComments: 'Issue', addComment: 'Issue', comment: 'Comment' };
 const entityNotFound = (entity, message) => new RegExp(`^Entity not found: ${entity}(?![A-Za-z])`).test(String(message));
 
 function errorText(error) {
@@ -258,12 +254,48 @@ const wellFormedErrors = (errors) =>
  * message names it and any `path` starts at its field). Another entity's not-found or malformed `errors` is not.
  */
 function notFound(op, json) {
-    const root = NOT_FOUND_ROOTS[op];
-    const errors = record(json)?.errors;
-    if (root === undefined || !wellFormedErrors(errors)) return false;
-    return errors.some(
-        (error) => entityNotFound(root.entity, error.message) && (error.path === undefined || (Array.isArray(error.path) && error.path[0] === root.field))
-    );
+    const entity = NOT_FOUND_ENTITIES[op];
+    if (entity === undefined || !wholeAnswerError(op, json)) return false;
+    return record(json).errors.some((error) => entityNotFound(entity, error.message));
+}
+
+/**
+ * Core's `linearWholeAnswerError`: a well-formed error answer with no root data (data absent or null, or its root field
+ * absent or null) whose every error path is absent or exactly the root field. Only it carries a definitive verdict.
+ */
+function wholeAnswerError(op, json) {
+    const field = ROOT_FIELDS[op];
+    const answer = record(json);
+    const errors = answer?.errors;
+    if (field === undefined || !wellFormedErrors(errors) || errors.length === 0) return false;
+    if (answer.data !== undefined && answer.data !== null) {
+        const data = record(answer.data);
+        if (data === null || (data[field] !== undefined && data[field] !== null)) return false;
+    }
+    return errors.every((error) => error.path === undefined || (Array.isArray(error.path) && error.path.length === 1 && error.path[0] === field));
+}
+
+/**
+ * Whether a refusal may say "nothing was applied": no body to read (a bare status), or an answer with no root data
+ * and no error deeper than the root. Partial data, an unreadable error list or a deeper error wins over the verdict.
+ */
+function beforeApply(op, json) {
+    if (json === null) return true;
+    const answer = record(json);
+    if (answer === null) return false;
+    if (answer.errors === undefined) {
+        const data = record(answer.data);
+        return answer.data === undefined || answer.data === null || (data !== null && (data[ROOT_FIELDS[op]] ?? null) === null);
+    }
+    return wholeAnswerError(op, json);
+}
+
+/** A commentCreate answer whose data is a well-formed success with the sent id: posted, whatever errors ride beside it. */
+function confirmedPost(json, request) {
+    const created = record(record(record(json)?.data)?.commentCreate);
+    const id = record(created?.comment)?.id;
+    const sent = record(record(request.body?.variables)?.input)?.id;
+    return created?.success === true && text(id) && id === sent;
 }
 
 /**
@@ -272,7 +304,7 @@ function notFound(op, json) {
  */
 function inputRefused(json) {
     const errors = record(json)?.errors;
-    if (!wellFormedErrors(errors) || errors.length === 0) return false;
+    if (!wholeAnswerError('addComment', json)) return false;
     if (errors.some((error) => entityNotFound('Comment', error.message))) return false;
     return errors.some((error) => record(error.extensions)?.code === 'INPUT_ERROR');
 }
@@ -297,7 +329,8 @@ function classify(json, op, status) {
         op.effect === 'write' ? { outcome: 'outcome_unknown', operation: op.name } : { outcome: 'unavailable', reason, retryable: true };
     if (errors !== undefined && !wellFormedErrors(errors)) return twoHundred ? failed('malformed-response') : null;
     if (Array.isArray(errors) && errors.length > 0) {
-        const kind = errorKind(json);
+        // A definitive kind needs a whole-answer error; beside partial data it is an upstream error.
+        const kind = wholeAnswerError(op.name, json) ? errorKind(json) : null;
         if (kind) return { ...kind.outcome };
         if (notFound(op.name, json)) return { ...NOT_FOUND_OUTCOME };
         return twoHundred ? failed('upstream-error') : null;
@@ -569,7 +602,15 @@ async function linearSend(ctx, conn, op, request, options = {}) {
                     : res.status < HTTP_SERVER_ERROR && res.status !== HTTP_TOO_MANY && !res.malformed
                       ? classify(res.json, { name: op, effect: write ? 'write' : 'read' }, res.status)
                       : null;
+            const json = res.malformed ? null : res.json;
+            // Partial data wins over a definitive verdict: a write is then reconciled, a read is an upstream error.
+            const notDefinitive = write ? { kind: 'ambiguous' } : { kind: 'refused', reason: 'upstream-error', unavailable: true };
+            if (write && !res.malformed && res.status < HTTP_SERVER_ERROR && confirmedPost(res.json, request)) {
+                return { kind: 'ok', json: res.json };
+            }
+            const definite = beforeApply(op, json);
             if (verdict?.reason === 'credential-rejected') {
+                if (!definite) return notDefinitive;
                 if (reauthed) return { kind: 'unauthorized' };
                 reauthed = true;
                 ctx.deps.eraseCredential(live.id);
@@ -579,8 +620,10 @@ async function linearSend(ctx, conn, op, request, options = {}) {
                 throw new Stop(EXIT_FAILED, 'unavailable', 'redirect', 'linear: Linear answered with a redirect; nothing was followed.');
             }
             if (res.status === HTTP_TOO_MANY || verdict?.outcome === 'rate_limited') {
+                if (!definite) return notDefinitive;
                 wait = retryAfterMs(res.headers) ?? backoff;
             } else if (res.status === HTTP_FORBIDDEN || verdict?.outcome === 'forbidden') {
+                if (!definite) return notDefinitive;
                 return { kind: 'refused', reason: 'provider-denied' };
             } else if (write) {
                 // "Nothing was posted" only on a definite refusal before applying (auth, forbidden, rate limit above, or an

@@ -460,7 +460,13 @@ const SHAPES = JSON.parse(readFileSync(join(ROOT, 'core/test/fixtures/linear-ans
         accept: Fixture[];
         reject: Fixture[];
         reconcileReject?: Fixture[];
-        answers?: { label: string; status: number; raw?: string; json?: unknown; posted: 'failed' | 'unknown' }[];
+        answers?: {
+            label: string;
+            status: number;
+            raw?: string;
+            json?: unknown;
+            posted: 'failed' | 'unknown' | 'confirmed';
+        }[];
     }
 >;
 const NOT_FOUND = (SHAPES as unknown as { notFound: { label: string; op: string; json: unknown; notFound: boolean }[] })
@@ -523,9 +529,18 @@ describe('what a commentCreate answer licenses', () => {
     it.each((SHAPES.addComment?.answers ?? []).map((f) => [f.label, f]))('%s', async (_label, f) => {
         const { status, raw, json, posted } = f as { status: number; raw?: string; json?: unknown; posted: string };
         const s = await scenario({ deadlineMs: 1500 });
-        s.linear.replies.AddComment = raw === undefined ? { status, json } : { status, raw };
+        // The fake board's first receipt id; a fixture names the receipt as $RECEIPT.
+        const receiptId = '55555555-5555-4555-8555-000000000000';
+        const body =
+            json === undefined ? undefined : JSON.parse(JSON.stringify(json).replaceAll('$RECEIPT', receiptId));
+        s.linear.replies.AddComment = raw === undefined ? { status, json: body } : { status, raw };
         const { code, out } = await s.run(comment());
-        if (posted === 'failed') {
+        if (posted === 'confirmed') {
+            expect(code).toBe(0);
+            expect(JSON.parse(out)).toEqual({ commentId: receiptId });
+            expect(s.receipts()[0]?.status).toBe('succeeded');
+            expect(s.linear.posts).toBe(1);
+        } else if (posted === 'failed') {
             expect(code).toBe(1);
             expect(s.receipts()[0]?.status).toBe('failed');
             expect(s.linear.posts).toBe(1);

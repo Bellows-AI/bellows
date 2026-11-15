@@ -454,3 +454,24 @@ describe('linear not-found is about the operation root only', () => {
         else expect(outcome).not.toMatchObject({ reason: 'unexpected-status' });
     });
 });
+
+const PARTIAL = (ANSWERS as unknown as { partial: { label: string; op: string; json: unknown }[] }).partial;
+const DEFINITIVE = ['credential-rejected', 'provider-denied', 'unexpected-status'];
+
+/** Errors beside root data, or deeper than the root, never make a definitive verdict: partial data wins. */
+describe('linear errors with partial data', () => {
+    it.each(PARTIAL.map((f) => [f.op, f.label, f]))('%s: %s', (_op, _label, fixture) => {
+        const { op, json } = fixture as { op: string; json: unknown };
+        const operation = LINEAR_OPERATIONS[op as keyof typeof LINEAR_OPERATIONS];
+        expect(linearNotFound(op, json)).toBe(false);
+        for (const status of [200, 400]) {
+            const outcome = classifyLinearAnswer(json, operation, status) as {
+                outcome?: string;
+                reason?: string;
+            } | null;
+            expect(outcome?.outcome).not.toBe('rate_limited');
+            expect(outcome?.outcome).not.toBe('forbidden');
+            expect(DEFINITIVE).not.toContain(outcome?.reason);
+        }
+    });
+});
