@@ -52,6 +52,7 @@ There is **no opt-out for a declared service or a GATE image**: one needing root
 - **The network controls are inert without an enforcing CNI** ([kubernetes-limits.md](kubernetes-limits.md)), and a NetworkPolicy cannot restrict HTTP routes.
 - **The tool uid guards the CLI against accidents, not a hostile tool**: it still writes config the CLI later executes (`.git/config`, `.claude`, `.mcp.json`) and can exhaust memory, CPU or pids; hooks and MCP servers run as the CLI's uid.
 - **A reviewer's tools share group node with the reviewer**: they can write its HOME and the review mailbox, as the agent's tools can the agent's tree (`docker/executor-common/factory-launch.sh`).
+- **Member env is trusted org configuration**: it reaches the agent and reviewer CLIs, which hold the lease and the OTLP header, so a member-set `NODE_OPTIONS` or similar runs as the CLI; the tool uid isolates what a tool command can do, not what an org member configures (`driver/src/scripts/review-loop.sh`).
 - **Pod Security `restricted` cannot admit the agent or the reviewer container** (`CAP_SETUID`/`CAP_SETGID`); `baseline` can.
 - **A task volume is a thread boundary** ([workspace.md](workspace.md)); **membership is not a sandbox** ([auth.md](auth.md)).
 - **`attrs.series` is an unsalted one-way digest** (`server/src/telemetry/otlp.ts`): a dictionary guess can confirm a value.
