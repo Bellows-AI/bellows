@@ -67,6 +67,7 @@ The render refuses to start without them, and names the missing value.
 | `dashboard.admission.maxRunning`, `maxRunningPerOrg`, `maxRunningPerRepo` | `''` | Cluster-wide caps on running tasks. Empty is unlimited. |
 | `mcp.enabled` | `false` | Turns on the MCP endpoint. Needs an `https` `auth.publicUrl`. See [Connect an MCP client](/mcp/connect). |
 | `integrations.jira.clientId`, `secret.atlassianClientSecret` | `''` | See [Set up Jira](/self-host/jira-app). |
+| `integrations.linear.clientId`, `secret.linearClientSecret` | `''` | See [Set up Linear](/self-host/linear-app). |
 | `secret.githubWebhookSecret` | `''` | Registers the webhook route. See [Create the GitHub App](/self-host/github-app). |
 | `auth.cookieSecure` | `''` | Empty follows `publicUrl`: `Secure` for https. Set `'true'` or `'false'` to override. |
 
@@ -106,6 +107,7 @@ By default the chart creates its Secrets from your values. For production, creat
     | `session-secret` | `secret.sessionSecret` |
     | `github-webhook-secret` | `secret.githubWebhookSecret` |
     | `atlassian-client-secret` | `secret.atlassianClientSecret` |
+    | `linear-client-secret` | `secret.linearClientSecret` |
     | `commerce-token` | Optional |
   </Step>
   <Step title="Create the driver Secret">
@@ -407,4 +409,4 @@ helm uninstall bellows -n bellows
 kubectl -n bellows delete pvc -l app.kubernetes.io/instance=bellows,factory.task-root
 ```
 
-Next: [Create the GitHub App](/self-host/github-app), [Set up Jira](/self-host/jira-app), [Security model](/self-host/security).
+Next: [Create the GitHub App](/self-host/github-app), [Set up Jira](/self-host/jira-app), [Set up Linear](/self-host/linear-app), [Security model](/self-host/security).
