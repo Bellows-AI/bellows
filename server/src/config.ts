@@ -5,6 +5,7 @@ import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
 import { type JiraOAuthConfig, type LinearOAuthConfig, loadJiraOAuth, loadLinearOAuth } from './config-integrations.js';
 import { loadRequestLimits, loadStatementTimeoutMs, parseTrustedProxies, type RequestLimits } from './config-limits.js';
 import { loadMcpConfig, type McpConfig } from './config-mcp.js';
+import { loadRunnerClassOptions, type RunnerClassOption } from './config-runner-classes.js';
 import type { TelemetrySource } from './telemetry/client.js';
 import type { PlanLimits } from './db/plan-limits.js';
 
@@ -195,6 +196,8 @@ export interface AppConfig {
     readonly mcp: McpConfig;
     /** Batches (BATCHES_ENABLED); off by default. Off: routes answer 404, MCP tools are unlisted, loops do not start. */
     readonly batches: { readonly enabled: boolean };
+    /** The runner classes an org executor profile may name (RUNNER_CLASSES); none when unset. See `config-runner-classes.ts`. */
+    readonly runnerClasses: readonly RunnerClassOption[];
     /**
      * Where this board runs (DEPLOYMENT_MODE): `self-hosted` (unset) or `cloud`. Server environment
      * only — no request can change it. Cloud refuses a Claude subscription OAuth token in executor
@@ -723,6 +726,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         },
         commerce: loadCommerceConfig(env),
         batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
+        runnerClasses: loadRunnerClassOptions(env.RUNNER_CLASSES),
         deploymentMode,
         operatorGithubIds: loadOperatorGithubIds(env.OPERATOR_GITHUB_IDS, deploymentMode),
         driverCredentialBootstrap: loadDriverCredentialBootstrap(env.DRIVER_CREDENTIAL_SHA256),

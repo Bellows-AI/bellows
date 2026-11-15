@@ -7,9 +7,73 @@ Values that live in `secret.existingSecret` cannot be seen from here — the ser
 those at boot, which is why every such key is `optional` in the pod spec: a missing key reads as
 the server's own message, never as an opaque CreateContainerConfigError.
 */}}
-{{- with .Values.runner.runtimeClassName }}
-{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" .) }}
-{{- fail (printf "runner.runtimeClassName must be a RuntimeClass name (a DNS-1123 subdomain), got %q" .) }}
+{{- /* Runner classes: the driver's own boot checks (driver/src/runner-classes.ts), at render time. */}}
+{{- /* The retired driver-wide runner values, refused if present at all: rendered silently, a kept
+runner.runtimeClassName or nodeSelector would leave the default class without it and move agent
+code out of its sandbox and node pool. Each names its runner class twin. */}}
+{{- range $retired := list "runtimeClassName" "nodeSelector" "tolerations" "affinity" "resources" "gateResources" }}
+{{- if hasKey $.Values.runner $retired }}
+{{- fail (printf "runner.%s is retired: set runner.classes.<name>.%s on each runner class instead (runner.classes, runner.defaultClass)" $retired $retired) }}
+{{- end }}
+{{- end }}
+{{- if not (hasKey (.Values.runner.classes | default dict) (toString .Values.runner.defaultClass)) }}
+{{- fail (printf "runner.defaultClass %q is not a class runner.classes declares" (toString .Values.runner.defaultClass)) }}
+{{- end }}
+{{- range $name, $class := .Values.runner.classes }}
+{{- if or (gt (len $name) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $name)) }}
+{{- fail (printf "runner.classes key %q must be a DNS-1123 label: it is a pod label value and a CEL map key" $name) }}
+{{- end }}
+{{- $runtimeClass := dig "runtimeClassName" "" ($class | default dict) }}
+{{- if and $runtimeClass (or (gt (len $runtimeClass) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $runtimeClass))) }}
+{{- fail (printf "runner.classes.%s.runtimeClassName must be a RuntimeClass name (a DNS-1123 subdomain), got %q" $name $runtimeClass) }}
+{{- end }}
+{{- if and (dig "docker" false ($class | default dict)) (not $runtimeClass) }}
+{{- fail (printf "runner.classes.%s.docker requires a runtimeClassName: a Docker daemon runs only in a sandbox" $name) }}
+{{- end }}
+{{- /* A docker class runs under a microVM (Kata) RuntimeClass, which sizes the VM by its containers'
+limits: the runner and daemon blocks each set a cpu and a memory limit, and the daemon's data root
+(memory-backed, inside the daemon's own memory) a size no larger than the daemon's memory limit. */}}
+{{- if dig "docker" false ($class | default dict) }}
+{{- range $block := list "resources" "dockerResources" }}
+{{- range $kind := list "cpu" "memory" }}
+{{- if eq (toString (dig $block "limits" $kind "" $class | default "")) "" }}
+{{- fail (printf "runner.classes.%s.%s.limits.%s is required: a docker class runs under a microVM RuntimeClass, sized by its limits" $name $block $kind) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $storage := toString (dig "dockerStorage" "" $class | default "") }}
+{{- if eq $storage "" }}
+{{- fail (printf "runner.classes.%s.dockerStorage is required: a docker class runs under a microVM RuntimeClass, sized by its limits" $name) }}
+{{- end }}
+{{- $daemonMemory := toString (dig "dockerResources" "limits" "memory" "" $class | default "") }}
+{{- $storageBytes := include "factory.memoryBytes" (dict "label" (printf "runner.classes.%s.dockerStorage" $name) "value" $storage) }}
+{{- $daemonBytes := include "factory.memoryBytes" (dict "label" (printf "runner.classes.%s.dockerResources.limits.memory" $name) "value" $daemonMemory) }}
+{{- if gt (float64 $storageBytes) (float64 $daemonBytes) }}
+{{- fail (printf "runner.classes.%s.dockerStorage (%s) exceeds runner.classes.%s.dockerResources.limits.memory (%s): the data root is memory-backed, inside the daemon's own memory" $name $storage $name $daemonMemory) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /* A kubernetes memory quantity in bytes, for the comparison above: a plain or decimal number
+with an optional binary (Ki…Ei) or decimal (k…E) suffix. Anything else is refused, naming `label`. */}}
+{{- define "factory.memoryBytes" -}}
+{{- $number := regexFind "^[0-9]+(\\.[0-9]+)?" .value -}}
+{{- $suffix := trimPrefix $number .value -}}
+{{- $scale := dict "" "1" "k" "1000" "M" "1000000" "G" "1000000000" "T" "1000000000000" "P" "1000000000000000" "E" "1000000000000000000" "Ki" "1024" "Mi" "1048576" "Gi" "1073741824" "Ti" "1099511627776" "Pi" "1125899906842624" "Ei" "1152921504606846976" -}}
+{{- if or (eq $number "") (not (hasKey $scale $suffix)) -}}
+{{- fail (printf "%s must be a memory quantity (e.g. 8Gi), got %q" .label .value) -}}
+{{- end -}}
+{{- mulf (float64 $number) (float64 (get $scale $suffix)) -}}
+{{- end }}
+{{- if and (ne (include "factory.runnerDockerClasses" .) "[]") (not (regexMatch "^sha256:[a-f0-9]{64}$" (toString (dig "docker" "image" "digest" "" .Values.runner)))) }}
+{{- fail "runner.docker.image.digest must be a sha256:<64 hex> digest when a runner class sets docker: true: the driver runs the daemon only pinned by digest" }}
+{{- end }}
+{{- $mirrors := dig "docker" "registryMirrors" list .Values.runner }}
+{{- if not (kindIs "slice" $mirrors) }}
+{{- fail (printf "runner.docker.registryMirrors must be a list of https:// URLs, got %v" $mirrors) }}
+{{- end }}
+{{- range $mirrors }}
+{{- if not (regexMatch "^https://[^\\s@?#]+$" (toString .)) }}
+{{- fail (printf "runner.docker.registryMirrors entries must be https:// URLs (no credentials, query or whitespace): a plain-http mirror needs an insecure registry, got %q" (toString .)) }}
 {{- end }}
 {{- end }}
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}

@@ -19,7 +19,7 @@ Use these to find valid values before you create a task.
 | --- | --- | --- |
 | `whoami` | Shows the account, organization, role, granted scopes and Bellows version this connection acts as | none |
 | `list_repos` | Lists tracked repositories. `stale: true` means the list could not refresh; a missing repo is not proof it is absent | `limit`, `cursor` |
-| `list_executors` | Lists your [executors](/guides/executors) (scope `user`) and the organization's (scope `org`), and which is the default | none |
+| `list_executors` | Lists your [executors](/guides/executors) (scope `user`) and the organization's (scope `org`), which is the default, and each one's `runnerClass` (`null` for the deployment default) | none |
 | `list_skills` | Lists selectable [skills](/guides/skills) with their source (`builtin`, `org`, `workspace`, `repo`) | `repo` (owner/name), `branch`, `executor`, `executorScope` (`user` or `org`) |
 | `list_connections` | Lists your own [connections](/guides/connections) with a state: `connected`, `needs_reconnect` or `disconnected`. Never returns secrets | none |
 | `list_available_integrations` | Browses the providers Bellows offers. Connects nothing | `q`, `category`, `limit`, `cursor` |

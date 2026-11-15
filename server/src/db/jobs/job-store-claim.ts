@@ -963,6 +963,7 @@ export function buildClaimResult(
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,
         executorRefusal,
+        runnerClass: resolved.runnerClass,
         skillRefusal,
         skillPin: row.skill_pin,
         skillHidden: row.skill_hidden,

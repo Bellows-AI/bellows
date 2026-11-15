@@ -56,6 +56,8 @@ A gate that fails because the environment broke is not the agent's fault. Bellow
 
 You can declare up to 16 gates. Values may be bare, `'single'` or `"double"` quoted. There are no escape sequences. If a command needs real quoting, put it in a script in your repo and call the script.
 
+When the task names a base branch, its gates see it as `$BELLOWS_BASE_BRANCH`. A gate can diff against `origin/$BELLOWS_BASE_BRANCH` to check only what the change touches. A task without a base branch leaves the variable unset, so fall back to your default branch: `origin/${BELLOWS_BASE_BRANCH:-main}`.
+
 ## On-demand gates
 
 Use `on_demand: true` for checks that are too slow or too specific to run on every task, such as an end-to-end suite. The agent runs it only when its change touches what the gate checks, and a failure never fails the task.
@@ -89,6 +91,37 @@ gates:
 </CodeGroup>
 
 The filter is up to 256 printable characters on one line. It is set for that one run only. A filtered run is never proof that the gate passed, and the end-of-run pass always runs gates without a filter. Pair a filtered `on_demand` gate with a full gate that has the same command and no filter.
+
+## Gates that need docker
+
+A gate can run `docker`, `docker compose` and `docker build` when the task runs in a docker runner class: an organization [executor profile](/guides/executors#runner-class) picks it. The daemon belongs to the task and starts empty, so the gate builds the images it needs. The gate's image brings the docker CLI.
+
+Bellows' own repository runs its suites in its `dev-runner` image:
+
+```yaml .bellows.yaml
+environment:
+    image: ghcr.io/bellows-ai/dev-runner:v0.0.17
+    setup: "npm ci"
+    gates:
+         - name: typecheck
+           command: "npm run typecheck"
+           timeout: 15
+         - name: "test:db"
+           command: "DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
+           timeout: 30
+
+services:
+    - name: postgres
+      image: postgres:17
+      user: "999:999"
+      ports: [5432]
+      environment:
+          POSTGRES_USER: factory
+          POSTGRES_PASSWORD: factory
+          POSTGRES_DB: factory_test
+```
+
+The `dev-runner` image carries node 24, the docker CLI with the compose and buildx plugins, `helm`, `jq`, `psql` and Playwright's chromium libraries. A container the gate starts that publishes a port shares the task's loopback with your services, so it cannot publish a port a service already uses.
 
 ## Where results show
 

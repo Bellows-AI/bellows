@@ -1,10 +1,11 @@
 import { raceStep } from './loop-attempt.js';
 import { isAgentless } from './loop-agentless.js';
-import { blockedHalt, releaseAbandonedAdoption } from './loop-fence.js';
+import { blockedHalt, faultHalt, releaseAbandonedAdoption } from './loop-fence.js';
 import { type AdoptedRecord, type AttemptCtx, type SetupConclusion, STOOD_DOWN } from './loop-types.js';
 import { AdoptionBlocked, LeftoverTerminating, type AdoptedRun, type LiveRun, type Read } from '../runner.js';
 import { awaitFirstContact, controlTokenOf } from '../supervised-steps.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../supervisor-contract.js';
+import { runnerClassRefusal } from '../runner-classes.js';
 
 /**
  * Adopts the finished runner an earlier claim left behind — before the sync, which
@@ -139,4 +140,24 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
     const reason = `took over the running agent of claim ${run.claimSeq}, whose driver was lost`;
     rt.log(`job ${job.id}: ${reason}`);
     return { record: 'interruption', reason, claimSeq: run.claimSeq };
+}
+
+/**
+ * The claim's runner class, refused before the sync creates anything: a class this driver does not
+ * declare fails a new launch `config`, never runs it in the default. After the adoption, because a
+ * run that survived a chart upgrade removing its class is never failed: a live group is taken over
+ * as it is, and a finished one — whose gates, publish and readouts each need a new pod no declared
+ * class may host — is handed back as an interruption naming the class, its group left, so the next
+ * claim finishes it once the class is declared again.
+ */
+export function runnerClassStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
+    const refusal = ctx.takeover ? null : runnerClassRefusal(ctx.rt.config, ctx.job);
+    if (refusal === null) return Promise.resolve(null);
+    if (!ctx.adopted) {
+        return Promise.resolve(
+            faultHalt('names a runner class this driver does not declare, failing', refusal, 'config')
+        );
+    }
+    ctx.state.groupDisposition = 'handover';
+    return Promise.resolve({ halt: 'interrupt', reason: `the adopted run cannot finish: ${refusal}`, refused: true });
 }

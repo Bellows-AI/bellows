@@ -164,6 +164,11 @@ export interface JobInterruption {
     requirement?: true;
     /** The platform took the attempt away: outside the interruption budget, bounded by `NODE_LOSS_BUDGET`. */
     nodeLoss?: true;
+    /**
+     * A docker class's dockerd lost under a failed gate. Refunded beside `nodeLoss` twice in a row; the
+     * third consecutive one on is stored without `nodeLoss`, unrefunded (`REPEATED_DAEMON_LOSS_NOTE`).
+     */
+    daemonLoss?: true;
     /** A hand-back while the organization was suspended: never a failure or a node loss, outside every budget. */
     orgSuspended?: true;
     /** A lease that expired under a silent driver, recorded by the claim that took the row over: bounded like a node loss. */
@@ -584,6 +589,11 @@ export interface Claim {
      * before any runner starts; a removed profile stays the plain null `executorType`.
      */
     executorRefusal: string | null;
+    /**
+     * The runner class the stamped profile names, resolved at claim; null runs in the driver's default.
+     * The driver is the authority on the name: one it does not declare fails the task `config`.
+     */
+    runnerClass: string | null;
     /**
      * Why the task's selected skills cannot run — a skill the catalog lacks, or a
      * connection whose env names the task's environment does not hold. Names only, never a value.
@@ -1122,7 +1132,12 @@ export interface CreateJobStoreDeps {
             name: string,
             scope: ExecutorScope,
             exec: Sql | TransactionSql
-        ): Promise<{ type: string; config: Record<string, unknown>; suspended: boolean } | null>;
+        ): Promise<{
+            type: string;
+            config: Record<string, unknown>;
+            suspended: boolean;
+            runnerClass: string | null;
+        } | null>;
     };
     /**
      * The PR lifecycle store, when the deployment records publications and PR waits (036).

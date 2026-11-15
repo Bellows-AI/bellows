@@ -270,6 +270,7 @@ describe('ci workflows', () => {
             'docker/driver.Dockerfile',
             'docker/claude-executor/Dockerfile',
             'docker/opencode-executor/Dockerfile',
+            'docker/dev-runner/Dockerfile',
         ];
         for (const path of dockerfiles) {
             // A stage or a named build context (`--from=skills`) is a bare word; an image carries a
@@ -286,7 +287,7 @@ describe('ci workflows', () => {
         expect(workflow(RELEASE).jobs.buildkit!.env!.BUILDKIT).toMatch(/^mirror\.gcr\.io\/moby\/buildkit:/);
     });
 
-    // Eight build cells pulling buildkit anonymously at once trip a registry's per-IP limits, and a
+    // Ten build cells pulling buildkit anonymously at once trip a registry's per-IP limits, and a
     // retry on the same runner reuses the same IP. One job pulls it once into the release registry;
     // every cell boots its builder from there.
     it('pulls buildkit once per release, retrying only on toomanyrequests', () => {
@@ -313,7 +314,7 @@ describe('ci workflows', () => {
         expect(mirror.permissions).toEqual({});
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
-        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault', 'pin-digests']);
+        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault', 'dind', 'pin-digests']);
         expect(job.env!.SOURCE).toBe(composePostgres());
         expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
@@ -363,6 +364,24 @@ describe('ci workflows', () => {
         expect(commands).toContain('grep -q toomanyrequests');
         expect(commands).toMatch(/for attempt[\s\S]*sleep[\s\S]*imagetools create/);
         expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
+    });
+
+    // global.imageRegistry prefixes the docker class's dockerd image like every image the chart
+    // renders, so the registry must hold the exact digest the chart pins, under the chart's tag.
+    it("mirrors the chart's pinned dockerd image into GHCR by digest, checked against the pin, and re-pins it weekly", () => {
+        const job = workflow(MIRROR).jobs.dind!;
+        expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
+        const commands = runs(job).join('\n');
+        expect(commands).toContain('docker login ghcr.io');
+        expect(commands).toContain('$2 == "docker"');
+        expect(commands).toContain('charts/factory/values.yaml');
+        expect(commands).toContain(
+            'docker buildx imagetools create -t "$REGISTRY/docker:$tag" "mirror.gcr.io/library/docker@$digest"'
+        );
+        expect(commands).toContain('test "$mirrored" = "$digest"');
+        expect(commands).toContain('grep -q toomanyrequests');
+        expect(commands).toMatch(/for attempt[\s\S]*sleep[\s\S]*imagetools create/);
+        expect(read('scripts/pin-digests.sh')).toContain('repin_chart docker mirror.gcr.io/library/docker');
     });
 
     it('pins Vault to an exact release, opt-in under the secrets-vault compose profile', () => {
@@ -491,10 +510,12 @@ describe('ci workflows', () => {
         expect(called, 'the release workflow does not reuse the validation workflow').toBeTruthy();
         const build = doc.jobs.build!;
         expect(needs(build)).toContain(called![0]);
-        // The four the chart names. Publishing three of them leaves an install that cannot pull.
+        // The four the chart names (publishing three of them leaves an install that cannot pull), and
+        // the dev runner image this repository's .bellows.yaml gates run in.
         const matrix = build.strategy!.matrix!.image!;
         expect(matrix.map((entry) => entry.name).sort()).toEqual([
             'claude-executor',
+            'dev-runner',
             'factory-ai',
             'factory-driver',
             'opencode-executor',

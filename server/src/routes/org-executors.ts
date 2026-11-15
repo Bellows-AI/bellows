@@ -10,13 +10,16 @@ import {
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
+import type { RunnerClassOption } from '../config-runner-classes.js';
 import type { OrgRegistry } from '../orgs.js';
 import type { UserExecutorStore } from '../db/user-executor-store.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import {
     executorFieldRefusal,
+    executorFieldStatus,
     MAX_EXECUTORS_PER_ORG,
     MAX_EXECUTORS_PER_USER,
+    orgRunnerClassRefusal,
     parseExecutorFields,
 } from './executor-fields.js';
 
@@ -115,8 +118,43 @@ function selectionMetadata(row: {
     type: string;
     createdAt: string;
     suspended: boolean;
+    runnerClass: string | null;
 }): Record<string, unknown> {
-    return { id: row.id, name: row.name, type: row.type, createdAt: row.createdAt, suspended: row.suspended };
+    return {
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        createdAt: row.createdAt,
+        suspended: row.suspended,
+        runnerClass: row.runnerClass,
+    };
+}
+
+/**
+ * The create and edit body: the shared fields, the name shape and the runner class this board declares —
+ * or null once the refusal is sent. A class refusal is a 422 naming `runnerClass`.
+ */
+function parseOrgFields(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    { deploymentMode, runnerClasses }: Pick<OrgExecutorRoutesDeps, 'deploymentMode' | 'runnerClasses'>
+) {
+    const fields = parseExecutorFields(jsonBody(request.body), deploymentMode);
+    if (typeof fields === 'string') {
+        bad(reply, executorFieldRefusal(fields), fields, executorFieldStatus(fields));
+        return null;
+    }
+    const reason = badProfileName(fields.name);
+    if (reason) {
+        bad(reply, ERROR_CODES.BAD_EXECUTOR_NAME, `"${fields.name}": ${reason}`);
+        return null;
+    }
+    const refusal = orgRunnerClassRefusal(fields.runnerClass, runnerClasses);
+    if (refusal) {
+        bad(reply, executorFieldRefusal(refusal), refusal, executorFieldStatus(refusal));
+        return null;
+    }
+    return fields;
 }
 
 /** The admin list's row: the metadata plus the configuration and the audit fields. */
@@ -129,6 +167,7 @@ function adminRow(row: {
     gateFixRounds: number;
     createdBy: string | null;
     suspended: boolean;
+    runnerClass: string | null;
     config: Record<string, unknown>;
 }): Record<string, unknown> {
     return {
@@ -140,6 +179,7 @@ function adminRow(row: {
         suspended: row.suspended,
         gateFixRounds: row.gateFixRounds,
         createdBy: row.createdBy,
+        runnerClass: row.runnerClass,
         config: row.config,
     };
 }
@@ -171,19 +211,13 @@ async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest
     return reply.code(HTTP_OK).send({ executors: loaded.value.map(selectionMetadata) });
 }
 
-async function handleCreateOrgExecutor(
-    { orgs, deploymentMode }: OrgExecutorRoutesDeps,
-    request: FastifyRequest,
-    reply: FastifyReply
-) {
-    const ctx = await adminContext(orgs, request, reply);
+async function handleCreateOrgExecutor(deps: OrgExecutorRoutesDeps, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await adminContext(deps.orgs, request, reply);
     if (!ctx) return reply;
     const { store, caller } = ctx;
 
-    const fields = parseExecutorFields(jsonBody(request.body), deploymentMode);
-    if (typeof fields === 'string') return bad(reply, executorFieldRefusal(fields), fields);
-    const reason = badProfileName(fields.name);
-    if (reason) return bad(reply, ERROR_CODES.BAD_EXECUTOR_NAME, `"${fields.name}": ${reason}`);
+    const fields = parseOrgFields(request, reply, deps);
+    if (!fields) return reply;
 
     const counted = await guard(
         reply,
@@ -212,12 +246,8 @@ async function handleCreateOrgExecutor(
     return reply.code(HTTP_CREATED).send(saved.value.ok);
 }
 
-async function handleUpdateOrgExecutor(
-    { orgs, deploymentMode }: OrgExecutorRoutesDeps,
-    request: FastifyRequest,
-    reply: FastifyReply
-) {
-    const ctx = await adminContext(orgs, request, reply);
+async function handleUpdateOrgExecutor(deps: OrgExecutorRoutesDeps, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await adminContext(deps.orgs, request, reply);
     if (!ctx) return reply;
     const { store } = ctx;
     const id = idParam(request, reply);
@@ -228,10 +258,9 @@ async function handleUpdateOrgExecutor(
     // here would let a caller believe they moved a profile between scopes when nothing changed.
     if ('scope' in raw) return bad(reply, ERROR_CODES.BAD_SCOPE, 'scope changes only through the scope route');
 
-    const fields = parseExecutorFields(raw, deploymentMode);
-    if (typeof fields === 'string') return bad(reply, executorFieldRefusal(fields), fields);
-    const reason = badProfileName(fields.name);
-    if (reason) return bad(reply, ERROR_CODES.BAD_EXECUTOR_NAME, `"${fields.name}": ${reason}`);
+    // The body is the whole entry: a runnerClass it leaves out (or nulls) returns the profile to the default class.
+    const fields = parseOrgFields(request, reply, deps);
+    if (!fields) return reply;
 
     const saved = await saveOrTaken(request, reply, () => store.updateOrg(id, fields));
     if (!saved.ok) return reply;
@@ -350,7 +379,7 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
  *
  * - `GET /api/org/executors` — every member reads selection metadata (id, name, type, createdAt);
  *   the full configuration answers to admins only.
- * - `POST /api/org/executors` — create, admin-gated.
+ * - `POST /api/org/executors` — create, admin-gated; `runnerClass` names a declared class or null.
  * - `PUT /api/org/executors/:id` — edit, admin-gated; `scope` in the body is a BAD_SCOPE refusal.
  * - `DELETE /api/org/executors/:id` — delete, admin-gated.
  * - `POST /api/org/executors/:id/suspension` — suspend/resume `{suspended}`, admin-gated.
@@ -361,6 +390,8 @@ interface OrgExecutorRoutesDeps {
     readonly orgs: OrgRegistry;
     /** `config.deploymentMode`: cloud refuses a Claude subscription OAuth token in a config. */
     readonly deploymentMode: DeploymentMode;
+    /** The classes an org profile may name (RUNNER_CLASSES): any other is a 422 naming `runnerClass`. */
+    readonly runnerClasses: readonly RunnerClassOption[];
 }
 
 export const orgExecutorRoutes =

@@ -14,6 +14,7 @@ kill "$server_pid" 2>/dev/null
 wait "$server_pid" 2>/dev/null
 server_pid=""
 
+# Loopback, not LANE_HOST: only this script's own requests reach this board, never a container.
 AUTH_BASE="http://127.0.0.1:$AUTH_PORT"
 # The lane driver's own credential: the board is started with its SHA-256 only.
 AUTH_CREDENTIAL="drv_$(printf '%064d' 1)"

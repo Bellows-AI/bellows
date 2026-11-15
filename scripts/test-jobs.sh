@@ -7,7 +7,7 @@
 # No model credential or quota. Selected phases provision fixtures without running other phases.
 #
 # Runtime fixtures are removed; timings and process logs remain under artifacts/jobs/.
-# Needs: docker and node; board phases also need compose Postgres. See --help.
+# Needs: docker and node; board phases also need compose Postgres or TEST_JOBS_PG_URL. See --help.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,6 +74,8 @@ while [ "$#" -gt 0 ]; do
         echo '        its own test-jobs.sh run with its own board fixture, database, run-specific names and a ten-port slice from PORT;'
         echo '        core, server and driver are built once, and the summary lists every group. Default stays serial.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
+        echo 'TEST_JOBS_PG_URL (postgres://user:pass@host:port, no database) puts the run databases on that server and'
+        echo '        starts no compose Postgres; psql and pg_isready must then be on PATH.'
         echo '--watch-stalls (or LANE_WATCH_STALLS=1) dumps every job container alive past LANE_STALL_S (default 120) seconds.'
         echo 'The run ends with a slow-jobs summary of attempts past LANE_SLOW_S (default 30) seconds, beside the timings.'
         exit 0
@@ -99,6 +101,29 @@ selected_phase() {
     case ",$PHASE," in *",$1,"*) return 0 ;; esac
     return 1
 }
+# Sets LANE_HOST: the address the boards and the host drivers' gate listeners bind, the one host.docker.internal
+# reaches from the lane's containers. Docker Desktop forwards that name to the host's loopback; a native Linux
+# daemon maps it (host-gateway) to the default bridge's gateway, which a loopback listener never answers. Never
+# 0.0.0.0: an AUTH_MODE=none board runs shell commands for anyone who reaches it. An empty, failed or malformed
+# read refuses the lane; it never guesses loopback.
+lane_host_bind() {
+    local os gateway
+    os="$(docker info --format '{{.OperatingSystem}}' 2>/dev/null)" || os=''
+    case "$os" in
+    '') gateway='' ;;
+    'Docker Desktop')
+        LANE_HOST=127.0.0.1
+        return 0
+        ;;
+    *) gateway="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null)" || gateway='' ;;
+    esac
+    [[ "$gateway" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || {
+        echo "test-jobs: cannot tell which address host.docker.internal reaches (daemon '$os', bridge gateway '$gateway')"
+        return 1
+    }
+    LANE_HOST="$gateway"
+}
+
 # The standalone CLI phases boot no board; any other selected phase does.
 needs_board() {
     [ "$PHASE" = all ] && return 0
@@ -118,13 +143,23 @@ MINT_PORT=$((PORT + 2))
 AUTH_PORT=$((PORT + 3))
 MCP_PORT=$((PORT + 4))
 MCP_IDP_PORT=$((PORT + 5))
-BASE="http://127.0.0.1:$PORT"
+# The smoke origin's loopback port (PLAN_BASE). Fixed, not ephemeral: native Linux docker re-allocates an ephemeral
+# published port on every network connect or disconnect, which the compose-driver phase does to the origin.
+ORIGIN_PORT=$((PORT + 6))
+# BASE, the main board's URL, is set once lane_host_bind has resolved LANE_HOST (below).
 # The identity the host drivers of this run stamp on what they create (driver/src/task-volume.ts
 # boardIdentity: a digest of JOB_BOARD_URL), so a check can look at its own board's objects only
 # when other groups share the daemon (--parallel).
 board_id() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 16))' "$BASE"; }
 DB="${JOBS_TEST_DB:-factory_jobs_${RUN_ID//-/_}_test}"
-DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
+# The server the run's database lives on. TEST_JOBS_PG_URL names one already running — in a gate, the
+# repository's declared `postgres` service, which holds 5432 on the pod loopback where a compose Postgres
+# publishing the same port would collide — and the lane then never starts compose's (start_postgres) and
+# runs every `compose exec -T postgres` on the host against it (compose()). A server, never a database: each
+# run still creates and drops its own disposable *_test database there.
+PG_SERVER="${TEST_JOBS_PG_URL:-postgres://factory:factory@127.0.0.1:5432}"
+PG_SERVER="${PG_SERVER%/}"
+DATABASE_URL="$PG_SERVER/$DB"
 IMAGE_BASE="factory-jobs-$RUN_ID-base"
 IMAGE_OK="factory-jobs-$RUN_ID-ok"
 IMAGE_FAIL="factory-jobs-$RUN_ID-fail"
@@ -153,6 +188,28 @@ COMPOSE_CREDENTIAL_SHA256="${DRIVER_CREDENTIAL_SHA256:-$(printf '%064d' 0)}"
 # The file's path is fixed here (compose() and cleanup() name it); the file itself is written after the preflight.
 SECRETS_ENV_FILE_PATH="${TMPDIR:-/tmp}/factory-jobs-$RUN_ID-secrets.env"
 compose() { DRIVER_CREDENTIAL_SHA256="$COMPOSE_CREDENTIAL_SHA256" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
+# pg_exec exec -T [-e NAME=value]... postgres <psql|pg_isready> [-U user] [-d db] [args...]: the same
+# command on the host against $PG_SERVER, as the URL's role, on the named database (default postgres).
+# With TEST_JOBS_PG_URL every `compose exec` goes here; every other compose call still runs the
+# definition above, renamed compose_docker.
+pg_exec() {
+    local envs=() db=postgres tool
+    shift 2
+    while [ "${1:-}" = -e ]; do
+        envs+=("$2")
+        shift 2
+    done
+    [ "${1:-}" = postgres ] || { echo "test-jobs: no TEST_JOBS_PG_URL equivalent for compose exec $1" >&2; return 1; }
+    tool="$2"
+    shift 2
+    [ "${1:-}" = -U ] && shift 2
+    [ "${1:-}" = -d ] && { db="$2"; shift 2; }
+    env ${envs[@]+"${envs[@]}"} "$tool" -d "$PG_SERVER/$db" "$@"
+}
+if [ -n "${TEST_JOBS_PG_URL:-}" ]; then
+    eval "compose_docker() $(declare -f compose | sed 1d)"
+    compose() { if [ "${1:-}" = exec ]; then pg_exec "$@"; else compose_docker "$@"; fi; }
+fi
 # A github-mode lane board holds only its driver credential's SHA-256 (DRIVER_CREDENTIAL_SHA256), the
 # lane's driver the credential itself (DRIVER_CREDENTIAL, `drv_…`): the same split a deployment has.
 credential_sha256() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$1"; }
@@ -197,6 +254,24 @@ if needs_board; then
     done
     compose version >/dev/null 2>&1 || { echo 'test-jobs: the compose plugin is required'; exit 1; }
     [[ "$DB" =~ ^[a-z_][a-z0-9_]*_test$ ]] || { echo 'test-jobs: JOBS_TEST_DB must be a SQL identifier ending _test'; exit 2; }
+    if [ -n "${TEST_JOBS_PG_URL:-}" ]; then
+        [[ "$PG_SERVER" =~ ^postgres(ql)?://[^/?]+$ ]] || {
+            echo 'test-jobs: TEST_JOBS_PG_URL names a server (postgres://user:pass@host:port), never a database: each run creates its own'
+            exit 2
+        }
+        for tool in psql pg_isready; do
+            command -v "$tool" >/dev/null || { echo "test-jobs: $tool is required with TEST_JOBS_PG_URL"; exit 1; }
+        done
+    fi
+    lane_host_bind || exit 1
+    export LANE_HOST
+    BASE="http://$LANE_HOST:$PORT"
+    # Off loopback an AUTH_MODE=none board refuses to boot without the hatch (server/src/config.ts
+    # assertNoneModeBindable). The bind stays host-local: the bridge gateway is an interface of this host,
+    # reachable from its containers, not from the LAN.
+    LANE_BOARD_BIND=(HOST="$LANE_HOST")
+    [ "$LANE_HOST" = 127.0.0.1 ] || LANE_BOARD_BIND+=(AUTH_ALLOW_PUBLIC_BIND=1)
+    echo "test-jobs: boards and host drivers bind $LANE_HOST"
 fi
 # Generated after the preflight: a refused run (missing tool, image or unsafe database) pays for no keys and leaves no file.
 # The secret store's keys (docs/secrets.md), generated per run. They ride ONLY on each board's launch command
@@ -216,10 +291,14 @@ SECRET_STORE_ENV=(
 # run from another checkout carries another config hash, so a plain `up` would replace the container
 # mid-write. A replaced one can spend most of a minute in crash recovery, hence the wait.
 start_postgres() { # start_postgres <log>
-    compose up -d --no-recreate postgres >"$1" 2>&1 || {
-        echo 'test-jobs: could not start postgres'
-        exit 1
-    }
+    if [ -n "${TEST_JOBS_PG_URL:-}" ]; then
+        echo 'TEST_JOBS_PG_URL names the server: no compose postgres' >"$1"
+    else
+        compose up -d --no-recreate postgres >"$1" 2>&1 || {
+            echo 'test-jobs: could not start postgres'
+            exit 1
+        }
+    fi
     local ready=''
     for _ in $(seq 1 120); do
         compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && { ready=1; break; }
@@ -536,6 +615,7 @@ start_driver() { # start_driver <image> [RUNNER_SERVICES] [DRIVER_CONCURRENCY]
         REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY="${3:-2}" DRIVER_LEASE_SECONDS=60 \
         DRIVER_HANDOVER_MS="${LANE_HANDOVER_MS:-5000}" DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" \
+        GATE_LISTEN_HOST="$LANE_HOST" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
 }
@@ -569,6 +649,7 @@ disruption_driver() { # disruption_driver [VAR=value ...] — a services-off dri
         RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS="$LANE_LEASE_S" \
         DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" "$@" \
+        GATE_LISTEN_HOST="$LANE_HOST" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
 }
@@ -982,7 +1063,7 @@ docker build -q -t "$IMAGE_BASE" -f "$work/stub-runner.Dockerfile" "$work" >/dev
 # (REPO_CLONE_BASE; server/src/github/local-origin-plan.ts).
 
 start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until it is migrated
-    env "${SECRET_STORE_ENV[@]}" AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
+    env "${SECRET_STORE_ENV[@]}" AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" "${LANE_BOARD_BIND[@]}" \
         REPO_CLONE_BASE="$PLAN_BASE" \
         node server/dist/offline.js >>"$work/server.log" 2>&1 &
     server_pid=$!
@@ -1018,7 +1099,7 @@ docker volume create "$ORIGIN_VOLUME" >/dev/null &&
         git init -q -b main /tmp/seed
         git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m init
         git -C /tmp/seed push -q "/origins/$1.git" main' sh "$SMOKE_REPO" &&
-    docker run -d --name "$ORIGIN_NAME" --network "$NETWORK" -p 127.0.0.1::9418 -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
+    docker run -d --name "$ORIGIN_NAME" --network "$NETWORK" -p "127.0.0.1:$ORIGIN_PORT:9418" -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
         git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack \
         --listen=0.0.0.0 --port=9418 /origins >/dev/null || {
     echo 'test-jobs: could not serve the smoke origin'

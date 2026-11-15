@@ -167,7 +167,11 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
             'factory.volume-export-run': expect.any(String),
             'app.kubernetes.io/instance': 'factory',
         });
-        expect(pod.spec.template.metadata.labels).toEqual(pod.metadata.labels);
+        // The pod runs in the default class (no claim names one), and says so for the admission policy.
+        expect(pod.spec.template.metadata.labels).toEqual({
+            ...pod.metadata.labels,
+            'factory.runner-class': 'default',
+        });
         expect(pod.spec.backoffLimit).toBe(0);
         expect(pod.spec.activeDeadlineSeconds).toBe(1);
         const spec = pod.spec.template.spec;

@@ -2,7 +2,7 @@ import { Avatar } from '../components/Avatar.js';
 import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
 import { Icon } from '../components/Icon.js';
-import { executorTypeLabel } from '../workspace/executors.js';
+import { executorTypeLabel, RUNNER_CLASS_LABEL } from '../workspace/executors.js';
 import type { OrgExecutor } from '../api/useWorkspace.js';
 import { DEFAULT_LABEL, RESUME_LABEL, SUSPEND_LABEL, SUSPENDED_LABEL } from './WorkspaceExecutorsPanel.js';
 import { ScrollRegion } from '../components/ScrollRegion.js';
@@ -176,7 +176,16 @@ export function OrgExecutorsPanel({
                                         </span>
                                     </td>
                                     <td data-label="Type">
-                                        <span className="pill">{executorTypeLabel(executor.type)}</span>
+                                        {/* The runner class sits beside the agent, not in a column of its
+                                            own: a profile in the deployment's default class shows none. */}
+                                        <span className="pill-list">
+                                            <span className="pill">{executorTypeLabel(executor.type)}</span>
+                                            {executor.runnerClass ? (
+                                                <span className="pill" title={RUNNER_CLASS_LABEL}>
+                                                    {executor.runnerClass}
+                                                </span>
+                                            ) : null}
+                                        </span>
                                     </td>
                                     <td data-label="Added" className="muted">
                                         {commitDate(executor.createdAt)}
