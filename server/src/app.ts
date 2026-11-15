@@ -30,6 +30,8 @@ import type { OperationReceipts } from './db/operation-receipts.js';
 import { operationReceiptRoutes } from './routes/operation-receipts.js';
 import { integrationCatalogRoutes } from './routes/integration-catalog.js';
 import { integrationRoutes } from './routes/integrations.js';
+import { modelSetupVerifyRoutes } from './routes/model-setup-verify.js';
+import type { ProviderKeys } from './provider-keys/verify.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
@@ -183,6 +185,8 @@ export interface AppDeps {
     attachmentMaxInFlight?: number | undefined;
     /** The single-use upload capabilities; with it the upload-request routes and the capability PUT exist. */
     uploadCapabilities?: UploadCapabilityStore | undefined;
+    /** The provider key check; with it `POST /api/model-setup/verify` exists. main.ts builds it for the deployment mode. */
+    providerKeys?: ProviderKeys | undefined;
 }
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR
@@ -314,13 +318,15 @@ async function registerRunnerCredentialRoutes(
         );
 }
 
-async function registerCommerce(
+/** The routes that exist only with their dependency: commerce (and COMMERCE_ENABLED), the provider key check. */
+async function registerOptionalRoutes(
     app: FastifyInstance,
     config: AppConfig,
     orgs: OrgRegistry,
-    writer: CommercePlanWriter | undefined
+    { commercePlanWriter: writer, providerKeys, now }: Pick<AppDeps, 'commercePlanWriter' | 'providerKeys' | 'now'>
 ): Promise<void> {
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
+    if (providerKeys) await app.register(modelSetupVerifyRoutes({ providerKeys, now }));
 }
 
 /** No `listen` here — that split is what lets the route tests drive the app in-process. */
@@ -351,6 +357,7 @@ export async function buildApp({
     installationListing,
     commercePlanWriter,
     oauth,
+    providerKeys,
     notificationConnectors = createConnectorRegistry([]),
     ready,
     version = readVersion(),
@@ -472,8 +479,8 @@ export async function buildApp({
         githubRevoke,
     });
     await app.register(workspaceRoutes({ orgs, deploymentMode: config.deploymentMode }));
-    // Plans and usage: like the webhook, no route exists unless the deployment turned commerce on.
-    await registerCommerce(app, config, orgs, commercePlanWriter);
+    // Plans and usage (like the webhook, only when the deployment turned commerce on) and the provider key check.
+    await registerOptionalRoutes(app, config, orgs, { commercePlanWriter, providerKeys, now });
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs, deploymentMode: config.deploymentMode }));

@@ -1,8 +1,12 @@
-import { request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
-import { request as httpsRequest } from 'node:https';
-import { lookup } from 'node:dns/promises';
-import { isIP, type LookupFunction } from 'node:net';
+import type { ClientRequest, IncomingMessage } from 'node:http';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from '@factory-ai/core';
+import {
+    openPinnedGet,
+    PinError,
+    pinnedAddress as pinAddress,
+    type Resolve,
+    systemResolve,
+} from '../net/pinned-request.js';
 import { isLoopbackAddress, isSpecialUseAddress } from './special-use-address.js';
 
 /**
@@ -80,32 +84,17 @@ const REDIRECT_FLOOR = 300;
 const REDIRECT_CEILING = 400;
 const HTTP_OK = 200;
 
-const systemResolve = async (hostname: string): Promise<string[]> =>
-    (await lookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address);
-
-const bareHost = (url: URL): string => (url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname);
-
 /** The address to connect to: a literal as given, or the first answer of a lookup whose every answer is allowed. */
-const pinnedAddress = async (
-    url: URL,
-    resolve: (hostname: string) => Promise<string[]>,
-    allowLoopback: boolean
-): Promise<string> => {
-    const host = bareHost(url);
-    let answers: string[] = [host];
-    if (!isIP(host)) {
-        try {
-            answers = await resolve(host);
-        } catch (e) {
-            throw new CimdFetchError('network', `Lookup failed: ${(e as Error).message}`);
-        }
-    }
+const pinnedAddress = async (url: URL, resolve: Resolve, allowLoopback: boolean): Promise<string> => {
     const refused = (address: string) => isSpecialUseAddress(address) && !(allowLoopback && isLoopbackAddress(address));
-    const [first] = answers;
-    if (first === undefined || answers.some(refused)) {
-        throw new CimdFetchError('address', 'The client id resolves to an address that is not allowed.');
+    try {
+        return await pinAddress(url, resolve, refused);
+    } catch (e) {
+        if (e instanceof PinError && e.failure === 'address') {
+            throw new CimdFetchError('address', 'The client id resolves to an address that is not allowed.');
+        }
+        throw new CimdFetchError('network', `Lookup failed: ${(e as Error).message}`);
     }
-    return first;
 };
 
 type Finish = (error?: Error, value?: unknown) => void;
@@ -167,35 +156,8 @@ const readBody = (response: IncomingMessage, maxBytes: number, finish: Finish): 
     response.on('close', () => finish(new CimdFetchError('network', 'The connection closed before the end.')));
 };
 
-/** Resolves the address a request may use, in place of the system lookup the socket would otherwise do. */
-const lookupOf =
-    (address: string): LookupFunction =>
-    (_host, lookupOptions, callback) => {
-        const entry = { address, family: isIP(address) };
-        if ((lookupOptions as { all?: boolean }).all) {
-            (callback as unknown as (e: null, all: (typeof entry)[]) => void)(null, [entry]);
-        } else callback(null, address, entry.family);
-    };
-
-const openRequest = (url: URL, address: string, onResponse: (response: IncomingMessage) => void): ClientRequest => {
-    const secure = url.protocol === 'https:';
-    const host = bareHost(url);
-    const outgoing = (secure ? httpsRequest : httpRequest)({
-        hostname: host,
-        port: url.port || undefined,
-        path: `${url.pathname}${url.search}`,
-        method: 'GET',
-        headers: { accept: JSON_CONTENT_TYPE, host: url.host },
-        lookup: lookupOf(address),
-        agent: false,
-        ...(secure && !isIP(host) ? { servername: host } : {}),
-    });
-    outgoing.on('response', onResponse);
-    return outgoing;
-};
-
 interface Fetching {
-    resolve: (hostname: string) => Promise<string[]>;
+    resolve: Resolve;
     allowLoopback: boolean;
     maxBytes: number;
     timeoutMs: number;
@@ -222,7 +184,9 @@ const fetchDocument = (url: URL, signal: AbortSignal | undefined, ctx: Fetching)
 
         const connect = (address: string) => {
             if (done) return;
-            outgoing = openRequest(url, address, (response) => readBody(response, ctx.maxBytes, finish));
+            outgoing = openPinnedGet(url, address, { accept: JSON_CONTENT_TYPE }, (response) =>
+                readBody(response, ctx.maxBytes, finish)
+            );
             outgoing.on('error', (e) => finish(new CimdFetchError('network', e.message)));
             outgoing.end();
         };
