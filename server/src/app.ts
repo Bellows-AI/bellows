@@ -314,6 +314,13 @@ async function registerCommerce(
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
 }
 
+/** What the personal and the organization executor routes share: the deployment mode and the runner classes. */
+const executorRouteDeps = (config: AppConfig, orgs: OrgRegistry) => ({
+    orgs,
+    deploymentMode: config.deploymentMode,
+    runnerClasses: config.runnerClasses,
+});
+
 /** No `listen` here — that split is what lets the route tests drive the app in-process. */
 export async function buildApp({
     config,
@@ -462,12 +469,12 @@ export async function buildApp({
         githubMint,
         githubRevoke,
     });
-    await app.register(workspaceRoutes({ orgs, deploymentMode: config.deploymentMode }));
+    await app.register(workspaceRoutes(executorRouteDeps(config, orgs)));
     // Plans and usage: like the webhook, no route exists unless the deployment turned commerce on.
     await registerCommerce(app, config, orgs, commercePlanWriter);
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
-    await app.register(orgExecutorRoutes({ orgs, deploymentMode: config.deploymentMode }));
+    await app.register(orgExecutorRoutes(executorRouteDeps(config, orgs)));
     // The organization's export archive: an admin read over every org table and object.
     await app.register(orgExportRoutes({ orgs }));
     // Notification subscriptions: the org's settings for who hears about a task verdict.

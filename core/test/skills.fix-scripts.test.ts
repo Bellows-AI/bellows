@@ -360,7 +360,13 @@ describe('heavy.sh host guard', () => {
         children.push(parented);
         const ppid = (pid: number) =>
             spawnSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
-        const alive = (pid: number) => spawnSync('kill', ['-0', String(pid)]).status === 0;
+        // A zombie still answers `kill -0`: where PID 1 does not reap (a container's bare `sleep`), a killed
+        // orphan stays one. Only a readable `Z` state counts as ended; a failed `ps` leaves the pid alive.
+        const alive = (pid: number) => {
+            if (spawnSync('kill', ['-0', String(pid)]).status !== 0) return false;
+            const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+            return !(ps.status === 0 && ps.stdout.trim().startsWith('Z'));
+        };
         for (let i = 0; i < 40 && !orphans.every((pid) => ppid(pid) === '1'); i++) await sleep(50);
         if (!orphans.every((pid) => ppid(pid) === '1')) {
             // A subreaper (some CI containers) adopts orphans instead of PID 1: not this host's shape.

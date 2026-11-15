@@ -1,9 +1,10 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { loadConfig } from '../src/config.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = join(ROOT, 'scripts/test-jobs.sh');
@@ -16,6 +17,9 @@ const COMMANDS = {
     docker: `printf '%s\n' "$*" >>"$HARNESS_TRACE"
 case "$1 $2" in
     'image inspect') [ "$3" != "\${MISSING_IMAGE:-}" ] || exit 1 ;;
+    # The daemon kind and the default bridge's gateway: $DOCKER_OS empty fails the read, as does an empty gateway.
+    'info --format') [ -n "\${DOCKER_OS-Docker Desktop}" ] || exit 1; printf '%s\n' "\${DOCKER_OS-Docker Desktop}" ;;
+    'network inspect') [ -n "\${BRIDGE_GATEWAY:-}" ] || exit 1; printf '%s\n' "$BRIDGE_GATEWAY" ;;
     'compose up')
         if [ "$POSTGRES_START_FAIL" = 1 ]; then
             echo 'simulated postgres startup failure' >&2
@@ -68,6 +72,9 @@ esac`,
     *) exit 99 ;;
 esac`,
     npm: 'echo unexpected-npm >>"$HARNESS_TRACE"; exit 99',
+    // The client tools a lane on a declared Postgres (TEST_JOBS_PG_URL) calls in place of `compose exec`.
+    psql: 'printf \'psql %s\\n\' "$*" >>"$HARNESS_TRACE"',
+    pg_isready: 'printf \'pg_isready %s\\n\' "$*" >>"$HARNESS_TRACE"',
     timeout: `shift
 if [ "$1" = docker ] && [ "$2" = wait ]; then
     [ -z "$SUPERVISOR_WAIT_STATUS" ] || exit "$SUPERVISOR_WAIT_STATUS"
@@ -269,6 +276,35 @@ describe('test-jobs phase options', () => {
         expect(lane.timings()).toMatch(/^cleanup\t\d+$/m);
     });
 
+    // In a gate the repository's declared `postgres` service already holds 5432 on the pod loopback,
+    // which a compose Postgres publishing the same port would collide with.
+    it('with TEST_JOBS_PG_URL set the lane never starts or publishes the compose Postgres and its DATABASE_URL uses that server', async () => {
+        const lane = fixture();
+        const server = 'postgres://factory:factory@postgres:5432';
+        const result = await lane.run(['--phase', 'board'], { TEST_JOBS_PG_URL: server });
+        // The build fails (npm is a stub), after the database was created and before any board.
+        expect(result.status).toBe(1);
+        const trace = lane.trace();
+        expect(trace).not.toMatch(/^compose (up|exec)/m);
+        expect(trace).toContain(`pg_isready -d ${server}/postgres`);
+        const database = /create database (factory_jobs_\w+_test)/.exec(trace)?.[1];
+        expect(database).toBeTruthy();
+        expect(trace).toContain(`psql -d ${server}/postgres`);
+        // The run's own database on that server: what the boards' DATABASE_URL names.
+        expect(trace).toContain(`psql -d ${server}/${database} `);
+        expect(trace).toContain(`drop database if exists ${database}`);
+    });
+
+    it('refuses a TEST_JOBS_PG_URL that names a database: each run creates its own disposable one', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'board'], {
+            TEST_JOBS_PG_URL: 'postgres://factory:factory@postgres:5432/factory',
+        });
+        expect(result.status).toBe(2);
+        expect(result.stdout).toContain('TEST_JOBS_PG_URL');
+        expect(lane.trace()).not.toMatch(/psql|pg_isready|compose up/);
+    });
+
     it('gives separate runs distinct disposable databases and image cleanup targets', async () => {
         const lanes = [fixture(), fixture()];
         // Concurrent: the two runs share nothing, and the ids must differ even when started together.
@@ -468,5 +504,131 @@ describe('test-jobs phase options', () => {
         expect(help.stdout).toContain('--phase driver,services');
         expect(help.stdout).toContain('--changed BASE');
         expect(help.stdout).toContain('the full lane');
+    });
+});
+
+// With TEST_JOBS_PG_URL no compose Postgres exists, so a phase that reaches the database another way
+// than compose() (which routes `compose exec -T postgres` to the server) or DATABASE_URL fails there.
+describe('test-jobs on a declared Postgres server', () => {
+    const lanes = () => [
+        'scripts/test-jobs.sh',
+        ...readdirSync(join(ROOT, 'scripts/lanes/jobs'))
+            .filter((name) => name.endsWith('.sh'))
+            .map((name) => `scripts/lanes/jobs/${name}`),
+    ];
+    const code = (path: string) =>
+        readFileSync(join(ROOT, path), 'utf8')
+            .split('\n')
+            .filter((line) => !line.trimStart().startsWith('#'));
+
+    // The compose postgres container, found by label or exec'd by id, exists only without the variable.
+    it('a phase reaches the compose postgres container directly only on the branch without TEST_JOBS_PG_URL', () => {
+        for (const path of lanes()) {
+            const lines = code(path);
+            lines.forEach((line, index) => {
+                if (!/docker exec\b.*\bpsql\b|com\.docker\.compose\.service=postgres/.test(line)) return;
+                const guard = lines.slice(Math.max(0, index - 12), index).join('\n');
+                expect(guard, `${path}: ${line.trim()}`).toMatch(/\[ -n "\$\{TEST_JOBS_PG_URL:-\}" \]/);
+            });
+        }
+    });
+
+    it('the capacity phase reads its database through one argv that names the server when it is set', () => {
+        const text = readFileSync(join(ROOT, 'scripts/lanes/jobs/capacity.sh'), 'utf8');
+        expect(text).toContain('cap_pg_argv=(env "PGOPTIONS=$cap_pg_options" psql -d "$DATABASE_URL")');
+        expect(text.match(/"\$\{cap_pg_argv\[@\]\}"/g)).toHaveLength(2);
+    });
+});
+
+// The boards and host drivers the lane's containers dial through host.docker.internal bind the
+// address that name reaches. driver/test/lane-stubs.test.ts pins that every launch site uses it.
+describe('test-jobs host bind', () => {
+    it('binds the boards and host drivers to the bridge gateway on a native Linux daemon', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'driver'], {
+            DOCKER_OS: 'Ubuntu 24.04 LTS',
+            BRIDGE_GATEWAY: '172.17.0.1',
+        });
+        expect(result.stdout).toContain('test-jobs: boards and host drivers bind 172.17.0.1');
+        expect(lane.trace()).toContain('network inspect bridge');
+    });
+
+    it('keeps them on 127.0.0.1 on Docker Desktop, without reading the bridge', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'driver'], { DOCKER_OS: 'Docker Desktop' });
+        expect(result.stdout).toContain('test-jobs: boards and host drivers bind 127.0.0.1');
+        expect(lane.trace()).not.toContain('network inspect');
+    });
+
+    it.each([
+        ['a failed docker info read', { DOCKER_OS: '' }],
+        ['a failed gateway read', { DOCKER_OS: 'Ubuntu 24.04 LTS', BRIDGE_GATEWAY: '' }],
+        ['a malformed gateway', { DOCKER_OS: 'Ubuntu 24.04 LTS', BRIDGE_GATEWAY: '<no value>' }],
+    ])('refuses the lane on %s, before any board starts, and never guesses loopback', async (_case, env) => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'driver'], env);
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain('test-jobs: cannot tell which address host.docker.internal reaches');
+        expect(result.stdout).not.toContain('bind 127.0.0.1');
+        expect(lane.trace()).not.toContain('compose up');
+        expect(lane.trace()).not.toContain('unexpected-npm');
+    });
+
+    it('reads nothing for the standalone CLI phases, which start no board and no host driver', async () => {
+        const lane = fixture();
+        await lane.run(['--phase', 'cooperative-stop'], { DOCKER_OS: '' });
+        expect(lane.trace()).not.toContain('info --format');
+    });
+});
+
+// A board moved off loopback meets the server's off-loopback rules (an authenticated board needs PUBLIC_URL,
+// MCP refuses an http one). Each board launch the lane runs is evaluated by bash under both resolved hosts,
+// and the environment it would hand server/dist/offline*.js goes through the real config loader.
+describe('test-jobs board launches boot config-valid', () => {
+    // The lane in run order: each sourced phase file in place of its `. "$REPO/scripts/lanes/…"` line.
+    const lane = readFileSync(SCRIPT, 'utf8').replace(/^\. "\$REPO\/(scripts\/lanes\/[^"]+\.sh)"$/gm, (_l, file) =>
+        readFileSync(join(ROOT, file), 'utf8')
+    );
+    const lines = lane.split('\n');
+    const boards = lines.flatMap((line, i) => {
+        if (!/node server\/dist\/offline[\w-]*\.js/.test(line)) return [];
+        let start = i;
+        while (start > 0 && lines[start - 1]?.trimEnd().endsWith('\\')) start--;
+        return [lines.slice(start, i + 1).join('\n')];
+    });
+    // What the lane itself derives from LANE_HOST and the board URLs its phase files set, taken from the script.
+    const derived = lines.filter((l) =>
+        /^\s*(LANE_BOARD_BIND|\[ "\$LANE_HOST"|BASE="http)|^(AUTH_BASE|MCP_BASE|MCP_IDP)=/.test(l)
+    );
+    const token = 'a-lane-config-check-secret-32-chars';
+    const preamble = [
+        'SECRET_STORE_ENV=(LANE_CONFIG_CHECK=1) # never empty: bash 3.2 reads an empty array as unbound under -u',
+        'DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_jobs_test',
+        'PORT=8129 CAP_LIGHT_PORT=8130 MINT_PORT=8131 AUTH_PORT=8132 MCP_PORT=8133 MCP_IDP_PORT=8134',
+        `PLAN_BASE=git://127.0.0.1:9418 CAP_TOKEN=${token} MCP_TOKEN=${token} PS_TOKEN=${token}`,
+        'set -- 8130 /dev/null',
+        ...derived.map((l) => l.trim()),
+    ].join('\n');
+    const printEnv = `"${process.execPath}" -e 'process.stdout.write(JSON.stringify(process.env))'`;
+    const launchEnv = (board: string, host: string): NodeJS.ProcessEnv => {
+        const run = board.replace(/node server\/dist\/offline[\w-]*\.js.*$/, printEnv);
+        const out = execFileSync('/bin/bash', ['-c', `set -eu\nLANE_HOST=${host}\n${preamble}\n${run}\nwait`], {
+            env: { PATH: process.env.PATH },
+            encoding: 'utf8',
+        });
+        const env = JSON.parse(out) as NodeJS.ProcessEnv;
+        for (const key of ['PATH', 'PWD', 'SHLVL', '_', 'OLDPWD']) delete env[key];
+        return env;
+    };
+
+    it('finds every board the lane starts', () => {
+        expect(boards.length).toBeGreaterThanOrEqual(6);
+    });
+
+    it.each(['172.17.0.1', '127.0.0.1'])('every board launch loads under LANE_HOST=%s', (host) => {
+        for (const board of boards) {
+            const env = launchEnv(board, host);
+            expect(() => loadConfig(env, { mode: 'none' }), board).not.toThrow();
+        }
     });
 });

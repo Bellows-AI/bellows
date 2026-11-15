@@ -3,7 +3,13 @@ import type { Page } from '@playwright/test';
 import { ADMIN_ROLE } from '@factory-ai/core';
 import { setRole } from './roles.js';
 import { throughSignIn } from './signin.js';
-import { ADD_LABEL } from '../web/src/workspace/executors.js';
+import {
+    ADD_LABEL,
+    RUNNER_CLASS_DEFAULT_LABEL,
+    RUNNER_CLASS_LABEL,
+    runnerClassOptionLabel,
+    SAVE_LABEL,
+} from '../web/src/workspace/executors.js';
 import { DEMOTE_LABEL } from '../web/src/panels/OrgExecutorsPanel.js';
 import {
     MAKE_DEFAULT_LABEL,
@@ -168,6 +174,41 @@ test('Delete asks first, and cancelling leaves the row untouched', async ({ page
     await expect(confirm).toHaveCount(0);
     await expect.poll(() => deletes.length).toBe(1);
     await expect(row(page, name)).toHaveCount(0);
+});
+
+test('an org profile picks a runner class, the table shows it, and an edit keeps it', async ({ page }) => {
+    await asAdmin(page);
+    const name = PROFILES[0]!;
+    await page.getByRole('button', { name: 'Add organization executor' }).click();
+    const dialog = page.getByRole('dialog', { name: ADD_LABEL });
+    const select = dialog.getByLabel(RUNNER_CLASS_LABEL, { exact: true });
+    // The board's declared classes (playwright.config.ts), each saying whether it has Docker.
+    await expect(select.locator('option')).toHaveText([
+        RUNNER_CLASS_DEFAULT_LABEL,
+        runnerClassOptionLabel({ name: 'standard', docker: false }),
+        runnerClassOptionLabel({ name: 'builds', docker: true }),
+    ]);
+    await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await select.selectOption('builds');
+    await page.screenshot({ path: `${SHOTS}/settings-executors-runner-class-dialog.png` });
+    await dialog.getByRole('button', { name: ADD_LABEL }).click();
+    await expect(dialog).toHaveCount(0);
+
+    // The real board stored it: the row says so, and the edit opens on it.
+    await expect(row(page, name).locator('[data-label="Type"]')).toContainText('builds');
+    await page.screenshot({ path: `${SHOTS}/settings-executors-runner-class-row.png` });
+    await row(page, name).getByRole('button', { name: 'Edit' }).click();
+    const edit = page.getByRole('dialog', { name: 'Edit executor' });
+    await expect(edit.getByLabel(RUNNER_CLASS_LABEL, { exact: true })).toHaveValue('builds');
+    // An edit that touches only the rounds still sends the class: the board's PUT is whole-entry.
+    await edit.getByText('Advanced configuration').click();
+    await edit.getByLabel(/gate repair rounds/i).fill('2');
+    await edit.getByRole('button', { name: SAVE_LABEL }).click();
+    await expect(edit).toHaveCount(0);
+    await page.reload();
+    await expect(row(page, name).locator('[data-label="Type"]')).toContainText('builds');
+
+    await deleteProfile(page, name);
 });
 
 /** The member's own list (issue 440): the table is named "Executors", the org's "Organization executors". */

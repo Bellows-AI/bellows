@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { readLaneScript } from './fixtures/lane-script.js';
 
@@ -26,6 +27,58 @@ function classify(files: string[]): Verdict {
     const out = spawnSync('node', [MAP, '--files', '--json'], { input: files.join('\n'), encoding: 'utf8' });
     expect(out.status).toBe(0);
     return JSON.parse(out.stdout) as Verdict;
+}
+
+const EMPTY_COLLECTIONS = new Set(['Map', 'Set', 'WeakMap', 'WeakSet']);
+
+// A call outside any nested function: code that runs when the enclosing statement does, not when a closure is invoked.
+// An empty collection's construction is not work.
+function callsNow(node: ts.Node): boolean {
+    if (ts.isFunctionLike(node)) return false;
+    if (ts.isNewExpression(node) && EMPTY_COLLECTIONS.has(node.expression.getText()) && !node.arguments?.length) {
+        return false;
+    }
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) return true;
+    return ts.forEachChild(node, callsNow) ?? false;
+}
+
+const ROUTE_VERBS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'route', 'all']);
+
+// `app.get(path, handler)` and the like: a plain declaration, whose handler runs per request.
+function declaresRoute(statement: ts.Statement): boolean {
+    if (!ts.isExpressionStatement(statement)) return false;
+    let call = statement.expression;
+    if (ts.isAwaitExpression(call)) call = call.expression;
+    if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) return false;
+    const { expression, name } = call.expression;
+    return (
+        ['app', 'scope'].includes(expression.getText()) && ROUTE_VERBS.has(name.text) && !call.arguments.some(callsNow)
+    );
+}
+
+/** The server/src files whose Fastify plugin body (a function taking `app`) runs a call at registration. */
+function registerTimeWork(): string[] {
+    const found: string[] = [];
+    for (const file of tracked('server/src').filter((f) => f.endsWith('.ts'))) {
+        const source = ts.createSourceFile(file, readFileSync(join(ROOT, file), 'utf8'), ts.ScriptTarget.Latest, true);
+        let works = false;
+        const visit = (node: ts.Node): void => {
+            const first = ts.isFunctionLike(node) ? node.parameters[0] : undefined;
+            const body = ts.isFunctionLike(node) && 'body' in node ? node.body : undefined;
+            const plugin =
+                first !== undefined &&
+                (['app', 'scope'].includes(first.name.getText()) || first.type?.getText() === 'FastifyInstance');
+            if (plugin && body && ts.isBlock(body)) {
+                works ||= body.statements.some(
+                    (st) => !ts.isFunctionDeclaration(st) && !declaresRoute(st) && callsNow(st)
+                );
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(source);
+        if (works) found.push(file);
+    }
+    return found;
 }
 
 function tracked(...dirs: string[]): string[] {
@@ -52,7 +105,7 @@ describe('test-jobs phase lists', () => {
 });
 
 describe('test-jobs --changed path-to-phase map', () => {
-    const ranges = tracked('driver/src', 'docker', 'scripts');
+    const ranges = tracked('driver/src', 'docker', 'scripts', 'server/src', 'server/migrations', 'core/src');
 
     it('lists exactly the phases the script accepts, in the order it runs them', async () => {
         const { PHASES } = (await import(MAP)) as { PHASES: string[] };
@@ -68,8 +121,8 @@ describe('test-jobs --changed path-to-phase map', () => {
         expect(PHASES.filter((phase) => !reached.has(phase))).toEqual([]);
     });
 
-    it('maps every tracked source path under driver/src, docker/ and scripts/ with a rule, not the fallback', () => {
-        expect(ranges.length).toBeGreaterThan(100);
+    it('maps every tracked source path under driver/src, docker/, scripts/, server/ and core/ with a rule, not the fallback', () => {
+        expect(ranges.length).toBeGreaterThan(500);
         const verdict = classify(ranges);
         expect(verdict.decisions.filter((decision) => decision.unmapped).map((decision) => decision.file)).toEqual([]);
     });
@@ -101,6 +154,107 @@ describe('test-jobs --changed path-to-phase map', () => {
         }
     });
 
+    it('runs the full lane for the board boot, the job and claim path, core and a migration', () => {
+        for (const file of [
+            'server/src/routes/jobs/jobs.ts',
+            'server/src/db/jobs/job-store-claim.ts',
+            'server/src/db/workflows/workflow-engine.ts',
+            'server/src/orgs.ts',
+            'server/src/stats-service.ts',
+            'server/src/notifications/delivery-loop.ts',
+            'server/src/notifications/outbox-store.ts',
+            'server/src/routes/github-credential.ts',
+            'server/src/skill-catalog.ts',
+            'server/src/db/skill-store.ts',
+            'server/src/integrations/credential-resolver.ts',
+            'core/src/executors.ts',
+            'server/migrations/006_jobs.sql',
+        ]) {
+            expect(classify([file]).selected, file).toBe('full');
+        }
+    });
+
+    // Every board phase boots the board, so what the boot runs is full. The loops: each module server/src/main.ts takes a
+    // start* function from. A loop main.ts starts only behind a flag one phase sets is listed here with that flag.
+    it('runs the full lane for every loop server/src/main.ts starts', () => {
+        const flagged: Record<string, string> = { 'server/src/auth/oauth-sweep.ts': 'MCP_ENABLED, the mcp phase' };
+        const main = readFileSync(join(ROOT, 'server/src/main.ts'), 'utf8');
+        const loops = [...main.matchAll(/import\s*\{([^}]*)\}\s*from\s*'\.\/([^']+)\.js'/g)]
+            .filter(([, names]) => /\bstart[A-Z]/.test(names ?? ''))
+            .map(([, , path]) => `server/src/${path}.ts`);
+        expect(loops.length).toBeGreaterThan(10);
+        for (const file of loops.filter((f) => !(f in flagged))) expect(classify([file]).selected, file).toBe('full');
+        // What the integration recovery pass runs: the integration modules and the grants it re-reads.
+        for (const file of ['server/src/integrations/authorization-store.ts', 'server/src/db/connection-grants.ts']) {
+            expect(classify([file]).selected, file).toBe('full');
+        }
+    });
+
+    // Registration runs at boot; only a handler body runs per request. A route file whose plugin body calls something
+    // besides declaring routes is full, unless its plugin is registered only behind a flag one phase sets.
+    it('runs the full lane for every route file that does work at registration', () => {
+        const flagged = /^server\/src\/(routes\/oauth[a-z-]*|mcp\/routes)\.ts$/; // registered only with MCP_ENABLED (app.ts)
+        const working = registerTimeWork();
+        expect(working).toContain('server/src/routes/skills.ts');
+        for (const file of working.filter((f) => !flagged.test(f)))
+            expect(classify([file]).selected, file).toBe('full');
+    });
+
+    it('selects nothing for a web-only diff', () => {
+        expect(classify(['web/src/panels/TaskRun.tsx']).selected).toEqual([]);
+    });
+
+    it('selects nothing for an org-settings route or store diff', () => {
+        for (const file of [
+            'server/src/routes/org-members.ts',
+            'server/src/routes/org-retention.ts',
+            'server/src/db/org-export.ts',
+        ]) {
+            expect(classify([file]).selected, file).toEqual([]);
+        }
+    });
+
+    it('selects nothing for commerce, batches, the documentation site or a route no phase calls', () => {
+        for (const file of [
+            'server/src/commerce/commerce-client.ts',
+            'server/src/db/commerce-store.ts',
+            'server/src/routes/commerce.ts',
+            'server/src/db/batches/batch-store.ts',
+            'server/src/routes/batches/batch-handlers.ts',
+            'server/src/routes/tokens.ts',
+            'server/src/routes/audit.ts',
+            'server/src/seed/cli.ts',
+            'site/docs.json',
+        ]) {
+            expect(classify([file]).selected, file).toEqual([]);
+        }
+    });
+
+    it('maps the stored-skill bundle and zip readers to the pinned-skills phase alone', () => {
+        expect(classify(['server/src/skills/skill-bundle.ts']).selected).toEqual(['pinned-skills']);
+        expect(classify(['server/src/skills/skill-zip.ts']).selected).toEqual(['pinned-skills']);
+    });
+
+    // question-round-trip.sh and pinned-skills.sh seed a grant and bind it through /api/jobs/:id/connections. The
+    // grants and integrations themselves run at boot (integration recovery), so only the connection store stays narrow.
+    it('maps the connection store to the phases that seed and bind a connection', () => {
+        expect(classify(['server/src/db/connection-store.ts']).selected).toEqual([
+            'github-credential',
+            'question-round-trip',
+            'pinned-skills',
+        ]);
+    });
+
+    it('maps a route one phase calls to that phase', () => {
+        expect(classify(['server/src/routes/workflows.ts']).selected).toEqual(['workflows']);
+        expect(classify(['server/src/oauth/cimd-fetch.ts']).selected).toEqual(['mcp']);
+        expect(classify(['server/src/routes/agent-title.ts']).selected).toEqual([
+            'tool-isolation',
+            'question-round-trip',
+        ]);
+        expect(classify(['server/src/offline-mint.ts']).selected).toEqual(['github-credential']);
+    });
+
     it('falls back to the full lane on a path it does not know, and says so', () => {
         const verdict = classify(['driver/src/brand-new-module.ts']);
         expect(verdict.selected).toBe('full');
@@ -114,10 +268,43 @@ describe('test-jobs --changed path-to-phase map', () => {
         ]);
     });
 
-    it('maps an MCP server or OAuth change to the mcp phase alone, ahead of the broad auth rule', () => {
+    it('maps an MCP server or OAuth change to the mcp phase alone, ahead of the auth rules', () => {
         expect(classify(['server/src/mcp/tools/task-wait.ts']).selected).toEqual(['mcp']);
         expect(classify(['server/src/auth/oauth-store.ts']).selected).toEqual(['mcp']);
-        expect(classify(['server/src/auth/session.ts']).selected).toEqual(['board', 'auth']);
+    });
+
+    // Every request, the claim's included, passes the auth plugin, its worker and session checks and the auth store.
+    it('runs the full lane for the auth files every request passes through', () => {
+        for (const file of [
+            'plugin',
+            'request-limits',
+            'route-class',
+            'session',
+            'store',
+            'worker-auth',
+            'driver-credentials',
+            'access-token',
+            'bridge-binding',
+            'membership-guard',
+        ]) {
+            expect(classify([`server/src/auth/${file}.ts`]).selected, file).toBe('full');
+        }
+    });
+
+    it('maps GitHub sign-in to the phases that boot an AUTH_MODE=github board, and the credential CLI to nothing', () => {
+        expect(classify(['server/src/auth/github.ts']).selected).toEqual(['capacity', 'auth', 'pinned-skills', 'mcp']);
+        expect(classify(['server/src/auth/driver-credential-cli.ts']).selected).toEqual([]);
+    });
+
+    // The driver asks the board for a GitHub token before every sync, publish and gate (driver/src/board/board.ts).
+    it('runs the full lane for the driver GitHub token ask every task makes', () => {
+        for (const file of [
+            'driver/src/github-credential-call.ts',
+            'driver/src/loop/loop-github.ts',
+            'driver/src/scripts/credential-helper.sh',
+        ]) {
+            expect(classify([file]).selected, file).toBe('full');
+        }
     });
 
     it('maps every file outside the lane inputs that a phase executes to that phase', () => {

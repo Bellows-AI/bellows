@@ -42,17 +42,19 @@ On kubernetes every control is **required by admission** (`charts/factory/templa
 | No escalation | `allowPrivilegeEscalation: false` | `--security-opt no-new-privileges` |
 | Seccomp | `seccompProfile: RuntimeDefault` | the daemon's default profile |
 | Agent launch, the `agent` and `reviewer` containers alone | `runAsUser: 0`, `capabilities.add: [SETUID, SETGID]`, admitted on a Job's `agent`, and on a `reviewer` whose command is `factory-launch --reviewer` | `--user 0:0 --cap-add SETUID --cap-add SETGID` |
+| Docker daemon, a docker class's `dockerd` alone | `privileged: true`, no added capability, no `drop`, no escalation field; admitted only as the `dockerd` init container of a docker class under its class's RuntimeClass | none: the docker executor refuses a docker class |
 
 There is **no opt-out for a declared service or a GATE image**: one needing root at boot declares `user: "uid:gid"`
 (numeric, uid never 0). `server/src/workspace/bellows-services.ts`, `driver/test/k8s-admission.test.ts`.
 
 ## Stated limits
 
-- **This is not kernel isolation and it is not VM isolation.** Every runner, gate, helper and service shares one host kernel; a kernel boundary means gVisor/Kata/Firecracker on a node group the chart does not provision.
+- **This is not kernel isolation and it is not VM isolation for a non-docker class.** Every runner, gate, helper and service of such a class shares one host kernel; a kernel boundary means a microVM (Kata) RuntimeClass on a node group the chart does not provision.
 - **The network controls are inert without an enforcing CNI** ([kubernetes-limits.md](kubernetes-limits.md)), and a NetworkPolicy cannot restrict HTTP routes.
 - **The tool uid guards the CLI against accidents, not a hostile tool**: it still writes config the CLI later executes (`.git/config`, `.claude`, `.mcp.json`) and can exhaust memory, CPU or pids; hooks and MCP servers run as the CLI's uid.
+- **A docker class gives task code root over the task volume**, and through the privileged `dockerd` over the guest kernel, never the node's: the class's microVM is the boundary, so tool-uid isolation does not hold there. The pod's `RuntimeDefault` does not filter `dockerd`: a privileged container always runs seccomp Unconfined. A runc RuntimeClass passed off as Kata would give it root of the node; the driver's boot check of the handler is the guard (`driver/src/k8s/k8s-runtime-class.ts`, [kubernetes-limits.md](kubernetes-limits.md)).
 - **A reviewer's tools share group node with the reviewer**: they can write its HOME and the review mailbox, as the agent's tools can the agent's tree (`docker/executor-common/factory-launch.sh`).
 - **Member env is trusted org configuration**: it reaches the agent and reviewer CLIs, which hold the lease and the OTLP header, so a member-set `NODE_OPTIONS` or similar runs as the CLI; the tool uid isolates what a tool command can do, not what an org member configures (`driver/src/scripts/review-loop.sh`).
-- **Pod Security `restricted` cannot admit the agent or the reviewer container** (`CAP_SETUID`/`CAP_SETGID`); `baseline` can.
+- **Pod Security `restricted` cannot admit the agent or the reviewer container** (`CAP_SETUID`/`CAP_SETGID`); `baseline` can, for a non-docker class. A namespace hosting a docker class must enforce Pod Security `privileged`, since `baseline` refuses the privileged `dockerd`; the admission policy then holds the baseline controls for every runner pod itself — host namespaces, ports and paths, capabilities, seccomp, AppArmor, SELinux, `/proc` mount, sysctls, HostProcess (`driver/test/k8s-admission.test.ts`).
 - **A task volume is a thread boundary** ([workspace.md](workspace.md)); **membership is not a sandbox** ([auth.md](auth.md)).
 - **`attrs.series` is an unsalted one-way digest** (`server/src/telemetry/otlp.ts`): a dictionary guess can confirm a value.

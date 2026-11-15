@@ -2,6 +2,7 @@ import type { BoardJob } from '../board/board.js';
 import { STRATEGIC_MERGE_PATCH_CONTENT_TYPE } from '../http.js';
 import { jobPodsPath, podLogPath, previousPodLogPath } from './k8s-auxspec.js';
 import { gateRequests, reviewerRequests } from './k8s-podfields.js';
+import { classOf } from '../runner-classes.js';
 import { stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
 import { podsOf } from './k8s-poll.js';
@@ -163,11 +164,16 @@ async function resizeSidecar(
 /** Resizes the gate sidecar; false for a group with no gate. */
 export async function resizeGateSidecar(deps: K8sDeps, job: BoardJob, phase: GateSizing): Promise<boolean> {
     if (!gateImageOf(job)) return false;
-    return resizeSidecar(deps, job, GATE_CONTAINER, gateRequests(deps.config, phase));
+    // A group whose class is no longer declared (adopted, or taken over) keeps whatever size it has.
+    const runnerClass = classOf(deps.config, job);
+    if (!runnerClass) return false;
+    return resizeSidecar(deps, job, GATE_CONTAINER, gateRequests(runnerClass, phase));
 }
 
 /** Resizes the reviewer sidecar; false for a claim that lists no reviewer profile. */
 export async function resizeReviewerSidecar(deps: K8sDeps, job: BoardJob, phase: ReviewerSizing): Promise<boolean> {
     if (!job.reviewerProfiles?.length) return false;
-    return resizeSidecar(deps, job, REVIEWER_CONTAINER, reviewerRequests(deps.config, phase));
+    const runnerClass = classOf(deps.config, job);
+    if (!runnerClass) return false;
+    return resizeSidecar(deps, job, REVIEWER_CONTAINER, reviewerRequests(runnerClass, phase));
 }

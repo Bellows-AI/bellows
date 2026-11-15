@@ -7,8 +7,10 @@ const INTERRUPTION_REASON_MAX = 500;
  * The flags only a release carries: a start the runner refused is a released attempt's outcome (an
  * adoption has a runner), and a claim that waits on a leftover still terminating, on a
  * connection the task asked for or on its suspended organization is a release outside the budget.
+ * `daemonLoss` (a docker class's dockerd lost under a failed gate) rides beside `nodeLoss`; the
+ * store bounds a run of them.
  */
-const RELEASE_FLAGS = ['refused', 'blocked', 'requirement', 'nodeLoss', 'orgSuspended'] as const;
+const RELEASE_FLAGS = ['refused', 'blocked', 'requirement', 'nodeLoss', 'daemonLoss', 'orgSuspended'] as const;
 
 /** The release flags a body sets: only the ones it sent `true`. */
 type ReleaseFlags = Partial<Record<(typeof RELEASE_FLAGS)[number], true>>;
