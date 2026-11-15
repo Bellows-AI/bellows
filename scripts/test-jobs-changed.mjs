@@ -86,21 +86,26 @@ export const RULES = [
     [/^server\/src\/(pr-follower|batch-loops|batch-pr-observer|stats-service|skills|skill-catalog)\.ts$/, FULL, 'the PR follower and stats warm-up every board runs, and the skill catalog every create reads'],
     [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
     [/^server\/src\/db\/batches\/batch-store-(observation|types)\.ts$/, FULL, 'the PR follower every board runs reads its lease'],
-    [/^server\/src\/integrations\/credential-resolver\.ts$/, FULL, 'every job read judges its bindings through it'],
+    // What server/src/main.ts starts on every board (pinned by the test from its start* imports): a loop's first pass runs
+    // at boot. Integration recovery reads every integration module and the grants; commerce delivery is called and returns
+    // at its COMMERCE_ENABLED check.
+    [/^server\/src\/(integrations\/|db\/connection-grants\.ts$|skills\/skill-collector\.ts$|commerce\/commerce-loop\.ts$)/, FULL, 'a loop every board starts at boot, and what it reads'],
     [/^server\/src\/oauth\/(rate-limit|special-use-address)\.ts$/, FULL, 'the rate limiter every request passes'],
     [/^server\/src\/attachments\/(attachment-collector|attachment-store|attachment-rows)\.ts$/, FULL, 'the attachment sweep every board runs over the shared object store'],
     [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|operation-receipts|ingest|stats|connections)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase'],
+    // Registration runs at boot: a route file whose plugin body calls something besides declaring routes (pinned by the test).
+    [/^server\/src\/routes\/(skills|skills-store|version|webhook|attachments|notification-subscriptions|operator|org-export|repos|connection-credential|batches\/batches)\.ts$/, FULL, 'registration does work at every boot'],
     // Called by named phases only.
-    [/^server\/src\/(db\/connection-(store|grants)\.ts$|routes\/connection-credential\.ts$|integrations\/)/, ['github-credential', 'question-round-trip', 'pinned-skills'], 'connections: two phases seed a grant and bind it, the broker reads its credential'],
+    [/^server\/src\/db\/connection-store\.ts$/, ['github-credential', 'question-round-trip', 'pinned-skills'], 'connections: two phases seed one and bind it to a task'],
     [/^server\/src\/(routes|db)\/agent-title\.ts$/, ['tool-isolation', 'question-round-trip'], 'the task title helper'],
     [/^server\/src\/routes\/workflows\.ts$/, ['workflows'], 'workflow definitions'],
-    [/^server\/src\/(routes\/skills-store\.ts$|skills\/)/, ['pinned-skills'], 'the stored-skill publish routes and their sweep'],
-    [/^server\/src\/(oauth\/|routes\/repos\.ts$|attachments\/upload-capability-store\.ts$)/, ['mcp'], 'the MCP client, its list_repos call and the sweep only an MCP board starts'],
+    [/^server\/src\/skills\//, ['pinned-skills'], 'stored-skill bundles, read only when a skill is published'],
+    [/^server\/src\/(oauth\/|attachments\/upload-capability-store\.ts$)/, ['mcp'], 'the MCP OAuth server and the sweep only an MCP board starts'],
     [/^server\/src\/offline-mint\.ts$/, ['github-credential'], 'the board with a stand-in mint'],
     // Not called by any jobs phase.
     [/^server\/src\/(commerce\/|db\/commerce-|routes\/commerce\.ts$)/, NONE, 'commerce, off unless COMMERCE_ENABLED, which no lane sets; not called by any jobs phase'],
     [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-merger\.ts$|batch-reconciler\.ts$)/, NONE, 'batches: their loops need BATCHES_ENABLED, which no lane sets, and no phase makes one; not called by any jobs phase'],
-    [/^server\/src\/(routes\/(org-members|org-retention|org-export|audit|tokens|tasks|version|prometheus|operator|operator-driver-credentials|webhook|integrations|integration-catalog|skills|attachments|attachment-uploads|attachment-ingest|notification-subscriptions)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
+    [/^server\/src\/(routes\/(org-members|org-retention|audit|tokens|tasks|prometheus|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
     [/^server\/src\/seed\//, NONE, 'synthetic data command line, not called by any jobs phase'],
 
     // --- docker executor, specific concerns ------------------------------------------------------

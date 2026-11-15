@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { readLaneScript } from './fixtures/lane-script.js';
 
@@ -26,6 +27,58 @@ function classify(files: string[]): Verdict {
     const out = spawnSync('node', [MAP, '--files', '--json'], { input: files.join('\n'), encoding: 'utf8' });
     expect(out.status).toBe(0);
     return JSON.parse(out.stdout) as Verdict;
+}
+
+const EMPTY_COLLECTIONS = new Set(['Map', 'Set', 'WeakMap', 'WeakSet']);
+
+// A call outside any nested function: code that runs when the enclosing statement does, not when a closure is invoked.
+// An empty collection's construction is not work.
+function callsNow(node: ts.Node): boolean {
+    if (ts.isFunctionLike(node)) return false;
+    if (ts.isNewExpression(node) && EMPTY_COLLECTIONS.has(node.expression.getText()) && !node.arguments?.length) {
+        return false;
+    }
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) return true;
+    return ts.forEachChild(node, callsNow) ?? false;
+}
+
+const ROUTE_VERBS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'route', 'all']);
+
+// `app.get(path, handler)` and the like: a plain declaration, whose handler runs per request.
+function declaresRoute(statement: ts.Statement): boolean {
+    if (!ts.isExpressionStatement(statement)) return false;
+    let call = statement.expression;
+    if (ts.isAwaitExpression(call)) call = call.expression;
+    if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) return false;
+    const { expression, name } = call.expression;
+    return (
+        ['app', 'scope'].includes(expression.getText()) && ROUTE_VERBS.has(name.text) && !call.arguments.some(callsNow)
+    );
+}
+
+/** The server/src files whose Fastify plugin body (a function taking `app`) runs a call at registration. */
+function registerTimeWork(): string[] {
+    const found: string[] = [];
+    for (const file of tracked('server/src').filter((f) => f.endsWith('.ts'))) {
+        const source = ts.createSourceFile(file, readFileSync(join(ROOT, file), 'utf8'), ts.ScriptTarget.Latest, true);
+        let works = false;
+        const visit = (node: ts.Node): void => {
+            const first = ts.isFunctionLike(node) ? node.parameters[0] : undefined;
+            const body = ts.isFunctionLike(node) && 'body' in node ? node.body : undefined;
+            const plugin =
+                first !== undefined &&
+                (['app', 'scope'].includes(first.name.getText()) || first.type?.getText() === 'FastifyInstance');
+            if (plugin && body && ts.isBlock(body)) {
+                works ||= body.statements.some(
+                    (st) => !ts.isFunctionDeclaration(st) && !declaresRoute(st) && callsNow(st)
+                );
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(source);
+        if (works) found.push(file);
+    }
+    return found;
 }
 
 function tracked(...dirs: string[]): string[] {
@@ -121,6 +174,32 @@ describe('test-jobs --changed path-to-phase map', () => {
         }
     });
 
+    // Every board phase boots the board, so what the boot runs is full. The loops: each module server/src/main.ts takes a
+    // start* function from. A loop main.ts starts only behind a flag one phase sets is listed here with that flag.
+    it('runs the full lane for every loop server/src/main.ts starts', () => {
+        const flagged: Record<string, string> = { 'server/src/auth/oauth-sweep.ts': 'MCP_ENABLED, the mcp phase' };
+        const main = readFileSync(join(ROOT, 'server/src/main.ts'), 'utf8');
+        const loops = [...main.matchAll(/import\s*\{([^}]*)\}\s*from\s*'\.\/([^']+)\.js'/g)]
+            .filter(([, names]) => /\bstart[A-Z]/.test(names ?? ''))
+            .map(([, , path]) => `server/src/${path}.ts`);
+        expect(loops.length).toBeGreaterThan(10);
+        for (const file of loops.filter((f) => !(f in flagged))) expect(classify([file]).selected, file).toBe('full');
+        // What the integration recovery pass runs: the integration modules and the grants it re-reads.
+        for (const file of ['server/src/integrations/authorization-store.ts', 'server/src/db/connection-grants.ts']) {
+            expect(classify([file]).selected, file).toBe('full');
+        }
+    });
+
+    // Registration runs at boot; only a handler body runs per request. A route file whose plugin body calls something
+    // besides declaring routes is full, unless its plugin is registered only behind a flag one phase sets.
+    it('runs the full lane for every route file that does work at registration', () => {
+        const flagged = /^server\/src\/(routes\/oauth[a-z-]*|mcp\/routes)\.ts$/; // registered only with MCP_ENABLED (app.ts)
+        const working = registerTimeWork();
+        expect(working).toContain('server/src/routes/skills.ts');
+        for (const file of working.filter((f) => !flagged.test(f)))
+            expect(classify([file]).selected, file).toBe('full');
+    });
+
     it('selects nothing for a web-only diff', () => {
         expect(classify(['web/src/panels/TaskRun.tsx']).selected).toEqual([]);
     });
@@ -129,7 +208,6 @@ describe('test-jobs --changed path-to-phase map', () => {
         for (const file of [
             'server/src/routes/org-members.ts',
             'server/src/routes/org-retention.ts',
-            'server/src/routes/org-export.ts',
             'server/src/db/org-export.ts',
         ]) {
             expect(classify([file]).selected, file).toEqual([]);
@@ -138,13 +216,13 @@ describe('test-jobs --changed path-to-phase map', () => {
 
     it('selects nothing for commerce, batches, the documentation site or a route no phase calls', () => {
         for (const file of [
-            'server/src/commerce/commerce-loop.ts',
+            'server/src/commerce/commerce-client.ts',
             'server/src/db/commerce-store.ts',
             'server/src/routes/commerce.ts',
             'server/src/db/batches/batch-store.ts',
-            'server/src/routes/batches/batches.ts',
+            'server/src/routes/batches/batch-handlers.ts',
             'server/src/routes/tokens.ts',
-            'server/src/routes/webhook.ts',
+            'server/src/routes/audit.ts',
             'server/src/seed/cli.ts',
             'site/docs.json',
         ]) {
@@ -152,31 +230,23 @@ describe('test-jobs --changed path-to-phase map', () => {
         }
     });
 
-    it('maps the stored-skill publish routes to the pinned-skills phase alone', () => {
-        expect(classify(['server/src/routes/skills-store.ts']).selected).toEqual(['pinned-skills']);
-        expect(classify(['server/src/skills/skill-collector.ts']).selected).toEqual(['pinned-skills']);
+    it('maps the stored-skill bundle and zip readers to the pinned-skills phase alone', () => {
+        expect(classify(['server/src/skills/skill-bundle.ts']).selected).toEqual(['pinned-skills']);
+        expect(classify(['server/src/skills/skill-zip.ts']).selected).toEqual(['pinned-skills']);
     });
 
-    // question-round-trip.sh and pinned-skills.sh seed a grant through server/dist/db/connection-grants.js and bind it
-    // through /api/jobs/:id/connections; the runner's broker reads it through /api/jobs/:id/credentials/connections.
-    it('maps connections and their credentials to the phases that seed and read one', () => {
-        for (const file of [
-            'server/src/db/connection-grants.ts',
-            'server/src/db/connection-store.ts',
-            'server/src/routes/connection-credential.ts',
-            'server/src/integrations/authorization-store.ts',
-        ]) {
-            expect(classify([file]).selected, file).toEqual([
-                'github-credential',
-                'question-round-trip',
-                'pinned-skills',
-            ]);
-        }
+    // question-round-trip.sh and pinned-skills.sh seed a grant and bind it through /api/jobs/:id/connections. The
+    // grants and integrations themselves run at boot (integration recovery), so only the connection store stays narrow.
+    it('maps the connection store to the phases that seed and bind a connection', () => {
+        expect(classify(['server/src/db/connection-store.ts']).selected).toEqual([
+            'github-credential',
+            'question-round-trip',
+            'pinned-skills',
+        ]);
     });
 
     it('maps a route one phase calls to that phase', () => {
         expect(classify(['server/src/routes/workflows.ts']).selected).toEqual(['workflows']);
-        expect(classify(['server/src/routes/repos.ts']).selected).toEqual(['mcp']);
         expect(classify(['server/src/oauth/cimd-fetch.ts']).selected).toEqual(['mcp']);
         expect(classify(['server/src/routes/agent-title.ts']).selected).toEqual([
             'tool-isolation',
