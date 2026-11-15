@@ -1,7 +1,6 @@
 import type { Sql, TransactionSql } from 'postgres';
 import {
     lockThreadRootInTx,
-    projectJiraConnectionInTx,
     resolveBindingsInTx,
     type Resolution,
     type ResolveInput,
@@ -121,8 +120,6 @@ async function disconnectOnce(
     await recordAudit(tx, { orgId, actor: userActor(userId), action: 'connection.disconnect', target: connectionId });
     const grantId = rows[0]!.grant_id;
     const revoked = grantId !== null && (await revokeGrantIfOrphaned(tx, orgId, grantId));
-    // Old pods read the root's projection: recompute it wherever this connection was bound.
-    for (const root of roots) await projectJiraConnectionInTx(tx, orgId, root);
     return { disconnected: true, revokedGrantId: revoked ? grantId : null };
 }
 

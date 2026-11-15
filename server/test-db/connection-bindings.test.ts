@@ -33,10 +33,13 @@ beforeAll(() => {
 const connect = (orgId: string, ownerUserId: string, account = `a-${randomUUID()}@example.com`) =>
     oauthConnection(sql, orgId, ownerUserId, { account });
 
-/** A root thread row authored by `userId`; the 094 trigger stamps its execution user. */
+/** A root thread row authored by `userId`, who is its execution user. */
 async function root(userId: string, orgId = ORG): Promise<string> {
     const id = randomUUID();
-    await sql`insert into job (org_id, id, command, root_job_id, created_by) values (${orgId}, ${id}, 'work', ${id}, ${userId})`;
+    await sql`
+        insert into job (org_id, id, command, root_job_id, created_by, execution_user_id)
+        values (${orgId}, ${id}, 'work', ${id}, ${userId}, ${userId})
+    `;
     return id;
 }
 

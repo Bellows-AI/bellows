@@ -94,21 +94,23 @@ export function createWorld(sql: Sql): World {
                 root,
                 row.parent ?? null,
                 row.author ?? null,
+                root === id ? (row.author ?? null) : null,
             ] as const;
             if (row.reviewOf) {
                 await sql`
-                    insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, repo,
-                                     created_at, review_of, review_key, review_profile, review_spec, review_revision,
-                                     review_ref)
+                    insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by,
+                                     execution_user_id, repo, created_at, review_of, review_key, review_profile,
+                                     review_spec, review_revision, review_ref)
                     values (${base[0]}, ${base[1]}, 'review', ${base[2]}, ${base[3]}, ${base[4]}, ${base[5]},
-                            ${row.repo ?? null}, now(), ${row.reviewOf}, ${marker('key')}, 'security', '{}'::jsonb,
+                            ${base[6]}, ${row.repo ?? null}, now(), ${row.reviewOf}, ${marker('key')}, 'security', '{}'::jsonb,
                             'head:abc', ${`refs/factory/review/${id}`})
                 `;
             } else {
                 await sql`
-                    insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, repo, created_at)
+                    insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by,
+                                     execution_user_id, repo, created_at)
                     values (${base[0]}, ${base[1]}, 'work', ${base[2]}, ${base[3]}, ${base[4]}, ${base[5]},
-                            ${row.repo ?? null}, now())
+                            ${base[6]}, ${row.repo ?? null}, now())
                 `;
             }
             return id;

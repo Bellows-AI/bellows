@@ -72,9 +72,6 @@ const create = async (target: { skills?: string[]; connectionIds?: string[] } = 
 const revisionOf = async (id: string): Promise<number> =>
     (await sql<{ rev: number }[]>`select binding_revision as rev from job where id = ${id}`)[0]!.rev;
 
-const projection = async (id: string): Promise<string | null> =>
-    (await sql<{ c: string | null }[]>`select jira_connection_id as c from job where id = ${id}`)[0]!.c;
-
 const claimerStore = (readFor: ReturnType<typeof parkedReader>['readFor']): JobStore =>
     createJobStore({ sql: claimPool, orgId: ORG, plan: { readFor } });
 
@@ -109,13 +106,11 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         expect(value(claimed)).toMatchObject({ id: root });
         expect(value(bound)).toEqual({ ok: true, revision: 1 });
         expect((await bindingsOf(sql, ORG, root)).map((b) => b.connectionId)).toEqual([fresh]);
-        expect(await projection(root)).toBe(fresh);
     });
 
     it('T2: disconnecting a bound connection and the claim of that root do not deadlock', async () => {
         const mine = await connect();
         const root = await create();
-        expect(await projection(root)).toBe(mine);
         const { claim, share } = await claimWaitingOnRoot(root);
         const disconnected = binderConnections.disconnect(mine, { userId: ALICE.id });
         await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
@@ -124,7 +119,6 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         const [claimed, gone] = await settledWithin([claim, disconnected]);
         expect(value(claimed)).toMatchObject({ id: root });
         expect(value(gone).disconnected).toBe(true);
-        expect(await projection(root)).toBeNull();
         const [binding] = await bindingsOf(sql, ORG, root);
         expect(binding).toMatchObject({ connectionId: mine, live: false });
     });
@@ -195,7 +189,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         expect((await bindingsOf(sql, ORG, root)).map((b) => b.connectionId)).toEqual([fresh]);
     });
 
-    it('T6: two disconnects over two shared roots both finish and project null', async () => {
+    it('T6: two disconnects over two shared roots both finish and leave no live binding', async () => {
         const one = await connect();
         const two = await connect();
         const first = await create({ connectionIds: [one, two] });
@@ -205,8 +199,9 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
             connections.disconnect(two, { userId: ALICE.id }),
         ]);
         expect(results.map((r) => value(r).disconnected)).toEqual([true, true]);
-        expect(await projection(first)).toBeNull();
-        expect(await projection(second)).toBeNull();
+        for (const root of [first, second]) {
+            expect((await bindingsOf(sql, ORG, root)).map((b) => b.live)).toEqual([false, false]);
+        }
     });
 
     it('T7: the real acquire records a requirement for an unbound root, then the waiting bind satisfies it', async () => {
