@@ -52,7 +52,7 @@ describe('test-jobs phase lists', () => {
 });
 
 describe('test-jobs --changed path-to-phase map', () => {
-    const ranges = tracked('driver/src', 'docker', 'scripts');
+    const ranges = tracked('driver/src', 'docker', 'scripts', 'server/src', 'server/migrations', 'core/src');
 
     it('lists exactly the phases the script accepts, in the order it runs them', async () => {
         const { PHASES } = (await import(MAP)) as { PHASES: string[] };
@@ -68,8 +68,8 @@ describe('test-jobs --changed path-to-phase map', () => {
         expect(PHASES.filter((phase) => !reached.has(phase))).toEqual([]);
     });
 
-    it('maps every tracked source path under driver/src, docker/ and scripts/ with a rule, not the fallback', () => {
-        expect(ranges.length).toBeGreaterThan(100);
+    it('maps every tracked source path under driver/src, docker/, scripts/, server/ and core/ with a rule, not the fallback', () => {
+        expect(ranges.length).toBeGreaterThan(500);
         const verdict = classify(ranges);
         expect(verdict.decisions.filter((decision) => decision.unmapped).map((decision) => decision.file)).toEqual([]);
     });
@@ -99,6 +99,90 @@ describe('test-jobs --changed path-to-phase map', () => {
         ]) {
             expect(classify([file]).selected, file).toBe('full');
         }
+    });
+
+    it('runs the full lane for the board boot, the job and claim path, core and a migration', () => {
+        for (const file of [
+            'server/src/routes/jobs/jobs.ts',
+            'server/src/db/jobs/job-store-claim.ts',
+            'server/src/db/workflows/workflow-engine.ts',
+            'server/src/orgs.ts',
+            'server/src/stats-service.ts',
+            'server/src/notifications/delivery-loop.ts',
+            'server/src/notifications/outbox-store.ts',
+            'server/src/routes/github-credential.ts',
+            'server/src/skill-catalog.ts',
+            'server/src/db/skill-store.ts',
+            'server/src/integrations/credential-resolver.ts',
+            'core/src/executors.ts',
+            'server/migrations/006_jobs.sql',
+        ]) {
+            expect(classify([file]).selected, file).toBe('full');
+        }
+    });
+
+    it('selects nothing for a web-only diff', () => {
+        expect(classify(['web/src/panels/TaskRun.tsx']).selected).toEqual([]);
+    });
+
+    it('selects nothing for an org-settings route or store diff', () => {
+        for (const file of [
+            'server/src/routes/org-members.ts',
+            'server/src/routes/org-retention.ts',
+            'server/src/routes/org-export.ts',
+            'server/src/db/org-export.ts',
+        ]) {
+            expect(classify([file]).selected, file).toEqual([]);
+        }
+    });
+
+    it('selects nothing for commerce, batches, the documentation site or a route no phase calls', () => {
+        for (const file of [
+            'server/src/commerce/commerce-loop.ts',
+            'server/src/db/commerce-store.ts',
+            'server/src/routes/commerce.ts',
+            'server/src/db/batches/batch-store.ts',
+            'server/src/routes/batches/batches.ts',
+            'server/src/routes/tokens.ts',
+            'server/src/routes/webhook.ts',
+            'server/src/seed/cli.ts',
+            'site/docs.json',
+        ]) {
+            expect(classify([file]).selected, file).toEqual([]);
+        }
+    });
+
+    it('maps the stored-skill publish routes to the pinned-skills phase alone', () => {
+        expect(classify(['server/src/routes/skills-store.ts']).selected).toEqual(['pinned-skills']);
+        expect(classify(['server/src/skills/skill-collector.ts']).selected).toEqual(['pinned-skills']);
+    });
+
+    // question-round-trip.sh and pinned-skills.sh seed a grant through server/dist/db/connection-grants.js and bind it
+    // through /api/jobs/:id/connections; the runner's broker reads it through /api/jobs/:id/credentials/connections.
+    it('maps connections and their credentials to the phases that seed and read one', () => {
+        for (const file of [
+            'server/src/db/connection-grants.ts',
+            'server/src/db/connection-store.ts',
+            'server/src/routes/connection-credential.ts',
+            'server/src/integrations/authorization-store.ts',
+        ]) {
+            expect(classify([file]).selected, file).toEqual([
+                'github-credential',
+                'question-round-trip',
+                'pinned-skills',
+            ]);
+        }
+    });
+
+    it('maps a route one phase calls to that phase', () => {
+        expect(classify(['server/src/routes/workflows.ts']).selected).toEqual(['workflows']);
+        expect(classify(['server/src/routes/repos.ts']).selected).toEqual(['mcp']);
+        expect(classify(['server/src/oauth/cimd-fetch.ts']).selected).toEqual(['mcp']);
+        expect(classify(['server/src/routes/agent-title.ts']).selected).toEqual([
+            'tool-isolation',
+            'question-round-trip',
+        ]);
+        expect(classify(['server/src/offline-mint.ts']).selected).toEqual(['github-credential']);
     });
 
     it('falls back to the full lane on a path it does not know, and says so', () => {

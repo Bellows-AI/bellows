@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Which test:jobs phases a change set needs — the ONE path-to-phase map behind
 // `scripts/test-jobs.sh --changed <base>`. Pinned by server/test/test-jobs.changed.test.ts: every
-// phase is reachable, and every tracked file under driver/src, docker/ and scripts/ matches a rule
-// here (an unmatched path is a test failure, not a silent full lane).
+// phase is reachable, and every tracked file under driver/src, docker/, scripts/, server/src,
+// server/migrations and core/src matches a rule here (an unmatched path is a test failure, not a silent full lane).
 //
 //   node scripts/test-jobs-changed.mjs <base>         paths from `git diff --name-only $(git merge-base <base> HEAD)`
 //                                                     plus untracked files
@@ -65,7 +65,38 @@ export const RULES = [
     [/^server\/src\/(mcp\/|auth\/oauth|routes\/oauth)/, ['mcp'], 'MCP server and its OAuth authorization server'],
     [/^scripts\/mcp-phase-client\.mjs$/, ['mcp'], 'the mcp phase client'],
     [/^server\/src\/auth\//, ['auth', 'board'], 'authentication'],
-    [/^(server|core)\/(src|migrations)\//, FULL, 'the board every phase boots'],
+
+    // --- the board (server/src, core/src, server/migrations) ----------------------------------------
+    // Derived from what the lane calls: the routes in scripts/test-jobs.sh, scripts/lanes/jobs/*.sh and the helpers they
+    // run, the driver's board client, the runner images' board calls, and the MCP tools scripts/mcp-phase-client.mjs
+    // calls; then route -> handler -> store, and the loops server/src/main.ts starts on every board. Adding a lane call
+    // to an area marked NONE or to one phase moves its rule here in the same change. Unproven stays full.
+    [/^server\/migrations\//, FULL, 'the schema every board migrates at boot'],
+    [/^core\/src\//, FULL, 'shared with the board through the core index re-export; a path cannot show which board module uses it'],
+    [/^server\/src\/(main|app|index|offline|orgs|shutdown|cache|interval-loop|abortable-sleep|identifiers|metrics|prometheus|version|tar|config(-[a-z-]+)?)\.ts$/, FULL, 'board boot, configuration and wiring'],
+    [/^server\/src\/(routes\/jobs|db\/jobs|db\/workflows)\//, FULL, 'the job, claim and workflow path every phase runs'],
+    [/^server\/src\/(workspace|github|artifacts|telemetry|notifications)\//, FULL, 'plan reads, GitHub reads, artifacts, runner telemetry and the notification outbox every board runs'],
+    [/^server\/src\/secrets\/rotate-(cli|args)\.ts$/, NONE, 'the rotation command line, not called by any jobs phase'],
+    [/^server\/src\/secrets\//, FULL, 'the secret store every board opens'],
+    [/^server\/src\/(pr-follower|batch-loops|batch-pr-observer|stats-service|skills|skill-catalog)\.ts$/, FULL, 'the PR follower and stats warm-up every board runs, and the skill catalog every create reads'],
+    [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
+    [/^server\/src\/db\/batches\/batch-store-(observation|types)\.ts$/, FULL, 'the PR follower every board runs reads its lease'],
+    [/^server\/src\/integrations\/credential-resolver\.ts$/, FULL, 'every job read judges its bindings through it'],
+    [/^server\/src\/oauth\/(rate-limit|special-use-address)\.ts$/, FULL, 'the rate limiter every request passes'],
+    [/^server\/src\/attachments\/(attachment-collector|attachment-store|attachment-rows)\.ts$/, FULL, 'the attachment sweep every board runs over the shared object store'],
+    [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|operation-receipts|ingest|stats|connections)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase'],
+    // Called by named phases only.
+    [/^server\/src\/(db\/connection-(store|grants)\.ts$|routes\/connection-credential\.ts$|integrations\/)/, ['github-credential', 'question-round-trip', 'pinned-skills'], 'connections: two phases seed a grant and bind it, the broker reads its credential'],
+    [/^server\/src\/(routes|db)\/agent-title\.ts$/, ['tool-isolation', 'question-round-trip'], 'the task title helper'],
+    [/^server\/src\/routes\/workflows\.ts$/, ['workflows'], 'workflow definitions'],
+    [/^server\/src\/(routes\/skills-store\.ts$|skills\/)/, ['pinned-skills'], 'the stored-skill publish routes and their sweep'],
+    [/^server\/src\/(oauth\/|routes\/repos\.ts$|attachments\/upload-capability-store\.ts$)/, ['mcp'], 'the MCP client, its list_repos call and the sweep only an MCP board starts'],
+    [/^server\/src\/offline-mint\.ts$/, ['github-credential'], 'the board with a stand-in mint'],
+    // Not called by any jobs phase.
+    [/^server\/src\/(commerce\/|db\/commerce-|routes\/commerce\.ts$)/, NONE, 'commerce, off unless COMMERCE_ENABLED, which no lane sets; not called by any jobs phase'],
+    [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-merger\.ts$|batch-reconciler\.ts$)/, NONE, 'batches: their loops need BATCHES_ENABLED, which no lane sets, and no phase makes one; not called by any jobs phase'],
+    [/^server\/src\/(routes\/(org-members|org-retention|org-export|audit|tokens|tasks|version|prometheus|operator|operator-driver-credentials|webhook|integrations|integration-catalog|skills|attachments|attachment-uploads|attachment-ingest|notification-subscriptions)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
+    [/^server\/src\/seed\//, NONE, 'synthetic data command line, not called by any jobs phase'],
 
     // --- docker executor, specific concerns ------------------------------------------------------
     [/^driver\/src\/(drain|loop\/loop-adopt|loop\/loop-reclaim|loop\/loop-fence|loop\/loop-lease|loop\/loop-race|adopt-skeleton|task-restore|reclaim-calls|kill-ledger|loop\/loop-ledger|operation-ledger)\.ts$/, RECOVERY, 'adoption and takeover'],
@@ -128,7 +159,7 @@ export const RULES = [
 
     // --- outside the lane's inputs ----------------------------------------------------------------
     [/^e2e\/stub-idp\.mjs$/, ['mcp'], 'the mcp phase signs its member in through it'],
-    [/^(web|e2e|docs|charts|lint|cli|plugins|\.github|\.claude|\.claude-plugin|\.opencode|\.factory)\//, NONE, 'not executed by the docker lane'],
+    [/^(web|e2e|docs|site|charts|lint|cli|plugins|\.github|\.claude|\.claude-plugin|\.opencode|\.factory)\//, NONE, 'not executed by the docker lane'],
     [/(^|\/)(test|test-db)\//, NONE, 'unit and integration tests'],
     [/^[^/]+\.(md|json|yaml|yml|ts|config\.ts)$|^(LICENSE|VERSION|Makefile|\.[a-z]+)$/, NONE, 'repo-level config and documents'],
 ];
