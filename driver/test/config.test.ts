@@ -177,7 +177,7 @@ describe('the driver config: runner classes', () => {
         docker: false,
     };
     const SANDBOX = {
-        runtimeClassName: 'gvisor',
+        runtimeClassName: 'kata',
         nodeSelector: { pool: 'sandbox' },
         resources: { limits: { cpu: '2', memory: '4Gi' } },
         docker: true,
@@ -216,7 +216,7 @@ describe('the driver config: runner classes', () => {
             },
             sandbox: {
                 name: 'sandbox',
-                runtimeClassName: 'gvisor',
+                runtimeClassName: 'kata',
                 nodeSelector: { pool: 'sandbox' },
                 tolerations: null,
                 affinity: null,
@@ -326,11 +326,11 @@ describe('the driver config: runner classes', () => {
         expect(() => loadDriverConfig(classesEnv({ Sandbox: SANDBOX }, 'Sandbox'))).toThrow(
             /RUNNER_CLASSES.*"Sandbox"/
         );
-        expect(() => loadDriverConfig(classesEnv({ standard: { ...STANDARD, runtime: 'gvisor' } }))).toThrow(
+        expect(() => loadDriverConfig(classesEnv({ standard: { ...STANDARD, runtime: 'kata' } }))).toThrow(
             /RUNNER_CLASSES\.standard.*"runtime"/
         );
         expect(() => loadDriverConfig(classesEnv(undefined, 'large'))).toThrow(/RUNNER_DEFAULT_CLASS.*"large"/);
-        expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_RUNTIME_CLASS: 'gvisor' })).toThrow(
+        expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_RUNTIME_CLASS: 'kata' })).toThrow(
             /RUNNER_RUNTIME_CLASS/
         );
         expect(() => loadDriverConfig({ RUNNER_RUNTIME_CLASS: '' })).toThrow(/RUNNER_RUNTIME_CLASS/);
@@ -403,7 +403,7 @@ describe('the driver config: runner classes', () => {
             loadDriverConfig({ EXECUTOR: 'kubernetes', ...oneClass(fields) });
         expect(() => loadDriverConfig({ RUNNER_CLASSES: 'not json' })).toThrow(/RUNNER_CLASSES must be JSON/);
         expect(() => loadDriverConfig({ RUNNER_CLASSES: '[]' })).toThrow(/RUNNER_CLASSES must be a JSON object/);
-        expect(() => loadDriverConfig({ RUNNER_CLASSES: '{"default":"gvisor"}' })).toThrow(/RUNNER_CLASSES\.default/);
+        expect(() => loadDriverConfig({ RUNNER_CLASSES: '{"default":"kata"}' })).toThrow(/RUNNER_CLASSES\.default/);
         expect(refused({ nodeSelector: [] })).toThrow(/RUNNER_CLASSES\.default\.nodeSelector/);
         expect(refused({ nodeSelector: { rack: 3 } })).toThrow(/RUNNER_CLASSES\.default\.nodeSelector/);
         expect(refused({ tolerations: {} })).toThrow(/RUNNER_CLASSES\.default\.tolerations/);
@@ -416,17 +416,17 @@ describe('the driver config: runner classes', () => {
         expect(refused({ resources: { limits: { gpu: '1' } } })).toThrow(/resources\.limits.*"gpu"/);
     });
 
-    // The RuntimeClass a class's pods run under (gvisor on GKE Sandbox). A name the API server would
+    // The RuntimeClass a class's pods run under (kata, a Kata microVM). A name the API server would
     // refuse fails at boot, never as a burned attempt.
     it('reads a class runtimeClassName as a RuntimeClass name, empty as none', () => {
         const runtimeOf = (runtimeClassName: unknown) =>
             loadDriverConfig({ EXECUTOR: 'kubernetes', ...oneClass({ runtimeClassName }) }).runnerClasses.default!
                 .runtimeClassName;
         expect(runtimeOf('')).toBeNull();
-        expect(runtimeOf('gvisor')).toBe('gvisor');
+        expect(runtimeOf('kata')).toBe('kata');
         expect(runtimeOf('kata.fc')).toBe('kata.fc');
-        expect(() => runtimeOf('gVisor')).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
-        expect(() => runtimeOf("gvisor' || true")).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
+        expect(() => runtimeOf('Kata')).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
+        expect(() => runtimeOf("kata' || true")).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
         expect(() => runtimeOf(5)).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
     });
 
@@ -434,7 +434,7 @@ describe('the driver config: runner classes', () => {
     // own, is refused at boot there, naming the stated limit — never silently run without it.
     it('refuses on docker a class that sets scheduling, a RuntimeClass or docker, naming the limit', () => {
         for (const fields of [
-            { runtimeClassName: 'gvisor' },
+            { runtimeClassName: 'kata' },
             { nodeSelector: { pool: 'sandbox' } },
             { tolerations: [{ key: 'pool' }] },
             { affinity: { nodeAffinity: {} } },

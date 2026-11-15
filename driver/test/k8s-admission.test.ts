@@ -255,7 +255,7 @@ describe('the admission policy pins each pod to its runner class RuntimeClass', 
     const helpers = readFileSync(join(ROOT, 'charts/factory/templates/_helpers.tpl'), 'utf8');
     const sandbox = {
         ...DOCKER_CLASS_SIZING,
-        runtimeClassName: 'gvisor',
+        runtimeClassName: 'kata',
         nodeSelector: { pool: 'sandbox' },
         docker: true,
     };
@@ -267,7 +267,7 @@ describe('the admission policy pins each pod to its runner class RuntimeClass', 
         RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
     });
     /** The class → RuntimeClass map the chart renders for these classes ('' for none). */
-    const runtimeClasses: Record<string, string> = { standard: '', sandbox: 'gvisor' };
+    const runtimeClasses: Record<string, string> = { standard: '', sandbox: 'kata' };
     const promptedJob: BoardJob = { ...job, masterPrompt: 'Factory execution contract' };
 
     it('admits a pod whose runtimeClassName matches its class label; refuses a mismatch, an unknown class label and a missing label', () => {
@@ -413,6 +413,140 @@ describe('the admission policy admits the privileged dockerd sidecar of a docker
             daemonOf(t).securityContext = { privileged: true, capabilities: { add: ['NET_ADMIN'] } };
         });
         expect(refusedOf(capped)).toEqual([PRIVILEGED]);
+    });
+
+    /*
+     * A docker class's namespace enforces Pod Security `privileged`, which checks nothing, so this
+     * policy holds every other Pod Security Standards baseline control for each runner pod and
+     * container — the privileged dockerd included: its waiver is privileged and capabilities alone.
+     * (Privileged, capabilities and seccomp are pinned above.)
+     */
+    type Edit = (pod: Sent['spec']['template']) => void;
+    const podOf = (t: Sent['spec']['template']) => t.spec as unknown as Record<string, unknown>;
+    // The driver's pod always carries its securityContext (the RuntimeDefault profile).
+    const podContext = (t: Sent['spec']['template']) => podOf(t).securityContext as Record<string, unknown>;
+    const agentOf = (t: Sent['spec']['template']) => t.spec.containers.find((c) => c.name === AGENT_CONTAINER)!;
+    const APPARMOR = 'a driver-specced pod runs no container AppArmor unconfined';
+    const SYSCTLS = 'a driver-specced pod sets no sysctls';
+    const SELINUX =
+        'a driver-specced pod and its containers set no SELinux user or role, and an SELinux type only of a container';
+    const PROC_MOUNT = 'a driver-specced container keeps the default /proc mount';
+    const HOST_PROCESS = 'a driver-specced pod runs no Windows HostProcess container';
+    const HOST_NAMESPACES = 'a driver-specced pod may not share host namespaces';
+    const HOST_PORT = 'a driver-specced container may not bind a host port';
+    const VOLUMES =
+        'a driver-specced pod may mount only a task volume claim, emptyDir, and its own per-attempt Secrets';
+    it.each<[string, Edit, string]>([
+        [
+            'AppArmor unconfined on the pod',
+            (t) => {
+                podContext(t).appArmorProfile = { type: 'Unconfined' };
+            },
+            APPARMOR,
+        ],
+        [
+            'AppArmor unconfined on the privileged dockerd',
+            (t) => {
+                daemonOf(t).securityContext!.appArmorProfile = { type: 'Unconfined' };
+            },
+            APPARMOR,
+        ],
+        [
+            'AppArmor unconfined by the legacy annotation',
+            (t) => {
+                (t.metadata as { annotations?: Record<string, string> }).annotations = {
+                    [`container.apparmor.security.beta.kubernetes.io/${AGENT_CONTAINER}`]: 'unconfined',
+                };
+            },
+            APPARMOR,
+        ],
+        [
+            'a safe sysctl',
+            (t) => {
+                podContext(t).sysctls = [{ name: 'net.ipv4.ip_unprivileged_port_start', value: '0' }];
+            },
+            SYSCTLS,
+        ],
+        [
+            'an SELinux type outside the container ones, on the privileged dockerd',
+            (t) => {
+                daemonOf(t).securityContext!.seLinuxOptions = { type: 'spc_t' };
+            },
+            SELINUX,
+        ],
+        [
+            'an SELinux user on the pod',
+            (t) => {
+                podContext(t).seLinuxOptions = { user: 'system_u' };
+            },
+            SELINUX,
+        ],
+        [
+            'an SELinux role on a container',
+            (t) => {
+                agentOf(t).securityContext!.seLinuxOptions = { role: 'system_r' };
+            },
+            SELINUX,
+        ],
+        [
+            'an unmasked /proc on the privileged dockerd',
+            (t) => {
+                daemonOf(t).securityContext!.procMount = 'Unmasked';
+            },
+            PROC_MOUNT,
+        ],
+        [
+            'a Windows HostProcess pod',
+            (t) => {
+                podContext(t).windowsOptions = { hostProcess: true };
+            },
+            HOST_PROCESS,
+        ],
+        [
+            'a Windows HostProcess container',
+            (t) => {
+                agentOf(t).securityContext!.windowsOptions = { hostProcess: true };
+            },
+            HOST_PROCESS,
+        ],
+        ...(['hostNetwork', 'hostPID', 'hostIPC'] as const).map((field): [string, Edit, string] => [
+            `the ${field} host namespace`,
+            (t) => {
+                podOf(t)[field] = true;
+            },
+            HOST_NAMESPACES,
+        ]),
+        [
+            'a host port on the privileged dockerd',
+            (t) => {
+                (daemonOf(t) as Record<string, unknown>).ports = [{ containerPort: 2375, hostPort: 2375 }];
+            },
+            HOST_PORT,
+        ],
+        [
+            'a hostPath volume',
+            (t) => {
+                (podOf(t).volumes as unknown[]).push({ name: 'host', hostPath: { path: '/' } });
+            },
+            VOLUMES,
+        ],
+    ])('refuses what Pod Security baseline refuses: %s', (_, edit, refusal) => {
+        expect(refusedOf(sent(edit))).toEqual([refusal]);
+    });
+
+    it('admits what Pod Security baseline admits of those: RuntimeDefault AppArmor, a container SELinux type, the default /proc', () => {
+        const baseline = sent((t) => {
+            podContext(t).appArmorProfile = { type: 'RuntimeDefault' };
+            podContext(t).seLinuxOptions = { type: 'container_t', level: 's0:c1,c2' };
+            daemonOf(t).securityContext!.appArmorProfile = { type: 'Localhost', localhostProfile: 'dockerd' };
+            daemonOf(t).securityContext!.procMount = 'Default';
+            (t.metadata as { annotations?: Record<string, string> }).annotations = {
+                [`container.apparmor.security.beta.kubernetes.io/${AGENT_CONTAINER}`]: 'runtime/default',
+                [`container.apparmor.security.beta.kubernetes.io/${GATE_CONTAINER}`]: 'localhost/gate',
+                'example.com/other': 'unconfined',
+            };
+        });
+        expect(refusedOf(baseline)).toEqual([]);
     });
 
     it('still requires no escalation, drop ALL and RuntimeDefault everywhere else', () => {

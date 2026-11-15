@@ -787,7 +787,7 @@ describe('a docker class', () => {
         RUNNER_CLASSES: JSON.stringify({
             standard: {},
             sandbox: {
-                runtimeClassName: 'gvisor',
+                runtimeClassName: 'kata',
                 resources: { requests: { cpu: '1', memory: '2Gi' }, limits: { cpu: '4', memory: '8Gi' } },
                 docker: true,
                 dockerStorage: '6Gi',

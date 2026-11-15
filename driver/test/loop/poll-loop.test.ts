@@ -32,7 +32,7 @@ describe('a docker class claim', () => {
         EXECUTOR: 'kubernetes',
         RUNNER_CLASSES: JSON.stringify({
             standard: {},
-            sandbox: { ...DOCKER_CLASS_SIZING, runtimeClassName: 'gvisor', docker: true },
+            sandbox: { ...DOCKER_CLASS_SIZING, runtimeClassName: 'kata', docker: true },
         }),
         RUNNER_DEFAULT_CLASS: 'standard',
         RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,

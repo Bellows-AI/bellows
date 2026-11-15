@@ -46,11 +46,12 @@ Limits, stated: the per-attempt Secret names do not carry the release, so in a n
 two releases one driver can still reach the other's per-attempt objects — install one release per
 namespace. Admission sees no job, so a task volume is fenced by shape, not by owner: a
 compromised driver can still mount another thread's volume by name. A mutating sidecar injector (a service mesh) adds volumes and containers this policy refuses on
-runner pods; exclude the namespace from injection. Seccomp is required here (#382); AppArmor and sysctls
-are still left to Pod Security Admission — label the namespace
-`pod-security.kubernetes.io/enforce: baseline` for those, or `privileged` when a class sets
-`docker: true`: baseline refuses the privileged `dockerd`, and this policy is then what holds
-privileged to that one container under its class's RuntimeClass. None of this is kernel or VM
+runner pods; exclude the namespace from injection. Seccomp is required here (#382), and so is the
+rest of the Pod Security Standards baseline for every pod the driver specs (AppArmor, sysctls,
+SELinux, /proc, HostProcess beside the host and privilege rules), because a namespace with a class
+that sets `docker: true` must enforce Pod Security `privileged`: baseline refuses the privileged
+`dockerd`, and this policy is then what holds privileged to that one container under its class's
+RuntimeClass, and every baseline control to every runner pod. None of this is kernel or VM
 isolation for a class without a daemon: it is a smaller share of one shared kernel, not a
 different one (docs/security.md); a docker class's boundary is its microVM.
 */}}
@@ -85,6 +86,9 @@ spec:
           expression: "object.spec.template.spec"
         - name: containers
           expression: "variables.spec.containers + (has(variables.spec.initContainers) ? variables.spec.initContainers : [])"
+        # The SELinux types Pod Security baseline admits: a container's own, or none.
+        - name: seLinuxTypes
+          expression: "['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t']"
         - name: allowed
           expression: {{ toJson $allowed | quote }}
         - name: pullSecrets
@@ -235,6 +239,53 @@ spec:
                 (has(c.securityContext) && has(c.securityContext.capabilities) &&
                 has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop))
           message: 'a driver-specced container must drop ALL capabilities'
+        {{/*
+        The rest of the Pod Security Standards baseline, held here because a docker class's
+        namespace enforces Pod Security `privileged`, which checks nothing. Host namespaces, host
+        ports, hostPath, privileged, capabilities and seccomp are the rules above; these are
+        AppArmor (the field on the pod and each container, and the legacy annotation), sysctls (none
+        at all: the driver sets none, so not even baseline's safe set), SELinux, /proc and Windows
+        HostProcess. Every container is held to them, dockerd included: its waiver is privileged and
+        capabilities, nothing else. Ephemeral containers need no rule: the apiserver forbids them in
+        a pod template, and the Role grants no pods/ephemeralcontainers.
+        */}}
+        - expression: >-
+              (!has(variables.spec.securityContext) || !has(variables.spec.securityContext.appArmorProfile) ||
+                variables.spec.securityContext.appArmorProfile.type != 'Unconfined') &&
+              variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.appArmorProfile) ||
+                c.securityContext.appArmorProfile.type != 'Unconfined') &&
+              (!has(object.spec.template.metadata) || !has(object.spec.template.metadata.annotations) ||
+                object.spec.template.metadata.annotations.all(k,
+                  !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
+                  object.spec.template.metadata.annotations[k] == 'runtime/default' ||
+                  object.spec.template.metadata.annotations[k].startsWith('localhost/')))
+          message: 'a driver-specced pod runs no container AppArmor unconfined'
+        - expression: >-
+              !has(variables.spec.securityContext) || !has(variables.spec.securityContext.sysctls) ||
+                size(variables.spec.securityContext.sysctls) == 0
+          message: 'a driver-specced pod sets no sysctls'
+        - expression: >-
+              (!has(variables.spec.securityContext) || !has(variables.spec.securityContext.seLinuxOptions) ||
+                ((!has(variables.spec.securityContext.seLinuxOptions.type) ||
+                    variables.spec.securityContext.seLinuxOptions.type in variables.seLinuxTypes) &&
+                  (!has(variables.spec.securityContext.seLinuxOptions.user) || variables.spec.securityContext.seLinuxOptions.user == '') &&
+                  (!has(variables.spec.securityContext.seLinuxOptions.role) || variables.spec.securityContext.seLinuxOptions.role == ''))) &&
+              variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.seLinuxOptions) ||
+                ((!has(c.securityContext.seLinuxOptions.type) || c.securityContext.seLinuxOptions.type in variables.seLinuxTypes) &&
+                  (!has(c.securityContext.seLinuxOptions.user) || c.securityContext.seLinuxOptions.user == '') &&
+                  (!has(c.securityContext.seLinuxOptions.role) || c.securityContext.seLinuxOptions.role == '')))
+          message: 'a driver-specced pod and its containers set no SELinux user or role, and an SELinux type only of a container'
+        - expression: >-
+              variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.procMount) ||
+                c.securityContext.procMount == 'Default')
+          message: 'a driver-specced container keeps the default /proc mount'
+        - expression: >-
+              !(has(variables.spec.securityContext) && has(variables.spec.securityContext.windowsOptions) &&
+                has(variables.spec.securityContext.windowsOptions.hostProcess) &&
+                variables.spec.securityContext.windowsOptions.hostProcess) &&
+              variables.containers.all(c, !(has(c.securityContext) && has(c.securityContext.windowsOptions) &&
+                has(c.securityContext.windowsOptions.hostProcess) && c.securityContext.windowsOptions.hostProcess))
+          message: 'a driver-specced pod runs no Windows HostProcess container'
         {{/*
         Issue #773. A declared service is a sidecar of the task pod, reached on the pod's own
         loopback by its name: `hostAliases` may point nowhere else, or a name the agent dials could

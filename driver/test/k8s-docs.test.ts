@@ -178,7 +178,7 @@ describe('the executor isolation record (#382)', () => {
         expect(securityDocs).toContain('not kernel isolation and it is not VM isolation');
         expect(securityDocs).toContain('shares one host kernel');
         // And it says what WOULD give one, so the limit is actionable rather than just a warning.
-        expect(securityDocs).toMatch(/gVisor|Kata|Firecracker/);
+        expect(securityDocs).toContain('Kata');
     });
 
     it('states the controls and that they are required, not merely set', () => {

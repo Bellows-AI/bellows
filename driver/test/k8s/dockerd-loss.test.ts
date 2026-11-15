@@ -13,7 +13,7 @@ import { job, namespace, podName, routed, runner } from '../fixtures/k8s-suite.j
  * status, a count that is not one — is `inconclusive`, never a count.
  */
 const DOCKER_CLASS = {
-    ...oneClass({ ...DOCKER_CLASS_SIZING, docker: true, runtimeClassName: 'gvisor' }),
+    ...oneClass({ ...DOCKER_CLASS_SIZING, docker: true, runtimeClassName: 'kata' }),
     RUNNER_DOCKER_IMAGE: `docker:27-dind@sha256:${'0'.repeat(64)}`,
 };
 const podsPath = jobPodsPath(namespace, runnerName(job));

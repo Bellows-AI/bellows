@@ -13,7 +13,7 @@ const load = (env: NodeJS.ProcessEnv) => loadConfig({ ...BASE, ...env });
 /** The chart's shape: the whole `runner.classes` map, of which the board reads names and the docker flag. */
 const CHART_CLASSES = JSON.stringify({
     standard: { resources: { requests: { cpu: '500m', memory: '1Gi' } } },
-    sandboxed: { runtimeClassName: 'gvisor', docker: true, nodeSelector: { pool: 'sandbox' } },
+    sandboxed: { runtimeClassName: 'kata', docker: true, nodeSelector: { pool: 'sandbox' } },
     plain: null,
 });
 

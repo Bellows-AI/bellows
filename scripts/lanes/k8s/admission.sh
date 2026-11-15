@@ -23,6 +23,10 @@ CLASS_LABEL='factory.runner-class: standard'
 # The driver creates pods only through Jobs: the Role grants no pod create and the
 # policy matches Jobs alone, so each probe is a Job whose pod template carries the spec lines.
 probe_pod() { # probe_pod <name> <extra spec lines> [<extra labels>] [<pod securityContext>]
+    # TEMPLATE_ANNOTATIONS, when set, is the template's annotations (flow-mapping entries). Built
+    # here: a brace inside a `${…:+…}` word closes the expansion early.
+    local notes=''
+    [ -z "${TEMPLATE_ANNOTATIONS:-}" ] || notes=", annotations: {$TEMPLATE_ANNOTATIONS}"
     cat <<EOF
 apiVersion: batch/v1
 kind: Job
@@ -31,7 +35,7 @@ metadata:
     labels: {factory.job: admission-probe}
 spec:
     template:
-        metadata: {labels: {factory.job: admission-probe${CLASS_LABEL:+, $CLASS_LABEL}${3:+, $3}}}
+        metadata: {labels: {factory.job: admission-probe${CLASS_LABEL:+, $CLASS_LABEL}${3:+, $3}}$notes}
         spec:
             automountServiceAccountToken: false
             restartPolicy: Never
@@ -314,6 +318,61 @@ sock_svc="$(dind_pod socksvc "    initContainers: [{name: svc-db, image: alpine,
     $SOCK_VOL" | as_driver)"
 expect_refused 'the policy refuses a svc- service mounting the docker socket volume' "$sock_svc" \
     'docker socket volume in the agent, the gate and dockerd alone'
+
+# Pod Security baseline, held by the policy: a docker class's namespace enforces `privileged`,
+# which checks nothing. Each probe is a dind pod, the privileged dockerd beside it, so a refusal
+# also proves dockerd's waiver reaches no further than privileged and capabilities.
+DIND_SPEC="    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}]
+    containers: [{name: agent, image: alpine, $HARD_C}]"
+baseline_dockerd() { # baseline_dockerd <name> <extra dockerd securityContext fields> — dind pod, dockerd changed
+    dind_pod "$1" "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {privileged: true, runAsUser: 0, $2}}]
+    containers: [{name: agent, image: alpine, $HARD_C}]"
+}
+pod_ctx() { printf '{seccompProfile: {type: RuntimeDefault}, %s}' "$1"; }
+apparmor_pod="$(dind_pod apparmorpod "$DIND_SPEC" "$(pod_ctx 'appArmorProfile: {type: Unconfined}')" | as_driver)"
+expect_refused 'the policy refuses an unconfined AppArmor pod' "$apparmor_pod" 'no container AppArmor unconfined'
+apparmor_dockerd="$(baseline_dockerd apparmordockerd 'appArmorProfile: {type: Unconfined}' | as_driver)"
+expect_refused 'the policy refuses an unconfined AppArmor dockerd' "$apparmor_dockerd" 'no container AppArmor unconfined'
+apparmor_note="$(TEMPLATE_ANNOTATIONS='container.apparmor.security.beta.kubernetes.io/agent: unconfined' \
+    dind_pod apparmornote "$DIND_SPEC" | as_driver)"
+expect_refused 'the policy refuses the unconfined AppArmor annotation' "$apparmor_note" 'no container AppArmor unconfined'
+apparmor_default="$(TEMPLATE_ANNOTATIONS='container.apparmor.security.beta.kubernetes.io/agent: runtime/default' \
+    dind_pod apparmordefault "$DIND_SPEC" | as_driver)"
+expect_contains 'the policy admits the RuntimeDefault AppArmor annotation' "$apparmor_default" 'created (server dry run)'
+sysctl_safe="$(dind_pod sysctl "$DIND_SPEC" \
+    "$(pod_ctx 'sysctls: [{name: net.ipv4.ip_unprivileged_port_start, value: "0"}]')" | as_driver)"
+expect_refused 'the policy refuses even a safe sysctl' "$sysctl_safe" 'sets no sysctls'
+selinux_type="$(baseline_dockerd selinuxtype 'seLinuxOptions: {type: spc_t}' | as_driver)"
+expect_refused 'the policy refuses an SELinux type outside the container ones on dockerd' "$selinux_type" \
+    'set no SELinux user or role'
+selinux_user="$(dind_pod selinuxuser "$DIND_SPEC" "$(pod_ctx 'seLinuxOptions: {user: system_u}')" | as_driver)"
+expect_refused 'the policy refuses an SELinux user on the pod' "$selinux_user" 'set no SELinux user or role'
+selinux_ok="$(dind_pod selinuxok "$DIND_SPEC" "$(pod_ctx 'seLinuxOptions: {type: container_t, level: "s0:c1,c2"}')" | as_driver)"
+expect_contains 'the policy admits a container SELinux type and level' "$selinux_ok" 'created (server dry run)'
+# The apiserver admits an unmasked /proc only in a user namespace, which in turn forbids a
+# privileged container, so this probe is the agent's (dockerd's is driver/test/k8s-admission.test.ts).
+proc_mount="$(probe_pod procmount "    hostUsers: false
+    containers: [{name: agent, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, procMount: Unmasked}}]" | as_driver)"
+expect_refused 'the policy refuses an unmasked /proc' "$proc_mount" 'keeps the default /proc mount'
+host_network="$(dind_pod hostnet "    hostNetwork: true
+$DIND_SPEC" | as_driver)"
+expect_refused 'the policy refuses the host network' "$host_network" 'may not share host namespaces'
+host_pid="$(dind_pod hostpid "    hostPID: true
+$DIND_SPEC" | as_driver)"
+expect_refused 'the policy refuses the host PID namespace' "$host_pid" 'may not share host namespaces'
+host_ipc="$(dind_pod hostipc "    hostIPC: true
+$DIND_SPEC" | as_driver)"
+expect_refused 'the policy refuses the host IPC namespace' "$host_ipc" 'may not share host namespaces'
+host_port="$(dind_pod hostport "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C, ports: [{containerPort: 2375, hostPort: 2375}]}]
+    containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
+expect_refused 'the policy refuses a host port on dockerd' "$host_port" 'may not bind a host port'
+host_path="$(dind_pod hostpath "$DIND_SPEC
+    volumes: [{name: h, hostPath: {path: /}}]" | as_driver)"
+expect_refused 'the policy refuses a hostPath volume in a docker class pod' "$host_path" 'may mount only a task volume claim'
+# A HostProcess pod needs the host network, which the apiserver checks first and the policy refuses.
+host_process="$(dind_pod hostprocess "    hostNetwork: true
+$DIND_SPEC" "$(pod_ctx 'windowsOptions: {hostProcess: true}')" | as_driver)"
+expect_refused 'the policy refuses a Windows HostProcess pod' "$host_process" 'may not share host namespaces'
 
 # --- The agent's tool isolation, on the real kubelet ----------------------------------
 #

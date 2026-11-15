@@ -1,7 +1,7 @@
 /**
  * The subset of CEL the chart's admission policies are written in, evaluated over plain JSON: field
  * selection, `has()`, `!` `&&` `||` `==` `!=` `in`, `+` (list and string concatenation), the ternary, list and map literals, `size()`, the
- * `all`/`exists`/`filter`/`map` macros and the string `matches`/`startsWith`/`endsWith`/`contains`.
+ * `all`/`exists`/`filter`/`map` macros (over a list, or a map's keys) and the string `matches`/`startsWith`/`endsWith`/`contains`.
  * Anything outside it throws at parse time, so a policy rule written in more CEL than this knows
  * fails the suite instead of passing unevaluated. A field that is absent throws when selected, as
  * the apiserver's does, and a throwing validation is a refusal (`failurePolicy: Fail`).
@@ -231,7 +231,8 @@ function call(node: Extract<Node, { k: 'call' }>, scope: Scope): unknown {
         const variable = args[0];
         if (variable?.k !== 'id') throw new Error(`${fn}() takes a variable name first`);
         const each = (item: unknown) => evaluate(args[1]!, { ...scope, [variable.name]: item });
-        const items = list(receiver);
+        // A macro over a map ranges over its keys, as CEL's does.
+        const items = isObject(receiver) ? Object.keys(receiver) : list(receiver);
         if (fn === 'map') return items.map(each);
         if (fn === 'filter') return items.filter((item) => bool(each(item)));
         // `all`/`exists` absorb an element's error when another element decides, as `&&`/`||` do.

@@ -1530,6 +1530,31 @@ expect_contains 'the admission policy requires every capability dropped' "$admis
     "'ALL' in c.securityContext.capabilities.drop"
 expect_not_contains 'the admission policy exempts no container from the capability drop' "$admission" \
     'factory.unhardened'
+# A docker class's namespace enforces Pod Security `privileged`, which checks nothing, so the policy
+# holds the rest of the baseline itself, for every container (dockerd's waiver is privileged and
+# capabilities alone); driver/test/k8s-admission.test.ts evaluates each, the --cluster phase refuses each.
+expect_contains 'the admission policy refuses an unconfined AppArmor profile field' "$admission" \
+    "c.securityContext.appArmorProfile.type != 'Unconfined'"
+expect_contains 'the admission policy refuses the unconfined AppArmor annotation' "$admission" \
+    "!k.startsWith('container.apparmor.security.beta.kubernetes.io/')"
+expect_contains 'the admission policy words the AppArmor refusal' "$admission" \
+    "message: 'a driver-specced pod runs no container AppArmor unconfined'"
+expect_contains 'the admission policy refuses every sysctl' "$admission" \
+    'size(variables.spec.securityContext.sysctls) == 0'
+expect_contains 'the admission policy words the sysctl refusal' "$admission" \
+    "message: 'a driver-specced pod sets no sysctls'"
+expect_contains 'the admission policy admits only the container SELinux types' "$admission" \
+    "['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t']"
+expect_contains 'the admission policy words the SELinux refusal' "$admission" \
+    "message: 'a driver-specced pod and its containers set no SELinux user or role, and an SELinux type only of a container'"
+expect_contains 'the admission policy keeps the default /proc mount' "$admission" \
+    "c.securityContext.procMount == 'Default'"
+expect_contains 'the admission policy words the /proc mount refusal' "$admission" \
+    "message: 'a driver-specced container keeps the default /proc mount'"
+expect_contains 'the admission policy refuses a Windows HostProcess container' "$admission" \
+    'c.securityContext.windowsOptions.hostProcess'
+expect_contains 'the admission policy words the HostProcess refusal' "$admission" \
+    "message: 'a driver-specced pod runs no Windows HostProcess container'"
 # Issue #773: the driver creates pods only through Jobs, no Service at all; a service is a `svc-`
 # sidecar of the task pod, named on its loopback by hostAliases.
 expect_not_contains 'the admission policy matches no bare pod create' "$admission" "operations: ['CREATE']

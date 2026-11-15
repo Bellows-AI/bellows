@@ -121,7 +121,7 @@ describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)',
             name: 'sandboxed',
             type: 'claude-code',
             config: {},
-            runnerClass: 'gvisor',
+            runnerClass: 'kata',
             createdBy: ALICE,
         });
         await executors.createOrg({ name: 'plain', type: 'claude-code', config: {}, createdBy: ALICE });
@@ -131,7 +131,7 @@ describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)',
 
         const first = await store.claim('w5', LEASE_SECONDS);
         expect(first?.id).toBe(classed.id);
-        expect(first?.runnerClass).toBe('gvisor');
+        expect(first?.runnerClass).toBe('kata');
 
         const plain = await mustCreate(
             store.create('echo hi', BOB, { repo: null, executor: 'plain', executorScope: 'org' })
